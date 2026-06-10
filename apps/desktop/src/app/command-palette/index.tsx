@@ -17,6 +17,7 @@ import {
   ChevronRight,
   Clock,
   Cpu,
+  Download,
   Globe,
   type IconComponent,
   Info,
@@ -36,7 +37,9 @@ import {
 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
+import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
+import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
 import {
   AGENTS_ROUTE,
@@ -54,6 +57,8 @@ import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
 import { prettyName } from '../settings/helpers'
 
+import { MarketplaceThemePage } from './marketplace-theme-page'
+
 interface PaletteItem {
   active?: boolean
   icon: IconComponent
@@ -69,9 +74,15 @@ interface PaletteItem {
 }
 
 interface PaletteGroup {
-  heading: string
+  /** Optional: a headingless group renders as a bare action row (e.g. the
+   *  "Install theme…" entry pinned atop the theme picker). */
+  heading?: string
   items: PaletteItem[]
 }
+
+// Nested page → its parent, so Back / Esc step up one level instead of closing
+// the palette. Pages absent here go straight back to the root list.
+const PAGE_PARENTS: Record<string, string> = { 'install-theme': 'theme' }
 
 /** A nested page reachable from a root item via `to`. */
 interface PalettePage {
@@ -146,6 +157,26 @@ const THEME_MODES: ReadonlyArray<{ icon: IconComponent; mode: ThemeMode }> = [
   { icon: Monitor, mode: 'system' }
 ]
 
+// Which Light/Dark groups a theme belongs in. Built-ins render in both modes
+// (the engine synthesises the missing side). Imported VS Code themes only carry
+// the variant(s) the extension shipped — a single dark theme like Dracula lives
+// under Dark only, while a GitHub/Solarized family (light + dark) lives in both.
+function themeSupportsMode(name: string, target: 'light' | 'dark'): boolean {
+  if (!isUserTheme(name)) {
+    return true
+  }
+
+  const resolved = resolveTheme(name)
+
+  if (!resolved) {
+    return true
+  }
+
+  const background = target === 'dark' ? (resolved.darkColors ?? resolved.colors).background : resolved.colors.background
+
+  return target === 'dark' ? luminance(background) <= 0.5 : luminance(background) > 0.5
+}
+
 export function CommandPalette() {
   const { t } = useI18n()
   const open = useStore($commandPaletteOpen)
@@ -194,10 +225,19 @@ export function CommandPalette() {
   }, [open])
 
   const go = useCallback((path: string) => () => navigate(path), [navigate])
+
+  // Step up one nested page (or back to the root list), clearing the filter so
+  // the parent page doesn't reopen mid-search.
+  const goBack = useCallback(() => {
+    setSearch('')
+    setPage(prev => (prev ? (PAGE_PARENTS[prev] ?? null) : null))
+  }, [])
+
   const settingsSectionLabel = useCallback(
     (section: (typeof SECTIONS)[number]) => t.settings.sections[section.id] ?? section.label,
     [t.settings.sections]
   )
+
   const configFieldLabel = useCallback(
     (key: string) =>
       fieldCopyForSchemaKey(t.settings.fieldLabels, key) ??
@@ -373,24 +413,43 @@ export function CommandPalette() {
       theme: {
         title: t.settings.appearance.themeTitle,
         placeholder: t.settings.appearance.themeDesc,
-        // Skins aren't inherently light/dark — the same skin renders in either
-        // mode. Group by appearance so picking an entry sets skin + mode at
-        // once, and keep the palette open so each pick previews live.
-        groups: (['light', 'dark'] as const).map(groupMode => ({
-          heading: groupMode === 'light' ? t.settings.modeOptions.light.label : t.settings.modeOptions.dark.label,
-          items: availableThemes.map(theme => ({
-            active: themeName === theme.name && resolvedMode === groupMode,
-            icon: groupMode === 'light' ? Sun : Moon,
-            id: `theme-${theme.name}-${groupMode}`,
-            keepOpen: true,
-            keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
-            label: theme.label,
-            run: () => {
-              setTheme(theme.name)
-              setMode(groupMode)
-            }
+        groups: [
+          // Pinned at the top: drills into the Marketplace browser. Activating an
+          // import only sets the skin (never the mode), so the current light/dark
+          // preference is preserved.
+          {
+            items: [
+              {
+                icon: Download,
+                id: 'theme-install',
+                keywords: ['install', 'marketplace', 'vscode', 'vs code', 'download', 'new', 'color'],
+                label: t.commandCenter.installTheme.title,
+                to: 'install-theme'
+              }
+            ]
+          },
+          // Built-ins and imported families both list under the mode(s) they
+          // support; picking one sets skin + mode at once. Keep the palette open
+          // to preview. A multi-variant import (GitHub, Solarized) appears in
+          // both groups and switches variants with the mode.
+          ...(['light', 'dark'] as const).map(groupMode => ({
+            heading: groupMode === 'light' ? t.settings.modeOptions.light.label : t.settings.modeOptions.dark.label,
+            items: availableThemes
+              .filter(theme => themeSupportsMode(theme.name, groupMode))
+              .map(theme => ({
+                active: themeName === theme.name && resolvedMode === groupMode,
+                icon: groupMode === 'light' ? Sun : Moon,
+                id: `theme-${theme.name}-${groupMode}`,
+                keepOpen: true,
+                keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
+                label: theme.label,
+                run: () => {
+                  setTheme(theme.name)
+                  setMode(groupMode)
+                }
+              }))
           }))
-        }))
+        ]
       },
       'color-mode': {
         title: t.settings.appearance.colorMode,
@@ -409,6 +468,13 @@ export function CommandPalette() {
             }))
           }
         ]
+      },
+      // Server-driven page: items come from the Marketplace, rendered by
+      // <MarketplaceThemePage> (loader + live search + per-row install).
+      'install-theme': {
+        title: t.commandCenter.installTheme.title,
+        placeholder: t.commandCenter.installTheme.placeholder,
+        groups: []
       }
     }),
     [availableThemes, mode, resolvedMode, setMode, setTheme, t, themeName]
@@ -446,7 +512,7 @@ export function CommandPalette() {
             {activePage && (
               <button
                 className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
-                onClick={() => setPage(null)}
+                onClick={goBack}
                 type="button"
               >
                 <ChevronLeft className="size-3.5" />
@@ -466,7 +532,7 @@ export function CommandPalette() {
                 if (event.key === 'Escape' || (event.key === 'Backspace' && search === '')) {
                   event.preventDefault()
                   event.stopPropagation()
-                  setPage(null)
+                  goBack()
                 }
               }}
               onValueChange={setSearch}
@@ -474,12 +540,16 @@ export function CommandPalette() {
               value={search}
             />
             <CommandList className="max-h-[min(24rem,60vh)]">
-              <CommandEmpty>{t.commandCenter.noResults}</CommandEmpty>
-              {visibleGroups.map(group => (
+              {page === 'install-theme' ? (
+                <MarketplaceThemePage onPickTheme={setTheme} search={search} />
+              ) : (
+                <CommandEmpty>{t.commandCenter.noResults}</CommandEmpty>
+              )}
+              {visibleGroups.map((group, index) => (
                 <CommandGroup
                   className="**:[[cmdk-group-heading]]:uppercase **:[[cmdk-group-heading]]:tracking-wider **:[[cmdk-group-heading]]:text-[0.6875rem] **:[[cmdk-group-heading]]:text-muted-foreground/70"
                   heading={group.heading}
-                  key={group.heading}
+                  key={group.heading ?? `palette-group-${index}`}
                 >
                   {group.items.map(item => {
                     const Icon = item.icon

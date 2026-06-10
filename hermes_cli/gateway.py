@@ -6840,15 +6840,15 @@ def openrc_install(
         sys.exit(1)
 
     # Default paths - these will be read from conf.d if present
-    default_venv = "/root/.hermes/venv"
-    default_home = "/root/.hermes"
+    default_venv = "$HOME/.hermes/venv"
+    default_home = "$HOME/.hermes"
 
     init_script = f"""supervisor=supervise-daemon
 #!/sbin/openrc-run
 description="Hermes Gateway"
 # Load config if present
 [ -f /etc/conf.d/hermes-gateway ] && . /etc/conf.d/hermes-gateway
-: ${HERMES_HOME:={default_home}}
+: ${HERMES_HOME:="{default_home}"}
 export HERMES_HOME
 
 # Use the virtualenv hermes binary

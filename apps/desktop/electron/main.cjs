@@ -29,6 +29,7 @@ const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
+const { resolveServedDashboardToken } = require('./dashboard-token.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
@@ -4594,15 +4595,20 @@ async function spawnPoolBackend(profile, entry) {
   const baseUrl = `http://127.0.0.1:${port}`
   await Promise.race([waitForHermes(baseUrl, token), startFailed])
   ready = true
+  const authToken = await resolveServedDashboardToken(baseUrl, token, { rememberLog }).catch(error => {
+    rememberLog(`[boot] could not read served dashboard token for profile "${profile}": ${error.message}`)
+    return token
+  })
+  entry.token = authToken
 
   return {
     baseUrl,
     mode: 'local',
     source: 'local',
     authMode: 'token',
-    token,
+    token: authToken,
     profile,
-    wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(token)}`,
+    wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`,
     logs: hermesLog.slice(-80),
     ...getWindowState()
   }
@@ -4821,6 +4827,10 @@ async function startHermes() {
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendReady = true
+    const authToken = await resolveServedDashboardToken(baseUrl, token, { rememberLog }).catch(error => {
+      rememberLog(`[boot] could not read served dashboard token: ${error.message}`)
+      return token
+    })
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',
@@ -4834,8 +4844,8 @@ async function startHermes() {
       mode: 'local',
       source: 'local',
       authMode: 'token',
-      token,
-      wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(token)}`,
+      token: authToken,
+      wsUrl: `ws://127.0.0.1:${port}/api/ws?token=${encodeURIComponent(authToken)}`,
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }

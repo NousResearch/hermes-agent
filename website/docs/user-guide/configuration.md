@@ -204,7 +204,7 @@ When a Hermes process exits — `/quit`, closing a TUI session, gateway shutdown
 | Trigger | When it fires |
 |---|---|
 | `docker_persist_across_processes: false` | Explicit per-process isolation. Every `cleanup()` does `stop` + `rm -f`. Matches pre-issue-#20561 behavior. |
-| Idle reaper (`lifetime_seconds`, default 300s) | Only when the env is `persist_across_processes=false`. Persist-mode envs are no-op'd; container survives the idle sweep. |
+| Idle reaper (`lifetime_seconds`, default 300s) | Only when `docker_persist_across_processes: false` / `TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES=false`. Persist-mode envs are no-op'd; container survives the idle sweep. |
 | Orphan reaper at next startup | Sweeps **Exited** hermes-labeled containers older than `2 × lifetime_seconds` (default 600s = 10 min), scoped to the current profile. **Running containers are never touched** — sibling-process safety. Set `docker_orphan_reaper: false` to disable. |
 | Direct user action | `docker rm -f`, `docker system prune`, Docker Desktop restart. We don't set `--restart=always`, so a host reboot leaves the container `Exited` (its CoW layer survives and gets reused on next startup, but bg processes are gone). |
 

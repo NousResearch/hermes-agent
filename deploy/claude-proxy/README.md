@@ -83,11 +83,22 @@ misbehaving provider; the bug was here.
 | `CLAUDE_PROXY_ALLOW_ANON` | `1` | serve keyless requests as tenant `anon`; `0` → 401 |
 | `CLAUDE_PROXY_KEYS_FILE` | `/opt/data/proxy/keys.json` | key → tenant map (mtime-reloaded) |
 | `CLAUDE_PROXY_DAILY_TOKEN_BUDGET` | `5000000` | per-tenant daily tokens; over → 429; `0` disables |
+| `CLAUDE_PROXY_METERS_FILE` | `/opt/data/proxy/meters.json` | durable per-tenant meters + daily budget (atomic, debounced, flushed on SIGTERM); empty disables |
+| `CLAUDE_PROXY_MAX_BODY_BYTES` | `1048576` | reject request bodies over this with 413 |
+| `CLAUDE_PROXY_MAX_WORKERS` | `64` | max concurrent completions; saturated → 503; `0` disables the cap |
+| `CLAUDE_PROXY_QUEUE_TIMEOUT` | `10` | seconds a request waits for a worker slot before 503 |
 | `ANTHROPIC_API_KEY` | — | required only when `CLAUDE_PROXY_BACKEND=anthropic` |
 | `ANTHROPIC_MODEL_HAIKU/SONNET/OPUS` | `claude-haiku-4-5` / `claude-sonnet-4-6` / `claude-opus-4-8` | tier→model map for the API backend |
 
 `GET /health` reports backend, auth (allow_anon + keys_loaded), per-tenant
-metering (`tenants`), daily-budget spend, cache + negative-cache + breaker state.
+metering (`tenants`, `meters_persisted`), daily-budget spend, request `limits`,
+cache + negative-cache + breaker state.
+
+Metering and the daily-budget window are persisted to `CLAUDE_PROXY_METERS_FILE`
+and restored on boot, so a restart (deploy/crash) doesn't reset usage data or
+silently refund spent budget. A stale budget window (a prior UTC day) is dropped
+on load. An explicit `X-Cache-Control: no-cache` bypass is honored only for an
+**authenticated** tenant — anon can't force backend spend.
 
 ## Hardening (proxy lane)
 

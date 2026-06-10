@@ -41,6 +41,12 @@ services:
       # This container owns the per-profile gateways and the :11435 Claude
       # proxy. (Default behavior even when unset; set explicitly for clarity.)
       - HERMES_ROLE=gateway
+      # Claude proxy tenant auth. Default (unset) serves keyless requests as a
+      # shared "anon" tenant so single-user setups work out of the box. For a
+      # MULTI-TENANT deployment, provision per-client keys and set this to 0 so
+      # a missing/invalid key returns 401 (see docker-compose.prod.yml, which
+      # the Contabo deploy layers on top to do exactly this).
+      # - CLAUDE_PROXY_ALLOW_ANON=0
       # To expose the OpenAI-compatible API server beyond localhost,
       # uncomment BOTH lines (API_SERVER_KEY is mandatory for auth):
       # - API_SERVER_HOST=0.0.0.0

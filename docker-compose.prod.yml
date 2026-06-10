@@ -1,0 +1,30 @@
+# Production override — STAGED, not yet wired into the deploy.
+#
+# When you're ready to enforce per-tenant proxy auth, add this file to the
+# Contabo deploy's compose command (.github/workflows/deploy-contabo.yml):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Until then the proxy stays anon-on and every bot keeps working untouched.
+# Prerequisite before flipping: re-run `hermes-provision-client <name>` once per
+# existing client so each bot's gateway sends its CLAUDE_PROXY_KEY (mint + wire
+# are idempotent); otherwise a keyless bot will get 401 once this is active.
+#
+# Why this is a separate file (and NOT baked into docker-compose.yml):
+# docker-compose.yml is the PUBLIC default that single-user / hobbyist setups
+# run. Those have no keys.json, so flipping the proxy to fail-closed there would
+# 401 their only bot. This override flips fail-closed for the MULTI-TENANT prod
+# deployment only, where every client bot is provisioned with its own key.
+#
+# Prerequisite before this is safe: every live bot's gateway must already send
+# its CLAUDE_PROXY_KEY (provisioned into the profile .env + auto-wired as the
+# proxy provider's api_key_env). Until then a keyless bot will get 401 from the
+# proxy. Re-running `hermes-provision-client` for each existing client reconciles
+# the key + wiring idempotently.
+services:
+  gateway:
+    environment:
+      # Enforce per-tenant proxy auth: a missing/invalid bearer key → 401,
+      # instead of being served as the shared "anon" tenant (which would share
+      # one cache namespace, one daily budget, and one meter bucket).
+      - CLAUDE_PROXY_ALLOW_ANON=0

@@ -72,6 +72,20 @@ KEYS_FILE = os.environ.get("CLAUDE_PROXY_KEYS_FILE", "/opt/data/proxy/keys.json"
 # Per-tenant daily token budget (input+output). Generous default; over budget
 # → 429 so the gateway's existing fallback chain takes over. 0 disables.
 DAILY_TOKEN_BUDGET = int(os.environ.get("CLAUDE_PROXY_DAILY_TOKEN_BUDGET", "5000000"))
+# Durable metering: persist per-tenant counters + the daily-budget window so a
+# proxy restart (deploy, crash) doesn't reset usage data or silently refund
+# every tenant's spent budget. Atomic write, debounced like the cache, flushed
+# on SIGTERM. Empty path disables persistence (in-memory only).
+METERS_FILE = os.environ.get("CLAUDE_PROXY_METERS_FILE", "/opt/data/proxy/meters.json")
+
+# Request hardening. The proxy is loopback-only, but a buggy/compromised
+# co-tenant gateway shouldn't be able to OOM it with a giant body or exhaust
+# threads. Cap the request body and bound concurrent work; over the cap → 413,
+# saturated → 503 (both signals the gateway's fallback chain understands).
+MAX_BODY_BYTES = int(os.environ.get("CLAUDE_PROXY_MAX_BODY_BYTES", str(1 * 1024 * 1024)))
+MAX_WORKERS = int(os.environ.get("CLAUDE_PROXY_MAX_WORKERS", "64"))  # 0 disables the cap
+# Seconds a request will wait for a worker slot before shedding with 503.
+QUEUE_TIMEOUT = float(os.environ.get("CLAUDE_PROXY_QUEUE_TIMEOUT", "10"))
 
 # Anthropic API backend config (only used when CLAUDE_PROXY_BACKEND=anthropic).
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
@@ -142,6 +156,10 @@ _breaker_trips = 0               # total times the breaker has opened (for /heal
 
 # Track for health checks
 request_count = 0
+
+# Bounds concurrent completion work so a burst (or a misbehaving co-tenant
+# gateway) can't spawn unbounded threads/subprocesses. None = unbounded.
+_worker_sem = threading.BoundedSemaphore(MAX_WORKERS) if MAX_WORKERS > 0 else None
 
 # ── Tenant identity (keys.json) ──
 #
@@ -215,6 +233,12 @@ _tenant_meters: dict = {}
 # tenant -> {"day": "YYYY-MM-DD", "tokens": int} for the daily budget window.
 _tenant_budgets: dict = {}
 
+# Debounced meter persistence (mirrors the cache's writer): at most one disk
+# write per ~30s instead of one per request.
+_METERS_SAVE_INTERVAL = 30.0
+_meters_last_save = 0.0
+_meters_save_lock = threading.Lock()
+
 
 def _today() -> str:
     return time.strftime("%Y-%m-%d", time.gmtime())
@@ -236,6 +260,77 @@ def meter_record(tenant: str, input_tokens: int, output_tokens: int) -> None:
             b = {"day": today, "tokens": 0}
             _tenant_budgets[tenant] = b
         b["tokens"] += int(input_tokens or 0) + int(output_tokens or 0)
+    _meters_save_debounced()
+
+
+def _meters_save_debounced() -> None:
+    """Persist meters at most once per ~30s, in a background thread."""
+    global _meters_last_save
+    if not METERS_FILE:
+        return
+    now = time.time()
+    with _meters_save_lock:
+        if now - _meters_last_save < _METERS_SAVE_INTERVAL:
+            return
+        _meters_last_save = now
+    threading.Thread(target=_meters_save, daemon=True).start()
+
+
+def _meters_save() -> None:
+    """Atomically snapshot per-tenant meters + budgets to disk (temp + replace),
+    matching the cache writer so a crash mid-write can't truncate the file."""
+    if not METERS_FILE:
+        return
+    try:
+        with _meter_lock:
+            snapshot = {
+                "tenants": {t: dict(m) for t, m in _tenant_meters.items()},
+                "budgets": {t: dict(b) for t, b in _tenant_budgets.items()},
+            }
+        path = Path(METERS_FILE)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(snapshot), encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _meters_load() -> None:
+    """Restore meters + budgets from disk on boot. Stale budget windows (a
+    different UTC day) are dropped on load so a restart never resurrects
+    yesterday's spend against today's allowance."""
+    if not METERS_FILE or not Path(METERS_FILE).exists():
+        return
+    try:
+        data = json.loads(Path(METERS_FILE).read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return
+        tenants = data.get("tenants", {}) or {}
+        budgets = data.get("budgets", {}) or {}
+        today = _today()
+        with _meter_lock:
+            for t, m in tenants.items():
+                if isinstance(m, dict):
+                    _tenant_meters[str(t)] = {
+                        "requests": int(m.get("requests", 0) or 0),
+                        "input_tokens": int(m.get("input_tokens", 0) or 0),
+                        "output_tokens": int(m.get("output_tokens", 0) or 0),
+                    }
+            for t, b in budgets.items():
+                if isinstance(b, dict) and b.get("day") == today:
+                    _tenant_budgets[str(t)] = {"day": today, "tokens": int(b.get("tokens", 0) or 0)}
+        print(f"[meters] loaded {len(_tenant_meters)} tenant meter(s) from {METERS_FILE}")
+    except Exception as e:
+        print(f"[meters] failed to load {METERS_FILE}: {e}")
+
+
+def _effective_no_cache(cache_control: str, tenant: str) -> bool:
+    """Honor an explicit ``X-Cache-Control: no-cache`` bypass only for an
+    AUTHENTICATED tenant. An anonymous caller must not be able to force backend
+    spend (and skip the cost-saving cache) — that's a cheap cost-amplification
+    lever against the shared Claude account/budget."""
+    return cache_control.lower() == "no-cache" and tenant != ANON_TENANT
 
 
 def budget_exceeded(tenant: str) -> bool:
@@ -1064,9 +1159,15 @@ class ProxyHandler(BaseHTTPRequestHandler):
                     "keys_loaded": key_count,
                 },
                 "tenants": tenants_snapshot,            # usage-metering seed
+                "meters_persisted": bool(METERS_FILE),
                 "budget": {
                     "daily_token_budget": DAILY_TOKEN_BUDGET,
                     "spent_today": budgets_snapshot,
+                },
+                "limits": {
+                    "max_body_bytes": MAX_BODY_BYTES,
+                    "max_workers": MAX_WORKERS,
+                    "queue_timeout_s": QUEUE_TIMEOUT,
                 },
                 "cache": {
                     "size": len(_cache),
@@ -1106,11 +1207,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.end_headers()
             self.wfile.write(json.dumps({"error": "Not found"}).encode())
             return
-        
-        # Read body
-        content_length = int(self.headers.get("Content-Length", 0))
+
+        # Read body — cap it so an oversized request can't exhaust memory.
+        try:
+            content_length = int(self.headers.get("Content-Length", 0) or 0)
+        except ValueError:
+            content_length = -1
+        if content_length < 0:
+            self.send_response(400)
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": {"message": "Invalid Content-Length"}}).encode())
+            return
+        if MAX_BODY_BYTES and content_length > MAX_BODY_BYTES:
+            self.send_response(413)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(
+                {"error": {"message": f"request body exceeds {MAX_BODY_BYTES} bytes", "code": 413}}
+            ).encode())
+            return
         body = self.rfile.read(content_length)
-        
+
         try:
             data = json.loads(body)
         except json.JSONDecodeError:
@@ -1135,7 +1252,9 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         messages = data.get("messages", [])
         model_name = data.get("model", "claude-sonnet-4-6")
-        no_cache = self.headers.get("X-Cache-Control", "").lower() == "no-cache"
+        # Honor an explicit cache bypass only for an authenticated tenant
+        # (anon can't force backend spend). See _effective_no_cache.
+        no_cache = _effective_no_cache(self.headers.get("X-Cache-Control", ""), tenant)
 
         if not messages:
             self.send_response(400)
@@ -1156,8 +1275,23 @@ class ProxyHandler(BaseHTTPRequestHandler):
 
         request_count += 1
 
-        # Call Claude with selected tier
-        claude_result = call_claude(system, prompt, tier, no_cache=no_cache, tenant=tenant)
+        # Bound concurrent completion work: shed load with 503 (a signal the
+        # gateway's fallback chain already handles) rather than spawning
+        # unbounded subprocesses when saturated.
+        if _worker_sem is not None and not _worker_sem.acquire(timeout=QUEUE_TIMEOUT):
+            self.send_response(503)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(json.dumps(
+                {"error": {"message": "proxy saturated — retry", "type": "overloaded", "code": 503}}
+            ).encode())
+            return
+        try:
+            # Call Claude with selected tier
+            claude_result = call_claude(system, prompt, tier, no_cache=no_cache, tenant=tenant)
+        finally:
+            if _worker_sem is not None:
+                _worker_sem.release()
 
         # Convert to OpenAI format — report actual tier used
         openai_response = claude_to_openai(claude_result, f"claude-{tier}")
@@ -1190,9 +1324,11 @@ def main():
         sys.exit(1)
     sys.excepthook = _excepthook
 
-    # Log SIGTERM so the finish script can see it was a signal death
+    # Log SIGTERM so the finish script can see it was a signal death. Flush the
+    # meters first so a deploy/restart doesn't lose the last <=30s of usage.
     def _sigterm_handler(signum, frame):
         print(f"[proxy] Received SIGTERM — shutting down gracefully", flush=True)
+        _meters_save()
         sys.exit(0)
     signal.signal(signal.SIGTERM, _sigterm_handler)
 
@@ -1205,6 +1341,7 @@ def main():
         print(f"[proxy] WARN: could not prepare workdir {WORKDIR}: {e}", flush=True)
 
     _cache_load()
+    _meters_load()
     _load_keys_if_changed()
     print(f"Starting Claude Code Proxy on port {PORT}...")
     print(f"Claude binary: {CLAUDE_BIN} (exists: {os.path.exists(CLAUDE_BIN)})")

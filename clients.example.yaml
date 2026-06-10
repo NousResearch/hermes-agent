@@ -16,12 +16,18 @@
 #   * Each client gets a random proxy key, minted idempotently at provision
 #     time and recorded in <hermes_root>/proxy/keys.json (key -> client_name,
 #     0600, host-side only — NEVER committed; same secrets/ pattern as tokens).
-#   * The key is also written into the profile's own .env as CLAUDE_PROXY_KEY.
-#     The gateway sends it to the claude-proxy as the custom-provider
-#     `Authorization: Bearer <key>`, so usage is attributed to that tenant.
-#   * The proxy serves anonymous requests by default
-#     (CLAUDE_PROXY_ALLOW_ANON=1) so rolling keys out never takes bots dark;
-#     set CLAUDE_PROXY_ALLOW_ANON=0 only AFTER every live bot has its key.
+#   * The key is also written into the profile's own .env as CLAUDE_PROXY_KEY,
+#     and the profile's claude-proxy provider is auto-wired to resolve it via
+#     `api_key_env: CLAUDE_PROXY_KEY` — so the gateway sends it to the proxy as
+#     `Authorization: Bearer <key>` and usage is attributed to that tenant with
+#     no manual step. (If your config has no proxy provider block, add the
+#     `api_key_env: CLAUDE_PROXY_KEY` line yourself.)
+#   * The public docker-compose.yml serves anonymous requests by default
+#     (CLAUDE_PROXY_ALLOW_ANON=1) so single-user setups work out of the box.
+#     The multi-tenant prod deploy layers docker-compose.prod.yml on top to set
+#     CLAUDE_PROXY_ALLOW_ANON=0 (keyless → 401). Flip prod to fail-closed only
+#     AFTER every live bot has its key wired (re-run hermes-provision-client to
+#     reconcile existing clients idempotently).
 
 clients:
   # The baseline 'default' profile is the gateway root itself. It may inherit

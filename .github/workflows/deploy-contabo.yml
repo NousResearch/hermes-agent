@@ -73,6 +73,12 @@ jobs:
             echo "proxy-migration: no volume claude-proxy to retire (already image-baked)"
           fi
 
+          # NOTE: per-tenant proxy auth (CLAUDE_PROXY_ALLOW_ANON=0) is STAGED,
+          # not active. The proxy still serves keyless requests as the shared
+          # "anon" tenant, so every bot keeps working with no key wiring needed.
+          # To enforce fail-closed later (after each live bot has its key — see
+          # docker-compose.prod.yml), add `-f /opt/hermes/app/docker-compose.prod.yml`
+          # to the line below.
           docker compose -f /opt/hermes/docker-compose.yml up -d
 
           # ---- Post-deploy health gate ---------------------------------

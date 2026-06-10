@@ -361,6 +361,97 @@ def test_meter_records_tokens(monkeypatch):
     assert m["input_tokens"] == 10 and m["output_tokens"] == 2
 
 
+# ── Durable metering: persist + restore meters/budgets across a restart ──
+
+def test_meters_save_load_roundtrip(tmp_path, monkeypatch):
+    f = tmp_path / "sub" / "meters.json"
+    monkeypatch.setattr(cp, "METERS_FILE", str(f))
+    cp.meter_record("acme", 100, 40)
+    cp.meter_record("acme", 10, 5)
+    cp._meters_save()
+    assert f.exists()
+    assert not (f.parent / (f.name + ".tmp")).exists()   # atomic temp replaced
+    # Simulate a restart: wipe in-memory state, reload from disk.
+    cp._tenant_meters.clear()
+    cp._tenant_budgets.clear()
+    cp._meters_load()
+    m = cp._tenant_meters["acme"]
+    assert m["requests"] == 2 and m["input_tokens"] == 110 and m["output_tokens"] == 45
+    # Budget survives the restart, so spend isn't silently refunded.
+    assert cp._tenant_budgets["acme"]["tokens"] == 155
+
+
+def test_meters_load_drops_stale_budget_day(tmp_path, monkeypatch):
+    import json as _j
+    f = tmp_path / "meters.json"
+    f.write_text(_j.dumps({
+        "tenants": {"acme": {"requests": 3, "input_tokens": 9, "output_tokens": 1}},
+        "budgets": {"acme": {"day": "1999-01-01", "tokens": 999}},  # yesterday
+    }))
+    monkeypatch.setattr(cp, "METERS_FILE", str(f))
+    cp._tenant_meters.clear()
+    cp._tenant_budgets.clear()
+    cp._meters_load()
+    # Lifetime meters restored, but a stale budget window is NOT carried into today.
+    assert cp._tenant_meters["acme"]["requests"] == 3
+    assert "acme" not in cp._tenant_budgets
+    assert cp.budget_exceeded("acme") is False
+
+
+# ── no-cache bypass is gated to authenticated tenants ──
+
+def test_effective_no_cache_gated_to_authenticated():
+    assert cp._effective_no_cache("no-cache", "acme") is True
+    assert cp._effective_no_cache("no-cache", cp.ANON_TENANT) is False   # anon can't bypass
+    assert cp._effective_no_cache("", "acme") is False
+
+
+# ── Request hardening: body cap (413) + anon-locked (401) over real HTTP ──
+
+def _start_proxy(monkeypatch, **attrs):
+    import threading
+    for k, v in attrs.items():
+        monkeypatch.setattr(cp, k, v)
+    srv = cp.ThreadingHTTPServer(("127.0.0.1", 0), cp.ProxyHandler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    return srv, srv.server_address[1]
+
+
+def test_http_body_cap_returns_413(monkeypatch):
+    import http.client
+    srv, port = _start_proxy(monkeypatch, MAX_BODY_BYTES=16)
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        conn.request("POST", "/v1/chat/completions", body="x" * 1000)
+        resp = conn.getresponse()
+        assert resp.status == 413
+    finally:
+        srv.shutdown()
+
+
+def test_http_anon_locked_returns_401(tmp_path, monkeypatch):
+    import http.client, json as _j
+    cp._keys_map.clear()
+    cp._keys_mtime = 0.0
+    srv, port = _start_proxy(
+        monkeypatch, ALLOW_ANON=False, KEYS_FILE=str(tmp_path / "absent.json"),
+    )
+    try:
+        conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        body = _j.dumps({"messages": [{"role": "user", "content": "hi"}]})
+        conn.request("POST", "/v1/chat/completions", body=body)   # no Authorization
+        resp = conn.getresponse()
+        assert resp.status == 401
+    finally:
+        srv.shutdown()
+
+
+def test_worker_semaphore_is_bounded():
+    # MAX_WORKERS > 0 installs a BoundedSemaphore guarding completion work.
+    assert cp.MAX_WORKERS > 0
+    assert cp._worker_sem is not None
+
+
 # ── Phase 4: classifier keyword-first + caching ──
 
 def test_classify_keyword_first_no_subprocess(monkeypatch):

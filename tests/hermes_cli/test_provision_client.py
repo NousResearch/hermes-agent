@@ -21,8 +21,67 @@ from hermes_cli.provision_client import (
     profile_is_created,
     provision_client,
     token_value,
+    wire_proxy_provider_keyref,
     write_token,
 )
+
+
+class TestWireProxyProviderKeyref:
+    """The proxy provider in a profile config.yaml should auto-resolve its
+    bearer from $CLAUDE_PROXY_KEY (api_key_env), so each bot authenticates as
+    its own tenant with no manual wiring step."""
+
+    def _cfg(self, tmp_path, text):
+        p = tmp_path / "config.yaml"
+        p.write_text(text, encoding="utf-8")
+        return p
+
+    def test_wires_proxy_provider_in_fallback_list(self, tmp_path):
+        import yaml
+        p = self._cfg(tmp_path, (
+            "model:\n  provider: deepseek\n  base_url: https://api.deepseek.com/v1\n"
+            "fallback_providers:\n"
+            "  - provider: custom\n    base_url: http://127.0.0.1:11435/v1\n"
+        ))
+        assert wire_proxy_provider_keyref(p) is True
+        cfg = yaml.safe_load(p.read_text())
+        assert cfg["fallback_providers"][0]["api_key_env"] == PROXY_KEY_VAR
+        # The non-proxy primary provider is left untouched.
+        assert "api_key_env" not in cfg["model"]
+
+    def test_wires_primary_model_block(self, tmp_path):
+        import yaml
+        p = self._cfg(tmp_path, (
+            "model:\n  provider: custom\n  base_url: http://localhost:11435/v1\n"
+        ))
+        assert wire_proxy_provider_keyref(p) is True
+        assert yaml.safe_load(p.read_text())["model"]["api_key_env"] == PROXY_KEY_VAR
+
+    def test_idempotent_and_respects_explicit_key(self, tmp_path):
+        # An explicit api_key (or api_key_env) is operator intent — never clobber.
+        explicit = (
+            "model:\n  base_url: http://127.0.0.1:11435/v1\n  api_key: sk-manual\n"
+        )
+        p = self._cfg(tmp_path, explicit)
+        assert wire_proxy_provider_keyref(p) is False
+        assert "sk-manual" in p.read_text()
+        # Already-wired config is a no-op on re-run.
+        p2 = self._cfg(tmp_path, (
+            "model:\n  base_url: http://127.0.0.1:11435/v1\n"
+            f"  api_key_env: {PROXY_KEY_VAR}\n"
+        ))
+        assert wire_proxy_provider_keyref(p2) is False
+
+    def test_no_proxy_block_is_noop(self, tmp_path):
+        p = self._cfg(tmp_path, "model:\n  base_url: https://api.deepseek.com/v1\n")
+        before = p.read_text()
+        assert wire_proxy_provider_keyref(p) is False
+        assert p.read_text() == before
+
+    def test_missing_or_garbage_file_is_safe(self, tmp_path):
+        assert wire_proxy_provider_keyref(tmp_path / "nope.yaml") is False
+        bad = self._cfg(tmp_path, "::: not yaml :::\n[")
+        assert wire_proxy_provider_keyref(bad) is False
 
 
 class TestTokenHelpers:

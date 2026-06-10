@@ -81,7 +81,13 @@ ENV_ARG="${HERMES_CLIENTS_ENV:-}"
 # gate and the generated docker-compose.clients.yml can never disagree. Run as
 # hermes (the registry/secrets are hermes-owned) and keep failures soft.
 isolated=""
+derive_ok=0
 if [ -x "$PYTHON" ]; then
+    # The trailing __DERIVE_OK__ marker lets us tell "registry says nothing is
+    # isolated" (safe: nothing to exclude) apart from "we couldn't read the
+    # registry at all" (NOT safe: an isolated bot could double-run). On failure
+    # the marker is absent and we fall through to the isolated.list fallback +
+    # a loud warning rather than silently treating the set as empty.
     isolated=$(
         HERMES_CLIENTS_REGISTRY="$REGISTRY" HERMES_CLIENTS_ENV="$ENV_ARG" \
         s6-setuidgid hermes "$PYTHON" - <<'PYEOF' 2>/dev/null || true
@@ -93,22 +99,38 @@ try:
     reg = load_registry(os.environ["HERMES_CLIENTS_REGISTRY"])
     for name in isolated_profile_names(reg, env):
         print(name)
+    print("__DERIVE_OK__")
 except Exception as exc:  # pragma: no cover - best-effort boot step
     print(f"registry-gate: could not derive isolated set: {exc}", file=sys.stderr)
     sys.exit(1)
 PYEOF
     )
+    case "$isolated" in
+        *__DERIVE_OK__*)
+            derive_ok=1
+            isolated=$(printf '%s\n' "$isolated" | grep -v '__DERIVE_OK__' || true) ;;
+    esac
 else
     echo "registry-gate: $PYTHON missing -- cannot read registry; no-op"
     exit 0
 fi
 
-# Fallback: if the registry read produced nothing but a compose-gen artifact
-# exists on the volume, honor it. (Belt-and-braces: a host that ran compose_gen
-# but whose container can't import the registry still gets the exclusion.)
-if [ -z "$isolated" ] && [ -f "$HERMES_HOME/isolated.list" ]; then
+# Fallback: if the registry read FAILED or produced nothing but a compose-gen
+# artifact exists on the volume, honor it. (Belt-and-braces: a host that ran
+# compose_gen but whose container can't import the registry still gets the
+# exclusion.)
+if { [ "$derive_ok" -eq 0 ] || [ -z "$isolated" ]; } && [ -f "$HERMES_HOME/isolated.list" ]; then
     isolated=$(cat "$HERMES_HOME/isolated.list" 2>/dev/null || true)
     [ -n "$isolated" ] && echo "registry-gate: using $HERMES_HOME/isolated.list fallback"
+fi
+
+# Loud warning when we could neither derive the set NOR fall back: an isolated
+# client may double-run this boot. The deploy-time registry match gate is the
+# backstop (it fails the deploy on a stray), but make the gap visible here too.
+if [ "$derive_ok" -eq 0 ] && [ -z "$isolated" ]; then
+    echo "registry-gate: WARN could not derive the isolated set from the registry" \
+         "and no $HERMES_HOME/isolated.list fallback exists -- isolated clients are" \
+         "NOT being excluded this boot (deploy match gate is the backstop)"
 fi
 
 # --- (a) Exclude isolated profiles from the shared gateway ----------------

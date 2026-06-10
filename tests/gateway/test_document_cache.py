@@ -151,7 +151,7 @@ class TestSupportedDocumentTypes:
 
     @pytest.mark.parametrize(
         "ext",
-        [".pdf", ".md", ".txt", ".zip", ".docx", ".xlsx", ".pptx"],
+        [".pdf", ".md", ".txt", ".zip", ".docx", ".xlsx", ".pptx", ".hwpx"],
     )
     def test_expected_extensions_present(self, ext):
         assert ext in SUPPORTED_DOCUMENT_TYPES
@@ -206,6 +206,28 @@ class TestCacheMediaBytes:
         assert result is not None
         assert result.kind == "document"
         assert result.media_type == "text/csv"
+
+    def test_hwpx_routes_to_document(self):
+        from gateway.platforms.base import cache_media_bytes
+        # HWPX (Hancom Office Hangul) is a zip container — PK magic bytes.
+        result = cache_media_bytes(
+            b"PK\x03\x04hwpx-body", filename="report.hwpx", mime_type="application/haansofthwpx"
+        )
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "application/haansofthwpx"
+        assert "report.hwpx" in result.display_name
+        assert os.path.exists(result.path)
+
+    def test_hwpx_mime_only_resolves_extension(self):
+        from gateway.platforms.base import cache_media_bytes
+        # Exercises the reverse MIME->ext lookup; proves the MIME is unique.
+        result = cache_media_bytes(
+            b"PK\x03\x04", filename="", mime_type="application/haansofthwpx"
+        )
+        assert result is not None
+        assert result.kind == "document"
+        assert result.media_type == "application/haansofthwpx"
 
     def test_unsupported_document_returns_none(self):
         from gateway.platforms.base import cache_media_bytes

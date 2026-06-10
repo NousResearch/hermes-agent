@@ -574,6 +574,21 @@ class TestMediaExtensionAllowlistParity:
         for ext in (".md", ".json", ".yaml", ".yml", ".xml", ".html", ".htm"):
             assert ext in MEDIA_DELIVERY_EXTS
 
+    def test_hwpx_in_shared_extension_set(self):
+        from gateway.platforms.base import MEDIA_DELIVERY_EXTS
+        assert ".hwpx" in MEDIA_DELIVERY_EXTS
+
+    def test_hwpx_extracts_via_media_tag(self):
+        path = "/tmp/report.hwpx"
+        media, _ = BasePlatformAdapter.extract_media(f"Done: MEDIA:{path}")
+        assert media == [(path, False)], ".hwpx should extract via MEDIA: tag"
+
+    def test_hwpx_bare_path_extracts_as_local_file(self, tmp_path):
+        f = tmp_path / "deliverable.hwpx"
+        f.write_bytes(b"PK\x03\x04")
+        files, _ = BasePlatformAdapter.extract_local_files(f"Saved to {f}")
+        assert str(f) in files, ".hwpx bare path should be delivered outbound"
+
     def test_unknown_extension_not_black_holed_by_cleanup(self):
         """A MEDIA: tag with an unknown extension is NOT stripped from the
         body — it survives so extract_local_files can still see the bare path,

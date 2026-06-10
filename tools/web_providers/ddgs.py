@@ -47,7 +47,6 @@ def _path_within(child: Path, parent: Path) -> bool:
         return False
 
 
-@functools.lru_cache(maxsize=1)
 def ddgs_package_available() -> bool:
     """Return True when the installed ``ddgs`` distribution owns the import target.
 

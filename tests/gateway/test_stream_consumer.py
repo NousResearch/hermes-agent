@@ -1780,4 +1780,3 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
-

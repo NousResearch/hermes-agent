@@ -33,6 +33,8 @@ from tools.tool_result_storage import maybe_persist_tool_result, enforce_turn_bu
 _tool_executor = concurrent.futures.ThreadPoolExecutor(max_workers=128)
 
 
+logger = logging.getLogger(__name__)
+
 def resize_tool_pool(max_workers: int):
     """
     Replace the global tool executor with a new one of the given size.
@@ -47,28 +49,15 @@ def resize_tool_pool(max_workers: int):
     logger.info("Tool thread pool resized to %d workers", max_workers)
 
 
-logger = logging.getLogger(__name__)
-
-
+@dataclass
 class ToolError:
     """Record of a tool execution error during the agent loop."""
 
-    def __init__(
-        self,
-        turn: int,
-        tool_name: str,
-        arguments: str,
-        error: str,
-        tool_result: str,
-    ):
-        self.turn = turn
-        self.tool_name = tool_name
-        self.arguments = arguments
-        self.error = error
-        self.tool_result = tool_result
-
-    def __repr__(self):
-        return f"ToolError(turn={self.turn}, tool_name={self.tool_name}, error={self.error})"
+    turn: int                  # Which turn the error occurred on
+    tool_name: str             # Which tool was called
+    arguments: str             # The arguments passed (truncated)
+    error: str                 # The error message
+    tool_result: str           # The raw result returned to the model
 
 
 @dataclass
@@ -173,7 +162,6 @@ class HermesAgentLoop:
                         If None, uses DEFAULT_BUDGET (current hardcoded values).
         """
         from tools.budget_config import DEFAULT_BUDGET
-
         self.server = server
         self.tool_schemas = tool_schemas
         self.valid_tool_names = valid_tool_names
@@ -200,7 +188,6 @@ class HermesAgentLoop:
 
         # Per-loop TodoStore for the todo tool (ephemeral, dies with the loop)
         from tools.todo_tool import TodoStore, todo_tool as _todo_tool
-
         _todo_store = TodoStore()
 
         # Extract user task from first user message for browser_snapshot context
@@ -243,9 +230,7 @@ class HermesAgentLoop:
                 response = await self.server.chat_completion(**chat_kwargs)
             except Exception as e:
                 api_elapsed = _time.monotonic() - api_start
-                logger.error(
-                    "API call failed on turn %d (%.1fs): %s", turn + 1, api_elapsed, e
-                )
+                logger.error("API call failed on turn %d (%.1fs): %s", turn + 1, api_elapsed, e)
                 return AgentResult(
                     messages=messages,
                     managed_state=self._get_managed_state(),
@@ -258,9 +243,7 @@ class HermesAgentLoop:
             api_elapsed = _time.monotonic() - api_start
 
             if not response or not response.choices:
-                logger.warning(
-                    "Empty response on turn %d (api=%.1fs)", turn + 1, api_elapsed
-                )
+                logger.warning("Empty response on turn %d (api=%.1fs)", turn + 1, api_elapsed)
                 return AgentResult(
                     messages=messages,
                     managed_state=self._get_managed_state(),
@@ -290,7 +273,6 @@ class HermesAgentLoop:
             ):
                 try:
                     from environments.tool_call_parsers import get_parser
-
                     fallback_parser = get_parser("hermes")
                     parsed_content, parsed_calls = fallback_parser.parse(
                         assistant_msg.content
@@ -303,7 +285,7 @@ class HermesAgentLoop:
                             "Fallback parser extracted %d tool calls from raw content",
                             len(parsed_calls),
                         )
-                except Exception as e:
+                except Exception:
                     logger.exception(
                         "[%s] turn %d: Fallback parser failed",
                         self.task_id[:8],
@@ -320,12 +302,8 @@ class HermesAgentLoop:
                             "id": tc.get("id", f"call_{uuid.uuid4().hex[:8]}"),
                             "type": "function",
                             "function": {
-                                "name": tc.get("function", {}).get(
-                                    "name", tc.get("name", "")
-                                ),
-                                "arguments": tc.get("function", {}).get(
-                                    "arguments", tc.get("arguments", "{}")
-                                ),
+                                "name": tc.get("function", {}).get("name", tc.get("name", "")),
+                                "arguments": tc.get("function", {}).get("arguments", tc.get("arguments", "{}")),
                             },
                         }
                     return {
@@ -356,35 +334,29 @@ class HermesAgentLoop:
                 for tc in assistant_msg.tool_calls:
                     # Handle both object (OpenAI) and dict (vLLM) formats
                     if isinstance(tc, dict):
-                        tool_name = tc.get("function", {}).get(
-                            "name", tc.get("name", "")
-                        )
-                        tool_args_raw = tc.get("function", {}).get(
-                            "arguments", tc.get("arguments", "{}")
-                        )
+                        tool_name = tc.get("function", {}).get("name", tc.get("name", ""))
+                        tool_args_raw = tc.get("function", {}).get("arguments", tc.get("arguments", "{}"))
                     else:
                         tool_name = tc.function.name
                         tool_args_raw = tc.function.arguments
 
                     # Validate tool name
                     if tool_name not in self.valid_tool_names:
-                        tool_result = json.dumps({
-                            "error": f"Unknown tool '{tool_name}'. "
-                            f"Available tools: {sorted(self.valid_tool_names)}"
-                        })
-                        tool_errors.append(
-                            ToolError(
-                                turn=turn + 1,
-                                tool_name=tool_name,
-                                arguments=tool_args_raw[:200],
-                                error=f"Unknown tool '{tool_name}'",
-                                tool_result=tool_result,
-                            )
+                        tool_result = json.dumps(
+                            {
+                                "error": f"Unknown tool '{tool_name}'. "
+                                f"Available tools: {sorted(self.valid_tool_names)}"
+                            }
                         )
+                        tool_errors.append(ToolError(
+                            turn=turn + 1, tool_name=tool_name,
+                            arguments=tool_args_raw[:200],
+                            error=f"Unknown tool '{tool_name}'",
+                            tool_result=tool_result,
+                        ))
                         logger.warning(
                             "Model called unknown tool '%s' on turn %d",
-                            tool_name,
-                            turn + 1,
+                            tool_name, turn + 1,
                         )
                     else:
                         # Parse arguments
@@ -392,22 +364,18 @@ class HermesAgentLoop:
                             args = json.loads(tool_args_raw)
                         except json.JSONDecodeError as e:
                             args = None
-                            tool_result = json.dumps({
-                                "error": f"Invalid JSON in tool arguments: {e}. Please retry with valid JSON."
-                            })
-                            tool_errors.append(
-                                ToolError(
-                                    turn=turn + 1,
-                                    tool_name=tool_name,
-                                    arguments=tool_args_raw[:200],
-                                    error=f"Invalid JSON: {e}",
-                                    tool_result=tool_result,
-                                )
+                            tool_result = json.dumps(
+                                {"error": f"Invalid JSON in tool arguments: {e}. Please retry with valid JSON."}
                             )
+                            tool_errors.append(ToolError(
+                                turn=turn + 1, tool_name=tool_name,
+                                arguments=tool_args_raw[:200],
+                                error=f"Invalid JSON: {e}",
+                                tool_result=tool_result,
+                            ))
                             logger.warning(
                                 "Invalid JSON in tool call arguments for '%s': %s",
-                                tool_name,
-                                tool_args_raw[:200],
+                                tool_name, tool_args_raw[:200],
                             )
 
                         # Dispatch tool only if arguments parsed successfully
@@ -417,9 +385,7 @@ class HermesAgentLoop:
                                     backend = os.getenv("TERMINAL_ENV", "local")
                                     cmd_preview = args.get("command", "")[:80]
                                     logger.info(
-                                        "[%s] $ %s",
-                                        self.task_id[:8],
-                                        cmd_preview,
+                                        "[%s] $ %s", self.task_id[:8], cmd_preview,
                                     )
 
                                 tool_submit_time = _time.monotonic()
@@ -433,14 +399,10 @@ class HermesAgentLoop:
                                     )
                                     tool_elapsed = _time.monotonic() - tool_submit_time
                                 elif tool_name == "memory":
-                                    tool_result = json.dumps({
-                                        "error": "Memory is not available in RL environments."
-                                    })
+                                    tool_result = json.dumps({"error": "Memory is not available in RL environments."})
                                     tool_elapsed = _time.monotonic() - tool_submit_time
                                 elif tool_name == "session_search":
-                                    tool_result = json.dumps({
-                                        "error": "Session search is not available in RL environments."
-                                    })
+                                    tool_result = json.dumps({"error": "Session search is not available in RL environments."})
                                     tool_elapsed = _time.monotonic() - tool_submit_time
                                 else:
                                     # Run tool calls in a thread pool so backends that
@@ -452,9 +414,7 @@ class HermesAgentLoop:
                                     tool_result = await loop.run_in_executor(
                                         _tool_executor,
                                         lambda: handle_function_call(
-                                            _tn,
-                                            _ta,
-                                            task_id=_tid,
+                                            _tn, _ta, task_id=_tid,
                                             user_task=_user_task,
                                         ),
                                     )
@@ -465,30 +425,22 @@ class HermesAgentLoop:
                                 if tool_elapsed > 30:
                                     logger.warning(
                                         "[%s] turn %d: %s took %.1fs (pool queue=%d)",
-                                        self.task_id[:8],
-                                        turn + 1,
-                                        tool_name,
-                                        tool_elapsed,
-                                        pool_active,
+                                        self.task_id[:8], turn + 1, tool_name,
+                                        tool_elapsed, pool_active,
                                     )
                             except Exception as e:
-                                tool_result = json.dumps({
-                                    "error": f"Tool execution failed: {type(e).__name__}: {str(e)}"
-                                })
-                                tool_errors.append(
-                                    ToolError(
-                                        turn=turn + 1,
-                                        tool_name=tool_name,
-                                        arguments=tool_args_raw[:200],
-                                        error=f"{type(e).__name__}: {str(e)}",
-                                        tool_result=tool_result,
-                                    )
+                                tool_result = json.dumps(
+                                    {"error": f"Tool execution failed: {type(e).__name__}: {str(e)}"}
                                 )
+                                tool_errors.append(ToolError(
+                                    turn=turn + 1, tool_name=tool_name,
+                                    arguments=tool_args_raw[:200],
+                                    error=f"{type(e).__name__}: {str(e)}",
+                                    tool_result=tool_result,
+                                ))
                                 logger.error(
                                     "Tool '%s' execution failed on turn %d: %s",
-                                    tool_name,
-                                    turn + 1,
-                                    e,
+                                    tool_name, turn + 1, e,
                                 )
 
                         # Also check if the tool returned an error in its JSON result
@@ -498,15 +450,12 @@ class HermesAgentLoop:
                                 err = result_data.get("error")
                                 exit_code = result_data.get("exit_code")
                                 if err and exit_code and exit_code < 0:
-                                    tool_errors.append(
-                                        ToolError(
-                                            turn=turn + 1,
-                                            tool_name=tool_name,
-                                            arguments=tool_args_raw[:200],
-                                            error=str(err),
-                                            tool_result=tool_result[:500],
-                                        )
-                                    )
+                                    tool_errors.append(ToolError(
+                                        turn=turn + 1, tool_name=tool_name,
+                                        arguments=tool_args_raw[:200],
+                                        error=str(err),
+                                        tool_result=tool_result[:500],
+                                    ))
                         except (json.JSONDecodeError, TypeError):
                             pass
 
@@ -519,11 +468,13 @@ class HermesAgentLoop:
                         config=self.budget_config,
                     )
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc_id,
-                        "content": tool_result,
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc_id,
+                            "content": tool_result,
+                        }
+                    )
 
                 num_tcs = len(assistant_msg.tool_calls)
                 if num_tcs > 0:
@@ -536,11 +487,8 @@ class HermesAgentLoop:
                 turn_elapsed = _time.monotonic() - turn_start
                 logger.info(
                     "[%s] turn %d: api=%.1fs, %d tools, turn_total=%.1fs",
-                    self.task_id[:8],
-                    turn + 1,
-                    api_elapsed,
-                    len(assistant_msg.tool_calls),
-                    turn_elapsed,
+                    self.task_id[:8], turn + 1, api_elapsed,
+                    len(assistant_msg.tool_calls), turn_elapsed,
                 )
 
             else:
@@ -556,10 +504,7 @@ class HermesAgentLoop:
                 turn_elapsed = _time.monotonic() - turn_start
                 logger.info(
                     "[%s] turn %d: api=%.1fs, no tools (finished), turn_total=%.1fs",
-                    self.task_id[:8],
-                    turn + 1,
-                    api_elapsed,
-                    turn_elapsed,
+                    self.task_id[:8], turn + 1, api_elapsed, turn_elapsed,
                 )
 
                 return AgentResult(

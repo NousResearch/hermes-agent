@@ -1,12 +1,8 @@
-"""Tests for cross-profile auth fallback.
+"""Tests that profile auth stores remain isolated from the global root.
 
 When ``HERMES_HOME`` points to a named profile, ``read_credential_pool()``
-and ``get_provider_auth_state()`` fall back to the global-root
-``auth.json`` per-provider when the profile has no entries for that
-provider.  Writes still target the profile only.
-
-See the #18594 follow-up report: profile workers couldn't see providers
-authenticated only at the global root.
+and ``get_provider_auth_state()`` must only read that profile's
+``auth.json``. The global-root ``auth.json`` is a separate auth boundary.
 """
 
 from __future__ import annotations
@@ -55,8 +51,8 @@ def _write(path: Path, payload: dict) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_profile_with_zero_entries_falls_back_to_global(profile_env):
-    """Empty profile pool inherits the global-root entries for that provider."""
+def test_profile_with_zero_entries_does_not_fall_back_to_global(profile_env):
+    """Empty profile pool does not inherit global-root entries."""
     from hermes_cli.auth import read_credential_pool
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
@@ -72,10 +68,7 @@ def test_profile_with_zero_entries_falls_back_to_global(profile_env):
     # Profile auth.json: exists but has no openrouter entries.
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={}))
 
-    entries = read_credential_pool("openrouter")
-    assert len(entries) == 1
-    assert entries[0]["id"] == "glob-1"
-    assert entries[0]["access_token"] == "sk-or-global"
+    assert read_credential_pool("openrouter") == []
 
 
 def test_profile_with_entries_fully_shadows_global(profile_env):
@@ -109,8 +102,8 @@ def test_profile_with_entries_fully_shadows_global(profile_env):
     assert entries[0]["access_token"] == "sk-or-profile"
 
 
-def test_per_provider_shadowing_is_independent(profile_env):
-    """Profile can override one provider while inheriting another from global."""
+def test_profile_entries_do_not_enable_other_global_providers(profile_env):
+    """Profile credentials for one provider do not expose global providers."""
     from hermes_cli.auth import read_credential_pool
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
@@ -132,7 +125,7 @@ def test_per_provider_shadowing_is_independent(profile_env):
         }],
     }))
     _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
-        # Profile has openrouter only — anthropic should still fall back.
+        # Profile has openrouter only; anthropic remains unavailable locally.
         "openrouter": [{
             "id": "prof-or",
             "label": "profile-or",
@@ -146,7 +139,7 @@ def test_per_provider_shadowing_is_independent(profile_env):
     or_entries = read_credential_pool("openrouter")
     ant_entries = read_credential_pool("anthropic")
     assert [e["id"] for e in or_entries] == ["prof-or"]
-    assert [e["id"] for e in ant_entries] == ["glob-ant"]
+    assert ant_entries == []
 
 
 def test_missing_global_auth_file_is_safe(profile_env):
@@ -186,7 +179,7 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
 
     # Profile reads still work; malformed global is silently ignored.
     assert read_credential_pool("openrouter")[0]["id"] == "prof-1"
-    # And no fallback for anthropic since global is unreadable.
+    # Anthropic remains unavailable because it is not in the profile.
     assert read_credential_pool("anthropic") == []
 
 
@@ -195,7 +188,7 @@ def test_malformed_global_auth_file_does_not_break_profile_read(profile_env):
 # ---------------------------------------------------------------------------
 
 
-def test_whole_pool_merges_global_providers_when_missing_locally(profile_env):
+def test_whole_pool_returns_profile_entries_only(profile_env):
     from hermes_cli.auth import read_credential_pool
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
@@ -228,17 +221,16 @@ def test_whole_pool_merges_global_providers_when_missing_locally(profile_env):
     }))
 
     pool = read_credential_pool(None)
-    # Profile wins for openrouter, global fills in anthropic.
     assert [e["id"] for e in pool["openrouter"]] == ["prof-or"]
-    assert [e["id"] for e in pool["anthropic"]] == ["glob-ant"]
+    assert "anthropic" not in pool
 
 
 # ---------------------------------------------------------------------------
-# get_provider_auth_state — singleton fallback
+# get_provider_auth_state — singleton isolation
 # ---------------------------------------------------------------------------
 
 
-def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_env):
+def test_provider_auth_state_does_not_fall_back_to_global_when_profile_has_none(profile_env):
     from hermes_cli.auth import get_provider_auth_state
 
     _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
@@ -246,9 +238,7 @@ def test_provider_auth_state_falls_back_to_global_when_profile_has_none(profile_
     }))
     _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
 
-    state = get_provider_auth_state("nous")
-    assert state is not None
-    assert state["access_token"] == "nous-global"
+    assert get_provider_auth_state("nous") is None
 
 
 def test_provider_auth_state_profile_wins_when_present(profile_env):
@@ -276,16 +266,12 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
 
 
 # ---------------------------------------------------------------------------
-# Classic mode — no fallback path should ever trigger
+# Classic mode — active auth store
 # ---------------------------------------------------------------------------
 
 
-def test_classic_mode_does_not_double_read_same_file(tmp_path, monkeypatch):
-    """In classic mode (HERMES_HOME == global root), no fallback path runs.
-
-    This guards against the merge accidentally duplicating entries when the
-    profile and global resolve to the same directory.
-    """
+def test_classic_mode_reads_active_auth_store(tmp_path, monkeypatch):
+    """In classic mode (HERMES_HOME == root), reads use that auth store."""
     # Put Path.home() under a subdir so the seat belt in _auth_file_path()
     # sees tmp_path/home/.hermes as the "real home" — which is NOT equal
     # to the HERMES_HOME we set (tmp_path/classic), so the guard passes.
@@ -307,14 +293,9 @@ def test_classic_mode_does_not_double_read_same_file(tmp_path, monkeypatch):
         }],
     }))
 
-    from hermes_cli.auth import read_credential_pool, _global_auth_file_path
+    from hermes_cli.auth import read_credential_pool
 
-    # Classic mode: HERMES_HOME is set to a custom path that is NOT under
-    # ~/.hermes/profiles/ — get_default_hermes_root() returns HERMES_HOME
-    # itself, so the profile root and global root are the same directory,
-    # and the helper correctly returns None (no fallback).
-    assert _global_auth_file_path() is None
-    # And the read should return exactly one entry (not two).
+    # The read should return exactly one local entry.
     entries = read_credential_pool("openrouter")
     assert len(entries) == 1
     assert entries[0]["id"] == "only"

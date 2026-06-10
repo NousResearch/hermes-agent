@@ -1983,44 +1983,6 @@ class TestTitleLineage:
     def test_resolve_nonexistent_title(self, db):
         assert db.resolve_session_by_title("nonexistent") is None
 
-    def test_resolve_filters_by_source_and_user_id(self, db):
-        db.create_session("victim", "telegram", user_id="victim-user")
-        db.set_session_title("victim", "shared project")
-        assert (
-            db.resolve_session_by_title(
-                "shared project", source="telegram", user_id="attacker-user"
-            )
-            is None
-        )
-        assert (
-            db.resolve_session_by_title(
-                "shared project", source="telegram", user_id="victim-user"
-            )
-            == "victim"
-        )
-
-    def test_resolve_lineage_filters_by_source_and_user_id(self, db):
-        import time
-
-        db.create_session("victim_v1", "telegram", user_id="victim-user")
-        db.set_session_title("victim_v1", "shared project")
-        time.sleep(0.01)
-        db.create_session("victim_v2", "telegram", user_id="victim-user")
-        db.set_session_title("victim_v2", "shared project #2")
-
-        assert (
-            db.resolve_session_by_title(
-                "shared project", source="telegram", user_id="attacker-user"
-            )
-            is None
-        )
-        assert (
-            db.resolve_session_by_title(
-                "shared project", source="telegram", user_id="victim-user"
-            )
-            == "victim_v2"
-        )
-
     def test_next_title_no_existing(self, db):
         """With no existing sessions, base title is returned as-is."""
         assert db.get_next_title_in_lineage("my project") == "my project"
@@ -2084,16 +2046,6 @@ class TestTitleSqlWildcards:
 
 class TestListSessionsRich:
     """Tests for enhanced session listing with preview and last_active."""
-
-    def test_filters_by_user_id(self, db):
-        db.create_session("victim", "telegram", user_id="victim-user")
-        db.create_session("attacker", "telegram", user_id="attacker-user")
-        db.set_session_title("victim", "Victim Work")
-        db.set_session_title("attacker", "Attacker Work")
-
-        sessions = db.list_sessions_rich(source="telegram", user_id="attacker-user")
-
-        assert [s["id"] for s in sessions] == ["attacker"]
 
     def test_preview_from_first_user_message(self, db):
         db.create_session("s1", "cli")

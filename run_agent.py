@@ -68,6 +68,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 from datetime import datetime
 from pathlib import Path
 
+from agent.redact import redact_sensitive_text
 from hermes_constants import get_hermes_home
 
 
@@ -1248,8 +1249,8 @@ class AIAgent:
         # not mid-conversation.  Also validates the api_mode is registered.
         try:
             self._get_transport()
-        except Exception:
-            pass  # Non-fatal — transport may not exist for all modes yet
+        except Exception as e:
+            logger.debug("Could not warm transport cache (Non-fatal): %s", e)
 
         try:
             from hermes_cli.model_normalize import (
@@ -2469,7 +2470,8 @@ class AIAgent:
         try:
             self._session_db.create_session(
                 session_id=self.session_id,
-                source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=self.platform
+                    or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                 model=self.model,
                 model_config=self._session_init_model_config,
                 system_prompt=self._cached_system_prompt,
@@ -4382,7 +4384,8 @@ class AIAgent:
             ),
             "session_id": self.session_id or "",
             "parent_session_id": self._parent_session_id or "",
-            "platform": self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            "platform": self.platform
+                            or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
             "tool_name": "memory",
         }
         if task_id:
@@ -5999,6 +6002,12 @@ class AIAgent:
                     role,
                 )
                 continue
+            if any(str(key).startswith("_hermes_") for key in msg):
+                msg = {
+                    key: value
+                    for key, value in msg.items()
+                    if not str(key).startswith("_hermes_")
+                }
             filtered.append(msg)
         messages = filtered
 
@@ -9785,19 +9794,17 @@ class AIAgent:
         if reasoning_text:
             reasoning_text = _sanitize_surrogates(reasoning_text)
 
-        # Strip inline reasoning tags (<think>…</think> etc.) from the stored
-        # assistant content.  Reasoning was already captured into
-        # ``reasoning_text`` above (either from structured fields or the
-        # inline-block fallback), so the raw tags in content are redundant.
-        # Leaving them in place caused reasoning to leak to messaging
-        # platforms (#8878, #9568), inflate context on subsequent turns
-        # (#9306 observed 16% content-size reduction on a real MiniMax
-        # session), and pollute generated session titles.  One strip at the
-        # storage boundary cleans content for every downstream consumer:
-        # API replay, session transcript, gateway delivery, CLI display,
-        # compression, title generation.
+        # Strip inline reasoning tags (<think>…</think> etc.) and internal
+        # memory-context wrappers from stored assistant content.  The final
+        # user-visible response is scrubbed separately, but this storage-boundary
+        # scrub is required so a model/provider echo of ephemeral recalled memory
+        # cannot become durable session history or Responses API replay state.
         if isinstance(_san_content, str) and _san_content:
-            _san_content = self._strip_think_blocks(_san_content).strip()
+            _stripped_content = self._strip_think_blocks(_san_content)
+            if isinstance(_stripped_content, str):
+                _san_content = sanitize_context(_stripped_content).strip()
+            else:
+                _san_content = sanitize_context(_san_content).strip()
 
         msg = {
             "role": "assistant",
@@ -9840,16 +9847,19 @@ class AIAgent:
         #
         # Promote the already-sanitized streamed ``reasoning_text`` to
         # ``reasoning_content`` at write time, but ONLY when no prior branch
-        # already set it AND we actually captured reasoning text. This
-        # preserves every existing behavior:
+        # already set it, we actually captured reasoning text, and this is not
+        # a tool-call turn.  Tool-call turns without provider-native
+        # ``reasoning_content`` must keep the legacy shape so DeepSeek/Kimi
+        # replay can pad instead of forwarding another provider's private
+        # chain-of-thought (#15748). This preserves every existing behavior:
         #   - SDK-exposed ``reasoning_content`` (OpenAI/Moonshot/DeepSeek SDK)
         #     still wins.
-        #   - DeepSeek tool-call ""-pad (#15250) still fires.
+        #   - DeepSeek/Kimi tool-call pad (#15250, #17400) still fires.
         #   - Non-thinking turns with no reasoning leave the field absent,
         #     so ``_copy_reasoning_content_for_api``'s cross-provider leak
         #     guard (#15748) and ``reasoning``→``reasoning_content``
         #     promotion tiers still apply at replay time.
-        if "reasoning_content" not in msg and reasoning_text:
+        if "reasoning_content" not in msg and reasoning_text and not assistant_tool_calls:
             msg["reasoning_content"] = reasoning_text
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
@@ -10241,8 +10251,14 @@ class AIAgent:
             # and get recovered by retrying on main?  Surface that so users
             # know their auxiliary.compression.model setting is broken even
             # though compression succeeded.
-            _aux_fail_model = getattr(self.context_compressor, "_last_aux_model_failure_model", None)
-            _aux_fail_err = getattr(self.context_compressor, "_last_aux_model_failure_error", None)
+            _aux_fail_model = redact_sensitive_text(
+                getattr(self.context_compressor, "_last_aux_model_failure_model", None),
+                force=True,
+            )
+            _aux_fail_err = redact_sensitive_text(
+                getattr(self.context_compressor, "_last_aux_model_failure_error", None),
+                force=True,
+            )
             if _aux_fail_model:
                 # Dedup on (model, error) so we don't spam on every compaction
                 _aux_key = (_aux_fail_model, _aux_fail_err)
@@ -10504,6 +10520,7 @@ class AIAgent:
                 limit=function_args.get("limit", 3),
                 db=session_db,
                 current_session_id=self.session_id,
+                current_source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
             )
         elif function_name == "memory":
             target = function_args.get("target", "memory")
@@ -11131,6 +11148,7 @@ class AIAgent:
                         limit=function_args.get("limit", 3),
                         db=session_db,
                         current_session_id=self.session_id,
+                        current_source=self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
                     )
                 tool_duration = time.time() - tool_start_time
                 if self._should_emit_quiet_tool_messages():

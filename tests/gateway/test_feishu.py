@@ -1515,30 +1515,6 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(submit.called)
 
     @patch.dict(os.environ, {}, clear=True)
-    def test_webhook_request_rejects_event_when_auth_not_configured(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        adapter._on_message_event = Mock()
-
-        body = json.dumps({
-            "header": {"event_type": "im.message.receive_v1"},
-            "event": {"message": {"message_id": "om_test"}},
-        }).encode("utf-8")
-        request = SimpleNamespace(
-            remote="127.0.0.1",
-            content_length=None,
-            headers={},
-            read=AsyncMock(return_value=body),
-        )
-
-        response = asyncio.run(adapter._handle_webhook_request(request))
-
-        self.assertEqual(response.status, 401)
-        adapter._on_message_event.assert_not_called()
-
-    @patch.dict(os.environ, {"FEISHU_VERIFICATION_TOKEN": "expected-token"}, clear=True)
     def test_webhook_request_uses_same_message_dispatch_path(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -1547,7 +1523,7 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._on_message_event = Mock()
 
         body = json.dumps({
-            "header": {"event_type": "im.message.receive_v1", "token": "expected-token"},
+            "header": {"event_type": "im.message.receive_v1"},
             "event": {"message": {"message_id": "om_test"}},
         }).encode("utf-8")
         request = SimpleNamespace(

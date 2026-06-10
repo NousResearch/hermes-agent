@@ -60,7 +60,7 @@ Opening any port on an internet facing machine is a security risk. You should no
 
 ## Running the dashboard
 
-The built-in web dashboard runs as an optional side-process inside the same container as the gateway. The dashboard exposes API keys and configuration, so only publish it on the host loopback interface. When you use Docker port publishing, the dashboard process inside the container must bind to `0.0.0.0` so Docker can forward the port into the container:
+The built-in web dashboard runs as an optional side-process inside the same container as the gateway. Set `HERMES_DASHBOARD=1` and expose port `9119` alongside the gateway's `8642`:
 
 ```sh
 docker run -d \
@@ -68,10 +68,8 @@ docker run -d \
   --restart unless-stopped \
   -v ~/.hermes:/opt/data \
   -p 8642:8642 \
-  -p 127.0.0.1:9119:9119 \
+  -p 9119:9119 \
   -e HERMES_DASHBOARD=1 \
-  -e HERMES_DASHBOARD_HOST=0.0.0.0 \
-  -e HERMES_DASHBOARD_INSECURE=1 \
   nousresearch/hermes-agent gateway run
 ```
 
@@ -80,12 +78,11 @@ The entrypoint starts `hermes dashboard` in the background (running as the non-r
 | Environment variable | Description | Default |
 |---------------------|-------------|---------|
 | `HERMES_DASHBOARD` | Set to `1` (or `true` / `yes`) to launch the dashboard alongside the main command | *(unset — dashboard not started)* |
-| `HERMES_DASHBOARD_HOST` | Bind address for the dashboard HTTP server | `127.0.0.1` |
+| `HERMES_DASHBOARD_HOST` | Bind address for the dashboard HTTP server | `0.0.0.0` |
 | `HERMES_DASHBOARD_PORT` | Port for the dashboard HTTP server | `9119` |
-| `HERMES_DASHBOARD_INSECURE` | Set to `1` (or `true` / `yes`) to pass `--insecure` for a non-localhost bind after you have restricted network access another way | *(unset)* |
 | `HERMES_DASHBOARD_TUI` | Set to `1` to expose the in-browser Chat tab (embedded `hermes --tui` via PTY/WebSocket) | *(unset)* |
 
-By default, the entrypoint does not bypass the dashboard's non-localhost safety gate. `HERMES_DASHBOARD_HOST` controls the bind address *inside the container*, while `-p 127.0.0.1:9119:9119` controls which interface on the *host* can reach it. If you set `HERMES_DASHBOARD_HOST=0.0.0.0` so Docker can forward the port, also keep the published port bound to `127.0.0.1` on the host and set `HERMES_DASHBOARD_INSECURE=1` as an explicit acknowledgement. Do not publish the dashboard on an internet-facing interface.
+The default `HERMES_DASHBOARD_HOST=0.0.0.0` is required for the host to reach the dashboard through the published port; the entrypoint automatically passes `--insecure` to `hermes dashboard` in that case. Override to `127.0.0.1` if you want to restrict the dashboard to in-container access only (e.g. behind a reverse proxy in a sidecar).
 
 :::note
 The dashboard side-process is **not supervised** — if it crashes, it stays down until the container restarts. Running it as a separate container is not supported: the dashboard's gateway-liveness detection requires a shared PID namespace with the gateway process.
@@ -212,13 +209,11 @@ services:
     command: gateway run
     ports:
       - "8642:8642"   # gateway API
-      - "127.0.0.1:9119:9119"   # dashboard, host-loopback only
+      - "9119:9119"   # dashboard (only reached when HERMES_DASHBOARD=1)
     volumes:
       - ~/.hermes:/opt/data
     environment:
       - HERMES_DASHBOARD=1
-      - HERMES_DASHBOARD_HOST=0.0.0.0
-      - HERMES_DASHBOARD_INSECURE=1
       # Uncomment to forward specific env vars instead of using .env file:
       # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       # - OPENAI_API_KEY=${OPENAI_API_KEY}

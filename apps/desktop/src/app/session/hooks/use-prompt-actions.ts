@@ -35,6 +35,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
+  $connection,
   $localDeviceName,
   $messages,
   $yoloActive,
@@ -57,6 +58,7 @@ function remoteSenderParams(): { sender_device?: string } {
 
 import type {
   ClientSessionState,
+  FileAttachResponse,
   ImageAttachResponse,
   SessionSteerResponse,
   SessionTitleResponse,
@@ -89,6 +91,42 @@ function inlineErrorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
 
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
+}
+
+function base64FromDataUrl(dataUrl: string): string {
+  const comma = dataUrl.indexOf(',')
+
+  return comma >= 0 ? dataUrl.slice(comma + 1) : ''
+}
+
+function imageFilenameFromPath(filePath: string): string {
+  return filePath.split(/[\\/]/).filter(Boolean).pop() || 'image.png'
+}
+
+// Remote gateway: the local composer-image file lives on THIS machine's disk,
+// not the gateway's, so read the bytes here and upload them via
+// image.attach_bytes. Returns null when the file can't be read.
+async function readImageForRemoteAttach(
+  filePath: string
+): Promise<{ contentBase64: string; filename: string } | null> {
+  const dataUrl = await window.hermesDesktop?.readFileDataUrl(filePath)
+  const contentBase64 = dataUrl ? base64FromDataUrl(dataUrl) : ''
+
+  return contentBase64 ? { contentBase64, filename: imageFilenameFromPath(filePath) } : null
+}
+
+// Read a non-image file as a data URL for upload via file.attach. Returns null
+// when the desktop bridge can't read the file (e.g. it was moved/deleted).
+async function readFileDataUrlForAttach(filePath: string): Promise<string | null> {
+  const reader = window.hermesDesktop?.readFileDataUrl
+
+  if (!reader) {
+    return null
+  }
+
+  const dataUrl = await reader(filePath)
+
+  return dataUrl || null
 }
 
 interface PromptActionsOptions {
@@ -200,42 +238,114 @@ export function usePromptActions({
     [selectedStoredSessionIdRef, updateSessionState]
   )
 
-  const syncImageAttachmentsForSubmit = useCallback(
+  const syncAttachmentsForSubmit = useCallback(
     async (
       sessionId: string,
       attachments: ComposerAttachment[],
       options: { updateComposerAttachments?: boolean } = {}
-    ) => {
+    ): Promise<ComposerAttachment[]> => {
       const updateComposerAttachments = options.updateComposerAttachments ?? true
-      const images = attachments.filter(attachment => attachment.kind === 'image' && attachment.path)
+      const remote = $connection.get()?.mode === 'remote' || activeBackendIsRemote()
+      const synced: ComposerAttachment[] = []
 
-      for (const attachment of images) {
-        if (attachment.attachedSessionId === sessionId) {
+      for (const attachment of attachments) {
+        // Already-synced or pathless refs (terminal, url, etc.) pass through.
+        if (!attachment.path || attachment.attachedSessionId === sessionId) {
+          synced.push(attachment)
           continue
         }
 
-        const result = await requestGateway<ImageAttachResponse>('image.attach', {
-          session_id: sessionId,
-          path: attachment.path
-        })
+        if (attachment.kind === 'image') {
+          let result: ImageAttachResponse
 
-        if (!result.attached) {
-          const label = attachment.label || (attachment.path ? pathLabel(attachment.path) : 'image')
-          throw new Error(result.message || `Could not attach ${label}`)
-        }
+          if (remote) {
+            // The gateway is on another machine — it can't read attachment.path
+            // (a path on THIS disk). Upload the bytes via image.attach_bytes.
+            const payload = await readImageForRemoteAttach(attachment.path)
 
-        const attachedPath = result.path || attachment.path
+            if (!payload) {
+              const label = attachment.label || pathLabel(attachment.path)
+              throw new Error(`Could not read ${label}`)
+            }
 
-        if (updateComposerAttachments) {
-          addComposerAttachment({
+            result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
+              session_id: sessionId,
+              content_base64: payload.contentBase64,
+              filename: payload.filename
+            })
+          } else {
+            result = await requestGateway<ImageAttachResponse>('image.attach', {
+              session_id: sessionId,
+              path: attachment.path
+            })
+          }
+
+          if (!result.attached) {
+            const label = attachment.label || pathLabel(attachment.path)
+            throw new Error(result.message || `Could not attach ${label}`)
+          }
+
+          const attachedPath = result.path || attachment.path
+          const nextAttachment: ComposerAttachment = {
             ...attachment,
             id: attachment.id,
             label: attachedPath ? pathLabel(attachedPath) : attachment.label,
             path: attachedPath,
             attachedSessionId: sessionId
-          })
+          }
+
+          if (updateComposerAttachments) {
+            addComposerAttachment(nextAttachment)
+          }
+
+          synced.push(nextAttachment)
+          continue
         }
+
+        if (attachment.kind === 'file') {
+          // Non-image file refs are @file: paths the gateway reads with its file
+          // tools. On a remote gateway the desktop path doesn't exist there, so
+          // upload the bytes; the gateway stages them into the session workspace
+          // and hands back a workspace-relative ref that actually resolves.
+          // Local mode can pass the path directly (gateway shares this disk).
+          const dataUrl = remote ? await readFileDataUrlForAttach(attachment.path) : null
+
+          if (remote && !dataUrl) {
+            const label = attachment.label || pathLabel(attachment.path)
+            throw new Error(`Could not read ${label}`)
+          }
+
+          const result = await requestGateway<FileAttachResponse>('file.attach', {
+            session_id: sessionId,
+            path: attachment.path,
+            name: attachment.label || pathLabel(attachment.path),
+            ...(dataUrl ? { data_url: dataUrl } : {})
+          })
+
+          if (!result.attached || !result.ref_text) {
+            const label = attachment.label || pathLabel(attachment.path)
+            throw new Error(result.message || `Could not attach ${label}`)
+          }
+
+          const nextAttachment: ComposerAttachment = {
+            ...attachment,
+            id: attachment.id,
+            refText: result.ref_text,
+            attachedSessionId: sessionId
+          }
+
+          if (updateComposerAttachments) {
+            addComposerAttachment(nextAttachment)
+          }
+
+          synced.push(nextAttachment)
+          continue
+        }
+
+        synced.push(attachment)
       }
+
+      return synced
     },
     [requestGateway]
   )
@@ -246,35 +356,42 @@ export function usePromptActions({
       const usingComposerAttachments = !options?.attachments
       const attachments = options?.attachments ?? $composerAttachments.get()
 
-      const contextRefs = attachments
-        .map(a => a.refText)
-        .filter(Boolean)
-        .join('\n')
-
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')
-      const attachmentRefs = attachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
 
-      const text =
-        [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
-        (hasImage ? 'What do you see in this image?' : '')
+      // Refs are recomputed after sync (file.attach rewrites @file: refs to
+      // workspace-relative paths the remote gateway can resolve). Seed the
+      // optimistic message with the pre-sync refs, then rewrite once synced.
+      let attachmentRefs = attachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
+      const buildContextText = (atts: ComposerAttachment[]): string => {
+        const contextRefs = atts
+          .map(a => a.refText)
+          .filter(Boolean)
+          .join('\n')
+
+        return (
+          [contextRefs, terminalContextBlocks, visibleText].filter(Boolean).join('\n\n') ||
+          (atts.some(a => a.kind === 'image') ? 'What do you see in this image?' : '')
+        )
+      }
 
       // Queue drains fire on the busy→false settle edge, where busyRef (synced
       // from $busy by a separate effect) may still read true — honoring it would
       // bounce the drained send. The drain lock serializes them; the user path
       // keeps the guard so a stray Enter mid-turn can't double-submit.
-      if (!text || (!options?.fromQueue && busyRef.current)) {
+      const hasSendable = Boolean(visibleText || terminalContextBlocks || attachments.length || hasImage)
+      if (!hasSendable || (!options?.fromQueue && busyRef.current)) {
         return false
       }
 
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
-      const userMessage: ChatMessage = {
+      const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
         role: 'user',
         parts: [textPart(visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
         attachmentRefs
-      }
+      })
 
       const releaseBusy = () => {
         setMutableRef(busyRef, false)
@@ -291,7 +408,7 @@ export function usePromptActions({
             ...state,
             messages: state.messages.some(m => m.id === optimisticId)
               ? state.messages
-              : [...state.messages, userMessage],
+              : [...state.messages, buildUserMessage()],
             busy: true,
             awaitingResponse: true,
             pendingBranchGroup: null,
@@ -299,6 +416,19 @@ export function usePromptActions({
             // Fresh submit = new turn — clear any leftover interrupt flag, else
             // mutateStream/completeAssistantMessage drop every delta of this turn
             // (what made drained-after-interrupt sends go silent).
+            interrupted: false
+          }),
+          selectedStoredSessionIdRef.current
+        )
+
+      // After sync rewrites refs, refresh the optimistic message in place so the
+      // transcript shows the resolved @file: ref rather than the local path.
+      const rewriteOptimistic = (sid: string) =>
+        updateSessionState(
+          sid,
+          state => ({
+            ...state,
+            messages: state.messages.map(message => (message.id === optimisticId ? buildUserMessage() : message)),
             interrupted: false
           }),
           selectedStoredSessionIdRef.current
@@ -334,7 +464,7 @@ export function usePromptActions({
       if (sessionId) {
         seedOptimistic(sessionId)
       } else {
-        setMessages(current => [...current, userMessage])
+        setMessages(current => [...current, buildUserMessage()])
       }
 
       if (!sessionId) {
@@ -360,9 +490,14 @@ export function usePromptActions({
       }
 
       try {
-        await syncImageAttachmentsForSubmit(sessionId, attachments, {
+        const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
         })
+        // Rewrite the optimistic message + prompt text with the synced refs so
+        // the gateway receives @file: paths that resolve in its workspace.
+        attachmentRefs = syncedAttachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
+        rewriteOptimistic(sessionId)
+        const text = buildContextText(syncedAttachments)
         await requestGateway('prompt.submit', { session_id: sessionId, text, ...remoteSenderParams() })
 
         if (usingComposerAttachments) {
@@ -410,7 +545,7 @@ export function usePromptActions({
       createBackendSessionForSend,
       requestGateway,
       selectedStoredSessionIdRef,
-      syncImageAttachmentsForSubmit,
+      syncAttachmentsForSubmit,
       updateSessionState
     ]
   )

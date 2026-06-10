@@ -2914,11 +2914,6 @@ def run_job(
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
-    os.environ["HERMES_CRON_SESSION"] = "1"
-
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
     from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
@@ -3003,6 +2998,12 @@ def run_job(
     # acquire) and is a no-op for workdir-less jobs (they never mutate the env).
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
 
+    # Bind cron approval policy to this job's ContextVar scope. Keep the token
+    # so cleanup restores the true prior state (_UNSET for normal callers),
+    # preserving the legacy os.environ fallback used by standalone entrypoints.
+    _cron_session_var = _VAR_MAP["HERMES_CRON_SESSION"]
+    _cron_session_token = None
+
     _holds_cwd_write = _job_workdir is not None
     if _holds_cwd_write:
         _terminal_cwd_lock.acquire_write()
@@ -3015,6 +3016,7 @@ def run_job(
     # (every future job blocks on acquire_*); a leaked reader blocks all
     # future writers.  Acquire itself can't leak (it either blocks or returns).
     try:
+        _cron_session_token = _cron_session_var.set("1")
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -3624,6 +3626,8 @@ def run_job(
             _terminal_cwd_lock.release_read()
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
+        if _cron_session_token is not None:
+            _cron_session_var.reset(_cron_session_token)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:

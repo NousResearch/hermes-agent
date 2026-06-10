@@ -139,6 +139,19 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
 
 
+def test_cron_session_context_overrides_stale_os_environ(monkeypatch):
+    """Gateway session context must suppress leaked cron env state."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
+
+    tokens = set_session_vars(platform="telegram")
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+    clear_session_vars(tokens)
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+
 def test_get_session_env_default_when_nothing_set(monkeypatch):
     """get_session_env returns default when neither contextvar nor env is set."""
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)

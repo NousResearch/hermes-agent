@@ -2736,23 +2736,32 @@ class TelegramAdapter(BasePlatformAdapter):
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
         confirm_id: str, metadata: Optional[Dict[str, Any]] = None,
+        allow_always: bool = True,
     ) -> SendResult:
-        """Render a three-button slash-command confirmation prompt."""
+        """Render a slash-command confirmation prompt."""
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
         try:
             preview = self.format_message(message if len(message) <= 3800 else message[:3800] + "...")
 
-            keyboard = InlineKeyboardMarkup([
-                [
-                    InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
-                    InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
-                ],
-                [
-                    InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
-                ],
-            ])
+            if allow_always:
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Approve Once", callback_data=f"sc:once:{confirm_id}"),
+                        InlineKeyboardButton("🔒 Always Approve", callback_data=f"sc:always:{confirm_id}"),
+                    ],
+                    [
+                        InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                    ],
+                ])
+            else:
+                keyboard = InlineKeyboardMarkup([
+                    [
+                        InlineKeyboardButton("✅ Approve", callback_data=f"sc:once:{confirm_id}"),
+                        InlineKeyboardButton("❌ Cancel", callback_data=f"sc:cancel:{confirm_id}"),
+                    ],
+                ])
 
             thread_id = self._metadata_thread_id(metadata)
             kwargs: Dict[str, Any] = {

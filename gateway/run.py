@@ -7142,6 +7142,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "voice":
             return await self._handle_voice_command(event)
 
+        if canonical == "call":
+            return await self._handle_call_command(event)
+
         if self._draining:
             return f"⏳ Gateway is {self._status_action_gerund()} and is not accepting new work right now."
 
@@ -9303,6 +9306,198 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return None
 
 
+    async def _handle_call_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /call — confirmation-safe Vapi outbound calling."""
+        parsed = self._parse_call_command_args(event.get_command_args())
+        if "error" in parsed:
+            return parsed["error"]
+
+        phone_number = parsed["phone_number"]
+        task = parsed["task"]
+        first_sentence = parsed.get("first_sentence") or ""
+        max_duration = int(parsed.get("max_duration") or 3)
+        masked_phone = self._mask_phone_for_display(phone_number)
+
+        async def _on_confirm(choice: str) -> Optional[str]:
+            if choice == "cancel":
+                return "🟡 /call cancelled. No outbound call was placed."
+            if choice == "always":
+                return (
+                    "Outbound calls require one-time approval. "
+                    "Re-run /call and choose Approve."
+                )
+            return await self._execute_confirmed_vapi_call(
+                phone_number=phone_number,
+                task=task,
+                first_sentence=first_sentence,
+                max_duration=max_duration,
+            )
+
+        task_preview = task[:500] + ("..." if len(task) > 500 else "")
+        first_line = (
+            f"\nFirst sentence: {first_sentence[:200]}"
+            if first_sentence else ""
+        )
+        message = (
+            "📞 **Confirm outbound Vapi call**\n\n"
+            f"To: `{masked_phone}`\n"
+            f"Max duration: {max_duration} minute(s){first_line}\n\n"
+            f"Task:\n{task_preview}\n\n"
+            "Approve only if this call is expected and appropriate.\n\n"
+            "_Text fallback: reply `/approve` to place the call or `/cancel` to abort._"
+        )
+        return await self._request_slash_confirm(
+            event=event,
+            command="call",
+            title="/call",
+            message=message,
+            handler=_on_confirm,
+            allow_always=False,
+        )
+
+    @staticmethod
+    def _mask_phone_for_display(phone_number: str) -> str:
+        digits = re.sub(r"\D", "", phone_number or "")
+        if len(digits) < 4:
+            return "***"
+        return f"***-***-{digits[-4:]}"
+
+    @staticmethod
+    def _parse_call_command_args(raw_args: str) -> Dict[str, Any]:
+        raw_args = (raw_args or "").strip()
+        usage = (
+            "Usage: `/call +15551234567 --task \"Ask whether they carry X\"`\n"
+            "Optional: `--first-sentence \"Hi, this is Hermes calling for Jesse.\"` "
+            "`--max-duration 3`"
+        )
+        if not raw_args:
+            return {"error": usage}
+        try:
+            tokens = shlex.split(raw_args)
+        except ValueError as exc:
+            return {"error": f"Could not parse /call arguments: {exc}\n\n{usage}"}
+        if not tokens:
+            return {"error": usage}
+
+        phone_number = tokens[0].strip()
+        if not phone_number.startswith("+") or len(re.sub(r"\D", "", phone_number)) < 8:
+            return {
+                "error": (
+                    "Phone number must be E.164 format, for example `+15551234567`.\n\n"
+                    + usage
+                )
+            }
+
+        task_parts: list[str] = []
+        first_sentence = ""
+        max_duration = 3
+        i = 1
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--task":
+                if i + 1 >= len(tokens):
+                    return {"error": "`--task` requires instructions.\n\n" + usage}
+                task_parts.append(tokens[i + 1])
+                i += 2
+                continue
+            if token == "--first-sentence":
+                if i + 1 >= len(tokens):
+                    return {"error": "`--first-sentence` requires text.\n\n" + usage}
+                first_sentence = tokens[i + 1].strip()
+                i += 2
+                continue
+            if token == "--max-duration":
+                if i + 1 >= len(tokens):
+                    return {"error": "`--max-duration` requires a number of minutes.\n\n" + usage}
+                try:
+                    max_duration = max(1, min(10, int(tokens[i + 1])))
+                except ValueError:
+                    return {"error": "`--max-duration` must be a whole number of minutes.\n\n" + usage}
+                i += 2
+                continue
+            task_parts.append(token)
+            i += 1
+
+        task = " ".join(part.strip() for part in task_parts if part.strip()).strip()
+        if not task:
+            return {"error": "A call task is required.\n\n" + usage}
+        return {
+            "phone_number": phone_number,
+            "task": task,
+            "first_sentence": first_sentence,
+            "max_duration": max_duration,
+        }
+
+    async def _execute_confirmed_vapi_call(
+        self,
+        *,
+        phone_number: str,
+        task: str,
+        first_sentence: str = "",
+        max_duration: int = 3,
+    ) -> str:
+        """Run the repo-shipped telephony helper after explicit approval."""
+        script = (
+            Path(__file__).resolve().parents[1]
+            / "optional-skills"
+            / "productivity"
+            / "telephony"
+            / "scripts"
+            / "telephony.py"
+        )
+        argv = [
+            sys.executable,
+            str(script),
+            "ai-call",
+            phone_number,
+            task,
+            "--provider",
+            "vapi",
+            "--max-duration",
+            str(max_duration),
+        ]
+        if first_sentence:
+            argv.extend(["--first-sentence", first_sentence])
+
+        def _run_call() -> tuple[int, str, str]:
+            import subprocess
+
+            proc = subprocess.run(
+                argv,
+                cwd=str(Path(__file__).resolve().parents[1]),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=45,
+            )
+            return proc.returncode, proc.stdout, proc.stderr
+
+        try:
+            returncode, stdout, stderr = await asyncio.to_thread(_run_call)
+        except TimeoutError:
+            return "⚠️ Vapi call request timed out before a call id was returned."
+        except Exception as exc:
+            logger.warning("Confirmed Vapi call failed before request completed: %s", exc)
+            return f"⚠️ Vapi call failed: {exc}"
+
+        if returncode != 0:
+            detail = (stderr or stdout or "").strip()
+            if detail:
+                detail = detail.splitlines()[-1][:300]
+            return f"⚠️ Vapi call failed before dialing: {detail or f'exit code {returncode}'}"
+
+        try:
+            payload = json.loads(stdout or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+
+        call_id = str(payload.get("call_id") or "")
+        status = str(payload.get("status") or "queued")
+        masked = str(payload.get("to_phone_number_masked") or self._mask_phone_for_display(phone_number))
+        if call_id:
+            return f"✅ Vapi outbound call queued to `{masked}`.\nCall ID: `{call_id}`\nStatus: {status}"
+        return f"✅ Vapi outbound call request completed for `{masked}`."
+
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
         adapter = self.adapters.get(event.source.platform)
@@ -10605,6 +10800,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         title: str,
         message: str,
         handler,
+        allow_always: bool = True,
     ) -> Optional[str]:
         """Ask the user to confirm an expensive slash command.
 
@@ -10650,6 +10846,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_key=session_key,
                     confirm_id=confirm_id,
                     metadata=metadata,
+                    allow_always=allow_always,
                 )
                 if button_result and getattr(button_result, "success", False):
                     used_buttons = True

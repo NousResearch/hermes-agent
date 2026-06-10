@@ -107,3 +107,42 @@ class TestSendSlashConfirm:
         )
 
         assert result.success is False
+
+    @pytest.mark.asyncio
+    async def test_one_time_confirm_omits_always_button(self, monkeypatch):
+        import gateway.platforms.telegram as telegram_mod
+
+        class _Button:
+            def __init__(self, text, callback_data):
+                self.text = text
+                self.callback_data = callback_data
+
+        class _Keyboard:
+            def __init__(self, rows):
+                self.inline_keyboard = rows
+
+        monkeypatch.setattr(telegram_mod, "InlineKeyboardButton", _Button)
+        monkeypatch.setattr(telegram_mod, "InlineKeyboardMarkup", _Keyboard)
+
+        adapter = _make_adapter()
+        sent = {}
+
+        async def mock_send(**kwargs):
+            sent.update(kwargs)
+            return SimpleNamespace(message_id=9)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send)
+
+        result = await adapter.send_slash_confirm(
+            chat_id="100",
+            title="Confirm",
+            message="place call",
+            session_key="sk",
+            confirm_id="cid4",
+            allow_always=False,
+        )
+
+        assert result.success is True
+        buttons = sent["reply_markup"].inline_keyboard
+        labels = [button.text for row in buttons for button in row]
+        assert labels == ["✅ Approve", "❌ Cancel"]

@@ -2407,6 +2407,7 @@ class BasePlatformAdapter(ABC):
         session_key: str,
         confirm_id: str,
         metadata: Optional[Dict[str, Any]] = None,
+        allow_always: bool = True,
     ) -> SendResult:
         """Send a three-option slash-command confirmation prompt.
 
@@ -2416,9 +2417,9 @@ class BasePlatformAdapter(ABC):
         acknowledge — the current caller is ``/reload-mcp``, which
         invalidates the provider prompt cache.
 
-        Platforms with inline-button support (Telegram, Discord, Slack,
-        Matrix, Feishu) should override this to render three buttons:
-        Approve Once / Always Approve / Cancel.  Button callbacks MUST be
+        Platforms with inline-button support should override this to render
+        Approve Once / Always Approve / Cancel when ``allow_always`` is true,
+        or Approve / Cancel for one-time-only confirmations. Button callbacks MUST be
         routed back through the gateway by calling
         ``GatewayRunner._resolve_slash_confirm(confirm_id, choice)`` where
         ``choice`` is ``"once"`` / ``"always"`` / ``"cancel"``.

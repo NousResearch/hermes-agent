@@ -103,6 +103,31 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
 
 
 @pytest.mark.asyncio
+async def test_enrich_message_with_transcription_returns_tuple_for_empty_content_placeholder():
+    from gateway.run import GatewayRunner
+
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+
+    with patch(
+        "tools.transcription_tools.transcribe_audio",
+        return_value={
+            "success": True,
+            "transcript": "voice transcript",
+            "provider": "local_command",
+        },
+    ):
+        result, transcripts = await runner._enrich_message_with_transcription(
+            "(The user sent a message with no text content)",
+            ["/tmp/voice.ogg"],
+        )
+
+    assert "voice transcript" in result
+    assert "(The user sent a message with no text content)" not in result
+    assert transcripts == ["voice transcript"]
+
+
+@pytest.mark.asyncio
 async def test_prepare_inbound_message_text_transcribes_queued_voice_event():
     from gateway.run import GatewayRunner
 

@@ -222,7 +222,7 @@ first, set `memory.write_approval: true`. It's a simple on/off gate applied to
 | `write_approval` | Behaviour |
 |------------------|-----------|
 | `false` (default) | Write freely — the gate is off (the pre-gate behaviour). |
-| `true` | Require approval before anything is saved. Foreground writes prompt you inline (entries are small enough to read in a chat bubble). Background-review writes are **staged** instead of committed (a background thread can't block on a prompt). |
+| `true` | Require approval before anything is saved. In the interactive CLI, foreground writes prompt you inline (entries are small enough to read in full). Everywhere else — messaging platforms, scripts, and the background self-improvement review — writes are **staged** for review with `/memory pending`. |
 
 > To turn memory off entirely (not just gate it), set `memory_enabled: false`.
 

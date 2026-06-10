@@ -76,6 +76,22 @@ class TestHostHeaderValidator:
         # Loopback — reject (we bound to a specific non-loopback name)
         assert not _is_accepted_host("localhost", "my-server.corp.net")
 
+    def test_explicit_non_loopback_bind_accepts_configured_alias(self):
+        """Operators can explicitly allow a stable alternate hostname such
+        as a Tailscale DNS name when it differs from the literal bind host."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        assert _is_accepted_host(
+            "my-node.tailnet.ts.net:9119",
+            "100.64.0.10",
+            allowed_hosts=("my-node.tailnet.ts.net",),
+        )
+        assert not _is_accepted_host(
+            "evil.example",
+            "100.64.0.10",
+            allowed_hosts=("my-node.tailnet.ts.net",),
+        )
+
     def test_case_insensitive_comparison(self):
         """Host headers are case-insensitive per RFC — accept variations."""
         from hermes_cli.web_server import _is_accepted_host
@@ -212,6 +228,31 @@ class TestWebSocketHostOriginGuard:
             headers={
                 "Host": "localhost:9119",
                 "Origin": "http://localhost:9119",
+            },
+        ):
+            pass
+
+    def test_explicit_alias_websocket_host_and_origin_are_accepted(self, monkeypatch):
+        from fastapi.testclient import TestClient
+
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setattr(ws.app.state, "bound_host", "100.64.0.10", raising=False)
+        monkeypatch.setattr(
+            ws.app.state,
+            "allowed_hosts",
+            ("my-node.tailnet.ts.net",),
+            raising=False,
+        )
+        monkeypatch.setattr(ws, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", True)
+
+        client = TestClient(ws.app)
+        url = f"/api/events?token={ws._SESSION_TOKEN}&channel=security-test"
+        with client.websocket_connect(
+            url,
+            headers={
+                "Host": "my-node.tailnet.ts.net:9119",
+                "Origin": "https://my-node.tailnet.ts.net",
             },
         ):
             pass

@@ -196,13 +196,82 @@ _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
-# CORS: restrict to localhost origins only.  The web UI is intended to run
-# locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
-# read/modify config and secrets.
+_LOCALHOST_CORS_ORIGIN_REGEX = r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$"
+
+
+def _split_dashboard_csv(value: str) -> list[str]:
+    """Split comma/newline-separated dashboard env values into tokens."""
+    if not value:
+        return []
+    parts: list[str] = []
+    for chunk in value.replace("\n", ",").split(","):
+        item = chunk.strip()
+        if item:
+            parts.append(item)
+    return parts
+
+
+def _normalize_dashboard_list(raw: Any) -> tuple[str, ...]:
+    """Normalize dashboard config list-ish values into a stable tuple."""
+    if raw is None:
+        return ()
+    if isinstance(raw, str):
+        items = _split_dashboard_csv(raw)
+    elif isinstance(raw, (list, tuple, set)):
+        items = [str(item).strip() for item in raw if str(item).strip()]
+    else:
+        return ()
+    seen: set[str] = set()
+    normalized: list[str] = []
+    for item in items:
+        if item not in seen:
+            seen.add(item)
+            normalized.append(item)
+    return tuple(normalized)
+
+
+def _canonical_host(value: str) -> str:
+    """Return a lower-cased host token without scheme, brackets, or port."""
+    raw = (value or "").strip()
+    if not raw:
+        return ""
+    if "://" in raw:
+        raw = urllib.parse.urlparse(raw).netloc or ""
+    if raw.startswith("["):
+        close = raw.find("]")
+        raw = raw[1:close] if close != -1 else raw.strip("[]")
+    elif raw.count(":") == 1:
+        raw = raw.rsplit(":", 1)[0]
+    return raw.strip().lower()
+
+
+def _load_dashboard_network_config() -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Return (cors_origins, allowed_hosts) from env/config with env winning."""
+    cfg = load_config() or {}
+    dashboard_cfg = cfg.get("dashboard") if isinstance(cfg.get("dashboard"), dict) else {}
+
+    cors_env = os.environ.get("HERMES_DASHBOARD_CORS_ORIGINS", "").strip()
+    host_env = os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "").strip()
+
+    cors_origins = _normalize_dashboard_list(
+        cors_env if cors_env else (dashboard_cfg or {}).get("cors_origins", ())
+    )
+    allowed_hosts = _normalize_dashboard_list(
+        host_env if host_env else (dashboard_cfg or {}).get("allowed_hosts", ())
+    )
+    return cors_origins, allowed_hosts
+
+
+_DASHBOARD_CORS_ORIGINS, _DASHBOARD_ALLOWED_HOSTS = _load_dashboard_network_config()
+
+# CORS: localhost stays allowed by default. Operators can add exact extra
+# origins for reverse proxies or stable remote hostnames without widening the
+# policy to "*".
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origins=list(_DASHBOARD_CORS_ORIGINS),
+    allow_origin_regex=_LOCALHOST_CORS_ORIGIN_REGEX,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -278,12 +347,17 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    allowed_hosts: Optional[tuple[str, ...]] = None,
+) -> bool:
     """True if the Host header targets the interface we bound to.
 
     Accepts:
     - Exact bound host (with or without port suffix)
     - Loopback aliases when bound to loopback
+    - Explicitly configured alternate hostnames
     - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
       no protection possible at this layer)
     """
@@ -295,17 +369,12 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     # Plain hosts/v4:
     #   localhost:9119
     #   127.0.0.1:9119
-    h = host_header.strip()
-    if h.startswith("["):
-        # IPv6 bracketed — port (if any) follows "]:"
-        close = h.find("]")
-        if close != -1:
-            host_only = h[1:close]  # strip brackets
-        else:
-            host_only = h.strip("[]")
-    else:
-        host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    host_only = _canonical_host(host_header)
+    allowed_host_values = {
+        _canonical_host(candidate)
+        for candidate in (allowed_hosts or ())
+        if _canonical_host(candidate)
+    }
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -314,12 +383,12 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
         return True
 
     # Loopback bind: accept the loopback names
-    bound_lc = bound_host.lower()
+    bound_lc = _canonical_host(bound_host)
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        return host_only in _LOOPBACK_HOST_VALUES or host_only in allowed_host_values
 
     # Explicit non-loopback bind: require exact host match
-    return host_only == bound_lc
+    return host_only == bound_lc or host_only in allowed_host_values
 
 
 @app.middleware("http")
@@ -339,7 +408,11 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        if not _is_accepted_host(
+            host_header,
+            bound_host,
+            getattr(app.state, "allowed_hosts", ()),
+        ):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -8397,7 +8470,8 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
 
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    allowed_hosts = getattr(app.state, "allowed_hosts", ())
+    if not _is_accepted_host(host_header, bound_host, allowed_hosts):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -8414,7 +8488,7 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(parsed.netloc, bound_host, allowed_hosts):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
@@ -10117,6 +10191,7 @@ def start_server(
     # PTY child uses to publish events to the dashboard sidebar.
     app.state.bound_host = host
     app.state.bound_port = port
+    app.state.allowed_hosts = _DASHBOARD_ALLOWED_HOSTS
 
     if open_browser:
         import webbrowser

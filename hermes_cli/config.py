@@ -1464,6 +1464,17 @@ DEFAULT_CONFIG = {
     # Web dashboard settings
     "dashboard": {
         "theme": "default",  # Dashboard visual theme: "default", "midnight", "ember", "mono", "cyberpunk", "rose"
+        "host": "127.0.0.1",  # Dashboard bind host; env override: HERMES_DASHBOARD_HOST
+        "port": 9119,  # Dashboard bind port; env override: HERMES_DASHBOARD_PORT
+        # Extra browser origins allowed by the dashboard CORS layer. Keep this
+        # empty unless you intentionally serve the dashboard through a
+        # different hostname or reverse proxy origin.
+        "cors_origins": [],
+        # Additional Host header values to accept for explicit non-loopback
+        # binds. Use this when the dashboard is intentionally reached through
+        # a stable hostname (for example a Tailscale DNS name) that differs
+        # from the literal bind address.
+        "allowed_hosts": [],
         # Hide the token/cost analytics surfaces (Analytics page, token bars and
         # cost figures on the Models page) by default.  The numbers shown there
         # are a local debug estimate: they only count successful main-agent

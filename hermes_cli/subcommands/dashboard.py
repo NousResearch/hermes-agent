@@ -10,6 +10,14 @@ import argparse
 from typing import Callable
 
 
+class _StoreValueAndSeen(argparse.Action):
+    """Record that a dashboard launch flag was explicitly provided."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        setattr(namespace, f"{self.dest}_explicit", True)
+
+
 def build_dashboard_parser(
     subparsers, *, cmd_dashboard: Callable, cmd_dashboard_register: Callable
 ) -> None:
@@ -23,10 +31,17 @@ def build_dashboard_parser(
         description="Launch the Hermes Agent web dashboard for managing config, API keys, and sessions",
     )
     dashboard_parser.add_argument(
-        "--port", type=int, default=9119, help="Port (default 9119)"
+        "--port",
+        type=int,
+        default=9119,
+        action=_StoreValueAndSeen,
+        help="Port (default 9119; config: dashboard.port)",
     )
     dashboard_parser.add_argument(
-        "--host", default="127.0.0.1", help="Host (default 127.0.0.1)"
+        "--host",
+        default="127.0.0.1",
+        action=_StoreValueAndSeen,
+        help="Host (default 127.0.0.1; config: dashboard.host)",
     )
     dashboard_parser.add_argument(
         "--no-open", action="store_true", help="Don't open browser automatically"

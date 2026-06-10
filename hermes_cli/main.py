@@ -10115,14 +10115,39 @@ def cmd_dashboard(args):
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
+    from hermes_cli.config import load_config
     from hermes_cli.web_server import start_server
+
+    cfg = load_config() or {}
+    dashboard_cfg = cfg.get("dashboard") if isinstance(cfg.get("dashboard"), dict) else {}
+
+    host_explicit = bool(getattr(args, "host_explicit", False))
+    port_explicit = bool(getattr(args, "port_explicit", False))
+
+    configured_host = os.environ.get("HERMES_DASHBOARD_HOST", "").strip()
+    if not configured_host:
+        configured_host = str((dashboard_cfg or {}).get("host") or "").strip()
+    host = args.host if host_explicit else (configured_host or args.host)
+
+    configured_port = os.environ.get("HERMES_DASHBOARD_PORT", "").strip()
+    if not configured_port:
+        configured_port = str((dashboard_cfg or {}).get("port") or "").strip()
+    port = args.port
+    if not port_explicit and configured_port:
+        try:
+            port = int(configured_port)
+        except ValueError:
+            print(
+                f"⚠ Ignoring invalid dashboard port override: {configured_port!r}",
+                file=sys.stderr,
+            )
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
     # available — the desktop app and the dashboard's own Chat tab both rely on
     # the `/api/ws` + `/api/pty` sockets, so there is no reason to gate them.
     start_server(
-        host=args.host,
-        port=args.port,
+        host=host,
+        port=port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
     )

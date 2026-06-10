@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { $connection } from '@/store/session'
 
 import {
+  desktopDefaultCwd,
   desktopGitRoot,
   readDesktopDir,
   readDesktopFileDataUrl,
@@ -21,6 +22,7 @@ const api = vi.fn(async ({ path }: { path: string }) => {
   if (path.startsWith('/api/fs/read-text?')) return { path: '/remote/file.txt', text: 'remote', byteSize: 6 }
   if (path.startsWith('/api/fs/read-data-url?')) return { dataUrl: 'data:text/plain;base64,cmVtb3Rl' }
   if (path.startsWith('/api/fs/git-root?')) return { root: '/remote' }
+  if (path === '/api/fs/default-cwd') return { cwd: '/backend/project', branch: 'main' }
   throw new Error(`unexpected path ${path}`)
 })
 
@@ -74,11 +76,13 @@ describe('desktop filesystem facade', () => {
     await expect(readDesktopFileText('/home/user/project/a b.txt')).resolves.toMatchObject({ text: 'remote' })
     await expect(readDesktopFileDataUrl('/home/user/project/a b.txt')).resolves.toBe('data:text/plain;base64,cmVtb3Rl')
     await expect(desktopGitRoot('/home/user/project')).resolves.toBe('/remote')
+    await expect(desktopDefaultCwd()).resolves.toEqual({ cwd: '/backend/project', branch: 'main' })
 
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/list?path=%2Fhome%2Fuser%2Fproject' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-text?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/read-data-url?path=%2Fhome%2Fuser%2Fproject%2Fa%20b.txt' })
     expect(api).toHaveBeenCalledWith({ path: '/api/fs/git-root?path=%2Fhome%2Fuser%2Fproject' })
+    expect(api).toHaveBeenCalledWith({ path: '/api/fs/default-cwd' })
     expect(readDir).not.toHaveBeenCalled()
     expect(readFileText).not.toHaveBeenCalled()
     expect(readFileDataUrl).not.toHaveBeenCalled()

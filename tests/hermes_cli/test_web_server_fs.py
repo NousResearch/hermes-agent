@@ -148,6 +148,32 @@ def test_fs_git_root_returns_null_outside_repo(client, tmp_path):
     assert response.json() == {"root": None}
 
 
+def test_fs_default_cwd_prefers_existing_terminal_cwd(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(web_server, "load_config", lambda: {"terminal": {"cwd": str(tmp_path)}})
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path / "env"))
+    monkeypatch.setattr(web_server.Path, "cwd", lambda: tmp_path / "process")
+    monkeypatch.setattr(web_server, "_fs_git_branch", lambda cwd: "main")
+
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.status_code == 200
+    assert response.json() == {"cwd": str(tmp_path), "branch": "main"}
+
+
+def test_fs_default_cwd_falls_back_when_terminal_cwd_is_invalid(client, tmp_path, monkeypatch):
+    fallback = tmp_path / "backend"
+    fallback.mkdir()
+    monkeypatch.setattr(web_server, "load_config", lambda: {"terminal": {"cwd": "/client/missing"}})
+    monkeypatch.setenv("TERMINAL_CWD", "/client/missing")
+    monkeypatch.setattr(web_server.Path, "cwd", lambda: fallback)
+    monkeypatch.setattr(web_server, "_fs_git_branch", lambda cwd: "")
+
+    response = client.get("/api/fs/default-cwd")
+
+    assert response.status_code == 200
+    assert response.json() == {"cwd": str(fallback), "branch": ""}
+
+
 def test_fs_endpoints_require_auth(tmp_path):
     client = TestClient(web_server.app)
     target = tmp_path / "secret.txt"
@@ -155,6 +181,8 @@ def test_fs_endpoints_require_auth(tmp_path):
 
     list_response = client.get("/api/fs/list", params={"path": str(tmp_path)})
     read_response = client.get("/api/fs/read-text", params={"path": str(target)})
+    default_response = client.get("/api/fs/default-cwd")
 
     assert list_response.status_code == 401
     assert read_response.status_code == 401
+    assert default_response.status_code == 401

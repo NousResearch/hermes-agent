@@ -29,6 +29,7 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { buildSocketProxyOptions } from './proxy.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -196,6 +197,7 @@ async function startSocket() {
       // This is enough for Baileys to complete the retry handshake.
       return { conversation: '' };
     },
+    ...buildSocketProxyOptions(),
   });
 
   sock.ev.on('creds.update', () => { saveCreds(); lidToPhone = buildLidMap(); });

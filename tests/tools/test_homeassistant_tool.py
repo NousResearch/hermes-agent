@@ -13,10 +13,12 @@ from tools.homeassistant_tool import (
     _check_ha_available,
     _filter_and_summarize,
     _build_service_payload,
+    _build_service_url,
     _parse_service_response,
     _get_headers,
     _handle_get_state,
     _handle_call_service,
+    _handle_get_todo_items,
     _BLOCKED_DOMAINS,
     _ENTITY_ID_RE,
     _SERVICE_NAME_RE,
@@ -36,6 +38,13 @@ SAMPLE_STATES = [
     {"entity_id": "binary_sensor.motion", "state": "off", "attributes": {"friendly_name": "Hallway Motion"}},
     {"entity_id": "sensor.humidity", "state": "55", "attributes": {"friendly_name": "Bedroom Humidity", "area": "bedroom"}},
 ]
+
+
+def _close_mocked_coroutine(mock_run):
+    """Close coroutine created before _run_async is patched to avoid warnings."""
+    coro = mock_run.call_args[0][0]
+    if hasattr(coro, "close"):
+        coro.close()
 
 
 # ---------------------------------------------------------------------------
@@ -143,6 +152,18 @@ class TestBuildServicePayload:
         assert payload["entity_id"] == "light.a"
 
 
+class TestBuildServiceUrl:
+    def test_service_url_without_return_response(self):
+        url = _build_service_url("https://ha.example", "light", "turn_on")
+        assert url == "https://ha.example/api/services/light/turn_on"
+
+    def test_service_url_with_return_response(self):
+        url = _build_service_url(
+            "https://ha.example", "todo", "get_items", return_response=True
+        )
+        assert url == "https://ha.example/api/services/todo/get_items?return_response"
+
+
 # ---------------------------------------------------------------------------
 # Service response parsing
 # ---------------------------------------------------------------------------
@@ -179,6 +200,31 @@ class TestParseServiceResponse:
     def test_service_name_format(self):
         result = _parse_service_response("climate", "set_temperature", [])
         assert result["service"] == "climate.set_temperature"
+
+    def test_return_response_preserves_dict_response(self):
+        ha_response = {
+            "todo.tawnberry": {
+                "items": [
+                    {"summary": "Milk", "status": "needs_action"},
+                    {"summary": "Eggs", "status": "needs_action"},
+                ]
+            }
+        }
+        result = _parse_service_response(
+            "todo", "get_items", ha_response, return_response=True
+        )
+        assert result["success"] is True
+        assert result["service"] == "todo.get_items"
+        assert result["affected_entities"] == []
+        assert result["response"] == ha_response
+
+    def test_non_return_response_keeps_existing_dict_behavior(self):
+        result = _parse_service_response(
+            "script", "run", {"result": "ok"}, return_response=False
+        )
+        assert result["success"] is True
+        assert result["affected_entities"] == []
+        assert "response" not in result
 
 
 # ---------------------------------------------------------------------------
@@ -322,8 +368,9 @@ class TestCallServiceStringData:
             "entity_id": "climate.living_room",
             "data": '{"hvac_mode": "heat"}',
         })
-        call_args = mock_run.call_args[0][0]  # the coroutine arg
         # _run_async was called, meaning we got past validation
+        mock_run.assert_called_once()
+        _close_mocked_coroutine(mock_run)
 
     @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
     def test_dict_data_passthrough(self, mock_run):
@@ -335,6 +382,7 @@ class TestCallServiceStringData:
             "data": {"brightness": 255},
         })
         mock_run.assert_called_once()
+        _close_mocked_coroutine(mock_run)
 
     def test_invalid_json_string_returns_error(self):
         """Malformed JSON string in data returns a clear error."""
@@ -357,6 +405,84 @@ class TestCallServiceStringData:
             "data": "   ",
         })
         mock_run.assert_called_once()
+        _close_mocked_coroutine(mock_run)
+
+    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
+    def test_return_response_boolean_passthrough(self, mock_run):
+        """return_response can be supplied as a top-level boolean."""
+        result = json.loads(_handle_call_service({
+            "domain": "todo",
+            "service": "get_items",
+            "entity_id": "todo.tawnberry",
+            "data": '{"status": "needs_action"}',
+            "return_response": True,
+        }))
+        assert result["result"]["success"] is True
+        mock_run.assert_called_once()
+        _close_mocked_coroutine(mock_run)
+
+    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
+    def test_return_response_string_true_passthrough(self, mock_run):
+        """return_response may arrive as a string in XML tool-calling mode."""
+        result = json.loads(_handle_call_service({
+            "domain": "todo",
+            "service": "get_items",
+            "entity_id": "todo.tawnberry",
+            "data": '{"status": "needs_action"}',
+            "return_response": "true",
+        }))
+        assert result["result"]["success"] is True
+        mock_run.assert_called_once()
+        _close_mocked_coroutine(mock_run)
+
+
+class TestGetTodoItemsHandler:
+    def test_missing_entity_id(self):
+        result = json.loads(_handle_get_todo_items({}))
+        assert "error" in result
+        assert "entity_id" in result["error"]
+
+    def test_rejects_invalid_entity_id(self):
+        result = json.loads(_handle_get_todo_items({"entity_id": "../../config"}))
+        assert "error" in result
+        assert "Invalid entity_id" in result["error"]
+
+    def test_rejects_non_todo_entity(self):
+        result = json.loads(_handle_get_todo_items({"entity_id": "sensor.temperature"}))
+        assert "error" in result
+        assert "todo" in result["error"].lower()
+
+    def test_rejects_invalid_status(self):
+        result = json.loads(_handle_get_todo_items({
+            "entity_id": "todo.tawnberry",
+            "status": "unknown",
+        }))
+        assert "error" in result
+        assert "status" in result["error"].lower()
+
+    @patch("tools.homeassistant_tool._run_async", return_value={
+        "success": True,
+        "service": "todo.get_items",
+        "affected_entities": [],
+        "response": {
+            "todo.tawnberry": {
+                "items": [
+                    {"summary": "Milk", "status": "needs_action"},
+                    {"summary": "Hermes test item", "status": "needs_action"},
+                ]
+            }
+        },
+    })
+    def test_get_todo_items_returns_items(self, mock_run):
+        result = json.loads(_handle_get_todo_items({
+            "entity_id": "todo.tawnberry",
+            "status": "needs_action",
+        }))
+        assert result["result"]["entity_id"] == "todo.tawnberry"
+        assert result["result"]["count"] == 2
+        assert result["result"]["items"][0]["summary"] == "Milk"
+        mock_run.assert_called_once()
+        _close_mocked_coroutine(mock_run)
 
 
 # ---------------------------------------------------------------------------
@@ -490,13 +616,21 @@ class TestRegistration:
         names = registry.get_all_tool_names()
         assert "ha_list_entities" in names
         assert "ha_get_state" in names
+        assert "ha_list_services" in names
         assert "ha_call_service" in names
+        assert "ha_get_todo_items" in names
 
     def test_tools_in_homeassistant_toolset(self):
         from tools.registry import registry
 
         toolset_map = registry.get_tool_to_toolset_map()
-        for tool in ("ha_list_entities", "ha_get_state", "ha_call_service"):
+        for tool in (
+            "ha_list_entities",
+            "ha_get_state",
+            "ha_list_services",
+            "ha_call_service",
+            "ha_get_todo_items",
+        ):
             assert toolset_map[tool] == "homeassistant"
 
     def test_check_fn_gates_availability(self, monkeypatch):
@@ -505,7 +639,13 @@ class TestRegistration:
 
         monkeypatch.delenv("HASS_TOKEN", raising=False)
         invalidate_check_fn_cache()
-        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
+        defs = registry.get_definitions({
+            "ha_list_entities",
+            "ha_get_state",
+            "ha_list_services",
+            "ha_call_service",
+            "ha_get_todo_items",
+        })
         assert len(defs) == 0
 
     def test_check_fn_includes_when_token_set(self, monkeypatch):
@@ -514,5 +654,11 @@ class TestRegistration:
 
         monkeypatch.setenv("HASS_TOKEN", "test-token")
         invalidate_check_fn_cache()
-        defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
-        assert len(defs) == 3
+        defs = registry.get_definitions({
+            "ha_list_entities",
+            "ha_get_state",
+            "ha_list_services",
+            "ha_call_service",
+            "ha_get_todo_items",
+        })
+        assert len(defs) == 5

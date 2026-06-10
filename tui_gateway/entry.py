@@ -271,6 +271,21 @@ def main():
         _log_exit("startup write failed (broken stdout pipe before first event)")
         sys.exit(0)
 
+    # Register declarative shell hooks from config.yaml so that pre_tool_call
+    # and other hooks fire in TUI/Desktop sessions, matching CLI and gateway
+    # behaviour.  ``accept_hooks=False`` lets ``register_from_config`` resolve
+    # the effective value from HERMES_ACCEPT_HOOKS / hooks_auto_accept — the
+    # same delegation the gateway uses (gateway/run.py ~L4667).
+    try:
+        from hermes_cli.config import load_config
+        from agent.shell_hooks import register_from_config
+        register_from_config(load_config(), accept_hooks=False)
+    except Exception:
+        logger.debug(
+            "shell-hook registration failed at TUI startup",
+            exc_info=True,
+        )
+
     for raw in sys.stdin:
         line = raw.strip()
         if not line:

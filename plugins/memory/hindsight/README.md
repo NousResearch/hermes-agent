@@ -130,6 +130,37 @@ Available in `hybrid` and `tools` memory modes:
 | `hindsight_recall` | Multi-strategy search (semantic + entity graph) |
 | `hindsight_reflect` | Cross-memory synthesis (LLM-powered) |
 
+## Import historical Hermes sessions
+
+The Hindsight plugin captures Hermes sessions live once it is enabled. To
+backfill sessions that already existed in `~/.hermes/state.db`, run:
+
+```bash
+hermes hindsight import-sessions --dry-run
+hermes hindsight import-sessions --skip-existing --yes
+```
+
+The `hermes hindsight` command is only registered while `memory.provider` is
+set to `hindsight`. The import targets the same bank as live retention: a
+configured `bank_id_template` is resolved with the active profile, and
+templates containing per-session placeholders (`{platform}`, `{user}`,
+`{session}`) require an explicit `--bank-id`. Local embedded mode starts the
+Hindsight daemon on demand; you do not need to keep `127.0.0.1:9177` running
+manually.
+
+Each historical document uses the Hermes `session_id` as its Hindsight
+`document_id` (live retention appends a start timestamp to its document IDs,
+so backfilled and live documents never collide) and is tagged with
+`session:<session_id>` plus `hermes-backfill`. Use `--doc-id-prefix` to
+namespace backfilled documents for later bulk cleanup. `--skip-existing`
+makes reruns safe: it skips documents whose IDs already exist, and fails with
+a clear error if the client cannot list documents.
+
+Sessions captured live since Hindsight was enabled are not detected by
+`--skip-existing` (live documents use different IDs), so a backfill stores
+their content a second time. Pass `--until <date you enabled Hindsight>` to
+avoid duplicating them.
+
 ## Environment Variables
 
 | Variable | Description |

@@ -1118,8 +1118,15 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             result is used for prompt injection. When omitted, the script
             (if any) runs inline as before.
     """
-    prompt = str(job.get("prompt") or "")
+    user_prompt = str(job.get("prompt") or "")
+    prompt = user_prompt
     skills = job.get("skills")
+    # True when runtime-collected DATA (script stdout, upstream-job output)
+    # has been injected into the prompt. Data content legitimately quotes
+    # command-shape strings (a triage feed ingesting a bug report that
+    # pastes `rm -rf /`), so it must not be scanned with the strict
+    # user-prompt pattern set — see _scan_assembled_cron_prompt.
+    has_injected_data = False
 
     # Run data-collection script if configured, inject output as context.
     script_path = job.get("script")
@@ -1137,6 +1144,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                     f"```\n{script_output}\n```\n\n"
                     f"{prompt}"
                 )
+                has_injected_data = True
             else:
                 # Script produced no output — nothing to report, skip AI call.
                 return None
@@ -1147,6 +1155,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 f"```\n{script_output}\n```\n\n"
                 f"{prompt}"
             )
+            has_injected_data = True
 
     # Inject output from referenced cron jobs as context.
     context_from = job.get("context_from")
@@ -1189,6 +1198,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                         f"```\n{latest_output}\n```\n\n"
                         f"{prompt}"
                     )
+                    has_injected_data = True
                 else:
                     continue  # silent skip — empty output
             except (OSError, PermissionError) as e:
@@ -1217,7 +1227,13 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     skill_names = [str(name).strip() for name in skills if str(name).strip()]
     if not skill_names:
-        return _scan_assembled_cron_prompt(prompt, job, has_skills=False)
+        return _scan_assembled_cron_prompt(
+            prompt,
+            job,
+            has_skills=False,
+            has_injected_data=has_injected_data,
+            user_prompt=user_prompt,
+        )
 
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
@@ -1294,7 +1310,14 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     return _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
 
 
-def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool = False) -> str:
+def _scan_assembled_cron_prompt(
+    assembled: str,
+    job: dict,
+    *,
+    has_skills: bool = False,
+    has_injected_data: bool = False,
+    user_prompt: Optional[str] = None,
+) -> str:
     """Scan the fully-assembled cron prompt for injection patterns. Raises
     ``CronPromptInjectionBlocked`` when a match fires so ``run_job`` can
     surface a clear refusal to the operator.
@@ -1305,29 +1328,45 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
     (auto-approves tool calls), a malicious skill carrying an injection
     payload bypassed every gate.
 
-    Two pattern tiers:
+    Two pattern tiers, selected by what the assembled prompt CONTAINS,
+    not just whether skills are attached:
 
-    - When ``has_skills=False`` (no skills attached) the assembled prompt
-      is essentially the user prompt + the cron hint, so the STRICT
-      ``_scan_cron_prompt`` patterns apply.
-    - When ``has_skills=True`` the assembled prompt includes loaded skill
-      markdown — often security docs / runbooks that *describe* attack
-      commands in prose. The LOOSER ``_scan_cron_skill_assembled``
-      pattern set is used: only unambiguous prompt-injection directives
-      block; command-shape patterns are dropped and invisible unicode is
-      sanitized (stripped + logged) rather than blocked, to avoid
-      false-positives that permanently kill a job. Skill bodies are
-      vetted at install time by ``skills_guard.py``.
+    - When the assembled prompt is essentially the user prompt + the cron
+      hint (no skills, no injected data), the STRICT ``_scan_cron_prompt``
+      patterns apply: a bare ``rm -rf /`` in a small directive prompt is a
+      smoking gun, not prose.
+    - When the assembled prompt includes runtime-loaded content — skill
+      markdown (``has_skills=True``) or DATA injected from a job script's
+      stdout / an upstream job's output (``has_injected_data=True``) — the
+      LOOSER ``_scan_cron_skill_assembled`` pattern set is used: only
+      unambiguous prompt-injection directives block; command-shape
+      patterns are dropped and invisible unicode is sanitized (stripped +
+      logged) rather than blocked, to avoid false-positives that
+      permanently kill a job. Skill bodies are vetted at install time by
+      ``skills_guard.py``; script output is produced by operator-authored
+      code, the same trust class — and data feeds (e.g. a triage bot
+      ingesting bug reports) legitimately quote dangerous commands.
+
+    When the looser tier is selected because of injected data only,
+    ``user_prompt`` (the raw, pre-assembly prompt) is additionally scanned
+    with the STRICT set so the user-authored surface keeps the full
+    create/update-time guarantee at runtime (defense-in-depth for legacy
+    jobs that predate the create-time scanner).
     """
     from tools.cronjob_tools import _scan_cron_prompt, _scan_cron_skill_assembled
 
-    if has_skills:
-        # Skill content is install-time vetted by skills_guard.py. Invisible
-        # unicode is sanitized (not blocked) so a stray zero-width space in a
-        # skill code example can't permanently kill the job; the cleaned
+    if has_skills or has_injected_data:
+        # Runtime-loaded content (vetted skill markdown and/or data from
+        # operator-authored scripts) legitimately contains command-shape
+        # strings. Invisible unicode is sanitized (not blocked) so a stray
+        # zero-width space can't permanently kill the job; the cleaned
         # prompt is what actually runs.
         cleaned, scan_error = _scan_cron_skill_assembled(assembled)
         assembled = cleaned
+        if not scan_error and not has_skills and user_prompt:
+            # Data-injection path: keep the strict guarantee on the
+            # user-authored prompt itself.
+            scan_error = _scan_cron_prompt(user_prompt)
     else:
         scan_error = _scan_cron_prompt(assembled)
     if scan_error:

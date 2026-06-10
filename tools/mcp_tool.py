@@ -3911,7 +3911,6 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
         pgids: Dict[int, int] = {pid: _stdio_pgids[pid] for pid in pids if pid in _stdio_pgids}
         for pid in pgids:
             _stdio_pgids.pop(pid, None)
-            _stdio_pgid_starts.pop(pid, None)
 
     # Fast path: no tracked stdio PIDs to reap. Skip the SIGTERM/sleep/SIGKILL
     # dance entirely — otherwise every MCP-free shutdown pays a 2s sleep tax.
@@ -3968,6 +3967,12 @@ def _kill_orphaned_mcp_children(include_active: bool = False) -> None:
             "Force-killed MCP process %d (%s) after SIGTERM timeout",
             pid, server_name,
         )
+
+    # Now that _pgid_valid() has finished consulting _stdio_pgid_starts,
+    # safe to drop the PGID start-time entries.  Deferred from the lock
+    # block above because _pgid_valid reads the dict during signal phase.
+    for pid in pgids:
+        _stdio_pgid_starts.pop(pgids[pid], None)
 
 
 def _stop_mcp_loop():

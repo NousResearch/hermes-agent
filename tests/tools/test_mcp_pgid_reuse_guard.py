@@ -197,7 +197,7 @@ class TestPgidStartsCleanup:
                             mod._kill_orphaned_mcp_children()
 
             assert 100 not in mod._stdio_pgids
-            assert 100 not in mod._stdio_pgid_starts
+            assert 200 not in mod._stdio_pgid_starts
         finally:
             mod._stdio_pgid_starts.clear()
             mod._stdio_pgid_starts.update(old_starts)

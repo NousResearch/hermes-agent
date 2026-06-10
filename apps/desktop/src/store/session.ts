@@ -48,24 +48,29 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
   await syncConfiguredDefaultProjectDir()
   const configured = getConfiguredDefaultProjectDir()
 
+  const seedLiveCwd = (cwd: string) => {
+    if (cwd && !$activeSessionId.get()) {
+      setCurrentCwd(cwd)
+    }
+  }
+
   if (configured) {
     const { cwd } = await sanitize(configured)
-    setCurrentCwd(cwd)
+    seedLiveCwd(cwd)
 
     return
   }
 
   const { cwd } = await sanitize(getRememberedWorkspaceCwd())
-
-  if (cwd) {
-    setCurrentCwd(cwd)
-  }
+  seedLiveCwd(cwd)
 }
 
 export function applyConfiguredDefaultProjectDir(dir: null | string | undefined): void {
   configuredDefaultProjectDir = dir?.trim() || ''
 
-  if (configuredDefaultProjectDir) {
+  // Cache only — new chats read this via workspaceCwdForNewSession(). Do not
+  // rewrite the live workspace (or localStorage) while a session is active.
+  if (configuredDefaultProjectDir && !$activeSessionId.get()) {
     setCurrentCwd(configuredDefaultProjectDir)
   }
 }

@@ -39,6 +39,7 @@ const {
   shouldRemoveAppBundle,
   uninstallArgsForMode
 } = require('./desktop-uninstall.cjs')
+const { isPackagedInstallPath: isPackagedInstallPathUnderRoots } = require('./workspace-cwd.cjs')
 const {
   authModeFromStatus,
   buildGatewayWsUrl,
@@ -1954,41 +1955,14 @@ function resolveRendererIndex() {
 // leaked into a release build) often resolve here — e.g. win-unpacked on
 // Windows — which is exactly where PR #37536 item 16 said we must NOT run.
 function isPackagedInstallPath(dir) {
-  if (!IS_PACKAGED || !dir) {
-    return false
-  }
-
-  let resolved
-
-  try {
-    resolved = path.resolve(String(dir))
-  } catch {
-    return false
-  }
-
-  const installRoots = new Set(
-    [
+  return isPackagedInstallPathUnderRoots(dir, {
+    isPackaged: IS_PACKAGED,
+    installRoots: [
       APP_ROOT,
       path.dirname(process.execPath),
       resolveRemovableAppPath(process.execPath, process.platform, process.env)
     ]
-      .filter(Boolean)
-      .map(candidate => path.resolve(String(candidate)))
-  )
-
-  for (const root of installRoots) {
-    if (resolved === root) {
-      return true
-    }
-
-    const rel = path.relative(root, resolved)
-
-    if (rel && !rel.startsWith('..') && !path.isAbsolute(rel)) {
-      return true
-    }
-  }
-
-  return false
+  })
 }
 
 function resolveHermesCwd() {

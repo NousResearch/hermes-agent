@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.config import PlatformConfig
+from gateway.config import Platform, PlatformConfig
 
 
 # ---------------------------------------------------------------------------
@@ -919,6 +919,7 @@ def _guest_test_adapter(*, guest_mode=True, require_mention=True, allowed_chats=
     )
     adapter = object.__new__(TelegramAdapter)
     adapter.config = config
+    adapter.platform = Platform.TELEGRAM
     adapter._bot = SimpleNamespace(id=999, username="hermes_bot")
     adapter._mention_patterns = adapter._compile_mention_patterns()
     # PR db50af910 added a TELEGRAM_ALLOWED_USERS allowlist gate to

@@ -34,9 +34,38 @@ incident.
 import ast
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+
+
+class _FakeTelegramEnumValue(str):
+    """String-compatible telegram enum value with enum-like repr.
+
+    Several gateway tests assert against ``repr(ParseMode.MARKDOWN_V2)`` to
+    prove production code used the enum constant, not a raw parse-mode string.
+    Test-local telegram mocks used plain strings, so whichever mock imported
+    ``gateway.platforms.telegram`` first could make later tests fail only in a
+    broad-suite order.  This keeps mock values API-compatible with Telegram's
+    string enum values while preserving the enum-style repr those tests pin.
+    """
+
+    _member_name: str
+
+    def __new__(cls, value: str, member_name: str):
+        obj = str.__new__(cls, value)
+        obj._member_name = member_name
+        return obj
+
+    def __repr__(self) -> str:
+        return f"<ParseMode.{self._member_name}: {str.__repr__(self)}>"
+
+
+class _FakeParseMode:
+    MARKDOWN = _FakeTelegramEnumValue("Markdown", "MARKDOWN")
+    MARKDOWN_V2 = _FakeTelegramEnumValue("MarkdownV2", "MARKDOWN_V2")
+    HTML = _FakeTelegramEnumValue("HTML", "HTML")
 
 
 def _ensure_telegram_mock() -> None:
@@ -52,9 +81,8 @@ def _ensure_telegram_mock() -> None:
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)
-    mod.constants.ParseMode.MARKDOWN = "Markdown"
-    mod.constants.ParseMode.MARKDOWN_V2 = "MarkdownV2"
-    mod.constants.ParseMode.HTML = "HTML"
+    mod.constants.ParseMode = _FakeParseMode
+    mod.ParseMode = _FakeParseMode
     mod.constants.ChatType.PRIVATE = "private"
     mod.constants.ChatType.GROUP = "group"
     mod.constants.ChatType.SUPERGROUP = "supergroup"
@@ -81,6 +109,41 @@ def _ensure_telegram_mock() -> None:
     ):
         sys.modules[name] = mod
     sys.modules["telegram.error"] = mod.error
+
+
+def _normalize_telegram_parse_mode_globals() -> None:
+    """Repair leaked telegram mocks before each test.
+
+    Some legacy gateway tests install their own minimal telegram mocks with
+    ``ParseMode.MARKDOWN_V2`` as a raw string and sometimes force-reimport
+    ``gateway.platforms.telegram`` while that mock is active.  Normalize both
+    ``sys.modules`` and the already-imported adapter module so parse-mode tests
+    are independent of collection/execution order.
+    """
+    telegram_mod = sys.modules.get("telegram")
+    constants_mod = sys.modules.get("telegram.constants")
+    for mod in (telegram_mod, constants_mod):
+        if mod is None or hasattr(mod, "__file__"):
+            continue
+        try:
+            setattr(mod, "ParseMode", _FakeParseMode)
+            if hasattr(mod, "constants"):
+                mod.constants.ParseMode = _FakeParseMode
+        except Exception:
+            pass
+
+    adapter_mod = sys.modules.get("gateway.platforms.telegram")
+    if adapter_mod is not None:
+        parse_mode = getattr(adapter_mod, "ParseMode", None)
+        if getattr(parse_mode, "MARKDOWN_V2", None) == "MarkdownV2":
+            setattr(adapter_mod, "ParseMode", _FakeParseMode)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_gateway_optional_dependency_mocks():
+    _normalize_telegram_parse_mode_globals()
+    yield
+    _normalize_telegram_parse_mode_globals()
 
 
 def _ensure_discord_mock() -> None:

@@ -93,6 +93,55 @@ except ImportError:
 
     TrustState = _TrustStateStub  # type: ignore[misc,assignment]
 
+
+def _bind_matrix_type_globals() -> None:
+    """Rebind cached mautrix type globals when a test/runtime installs mautrix late.
+
+    The adapter is intentionally importable without mautrix, so it caches local
+    stubs when the import fails. Gateway tests also patch ``sys.modules`` with
+    lightweight mautrix fakes around individual calls. Rebinding at call time
+    keeps those module globals consistent with the active mautrix module instead
+    of leaking stale/partial values across broad test-suite orderings.
+    """
+    global ContentURI, EventID, EventType, PaginationDirection, PresenceState
+    global RoomCreatePreset, RoomID, SyncToken, TrustState, UserID
+
+    try:
+        from mautrix.types import (  # type: ignore[import-not-found]
+            ContentURI as _ContentURI,
+            EventID as _EventID,
+            EventType as _EventType,
+            PaginationDirection as _PaginationDirection,
+            PresenceState as _PresenceState,
+            RoomCreatePreset as _RoomCreatePreset,
+            RoomID as _RoomID,
+            SyncToken as _SyncToken,
+            TrustState as _TrustState,
+            UserID as _UserID,
+        )
+    except (ImportError, AttributeError):
+        return
+
+    if (
+        not hasattr(_EventType, "ROOM_MESSAGE")
+        or not hasattr(_TrustState, "UNVERIFIED")
+        or not hasattr(_RoomCreatePreset, "PRIVATE")
+        or not hasattr(_PresenceState, "ONLINE")
+    ):
+        return
+
+    ContentURI = _ContentURI
+    EventID = _EventID
+    EventType = _EventType
+    PaginationDirection = _PaginationDirection
+    PresenceState = _PresenceState
+    RoomCreatePreset = _RoomCreatePreset
+    RoomID = _RoomID
+    SyncToken = _SyncToken
+    TrustState = _TrustState
+    UserID = _UserID
+
+
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -711,6 +760,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to the Matrix homeserver and start syncing."""
+        _bind_matrix_type_globals()
         from mautrix.api import HTTPAPI
         from mautrix.client import Client
         from mautrix.client.state_store import MemoryStateStore, MemorySyncStore
@@ -1077,6 +1127,7 @@ class MatrixAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a message to a Matrix room."""
+        _bind_matrix_type_globals()
 
         if not content:
             return SendResult(success=True)
@@ -1191,6 +1242,7 @@ class MatrixAdapter(BasePlatformAdapter):
         self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
     ) -> SendResult:
         """Edit an existing message (via m.replace)."""
+        _bind_matrix_type_globals()
 
         formatted = self.format_message(content)
         new_content = self._build_text_message_content(formatted)
@@ -1406,6 +1458,7 @@ class MatrixAdapter(BasePlatformAdapter):
         is_voice: bool = False,
     ) -> SendResult:
         """Upload bytes to Matrix and send as a media message."""
+        _bind_matrix_type_globals()
 
         upload_data = data
         encrypted_file = None
@@ -2177,6 +2230,7 @@ class MatrixAdapter(BasePlatformAdapter):
         """Send an emoji reaction to a message in a room.
         Returns the reaction event_id on success, None on failure.
         """
+        _bind_matrix_type_globals()
 
         if not self._client:
             return None
@@ -2498,6 +2552,7 @@ class MatrixAdapter(BasePlatformAdapter):
         preset: str = "private_chat",
     ) -> Optional[str]:
         """Create a new Matrix room."""
+        _bind_matrix_type_globals()
         if not self._client:
             return None
         try:
@@ -2542,6 +2597,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def set_presence(self, state: str = "online", status_msg: str = "") -> bool:
         """Set the bot's presence status."""
+        _bind_matrix_type_globals()
         if not self._client:
             return False
         if state not in self._VALID_PRESENCE_STATES:
@@ -2574,6 +2630,7 @@ class MatrixAdapter(BasePlatformAdapter):
         msgtype: str,
     ) -> SendResult:
         """Send a simple message (emote, notice) with optional HTML formatting."""
+        _bind_matrix_type_globals()
         if not self._client or not text:
             return SendResult(success=False, error="No client or empty text")
 

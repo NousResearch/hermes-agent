@@ -10,7 +10,7 @@ import os
 import re
 import stat
 import sys
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -139,6 +139,39 @@ def provider_with_config(tmp_path, monkeypatch):
         p._client = _make_mock_client()
         return p
     return _make
+
+
+@pytest.mark.parametrize("mode", ["cloud", "local_external"])
+def test_http_client_modes_lazy_install_hindsight_client(provider_with_config, monkeypatch, mode):
+    """Cloud/local_external modes need the lazy Hindsight HTTP client too.
+
+    The embedded mode already ensured ``memory.hindsight`` before importing
+    the local runtime, but local_external still imports ``hindsight_client`` to
+    talk to an already-running API server. Without this ensure call, slim
+    installs hit ModuleNotFoundError during retain/recall.
+    """
+    ensure_calls = []
+
+    def fake_ensure(name, prompt=False):
+        ensure_calls.append((name, prompt))
+
+    class FakeHindsight:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+    fake_module = ModuleType("hindsight_client")
+    setattr(fake_module, "Hindsight", FakeHindsight)
+    monkeypatch.setitem(sys.modules, "hindsight_client", fake_module)
+    monkeypatch.setattr("tools.lazy_deps.ensure", fake_ensure)
+
+    provider = provider_with_config(mode=mode, api_url="http://localhost:8888")
+    provider._client = None
+
+    client = provider._get_client()
+
+    assert isinstance(client, FakeHindsight)
+    assert client.kwargs["base_url"] == "http://localhost:8888"
+    assert ensure_calls == [("memory.hindsight", False)]
 
 
 def test_normalize_retain_tags_accepts_csv_and_dedupes():

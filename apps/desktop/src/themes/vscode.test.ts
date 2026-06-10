@@ -110,4 +110,62 @@ describe('convertVscodeColorTheme', () => {
   it('throws when there is no colors map', () => {
     expect(() => convertVscodeColorTheme({ name: 'Empty' })).toThrow(/colors/)
   })
+
+  const fullAnsi = {
+    'terminal.ansiBlack': '#073642',
+    'terminal.ansiRed': '#dc322f',
+    'terminal.ansiGreen': '#859900',
+    'terminal.ansiYellow': '#b58900',
+    'terminal.ansiBlue': '#268bd2',
+    'terminal.ansiMagenta': '#d33682',
+    'terminal.ansiCyan': '#2aa198',
+    'terminal.ansiWhite': '#eee8d5',
+    'terminal.ansiBrightBlack': '#002b36',
+    'terminal.ansiBrightRed': '#cb4b16',
+    'terminal.ansiBrightGreen': '#586e75',
+    'terminal.ansiBrightYellow': '#657b83',
+    'terminal.ansiBrightBlue': '#839496',
+    'terminal.ansiBrightMagenta': '#6c71c4',
+    'terminal.ansiBrightCyan': '#93a1a1',
+    'terminal.ansiBrightWhite': '#fdf6e3'
+  }
+
+  it('lifts the ANSI palette when the full base-8 set is present', () => {
+    const { theme } = convertVscodeColorTheme({
+      name: 'Solarized Dark',
+      type: 'dark',
+      colors: {
+        'editor.background': '#002b36',
+        'editor.foreground': '#93a1a1',
+        'terminal.foreground': '#839496',
+        'terminalCursor.foreground': '#93a1a1',
+        // Alpha selection must survive un-flattened — xterm blends it.
+        'terminal.selectionBackground': '#073642aa',
+        ...fullAnsi
+      }
+    })
+
+    expect(theme.terminal?.red).toBe('#dc322f')
+    expect(theme.terminal?.brightWhite).toBe('#fdf6e3')
+    expect(theme.terminal?.foreground).toBe('#839496')
+    expect(theme.terminal?.cursor).toBe('#93a1a1')
+    expect(theme.terminal?.selectionBackground).toBe('#073642aa')
+    // No background slot — the pane keeps the live surface (transparency).
+    expect('background' in (theme.terminal ?? {})).toBe(false)
+  })
+
+  it('keeps the default palette (no terminal slot) when the ANSI set is partial', () => {
+    const { theme } = convertVscodeColorTheme({
+      name: 'Half',
+      type: 'dark',
+      colors: {
+        'editor.background': '#101010',
+        'editor.foreground': '#fafafa',
+        'terminal.ansiRed': '#ff0000',
+        'terminal.ansiGreen': '#00ff00'
+      }
+    })
+
+    expect(theme.terminal).toBeUndefined()
+  })
 })

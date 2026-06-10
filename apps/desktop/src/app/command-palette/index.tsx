@@ -4,6 +4,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
 import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
 import { KbdGroup } from '@/components/ui/kbd'
@@ -203,7 +204,7 @@ export function CommandPalette() {
   const open = useStore($commandPaletteOpen)
   const bindings = useStore($bindings)
   const navigate = useNavigate()
-  const { availableThemes, setMode, setTheme } = useTheme()
+  const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
 
@@ -536,7 +537,7 @@ export function CommandPalette() {
         groups: []
       }
     }),
-    [availableThemes, setMode, setTheme, t]
+    [availableThemes, resolvedMode, setMode, setTheme, t, themeName]
   )
 
   const activePage = page ? subPages[page] : null
@@ -561,10 +562,15 @@ export function CommandPalette() {
   return (
     <DialogPrimitive.Root onOpenChange={setCommandPaletteOpen} open={open}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[200] bg-black/15 backdrop-blur-[1px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        {/* Transparent overlay: keeps click-away + focus trap, but no dim/blur. */}
+        <DialogPrimitive.Overlay className="fixed inset-0 z-[200]" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          className="fixed left-1/2 top-[14vh] z-[210] w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-lg duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95"
+          className={cn(
+            HUD_POSITION,
+            HUD_SURFACE,
+            'z-[210] w-[min(34rem,calc(100vw-2rem))] overflow-hidden duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95'
+          )}
         >
           <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
           <Command className="bg-transparent" filter={paletteFilter} loop>
@@ -581,6 +587,7 @@ export function CommandPalette() {
               </button>
             )}
             <CommandInput
+              className={HUD_TEXT}
               onKeyDown={event => {
                 if (!activePage) {
                   return
@@ -598,7 +605,7 @@ export function CommandPalette() {
               placeholder={placeholder}
               value={search}
             />
-            <CommandList className="max-h-[min(24rem,60vh)]">
+            <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
               {page === 'install-theme' ? (
                 <MarketplaceThemePage onPickTheme={setTheme} search={search} />
               ) : (
@@ -606,7 +613,7 @@ export function CommandPalette() {
               )}
               {visibleGroups.map((group, index) => (
                 <CommandGroup
-                  className="**:[[cmdk-group-heading]]:uppercase **:[[cmdk-group-heading]]:tracking-wider **:[[cmdk-group-heading]]:text-[0.6875rem] **:[[cmdk-group-heading]]:text-muted-foreground/70"
+                  className={HUD_HEADING}
                   heading={group.heading}
                   key={group.heading ?? `palette-group-${index}`}
                 >
@@ -617,18 +624,18 @@ export function CommandPalette() {
 
                     return (
                       <CommandItem
-                        className="gap-2.5"
+                        className={cn(HUD_ITEM, HUD_TEXT)}
                         key={item.id}
                         keywords={item.keywords}
                         onSelect={() => handleSelect(item)}
                         value={`${item.label} ${item.keywords?.join(' ') ?? ''} ${item.id}`}
                       >
-                        <Icon className="size-4 shrink-0 text-muted-foreground" />
+                        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
                         <span className="truncate">{item.label}</span>
                         {keys && <KbdGroup className="ml-auto" keys={keys} />}
                         {item.to && (
                           <ChevronRight
-                            className={cn('size-4 shrink-0 text-muted-foreground/70', !keys && 'ml-auto')}
+                            className={cn('size-3.5 shrink-0 text-muted-foreground/70', !keys && 'ml-auto')}
                           />
                         )}
                       </CommandItem>

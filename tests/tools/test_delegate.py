@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _sanitize_requested_acp_transport,
 )
 
 
@@ -1352,7 +1353,8 @@ class TestDelegationProviderIntegration(unittest.TestCase):
         }
         parent = _make_mock_parent(depth=0)
 
-        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+        with patch("tools.delegate_tool._command_supports_acp", return_value=True), \
+             patch("tools.delegate_tool._build_child_agent") as mock_build, \
              patch("tools.delegate_tool._run_single_child") as mock_run:
             mock_child = MagicMock()
             mock_build.return_value = mock_child
@@ -1871,18 +1873,26 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 # =========================================================================
 
 class TestDispatchDelegateTask(unittest.TestCase):
-    """Tests for the _dispatch_delegate_task helper and full param forwarding."""
+    """Tests for the _dispatch_delegate_task helper and ACP override hygiene."""
 
-    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_acp_args_forwarded(self, mock_creds, mock_cfg):
         """Both acp_command and acp_args reach delegate_task via the helper."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": None,
+            "provider": None,
+        }
         mock_creds.return_value = {
             "provider": None, "base_url": None,
             "api_key": None, "api_mode": None, "model": None,
         }
         parent = _make_mock_parent(depth=0)
-        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+        parent.acp_command = None
+        parent.acp_args = []
+        with patch("tools.delegate_tool._command_supports_acp", return_value=True), \
+             patch("tools.delegate_tool._build_child_agent") as mock_build:
             mock_child = MagicMock()
             mock_child.run_conversation.return_value = {
                 "final_response": "done", "completed": True,
@@ -1905,8 +1915,49 @@ class TestDispatchDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["override_acp_command"], "claude")
             self.assertEqual(kwargs["override_acp_args"], ["--acp", "--stdio"])
 
+    def test_sanitize_requested_acp_transport_rejects_known_non_acp_cli(self):
+        cmd, args = _sanitize_requested_acp_transport("codex", ["--acp", "--stdio"])
+        self.assertIsNone(cmd)
+        self.assertIsNone(args)
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_non_acp_cli_override_falls_back_to_parent_runtime(self, mock_creds, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": None,
+            "provider": None,
+        }
+        mock_creds.return_value = {
+            "provider": None, "base_url": None,
+            "api_key": None, "api_mode": None, "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.acp_command = None
+        parent.acp_args = []
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="test",
+                acp_command="codex",
+                acp_args=["--acp", "--stdio"],
+                parent_agent=parent,
+            )
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["provider"], parent.provider)
+            self.assertEqual(kwargs["base_url"], parent.base_url)
+            self.assertEqual(kwargs["api_mode"], parent.api_mode)
+            self.assertIsNone(kwargs["acp_command"])
+            self.assertEqual(kwargs["acp_args"], [])
+
 class TestDelegateEventEnum(unittest.TestCase):
-    """Tests for DelegateEvent enum and back-compat aliases."""
+
 
     def test_enum_values_are_strings(self):
         for event in DelegateEvent:

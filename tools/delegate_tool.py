@@ -19,6 +19,8 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import shutil
+import subprocess
 
 logger = logging.getLogger(__name__)
 import os
@@ -135,6 +137,16 @@ MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected u
 # stays as the default fallback and is still the symbol tests import.
 _MIN_SPAWN_DEPTH = 1
 _MAX_SPAWN_DEPTH_CAP = 3
+_KNOWN_NON_ACP_CLI_BASENAMES = frozenset(
+    {
+        "codex",
+        "codex-ce",
+        "cce",
+        "claude",
+        "claude-code",
+        "ecc",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -865,6 +877,69 @@ def _build_child_progress_callback(
 
     _callback._flush = _flush
     return _callback
+
+
+_ACP_COMPATIBILITY_CACHE: dict[str, bool] = {}
+
+
+def _command_supports_acp(command: str) -> bool:
+    """Best-effort check whether a CLI exposes ACP stdio flags."""
+    cmd = str(command or "").strip()
+    if not cmd:
+        return False
+    resolved = shutil.which(cmd) or cmd
+    cache_key = os.path.abspath(resolved) if os.path.sep in resolved else resolved
+    cached = _ACP_COMPATIBILITY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    base = os.path.basename(resolved).lower()
+    if base in _KNOWN_NON_ACP_CLI_BASENAMES:
+        _ACP_COMPATIBILITY_CACHE[cache_key] = False
+        return False
+
+    try:
+        probe = subprocess.run(
+            [resolved, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        help_text = f"{probe.stdout}\n{probe.stderr}"
+    except Exception as exc:
+        logger.debug("ACP compatibility probe failed for %s: %s", resolved, exc)
+        _ACP_COMPATIBILITY_CACHE[cache_key] = False
+        return False
+
+    supported = "--acp" in help_text and "--stdio" in help_text
+    _ACP_COMPATIBILITY_CACHE[cache_key] = supported
+    return supported
+
+
+def _sanitize_requested_acp_transport(
+    acp_command: Optional[str],
+    acp_args: Optional[List[str]],
+) -> tuple[Optional[str], Optional[List[str]]]:
+    """Drop unsupported ACP overrides so delegation falls back safely.
+
+    Models sometimes guess local CLIs like ``codex`` or ``cce`` as ACP
+    transports. Those binaries do not speak ACP stdio, so passing them through
+    makes child startup crash immediately. Returning ``(None, None)`` lets the
+    child inherit the normal provider/runtime instead.
+    """
+    cmd = str(acp_command or "").strip()
+    if not cmd:
+        return None, acp_args
+    if _command_supports_acp(cmd):
+        return cmd, list(acp_args) if acp_args is not None else None
+
+    logger.warning(
+        "Ignoring unsupported delegate ACP override '%s' — CLI does not advertise "
+        "--acp/--stdio support. Falling back to inherited provider/runtime.",
+        cmd,
+    )
+    return None, None
 
 
 def _build_child_agent(
@@ -2055,6 +2130,16 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
+            requested_acp_command = t.get("acp_command") or acp_command or creds.get("command")
+            requested_acp_args = (
+                task_acp_args
+                if task_acp_args is not None
+                else (acp_args if acp_args is not None else creds.get("args"))
+            )
+            sanitized_acp_command, sanitized_acp_args = _sanitize_requested_acp_transport(
+                requested_acp_command,
+                requested_acp_args,
+            )
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
@@ -2071,14 +2156,8 @@ def delegate_task(
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
-                override_acp_command=t.get("acp_command")
-                or acp_command
-                or creds.get("command"),
-                override_acp_args=(
-                    task_acp_args
-                    if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
-                ),
+                override_acp_command=sanitized_acp_command,
+                override_acp_args=sanitized_acp_args,
                 role=effective_role,
             )
             # Override with correct parent tool names (before child construction mutated global)

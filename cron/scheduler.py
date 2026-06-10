@@ -769,7 +769,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
 
                 if adapter_ok:
-                    logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
+                    logger.info(
+                        "Job '%s': delivered to %s:%s via live adapter%s",
+                        job["id"],
+                        platform_name,
+                        chat_id,
+                        f" thread_id={thread_id}" if thread_id else "",
+                    )
+                    _mirror_no_agent_delivery(job, platform_name, chat_id, thread_id, text_to_send)
                     delivered = True
             except Exception as e:
                 logger.warning(
@@ -803,11 +810,70 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.append(msg)
                 continue
 
-            logger.info("Job '%s': delivered to %s:%s", job["id"], platform_name, chat_id)
+            logger.info(
+                "Job '%s': delivered to %s:%s%s",
+                job["id"],
+                platform_name,
+                chat_id,
+                f" thread_id={thread_id}" if thread_id else "",
+            )
+            _mirror_no_agent_delivery(job, platform_name, chat_id, thread_id, cleaned_delivery_content.strip())
 
     if delivery_errors:
         return "; ".join(delivery_errors)
     return None
+
+
+def _mirror_no_agent_delivery(
+    job: dict,
+    platform_name: str,
+    chat_id: str,
+    thread_id: str | None,
+    message_text: str,
+) -> None:
+    """Mirror script-only cron deliveries into the target session transcript.
+
+    ``run_job()`` already persists assistant output for LLM-driven cron jobs.
+    ``no_agent`` script jobs can deliver successfully without leaving anything in
+    the session DB, which makes later ``session_search`` continuity checks look
+    like the report never happened. Mirror only no-agent deliveries and keep the
+    side-channel best-effort.
+    """
+    if not job.get("no_agent"):
+        return
+    text = str(message_text or "").strip()
+    if not text:
+        return
+    try:
+        from gateway.mirror import mirror_to_session
+
+        origin = _resolve_origin(job) or {}
+        user_id = origin.get("user_id")
+        mirrored = mirror_to_session(
+            platform_name,
+            chat_id,
+            text,
+            source_label="cron",
+            thread_id=thread_id,
+            user_id=str(user_id) if user_id is not None else None,
+        )
+        if mirrored:
+            logger.debug(
+                "Job '%s': mirrored no_agent delivery into session (%s:%s%s)",
+                job.get("id", "?"),
+                platform_name,
+                chat_id,
+                f" thread_id={thread_id}" if thread_id else "",
+            )
+    except Exception as exc:
+        logger.debug(
+            "Job '%s': failed to mirror no_agent delivery for %s:%s%s: %s",
+            job.get("id", "?"),
+            platform_name,
+            chat_id,
+            f" thread_id={thread_id}" if thread_id else "",
+            exc,
+        )
 
 
 _DEFAULT_SCRIPT_TIMEOUT = 120  # seconds

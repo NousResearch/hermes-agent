@@ -836,6 +836,42 @@ class TestDeliverResultWrapping:
         send_mock.assert_called_once()
         assert send_mock.call_args.kwargs["thread_id"] == "17585"
 
+    def test_no_agent_origin_delivery_mirrors_into_target_session(self):
+        """Script-only cron deliveries should be mirrored for later session_search continuity."""
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+
+        job = {
+            "id": "watcher-job",
+            "name": "liv-issue-done-watch",
+            "deliver": "origin",
+            "no_agent": True,
+            "origin": {
+                "platform": "telegram",
+                "chat_id": "-1001",
+                "thread_id": "17585",
+            },
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            _deliver_result(job, "hello")
+
+        mirror_mock.assert_called_once_with(
+            "telegram",
+            "-1001",
+            "hello",
+            source_label="cron",
+            thread_id="17585",
+            user_id=None,
+        )
+
 
 class TestDeliverResultErrorReturns:
     """Verify _deliver_result returns error strings on failure, None on success."""

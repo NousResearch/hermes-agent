@@ -329,16 +329,19 @@ def check_alias_collision(name: str) -> Optional[str]:
 
     # Check existing commands in PATH
     wrapper_dir = _get_wrapper_dir()
+    is_windows = sys.platform == "win32"
     try:
         result = subprocess.run(
-            ["which", canon], capture_output=True, text=True, timeout=5,
+            ["where" if is_windows else "which", canon],
+            capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            existing_path = result.stdout.strip()
+            existing_path = result.stdout.strip().splitlines()[0]
             # Allow overwriting our own wrappers
-            if existing_path == str(wrapper_dir / canon):
+            expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
+            if existing_path == str(expected):
                 try:
-                    content = (wrapper_dir / canon).read_text()
+                    content = expected.read_text()
                     if "hermes -p" in content:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
@@ -356,12 +359,18 @@ def _is_wrapper_dir_in_path() -> bool:
     return wrapper_dir in os.environ.get("PATH", "").split(os.pathsep)
 
 
-def create_wrapper_script(name: str) -> Optional[Path]:
+def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[Path]:
     """Create a shell wrapper script at ~/.local/bin/<name>.
 
+    The wrapper file is named after ``name`` (the alias). The profile it
+    activates is ``target`` if given, otherwise ``name`` — this lets a custom
+    alias name point at a differently-named profile without a post-hoc rewrite.
+
+    On Windows, creates a ``.bat`` file instead of a POSIX shell script.
     Returns the path to the created wrapper, or None if creation failed.
     """
     canon = normalize_profile_name(name)
+    profile = normalize_profile_name(target) if target else canon
     wrapper_dir = _get_wrapper_dir()
     try:
         wrapper_dir.mkdir(parents=True, exist_ok=True)
@@ -369,29 +378,92 @@ def create_wrapper_script(name: str) -> Optional[Path]:
         print(f"⚠ Could not create {wrapper_dir}: {e}")
         return None
 
-    wrapper_path = wrapper_dir / canon
-    try:
-        wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {canon} "$@"\n')
-        wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
-        return wrapper_path
-    except OSError as e:
-        print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
-        return None
+    is_windows = sys.platform == "win32"
+    if is_windows:
+        wrapper_path = wrapper_dir / f"{canon}.bat"
+        try:
+            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n")
+            return wrapper_path
+        except OSError as e:
+            print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
+            return None
+    else:
+        wrapper_path = wrapper_dir / canon
+        try:
+            wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {profile} "$@"\n')
+            wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+            return wrapper_path
+        except OSError as e:
+            print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
+            return None
 
 
 def remove_wrapper_script(name: str) -> bool:
     """Remove the wrapper script for a profile. Returns True if removed."""
-    wrapper_path = _get_wrapper_dir() / normalize_profile_name(name)
-    if wrapper_path.exists():
-        try:
-            # Verify it's our wrapper before removing
-            content = wrapper_path.read_text()
-            if "hermes -p" in content:
-                wrapper_path.unlink()
-                return True
-        except Exception:
-            pass
+    wrapper_dir = _get_wrapper_dir()
+    canon = normalize_profile_name(name)
+    is_windows = sys.platform == "win32"
+
+    # Check both the extensionless path (POSIX) and .bat (Windows)
+    candidates = [wrapper_dir / canon]
+    if is_windows:
+        candidates.insert(0, wrapper_dir / f"{canon}.bat")
+
+    for wrapper_path in candidates:
+        if wrapper_path.exists():
+            try:
+                # Verify it's our wrapper before removing
+                content = wrapper_path.read_text()
+                if "hermes -p" in content:
+                    wrapper_path.unlink()
+                    return True
+            except Exception:
+                pass
     return False
+
+
+def find_alias_for_profile(profile_name: str) -> Optional[str]:
+    """Return the alias name of the wrapper that activates *profile_name*, or None.
+
+    A wrapper created by :func:`create_wrapper_script` is a file named after the
+    alias whose body invokes ``hermes -p <profile>``. When the alias name equals
+    the profile name this is trivial, but a custom alias (``hermes profile alias
+    <profile> --name <custom>``) produces a differently-named file — so the
+    display side cannot assume ``wrapper == profile`` and must reverse-look-up.
+
+    A custom alias (name != profile) is preferred over the profile-named wrapper
+    so ``profile list``/``show`` surface the command the user actually typed.
+    Results are sorted for deterministic output when several aliases match.
+    """
+    wrapper_dir = _get_wrapper_dir()
+    if not wrapper_dir.is_dir():
+        return None
+    canon = normalize_profile_name(profile_name)
+    is_windows = sys.platform == "win32"
+    needle = f"hermes -p {canon}"
+
+    custom: Optional[str] = None
+    profile_named: Optional[str] = None
+    for entry in sorted(wrapper_dir.iterdir()):
+        if not entry.is_file():
+            continue
+        # Only our own wrappers are named with the alias and (on Windows) .bat.
+        if is_windows and entry.suffix != ".bat":
+            continue
+        if not is_windows and entry.suffix:
+            continue
+        try:
+            content = entry.read_text()
+        except (OSError, UnicodeDecodeError):
+            continue
+        if needle not in content:
+            continue
+        alias = entry.stem if is_windows else entry.name
+        if alias == canon:
+            profile_named = alias
+        elif custom is None:
+            custom = alias
+    return custom if custom is not None else profile_named
 
 
 # ---------------------------------------------------------------------------
@@ -410,6 +482,10 @@ class ProfileInfo:
     has_env: bool = False
     skill_count: int = 0
     alias_path: Optional[Path] = None
+    # Custom alias name (the wrapper file name) when it differs from ``name``;
+    # falls back to ``name`` when a profile-named wrapper exists. None if no
+    # wrapper points at this profile. See ``find_alias_for_profile``.
+    alias_name: Optional[str] = None
     # Distribution metadata (None if the profile wasn't installed from a distribution).
     distribution_name: Optional[str] = None
     distribution_version: Optional[str] = None
@@ -607,10 +683,17 @@ def list_profiles() -> List[ProfileInfo]:
             if not entry.is_dir():
                 continue
             name = entry.name
+            if name == "default":
+                continue  # already added as the built-in default above
             if not _PROFILE_ID_RE.match(name):
                 continue
             model, provider = _read_config_model(entry)
-            alias_path = wrapper_dir / name
+            alias_name = find_alias_for_profile(name)
+            if alias_name:
+                is_windows = sys.platform == "win32"
+                alias_path = wrapper_dir / (f"{alias_name}.bat" if is_windows else alias_name)
+            else:
+                alias_path = None
             dist_name, dist_version, dist_source = _read_distribution_meta(entry)
             meta = read_profile_meta(entry)
             profiles.append(ProfileInfo(
@@ -622,7 +705,8 @@ def list_profiles() -> List[ProfileInfo]:
                 provider=provider,
                 has_env=(entry / ".env").exists(),
                 skill_count=_count_skills(entry),
-                alias_path=alias_path if alias_path.exists() else None,
+                alias_path=alias_path if (alias_path and alias_path.exists()) else None,
+                alias_name=alias_name,
                 distribution_name=dist_name,
                 distribution_version=dist_version,
                 distribution_source=dist_source,
@@ -926,6 +1010,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print(f"✓ Removed {wrapper_path}")
 
     # 4. Remove profile directory
+    remove_error: Exception | None = None
     try:
         def _make_writable(func, path, exc):
             """onexc/onerror handler: add +w on PermissionError so rmtree can proceed.
@@ -940,7 +1025,6 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             ``sys.exc_info()`` tuple).
             """
             import stat as _stat
-            import sys as _sys
 
             # Normalise the two callback signatures:
             #   onexc(func, path, exc_instance)   — 3.12+
@@ -973,6 +1057,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
+        remove_error = e
 
     # 5. Clear active_profile if it pointed to this profile
     try:
@@ -982,6 +1067,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print("✓ Active profile reset to default")
     except Exception:
         pass
+
+    if remove_error is not None:
+        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
 
     print(f"\nProfile '{canon}' deleted.")
     return profile_dir
@@ -1444,8 +1532,9 @@ def import_profile(archive_path: str, name: Optional[str] = None) -> Path:
 
 def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) -> None:
     """Rename Honcho host blocks for a renamed profile without changing peers."""
-    old_host = f"hermes.{old_name}"
-    new_host = f"hermes.{new_name}"
+    old_host = f"hermes_{old_name}"
+    legacy_old_host = f"hermes.{old_name}"
+    new_host = f"hermes_{new_name}"
 
     candidates = [
         new_dir / "honcho.json",
@@ -1469,18 +1558,24 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
             continue
 
         hosts = raw.get("hosts")
-        if not isinstance(hosts, dict) or old_host not in hosts:
+        if not isinstance(hosts, dict):
+            continue
+        source_host = old_host if old_host in hosts else legacy_old_host
+        if source_host not in hosts:
             continue
 
         if new_host in hosts:
             print(f"⚠ Honcho host block not migrated: {new_host} already exists in {path}")
             continue
 
-        block = hosts[old_host]
+        block = hosts[source_host]
         if isinstance(block, dict) and "aiPeer" not in block:
-            bare = old_host.split(".", 1)[1] if "." in old_host else old_host
+            if source_host.startswith("hermes_"):
+                bare = source_host.split("_", 1)[1]
+            else:
+                bare = source_host.split(".", 1)[1] if "." in source_host else source_host
             block["aiPeer"] = bare
-        hosts[new_host] = hosts.pop(old_host)
+        hosts[new_host] = hosts.pop(source_host)
         tmp = path.with_suffix(path.suffix + ".tmp")
         try:
             tmp.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -1492,7 +1587,7 @@ def _migrate_honcho_profile_host(old_name: str, new_name: str, new_dir: Path) ->
                 pass
             continue
 
-        print(f"✓ Honcho host updated: {old_host} → {new_host}")
+        print(f"✓ Honcho host updated: {source_host} → {new_host}")
 
 
 def rename_profile(old_name: str, new_name: str) -> Path:

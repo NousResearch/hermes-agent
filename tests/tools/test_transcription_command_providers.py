@@ -19,15 +19,11 @@ identically on Linux, macOS, and Windows (with minor quoting differences).
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
-import tempfile
 import wave
 from pathlib import Path
-from typing import Optional
 from unittest.mock import patch
 
-import pytest
 
 from tools.transcription_tools import (
     BUILTIN_STT_PROVIDERS,
@@ -39,12 +35,9 @@ from tools.transcription_tools import (
     _get_command_stt_timeout,
     _get_named_stt_provider_config,
     _has_any_command_stt_provider,
-    _is_command_stt_provider_config,
     _iter_command_stt_providers,
-    _quote_command_stt_placeholder,
     _render_command_stt_template,
     _resolve_command_stt_provider_config,
-    _shell_quote_context_stt,
     _transcribe_command_stt,
     transcribe_audio,
 )

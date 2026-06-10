@@ -43,7 +43,7 @@ plugins/web/my-backend/
 
 ## The WebSearchProvider ABC
 
-Subclass `agent.web_search_provider.WebSearchProvider`. The only required members are `name`, `is_available()`, and whichever of `search()` / `extract()` / `crawl()` you implement.
+Subclass `agent.web_search_provider.WebSearchProvider`. The only required members are `name`, `is_available()`, and whichever of `search()` / `extract()` you implement. (Deep crawling is not a separate method — it's a mode of `extract()`.)
 
 ```python
 # plugins/web/my-backend/provider.py
@@ -78,9 +78,6 @@ class MyBackendWebSearchProvider(WebSearchProvider):
         return True
 
     def supports_extract(self) -> bool:
-        return False
-
-    def supports_crawl(self) -> bool:
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
@@ -157,12 +154,10 @@ Full contract in `agent/web_search_provider.py`. Methods you may override:
 | `is_available()` | ✅ | — | Cheap availability gate — env vars, optional deps |
 | `supports_search()` | — | `True` | Capability flag for `web_search` routing |
 | `supports_extract()` | — | `False` | Capability flag for `web_extract` routing |
-| `supports_crawl()` | — | `False` | Capability flag for deep-crawl modes |
 | `search(query, limit)` | conditional | raises | Required when `supports_search()` returns `True` |
 | `extract(urls, **kwargs)` | conditional | raises | Required when `supports_extract()` returns `True` |
-| `crawl(url, **kwargs)` | conditional | raises | Required when `supports_crawl()` returns `True` |
 
-Providers can advertise multiple capabilities from a single class — Firecrawl, Tavily, Exa, and Parallel all implement all three of search/extract/crawl. Brave Search and DDGS are search-only; SearXNG is search-only with a documented "pair me with an extract provider" workflow.
+Providers can advertise multiple capabilities from a single class — Firecrawl, Tavily, Exa, and Parallel all implement both search and extract. Brave Search and DDGS are search-only; SearXNG is search-only with a documented "pair me with an extract provider" workflow.
 
 ## Response shape
 
@@ -231,7 +226,7 @@ The `web_search` and `web_extract` tools live in `tools/web_tools.py`. At call t
 1. Read the relevant config key (`web.search_backend` for `web_search`, `web.extract_backend` for `web_extract`)
 2. Ask the registry for the provider with that `name`
 3. Check `is_available()` and the matching `supports_*()` flag
-4. Dispatch to `search()` / `extract()` / `crawl()`, awaiting if the method is a coroutine
+4. Dispatch to `search()` / `extract()` (deep crawl runs as a mode inside `extract()`), awaiting if the method is a coroutine
 5. JSON-serialize the response envelope and hand it back to the LLM
 
 Errors surface as the tool result; the LLM decides how to explain them. If no provider is registered (or every available one fails the capability gate), the tool returns a helpful error pointing at `hermes tools`.

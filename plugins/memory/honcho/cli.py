@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
-from plugins.memory.honcho.client import resolve_active_host, resolve_config_path, HOST
+from plugins.memory.honcho.client import _host_block, profile_host_key, resolve_active_host, resolve_config_path, HOST
 from hermes_cli.config import cfg_get
 
 
@@ -36,7 +36,7 @@ def clone_honcho_for_profile(profile_name: str) -> bool:
     if not default_block and not has_key:
         return False
 
-    new_host = f"{HOST}.{profile_name}"
+    new_host = profile_host_key(profile_name)
     if new_host in hosts:
         return False  # already exists
 
@@ -192,7 +192,7 @@ def cmd_sync(args) -> None:
         if p.name == "default":
             continue
         if clone_honcho_for_profile(p.name):
-            print(f"  + {p.name} -> hermes.{p.name}")
+            print(f"  + {p.name} -> {profile_host_key(p.name)}")
             created += 1
         else:
             skipped += 1
@@ -243,7 +243,7 @@ def _host_key() -> str:
     if _profile_override:
         if _profile_override in {"default", "custom"}:
             return HOST
-        return f"{HOST}.{_profile_override}"
+        return profile_host_key(_profile_override)
     return resolve_active_host()
 
 
@@ -275,10 +275,8 @@ def _read_config() -> dict:
 def _write_config(cfg: dict, path: Path | None = None) -> None:
     path = path or _local_config_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(cfg, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    from utils import atomic_json_write
+    atomic_json_write(path, cfg, mode=0o600)
 
 
 def _resolve_api_key(cfg: dict) -> str:
@@ -292,7 +290,7 @@ def _resolve_api_key(cfg: dict) -> str:
     config shapes, e.g. ``localhost:8000``) still pass — the Honcho SDK
     will reject them itself with a clearer error than ours.
     """
-    host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
+    host_key = _host_block(cfg, _host_key()).get("apiKey")
     key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
     if not key:
         base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
@@ -418,6 +416,7 @@ def _ensure_sdk_installed() -> bool:
         [sys.executable, "-m", "pip", "install", "honcho-ai>=2.0.1"],
         capture_output=True,
         text=True,
+        stdin=subprocess.DEVNULL,
     )
     if result.returncode == 0:
         print("  Installed.\n")
@@ -462,21 +461,58 @@ def cmd_setup(args) -> None:
     cfg.pop("base_url", None)
 
     if is_local:
-        # --- Local: ask for base URL, skip or clear API key ---
+        # --- Local: ask for base URL, optionally accept a JWT for auth ---
         current_url = cfg.get("baseUrl") or ""
         new_url = _prompt("Base URL", default=current_url or "http://localhost:8000")
         if new_url:
             cfg["baseUrl"] = new_url
 
-        # For local no-auth, the SDK must not send an API key.
-        # We keep the key in config (for cloud switching later) but
-        # the client should skip auth when baseUrl is local.
-        current_key = cfg.get("apiKey", "")
-        if current_key:
-            print(f"\n  API key present in config (kept for cloud/hybrid use).")
-            print("  Local connections will skip auth automatically.")
+        # Self-hosted Honcho can run with AUTH_USE_AUTH=true and an
+        # AUTH_JWT_SECRET on the server side. In that case clients must
+        # send a JWT signed with that secret as the bearer token (the
+        # Honcho SDK takes it via ``api_key=``). Cloud users got prompted
+        # for a key already; the local path historically skipped this and
+        # forced users to disable auth on the server. Offer the prompt
+        # here too. We store it under the host block (not the top-level
+        # apiKey) so ``get_honcho_client`` recognises it as an explicit
+        # local auth opt-in (see ``_host_has_key`` in client.py) and
+        # cloud/hybrid switching is unaffected.
+        current_host_key = hermes_host.get("apiKey", "")
+        masked = (
+            f"...{current_host_key[-8:]}"
+            if len(current_host_key) > 8
+            else ("set" if current_host_key else "not set")
+        )
+        print(
+            "\n  Local Honcho auth (JWT signed with the server's "
+            "AUTH_JWT_SECRET)."
+        )
+        print(
+            "  Leave blank if your server runs with AUTH_USE_AUTH=false. "
+            f"Current: {masked}"
+        )
+        new_local_key = _prompt(
+            "Local JWT / bearer token (blank to skip / keep current)",
+            secret=True,
+        )
+        if new_local_key:
+            hermes_host["apiKey"] = new_local_key
+        elif current_host_key:
+            print("  Keeping existing local JWT.")
         else:
-            print("\n  No API key set. Local no-auth ready.")
+            # Surface the top-level key situation for transparency.
+            top_key = cfg.get("apiKey", "")
+            if top_key:
+                print(
+                    "\n  Top-level API key present in config (kept for "
+                    "cloud/hybrid use)."
+                )
+                print(
+                    "  Local connections will skip auth automatically "
+                    "until a local JWT is set above."
+                )
+            else:
+                print("\n  No local JWT set. Local no-auth ready.")
     else:
         # --- Cloud: set default base URL, require API key ---
         cfg.pop("baseUrl", None)  # cloud uses SDK default
@@ -843,9 +879,21 @@ def cmd_status(args) -> None:
     write_path = _local_config_path()
 
     if not cfg:
-        print(f"  No Honcho config found at {active_path}")
-        print("  Run 'hermes honcho setup' to configure.\n")
-        return
+        # Config file missing — try env var fallback before giving up.
+        try:
+            from plugins.memory.honcho.client import HonchoClientConfig
+            _env_cfg = HonchoClientConfig.from_global_config(host=_host_key())
+            if _env_cfg.api_key or _env_cfg.base_url:
+                # Env var fallback worked — use that config instead.
+                cfg = {"apiKey": _env_cfg.api_key, "enabled": _env_cfg.enabled}
+            else:
+                print(f"  No Honcho config found at {active_path}")
+                print("  Run 'hermes honcho setup' to configure.\n")
+                return
+        except Exception:
+            print(f"  No Honcho config found at {active_path}")
+            print("  Run 'hermes honcho setup' to configure.\n")
+            return
 
     try:
         from plugins.memory.honcho.client import HonchoClientConfig, get_honcho_client

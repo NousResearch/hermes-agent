@@ -15,7 +15,7 @@ Download the latest release from the [simplex-chat GitHub releases](https://gith
 
 ```bash
 # Linux / macOS binary
-curl -L https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex-chat-ubuntu-22_04-x86-64 -o simplex-chat
+curl -L https://github.com/simplex-chat/simplex-chat/releases/latest/download/simplex-chat-ubuntu-22_04-x86_64 -o simplex-chat
 chmod +x simplex-chat
 ```
 
@@ -34,7 +34,7 @@ The daemon listens on WebSocket at `ws://127.0.0.1:5225` by default.
 ### Via setup wizard
 
 ```bash
-hermes setup gateway
+hermes gateway setup
 ```
 
 Select **SimpleX Chat** and follow the prompts.
@@ -52,21 +52,55 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 | Variable | Required | Description |
 |---|---|---|
 | `SIMPLEX_WS_URL` | Yes | WebSocket URL of the simplex-chat daemon |
-| `SIMPLEX_ALLOWED_USERS` | Recommended | Comma-separated contact IDs allowed to use the agent |
+| `SIMPLEX_ALLOWED_USERS` | Recommended | Comma-separated allowlist. Each entry can be a numeric `contactId` **or** a display name — both forms work. |
 | `SIMPLEX_ALLOW_ALL_USERS` | Optional | Set `true` to allow every contact (use carefully) |
-| `SIMPLEX_HOME_CHANNEL` | Optional | Default contact ID for cron job delivery |
+| `SIMPLEX_AUTO_ACCEPT` | Optional | Auto-accept incoming contact requests (default: `true`) |
+| `SIMPLEX_GROUP_ALLOWED` | Optional | Comma-separated group IDs the bot participates in, or `*` for any group. Omit to ignore group messages entirely |
+| `SIMPLEX_HOME_CHANNEL` | Optional | Default contact/group ID for cron job delivery |
 | `SIMPLEX_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
+| `HERMES_SIMPLEX_TEXT_BATCH_DELAY` | Optional | Quiet-period seconds (default: `0.8`) used to concatenate rapid-fire inbound text messages into one event |
 
-## Find your contact ID
+## Find your contact ID or display name
 
-After starting the daemon, open a conversation with your agent contact. The contact ID will appear in session logs or via `hermes send_message action=list`.
+After starting the daemon, open a conversation with your agent contact. The numeric `contactId` appears in session logs or via `hermes send_message action=list`. If you'd rather use the display name shown in the SimpleX UI, that works too — `SIMPLEX_ALLOWED_USERS` accepts either form.
 
 ## Authorization
 
 By default **all contacts are denied**. You must either:
 
-1. Set `SIMPLEX_ALLOWED_USERS` to a comma-separated list of contact IDs, or
-2. Use **DM pairing** — send any message to the bot and it will reply with a pairing code. Enter that code via `hermes gateway pair`.
+1. Set `SIMPLEX_ALLOWED_USERS` to a comma-separated list of `contactId`s and/or display names (e.g. `SIMPLEX_ALLOWED_USERS=4,alice` matches either contactId 4 or the contact whose display name is "alice"), or
+2. Use **DM pairing** — send any message to the bot and it will reply with a pairing code. Enter that code via `hermes pairing approve simplex <CODE>`.
+
+## Group chats
+
+By default the adapter ignores group messages — a bot in a group otherwise
+processes every member's traffic. Opt-in explicitly:
+
+```
+SIMPLEX_GROUP_ALLOWED=12,34          # specific group IDs
+# or
+SIMPLEX_GROUP_ALLOWED=*              # any group the bot is in
+```
+
+Address groups by prefixing the chat ID with `group:`, e.g.
+`simplex:group:12` in `send_message` or as a cron `deliver=` target.
+
+## Attachments
+
+The adapter supports native SimpleX attachments in both directions:
+
+- **Inbound** — incoming images, voice notes, and files are accepted via
+  the daemon's XFTP flow (`rcvFileDescrReady` → `/freceive` → wait for
+  `rcvFileComplete`) and surfaced as `MessageEvent.media_urls` with the
+  appropriate `MessageType` (`PHOTO`, `VOICE`, `TEXT` + document).
+- **Outbound** — `send_image_file`, `send_voice`, `send_document`, and
+  `send_video` all use the structured `/_send` form with `filePath`, so
+  the receiving SimpleX client renders images inline and plays voice
+  notes inline rather than offering them as downloads.
+
+Agent replies can also embed `MEDIA:/path/to/file` tags in plain text —
+the adapter strips the tag from the body and sends the file as either a
+voice note (audio extensions) or a document.
 
 ## Using SimpleX with cron jobs
 

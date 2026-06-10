@@ -126,7 +126,6 @@ from gateway.platforms.qqbot.chunked_upload import (
 )
 from gateway.platforms.qqbot.keyboards import (
     ApprovalRequest,
-    ApprovalSender,
     InlineKeyboard,
     InteractionEvent,
     build_approval_keyboard,
@@ -269,6 +268,11 @@ class QQAdapter(BasePlatformAdapter):
     @property
     def name(self) -> str:
         return "QQBot"
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """QQBot gates DM/group access at intake via dm_policy/group_policy."""
+        return True
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -677,6 +681,12 @@ class QQAdapter(BasePlatformAdapter):
         """Read WebSocket frames until connection closes."""
         if not self._ws:
             raise RuntimeError("WebSocket not connected")
+        if self._ws.closed:
+            # A closed-but-non-None ws makes the while-condition false on entry,
+            # so this would return normally — which _listen_loop treats as a
+            # clean read and immediately retries with backoff reset to 0,
+            # producing a 100% CPU spin. Raise so the reconnect/backoff path runs.
+            raise RuntimeError("WebSocket closed")
 
         while self._running and self._ws and not self._ws.closed:
             msg = await self._ws.receive()

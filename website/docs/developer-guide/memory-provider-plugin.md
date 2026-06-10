@@ -154,10 +154,10 @@ hooks:
 **`sync_turn()` MUST be non-blocking.** If your backend has latency (API calls, LLM processing), run the work in a daemon thread:
 
 ```python
-def sync_turn(self, user_content, assistant_content):
+def sync_turn(self, user_content, assistant_content, *, session_id="", messages=None):
     def _sync():
         try:
-            self._api.ingest(user_content, assistant_content)
+            self._api.ingest(user_content, assistant_content, session_id=session_id, messages=messages)
         except Exception as e:
             logger.warning("Sync failed: %s", e)
 
@@ -166,6 +166,16 @@ def sync_turn(self, user_content, assistant_content):
     self._sync_thread = threading.Thread(target=_sync, daemon=True)
     self._sync_thread.start()
 ```
+
+`messages` is optional OpenAI-style conversation context as of the completed
+turn. When present, it includes user/assistant messages, assistant tool calls,
+and tool result messages. Providers that do not need raw turn context can omit
+the `messages` parameter; Hermes will continue calling them with the legacy
+signature.
+
+Cloud providers should document what parts of `messages` are sent off-device.
+Tool calls and tool results may contain file paths, command output, or other
+workspace data.
 
 ## Profile Isolation
 

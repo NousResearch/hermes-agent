@@ -15,7 +15,6 @@ the ``platform_registry``.
 from __future__ import annotations
 
 import asyncio
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -487,6 +486,22 @@ class TestSend:
         call_headers = mock_client.post.call_args[1]["headers"]
         assert "X-Markdown" not in call_headers
 
+    def test_send_emits_echo_tag_header(self):
+        """Outgoing messages carry the echo-prevention tag so the adapter
+        can recognise and skip its own replies when subscribe topic ==
+        publish topic (the default config that causes the loop)."""
+        adapter = self._make_adapter(topic="hermes-in")
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "abc123"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        adapter._http_client = mock_client
+
+        _run(adapter.send("hermes-in", "Hello!"))
+        call_headers = mock_client.post.call_args[1]["headers"]
+        assert call_headers.get("X-Tags") == _ntfy._ECHO_TAG
+
 
 # ---------------------------------------------------------------------------
 # 8. Inbound message processing (identity invariant — security-critical)
@@ -542,6 +557,47 @@ class TestOnMessage:
         event = {"id": "dup-1", "event": "message", "topic": "hermes-in", "message": "hi", "time": None}
         _run(adapter._on_message(event))
         _run(adapter._on_message(event))
+        assert len(calls) == 1
+
+    def test_own_tagged_message_skipped(self):
+        """An incoming event carrying the adapter's echo tag is the agent's
+        own reply echoed back by ntfy — it must not be dispatched, otherwise
+        the agent replies to itself forever (issue #34447)."""
+        adapter = self._make_adapter()
+        calls = []
+
+        async def handler(event):
+            calls.append(event)
+
+        adapter.set_message_handler(handler)
+        _run(adapter._on_message({
+            "id": "echo-1",
+            "event": "message",
+            "topic": "hermes-in",
+            "message": "my own reply",
+            "tags": [_ntfy._ECHO_TAG],
+            "time": None,
+        }))
+        assert calls == []
+
+    def test_message_with_other_tags_still_dispatched(self):
+        """Tags unrelated to the echo sentinel must not suppress genuine
+        user messages."""
+        adapter = self._make_adapter()
+        calls = []
+
+        async def handler(event):
+            calls.append(event)
+
+        adapter.set_message_handler(handler)
+        _run(adapter._on_message({
+            "id": "user-1",
+            "event": "message",
+            "topic": "hermes-in",
+            "message": "hello",
+            "tags": ["warning", "skull"],
+            "time": None,
+        }))
         assert len(calls) == 1
 
     def test_timestamp_parsed_from_event(self):
@@ -742,6 +798,28 @@ class TestStandaloneSend:
         assert result["message_id"] == "id-42"
         posted_url = mock_client.post.call_args[0][0]
         assert posted_url == "https://ntfy.example.com/hermes-in"
+
+    def test_emits_echo_tag_header(self, monkeypatch):
+        """Out-of-process cron / send_message deliveries also carry the echo
+        tag, so a gateway subscribed to the same topic skips them too."""
+        monkeypatch.setenv("NTFY_TOPIC", "hermes-in")
+        pconfig = MagicMock()
+        pconfig.extra = {"topic": "hermes-in"}
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {"id": "id-99"}
+        mock_client = AsyncMock()
+        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=None)
+
+        with patch.object(_ntfy, "httpx") as mock_httpx:
+            mock_httpx.AsyncClient.return_value = mock_client
+            _run(_standalone_send(pconfig, "hermes-in", "hi"))
+
+        headers = mock_client.post.call_args[1]["headers"]
+        assert headers.get("X-Tags") == _ntfy._ECHO_TAG
 
     def test_emits_bearer_token_when_configured(self, monkeypatch):
         monkeypatch.setenv("NTFY_TOPIC", "hermes-in")

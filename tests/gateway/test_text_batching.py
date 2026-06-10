@@ -9,8 +9,7 @@ Telegram and Feishu.
 """
 
 import asyncio
-import os
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 

@@ -9,6 +9,8 @@ Routes messages to the appropriate destination based on:
 """
 
 import logging
+import os
+import re
 from pathlib import Path
 from datetime import datetime
 from dataclasses import dataclass
@@ -20,6 +22,32 @@ logger = logging.getLogger(__name__)
 
 MAX_PLATFORM_OUTPUT = 4000
 TRUNCATED_VISIBLE = 3800
+
+# Matches strings that are *only* a "silence" narration with optional markdown
+# wrappers. Covers: *(silent)*, _silent_, `silent`, ~silent~, (silent), silent,
+# 🔇, a bare ".", "…", and the whitespace/marker-padded variants seen in the
+# wild. Anchored to start/end so substantive messages that merely *contain* the
+# word "silent" are never matched.
+_SILENCE_NARRATION = re.compile(
+    r'^[\s*_~`]*\(?\s*(silent|silence|no\s+response|no\s+reply)\s*\.?\)?[\s*_~`]*$'
+    r'|^[\s*_~`]*[\U0001F507\.\u2026]+[\s*_~`]*$',
+    re.IGNORECASE,
+)
+
+
+def _is_silence_narration(content: Optional[str]) -> bool:
+    """Return True when ``content`` is *only* a silence-narration token.
+
+    Length-guarded (real messages are longer) and anchored to the whole string
+    so legitimate prose like "The deployment ran silently" or "Silence is
+    golden — here is the plan..." is never flagged.
+    """
+    if not content:
+        return False
+    stripped = content.strip()
+    if not stripped or len(stripped) > 64:  # length guard
+        return False
+    return bool(_SILENCE_NARRATION.match(stripped))
 
 from .config import Platform, GatewayConfig
 from .session import SessionSource
@@ -261,6 +289,18 @@ class DeliveryRouter:
         path.write_text(content)
         return path
 
+    def _filter_silence_narration_enabled(self) -> bool:
+        """Whether the outbound silence-narration filter is active.
+
+        ``HERMES_FILTER_SILENCE_NARRATION`` env var overrides config when set;
+        otherwise the ``gateway.filter_silence_narration`` config flag wins
+        (default True).
+        """
+        env = os.getenv("HERMES_FILTER_SILENCE_NARRATION")
+        if env is not None:
+            return env.strip().lower() in ("1", "true", "yes", "on")
+        return bool(getattr(self.config, "filter_silence_narration", True))
+
     async def _deliver_to_platform(
         self,
         target: DeliveryTarget,
@@ -286,6 +326,27 @@ class DeliveryRouter:
                 + f"\n\n... [truncated, full output saved to {saved_path}]"
             )
         
+        # Substrate-level anti-loop guard: drop hallucinated "silence narration"
+        # (*(silent)*, 🔇, a bare ".", etc.) before it ever reaches the adapter.
+        # In bot-to-bot channels these tokens mirror back and forth until a
+        # model crashes with "no content after all retries". Behavioral prompt
+        # rules drift across providers; this single chokepoint covers every
+        # platform adapter regardless of which persona's prompt failed.
+        # Local/file delivery (_deliver_local) is a separate path and is never
+        # filtered — saved silence has no loop risk.
+        if self._filter_silence_narration_enabled() and _is_silence_narration(content):
+            logger.warning(
+                "Dropped silence-narration outbound to %s (chat=%s): %r",
+                target.platform.value,
+                target.chat_id,
+                content[:40],
+            )
+            return {
+                "success": True,
+                "filtered": "silence_narration",
+                "delivered": False,
+            }
+
         send_metadata = dict(metadata or {})
         is_named_telegram_private_topic = False
         named_telegram_private_topic_name: Optional[str] = None

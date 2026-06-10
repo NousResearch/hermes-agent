@@ -15,7 +15,6 @@ import os
 import sys
 from pathlib import Path
 
-import pytest
 
 
 def _run_apply_profile_override(

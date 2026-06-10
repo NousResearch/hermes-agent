@@ -5,7 +5,6 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
-import os
 import threading
 import time
 from types import SimpleNamespace
@@ -1720,6 +1719,80 @@ class TestReconnection:
 
         asyncio.run(_test())
 
+    def test_preflight_probe_runs_on_initial_http_connect(self):
+        """The content-type preflight probe fires on the first HTTP connect."""
+        from tools.mcp_tool import MCPServerTask
+
+        target_server = None
+        probe = AsyncMock()
+
+        original_run_http = MCPServerTask._run_http
+
+        async def patched_run_http(self_srv, config):
+            if target_server is not self_srv:
+                return await original_run_http(self_srv, config)
+            # First connect succeeds; signal shutdown so run() exits cleanly.
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._ready.set()
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("http_srv")
+            target_server = server
+
+            with patch.object(MCPServerTask, "_run_http", patched_run_http), \
+                 patch.object(MCPServerTask, "_preflight_content_type", probe), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"url": "https://example.com/mcp"})
+
+            # Probe ran exactly once on the initial (pre-_ready) connect.
+            assert probe.await_count == 1
+
+        asyncio.run(_test())
+
+    def test_preflight_probe_skipped_when_already_ready(self):
+        """The probe must NOT re-run on reconnect (_ready already set).
+
+        On reconnect (OAuth recovery / manual refresh) run() is re-entered
+        with _ready still set from the prior successful connect. Re-probing
+        the already-validated endpoint burns a redundant network round-trip,
+        so the guard must skip it. Regression test for #40548.
+        """
+        from tools.mcp_tool import MCPServerTask
+
+        target_server = None
+        probe = AsyncMock()
+
+        original_run_http = MCPServerTask._run_http
+
+        async def patched_run_http(self_srv, config):
+            if target_server is not self_srv:
+                return await original_run_http(self_srv, config)
+            self_srv.session = MagicMock()
+            self_srv._tools = []
+            self_srv._shutdown_event.set()
+            await self_srv._shutdown_event.wait()
+
+        async def _test():
+            nonlocal target_server
+            server = MCPServerTask("http_srv")
+            target_server = server
+            # Simulate a reconnect: _ready was set by the prior connect.
+            server._ready.set()
+
+            with patch.object(MCPServerTask, "_run_http", patched_run_http), \
+                 patch.object(MCPServerTask, "_preflight_content_type", probe), \
+                 patch("asyncio.sleep", new_callable=AsyncMock):
+                await server.run({"url": "https://example.com/mcp"})
+
+            # Probe skipped because _ready was already set.
+            assert probe.await_count == 0
+
+        asyncio.run(_test())
+
 
 # ---------------------------------------------------------------------------
 # Configurable timeouts
@@ -1770,7 +1843,7 @@ class TestConfigurableTimeouts:
 
     def test_timeout_passed_to_handler(self):
         """The tool handler uses the server's configured timeout."""
-        from tools.mcp_tool import _make_tool_handler, _servers, MCPServerTask
+        from tools.mcp_tool import _make_tool_handler, _servers
 
         mock_session = MagicMock()
         mock_session.call_tool = AsyncMock(
@@ -2225,8 +2298,6 @@ class TestUtilityToolRegistration:
 # SamplingHandler tests
 # ===========================================================================
 
-import math
-import time
 
 class _CompatType:
     def __init__(self, **kwargs):

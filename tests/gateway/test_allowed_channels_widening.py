@@ -243,7 +243,6 @@ class TestMattermostAllowedChannels:
     @staticmethod
     def _would_process(channel_id, channel_type="O", allowed_cfg=None, allowed_env=""):
         """Replicate the whitelist gate from gateway/platforms/mattermost.py."""
-        import os as _os
         if channel_type == "D":
             return True
         # config-first, env-var fallback (matching the adapter)

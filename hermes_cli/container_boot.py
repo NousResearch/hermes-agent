@@ -24,7 +24,7 @@ import logging
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Sequence
 
 log = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ def reconcile_profile_gateways(
     hermes_home: Path,
     scandir: Path,
     dry_run: bool = False,
+    container_argv: Sequence[str] | None = None,
 ) -> list[ReconcileAction]:
     """Recreate s6 service registrations for every persistent profile.
 
@@ -82,6 +83,8 @@ def reconcile_profile_gateways(
             directories are created at ``<scandir>/gateway-<profile>/``.
         dry_run: When True, walk and return the action list without
             touching the filesystem. For tests and `--dry-run` debug.
+        container_argv: Optional container PID 1 argv override. Production
+            reads ``/proc/1/cmdline``; tests inject it directly.
 
     Returns:
         One :class:`ReconcileAction` per profile, in this order:
@@ -93,8 +96,15 @@ def reconcile_profile_gateways(
     # populated the root profile dir. The slot exists so
     # ``hermes gateway start`` (no ``-p``) has somewhere to land;
     # auto-up only when the prior state was "running" (same rule as
-    # named profiles).
-    default_prior_state = _read_prior_state(hermes_home)
+    # named profiles). If the container was launched with the legacy
+    # `gateway run` command and no state exists yet, seed that intent
+    # as `running` so the s6 reconciler preserves the pre-s6 behavior.
+    legacy_default_state = _maybe_migrate_legacy_gateway_run_state(
+        hermes_home,
+        container_argv=container_argv,
+        dry_run=dry_run,
+    )
+    default_prior_state = legacy_default_state or _read_prior_state(hermes_home)
     default_should_start = default_prior_state in _AUTOSTART_STATES
     if not dry_run:
         _cleanup_stale_runtime_files(hermes_home)
@@ -145,6 +155,66 @@ def reconcile_profile_gateways(
     if not dry_run:
         _write_reconcile_log(hermes_home, actions)
     return actions
+
+
+def _maybe_migrate_legacy_gateway_run_state(
+    hermes_home: Path,
+    *,
+    container_argv: Sequence[str] | None,
+    dry_run: bool,
+) -> str | None:
+    """Seed root gateway_state for pre-s6 `gateway run` containers.
+
+    The tini image let Docker users run the gateway as the container
+    command (`docker run ... gateway run`). After the s6 migration,
+    profile gateways are restored from persisted gateway_state.json; a
+    legacy container with no state file would therefore register the
+    default service down and never start. Only synthesize state when no
+    root gateway_state.json exists so explicit stopped/failed states keep
+    winning across restarts.
+    """
+    state_file = hermes_home / "gateway_state.json"
+    if state_file.exists():
+        return None
+
+    if os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes"):
+        return None
+
+    argv = tuple(container_argv) if container_argv is not None else _read_container_argv()
+    if not _is_legacy_gateway_run_request(argv):
+        return None
+
+    if not dry_run:
+        import time
+        state_file.write_text(json.dumps({
+            "gateway_state": "running",
+            "timestamp": int(time.time()),
+            "migrated_from": "legacy-container-cmd",
+        }) + "\n")
+    return "running"
+
+
+def _read_container_argv() -> tuple[str, ...]:
+    """Best-effort read of the container PID 1 argv."""
+    try:
+        raw = Path("/proc/1/cmdline").read_bytes()
+    except OSError:
+        return ()
+    return tuple(part.decode("utf-8", "replace") for part in raw.split(b"\0") if part)
+
+
+def _is_legacy_gateway_run_request(argv: Sequence[str]) -> bool:
+    """Return True for Docker commands equivalent to `gateway run`."""
+    args = list(argv)
+    if args and Path(args[0]).name == "init":
+        args = args[1:]
+    if args and args[0].endswith("main-wrapper.sh"):
+        args = args[1:]
+    if args and Path(args[0]).name == "hermes":
+        args = args[1:]
+    if "--no-supervise" in args:
+        return False
+    return len(args) >= 2 and args[0] == "gateway" and args[1] == "run"
 
 
 def _read_prior_state(profile_dir: Path) -> str | None:

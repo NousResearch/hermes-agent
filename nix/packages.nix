@@ -43,17 +43,15 @@
             "modal"
             "parallel-web"
             "tts-premium"
-            "vercel"
             "voice"
           ] ++ lib.optionals pkgs.stdenv.isLinux [ "matrix" ];
         };
 
         tui = hermesAgent.hermesTui;
         web = hermesAgent.hermesWeb;
+        desktop = hermesAgent.hermesDesktop;
 
-        fix-lockfiles = hermesAgent.hermesNpmLib.mkFixLockfiles {
-          packages = [ hermesAgent.hermesTui hermesAgent.hermesWeb ];
-        };
+        fix-lockfiles = hermesAgent.hermesNpmLib.mkFixLockfiles { attr = "tui"; };
       };
     };
 }

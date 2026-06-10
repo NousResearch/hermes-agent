@@ -215,7 +215,7 @@ TIPS = [
     # --- Context & Compression ---
     "Context auto-compresses when it reaches the threshold — memories are flushed and history summarized.",
     "The status bar turns yellow, then orange, then red as context fills up.",
-    "SOUL.md at ~/.hermes/SOUL.md is the agent's primary identity — customize it to shape behavior.",
+    "SOUL.md is the agent's primary identity file — customize it to shape behavior.",
     "Hermes loads project context from .hermes.md, AGENTS.md, CLAUDE.md, or .cursorrules (first match).",
     "Subdirectory AGENTS.md files are discovered progressively as the agent navigates into folders.",
     "Context files are capped at 20,000 characters with smart head/tail truncation.",
@@ -273,7 +273,7 @@ TIPS = [
     "Cron scripts live in ~/.hermes/scripts/ and run before the agent — perfect for data collection pipelines.",
     "prefill_messages_file in config.yaml injects few-shot examples into every API call, never saved to history.",
     "SOUL.md completely replaces the agent's default identity — rewrite it to make Hermes your own.",
-    "SOUL.md is auto-seeded with a default personality on first run. Edit ~/.hermes/SOUL.md to customize.",
+    "SOUL.md is auto-seeded with a default personality on first run. Edit it to customize.",
     "/compress <focus topic> allocates 60-70% of the summary budget to your topic and aggressively trims the rest.",
     "On second+ compression, the compressor updates the previous summary instead of starting from scratch.",
     "Before a gateway session reset, Hermes auto-flushes important facts to memory in the background.",
@@ -345,7 +345,7 @@ TIPS = [
     '/copy [N] copies the last assistant response to your clipboard, or the Nth-from-last with a number.',
     '/redraw forces a full UI repaint, fixing terminal drift after tmux resize or mouse selection artifacts.',
     '/agents (alias /tasks) shows active agents and running background tasks across the current session.',
-    '/footer toggles the gateway footer on final replies showing model, tool counts, and turn timing.',
+    '/footer toggles the gateway footer on final replies showing model, context %, and cwd.',
     '/busy queue|steer|interrupt controls what pressing Enter does while Hermes is working.',
     '/topic in Telegram DMs enables user-managed multi-session topic mode — /topic <id> restores past sessions inline.',
     '/approve session|always runs a pending dangerous command with your chosen trust scope; /deny rejects it.',
@@ -381,7 +381,7 @@ TIPS = [
     'Ctrl+G or Ctrl+X Ctrl+E in the TUI opens the input buffer in $EDITOR for long multi-line prompts.',
     'The TUI renders LaTeX inline — $E=mc^2$ becomes Unicode math instead of raw TeX.',
     'hermes dashboard launches a local web UI at 127.0.0.1:9119 — zero data leaves localhost.',
-    'hermes dashboard --tui embeds the full Hermes TUI in your browser via xterm.js and a WebSocket PTY.',
+    'hermes dashboard embeds the full Hermes TUI in your browser via xterm.js and a WebSocket PTY.',
     'Drop a YAML in ~/.hermes/dashboard-themes/ with two palette colors to reskin the entire dashboard.',
     'Dashboard plugins are drop-in: manifest.json + JS bundle in ~/.hermes/dashboard-plugins/ — no npm build required.',
     'layoutVariant: cockpit in a dashboard theme adds a 260px left rail that plugins can populate via the sidebar slot.',
@@ -430,7 +430,7 @@ TIPS = [
     'hermes -z "<prompt>" is the purest one-shot: final answer on stdout, nothing else — ideal for piping in scripts.',
     'hermes chat --pass-session-id injects the session ID into the system prompt so the agent can self-reference it.',
     'hermes chat --image path/to/pic.png attaches a local image to a single -q query without a separate upload step.',
-    'hermes chat --ignore-user-config skips ~/.hermes/config.yaml — reproducible bug reports and CI runs.',
+    'hermes chat --ignore-user-config skips the active user config — reproducible bug reports and CI runs.',
     "hermes chat --source tool tags programmatic chats so they don't clutter hermes sessions list.",
     'hermes dump --show-keys includes redacted API key fingerprints for deeper support debugging.',
     'hermes sessions rename <ID> "new title" renames any past session; hermes sessions delete <ID> removes one.',
@@ -484,5 +484,3 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
-
-

@@ -627,9 +627,9 @@ class OpenVikingMemoryProvider(MemoryProvider):
             logger.warning("OpenViking session commit failed: %s", e)
 
     def _build_memory_uri(self, subdir: str) -> str:
-        """Build a viking:// memory URI under the configured user/subdir."""
+        """Build a viking:// memory URI under the configured user/agent/subdir."""
         slug = uuid.uuid4().hex[:12]
-        return f"viking://user/{self._user}/memories/{subdir}/mem_{slug}.md"
+        return f"viking://user/{self._user}/agent/{self._agent}/memories/{subdir}/mem_{slug}.md"
 
     def on_memory_write(
         self,

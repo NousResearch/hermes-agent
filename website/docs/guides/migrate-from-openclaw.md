@@ -160,7 +160,7 @@ TTS settings are read from **two** OpenClaw config locations with this priority:
 | Browser headless | `browser.headless` | `config.yaml` → `browser.headless` | |
 | Brave search key | `tools.web.search.brave.apiKey` | `.env` → `BRAVE_API_KEY` | Requires `--migrate-secrets` |
 | Gateway auth token | `gateway.auth.token` | `.env` → `HERMES_GATEWAY_TOKEN` | Requires `--migrate-secrets` |
-| Working directory | `agents.defaults.workspace` | `.env` → `MESSAGING_CWD` | |
+| Working directory | `agents.defaults.workspace` | `config.yaml` → `terminal.cwd` | Legacy migrations may still emit `MESSAGING_CWD` as a compatibility fallback |
 
 ### Archived (no direct Hermes equivalent)
 
@@ -229,7 +229,7 @@ The migration resolves all three formats. For env templates and SecretRef object
 
 5. **Test messaging** — if you migrated platform tokens, restart the gateway: `systemctl --user restart hermes-gateway`
 
-6. **Check session policies** — verify `hermes config get session_reset` matches your expectations.
+6. **Check session policies** — run `hermes config show` and verify the `session_reset` value matches your expectations.
 
 7. **Re-pair WhatsApp** — WhatsApp uses QR code pairing (Baileys), not token migration. Run `hermes whatsapp` to pair.
 

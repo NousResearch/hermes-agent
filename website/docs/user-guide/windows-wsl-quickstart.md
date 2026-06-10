@@ -100,7 +100,7 @@ The `metadata` mount option above is important — without it, files on `/mnt/c/
 Once you have a WSL2 shell open:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 source ~/.bashrc
 hermes
 ```
@@ -259,6 +259,32 @@ For webhooks from cloud messaging providers (Telegram `setWebhook`, Slack events
 ## Running Hermes services long-term on Windows
 
 The Hermes [Tool Gateway](/user-guide/features/tool-gateway) and the API server are long-lived processes. In WSL2 you have a few options for keeping them up.
+
+### Desktop shortcut for opening Hermes quickly
+
+If you just want a double-click launcher for an interactive Hermes shell, create
+it on the Windows side and have it jump into WSL for you:
+
+1. Right-click the Windows desktop and choose **New -> Shortcut**.
+2. For the target, use your distro name (replace `Ubuntu` if needed):
+
+   ```text
+   wt.exe -w 0 -p "Ubuntu" wsl.exe -d Ubuntu --cd ~ -- bash -ic "hermes"
+   ```
+
+3. Name it something obvious like `Hermes`.
+
+That opens Windows Terminal, starts your WSL distro, drops you in your Linux
+home directory, and launches Hermes. If `hermes` is not on PATH yet, open WSL
+once manually and run `source ~/.bashrc`, or replace the command with
+`uv run hermes` inside your project checkout.
+
+Optional polish:
+
+- **Custom icon:** open **Properties -> Change Icon** and point it at an `.ico`
+  file, such as the Hermes favicon from the repo.
+- **Pinned launcher:** once the shortcut works, pin it to Start or Taskbar so
+  you do not have to browse for it again.
 
 ### Inside WSL with systemd (recommended)
 

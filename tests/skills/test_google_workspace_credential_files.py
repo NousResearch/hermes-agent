@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
 
 SKILL_MD = (
     Path(__file__).resolve().parents[2]

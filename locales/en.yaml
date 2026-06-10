@@ -270,7 +270,7 @@ gateway:
     title:                 "**Title:** {title}"
     created:               "**Created:** {timestamp}"
     last_activity:         "**Last Activity:** {timestamp}"
-    tokens:                "**Tokens:** {tokens}"
+    tokens:                "**Cumulative API tokens (re-sent each call):** {tokens}"
     agent_running:         "**Agent Running:** {state}"
     state_yes:             "Yes ⚡"
     state_no:              "No"
@@ -305,7 +305,8 @@ gateway:
 
   undo:
     nothing:               "Nothing to undo."
-    removed:               "↩️ Undid {count} message(s).\nRemoved: \"{preview}\""
+    removed:               "↩️ Undid {turns} turn(s) ({count} message(s)).\nBacked up to: \"{preview}\"\nCopy/edit the text above and send it to re-prompt from here."
+    invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
 
   update:
     platform_not_messaging:  "✗ /update is only available from messaging platforms. Run `hermes update` from the terminal."
@@ -357,6 +358,8 @@ gateway:
     label_off:             "Off (text only)"
     label_voice_only:      "On (voice reply to voice messages)"
     label_all:             "TTS (voice reply to all messages)"
+    help:                  "{toggle}\n\n**How /voice works**\n• `/voice on` — voice reply when you send a voice message\n• `/voice tts` — voice reply to *every* message\n• `/voice off` — back to text-only replies\n• `/voice status` — show the current mode\n• `/voice` (no argument) — quick toggle between on and off{channels}"
+    help_channels:         "\n\n**Live voice channels (Discord)**\n• Join a voice channel first, then `/voice channel` — I'll join, listen, and speak my replies\n• `/voice leave` — disconnect from the voice channel"
 
   yolo:
     disabled:                   "⚠️ YOLO mode **OFF** for this session — dangerous commands will require approval."

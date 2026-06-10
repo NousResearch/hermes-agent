@@ -73,20 +73,50 @@ ADAPTIVE_EFFORT_MAP = {
     "minimal": "low",
 }
 
-# Models that accept the "xhigh" output_config.effort level.  Opus 4.7 added
-# xhigh as a distinct level between high and max; older adaptive-thinking
-# models (4.6) reject it with a 400.  Keep this substring list in sync with
-# the Anthropic migration guide as new model families ship.
-_XHIGH_EFFORT_SUBSTRINGS = ("4-7", "4.7")
+# ── Anthropic thinking-mode classification ────────────────────────────
+# Claude 4.6 replaced budget-based extended thinking with *adaptive* thinking,
+# and 4.7 additionally forbids the manual ``thinking`` block entirely and drops
+# temperature/top_p/top_k.  Newer Claude releases (4.8, and named models like
+# claude-fable-5) follow the same modern contract — but they share no common
+# version substring, so an allowlist of version numbers ("4.6", "4.7", …) goes
+# stale the moment a model ships without a recognized number and silently
+# routes it down the legacy manual-thinking path.
+#
+# Instead we DEFAULT unknown Claude models to the modern contract and keep an
+# explicit *legacy* list of the older Claude families that still require manual
+# thinking.  This mirrors _get_anthropic_max_output's "default to newest" design
+# (future models are unlikely to regress to the older contract), so each new
+# Claude release works without a code change.
+#
+# Non-Claude Anthropic-Messages models (minimax, qwen3, GLM, …) are NOT Claude,
+# so they fall through to the legacy path automatically — exactly what those
+# manual-thinking endpoints need.
 
-# Models where extended thinking is deprecated/removed (4.6+ behavior: adaptive
-# is the only supported mode; 4.7 additionally forbids manual thinking entirely
-# and drops temperature/top_p/top_k).
-_ADAPTIVE_THINKING_SUBSTRINGS = ("4-6", "4.6", "4-7", "4.7")
+# Older Claude families that DON'T support adaptive thinking (manual thinking
+# with budget_tokens only). Substring-matched against the model name.
+_LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS = (
+    "claude-3",          # 3, 3.5, 3.7
+    "claude-opus-4-0", "claude-opus-4.0", "claude-opus-4-1", "claude-opus-4.1",
+    "claude-sonnet-4-0", "claude-sonnet-4.0",
+    "claude-opus-4-2025", "claude-sonnet-4-2025",  # date-stamped 4.0 IDs
+    "claude-opus-4-5", "claude-opus-4.5",
+    "claude-sonnet-4-5", "claude-sonnet-4.5",
+    "claude-haiku-4-5", "claude-haiku-4.5",
+)
 
-# Models where temperature/top_p/top_k return 400 if set to non-default values.
-# This is the Opus 4.7 contract; future 4.x+ models are expected to follow it.
-_NO_SAMPLING_PARAMS_SUBSTRINGS = ("4-7", "4.7")
+# Older Claude families that DON'T accept the "xhigh" effort level (4.6 only
+# supports low/medium/high/max). xhigh arrived with Opus 4.7. Adaptive models
+# not in this list (4.7, 4.8, fable, future) accept xhigh.
+_NO_XHIGH_CLAUDE_SUBSTRINGS = (
+    "claude-opus-4-6", "claude-opus-4.6",
+    "claude-sonnet-4-6", "claude-sonnet-4.6",
+)
+
+
+def _is_claude_model(model: str | None) -> bool:
+    return "claude" in (model or "").lower()
+
+
 _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 
 # ── Max output token limits per Anthropic model ───────────────────────
@@ -94,6 +124,10 @@ _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-6", "opus-4.6")
 # max_tokens as a mandatory field.  Previously we hardcoded 16384, which
 # starves thinking-enabled models (thinking tokens count toward the limit).
 _ANTHROPIC_OUTPUT_LIMITS = {
+    # Mythos-class named models (claude-fable-5, …) — 1M context, reasoning
+    "claude-fable":      128_000,
+    # Claude 4.8
+    "claude-opus-4-8":   128_000,
     # Claude 4.7
     "claude-opus-4-7":   128_000,
     # Claude 4.6
@@ -206,8 +240,17 @@ def _resolve_anthropic_messages_max_tokens(
 
 
 def _supports_adaptive_thinking(model: str) -> bool:
-    """Return True for Claude 4.6+ models that support adaptive thinking."""
-    return any(v in model for v in _ADAPTIVE_THINKING_SUBSTRINGS)
+    """Return True for Claude models that use adaptive thinking (4.6+).
+
+    Defaults *unknown* Claude models to adaptive (the modern contract) and
+    only returns False for the explicit legacy list of older Claude families
+    that require manual budget-based thinking. Non-Claude Anthropic-Messages
+    models (minimax, qwen3, …) return False so they keep the manual path.
+    """
+    if not _is_claude_model(model):
+        return False
+    m = model.lower()
+    return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
 
 
 def _supports_xhigh_effort(model: str) -> bool:
@@ -217,18 +260,33 @@ def _supports_xhigh_effort(model: str) -> bool:
     Pre-4.7 adaptive models (Opus/Sonnet 4.6) only accept low/medium/high/max
     and reject xhigh with an HTTP 400. Callers should downgrade xhigh→max
     when this returns False.
+
+    Defaults unknown adaptive Claude models to accepting xhigh (4.7+ contract);
+    only the 4.6 family and legacy manual-thinking models are excluded.
     """
-    return any(v in model for v in _XHIGH_EFFORT_SUBSTRINGS)
+    if not _supports_adaptive_thinking(model):
+        return False
+    m = model.lower()
+    return not any(v in m for v in _NO_XHIGH_CLAUDE_SUBSTRINGS)
 
 
 def _forbids_sampling_params(model: str) -> bool:
     """Return True for models that 400 on any non-default temperature/top_p/top_k.
 
-    Opus 4.7 explicitly rejects sampling parameters; later Claude releases are
-    expected to follow suit.  Callers should omit these fields entirely rather
-    than passing zero/default values (the API rejects anything non-null).
+    Opus 4.7 introduced this restriction; later Claude releases follow it.
+    Defaults unknown Claude models to forbidding sampling params (the modern
+    contract). The 4.6 family still accepts them, and the legacy manual-thinking
+    families (4.5 and older) accept them too, so both are excluded. Non-Claude
+    models are unaffected. Callers should omit these fields entirely rather than
+    passing zero/default values (the API rejects anything non-null).
     """
-    return any(v in model for v in _NO_SAMPLING_PARAMS_SUBSTRINGS)
+    if not _is_claude_model(model):
+        return False
+    m = model.lower()
+    # 4.6 family is adaptive but still accepts sampling params.
+    if any(v in m for v in _NO_XHIGH_CLAUDE_SUBSTRINGS):
+        return False
+    return not any(v in m for v in _LEGACY_MANUAL_THINKING_CLAUDE_SUBSTRINGS)
 
 
 def _supports_fast_mode(model: str) -> bool:
@@ -819,6 +877,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
             capture_output=True,
             text=True,
             timeout=5,
+            stdin=subprocess.DEVNULL,
         )
     except (OSError, subprocess.TimeoutExpired):
         logger.debug("Keychain: security command not available or timed out")
@@ -889,20 +948,6 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
         except (json.JSONDecodeError, OSError, IOError) as e:
             logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
 
-    return None
-
-
-def read_claude_managed_key() -> Optional[str]:
-    """Read Claude's native managed key from ~/.claude.json for diagnostics only."""
-    claude_json = Path.home() / ".claude.json"
-    if claude_json.exists():
-        try:
-            data = json.loads(claude_json.read_text(encoding="utf-8"))
-            primary_key = data.get("primaryApiKey", "")
-            if isinstance(primary_key, str) and primary_key.strip():
-                return primary_key.strip()
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude.json: %s", e)
     return None
 
 
@@ -1175,7 +1220,10 @@ def run_oauth_setup_token() -> Optional[str]:
             "Install it with: npm install -g @anthropic-ai/claude-code"
         )
 
-    # Run interactively — stdin/stdout/stderr inherited so user can interact
+    # Run interactively — stdin/stdout/stderr inherited so the user can
+    # complete the OAuth login prompt. Must keep inherited stdin; the TUI-EOF
+    # concern does not apply to an interactive login the user explicitly
+    # invokes.  noqa: subprocess-stdin
     try:
         subprocess.run([claude_path, "setup-token"])
     except (KeyboardInterrupt, EOFError):
@@ -1254,10 +1302,16 @@ def run_hermes_oauth_login_pure() -> Optional[Dict[str, Any]]:
     print()
 
     try:
-        webbrowser.open(auth_url)
-        print("  (Browser opened automatically)")
+        from hermes_cli.auth import _can_open_graphical_browser as _can_open_gui
     except Exception:
-        pass
+        _can_open_gui = lambda: True  # noqa: E731 — degrade to prior behavior
+
+    if _can_open_gui():
+        try:
+            webbrowser.open(auth_url)
+            print("  (Browser opened automatically)")
+        except Exception:
+            pass
 
     print()
     print("After authorizing, you'll see a code. Paste it below.")
@@ -1789,11 +1843,25 @@ def _strip_orphaned_tool_blocks(result: List[Dict[str, Any]]) -> None:
                     tool_result_ids.add(block.get("tool_use_id"))
     for m in result:
         if m["role"] == "assistant" and isinstance(m["content"], list):
-            m["content"] = [
+            kept = [
                 b
                 for b in m["content"]
                 if b.get("type") != "tool_use" or b.get("id") in tool_result_ids
             ]
+            # If stripping an orphaned tool_use mutated a turn that also carries a
+            # signed thinking block, that block's Anthropic signature was computed
+            # against the ORIGINAL (un-stripped) turn content and is now invalid.
+            # Anthropic rejects the replayed turn with HTTP 400 "thinking blocks in
+            # the latest assistant message cannot be modified".  Flag the turn so
+            # _manage_thinking_signatures can demote the dead signature instead of
+            # replaying it verbatim.  See hermes-agent: extended-thinking + parallel
+            # tool batch interrupted mid-flight → non-retryable 400 crash-loop.
+            if len(kept) != len(m["content"]) and any(
+                isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
+                for b in m["content"]
+            ):
+                m["_thinking_signature_invalidated"] = True
+            m["content"] = kept
             if not m["content"]:
                 m["content"] = [{"type": "text", "text": "(tool call removed)"}]
 
@@ -1838,6 +1906,10 @@ def _merge_consecutive_roles(result: List[Dict[str, Any]]) -> List[Dict[str, Any
                     fixed[-1]["content"] = prev_content + curr_content
             else:
                 # Consecutive assistant messages — merge text content.
+                # Propagate the orphan-strip signature-invalidation flag onto the
+                # surviving (prev) dict so _manage_thinking_signatures still sees it.
+                if m.get("_thinking_signature_invalidated"):
+                    fixed[-1]["_thinking_signature_invalidated"] = True
                 # Drop thinking blocks from the *second* message: their
                 # signature was computed against a different turn boundary
                 # and becomes invalid once merged.
@@ -1926,10 +1998,25 @@ def _manage_thinking_signatures(
         else:
             # Latest assistant on direct Anthropic: keep signed, downgrade unsigned
             # to text so the reasoning isn't lost.
+            #
+            # Exception: if orphan-stripping (or another structural mutation) removed
+            # a tool_use block from THIS turn, every thinking signature on it was
+            # computed against the original turn content and is now dead.  Anthropic
+            # rejects the turn either way — replaying the signed block 400s with
+            # "thinking blocks in the latest assistant message cannot be modified",
+            # and a bare signed block with no following tool_use is also invalid.
+            # Demote ALL thinking blocks on this turn to text so the turn replays
+            # cleanly and the model can re-plan from the surviving tool results.
+            signature_dead = bool(m.get("_thinking_signature_invalidated"))
             new_content = []
             for b in m["content"]:
                 if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
                     new_content.append(b)
+                    continue
+                if signature_dead:
+                    thinking_text = b.get("thinking", "")
+                    if thinking_text:
+                        new_content.append({"type": "text", "text": thinking_text})
                     continue
                 if b.get("type") == "redacted_thinking":
                     # Redacted blocks use 'data' for the signature payload —
@@ -1949,6 +2036,9 @@ def _manage_thinking_signatures(
         for b in m["content"]:
             if isinstance(b, dict) and b.get("type") in _THINKING_TYPES:
                 b.pop("cache_control", None)
+
+        # Drop the internal bookkeeping flag — it must never reach the API payload.
+        m.pop("_thinking_signature_invalidated", None)
 
 
 def _evict_old_screenshots(result: List[Dict[str, Any]]) -> None:
@@ -2271,3 +2361,43 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
+
+
+# Keys that belong exclusively to the OpenAI Responses / Codex API shape.
+# The Anthropic Messages SDK (``messages.create()`` / ``messages.stream()``)
+# raises ``TypeError: ... got an unexpected keyword argument`` on any of them.
+_RESPONSES_ONLY_KWARGS = frozenset(
+    {"instructions", "input", "store", "parallel_tool_calls"}
+)
+
+
+def sanitize_anthropic_kwargs(api_kwargs: Any, *, log_prefix: str = "") -> Any:
+    """Drop Responses-API-only keys before an Anthropic Messages SDK call.
+
+    Defensive boundary guard for #31673: under rare api_mode-flip races
+    (e.g. a concurrent auxiliary call mutating a shared agent between the
+    kwargs build and the stream dispatch), a Responses-shaped payload
+    carrying ``instructions=`` can reach ``messages.stream()`` /
+    ``messages.create()``. The Anthropic SDK rejects it with a
+    non-retryable ``TypeError`` that nukes the whole turn and propagates
+    the entire fallback chain.
+
+    Mutates ``api_kwargs`` in place and returns it. When a foreign key is
+    present we log a WARNING so the underlying race stays visible in the
+    wild instead of being silently papered over.
+    """
+    if not isinstance(api_kwargs, dict):
+        return api_kwargs
+    leaked = _RESPONSES_ONLY_KWARGS.intersection(api_kwargs)
+    if leaked:
+        for _key in leaked:
+            api_kwargs.pop(_key, None)
+        logger.warning(
+            "%sStripped Responses-only kwarg(s) %s from an Anthropic Messages "
+            "call (api_mode flip race — see #31673). The call will proceed; "
+            "this breadcrumb means a kwargs build ran under a Responses "
+            "api_mode while dispatch ran under anthropic_messages.",
+            log_prefix,
+            sorted(leaked),
+        )
+    return api_kwargs

@@ -9,12 +9,9 @@ Verifies that the agent cache correctly:
 - Preserves frozen system prompt across turns
 """
 
-import hashlib
-import json
 import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 def _make_runner():
@@ -278,6 +275,111 @@ class TestExtractCacheBustingConfig:
         out = GatewayRunner._extract_cache_busting_config({})
 
         assert out["tools.registry_generation"] == 12345
+
+
+    def test_skips_honcho_config_read_when_provider_is_not_honcho(self, monkeypatch):
+        """Non-Honcho gateways must not read/parse honcho.json on every message."""
+        from gateway.run import GatewayRunner
+
+        called = False
+
+        def _boom():
+            nonlocal called
+            called = True
+            raise AssertionError("should not read Honcho config")
+
+        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _boom)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
+
+        assert called is False
+        assert out["honcho.peer_name"] is None
+        assert out["honcho.user_peer_aliases"] is None
+
+    def test_reads_honcho_config_only_when_provider_is_honcho(self, monkeypatch):
+        from gateway.run import GatewayRunner
+
+        calls = []
+
+        def _fake():
+            calls.append(True)
+            return {
+                "honcho.peer_name": "eri",
+                "honcho.ai_peer": "hermes",
+                "honcho.pin_peer_name": True,
+                "honcho.runtime_peer_prefix": "tg_",
+                "honcho.user_peer_aliases": [("123", "eri")],
+            }
+
+        monkeypatch.setattr(GatewayRunner, "_extract_honcho_cache_busting_config", _fake)
+
+        out = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+
+        assert calls == [True]
+        assert out["honcho.peer_name"] == "eri"
+        assert out["honcho.user_peer_aliases"] == [("123", "eri")]
+
+    def test_memory_provider_change_busts_signature(self, monkeypatch):
+        """Switching memory.provider must itself change the cache-busting
+        signature, so the agent is rebuilt when a user swaps providers
+        mid-gateway (independent of the honcho.json identity keys)."""
+        from gateway.run import GatewayRunner
+
+        # Neutralize honcho.json reads so the only varying input is the
+        # provider value itself.
+        monkeypatch.setattr(
+            GatewayRunner,
+            "_extract_honcho_cache_busting_config",
+            classmethod(lambda cls: cls._empty_honcho_cache_busting_config()),
+        )
+
+        sig_honcho = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "honcho"}})
+        sig_mem0 = GatewayRunner._extract_cache_busting_config({"memory": {"provider": "mem0"}})
+
+        assert sig_honcho["memory.provider"] == "honcho"
+        assert sig_mem0["memory.provider"] == "mem0"
+        assert sig_honcho != sig_mem0
+
+    def test_honcho_cache_busting_config_memoized_by_mtime(self, monkeypatch, tmp_path):
+        """Repeated Honcho extraction for unchanged honcho.json should reuse parse result."""
+        from types import SimpleNamespace
+        from gateway.run import GatewayRunner
+
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text("{}")
+        parse_calls = []
+
+        class FakeConfig:
+            peer_name = "eri"
+            ai_peer = "hermes"
+            pin_peer_name = False
+            runtime_peer_prefix = "tg_"
+            user_peer_aliases = {"123": "eri"}
+
+            @classmethod
+            def from_global_config(cls, config_path=None):
+                parse_calls.append(config_path)
+                return cls()
+
+        fake_client = SimpleNamespace(
+            HonchoClientConfig=FakeConfig,
+            resolve_config_path=lambda: config_path,
+        )
+        monkeypatch.setitem(__import__("sys").modules, "plugins.memory.honcho.client", fake_client)
+        monkeypatch.setattr(GatewayRunner, "_HONCHO_CACHE_BUSTING_MEMO", {})
+
+        first = GatewayRunner._extract_honcho_cache_busting_config()
+        second = GatewayRunner._extract_honcho_cache_busting_config()
+
+        assert first == second
+        assert first["honcho.user_peer_aliases"] == [("123", "eri")]
+        assert parse_calls == [config_path]
+
+        config_path.write_text("{\n  \"changed\": true\n}")
+        third = GatewayRunner._extract_honcho_cache_busting_config()
+
+        assert third == first
+        assert parse_calls == [config_path, config_path]
 
     def test_full_round_trip_busts_cache_on_real_edit(self):
         """End-to-end: simulate a config edit on main and verify the

@@ -7,7 +7,6 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
-import threading
 import time
 from unittest.mock import patch
 from typing import Any, Optional
@@ -17,7 +16,6 @@ import pytest
 import agent.transports.codex_app_server_session as session_mod
 from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
-    TurnResult,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
     _coerce_turn_input_text,
@@ -198,6 +196,40 @@ class TestRunTurn:
         # turn_id propagated for downstream session-DB linkage
         assert r.turn_id == "turn-fake-001"
 
+    def test_token_usage_notification_is_captured(self):
+        client = FakeClient()
+        client.queue_notification(
+            "thread/tokenUsage/updated",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            tokenUsage={
+                "last": {
+                    "totalTokens": 130,
+                    "inputTokens": 80,
+                    "cachedInputTokens": 20,
+                    "outputTokens": 25,
+                    "reasoningOutputTokens": 5,
+                },
+                "total": {
+                    "totalTokens": 500,
+                    "inputTokens": 300,
+                    "cachedInputTokens": 75,
+                    "outputTokens": 100,
+                    "reasoningOutputTokens": 25,
+                },
+                "modelContextWindow": 200000,
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        r = make_session(client).run_turn("hi", turn_timeout=2.0)
+        assert r.token_usage_last["totalTokens"] == 130
+        assert r.token_usage_total["totalTokens"] == 500
+        assert r.model_context_window == 200000
+
     def test_rich_content_turn_is_collapsed_to_text_payload(self):
         client = FakeClient()
         client.queue_notification(
@@ -275,8 +307,9 @@ class TestRunTurn:
     def test_turn_start_failure_attaches_redacted_stderr_tail(self):
         """When codex stderr has content (non-OAuth), the tail gets attached
         to the user-facing error so config/provider problems are debuggable
-        instead of just 'Internal error'. Secrets in stderr are redacted
-        via agent.redact(force=True)."""
+        instead of just 'Internal error'. Credential-shaped values in stderr
+        are redacted via agent.redact(force=True); web-URL query params pass
+        through (see fix(redact): pass web URLs through unchanged)."""
         client = FakeClient()
         client.set_stderr_tail([
             "ERROR: provider auth failed",
@@ -299,9 +332,8 @@ class TestRunTurn:
         # Stderr tail attached
         assert "codex stderr" in r.error
         assert "provider auth failed" in r.error
-        # Secrets redacted
+        # Credential-shaped values still redacted (sk- prefix + Bearer header)
         assert "sk-live-deadbeefdeadbeef" not in r.error
-        assert "querysecret12345" not in r.error
         # Non-OAuth → should NOT retire (subprocess JSON-RPC is still healthy).
         assert r.should_retire is False
 

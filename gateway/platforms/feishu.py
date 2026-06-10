@@ -48,6 +48,7 @@ user is seen through different apps in the future.
 from __future__ import annotations
 
 import asyncio
+import collections
 import hashlib
 import hmac
 import itertools
@@ -239,6 +240,7 @@ _FEISHU_REACTION_FAILURE = "CrossMark"
 # drain on completion; the cap is a safeguard against unbounded growth from
 # delete-failures, not a capacity plan.
 _FEISHU_PROCESSING_REACTION_CACHE_SIZE = 1024
+_FEISHU_MESSAGE_TEXT_CACHE_SIZE = 512       # LRU cap for reply-context message text lookups
 
 # QR onboarding constants
 _ONBOARD_ACCOUNTS_URLS = {
@@ -1407,7 +1409,11 @@ def check_feishu_requirements() -> bool:
 class FeishuAdapter(BasePlatformAdapter):
     """Feishu/Lark bot adapter."""
 
+    supports_code_blocks = True  # Feishu renders fenced code blocks
+
     MAX_MESSAGE_LENGTH = 8000
+    # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
+    CHAT_LOCK_MAX_SIZE: int = 1000
     # Threshold for detecting Feishu client-side message splits.
     # When a chunk is near the ~4096-char practical limit, a continuation
     # is almost certain.
@@ -1445,11 +1451,11 @@ class FeishuAdapter(BasePlatformAdapter):
         self._pending_inbound_lock = threading.Lock()
         self._pending_drain_scheduled = False
         self._pending_inbound_max_depth = 1000  # cap queue; drop oldest beyond
-        self._chat_locks: Dict[str, asyncio.Lock] = {}  # chat_id → lock (per-chat serial processing)
+        self._chat_locks: "collections.OrderedDict[str, asyncio.Lock]" = collections.OrderedDict()  # chat_id → lock (per-chat serial processing, LRU-bounded)
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
-        self._message_text_cache: Dict[str, Optional[str]] = {}
+        self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
         self._pending_text_batches = self._text_batch_state.events
@@ -1626,6 +1632,10 @@ class FeishuAdapter(BasePlatformAdapter):
             .register_p2_customized_event(
                 "drive.notice.comment_add_v1",
                 self._on_drive_comment_event,
+            )
+            .register_p2_customized_event(
+                "vc.bot.meeting_invited_v1",
+                self._on_meeting_invited_event,
             )
             .build()
         )
@@ -2470,6 +2480,16 @@ class FeishuAdapter(BasePlatformAdapter):
             handle_drive_comment_event(self._client, data, self_open_id=self._bot_open_id),
         )
 
+    def _on_meeting_invited_event(self, data: Any) -> None:
+        """Handle VC bot meeting invitation notification (vc.bot.meeting_invited_v1)."""
+        from gateway.platforms.feishu_meeting_invite import handle_meeting_invited_event
+
+        loop = self._loop
+        if not self._loop_accepts_callbacks(loop):
+            logger.warning("[Feishu] Dropping meeting invite event before adapter loop is ready")
+            return
+        self._submit_on_loop(loop, handle_meeting_invited_event(self, data))
+
     def _on_reaction_event(self, event_type: str, data: Any) -> None:
         """Route user reactions on bot messages as synthetic text events."""
         event = getattr(data, "event", None)
@@ -2626,7 +2646,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if prompt_id is None:
             logger.debug("[Feishu] Card action missing update_prompt_id, ignoring")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
-        if prompt_id not in self._update_prompt_state:
+        state = self._update_prompt_state.get(prompt_id)
+        if not state:
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2637,12 +2658,33 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        if not self._is_interactive_operator_authorized(open_id):
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] Update prompt callback chat mismatch for %s (expected=%s, got=%s)",
+                prompt_id,
+                expected_chat_id,
+                callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
         user_name = self._get_cached_sender_name(open_id) or open_id
-        if not self._submit_on_loop(loop, self._resolve_update_prompt(prompt_id, answer, user_name)):
+        if not self._submit_on_loop(
+            loop,
+            self._resolve_update_prompt(
+                prompt_id,
+                answer,
+                user_name,
+                open_id=open_id,
+                chat_id=callback_chat_id,
+            ),
+        ):
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
         if P2CardActionTriggerResponse is None:
@@ -2693,11 +2735,37 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.error("Failed to resolve gateway approval from Feishu button: %s", exc)
 
-    async def _resolve_update_prompt(self, prompt_id: Any, answer: str, user_name: str) -> None:
+    async def _resolve_update_prompt(
+        self,
+        prompt_id: Any,
+        answer: str,
+        user_name: str,
+        *,
+        open_id: str = "",
+        chat_id: str = "",
+    ) -> None:
         """Persist an update prompt answer for the detached update process."""
-        state = self._update_prompt_state.pop(prompt_id, None)
+        state = self._update_prompt_state.get(prompt_id)
         if not state:
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
+            return
+        if open_id:
+            sender_id = SimpleNamespace(open_id=open_id, user_id="")
+            if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+                logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
+                return
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if expected_chat_id and chat_id and expected_chat_id != chat_id:
+            logger.warning(
+                "[Feishu] Update prompt %s chat mismatch (expected=%s, got=%s)",
+                prompt_id,
+                expected_chat_id,
+                chat_id,
+            )
+            return
+        state = self._update_prompt_state.pop(prompt_id, None)
+        if not state:
+            logger.debug("[Feishu] Update prompt %s already resolved while validating callback", prompt_id)
             return
         try:
             self._write_update_prompt_response(answer)
@@ -2835,11 +2903,28 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _get_chat_lock(self, chat_id: str) -> asyncio.Lock:
-        """Return (creating if needed) the per-chat asyncio.Lock for serial message processing."""
+        """Return (creating if needed) the per-chat asyncio.Lock for serial message processing.
+
+        Bounded with LRU eviction so a long-running gateway that sees many
+        distinct chats does not grow ``_chat_locks`` without limit. Locks that
+        are currently held are never evicted; if every entry is locked we fall
+        back to dropping the least-recently-used one.
+        """
         lock = self._chat_locks.get(chat_id)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._chat_locks[chat_id] = lock
+        if lock is not None:
+            self._chat_locks.move_to_end(chat_id)
+            return lock
+        if len(self._chat_locks) >= self.CHAT_LOCK_MAX_SIZE:
+            evicted = False
+            for key in list(self._chat_locks):
+                if not self._chat_locks[key].locked():
+                    self._chat_locks.pop(key)
+                    evicted = True
+                    break
+            if not evicted:
+                self._chat_locks.pop(next(iter(self._chat_locks)))
+        lock = asyncio.Lock()
+        self._chat_locks[chat_id] = lock
         return lock
 
     async def _handle_message_with_guards(self, event: MessageEvent) -> None:
@@ -3334,6 +3419,8 @@ class FeishuAdapter(BasePlatformAdapter):
             self._on_card_action_trigger(data)
         elif event_type == "drive.notice.comment_add_v1":
             self._on_drive_comment_event(data)
+        elif event_type == "vc.bot.meeting_invited_v1":
+            self._on_meeting_invited_event(data)
         else:
             logger.debug("[Feishu] Ignoring webhook event type: %s", event_type or "unknown")
         return web.json_response({"code": 0, "msg": "ok"})
@@ -3939,6 +4026,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client or not message_id:
             return None
         if message_id in self._message_text_cache:
+            self._message_text_cache.move_to_end(message_id)
             return self._message_text_cache[message_id]
         try:
             request = self._build_get_message_request(message_id)
@@ -3960,6 +4048,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 mentions=parent_mentions,
             )
             self._message_text_cache[message_id] = text
+            while len(self._message_text_cache) > _FEISHU_MESSAGE_TEXT_CACHE_SIZE:
+                self._message_text_cache.popitem(last=False)
             return text
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
@@ -4395,17 +4485,20 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             request = self._build_create_message_request("thread_id", body)
         else:
+            receive_id = chat_id
+            receive_id_type = "chat_id"
+            if chat_id.startswith("feishu_user_id:"):
+                receive_id = chat_id.split(":", 1)[1]
+                receive_id_type = "user_id"
+            elif chat_id.startswith("ou_"):
+                receive_id_type = "open_id"
+
             body = self._build_create_message_body(
-                receive_id=chat_id,
+                receive_id=receive_id,
                 msg_type=msg_type,
                 content=payload,
                 uuid_value=str(uuid.uuid4()),
             )
-            # Detect whether chat_id is a user open_id (DM) or a chat_id (group).
-            if chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
-            else:
-                receive_id_type = "chat_id"
             request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 

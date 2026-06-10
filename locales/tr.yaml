@@ -290,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Geri alınacak bir şey yok."
-    removed:               "↩️ {count} mesaj geri alındı.\nKaldırıldı: \"{preview}\""
+    removed:               "↩️ {turns} tur geri alındı ({count} mesaj).\nYedeklendiği yer: \"{preview}\"\nYukarıdaki metni kopyalayıp/düzenleyip göndererek buradan yeniden sorabilirsiniz."
+    invalid_count:         "Geçersiz sayı \"{arg}\" — /undo veya /undo N kullanın."
 
   update:
     platform_not_messaging:  "✗ /update yalnızca mesajlaşma platformlarında kullanılabilir. Terminalden `hermes update` komutunu çalıştırın."
@@ -342,6 +343,8 @@ gateway:
     label_off:             "Kapalı (yalnızca metin)"
     label_voice_only:      "Açık (sesli mesajlara sesli yanıt)"
     label_all:             "TTS (tüm mesajlara sesli yanıt)"
+    help:                  "{toggle}\n\n**/voice nasıl çalışır**\n• `/voice on` — sesli mesaj gönderdiğinde sesli yanıt\n• `/voice tts` — *her* mesaja sesli yanıt\n• `/voice off` — yalnızca metin yanıtlarına dön\n• `/voice status` — geçerli modu göster\n• `/voice` (argümansız) — açık ve kapalı arasında hızlı geçiş{channels}"
+    help_channels:         "\n\n**Canlı ses kanalları (Discord)**\n• Önce bir ses kanalına katıl, sonra `/voice channel` — katılırım, dinlerim ve yanıtlarımı sesli söylerim\n• `/voice leave` — ses kanalından ayrıl"
 
   yolo:
     disabled:                   "⚠️ Bu oturumda YOLO modu **KAPALI** — tehlikeli komutlar onay gerektirecek."

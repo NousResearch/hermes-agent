@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import threading
 from pathlib import Path
 from typing import Any, Dict
@@ -106,7 +105,7 @@ def test_nous_adapter_authenticated_with_agent_key(tmp_path, monkeypatch):
 
 
 def test_nous_adapter_authenticated_with_refresh_token_only(tmp_path, monkeypatch):
-    """If access_token+refresh_token exist but no agent_key yet, we can still mint."""
+    """If access_token+refresh_token exist but no agent_key yet, we can still refresh."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
@@ -126,7 +125,7 @@ def test_nous_adapter_get_credential_uses_runtime_resolver(tmp_path, monkeypatch
     })
 
     refreshed_state = {
-        "api_key": "minted-bearer",
+        "api_key": "jwt-bearer",
         "base_url": "https://inference-api.nousresearch.com/v1",
         "expires_at": "2099-01-01T00:00:00Z",
     }
@@ -139,13 +138,13 @@ def test_nous_adapter_get_credential_uses_runtime_resolver(tmp_path, monkeypatch
         cred = adapter.get_credential()
 
     mock_resolve.assert_called_once()
-    assert cred.bearer == "minted-bearer"
+    assert cred.bearer == "jwt-bearer"
     assert cred.base_url == "https://inference-api.nousresearch.com/v1"
     assert cred.expires_at == "2099-01-01T00:00:00Z"
     assert cred.token_type == "Bearer"
 
 
-def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch):
+def test_nous_adapter_retry_credential_force_refreshes_on_jwt_401(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "jwt-access",
@@ -155,9 +154,8 @@ def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch)
         "inference_base_url": "https://inference-api.nousresearch.com/v1",
         "agent_key": "jwt-access",
     })
-
     refreshed_state = {
-        "api_key": "legacy-bearer",
+        "api_key": "fresh-jwt-bearer",
         "base_url": "https://inference-api.nousresearch.com/v1",
         "expires_at": "2099-01-01T00:00:00Z",
     }
@@ -176,11 +174,11 @@ def test_nous_adapter_retry_credential_forces_legacy_mint(tmp_path, monkeypatch)
         )
 
     assert cred is not None
-    assert cred.bearer == "legacy-bearer"
-    assert mock_resolve.call_args.kwargs["inference_auth_mode"] == "legacy"
+    assert cred.bearer == "fresh-jwt-bearer"
+    assert mock_resolve.call_args.kwargs["force_refresh"] is True
 
 
-def test_nous_adapter_retry_credential_skips_opaque_bearer(tmp_path, monkeypatch):
+def test_nous_adapter_retry_credential_skips_non_401(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "jwt-access",
@@ -197,7 +195,7 @@ def test_nous_adapter_retry_credential_skips_opaque_bearer(tmp_path, monkeypatch
                 bearer="opaque-bearer",
                 base_url="https://inference-api.nousresearch.com/v1",
             ),
-            status_code=401,
+            status_code=403,
         )
 
     assert cred is None
@@ -261,8 +259,8 @@ def test_nous_adapter_quarantines_terminal_refresh_failure(tmp_path, monkeypatch
     assert stored.get("credential_pool", {}).get("nous") == []
 
 
-def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path, monkeypatch):
-    """If the refresh helper succeeds but produces no agent_key, we surface a clear error."""
+def test_nous_adapter_get_credential_raises_when_no_jwt_returned(tmp_path, monkeypatch):
+    """If the refresh helper succeeds but produces no JWT, we surface a clear error."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _write_auth_store(tmp_path, {
         "access_token": "access-tok",
@@ -274,7 +272,7 @@ def test_nous_adapter_get_credential_raises_when_no_agent_key_returned(tmp_path,
         return_value={"access_token": "a", "refresh_token": "r"},
     ):
         adapter = NousPortalAdapter()
-        with pytest.raises(RuntimeError, match="did not return a usable agent_key"):
+        with pytest.raises(RuntimeError, match="did not return a usable inference JWT"):
             adapter.get_credential()
 
 

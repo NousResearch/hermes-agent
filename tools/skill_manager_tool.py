@@ -908,10 +908,10 @@ def skill_manage(
 
     Returns JSON string with results.
     """
-    # Write gate: off blocks the write; approve stages it for review (skills are
-    # too large to review inline, so they always stage regardless of origin).
-    # on (default) passes straight through. The gate is bypassed when this call
-    # is itself replaying an already-approved staged write (_skill_apply_pending).
+    # Approval gate: when on, stages the write for review (skills are too large
+    # to review inline, so they always stage regardless of origin); when off
+    # (default) passes straight through. The gate is bypassed when this call is
+    # itself replaying an already-approved staged write (_skill_apply_pending).
     gate_result = _apply_skill_write_gate(
         action, name, content=content, category=category,
         file_path=file_path, file_content=file_content,

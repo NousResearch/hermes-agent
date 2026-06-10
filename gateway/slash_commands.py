@@ -1955,12 +1955,12 @@ class GatewaySlashCommandsMixin:
         return t("gateway.reasoning.set_session", effort=effort)
 
     async def _handle_memory_command(self, event: MessageEvent) -> str:
-        """Handle /memory — review pending memory writes + set write mode.
+        """Handle /memory — review pending memory writes + toggle the approval gate.
 
         Memory entries are small enough to review inline in a chat bubble, so
-        the full pending/approve/reject/mode flow works on every platform.
-        Mode changes persist to config.yaml and evict the cached agent so the
-        new write_mode takes effect on the next message.
+        the full pending/approve/reject/approval flow works on every platform.
+        Gate changes persist to config.yaml and evict the cached agent so the
+        new setting takes effect on the next message.
         """
         from gateway.run import _hermes_home
         from hermes_cli.write_approval_commands import handle_pending_subcommand
@@ -1972,15 +1972,15 @@ class GatewaySlashCommandsMixin:
         session_key = self._session_key_for_source(event.source)
         config_path = _hermes_home / "config.yaml"
 
-        def _set_mode(mode: str):
+        def _set_approval(enabled: bool):
             import yaml
             user_config = {}
             if config_path.exists():
                 with open(config_path, encoding="utf-8") as f:
                     user_config = yaml.safe_load(f) or {}
-            user_config.setdefault("memory", {})["write_mode"] = mode
+            user_config.setdefault("memory", {})["write_approval"] = bool(enabled)
             atomic_yaml_write(config_path, user_config)
-            # New write_mode must take effect next message → drop cached agent.
+            # New setting must take effect next message → drop cached agent.
             self._evict_cached_agent(session_key)
 
         # Apply approved writes against a fresh on-disk store (the gateway has
@@ -1989,11 +1989,11 @@ class GatewaySlashCommandsMixin:
         store.load_from_disk()
 
         out = handle_pending_subcommand(
-            wa.MEMORY, args, memory_store=store, set_mode_fn=_set_mode,
+            wa.MEMORY, args, memory_store=store, set_mode_fn=_set_approval,
         )
         if out is None:
             out = ("Unknown /memory subcommand. Use: pending, approve <id>, "
-                   "reject <id>, mode <on|off|approve>.")
+                   "reject <id>, approval <on|off>.")
         return out
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:

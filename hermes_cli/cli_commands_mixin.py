@@ -1306,12 +1306,12 @@ class CLICommandsMixin:
         parts = cmd.strip().split()
         args = parts[1:] if len(parts) > 1 else []
         if args and args[0].lower() in {"pending", "approve", "apply", "reject",
-                                        "deny", "drop", "diff", "mode"}:
+                                        "deny", "drop", "diff", "approval", "mode"}:
             from hermes_cli.write_approval_commands import handle_pending_subcommand
             from tools import write_approval as wa
             out = handle_pending_subcommand(
                 wa.SKILLS, args,
-                set_mode_fn=lambda m: self._save_write_mode("skills", m),
+                set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
             )
             if out is not None:
                 print(out)
@@ -1320,7 +1320,7 @@ class CLICommandsMixin:
         handle_skills_slash(cmd, ChatConsole())
 
     def _handle_memory_command(self, cmd: str):
-        """Handle /memory slash command — pending review + write-mode control."""
+        """Handle /memory slash command — pending review + approval-gate toggle."""
         from hermes_cli.write_approval_commands import handle_pending_subcommand
         from tools import write_approval as wa
         parts = cmd.strip().split()
@@ -1329,17 +1329,17 @@ class CLICommandsMixin:
         out = handle_pending_subcommand(
             wa.MEMORY, args,
             memory_store=store,
-            set_mode_fn=lambda m: self._save_write_mode("memory", m),
+            set_mode_fn=lambda enabled: self._save_write_approval("memory", enabled),
         )
         if out is None:
             out = ("Unknown /memory subcommand. "
-                   "Use: pending, approve <id>, reject <id>, mode <on|off|approve>.")
+                   "Use: pending, approve <id>, reject <id>, approval <on|off>.")
         print(out)
 
-    def _save_write_mode(self, subsystem: str, mode: str):
-        """Persist <subsystem>.write_mode to config (for /memory|/skills mode)."""
+    def _save_write_approval(self, subsystem: str, enabled: bool):
+        """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
         from cli import save_config_value
-        save_config_value(f"{subsystem}.write_mode", mode)
+        save_config_value(f"{subsystem}.write_approval", bool(enabled))
 
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.

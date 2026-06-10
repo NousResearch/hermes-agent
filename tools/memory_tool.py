@@ -681,8 +681,8 @@ def memory_tool(
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
-    # Write gate: off blocks the write; approve stages it (background) or
-    # prompts inline (foreground). on (default) passes straight through.
+    # Approval gate: when on, stages the write (background) or prompts inline
+    # (foreground); when off (default) passes straight through.
     gate_result = _apply_write_gate(action, target, content, old_text)
     if gate_result is not None:
         return gate_result

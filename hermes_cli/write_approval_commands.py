@@ -20,7 +20,10 @@ from typing import List, Optional
 
 from tools import write_approval as wa
 
-_VALID_MODES = (wa.MODE_ON, wa.MODE_OFF, wa.MODE_APPROVE)
+
+def _fmt_state(subsystem: str) -> str:
+    on = wa.write_approval_enabled(subsystem)
+    return f"{subsystem}.write_approval = {'on' if on else 'off'}"
 
 
 # ---------------------------------------------------------------------------
@@ -63,18 +66,17 @@ def handle_pending_subcommand(
         memory_store: live MemoryStore for applying approved memory writes
             (CLI passes ``self.agent._memory_store``; gateway applies against a
             freshly loaded store).
-        set_mode_fn: optional callable ``(mode: str) -> None`` that persists the
-            new write_mode to config (gateway provides this; CLI uses its own
-            ``save_config_value`` and passes a closure).
+        set_mode_fn: optional callable ``(enabled: bool) -> None`` that
+            persists the new write_approval boolean to config (gateway provides
+            this; CLI uses its own ``save_config_value`` and passes a closure).
 
     Returns a text string to show the user. Returns None when the args are not
     a write-approval subcommand (caller falls through to its other handling,
     e.g. /skills search).
     """
     if not args:
-        # Bare /memory or /skills with no sub → show pending + current mode.
-        mode = wa.get_write_mode(subsystem)
-        return f"{subsystem}.write_mode = {mode}\n\n" + _fmt_pending_list(subsystem)
+        # Bare /memory or /skills with no sub → show pending + gate state.
+        return f"{_fmt_state(subsystem)}\n\n" + _fmt_pending_list(subsystem)
 
     sub = args[0].lower()
     rest = args[1:]
@@ -91,8 +93,8 @@ def handle_pending_subcommand(
     if sub == "diff" and subsystem == wa.SKILLS:
         return _diff(rest)
 
-    if sub == "mode":
-        return _set_mode(subsystem, rest, set_mode_fn)
+    if sub in {"approval", "mode"}:  # 'mode' kept as a back-compat alias
+        return _set_approval(subsystem, rest, set_mode_fn)
 
     return None  # not ours — caller handles
 
@@ -179,19 +181,29 @@ def _diff(rest: List[str]) -> str:
     return header + "\n" + diff
 
 
-def _set_mode(subsystem: str, rest: List[str], set_mode_fn) -> str:
+def _set_approval(subsystem: str, rest: List[str], set_mode_fn) -> str:
+    """Turn the approval gate on/off for a subsystem.
+
+    ``set_mode_fn`` (when provided) persists the new boolean to config.
+    """
     if not rest:
-        cur = wa.get_write_mode(subsystem)
-        return (f"{subsystem}.write_mode = {cur}\n"
-                f"Set with: /{subsystem} mode <on|off|approve>")
-    mode = rest[0].lower()
-    if mode not in _VALID_MODES:
-        return f"Invalid mode '{mode}'. Use: on, off, approve."
+        return (f"{_fmt_state(subsystem)}\n"
+                f"Set with: /{subsystem} approval <on|off>")
+    arg = rest[0].strip().lower()
+    truthy = {"on", "true", "yes", "1", "enable", "enabled"}
+    falsey = {"off", "false", "no", "0", "disable", "disabled"}
+    if arg in truthy:
+        enabled = True
+    elif arg in falsey:
+        enabled = False
+    else:
+        return f"Invalid value '{arg}'. Use: on or off."
     if set_mode_fn is None:
-        return (f"To change {subsystem} write mode, run:\n"
-                f"  hermes config set {subsystem}.write_mode {mode}")
+        val = "true" if enabled else "false"
+        return (f"To change the {subsystem} approval gate, run:\n"
+                f"  hermes config set {subsystem}.write_approval {val}")
     try:
-        set_mode_fn(mode)
+        set_mode_fn(enabled)
     except Exception as e:
-        return f"Failed to set {subsystem}.write_mode: {e}"
-    return f"{subsystem}.write_mode set to '{mode}'."
+        return f"Failed to set {subsystem}.write_approval: {e}"
+    return f"{subsystem}.write_approval set to '{'on' if enabled else 'off'}'."

@@ -58,48 +58,48 @@ MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
 
-# Tri-state write modes
-MODE_ON = "on"
-MODE_OFF = "off"
-MODE_APPROVE = "approve"
-_VALID_MODES = (MODE_ON, MODE_OFF, MODE_APPROVE)
+# Config key (per subsystem). A single boolean: the approval gate is OFF by
+# default (writes flow freely, the pre-gate behaviour), and ON means stage /
+# prompt every write for the user's approval. There is intentionally no third
+# "block all writes" state — to disable a subsystem entirely use its own
+# enable flag (e.g. ``memory.memory_enabled: false``).
+CONFIG_KEY = "write_approval"
 
 
 # ---------------------------------------------------------------------------
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def get_write_mode(subsystem: str) -> str:
-    """Return the configured write_mode for ``subsystem`` (memory|skills).
+def write_approval_enabled(subsystem: str) -> bool:
+    """Return whether the approval gate is enabled for ``subsystem``.
 
-    Reads ``<subsystem>.write_mode`` from config.yaml. Falls back to ``on``
-    (current behaviour) for any unset / invalid value so existing installs are
-    unaffected until the user opts in.
+    Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
+    ``False`` (gate off — writes flow freely) for any unset / invalid value so
+    existing installs keep their current behaviour until the user opts in.
     """
     if subsystem not in _SUBSYSTEMS:
-        return MODE_ON
+        return False
     try:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
-        raw = cfg_get(cfg, subsystem, "write_mode", default=MODE_ON)
+        raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
     except Exception:
-        return MODE_ON
-    return _normalize_mode(raw)
+        return False
+    return _normalize_enabled(raw)
 
 
-def _normalize_mode(value: Any) -> str:
-    """Coerce a config value to a valid mode string.
+def _normalize_enabled(value: Any) -> bool:
+    """Coerce a config value to a bool. Default (unknown) is False (gate off).
 
-    YAML 1.1 parses bare ``off`` / ``on`` as booleans, so handle bools the way
-    the approval-mode normalizer does.
+    Accepts real bools and the usual truthy/falsey strings. YAML 1.1 parses
+    bare ``on``/``off``/``yes``/``no`` as bools already, so the string branch
+    is mostly for hand-edited configs.
     """
     if isinstance(value, bool):
-        return MODE_OFF if value is False else MODE_ON
+        return value
     if isinstance(value, str):
-        v = value.strip().lower()
-        if v in _VALID_MODES:
-            return v
-    return MODE_ON
+        return value.strip().lower() in {"on", "true", "yes", "1", "approve", "enabled"}
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -260,29 +260,19 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
         inline_detail: full content shown in the inline prompt (memory entries
             are small; skills never take the inline path).
 
-    Mode matrix:
-        on       → allow
-        off      → blocked
-        approve  → memory + foreground   → inline approve/deny prompt
-                   memory + background    → stage
-                   skills (any origin)    → stage (too big to review inline)
-    """
-    mode = get_write_mode(subsystem)
+    Decision matrix:
+        gate off (default)           → allow (writes flow freely)
+        gate on, memory + foreground → inline approve/deny prompt
+        gate on, memory + background → stage
+        gate on, skills (any origin) → stage (too big to review inline)
 
-    if mode == MODE_ON:
+    Note: there is no config-driven "blocked" outcome — the gate only ever
+    delays a write for approval, never silently refuses it. ``blocked`` is
+    still produced when the user *actively denies* an inline prompt.
+    """
+    if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
 
-    if mode == MODE_OFF:
-        return GateDecision(
-            blocked=True,
-            message=(
-                f"{subsystem.capitalize()} writes are disabled "
-                f"({subsystem}.write_mode = off). The change was not saved. "
-                f"Set {subsystem}.write_mode to 'on' or 'approve' to allow writes."
-            ),
-        )
-
-    # mode == approve
     background = is_background()
 
     # Skills always stage — a SKILL.md is too large to review inline, and a
@@ -292,7 +282,7 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
         return GateDecision(
             stage=True,
             message=(
-                f"Staged for approval ({subsystem}.write_mode = approve). "
+                f"Staged for approval ({subsystem}.write_approval is on). "
                 f"Not yet saved — review with {where}."
             ),
         )
@@ -315,7 +305,7 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     return GateDecision(
         stage=True,
         message=(
-            "Staged for approval (memory.write_mode = approve). "
+            "Staged for approval (memory.write_approval is on). "
             "Not yet saved — review with /memory pending."
         ),
     )

@@ -1653,18 +1653,19 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
-        # Write gate for the memory tool (add/replace/remove), applied to BOTH
+        # Approval gate for memory writes (add/replace/remove), applied to BOTH
         # foreground agent turns and the background self-improvement review fork
-        # (the source of unprompted "wrong assumption" saves users reported):
-        #   on      — write freely (default, current behaviour)
-        #   off     — never write; the memory tool returns a clean disabled result
-        #   approve — foreground writes block on an inline approve/deny prompt
-        #             (entries are small enough to review in a chat bubble);
-        #             background-review writes are staged for review instead of
-        #             committed (a daemon thread cannot block on a prompt).
-        #             Pending entries: /memory pending, /memory approve <id>,
-        #             /memory reject <id>.
-        "write_mode": "on",
+        # (the source of unprompted "wrong assumption" saves users reported).
+        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        #   true            — require approval: foreground writes prompt inline
+        #                     (entries are small enough to review in a chat
+        #                     bubble); background-review writes are staged
+        #                     instead of committed (a daemon thread cannot block
+        #                     on a prompt). Review staged entries with
+        #                     /memory pending, /memory approve <id>,
+        #                     /memory reject <id>.
+        # To disable memory entirely, use memory_enabled: false instead.
+        "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
@@ -1769,17 +1770,18 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
-        # Write gate for skill_manage (create/edit/patch/write_file/delete/
+        # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
-        # background self-improvement review fork:
-        #   on      — write freely (default, current behaviour)
-        #   off     — never write; skill_manage returns a clean disabled result
-        #   approve — stage the write for review instead of committing.
-        #             Pending skills are listed with /skills pending, reviewed
-        #             with /skills diff <id> (full diff — CLI/dashboard/file,
-        #             never crammed into a chat bubble), and applied with
-        #             /skills approve <id> or dropped with /skills reject <id>.
-        "write_mode": "on",
+        # background self-improvement review fork.
+        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        #   true            — require approval: stage the write for review
+        #                     instead of committing (a SKILL.md is too large to
+        #                     review inline, so skills always stage rather than
+        #                     prompt). List with /skills pending, inspect with
+        #                     /skills diff <id> (full diff — CLI/dashboard/file,
+        #                     never crammed into a chat bubble), apply with
+        #                     /skills approve <id> or drop with /skills reject <id>.
+        "write_approval": False,
     },
 
     # Curator — background skill maintenance.
@@ -2463,7 +2465,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 28,
+    "_config_version": 29,
 }
 
 # =============================================================================
@@ -4733,6 +4735,34 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             results["config_added"].append("model_catalog.ttl_hours 24→1")
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
+
+    # ── Version 28 → 29: rename memory/skills write_mode → write_approval ──
+    # The tri-state write_mode (on|off|approve) was replaced by a clear boolean
+    # write_approval (default false = gate off, writes flow freely; true =
+    # require approval). Only an explicit "approve" carried gating intent, so
+    # it maps to true; everything else (on/off/unset) → false. The old
+    # "off = block all writes" mode is dropped — memory_enabled: false disables
+    # memory entirely. Only rewrite a key the user actually persisted; never
+    # invent one.
+    if current_ver < 29:
+        config = read_raw_config()
+        touched = False
+        for subsystem in ("memory", "skills"):
+            sub = config.get(subsystem)
+            if not isinstance(sub, dict) or "write_mode" not in sub:
+                continue
+            old = sub.pop("write_mode")
+            old_norm = old.strip().lower() if isinstance(old, str) else old
+            sub["write_approval"] = (old_norm == "approve")
+            config[subsystem] = sub
+            touched = True
+            results["config_added"].append(
+                f"{subsystem}.write_mode → write_approval={sub['write_approval']}"
+            )
+        if touched:
+            save_config(config)
+            if not quiet:
+                print("  ✓ Renamed write_mode → write_approval (boolean gate)")
 
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")

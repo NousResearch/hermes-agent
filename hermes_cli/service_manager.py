@@ -15,7 +15,6 @@ profile create/delete hooks (Phase 4) and the s6 dispatch path in
 ``hermes gateway start/stop/restart`` when running inside a container.
 """
 from __future__ import annotations
-import shutil
 
 import re
 from pathlib import Path
@@ -103,10 +102,10 @@ def detect_service_manager() -> ServiceManagerKind:
     # Protocol type or validate_profile_name().
     from hermes_constants import is_container
     from hermes_cli.gateway import (
-    is_macos,
-    is_windows,
-    supports_systemd_services,
-    supports_openrc_services,
+        is_macos,
+        is_windows,
+        supports_systemd_services,
+        supports_openrc_services,
     )
 
     if is_container() and _s6_running():

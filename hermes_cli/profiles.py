@@ -650,6 +650,36 @@ class ProfileInfo:
     # surfaces a "review" badge in this case so the user can edit or
     # accept.
     description_auto: bool = False
+    # True when the profile has a picture (``avatar.<ext>``) on disk.
+    has_avatar: bool = False
+    # mtime (epoch seconds) of the avatar file, used as a cache-busting
+    # version so clients only re-fetch the image when it actually changes.
+    # None when there is no avatar.
+    avatar_updated_at: Optional[float] = None
+
+
+# ---------------------------------------------------------------------------
+# Profile picture (avatar)
+# ---------------------------------------------------------------------------
+#
+# Stored as a single ``avatar.<ext>`` file in the profile directory, mirroring
+# the per-profile-file pattern used by SOUL.md. Living inside the profile dir
+# means the picture follows the profile through rename/delete for free.
+
+_AVATAR_EXTS = (".png", ".jpg", ".webp")
+
+
+def find_profile_avatar(profile_dir: Path) -> Optional[Path]:
+    """Return the profile's ``avatar.<ext>`` file if one exists, else None.
+
+    Checks the known extensions in order; there should only ever be one
+    (``PUT`` removes any prior variant before writing).
+    """
+    for ext in _AVATAR_EXTS:
+        candidate = profile_dir / f"avatar{ext}"
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 def _read_distribution_meta(profile_dir: Path) -> tuple:
@@ -874,6 +904,21 @@ def write_profile_meta(
 # CRUD operations
 # ---------------------------------------------------------------------------
 
+def _avatar_meta(profile_dir: Path) -> tuple:
+    """Return ``(has_avatar, avatar_updated_at)`` for a profile directory.
+
+    Best-effort like ``_count_skills`` — a stat failure must never break
+    ``hermes profile list``.
+    """
+    try:
+        avatar_path = find_profile_avatar(profile_dir)
+        if avatar_path is None:
+            return False, None
+        return True, avatar_path.stat().st_mtime
+    except Exception:
+        return False, None
+
+
 def list_profiles() -> List[ProfileInfo]:
     """Return info for all profiles, including the default."""
     profiles = []
@@ -885,6 +930,7 @@ def list_profiles() -> List[ProfileInfo]:
         model, provider = _read_config_model(default_home)
         dist_name, dist_version, dist_source = _read_distribution_meta(default_home)
         meta = read_profile_meta(default_home)
+        has_avatar, avatar_updated_at = _avatar_meta(default_home)
         profiles.append(ProfileInfo(
             name="default",
             path=default_home,
@@ -899,6 +945,8 @@ def list_profiles() -> List[ProfileInfo]:
             distribution_source=dist_source,
             description=meta.get("description", ""),
             description_auto=meta.get("description_auto", False),
+            has_avatar=has_avatar,
+            avatar_updated_at=avatar_updated_at,
         ))
 
     # Named profiles
@@ -925,6 +973,7 @@ def list_profiles() -> List[ProfileInfo]:
                 alias_path = None
             dist_name, dist_version, dist_source = _read_distribution_meta(entry)
             meta = read_profile_meta(entry)
+            has_avatar, avatar_updated_at = _avatar_meta(entry)
             profiles.append(ProfileInfo(
                 name=name,
                 path=entry,
@@ -941,6 +990,8 @@ def list_profiles() -> List[ProfileInfo]:
                 distribution_source=dist_source,
                 description=meta.get("description", ""),
                 description_auto=meta.get("description_auto", False),
+                has_avatar=has_avatar,
+                avatar_updated_at=avatar_updated_at,
             ))
 
     return profiles

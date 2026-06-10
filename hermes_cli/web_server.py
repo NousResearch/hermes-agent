@@ -12775,6 +12775,10 @@ class ProfileSoulUpdate(BaseModel):
     content: str
 
 
+class ProfileAvatarUpdate(BaseModel):
+    data_url: str
+
+
 class ProfileActiveUpdate(BaseModel):
     name: str
 
@@ -12815,6 +12819,8 @@ def _profile_to_dict(info) -> Dict[str, Any]:
         "distribution_version": _profile_attr(info, "distribution_version"),
         "distribution_source": _profile_attr(info, "distribution_source"),
         "has_alias": _profile_attr(info, "alias_path") is not None,
+        "has_avatar": bool(_profile_attr(info, "has_avatar", False)),
+        "avatar_updated_at": _profile_attr(info, "avatar_updated_at"),
     }
 
 
@@ -12829,6 +12835,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
     default_home = profiles_mod._get_default_hermes_home()
     if default_home.is_dir():
         model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
+        has_avatar, avatar_updated_at = profiles_mod._avatar_meta(default_home)
         profiles.append({
             "name": "default",
             "path": str(default_home),
@@ -12844,6 +12851,8 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             "distribution_version": None,
             "distribution_source": None,
             "has_alias": False,
+            "has_avatar": has_avatar,
+            "avatar_updated_at": avatar_updated_at,
         })
 
     profiles_root = profiles_mod._get_profiles_root()
@@ -12852,6 +12861,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
                 continue
             model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
+            has_avatar, avatar_updated_at = profiles_mod._avatar_meta(entry)
             profiles.append({
                 "name": entry.name,
                 "path": str(entry),
@@ -12867,6 +12877,8 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "distribution_version": None,
                 "distribution_source": None,
                 "has_alias": False,
+                "has_avatar": has_avatar,
+                "avatar_updated_at": avatar_updated_at,
             })
 
     return profiles
@@ -13281,6 +13293,93 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
+    return {"ok": True}
+
+
+# Profile picture (avatar) endpoints. The image lives as ``avatar.<ext>`` in the
+# profile directory (mirrors SOUL.md), so it follows the profile through rename
+# and delete with no extra bookkeeping. Transport is a JSON data URL both ways.
+_AVATAR_MIME_EXT = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/webp": ".webp",
+}
+_AVATAR_EXT_MIME = {ext: mime for mime, ext in _AVATAR_MIME_EXT.items()}
+_AVATAR_MAX_BYTES = 2 * 1024 * 1024
+_AVATAR_DATA_URL_RE = re.compile(r"^data:(image/(?:png|jpeg|webp));base64,(.+)$", re.DOTALL)
+
+
+@app.get("/api/profiles/{name}/avatar")
+async def get_profile_avatar(name: str):
+    """Return the profile's picture as a base64 data URL, or null if unset.
+
+    Mirrors the soul endpoint's no-404-on-missing behavior so the client can
+    treat "no picture" as a normal state rather than an error.
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    avatar_path = profiles_mod.find_profile_avatar(_resolve_profile_dir(name))
+    if avatar_path is None:
+        return {"data_url": None, "exists": False}
+    content_type = _AVATAR_EXT_MIME.get(avatar_path.suffix.lower(), "image/png")
+    try:
+        encoded = base64.b64encode(avatar_path.read_bytes()).decode("ascii")
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not read avatar: {e}")
+    return {"data_url": f"data:{content_type};base64,{encoded}", "exists": True}
+
+
+@app.put("/api/profiles/{name}/avatar")
+async def update_profile_avatar(name: str, body: ProfileAvatarUpdate):
+    """Store a profile picture from a ``data:image/...;base64,...`` payload.
+
+    Validates the mime against an allowlist and caps the decoded size; replaces
+    any existing ``avatar.*`` so exactly one variant remains on disk.
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    profile_dir = _resolve_profile_dir(name)
+    match = _AVATAR_DATA_URL_RE.match(body.data_url or "")
+    if not match:
+        raise HTTPException(status_code=400, detail="Expected a PNG, JPEG, or WebP data URL")
+    mime, payload = match.group(1), match.group(2)
+    ext = _AVATAR_MIME_EXT[mime]
+    # Reject oversized payloads on encoded length first (base64 is ~4/3 the
+    # decoded size) so a huge body never gets decoded into memory at all.
+    if len(payload) > _AVATAR_MAX_BYTES * 4 // 3 + 4:
+        raise HTTPException(status_code=413, detail="Image too large")
+    try:
+        data = base64.b64decode(payload, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Invalid base64 image data")
+    if len(data) > _AVATAR_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="Image too large")
+
+    try:
+        # Drop any prior variant first so only one avatar.* file ever exists.
+        existing = profiles_mod.find_profile_avatar(profile_dir)
+        if existing is not None and existing.suffix != ext:
+            existing.unlink(missing_ok=True)
+        avatar_path = profile_dir / f"avatar{ext}"
+        avatar_path.write_bytes(data)
+    except OSError as e:
+        _log.exception("PUT /api/profiles/%s/avatar failed", name)
+        raise HTTPException(status_code=500, detail=f"Could not write avatar: {e}")
+    return {"ok": True, "avatar_updated_at": avatar_path.stat().st_mtime}
+
+
+@app.delete("/api/profiles/{name}/avatar")
+async def delete_profile_avatar(name: str):
+    """Remove the profile's picture. Idempotent — succeeds even if unset."""
+    from hermes_cli import profiles as profiles_mod
+
+    profile_dir = _resolve_profile_dir(name)
+    try:
+        for ext in profiles_mod._AVATAR_EXTS:
+            (profile_dir / f"avatar{ext}").unlink(missing_ok=True)
+    except OSError as e:
+        _log.exception("DELETE /api/profiles/%s/avatar failed", name)
+        raise HTTPException(status_code=500, detail=f"Could not delete avatar: {e}")
     return {"ok": True}
 
 

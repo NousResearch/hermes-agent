@@ -4416,6 +4416,129 @@ class TestNewEndpoints:
         resp = self.client.get("/api/profiles/nonexistent/soul")
         assert resp.status_code == 404
 
+    # --- Profile avatar (picture) endpoints ---
+
+    # 1x1 transparent PNG, the smallest valid image we can round-trip.
+    _PNG_DATA_URL = (
+        "data:image/png;base64,"
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/wH5AAAAAElFTkSuQmCC"
+    )
+
+    def test_profile_avatar_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "pic-prof"})
+
+        # No picture yet.
+        empty = self.client.get("/api/profiles/pic-prof/avatar")
+        assert empty.status_code == 200
+        assert empty.json() == {"data_url": None, "exists": False}
+
+        put = self.client.put(
+            "/api/profiles/pic-prof/avatar",
+            json={"data_url": self._PNG_DATA_URL},
+        )
+        assert put.status_code == 200
+        assert put.json()["ok"] is True
+        assert put.json()["avatar_updated_at"] is not None
+
+        got = self.client.get("/api/profiles/pic-prof/avatar").json()
+        assert got["exists"] is True
+        assert got["data_url"] == self._PNG_DATA_URL
+
+        # The list reflects the picture for cache-busting.
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["pic-prof"]["has_avatar"] is True
+        assert profiles["pic-prof"]["avatar_updated_at"] is not None
+
+        # Delete clears it.
+        assert self.client.delete("/api/profiles/pic-prof/avatar").status_code == 200
+        assert self.client.get("/api/profiles/pic-prof/avatar").json()["exists"] is False
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["pic-prof"]["has_avatar"] is False
+
+        self.client.delete("/api/profiles/pic-prof")
+
+    def test_profile_avatar_replaces_prior_variant(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "swap-prof"})
+
+        # Store a PNG, then a WebP — only one avatar.* file may remain.
+        assert self.client.put(
+            "/api/profiles/swap-prof/avatar", json={"data_url": self._PNG_DATA_URL}
+        ).status_code == 200
+        webp_data_url = "data:image/webp;base64,UklGRhIAAABXRUJQVlA4TAYAAAAvAAAAAAfQ//73v/+BiOh/AAA="
+        assert self.client.put(
+            "/api/profiles/swap-prof/avatar", json={"data_url": webp_data_url}
+        ).status_code == 200
+
+        profile_dir = get_hermes_home() / "profiles" / "swap-prof"
+        avatar_files = sorted(p.name for p in profile_dir.glob("avatar.*"))
+        assert avatar_files == ["avatar.webp"]
+
+    def test_profile_avatar_rejects_non_image(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "bad-prof"})
+
+        text = self.client.put(
+            "/api/profiles/bad-prof/avatar",
+            json={"data_url": "data:text/plain;base64,aGVsbG8="},
+        )
+        assert text.status_code == 400
+
+        garbage = self.client.put(
+            "/api/profiles/bad-prof/avatar",
+            json={"data_url": "data:image/png;base64,not-valid-base64!!!"},
+        )
+        assert garbage.status_code == 400
+
+    def test_profile_avatar_rejects_oversized(self, monkeypatch):
+        import base64
+
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "big-prof"})
+
+        oversized = base64.b64encode(b"\x00" * (2 * 1024 * 1024 + 1)).decode("ascii")
+        resp = self.client.put(
+            "/api/profiles/big-prof/avatar",
+            json={"data_url": f"data:image/png;base64,{oversized}"},
+        )
+        assert resp.status_code == 413
+
+    def test_profile_avatar_survives_rename(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "rename-pic"})
+        assert self.client.put(
+            "/api/profiles/rename-pic/avatar", json={"data_url": self._PNG_DATA_URL}
+        ).status_code == 200
+
+        assert self.client.patch(
+            "/api/profiles/rename-pic", json={"new_name": "rename-pic-2"}
+        ).status_code == 200
+
+        got = self.client.get("/api/profiles/rename-pic-2/avatar").json()
+        assert got["exists"] is True
+        assert got["data_url"] == self._PNG_DATA_URL
+
+    def test_profile_avatar_unknown_profile_404(self):
+        assert self.client.get("/api/profiles/nope/avatar").status_code == 404
+        assert self.client.delete("/api/profiles/nope/avatar").status_code == 404
+        put = self.client.put(
+            "/api/profiles/nope/avatar", json={"data_url": self._PNG_DATA_URL}
+        )
+        assert put.status_code == 404
+
     # --- New profiles endpoints: active / description / model / describe-auto ---
 
     def test_profiles_active_defaults(self):

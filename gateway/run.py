@@ -13782,38 +13782,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             if agent is None:
                 # Config changed or first message — create fresh agent
-                agent = AIAgent(
-                    model=turn_route["model"],
+                # Phase 3 Brain-host seam (central-brain-openclaw.md §11 "3c/3d").
+                # Default OFF — zero import cost when the flag is absent.
+                agent_kwargs = {
+                    "model": turn_route["model"],
                     **turn_route["runtime"],
-                    max_iterations=max_iterations,
-                    quiet_mode=True,
-                    verbose_logging=False,
-                    enabled_toolsets=enabled_toolsets,
-                    disabled_toolsets=disabled_toolsets,
-                    ephemeral_system_prompt=combined_ephemeral or None,
-                    prefill_messages=self._prefill_messages or None,
-                    reasoning_config=reasoning_config,
-                    service_tier=self._service_tier,
-                    request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=pr.get("only"),
-                    providers_ignored=pr.get("ignore"),
-                    providers_order=pr.get("order"),
-                    provider_sort=pr.get("sort"),
-                    provider_require_parameters=pr.get("require_parameters", False),
-                    provider_data_collection=pr.get("data_collection"),
-                    session_id=session_id,
-                    platform=platform_key,
-                    user_id=source.user_id,
-                    user_id_alt=source.user_id_alt,
-                    user_name=source.user_name,
-                    chat_id=source.chat_id,
-                    chat_name=source.chat_name,
-                    chat_type=source.chat_type,
-                    thread_id=source.thread_id,
-                    gateway_session_key=session_key,
-                    session_db=self._session_db,
-                    fallback_model=self._fallback_model,
-                )
+                    "max_iterations": max_iterations,
+                    "quiet_mode": True,
+                    "verbose_logging": False,
+                    "enabled_toolsets": enabled_toolsets,
+                    "disabled_toolsets": disabled_toolsets,
+                    "ephemeral_system_prompt": combined_ephemeral or None,
+                    "prefill_messages": self._prefill_messages or None,
+                    "reasoning_config": reasoning_config,
+                    "service_tier": self._service_tier,
+                    "request_overrides": turn_route.get("request_overrides"),
+                    "providers_allowed": pr.get("only"),
+                    "providers_ignored": pr.get("ignore"),
+                    "providers_order": pr.get("order"),
+                    "provider_sort": pr.get("sort"),
+                    "provider_require_parameters": pr.get("require_parameters", False),
+                    "provider_data_collection": pr.get("data_collection"),
+                    "session_id": session_id,
+                    "platform": platform_key,
+                    "user_id": source.user_id,
+                    "user_id_alt": source.user_id_alt,
+                    "user_name": source.user_name,
+                    "chat_id": source.chat_id,
+                    "chat_name": source.chat_name,
+                    "chat_type": source.chat_type,
+                    "thread_id": source.thread_id,
+                    "gateway_session_key": session_key,
+                    "session_db": self._session_db,
+                    "fallback_model": self._fallback_model,
+                }
+                if os.environ.get("HERMES_BRAIN_HOST", "").strip() == "1":
+                    from agent.brain_host import AgentSpec, BrainHost
+                    agent = BrainHost.get().build_agent(
+                        AgentSpec(intent="gateway-run", kwargs=agent_kwargs)
+                    )
+                else:
+                    agent = AIAgent(**agent_kwargs)
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)

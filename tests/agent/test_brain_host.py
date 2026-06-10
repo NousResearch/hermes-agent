@@ -207,3 +207,175 @@ def test_flag_gate_on_routes_through_brain_host():
     assert isinstance(spec.kwargs, dict)
     # Spot-check a stable key that the gate path must forward.
     assert spec.kwargs.get("quiet_mode") is True
+
+
+# ---------------------------------------------------------------------------
+# Flag-gate tests — gateway/platforms/api_server._create_agent
+#
+# gateway.platforms.api_server._create_agent is importable and its
+# AIAgent construction is refactored into agent_kwargs, so we can drive
+# it directly with the same FakeAgent monkeypatching pattern used in
+# test_api_server.py.
+#
+# gateway/run.py's gate lives deep inside GatewayRunner._run_agent (an
+# async method with heavy I/O dependencies); that site is verified by
+# import-compilation + grep-assert (see task notes) rather than a
+# unit-driving test.
+# ---------------------------------------------------------------------------
+
+def _make_fake_runtime():
+    return {
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_key": "sk-test",
+        "api_mode": "anthropic_messages",
+    }
+
+
+def _patch_api_server_deps(extra_patches=None):
+    """Return a list of context managers that stub the heavy dependencies of
+    APIServerAdapter._create_agent so we can call it without real config."""
+    from unittest.mock import patch, MagicMock
+
+    patches = [
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value=_make_fake_runtime()),
+        patch("gateway.run._resolve_gateway_model", return_value="claude-opus-4-6"),
+        patch("gateway.run._load_gateway_config", return_value={}),
+        patch(
+            "gateway.run.GatewayRunner._load_reasoning_config",
+            staticmethod(lambda: None),
+        ),
+        patch(
+            "gateway.run.GatewayRunner._load_fallback_model",
+            staticmethod(lambda: None),
+        ),
+        patch("hermes_cli.tools_config._get_platform_tools", lambda *_: set()),
+    ]
+    if extra_patches:
+        patches.extend(extra_patches)
+    return patches
+
+
+def test_api_server_flag_gate_off_by_default():
+    """When HERMES_BRAIN_HOST is unset, api_server._create_agent must NOT
+    import agent.brain_host."""
+    from unittest.mock import MagicMock, patch
+    from gateway.platforms.api_server import APIServerAdapter
+    from gateway.config import PlatformConfig
+
+    os.environ.pop("HERMES_BRAIN_HOST", None)
+    sys.modules.pop("agent.brain_host", None)
+
+    mock_ai_agent = MagicMock()
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+
+    ctx_managers = _patch_api_server_deps([
+        patch("run_agent.AIAgent", mock_ai_agent),
+    ])
+    entered = []
+    try:
+        for cm in ctx_managers:
+            entered.append(cm.__enter__())
+        with patch.object(adapter, "_ensure_session_db", return_value=None):
+            with patch.dict(os.environ, {}, clear=False):
+                adapter._create_agent(session_id="test-off")
+        modules_after = set(sys.modules.keys())
+    finally:
+        for cm in reversed(ctx_managers):
+            cm.__exit__(None, None, None)
+
+    assert "agent.brain_host" not in modules_after, (
+        "agent.brain_host was imported even though HERMES_BRAIN_HOST is unset"
+    )
+    mock_ai_agent.assert_called_once()
+
+
+def test_api_server_flag_gate_off_when_zero():
+    """When HERMES_BRAIN_HOST=0, api_server._create_agent must NOT import
+    agent.brain_host."""
+    from unittest.mock import MagicMock, patch
+    from gateway.platforms.api_server import APIServerAdapter
+    from gateway.config import PlatformConfig
+
+    sys.modules.pop("agent.brain_host", None)
+
+    mock_ai_agent = MagicMock()
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+
+    ctx_managers = _patch_api_server_deps([
+        patch("run_agent.AIAgent", mock_ai_agent),
+        patch.dict(os.environ, {"HERMES_BRAIN_HOST": "0"}, clear=False),
+    ])
+    entered = []
+    try:
+        for cm in ctx_managers:
+            entered.append(cm.__enter__())
+        with patch.object(adapter, "_ensure_session_db", return_value=None):
+            adapter._create_agent(session_id="test-zero")
+        modules_after = set(sys.modules.keys())
+    finally:
+        for cm in reversed(ctx_managers):
+            cm.__exit__(None, None, None)
+
+    assert "agent.brain_host" not in modules_after, (
+        "agent.brain_host was imported even though HERMES_BRAIN_HOST=0"
+    )
+    mock_ai_agent.assert_called_once()
+
+
+def test_api_server_flag_gate_on_routes_through_brain_host():
+    """When HERMES_BRAIN_HOST=1, api_server._create_agent must call
+    BrainHost.build_agent with intent='api-server'."""
+    from unittest.mock import MagicMock, patch
+    from agent.brain_host import BrainHost  # ensure loaded
+    from gateway.platforms.api_server import APIServerAdapter
+    from gateway.config import PlatformConfig
+
+    build_agent_mock = MagicMock(return_value=MagicMock())
+    adapter = APIServerAdapter(PlatformConfig(enabled=True))
+
+    ctx_managers = _patch_api_server_deps([
+        patch("run_agent.AIAgent", MagicMock()),
+        patch("agent.brain_host.BrainHost.build_agent", build_agent_mock),
+        patch.dict(os.environ, {"HERMES_BRAIN_HOST": "1"}, clear=False),
+    ])
+    entered = []
+    try:
+        for cm in ctx_managers:
+            entered.append(cm.__enter__())
+        with patch.object(adapter, "_ensure_session_db", return_value=None):
+            adapter._create_agent(session_id="test-on")
+    finally:
+        for cm in reversed(ctx_managers):
+            cm.__exit__(None, None, None)
+
+    build_agent_mock.assert_called_once()
+    spec = build_agent_mock.call_args.args[0]
+    assert spec.intent == "api-server"
+    assert isinstance(spec.kwargs, dict)
+    # Spot-check stable keys that the gate path must forward.
+    assert spec.kwargs.get("quiet_mode") is True
+    assert spec.kwargs.get("platform") == "api_server"
+
+
+def test_gateway_run_gate_exists_in_source():
+    """Compile-time check: gateway/run.py and gateway/platforms/api_server.py
+    both contain the HERMES_BRAIN_HOST gate.  This is the practical substitute
+    for unit-driving GatewayRunner._run_agent (which is too entangled for
+    direct unit testing)."""
+    import importlib.util
+    import pathlib
+
+    run_path = pathlib.Path(__file__).parents[2] / "gateway" / "run.py"
+    api_path = (
+        pathlib.Path(__file__).parents[2] / "gateway" / "platforms" / "api_server.py"
+    )
+
+    run_src = run_path.read_text()
+    api_src = api_path.read_text()
+
+    assert 'HERMES_BRAIN_HOST' in run_src, "HERMES_BRAIN_HOST gate missing from gateway/run.py"
+    assert '"gateway-run"' in run_src, 'intent "gateway-run" missing from gateway/run.py'
+
+    assert 'HERMES_BRAIN_HOST' in api_src, "HERMES_BRAIN_HOST gate missing from gateway/platforms/api_server.py"
+    assert '"api-server"' in api_src, 'intent "api-server" missing from gateway/platforms/api_server.py'

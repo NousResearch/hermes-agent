@@ -2887,7 +2887,7 @@ def _make_agent(
     session_db=None,
     model_override: dict | None = None,
 ):
-    from run_agent import AIAgent
+    from agent.brain_host_gate import build_agent
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     # MCP tool discovery runs in a background daemon thread at startup so a
@@ -2981,13 +2981,7 @@ def _make_agent(
     )
     # Phase 3 Brain-host seam (central-brain-openclaw.md §11 "3c/3d").
     # Default OFF — zero import cost when the flag is absent.
-    if os.environ.get("HERMES_BRAIN_HOST", "").strip() == "1":
-        from agent.brain_host import AgentSpec, BrainHost
-
-        return BrainHost.get().build_agent(
-            AgentSpec(intent="tui_gateway", kwargs=agent_kwargs)
-        )
-    return AIAgent(**agent_kwargs)
+    return build_agent("tui_gateway", **agent_kwargs)
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
@@ -5985,9 +5979,10 @@ def _(rid, params: dict) -> dict:
     def run():
         session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
         try:
-            from run_agent import AIAgent
+            from agent.brain_host_gate import build_agent
 
-            result = AIAgent(
+            result = build_agent(
+                "tui-background",
                 **_background_agent_kwargs(session.agent, task_id)
             ).run_conversation(
                 user_message=text,
@@ -6082,7 +6077,7 @@ def _(rid, params: dict) -> dict:
         # invalid client path, which would silently fall back to the launch dir.
         session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
         try:
-            from run_agent import AIAgent
+            from agent.brain_host_gate import build_agent
             from tools.terminal_tool import register_task_env_overrides
 
             if preview_cwd:
@@ -6098,7 +6093,8 @@ def _(rid, params: dict) -> dict:
                 parent,
                 {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"},
             )
-            result = AIAgent(
+            result = build_agent(
+                "preview-restart",
                 **_ephemeral_preview_agent_kwargs(session.agent, task_id),
                 **_preview_restart_callbacks(parent, task_id),
             ).run_conversation(

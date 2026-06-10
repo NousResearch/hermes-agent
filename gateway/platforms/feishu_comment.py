@@ -1052,7 +1052,7 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
 
     Returns the agent's final response text, or empty string on failure.
     """
-    from run_agent import AIAgent
+    from agent.brain_host_gate import build_agent
 
     logger.info("[Feishu-Comment] _run_comment_agent: injecting lark client into tool thread-locals")
     from tools.feishu_doc_tool import set_client as set_doc_client
@@ -1071,7 +1071,8 @@ def _run_comment_agent(prompt: str, client: Any, session_key: str = "") -> str:
             logger.info("[Feishu-Comment] _run_comment_agent: loaded %d history messages from session %s",
                         len(history), session_key)
 
-        agent = AIAgent(
+        agent = build_agent(
+            "feishu-comment",
             model=model,
             base_url=runtime_kwargs.get("base_url"),
             api_key=runtime_kwargs.get("api_key"),

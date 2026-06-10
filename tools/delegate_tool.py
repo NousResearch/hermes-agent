@@ -932,7 +932,7 @@ def _build_child_agent(
     routing subagents to a different provider:model pair (e.g. cheap/fast
     model on OpenRouter while the parent runs on Nous Portal).
     """
-    from run_agent import AIAgent
+    from agent.brain_host_gate import build_agent
     import uuid as _uuid
 
     # ── Role resolution ─────────────────────────────────────────────────
@@ -1137,7 +1137,8 @@ def _build_child_agent(
         # openrouter/pareto-code), so we keep it inherited even when the
         # provider is overridden — it's a no-op on any other model.
 
-    child = AIAgent(
+    child = build_agent(
+        "delegate",
         base_url=effective_base_url,
         api_key=effective_api_key,
         model=effective_model,

@@ -5283,7 +5283,9 @@ def main(
     
     # Initialize agent with provided parameters
     try:
-        agent = AIAgent(
+        from agent.brain_host_gate import build_agent
+        agent = build_agent(
+            "run-agent-cli",
             base_url=base_url,
             model=model,
             api_key=api_key,

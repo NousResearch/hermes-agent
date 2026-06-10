@@ -2295,7 +2295,7 @@ class GatewaySlashCommandsMixin:
         partial, keep_last, focus_topic = parse_partial_compress_args(_raw_args)
 
         try:
-            from run_agent import AIAgent
+            from agent.brain_host_gate import build_agent
             from agent.manual_compression_feedback import summarize_manual_compression
             from agent.model_metadata import estimate_request_tokens_rough
 
@@ -2326,7 +2326,8 @@ class GatewaySlashCommandsMixin:
                     partial = False
                     head = msgs
 
-            tmp_agent = AIAgent(
+            tmp_agent = build_agent(
+                "compress",
                 **runtime_kwargs,
                 model=model,
                 max_iterations=4,

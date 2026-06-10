@@ -46,7 +46,7 @@ from rich.console import Console
 logger = logging.getLogger(__name__)
 import fire
 
-from run_agent import AIAgent
+from agent.brain_host_gate import build_agent
 from toolset_distributions import (
     list_distributions, 
     sample_toolsets_from_distribution,
@@ -322,7 +322,8 @@ def _process_single_prompt(
         
         # Initialize agent with sampled toolsets and log prefix for identification
         log_prefix = f"[B{batch_num}:P{prompt_index}]"
-        agent = AIAgent(
+        agent = build_agent(
+            "batch",
             base_url=config.get("base_url"),
             api_key=config.get("api_key"),
             model=config["model"],

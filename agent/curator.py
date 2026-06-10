@@ -1709,7 +1709,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        from run_agent import AIAgent
+        from agent.brain_host_gate import build_agent
     except Exception as e:
         result_meta["error"] = f"AIAgent import failed: {e}"
         result_meta["summary"] = result_meta["error"]
@@ -1755,7 +1755,8 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
-        review_agent = AIAgent(
+        review_agent = build_agent(
+            "curator",
             model=_model_name,
             provider=_resolved_provider,
             api_key=_api_key,

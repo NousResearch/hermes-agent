@@ -1348,7 +1348,8 @@ class CLICommandsMixin:
         When it completes, prints the result to the CLI without modifying
         the active session's conversation history.
         """
-        from cli import AIAgent, ChatConsole, _accent_hex, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from cli import ChatConsole, _accent_hex, _cprint, _maybe_remap_for_light_mode, _render_final_assistant_content, set_approval_callback, set_secret_capture_callback, set_sudo_password_callback
+        from agent.brain_host_gate import build_agent
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or not parts[1].strip():
             _cprint("  Usage: /background <prompt>")
@@ -1380,7 +1381,8 @@ class CLICommandsMixin:
             except Exception:
                 pass
             try:
-                bg_agent = AIAgent(
+                bg_agent = build_agent(
+                    "cli-background",
                     model=turn_route["model"],
                     api_key=turn_route["runtime"].get("api_key"),
                     base_url=turn_route["runtime"].get("base_url"),

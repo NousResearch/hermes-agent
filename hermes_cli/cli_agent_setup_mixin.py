@@ -223,7 +223,8 @@ class CLIAgentSetupMixin:
         Returns:
             bool: True if successful, False otherwise
         """
-        from cli import AIAgent, ChatConsole, _DIM, _RST, _accent_hex, _cprint, _prepare_deferred_agent_startup, logger
+        from cli import ChatConsole, _DIM, _RST, _accent_hex, _cprint, _prepare_deferred_agent_startup, logger
+        from agent.brain_host_gate import build_agent
         if self.agent is not None:
             return True
 
@@ -340,7 +341,8 @@ class CLIAgentSetupMixin:
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model
-            self.agent = AIAgent(
+            self.agent = build_agent(
+                "cli",
                 model=effective_model,
                 api_key=runtime.get("api_key"),
                 base_url=runtime.get("base_url"),

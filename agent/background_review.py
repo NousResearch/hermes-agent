@@ -336,7 +336,7 @@ def _run_review_in_thread(
     via ``agent._safe_print`` and ``agent.background_review_callback``.
     """
     # Local import to avoid a hard circular dep at module load.
-    from run_agent import AIAgent
+    from agent.brain_host_gate import build_agent
     from tools.terminal_tool import set_approval_callback as _set_approval_callback
 
     # Install a non-interactive approval callback on this worker
@@ -399,7 +399,8 @@ def _run_review_in_thread(
             # Match parent's toolset config so ``tools[]`` is byte-identical
             # in the request body — Anthropic's cache key includes it.
             # (The runtime whitelist below still restricts dispatch.)
-            review_agent = AIAgent(
+            review_agent = build_agent(
+                "background-review",
                 model=agent.model,
                 max_iterations=16,
                 quiet_mode=True,

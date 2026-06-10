@@ -32,14 +32,15 @@ def _build_inspection_agent(platform: str) -> Any:
     ``run_agent.py`` (no provider auto-detection, no network). Toolsets and
     platform come from the caller so the breakdown matches a real session.
     """
-    from run_agent import AIAgent
+    from agent.brain_host_gate import build_agent
     from hermes_cli.config import load_config
 
     cfg = load_config()
     model_cfg = cfg.get("model", {}) if isinstance(cfg.get("model"), dict) else {}
     model = model_cfg.get("default") or model_cfg.get("model") or ""
 
-    return AIAgent(
+    return build_agent(
+        "prompt-size",
         model=model,
         api_key="inspect-only",
         base_url="https://openrouter.ai/api/v1",

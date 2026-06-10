@@ -257,7 +257,7 @@ def _run_agent(
     from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
-    from run_agent import AIAgent
+    from agent.brain_host_gate import build_agent
 
     cfg = load_config()
 
@@ -332,7 +332,8 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
-    agent = AIAgent(
+    agent = build_agent(
+        "oneshot",
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),

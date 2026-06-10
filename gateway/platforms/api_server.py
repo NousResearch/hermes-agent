@@ -1026,7 +1026,7 @@ class APIServerAdapter(BasePlatformAdapter):
         providers (e.g. Honcho) can scope their per-chat state correctly
         — matching the semantics of the native gateway's ``session_key``.
         """
-        from run_agent import AIAgent
+        from agent.brain_host_gate import build_agent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config, GatewayRunner
         from hermes_cli.tools_config import _get_platform_tools
 
@@ -1064,13 +1064,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "reasoning_config": reasoning_config,
             "gateway_session_key": gateway_session_key,
         }
-        if os.environ.get("HERMES_BRAIN_HOST", "").strip() == "1":
-            from agent.brain_host import AgentSpec, BrainHost
-            agent = BrainHost.get().build_agent(
-                AgentSpec(intent="api-server", kwargs=agent_kwargs)
-            )
-        else:
-            agent = AIAgent(**agent_kwargs)
+        agent = build_agent("api-server", **agent_kwargs)
         return agent
 
     # ------------------------------------------------------------------

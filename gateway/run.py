@@ -8134,7 +8134,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _hyg_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
 
                     try:
-                        from run_agent import AIAgent
+                        from agent.brain_host_gate import build_agent
 
                         _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
                             source=source,
@@ -8150,7 +8150,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             ]
 
                             if len(_hyg_msgs) >= 4:
-                                _hyg_agent = AIAgent(
+                                _hyg_agent = build_agent(
+                                    "history-hygiene",
                                     **_hyg_runtime,
                                     model=_hyg_model,
                                     max_iterations=4,
@@ -9807,7 +9808,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         media_types: Optional[List[str]] = None,
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
-        from run_agent import AIAgent
+        from agent.brain_host_gate import build_agent
 
         media_urls = media_urls or []
         media_types = media_types or []
@@ -9865,7 +9866,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.warning("Background task vision enrichment failed: %s", e)
 
             def run_sync():
-                agent = AIAgent(
+                agent = build_agent(
+                    "gateway-background",
                     model=turn_route["model"],
                     **turn_route["runtime"],
                     max_iterations=max_iterations,
@@ -12841,7 +12843,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 event_message_id=event_message_id,
             )
 
-        from run_agent import AIAgent
+        from agent.brain_host_gate import build_agent
         import queue
 
         def _run_still_current() -> bool:
@@ -13816,13 +13818,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "session_db": self._session_db,
                     "fallback_model": self._fallback_model,
                 }
-                if os.environ.get("HERMES_BRAIN_HOST", "").strip() == "1":
-                    from agent.brain_host import AgentSpec, BrainHost
-                    agent = BrainHost.get().build_agent(
-                        AgentSpec(intent="gateway-run", kwargs=agent_kwargs)
-                    )
-                else:
-                    agent = AIAgent(**agent_kwargs)
+                agent = build_agent("gateway-run", **agent_kwargs)
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)

@@ -358,24 +358,126 @@ def test_api_server_flag_gate_on_routes_through_brain_host():
     assert spec.kwargs.get("platform") == "api_server"
 
 
-def test_gateway_run_gate_exists_in_source():
-    """Compile-time check: gateway/run.py and gateway/platforms/api_server.py
-    both contain the HERMES_BRAIN_HOST gate.  This is the practical substitute
-    for unit-driving GatewayRunner._run_agent (which is too entangled for
-    direct unit testing)."""
-    import importlib.util
-    import pathlib
+# ---------------------------------------------------------------------------
+# brain_host_gate.build_agent — the one-line gate helper every migrated
+# construction site calls.
+# ---------------------------------------------------------------------------
 
-    run_path = pathlib.Path(__file__).parents[2] / "gateway" / "run.py"
-    api_path = (
-        pathlib.Path(__file__).parents[2] / "gateway" / "platforms" / "api_server.py"
+def test_gate_helper_flag_off_constructs_directly_without_importing_brain_host():
+    """With the flag unset, build_agent must construct via run_agent.AIAgent
+    and must NOT import agent.brain_host (zero-footprint invariant)."""
+    from agent.brain_host_gate import build_agent
+
+    RecorderAgent, instances = _make_recorder_class()
+
+    os.environ.pop("HERMES_BRAIN_HOST", None)
+    sys.modules.pop("agent.brain_host", None)
+
+    with patch("run_agent.AIAgent", RecorderAgent):
+        result = build_agent("test-intent", model="m", quiet_mode=True)
+
+    assert "agent.brain_host" not in sys.modules, (
+        "agent.brain_host was imported even though HERMES_BRAIN_HOST is unset"
     )
+    assert isinstance(result, RecorderAgent)
+    assert instances[0]._kwargs == {"model": "m", "quiet_mode": True}
 
-    run_src = run_path.read_text()
-    api_src = api_path.read_text()
 
-    assert 'HERMES_BRAIN_HOST' in run_src, "HERMES_BRAIN_HOST gate missing from gateway/run.py"
-    assert '"gateway-run"' in run_src, 'intent "gateway-run" missing from gateway/run.py'
+def test_gate_helper_flag_zero_constructs_directly():
+    """HERMES_BRAIN_HOST=0 behaves identically to unset."""
+    from agent.brain_host_gate import build_agent
 
-    assert 'HERMES_BRAIN_HOST' in api_src, "HERMES_BRAIN_HOST gate missing from gateway/platforms/api_server.py"
-    assert '"api-server"' in api_src, 'intent "api-server" missing from gateway/platforms/api_server.py'
+    RecorderAgent, instances = _make_recorder_class()
+    sys.modules.pop("agent.brain_host", None)
+
+    with (
+        patch.dict(os.environ, {"HERMES_BRAIN_HOST": "0"}, clear=False),
+        patch("run_agent.AIAgent", RecorderAgent),
+    ):
+        result = build_agent("test-intent", model="m")
+
+    assert "agent.brain_host" not in sys.modules
+    assert isinstance(result, RecorderAgent)
+    assert instances[0]._kwargs == {"model": "m"}
+
+
+def test_gate_helper_flag_on_routes_through_brain_host_with_intent():
+    """HERMES_BRAIN_HOST=1 routes through BrainHost.build_agent, forwarding the
+    intent tag and the exact kwargs on the AgentSpec."""
+    from agent.brain_host import BrainHost  # noqa: PLC0415 — ensure loaded
+    from agent.brain_host_gate import build_agent
+
+    build_agent_mock = MagicMock(return_value=MagicMock())
+
+    with (
+        patch.dict(os.environ, {"HERMES_BRAIN_HOST": "1"}, clear=False),
+        patch("agent.brain_host.BrainHost.build_agent", build_agent_mock),
+    ):
+        build_agent("cron", model="m", quiet_mode=True)
+
+    build_agent_mock.assert_called_once()
+    spec = build_agent_mock.call_args.args[0]
+    assert spec.intent == "cron"
+    assert spec.kwargs == {"model": "m", "quiet_mode": True}
+
+
+def test_gate_helper_off_on_kwargs_parity():
+    """The kwargs that reach AIAgent must be identical on both gate paths."""
+    from agent.brain_host_gate import build_agent
+
+    RecorderAgent, instances = _make_recorder_class()
+    test_kwargs = {"model": "claude-opus-4-6", "api_key": "sk-test", "quiet_mode": True}
+
+    with patch("run_agent.AIAgent", RecorderAgent):
+        os.environ.pop("HERMES_BRAIN_HOST", None)
+        build_agent("parity", **test_kwargs)
+
+        with patch.dict(os.environ, {"HERMES_BRAIN_HOST": "1"}, clear=False):
+            build_agent("parity", **test_kwargs)
+
+    assert len(instances) == 2
+    assert instances[0]._kwargs == instances[1]._kwargs == test_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Site-table source check — every migrated construction site must call
+# build_agent with its registered intent.  This is the practical substitute
+# for unit-driving call sites that live deep inside async/thread workers.
+# ---------------------------------------------------------------------------
+
+# (relative file path, expected intents constructed in that file)
+_MIGRATED_SITES = [
+    ("tui_gateway/server.py", ["tui_gateway", "tui-background", "preview-restart"]),
+    ("gateway/run.py", ["gateway-run", "history-hygiene", "gateway-background"]),
+    ("gateway/platforms/api_server.py", ["api-server"]),
+    ("gateway/platforms/feishu_comment.py", ["feishu-comment"]),
+    ("gateway/slash_commands.py", ["compress"]),
+    ("hermes_cli/prompt_size.py", ["prompt-size"]),
+    ("hermes_cli/oneshot.py", ["oneshot"]),
+    ("hermes_cli/cli_commands_mixin.py", ["cli-background"]),
+    ("hermes_cli/cli_agent_setup_mixin.py", ["cli"]),
+    ("agent/background_review.py", ["background-review"]),
+    ("agent/curator.py", ["curator"]),
+    ("acp_adapter/session.py", ["acp"]),
+    ("cron/scheduler.py", ["cron"]),
+    ("batch_runner.py", ["batch"]),
+    ("run_agent.py", ["run-agent-cli"]),
+    ("tools/delegate_tool.py", ["delegate"]),
+]
+
+
+def test_all_migrated_sites_use_gate_helper():
+    """Every registered construction site calls build_agent("<intent>", ...)."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).parents[2]
+    missing = []
+    for rel_path, intents in _MIGRATED_SITES:
+        src = (root / rel_path).read_text()
+        for intent in intents:
+            # Matches both single-line build_agent("cron", ...) and the
+            # multi-line call style build_agent(\n    "cron",\n    ...
+            if not re.search(r'build_agent\(\s*"' + re.escape(intent) + r'"', src):
+                missing.append(f'{rel_path}: build_agent("{intent}" …)')
+    assert not missing, "sites not routed through brain_host_gate:\n" + "\n".join(missing)

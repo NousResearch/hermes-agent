@@ -651,7 +651,12 @@ class GatewayStreamConsumer:
             _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
-                    _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
+                    _best_effort_ok = bool(
+                        await self._send_or_edit(
+                            self._accumulated,
+                            finalize=self._adapter_requires_finalize,
+                        )
+                    )
                 except Exception:
                     pass
             # Only confirm final delivery if the best-effort send above
@@ -779,6 +784,18 @@ class GatewayStreamConsumer:
             if final_text.strip() and final_text != self._visible_prefix():
                 continuation = final_text
             else:
+                if self._adapter_requires_finalize:
+                    if self._message_id:
+                        self._final_response_sent = await self._send_or_edit(
+                            final_text,
+                            finalize=True,
+                        )
+                        self._fallback_prefix = ""
+                        return
+                    self._already_sent = False
+                    self._final_response_sent = False
+                    self._fallback_prefix = ""
+                    return
                 # Defence-in-depth for #7183: the last edit may still show the
                 # cursor character because fallback mode was entered after an
                 # edit failure left it stuck.  Try one final edit to strip it

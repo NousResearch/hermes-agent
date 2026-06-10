@@ -1240,6 +1240,38 @@ class TestCancelledConsumerSetsFlags:
         assert consumer.final_response_sent is True
 
     @pytest.mark.asyncio
+    async def test_cancelled_requires_finalize_sends_terminal_edit(self):
+        """Cancellation cleanup must close lifecycle-aware streams."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1")
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        consumer = GatewayStreamConsumer(
+            adapter,
+            "chat_123",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5),
+        )
+
+        consumer.on_delta("Hello world")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.08)
+
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        assert adapter.edit_message.call_args.kwargs["finalize"] is True
+        assert consumer.final_response_sent is True
+
+    @pytest.mark.asyncio
     async def test_cancelled_without_any_sends_does_not_mark_final(self):
         """Cancelling before anything was sent should NOT set final_response_sent."""
         adapter = MagicMock()
@@ -1660,6 +1692,54 @@ class TestCursorStrippingOnFallback:
         # _last_sent_text must NOT be updated when the edit failed
         assert consumer._last_sent_text == "Hello ▉"
 
+    @pytest.mark.asyncio
+    async def test_requires_finalize_sends_terminal_edit_when_continuation_empty(self):
+        """Adapters with explicit stream lifecycle need a final edit here."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg-1")
+        )
+
+        consumer = GatewayStreamConsumer(
+            adapter, "chat-1",
+            config=StreamConsumerConfig(cursor=" ▉"),
+        )
+        consumer._message_id = "msg-1"
+        consumer._last_sent_text = "Hello world"
+        consumer._fallback_final_send = False
+
+        await consumer._send_fallback_final("Hello world")
+
+        adapter.edit_message.assert_called_once()
+        call_args = adapter.edit_message.call_args
+        assert call_args.kwargs["content"] == "Hello world"
+        assert call_args.kwargs["finalize"] is True
+        assert consumer._final_response_sent is True
+
+    @pytest.mark.asyncio
+    async def test_requires_finalize_without_message_id_allows_normal_final_send(self):
+        """Do not claim final delivery when no terminal edit can be sent."""
+        adapter = MagicMock()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.MAX_MESSAGE_LENGTH = 4096
+        adapter.edit_message = AsyncMock()
+
+        consumer = GatewayStreamConsumer(
+            adapter, "chat-1",
+            config=StreamConsumerConfig(cursor=" ▉"),
+        )
+        consumer._message_id = None
+        consumer._last_sent_text = "Hello world"
+        consumer._fallback_final_send = False
+
+        await consumer._send_fallback_final("Hello world")
+
+        adapter.edit_message.assert_not_called()
+        assert consumer._already_sent is False
+        assert consumer._final_response_sent is False
+
 
 # ── on_new_message callback (tool-progress linearization) ─────────────
 
@@ -1907,4 +1987,3 @@ class TestUtf16OverflowDetection:
         # auto-attr mock. Verified indirectly by all the other tests in
         # this file passing — they all use MagicMock adapters.
         assert consumer is not None
-

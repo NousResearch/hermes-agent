@@ -4749,7 +4749,7 @@ class TestPtyWebSocket:
             while time.monotonic() < deadline:
                 # receive_bytes() blocks; once the child prints its winsize and
                 # exits, the PTY closes and further reads raise. Without this
-                # guard a missed-marker run blocks until the 30s pytest-timeout
+                # guard a missed-marker run blocks until a test timeout
                 # (flaky failure) instead of failing fast on the assert below.
                 try:
                     frame = conn.receive_bytes()

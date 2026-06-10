@@ -31,6 +31,92 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         help="Run Hermes as an MCP server (expose conversations to other agents)",
     )
     mcp_serve_p.add_argument(
+        "--transport",
+        choices=["stdio", "streamable-http"],
+        default="stdio",
+        help="MCP transport to serve (default: stdio)",
+    )
+    mcp_serve_p.add_argument("--host", default="127.0.0.1", help="HTTP host to bind")
+    mcp_serve_p.add_argument("--port", type=int, default=8666, help="HTTP port to bind")
+    mcp_serve_p.add_argument("--path", default="/mcp", help="HTTP MCP endpoint path")
+    mcp_serve_p.add_argument(
+        "--public-base-url",
+        help="Externally visible base URL for OAuth metadata (for reverse proxies/Tailscale)",
+    )
+    mcp_serve_p.add_argument(
+        "--auth-token-env",
+        help="Environment variable containing the shared MCP HTTP auth token/PSK",
+    )
+    mcp_serve_p.add_argument(
+        "--auth-header",
+        default="X-Hermes-MCP-PSK",
+        help="Additional PSK header name accepted by HTTP auth",
+    )
+    mcp_serve_p.add_argument(
+        "--allow-query-token",
+        action="store_true",
+        help="Accept ?access_token= or ?psk= auth for clients that cannot send headers; disables access logs",
+    )
+    mcp_serve_p.add_argument(
+        "--oauth-compatible",
+        action="store_true",
+        help="Expose OAuth-compatible metadata plus /mcp/authorize and /mcp/token endpoints",
+    )
+    mcp_serve_p.add_argument(
+        "--oauth-client-id-env",
+        help="Environment variable containing the OAuth client id (defaults to auth token when omitted)",
+    )
+    mcp_serve_p.add_argument(
+        "--oauth-client-secret-env",
+        help="Optional environment variable containing the OAuth client secret",
+    )
+    mcp_serve_p.add_argument(
+        "--oauth-token-ttl-seconds",
+        type=int,
+        default=2592000,
+        help="Issued OAuth bearer token lifetime in seconds",
+    )
+    mcp_serve_p.add_argument(
+        "--oauth-code-ttl-seconds",
+        type=int,
+        default=300,
+        help="Authorization code lifetime in seconds",
+    )
+    mcp_serve_p.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        help="Allowed HTTP Host value for Streamable HTTP transport security; repeat or comma-separate",
+    )
+    mcp_serve_p.add_argument(
+        "--allowed-origin",
+        action="append",
+        default=[],
+        help="Allowed Origin value for Streamable HTTP transport security; repeat or comma-separate",
+    )
+    mcp_serve_p.add_argument(
+        "--health-path",
+        default="/health",
+        help="Health check endpoint path for HTTP transport",
+    )
+    mcp_serve_p.add_argument(
+        "--expose-toolset",
+        action="append",
+        default=[],
+        help="Expose registered Hermes tools from a toolset over this MCP server; repeat or comma-separate",
+    )
+    mcp_serve_p.add_argument(
+        "--expose-tool",
+        action="append",
+        default=[],
+        help="Expose an individual registered Hermes tool over this MCP server; repeat or comma-separate",
+    )
+    mcp_serve_p.add_argument(
+        "--expose-plugin-tools",
+        action="store_true",
+        help="Expose all tools registered by enabled Hermes plugins over this MCP server",
+    )
+    mcp_serve_p.add_argument(
         "-v",
         "--verbose",
         action="store_true",

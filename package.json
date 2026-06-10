@@ -35,10 +35,7 @@
     "agent-browser": "^0.26.0"
   },
   "overrides": {
-    "lodash": "4.18.1",
-    "glob": ">=10.0.0",
-    "rimraf": ">=5.0.0",
-    "inflight": "npm:@nicolo-ribaudo/inflight@^2.0.0"
+    "lodash": "4.18.1"
   },
   "engines": {
     "node": ">=20.0.0"

@@ -20,9 +20,9 @@ from gateway.platforms.base import Platform, PlatformConfig
 # ---------------------------------------------------------------------------
 
 class _StubAdapter(BasePlatformAdapter):
-    def __init__(self):
-        cfg = PlatformConfig()
-        super().__init__(cfg, Platform.TELEGRAM)
+    def __init__(self, platform=Platform.TELEGRAM, *, extra=None):
+        cfg = PlatformConfig(extra=extra or {})
+        super().__init__(cfg, platform)
         self._send_results = []   # queue of SendResult to return per call
         self._send_calls = []     # record of (chat_id, content) sent
 
@@ -248,6 +248,44 @@ class TestSendWithRetryExhausted:
         with patch("asyncio.sleep", new_callable=AsyncMock):
             result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
         assert not result.success  # still failed, but no exception raised
+
+    @pytest.mark.asyncio
+    async def test_whatsapp_suppresses_delivery_failure_notice_after_exhaustion(self):
+        adapter = _StubAdapter(platform=Platform.WHATSAPP)
+        network_err = SendResult(success=False, error="httpx.ConnectError: host unreachable")
+        adapter._send_results = [network_err, network_err, network_err]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=2, base_delay=0)
+
+        assert not result.success
+        assert len(adapter._send_calls) == 3  # initial + retries only; no diagnostic notice
+        assert all("delivery failed" not in content.lower() for _, content in adapter._send_calls)
+
+    @pytest.mark.asyncio
+    async def test_whatsapp_suppresses_not_connected_fallback(self):
+        adapter = _StubAdapter(platform=Platform.WHATSAPP)
+        adapter._send_results = [
+            SendResult(success=False, error="Not connected to WhatsApp"),
+        ]
+
+        result = await adapter._send_with_retry("chat1", "hello", max_retries=2)
+
+        assert not result.success
+        assert len(adapter._send_calls) == 1
+
+    @pytest.mark.asyncio
+    async def test_whatsapp_suppresses_plain_text_diagnostic_fallback(self):
+        adapter = _StubAdapter(platform=Platform.WHATSAPP)
+        adapter._send_results = [
+            SendResult(success=False, error="Bad Request: formatting failed"),
+        ]
+
+        result = await adapter._send_with_retry("chat1", "**bold**", max_retries=2)
+
+        assert not result.success
+        assert len(adapter._send_calls) == 1
+        assert "plain text" not in adapter._send_calls[-1][1].lower()
 
 
 # ---------------------------------------------------------------------------

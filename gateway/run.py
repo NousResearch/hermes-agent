@@ -381,6 +381,12 @@ _GATEWAY_DIAGNOSTIC_MESSAGE_RE = re.compile(
     r"|provider authentication failed"
     r"|request failed:"
     r"|encountered an error"
+    r"|message delivery failed"
+    r"|response formatting failed"
+    r"|hermes gateway (?:starting|started|stopped|running|status)"
+    r"|gateway (?:service )?(?:is )?(?:down|offline|not running|not loaded|starting|stopped|running)"
+    r"|not connected to whatsapp"
+    r"|bootstrap failed"
     r")",
     re.IGNORECASE,
 )
@@ -460,6 +466,16 @@ def _gateway_effective_suppress_provider_diagnostics(config: Any, platform: Any)
     )
 
 
+_SILENT_FINAL_RESPONSE_SENTINELS = {"[SILENT]", "[[SILENT]]", "<SILENT>"}
+
+
+def _is_silent_final_response_sentinel(text: Any) -> bool:
+    """Return True when a model final response means no visible reply."""
+    if text is None:
+        return False
+    return str(text).strip().upper() in _SILENT_FINAL_RESPONSE_SENTINELS
+
+
 def _sanitize_gateway_final_response(
     platform: Any,
     text: str,
@@ -470,7 +486,12 @@ def _sanitize_gateway_final_response(
     if not text:
         return text
 
+    if _is_silent_final_response_sentinel(text):
+        return ""
+
     redacted = _redact_gateway_user_facing_secrets(str(text))
+    if _is_silent_final_response_sentinel(redacted):
+        return ""
     if suppress_provider_diagnostics and _looks_like_gateway_diagnostic_message(redacted):
         return ""
 

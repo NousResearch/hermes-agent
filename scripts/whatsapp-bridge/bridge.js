@@ -24,7 +24,7 @@ import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync, appendFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { randomBytes, createHash } from 'crypto';
 import { execSync } from 'child_process';
@@ -47,6 +47,7 @@ const WHATSAPP_DEBUG =
 
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
+const HERMES_HOME = process.env.HERMES_HOME || path.join(process.env.HOME || '~', '.hermes');
 // Cache directories: the Python gateway passes the profile-aware paths via
 // env (HERMES_HOME-aware, new cache/ layout).  Fall back to the legacy
 // hardcoded locations for bridges launched outside the gateway.
@@ -56,6 +57,7 @@ const DOCUMENT_CACHE_DIR = process.env.HERMES_DOCUMENT_CACHE_DIR
   || path.join(process.env.HOME || '~', '.hermes', 'document_cache');
 const AUDIO_CACHE_DIR = process.env.HERMES_AUDIO_CACHE_DIR
   || path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
+const SENT_LEDGER_PATH = path.join(HERMES_HOME, 'whatsapp', 'sent-messages.jsonl');
 
 // Self-hash of this script file.  Reported in /health so the Python gateway
 // can detect a running bridge that predates the current bridge.js and
@@ -131,12 +133,30 @@ function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
   return chunks;
 }
 
-function trackSentMessageId(sent) {
-  if (sent?.key?.id) {
-    recentlySentIds.add(sent.key.id);
-    if (recentlySentIds.size > MAX_RECENT_IDS) {
-      recentlySentIds.delete(recentlySentIds.values().next().value);
-    }
+function trackSentMessageId(sent, meta = {}) {
+  if (!sent?.key?.id) return;
+
+  recentlySentIds.add(sent.key.id);
+  if (recentlySentIds.size > MAX_RECENT_IDS) {
+    recentlySentIds.delete(recentlySentIds.values().next().value);
+  }
+
+  try {
+    mkdirSync(path.dirname(SENT_LEDGER_PATH), { recursive: true });
+    const entry = {
+      timestamp: new Date().toISOString(),
+      chatId: sent.key.remoteJid || meta.chatId || null,
+      messageId: sent.key.id,
+      fromMe: !!sent.key.fromMe,
+      participant: sent.key.participant || null,
+      kind: meta.kind || 'text',
+      chunkIndex: meta.chunkIndex ?? null,
+      chunkCount: meta.chunkCount ?? null,
+      textPreview: meta.text ? String(meta.text).slice(0, 500) : null,
+    };
+    appendFileSync(SENT_LEDGER_PATH, `${JSON.stringify(entry)}\n`);
+  } catch (err) {
+    console.warn('[bridge] Failed to write sent-message ledger:', err.message);
   }
 }
 
@@ -590,6 +610,28 @@ function textPayload(text, mentions = [], extra = {}) {
     : { text, ...extra };
 }
 
+app.get('/sent', (req, res) => {
+  try {
+    if (!existsSync(SENT_LEDGER_PATH)) return res.json({ success: true, messages: [] });
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit || '50', 10) || 50, 500));
+    const chatId = req.query.chatId ? String(req.query.chatId) : '';
+    const q = req.query.q ? String(req.query.q).toLowerCase() : '';
+    const lines = readFileSync(SENT_LEDGER_PATH, 'utf8').split('\n').filter(Boolean);
+    const messages = [];
+    for (let i = lines.length - 1; i >= 0 && messages.length < limit; i -= 1) {
+      try {
+        const entry = JSON.parse(lines[i]);
+        if (chatId && entry.chatId !== chatId) continue;
+        if (q && !String(entry.textPreview || '').toLowerCase().includes(q)) continue;
+        messages.push(entry);
+      } catch {}
+    }
+    res.json({ success: true, messages });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Send a message
 app.post('/send', async (req, res) => {
   if (!sock || connectionState !== 'connected') {
@@ -606,7 +648,13 @@ app.post('/send', async (req, res) => {
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
       const sent = await sendWithTimeout(chatId, textPayload(chunks[i], i === 0 ? mentions : []));
-      trackSentMessageId(sent);
+      trackSentMessageId(sent, {
+        chatId,
+        text: chunks[i],
+        kind: 'text',
+        chunkIndex: i,
+        chunkCount: chunks.length,
+      });
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
         await sleep(CHUNK_DELAY_MS);
@@ -643,7 +691,13 @@ app.post('/edit', async (req, res) => {
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
         const sent = await sendWithTimeout(chatId, textPayload(chunks[i]));
-        trackSentMessageId(sent);
+        trackSentMessageId(sent, {
+          chatId,
+          text: chunks[i],
+          kind: 'edit-continuation',
+          chunkIndex: i,
+          chunkCount: chunks.length,
+        });
         if (sent?.key?.id) messageIds.push(sent.key.id);
         if (i < chunks.length - 1) {
           await sleep(CHUNK_DELAY_MS);
@@ -652,6 +706,26 @@ app.post('/edit', async (req, res) => {
     }
 
     res.json({ success: true, messageIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Delete/retract a previously sent message by exact WhatsApp message id.
+app.post('/delete', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId } = req.body;
+  if (!chatId || !messageId) {
+    return res.status(400).json({ error: 'chatId and messageId are required' });
+  }
+
+  try {
+    const key = { remoteJid: chatId, fromMe: true, id: messageId };
+    await sendWithTimeout(chatId, { delete: key });
+    res.json({ success: true, messageId });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -745,7 +819,11 @@ app.post('/send-media', async (req, res) => {
 
     const sent = await sendWithTimeout(chatId, msgPayload);
 
-    trackSentMessageId(sent);
+    trackSentMessageId(sent, {
+      chatId,
+      text: caption || fileName || filePath,
+      kind: type || 'media',
+    });
 
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {

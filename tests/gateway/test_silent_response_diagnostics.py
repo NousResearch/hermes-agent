@@ -91,6 +91,48 @@ def test_suppress_provider_diagnostics_filters_final_and_status_messages():
     )
 
 
+def test_suppress_provider_diagnostics_filters_gateway_lifecycle_banners():
+    banners = [
+        "⚕ Hermes Gateway Starting...",
+        "Gateway running with 1 platform(s)",
+        "Gateway service is not running",
+        "Not connected to WhatsApp",
+        "Bootstrap failed: 5",
+        "⚠️ Message delivery failed after multiple attempts.",
+        "(Response formatting failed, plain text:)",
+    ]
+
+    for banner in banners:
+        assert (
+            _sanitize_gateway_final_response(
+                Platform.WHATSAPP,
+                banner,
+                suppress_provider_diagnostics=True,
+            )
+            == ""
+        )
+        assert (
+            _prepare_gateway_status_message(
+                Platform.WHATSAPP,
+                "lifecycle",
+                banner,
+                suppress_provider_diagnostics=True,
+            )
+            is None
+        )
+
+
+def test_gateway_lifecycle_text_is_preserved_when_diagnostic_suppression_off():
+    assert (
+        _sanitize_gateway_final_response(
+            Platform.WHATSAPP,
+            "Gateway running with 1 platform(s)",
+            suppress_provider_diagnostics=False,
+        )
+        == "Gateway running with 1 platform(s)"
+    )
+
+
 def test_effective_policy_reads_global_and_platform_specific_flags():
     global_config = GatewayConfig(allow_silent_response=True)
     assert _gateway_effective_allow_silent_response(global_config, Platform.WHATSAPP)

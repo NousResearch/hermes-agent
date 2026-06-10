@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
+from urllib.parse import quote
 
 from hermes_constants import (
     find_node_executable,
@@ -1274,6 +1275,110 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._close_bridge_log()
         print(f"[{self.name}] Disconnected")
     
+    def format_message(self, content: str) -> str:
+        """Convert standard markdown to WhatsApp-compatible formatting.
+
+        WhatsApp supports: *bold*, _italic_, ~strikethrough~, ```code```,
+        and monospaced `inline`. Standard markdown uses different syntax
+        for bold/italic/strikethrough, so we convert here.
+
+        Code blocks (``` fenced) and inline code (`) are protected from
+        conversion via placeholder substitution.
+        """
+        if not content:
+            return content
+
+        # --- 1. Protect fenced code blocks from formatting changes ---
+        _FENCE_PH = "\x00FENCE"
+        fences: list[str] = []
+
+        def _save_fence(m: re.Match) -> str:
+            fences.append(m.group(0))
+            return f"{_FENCE_PH}{len(fences) - 1}\x00"
+
+        result = re.sub(r"```[\s\S]*?```", _save_fence, content)
+
+        # --- 2. Protect inline code ---
+        _CODE_PH = "\x00CODE"
+        codes: list[str] = []
+
+        def _save_code(m: re.Match) -> str:
+            codes.append(m.group(0))
+            return f"{_CODE_PH}{len(codes) - 1}\x00"
+
+        result = re.sub(r"`[^`\n]+`", _save_code, result)
+
+        # --- 3. Convert markdown formatting to WhatsApp syntax ---
+        # Bold: **text** or __text__ → *text*
+        result = re.sub(r"\*\*(.+?)\*\*", r"*\1*", result)
+        result = re.sub(r"__(.+?)__", r"*\1*", result)
+        # Strikethrough: ~~text~~ → ~text~
+        result = re.sub(r"~~(.+?)~~", r"~\1~", result)
+        # Italic: *text* is already WhatsApp italic — leave as-is
+        # _text_ is already WhatsApp italic — leave as-is
+
+        # --- 4. Convert markdown headers to bold text ---
+        # # Header → *Header*
+        result = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", result, flags=re.MULTILINE)
+
+        # --- 5. Convert markdown links: [text](url) → text (url) ---
+        result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)
+
+        # --- 6. Restore protected sections ---
+        for i, fence in enumerate(fences):
+            result = result.replace(f"{_FENCE_PH}{i}\x00", fence)
+        for i, code in enumerate(codes):
+            result = result.replace(f"{_CODE_PH}{i}\x00", code)
+
+        return result
+
+    async def _resolve_visible_mentions(
+        self,
+        chat_id: str,
+        text: str,
+        existing_mentions: Optional[list[str]] = None,
+    ) -> list[str]:
+        """Resolve visible @digits in group text into native WhatsApp mentions.
+
+        The visible token must match a group participant localpart. This avoids
+        pretending a plain-text @number is a mention while still fixing normal
+        gateway final responses that cannot otherwise attach mention metadata.
+        """
+        mentions = []
+        seen = set()
+        for mention in existing_mentions or []:
+            jid = str(mention or "").strip()
+            if jid and jid not in seen:
+                mentions.append(jid)
+                seen.add(jid)
+
+        tokens = list(dict.fromkeys(re.findall(r"(?<!\w)@(\d{5,})\b", str(text or ""))))
+        if not tokens or not str(chat_id or "").endswith("@g.us") or not self._http_session:
+            return mentions
+
+        try:
+            import aiohttp
+
+            async with self._http_session.get(
+                f"http://127.0.0.1:{self._bridge_port}/chat/{quote(chat_id, safe='')}",
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status != 200:
+                    return mentions
+                data = await resp.json()
+        except Exception as exc:
+            logger.debug("[%s] Unable to resolve WhatsApp mentions for %s: %s", self.name, chat_id, exc)
+            return mentions
+
+        participants = {str(item or "").strip() for item in data.get("participants") or []}
+        for token in tokens:
+            for candidate in (f"{token}@lid", f"{token}@s.whatsapp.net"):
+                if candidate in participants and candidate not in seen:
+                    mentions.append(candidate)
+                    seen.add(candidate)
+                    break
+        return mentions
+
     async def send(
         self,
         chat_id: str,
@@ -1304,12 +1409,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             formatted = self.format_message(content)
             chunks = self.truncate_message(formatted, self._outgoing_chunk_limit())
 
+            raw_mentions = metadata.get("mentions") if isinstance(metadata, dict) else None
+            mentions = [str(item).strip() for item in raw_mentions or [] if str(item).strip()]
+            mentions = await self._resolve_visible_mentions(chat_id, formatted, mentions)
+
             last_message_id = None
-            for chunk in chunks:
+            for chunk_index, chunk in enumerate(chunks):
                 payload: Dict[str, Any] = {
                     "chatId": chat_id,
                     "message": chunk,
                 }
+                if mentions and chunk_index == 0:
+                    payload["mentions"] = mentions
                 if reply_to and last_message_id is None:
                     # Only reply-to on the first chunk
                     payload["replyTo"] = reply_to

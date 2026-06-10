@@ -3747,6 +3747,25 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
+    def _suppress_delivery_diagnostics_in_chat(self) -> bool:
+        """Return True when adapter-generated failure/status text must stay local.
+
+        This is a final platform-layer guard for errors that bypass the agent
+        status sanitizer: send retry exhaustion, plain-text fallback banners,
+        and exception-handler "sorry/error" messages. WhatsApp chats are not an
+        operator console, so suppress by default there while preserving legacy
+        behavior elsewhere unless explicitly configured.
+        """
+        extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        configured = extra.get("suppress_delivery_diagnostics")
+        if configured is None:
+            configured = extra.get("suppress_diagnostics")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.strip().lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return _platform_name(getattr(self, "platform", None)) == "whatsapp"
+
     def _unwrap_ephemeral(self, response: Any) -> Tuple[Optional[str], int]:
         """Unwrap a handler response into (text, ttl_seconds).
 
@@ -3836,8 +3855,12 @@ class BasePlatformAdapter(ABC):
                 if not (result.retryable or self._is_retryable_error(error_str)):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:
-                # All retries exhausted (loop completed without break) — notify user
+                # All retries exhausted (loop completed without break). Keep
+                # adapter-generated delivery diagnostics out of customer-facing
+                # platforms such as WhatsApp; the failure is logged locally.
                 logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                if self._suppress_delivery_diagnostics_in_chat():
+                    return result
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
                     "Please try again \u2014 your request was processed but the response could not be sent."
@@ -3849,6 +3872,13 @@ class BasePlatformAdapter(ABC):
                 return result
 
         # Non-network / post-retry formatting failure: try plain text as fallback
+        if self._suppress_delivery_diagnostics_in_chat():
+            logger.warning(
+                "[%s] Send failed: %s — suppressing plain-text diagnostic fallback for customer-facing platform",
+                self.name,
+                error_str,
+            )
+            return result
         logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
         fallback_result = await self.send(
             chat_id=chat_id,
@@ -4900,22 +4930,25 @@ class BasePlatformAdapter(ABC):
         except Exception as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
-            # Send the error to the user so they aren't left with radio silence
-            try:
-                error_type = type(e).__name__
-                error_detail = str(e)[:300] if str(e) else "no details available"
-                _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
-                await self.send(
-                    chat_id=event.source.chat_id,
-                    content=(
-                        f"Sorry, I encountered an error ({error_type}).\n"
-                        f"{error_detail}\n"
-                        "Try again or use /reset to start a fresh session."
-                    ),
-                    metadata=_thread_metadata,
-                )
-            except Exception:
-                pass  # Last resort — don't let error reporting crash the handler
+            # Send the error to the user on operator-facing platforms only.
+            # WhatsApp/customer-facing chats must not receive stack/service
+            # diagnostics when the gateway or handler fails.
+            if not self._suppress_delivery_diagnostics_in_chat():
+                try:
+                    error_type = type(e).__name__
+                    error_detail = str(e)[:300] if str(e) else "no details available"
+                    _thread_metadata = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
+                    await self.send(
+                        chat_id=event.source.chat_id,
+                        content=(
+                            f"Sorry, I encountered an error ({error_type}).\n"
+                            f"{error_detail}\n"
+                            "Try again or use /reset to start a fresh session."
+                        ),
+                        metadata=_thread_metadata,
+                    )
+                except Exception:
+                    pass  # Last resort — don't let error reporting crash the handler
         finally:
             # Stop typing before any deferred callback work.  Post-delivery
             # callbacks may perform platform I/O; a stuck callback must not

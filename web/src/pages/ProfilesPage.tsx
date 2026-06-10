@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   AlignLeft,
   Check,
@@ -246,6 +247,7 @@ export default function ProfilesPage() {
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
+  const navigate = useNavigate();
 
   // Locale strings with English fallbacks. The enriched keys are optional in
   // the i18n type so untranslated locales don't break the build — they render
@@ -722,21 +724,31 @@ export default function ProfilesPage() {
       : base;
   })();
 
-  // Put "Create" button in page header
+  // Put "Build" (full builder) + "Create" (quick modal) buttons in header
   useLayoutEffect(() => {
     setEnd(
-      <Button
-        className="uppercase"
-        size="sm"
-        onClick={() => setCreateModalOpen(true)}
-      >
-        {t.common.create}
-      </Button>,
+      <div className="flex items-center gap-2">
+        <Button
+          className="uppercase"
+          size="sm"
+          outlined
+          onClick={() => navigate("/profiles/new")}
+        >
+          Build
+        </Button>
+        <Button
+          className="uppercase"
+          size="sm"
+          onClick={() => setCreateModalOpen(true)}
+        >
+          {t.common.create}
+        </Button>
+      </div>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading]);
+  }, [setEnd, t.common.create, loading, navigate]);
 
   const cloning = cloneAll || cloneFromDefault;
 

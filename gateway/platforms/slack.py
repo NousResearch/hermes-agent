@@ -54,6 +54,15 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
+# User-Agent prefix for outbound Slack API calls so platform partners can
+# identify HermesAgent traffic — matching other Hermes outbound surfaces
+# that already set ``HermesAgent/<version>`` for platform-partner attribution.
+try:
+    from hermes_cli import __version__ as _HERMES_VERSION
+except Exception:
+    _HERMES_VERSION = "unknown"
+_HERMES_SLACK_USER_AGENT_PREFIX = f"HermesAgent/{_HERMES_VERSION}"
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -830,12 +839,19 @@ class SlackAdapter(BasePlatformAdapter):
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
-            self._app = AsyncApp(token=primary_token)
+            primary_client = AsyncWebClient(
+                token=primary_token,
+                user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
+            )
+            self._app = AsyncApp(token=primary_token, client=primary_client)
             _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client
             for token in bot_tokens:
-                client = AsyncWebClient(token=token)
+                client = AsyncWebClient(
+                    token=token,
+                    user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
+                )
                 _apply_slack_proxy(client, proxy_url)
                 auth_response = await client.auth_test()
                 team_id = auth_response.get("team_id", "")

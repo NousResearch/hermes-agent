@@ -17,7 +17,7 @@ new syntax in the first place.
 from __future__ import annotations
 
 import re
-from bisect import bisect_right
+from collections.abc import Callable
 
 
 # ===========================================================================
@@ -32,7 +32,7 @@ _PS_KEYWORDS = frozenset({
     "using", "var", "while",
 })
 
-_VAR_FIRST_CHARS = '$(["\'@0123456789'
+
 
 _EXPR_STOP = "=;|&,"
 
@@ -125,83 +125,86 @@ def _skip_subexpression(code: str, start: int) -> int:
 # Region finders  (strings, comments, here-strings)
 # ===========================================================================
 
-def _find_regions(code: str, *, here_strings: bool = True) -> list[tuple[int, int]]:
-    """Return intervals covering all string/comment regions in *code*.
+def _scan_here_string(code: str, start: int) -> int:
+    """Skip a here-string (``@'...'@`` or ``@"..."@``) starting at *start*.
+
+    *start* points to the opening ``@``.
+    Returns the index *after* the closing delimiter.
+    """
+    n = len(code)
+    quote = code[start + 1]
+    i = start + 2
+    seen_newline = False
+    line_begin = start + 2  # start of current line
+    while i < n:
+        if code[i] == "\n":
+            seen_newline = True
+            line_begin = i + 1
+        elif (
+            code[i] == quote
+            and i + 1 < n
+            and code[i + 1] == "@"
+            and seen_newline
+        ):
+            # Closing delimiter must be at the beginning of its own line
+            # (only whitespace may precede it on that line)
+            if code[line_begin:i].strip() == "":
+                return i + 2
+        i += 1
+    return i
+
+
+def _build_region_mask(code: str, *, here_strings: bool = True) -> bytearray:
+    """Build a region mask for *code* in a single pass.
+
+    Returns a bytearray where 1 means outside regions (code) and 0 means
+    inside (strings, comments, here-strings).
 
     When *here_strings* is False, here-strings are not detected (used for
     line-level scanning where here-strings cannot be reliably identified).
     """
-    regions: list[tuple[int, int]] = []
-    i = 0
     n = len(code)
+    mask = bytearray(b"\x01" * n)
+    i = 0
     while i < n:
         c = code[i]
         if c == "<" and i + 1 < n and code[i + 1] == "#":
             start = i
             i = _scan_block_comment(code, i)
-            regions.append((start, i))
+            mask[start:i] = b"\x00" * (i - start)
         elif c == "#":
             start = i
-            if here_strings:
-                while i < n and code[i] != "\n":
-                    i += 1
-            else:
-                i = n  # rest of line is comment
-            regions.append((start, i))
+            while i < n and code[i] != "\n":
+                i += 1
+            mask[start:i] = b"\x00" * (i - start)
         elif here_strings and c == "@" and i + 1 < n and code[i + 1] in ("'", '"'):
+            # PowerShell here-strings require the closing delimiter at the
+            # beginning of its own line (only whitespace may precede it).
             j = i + 2
             while j < n and code[j] in " \t\r":
                 j += 1
             if j < n and code[j] != "\n":
-                i += 1
+                i += 1  # Not a here-string: @' or @" not followed by newline
                 continue
             start = i
-            quote_char = code[i + 1]
-            i += 2
-            while i < n:
-                if code[i] == quote_char and i + 1 < n and code[i + 1] == "@":
-                    line_start = code.rfind("\n", 0, i)
-                    line_start = 0 if line_start == -1 else line_start + 1
-                    if code[line_start:i].strip() == "":
-                        i += 2
-                        break
-                i += 1
-            regions.append((start, i))
+            i = _scan_here_string(code, i)
+            mask[start:i] = b"\x00" * (i - start)
         elif c == "'":
             start = i
             i = _scan_single_quoted(code, i)
-            regions.append((start, i))
+            mask[start:i] = b"\x00" * (i - start)
         elif c == '"':
             start = i
             i = _scan_double_quoted(code, i)
-            regions.append((start, i))
+            mask[start:i] = b"\x00" * (i - start)
         else:
             i += 1
-    return regions
-
-
-# ===========================================================================
-# Fast region mask: O(1) per-character lookups
-# ===========================================================================
-
-def _region_mask(length: int, regions: list[tuple[int, int]]) -> bytearray:
-    """Return a bytearray where 1 means outside regions and 0 means inside.
-
-    This replaces repeated ``_outside_regions`` calls (O(log r) each) with
-    a simple index lookup (O(1)).
-    """
-    mask = bytearray(b"\x01" * length)
-    for start, end in regions:
-        if start >= length:
-            break
-        end = min(end, length)
-        mask[start:end] = b"\x00" * (end - start)
     return mask
 
 
 def _line_mask(line: str) -> bytearray:
     """Return a region mask for *line* (here-strings disabled)."""
-    return _region_mask(len(line), _find_regions(line, here_strings=False))
+    return _build_region_mask(line, here_strings=False)
 
 
 # ===========================================================================
@@ -229,9 +232,8 @@ def _compute_depths(line: str, mask: bytearray) -> list[int]:
 
 def _join_continuation_lines(code: str) -> str:
     """Collapse backtick line-continuations into single logical lines."""
-    regions = _find_regions(code)
+    mask = _build_region_mask(code)
     n = len(code)
-    mask = _region_mask(n, regions)
     result: list[str] = []
     i = 0
     while i < n:
@@ -261,7 +263,7 @@ _COMMAND_PREFIX_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*\s+")
 
 def _match_assignment(before: str) -> tuple[str, str] | None:
     """Match an assignment prefix like ``$var = `` at the end of *before*."""
-    m = _ASSIGN_RE.match(before)
+    m = _ASSIGN_RE.match(before.rstrip())
     if m:
         return m.group(1), m.group(2)
     return None
@@ -269,25 +271,26 @@ def _match_assignment(before: str) -> tuple[str, str] | None:
 
 def _build_replacement(prefix: str, inner: str) -> str:
     """Build replacement string, preserving an assignment if one is detected."""
-    assign = _match_assignment(prefix.rstrip())
+    assign = _match_assignment(prefix)
     if assign:
         p, var = assign
         return f"{p}{var} = {inner}"
     return f"{prefix}{inner}"
 
 
-def _strip_command_prefix(expr: str, start: int) -> tuple[str, int]:
+def _strip_command_prefix(expr: str, start: int, *, check_keywords: bool = True) -> tuple[str, int]:
     """Strip a leading command name (e.g. ``Write-Output ``) from *expr*.
 
     Returns ``(stripped_expr, adjusted_start)``.
-    PowerShell keywords (if, foreach, …) are never stripped.
+    When *check_keywords* is True (default), PowerShell keywords (if, foreach, …)
+    are never stripped. When False, any command prefix is stripped.
     """
     m = _COMMAND_PREFIX_RE.match(expr)
     if m:
         cmd = m.group(0).strip().lower()
-        if cmd not in _PS_KEYWORDS:
+        if not check_keywords or cmd not in _PS_KEYWORDS:
             expr_part = expr[m.end():]
-            if expr_part and expr_part[0] in _VAR_FIRST_CHARS:
+            if expr_part and expr_part[0] in '$(["\'@0123456789':
                 return expr_part, start + m.end()
     return expr, start
 
@@ -295,6 +298,20 @@ def _strip_command_prefix(expr: str, start: int) -> tuple[str, int]:
 # ===========================================================================
 # $? adjacency check — shared by all transforms
 # ===========================================================================
+
+def _separate_trailing_comment(line: str, start: int, mask: bytearray
+                         ) -> tuple[int, str]:
+    """Split off a trailing line comment starting at *start*, if present.
+
+    Returns ``(content_end, comment_str)`` where *content_end* is the index
+    at which the content before the comment ends, and *comment_str* is the
+    comment text (including the ``#``) or ``""`` if none.
+    """
+    for ri in range(max(start, 1), len(line)):
+        if mask[ri] == 0 and mask[ri - 1] == 1 and line[ri] == "#":
+            return ri, line[ri:]
+    return len(line), ""
+
 
 def _after_dollar_question(line: str, op_idx: int) -> bool:
     """Return True if *op_idx* is immediately after ``$?``.
@@ -317,18 +334,26 @@ def _after_dollar_question(line: str, op_idx: int) -> bool:
 
 def _is_scope_colon(line: str, i: int) -> bool:
     """Return ``True`` if the colon at *i* belongs to a ``$scope:var`` prefix."""
-    if i > 0 and (line[i - 1].isalnum() or line[i - 1] == "_"):
-        j = i - 1
-        while j > 0 and (line[j].isalnum() or line[j] == "_"):
-            j -= 1
-        if line[j] == "$":
-            return True
-    return False
+    # Scan backwards from the colon to find the preceding ``$`` variable prefix.
+    j = i - 1
+    while j >= 0 and (line[j].isalnum() or line[j] == "_"):
+        j -= 1
+    return j >= 0 and line[j] == "$"
 
 
 # ===========================================================================
 # Expression boundary helpers
 # ===========================================================================
+
+def _is_null_conditional_qmark(line: str, i: int) -> bool:
+    """Return True if ``?`` at *i* is part of ``?.`` (null-conditional)."""
+    return i + 1 < len(line) and line[i + 1] == "."
+
+
+def _is_double_colon(line: str, i: int) -> bool:
+    """Return True if ``:`` at *i* is part of ``::`` (static member access)."""
+    return (i + 1 < len(line) and line[i + 1] == ":") or (i > 0 and line[i - 1] == ":")
+
 
 def _find_expr_start(line: str, end: int, mask: bytearray,
                      extra_stop: str = "") -> int:
@@ -351,17 +376,13 @@ def _find_expr_start(line: str, end: int, mask: bytearray,
                 return i + 1
         elif depth == 0 and c in stop_set:
             if c == "?":
-                if i + 1 < len(line) and line[i + 1] == ".":
-                    continue  # ?. is null-conditional
+                if _is_null_conditional_qmark(line, i):
+                    continue
                 if _after_dollar_question(line, i):
-                    continue  # $? auto var (but not $$)
+                    continue
             elif c == ":":
-                if i + 1 < len(line) and line[i + 1] == ":":
-                    continue  # :: static member
-                if i > 0 and line[i - 1] == ":":
-                    continue  # :: static member (right side)
-                if _is_scope_colon(line, i):
-                    continue  # $scope:var
+                if _is_double_colon(line, i) or _is_scope_colon(line, i):
+                    continue
             return i + 1
     return 0
 
@@ -388,13 +409,8 @@ def _find_expr_end(line: str, start: int, mask: bytearray) -> int:
             depth -= 1
             if depth < 0:
                 return i
-        elif depth == 0:
-            # Keep the direct '#' check as a defensive fallback (e.g. if mask
-            # handling changes in the future).
-            if c == "#":
-                return i
-            if c in _EXPR_STOP:
-                return i
+        elif depth == 0 and c in _EXPR_STOP:
+            return i
     return len(line)
 
 
@@ -422,34 +438,35 @@ def _expr_right(line: str, pos: int, mask: bytearray) -> tuple[int, int]:
 # ===========================================================================
 
 def _find_next_op(line: str, op: str, mask: bytearray,
-                  after_dq_check: bool = False, start: int = 0) -> int:
-    """Find the next occurrence of *op* in *line* that is outside regions.
+                  skip_dollar_q: bool = False, start: int = 0,
+                  reverse: bool = False) -> int:
+    """Find the next (or rightmost when *reverse* is True) occurrence of *op*
+    in *line* that is outside regions.
 
-    If *after_dq_check* is True, skip positions immediately after ``$?``.
-    *start* restricts the search to indices >= *start*.
+    If *skip_dollar_q* is True, skip positions immediately after ``$?``.
+    *start* restricts the search to indices >= *start* (ignored when *reverse*).
     """
-    idx = line.find(op, start)
+    search = line.rfind if reverse else line.find
+    idx = search(op, start if not reverse else None)
     while idx != -1:
-        if mask[idx] and (not after_dq_check or not _after_dollar_question(line, idx)):
+        if mask[idx] and (not skip_dollar_q or not _after_dollar_question(line, idx)):
             return idx
-        idx = line.find(op, idx + 1)
+        idx = search(op, idx + 1) if not reverse else line.rfind(op, 0, idx)
     return -1
 
 
 def _transform_operator(
     line: str,
     op: str,
-    builder: callable,
+    builder: Callable,
     *,
-    right_scanner: callable | None = None,
-    skip_dq: bool = True,
+    skip_dollar_q: bool = True,
 ) -> tuple[str, list[str]]:
     """Generic single-operator line transformer.
 
     *op*          — the operator string to search for (e.g. ``"??"``).
     *builder*     — callable(left_expr, right_expr, right_extra) → inner_str.
-    *right_scanner* — optional callable(line, pos, mask) → (extra, end_pos).
-    *skip_dq*    — when True, skip positions immediately after ``$?``.
+    *skip_dollar_q* — when True, skip positions immediately after ``$?``.
 
     Returns ``(transformed_line, warnings)``.
     """
@@ -458,7 +475,7 @@ def _transform_operator(
     search = 0
     while True:
         mask = _line_mask(line)
-        idx = _find_next_op(line, op, mask, skip_dq, search)
+        idx = _find_next_op(line, op, mask, skip_dollar_q, search)
         if idx == -1:
             break
 
@@ -466,13 +483,9 @@ def _transform_operator(
         left_expr = line[left_start:left_end].strip()
         left_expr, left_start = _strip_command_prefix(left_expr, left_start)
 
-        if right_scanner is not None:
-            right_extra, right_end = right_scanner(line, idx + op_len, mask)
-            right_expr = line[idx + op_len:right_end].strip()
-        else:
-            right_start, right_end = _expr_right(line, idx + op_len, mask)
-            right_expr = line[right_start:right_end].strip()
-            right_extra = None
+        right_start, right_end = _expr_right(line, idx + op_len, mask)
+        right_expr = line[right_start:right_end].strip()
+        right_extra = None
 
         if not left_expr or not right_expr:
             search = idx + 1
@@ -512,15 +525,13 @@ def _transform_nca_line(line: str) -> tuple[str, list[str]]:
 
         val_start, val_end = _expr_right(line, idx + 3, mask)
         value = line[val_start:val_end].strip()
-        before = line[:left_start].rstrip()
-        prefix = f"{before} " if before else ""
         new_inner = f"if ($null -eq {var}) {{ {var} = {value} }}"
         warnings.append(
             f"null-coalescing assignment `{var} ??= {value}` "
             f"rewritten to `{new_inner}`"
         )
-        line = f"{prefix}{new_inner}" + line[val_end:]
-        search = 0
+        line = _build_replacement(line[:left_start].rstrip(), new_inner) + line[val_end:]
+        search = left_start
     return line, warnings
 
 
@@ -547,9 +558,7 @@ def _find_matching_colon(line: str, start: int, mask: bytearray,
     for i in range(start, len(line)):
         if line[i] != ":" or depth_arr[i] != 0 or not mask[i]:
             continue
-        if (i > 0 and line[i - 1] == ":") or (i + 1 < len(line) and line[i + 1] == ":"):
-            continue
-        if _is_scope_colon(line, i):
+        if _is_double_colon(line, i) or _is_scope_colon(line, i):
             continue
         return i
     return -1
@@ -565,7 +574,7 @@ def _transform_ternary_line(line: str) -> tuple[str, list[str]]:
         if (
             line[pos] == "?"
             and mask[pos]
-            and not (pos > 0 and line[pos - 1] == "$")
+            and not _after_dollar_question(line, pos)
         ):
             colon_pos = _find_matching_colon(line, pos + 1, mask, depth_arr)
             if colon_pos != -1:
@@ -574,13 +583,8 @@ def _transform_ternary_line(line: str) -> tuple[str, list[str]]:
                 true_expr = line[pos + 1:colon_pos].strip()
                 false_start, false_end = _expr_right(line, colon_pos + 1, mask)
                 false_expr = line[false_start:false_end].strip()
-                if not _match_assignment(line[:cond_start].rstrip()) and condition:
-                    m = _COMMAND_PREFIX_RE.match(condition)
-                    if m:
-                        expr_part = condition[m.end():]
-                        if expr_part and expr_part[0] in _VAR_FIRST_CHARS:
-                            cond_start += m.end()
-                            condition = expr_part
+                if not _match_assignment(line[:cond_start]):
+                    condition, cond_start = _strip_command_prefix(condition, cond_start, check_keywords=False)
                 inner = f"if ({condition}) {{ {true_expr} }} else {{ {false_expr} }}"
                 warnings.append(
                     f"ternary operator `{condition} ? {true_expr} : {false_expr}` "
@@ -608,34 +612,21 @@ def _transform_chain_line(line: str) -> tuple[str, list[str]]:
     warnings: list[str] = []
     while True:
         mask = _line_mask(line)
-        best_pos = -1
-        best_op = ""
-        for op in ("&&", "||"):
-            pos = line.rfind(op)
-            while pos != -1:
-                if mask[pos]:
-                    if pos > best_pos:
-                        best_pos = pos
-                        best_op = op
-                    break
-                pos = line.rfind(op, 0, pos)
-        if best_pos == -1:
+        and_pos = _find_next_op(line, "&&", mask, reverse=True)
+        or_pos = _find_next_op(line, "||", mask, reverse=True)
+        if and_pos == -1 and or_pos == -1:
             break
+        if and_pos > or_pos:
+            best_pos, best_op = and_pos, "&&"
+        else:
+            best_pos, best_op = or_pos, "||"
         condition = "$?" if best_op == "&&" else "-not $?"
         left = line[:best_pos].strip()
         right_start = best_pos + 2
         # Separate a trailing line comment from the right-hand expression
         # so it stays outside the generated ``{ }`` block (a ``#`` inside
         # braces would comment out the closing ``}``).
-        right_raw_end = len(line)
-        comment = ""
-        prev_m = 1 if right_start == 0 else mask[right_start - 1]
-        for ri in range(right_start, len(line)):
-            if mask[ri] == 0 and prev_m == 1 and line[ri] == "#":
-                right_raw_end = ri
-                comment = line[ri:]
-                break
-            prev_m = mask[ri]
+        right_raw_end, comment = _separate_trailing_comment(line, right_start, mask)
         right = line[right_start:right_raw_end].strip()
         new_line = f"{left}; if ({condition}) {{ {right} }}{comment}"
         warnings.append(
@@ -655,30 +646,34 @@ def _scan_member_name(line: str, ms: int, mask: bytearray) -> int:
     if ms >= len(line):
         return ms
     c0 = line[ms]
-    if c0 == "$":
-        me = ms + 1
-        if me < len(line) and line[me] == "{":
-            bd = 1
-            me += 1
-            while me < len(line) and bd > 0:
-                if line[me] == "{":
-                    bd += 1
-                elif line[me] == "}":
-                    bd -= 1
-                me += 1
-        elif me < len(line) and line[me] in "?$^":
-            me += 1  # single-char automatic variables ($? $$ $^)
-        else:
-            while me < len(line) and (line[me].isalnum() or line[me] in "_:"):
-                me += 1
-        return me
     if c0 == "'":
         return _scan_single_quoted(line, ms)
     if c0 == '"':
         return _scan_double_quoted(line, ms)
-    me = ms
-    while me < len(line) and (line[me].isalnum() or line[me] == "_"):
+    if c0 != "$":
+        me = ms
+        while me < len(line) and (line[me].isalnum() or line[me] == "_"):
+            me += 1
+        return me
+    # Variable member ($var, ${var}, $? etc.)
+    me = ms + 1
+    if me >= len(line):
+        return me
+    ch = line[me]
+    if ch == "{":
+        bd = 1
         me += 1
+        while me < len(line) and bd > 0:
+            if line[me] == "{":
+                bd += 1
+            elif line[me] == "}":
+                bd -= 1
+            me += 1
+    elif ch in "?$^":
+        me += 1  # single-char automatic variables ($? $$ $^)
+    else:
+        while me < len(line) and (line[me].isalnum() or line[me] in "_:"):
+            me += 1
     return me
 
 
@@ -708,82 +703,84 @@ def _scan_method_args(line: str, start: int, mask: bytearray) -> tuple[str, int]
 # Transform: null-conditional  (?. and ?[)
 # ===========================================================================
 
+def _transform_null_conditional_dot(line: str) -> tuple[str, list[str]]:
+    """Rewrite null-conditional member access (``?.``)."""
+    return _transform_null_conditional_line(line, "?.")
+
+
+def _transform_null_conditional_bracket(line: str) -> tuple[str, list[str]]:
+    """Rewrite null-conditional index access (``?[``)."""
+    return _transform_null_conditional_line(line, "?[")
+
+
 def _transform_null_conditional_line(line: str, op: str) -> tuple[str, list[str]]:
     """Rewrite null-conditional member access (``?.``) or index access (``?[``)."""
     warnings: list[str] = []
     is_dot = op == "?."
     op_len = len(op)
+    search = 0
     while True:
         mask = _line_mask(line)
-        matched = False
-        search = 0
-        while True:
-            idx = _find_next_op(line, op, mask, True, search)
-            if idx == -1:
-                break
+        idx = _find_next_op(line, op, mask, True, search)
+        if idx == -1:
+            return line, warnings
 
-            expr_start, expr_end = _expr_left(line, idx, mask, "?:")
-            base = line[expr_start:expr_end].strip()
-            base, expr_start = _strip_command_prefix(base, expr_start)
-            if not base:
+        expr_start, expr_end = _expr_left(line, idx, mask, "?:")
+        base = line[expr_start:expr_end].strip()
+        base, expr_start = _strip_command_prefix(base, expr_start)
+        if not base:
+            search = idx + op_len
+            continue
+
+        if is_dot:
+            segments: list[tuple[str, int]] = []  # (member_expr, end_pos)
+            prefixes = [base]  # accumulated dotted prefixes
+            cur = idx
+            while cur < len(line) - 1 and line[cur:cur + 2] == "?.":
+                ms = cur + 2
+                while ms < len(line) and line[ms] == " ":
+                    ms += 1
+                me = _scan_member_name(line, ms, mask)
+                if me == ms:
+                    break
+                mem = line[ms:me]
+                args, me = _scan_method_args(line, me, mask)
+                segments.append((f".{mem}{args}", me))
+                prefixes.append(prefixes[-1] + segments[-1][0])
+                cur = me
+            if not segments:
                 search = idx + op_len
                 continue
+            # Build nested if chain from innermost to outermost
+            full_expr = prefixes[-1]  # full dotted expression
+            for pfx in reversed(prefixes[:-1]):
+                full_expr = f"if ($null -ne {pfx}) {{ {full_expr} }}"
+            inner = f"$({full_expr})"
+            end_pos = segments[-1][1]
+            orig_expr = base + "?." + "?.".join(seg[0][1:] for seg in segments)
+        else:
+            bracket_depth = 1
+            bracket_end = idx + 2
+            while bracket_end < len(line) and bracket_depth > 0:
+                c = line[bracket_end]
+                if mask[bracket_end]:
+                    if c == "[":
+                        bracket_depth += 1
+                    elif c == "]":
+                        bracket_depth -= 1
+                bracket_end += 1
+            index_expr = line[idx + 2:bracket_end - 1]
+            inner = f"$(if ($null -ne {base}) {{ {base}[{index_expr}] }})"
+            end_pos = bracket_end
+            orig_expr = f"{base}?[{index_expr}]"
 
-            if is_dot:
-                chain: list[tuple[str, str, int]] = []
-                cur = idx
-                while cur < len(line) - 1 and line[cur:cur + 2] == "?.":
-                    ms = cur + 2
-                    while ms < len(line) and line[ms] == " ":
-                        ms += 1
-                    me = _scan_member_name(line, ms, mask)
-                    if me == ms:
-                        break
-                    mem = line[ms:me]
-                    args, me = _scan_method_args(line, me, mask)
-                    chain.append((mem, args, me))
-                    cur = me
-                if not chain:
-                    search = idx + 2
-                    continue
-                paths = [base]
-                orig_parts = [base]
-                for mem, args, _ in chain:
-                    paths.append(f"{paths[-1]}.{mem}{args}")
-                    orig_parts.append(f"{mem}{args}")
-                inner = paths[-1]
-                for p in reversed(paths[:-1]):
-                    inner = f"if ($null -ne {p}) {{ {inner} }}"
-                inner = f"$({inner})"
-                end_pos = chain[-1][2]
-                orig_expr = "?.".join(orig_parts)
-            else:
-                bracket_depth = 1
-                bracket_end = idx + 2
-                while bracket_end < len(line) and bracket_depth > 0:
-                    c = line[bracket_end]
-                    if mask[bracket_end]:
-                        if c == "[":
-                            bracket_depth += 1
-                        elif c == "]":
-                            bracket_depth -= 1
-                    bracket_end += 1
-                index_expr = line[idx + 2:bracket_end - 1]
-                inner = f"$(if ($null -ne {base}) {{ {base}[{index_expr}] }})"
-                end_pos = bracket_end
-                orig_expr = f"{base}?[{index_expr}]"
-
-            kind = "member access" if is_dot else "index"
-            warnings.append(
-                f"null-conditional {kind} `{orig_expr}` "
-                f"rewritten to `{inner}`"
-            )
-            line = _build_replacement(line[:expr_start], inner) + line[end_pos:]
-            matched = True
-            break
-        if not matched:
-            break
-    return line, warnings
+        kind = "member access" if is_dot else "index"
+        warnings.append(
+            f"null-conditional {kind} `{orig_expr}` "
+            f"rewritten to `{inner}`"
+        )
+        line = _build_replacement(line[:expr_start], inner) + line[end_pos:]
+        search = 0
 
 
 # ===========================================================================
@@ -792,8 +789,8 @@ def _transform_null_conditional_line(line: str, op: str) -> tuple[str, list[str]
 
 _TRANSFORMS = (
     _transform_nca_line,
-    lambda line: _transform_null_conditional_line(line, "?."),
-    lambda line: _transform_null_conditional_line(line, "?["),
+    _transform_null_conditional_dot,
+    _transform_null_conditional_bracket,
     _transform_nc_line,
     _transform_ternary_line,
     _transform_chain_line,
@@ -812,19 +809,8 @@ def pwsh_transform(code: str) -> tuple[str, list[str]]:
     """
     code = _join_continuation_lines(code)
     lines = code.split("\n")
-    regions = _find_regions(code)
-
-    line_offsets = [0]
-    for ln in lines[:-1]:
-        line_offsets.append(line_offsets[-1] + len(ln) + 1)
-
-    multi: set[int] = set()
-    for s, e in regions:
-        if "\n" not in code[s:e]:
-            continue
-        first = bisect_right(line_offsets, s) - 1
-        last = bisect_right(line_offsets, e) - 1
-        multi.update(range(first, last + 1))
+    mask = _build_region_mask(code)
+    multi = _find_multiline_regions(code, mask, lines)
 
     result: list[str] = []
     all_warnings: list[str] = []
@@ -840,6 +826,33 @@ def pwsh_transform(code: str) -> tuple[str, list[str]]:
         result.append(line)
 
     return "\n".join(result), all_warnings
+
+
+def _find_multiline_regions(code: str, mask: bytearray, lines: list[str]) -> set[int]:
+    """Return a set of line indices that are inside multi-line regions.
+
+    Multi-line regions are strings, comments, or here-strings that span
+    across two or more lines. Lines wholly inside such regions must be
+    skipped by line-level transforms.
+    """
+    multi: set[int] = set()
+    i = 0
+    n = len(code)
+    line_idx = 0
+    while i < n:
+        if mask[i] == 0:
+            start_line = line_idx
+            while i < n and mask[i] == 0:
+                if code[i] == "\n":
+                    line_idx += 1
+                i += 1
+            if line_idx > start_line:
+                multi.update(range(start_line, line_idx + 1))
+        else:
+            if code[i] == "\n":
+                line_idx += 1
+            i += 1
+    return multi
 
 
 if __name__ == "__main__":

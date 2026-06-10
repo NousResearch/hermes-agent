@@ -162,7 +162,7 @@ class TestPoolRotationCycle:
         # mark_exhausted_and_rotate returns next entry until exhausted
         self._rotation_index = 0
 
-        def rotate(status_code=None, error_context=None, api_key_hint=None):
+        def rotate(status_code=None, error_context=None, **_kwargs):
             self._rotation_index += 1
             if self._rotation_index < pool_entries:
                 return entries[self._rotation_index]
@@ -173,6 +173,9 @@ class TestPoolRotationCycle:
         agent._credential_pool = pool
         agent._swap_credential = MagicMock()
         agent.log_prefix = ""
+        agent.api_key = "test-api-key"
+        agent.provider = "test-provider"
+        pool.provider = "test-provider"
 
         return agent, pool, entries
 
@@ -194,7 +197,7 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False  # reset after rotation
-        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None)
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=429, error_context=None, api_key_hint="test-api-key")
         agent._swap_credential.assert_called_once_with(entries[1])
 
     def test_pool_exhaustion_returns_false(self):
@@ -220,11 +223,7 @@ class TestPoolRotationCycle:
         )
         assert recovered is True
         assert has_retried is False
-        pool.mark_exhausted_and_rotate.assert_called_once_with(
-            status_code=402,
-            error_context=None,
-            api_key_hint=None,
-        )
+        pool.mark_exhausted_and_rotate.assert_called_once_with(status_code=402, error_context=None, api_key_hint="test-api-key")
 
     def test_no_pool_returns_false(self):
         """No pool should return (False, unchanged)."""
@@ -239,3 +238,40 @@ class TestPoolRotationCycle:
         )
         assert recovered is False
         assert has_retried is False
+
+    def test_api_key_hint_from_pool_current_when_agent_key_missing(self):
+        """api_key_hint should fall back to pool.current().runtime_api_key
+        when agent.api_key is not set (#43747)."""
+        from run_agent import AIAgent
+
+        with patch.object(AIAgent, "__init__", lambda self, **kw: None):
+            agent = AIAgent()
+
+        e0 = MagicMock(name="entry_0")
+        e0.id = "cred-0"
+        e1 = MagicMock(name="entry_1")
+        e1.id = "cred-1"
+
+        pool = MagicMock()
+        pool.has_credentials.return_value = True
+        pool.provider = "test-provider"
+        agent.provider = "test-provider"
+
+        # current entry has a runtime_api_key
+        cur_entry = MagicMock()
+        cur_entry.runtime_api_key = "pool-current-key"
+        pool.current.return_value = cur_entry
+
+        pool.mark_exhausted_and_rotate.return_value = e1
+        agent._credential_pool = pool
+        agent._swap_credential = MagicMock()
+        agent.log_prefix = ""
+        # No agent.api_key set — should fall back to pool.current().runtime_api_key
+
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=402, has_retried_429=False
+        )
+        assert recovered is True
+        pool.mark_exhausted_and_rotate.assert_called_once_with(
+            status_code=402, error_context=None, api_key_hint="pool-current-key"
+        )

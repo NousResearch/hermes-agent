@@ -1101,9 +1101,15 @@ def build_skills_system_prompt(
     in the local dir.  Local skills take precedence when names collide.
     """
     skills_dir = get_skills_dir()
-    external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
+    all_skill_dirs = get_all_skills_dirs()
+    # resolve() with strict=False (default) never raises, so try-except
+    # is unnecessary.  We must still call resolve() on each path because
+    # get_all_skills_dirs() returns the local dir unresolved.
+    resolved_local = skills_dir.resolve()
+    local_enabled = any(d.resolve() == resolved_local for d in all_skill_dirs)
+    external_dirs = [d for d in all_skill_dirs if d.resolve() != resolved_local]
 
-    if not skills_dir.exists() and not external_dirs:
+    if (not local_enabled or not skills_dir.exists()) and not external_dirs:
         return ""
 
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
@@ -1131,7 +1137,7 @@ def build_skills_system_prompt(
             return cached
 
     # ── Layer 2: disk snapshot ────────────────────────────────────────
-    snapshot = _load_skills_snapshot(skills_dir)
+    snapshot = _load_skills_snapshot(skills_dir) if local_enabled else None
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
@@ -1165,45 +1171,47 @@ def build_skills_system_prompt(
     else:
         # Cold path: full filesystem scan + write snapshot for next time
         skill_entries: list[dict] = []
-        for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
-            is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
-            entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
-            skill_entries.append(entry)
-            if not is_compatible:
-                continue
-            skill_name = entry["skill_name"]
-            if entry["frontmatter_name"] in disabled or skill_name in disabled:
-                continue
-            if not _skill_should_show(
-                extract_skill_conditions(frontmatter),
-                available_tools,
-                available_toolsets,
-            ):
-                continue
-            skills_by_category.setdefault(entry["category"], []).append(
-                (entry["frontmatter_name"], entry["description"])
-            )
+        if local_enabled:
+            for skill_file in iter_skill_index_files(skills_dir, "SKILL.md"):
+                is_compatible, frontmatter, desc = _parse_skill_file(skill_file)
+                entry = _build_snapshot_entry(skill_file, skills_dir, frontmatter, desc)
+                skill_entries.append(entry)
+                if not is_compatible:
+                    continue
+                skill_name = entry["skill_name"]
+                if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                    continue
+                if not _skill_should_show(
+                    extract_skill_conditions(frontmatter),
+                    available_tools,
+                    available_toolsets,
+                ):
+                    continue
+                skills_by_category.setdefault(entry["category"], []).append(
+                    (entry["frontmatter_name"], entry["description"])
+                )
 
         # Read category-level DESCRIPTION.md files
-        for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
-            try:
-                content = desc_file.read_text(encoding="utf-8")
-                fm, _ = parse_frontmatter(content)
-                cat_desc = fm.get("description")
-                if not cat_desc:
-                    continue
-                rel = desc_file.relative_to(skills_dir)
-                cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
-                category_descriptions[cat] = str(cat_desc).strip().strip("'\"")
-            except Exception as e:
-                logger.debug("Could not read skill description %s: %s", desc_file, e)
+        if local_enabled:
+            for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
+                try:
+                    content = desc_file.read_text(encoding="utf-8")
+                    fm, _ = parse_frontmatter(content)
+                    cat_desc = fm.get("description")
+                    if not cat_desc:
+                        continue
+                    rel = desc_file.relative_to(skills_dir)
+                    cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
+                    category_descriptions[cat] = str(cat_desc).strip().strip("'\"")
+                except Exception as e:
+                    logger.debug("Could not read skill description %s: %s", desc_file, e)
 
-        _write_skills_snapshot(
-            skills_dir,
-            _build_skills_manifest(skills_dir),
-            skill_entries,
-            category_descriptions,
-        )
+            _write_skills_snapshot(
+                skills_dir,
+                _build_skills_manifest(skills_dir),
+                skill_entries,
+                category_descriptions,
+            )
 
     # ── External skill directories ─────────────────────────────────────
     # Scan external dirs directly (no snapshot caching — they're read-only

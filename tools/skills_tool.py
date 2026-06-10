@@ -502,8 +502,8 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
     try:
         from agent.skill_utils import get_external_skills_dirs
         dirs_to_check.extend(get_external_skills_dirs())
-    except Exception:
-        pass
+    except ImportError:
+        pass  # skill_utils unavailable; fall back to SKILLS_DIR only
     for skills_dir in dirs_to_check:
         try:
             rel_path = skill_path.relative_to(skills_dir)
@@ -603,7 +603,11 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
     Returns:
         List of skill metadata dicts (name, description, category).
     """
-    from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+    from agent.skill_utils import (
+        get_external_skills_dirs,
+        get_local_skills_dir,
+        iter_skill_index_files,
+    )
 
     skills = []
     seen_names: set = set()
@@ -613,8 +617,9 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
     # Scan local dir first, then external dirs (local takes precedence)
     dirs_to_scan = []
-    if SKILLS_DIR.exists():
-        dirs_to_scan.append(SKILLS_DIR)
+    local_dir = get_local_skills_dir()
+    if local_dir and local_dir.exists():
+        dirs_to_scan.append(local_dir)
     dirs_to_scan.extend(get_external_skills_dirs())
 
     for scan_dir in dirs_to_scan:
@@ -692,6 +697,20 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         JSON string with minimal skill info: name, description, category
     """
     try:
+        from agent.skill_utils import get_local_skills_dir
+
+        local_dir = get_local_skills_dir()
+        if local_dir is None:
+            return json.dumps(
+                {
+                    "success": True,
+                    "skills": [],
+                    "categories": [],
+                    "message": "No Hermes skills found. The configured skills directory belongs to OpenClaw and was skipped.",
+                },
+                ensure_ascii=False,
+            )
+
         if not SKILLS_DIR.exists():
             SKILLS_DIR.mkdir(parents=True, exist_ok=True)
             return json.dumps(
@@ -957,7 +976,7 @@ def skill_view(
             if bare:
                 local_category_name = f"{namespace}/{bare}"
 
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_local_skills_dir
 
         # The categorized fall-through form (namespace/bare) joins onto each
         # search dir too; re-validate it since `bare` is not namespace-checked.
@@ -973,10 +992,11 @@ def skill_view(
                     ensure_ascii=False,
                 )
 
-        # Build list of all skill directories to search
+        # Build list of all skill directories to search (already filtered)
         all_dirs = []
-        if SKILLS_DIR.exists():
-            all_dirs.append(SKILLS_DIR)
+        local_dir = get_local_skills_dir()
+        if local_dir and local_dir.exists():
+            all_dirs.append(local_dir)
         all_dirs.extend(get_external_skills_dirs())
 
         if not all_dirs:
@@ -1016,6 +1036,11 @@ def skill_view(
             # Strategy 1: direct path (e.g., "mlops/axolotl" or bare "axolotl"
             # at the top of the dir).
             direct_path = search_dir / name
+            if direct_path.is_absolute():
+                try:
+                    direct_path.resolve().relative_to(search_dir.resolve())
+                except ValueError:
+                    continue
             if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
                 _record(direct_path, direct_path / "SKILL.md")
             elif direct_path.with_suffix(".md").exists():

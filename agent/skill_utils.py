@@ -322,6 +322,74 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
+# ── Skills directory isolation ───────────────────────────────────────────
+
+_OPENCLAW_HOME_MARKERS = frozenset(("openclaw.json", "clawdbot.json", "moltbot.json"))
+
+
+def _is_openclaw_owned(path: Path) -> bool:
+    """Return True when *path* is an OpenClaw-owned directory.
+
+    Checks two conditions:
+    1. Path component contains ".openclaw" (covers 90% of cases)
+    2. Directory or its parents contain an OpenClaw config marker file
+    """
+    resolved = Path(path).expanduser().resolve()
+
+    # Check 1: path component contains .openclaw
+    if any(part.lower() == ".openclaw" for part in resolved.parts):
+        return True
+
+    # Check 2: directory or parents contain config marker
+    for parent in (resolved, *resolved.parents):
+        if any((parent / m).exists() for m in _OPENCLAW_HOME_MARKERS):
+            return True
+    return False
+
+
+def _openclaw_allowed() -> bool:
+    """Check if OpenClaw skills are explicitly allowed via env var or config."""
+    # Check env var first (fast path)
+    if os.getenv("HERMES_ALLOW_OPENCLAW_SKILLS", "").lower() in ("1", "true", "yes", "on"):
+        return True
+
+    # Check config file
+    config_path = get_config_path()
+    if not config_path.exists():
+        return False
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return False
+    # Support multiple config keys for backward compatibility
+    return any(
+        str(skills_cfg.get(key, "")).lower() in ("1", "true", "yes", "on")
+        for key in (
+            "allow_openclaw_external_dirs",
+            "allow_openclaw_skills",
+            "allow_foreign_app_skills",
+        )
+    )
+
+
+def get_local_skills_dir() -> Path | None:
+    """Return the local skills directory, or None if it should be skipped.
+
+    Returns None when HERMES_HOME points at an OpenClaw-owned tree and
+    the user has not opted in via HERMES_ALLOW_OPENCLAW_SKILLS=1.
+    """
+    local = get_skills_dir()
+    if _is_openclaw_owned(local) and not _openclaw_allowed():
+        logger.warning("Skipping OpenClaw-owned local skills directory: %s", local)
+        return None
+    return local
+
+
 # ── External skills directories ──────────────────────────────────────────
 
 # (config_path_str, mtime_ns) -> resolved external dirs list.  Keyed by
@@ -348,7 +416,8 @@ def get_external_skills_dirs() -> List[Path]:
     Cached in-process, keyed on ``config.yaml`` mtime — the function is
     called once per skill during banner / tool-registry scans, and YAML
     parsing a non-trivial config dominates ``hermes`` cold-start time
-    when the cache is absent.
+    when the cache is absent.  OpenClaw-owned directories are skipped
+    unless ``HERMES_ALLOW_OPENCLAW_SKILLS=1``.
     """
     config_path = get_config_path()
     if not config_path.exists():
@@ -395,7 +464,8 @@ def get_external_skills_dirs() -> List[Path]:
     hermes_home = get_hermes_home()
     local_skills = get_skills_dir().resolve()
     seen: Set[Path] = set()
-    result = []
+    result: List[Path] = []
+    openclaw_allowed = _openclaw_allowed()
 
     for entry in raw_dirs:
         entry = str(entry).strip()
@@ -413,6 +483,9 @@ def get_external_skills_dirs() -> List[Path]:
             continue
         if p in seen:
             continue
+        if _is_openclaw_owned(p) and not openclaw_allowed:
+            logger.warning("Skipping OpenClaw-owned external skills directory: %s", p)
+            continue
         if p.is_dir():
             seen.add(p)
             result.append(p)
@@ -427,10 +500,12 @@ def get_external_skills_dirs() -> List[Path]:
 def get_all_skills_dirs() -> List[Path]:
     """Return all skill directories: local ``~/.hermes/skills/`` first, then external.
 
-    The local dir is always first (and always included even if it doesn't exist
-    yet — callers handle that).  External dirs follow in config order.
+    The local dir is first unless ``HERMES_HOME`` points at an OpenClaw-owned
+    tree, which is treated as a misconfiguration and skipped to prevent
+    cross-app skill pollution. External dirs follow in config order.
     """
-    dirs = [get_skills_dir()]
+    local = get_local_skills_dir()
+    dirs = [local] if local else []
     dirs.extend(get_external_skills_dirs())
     return dirs
 

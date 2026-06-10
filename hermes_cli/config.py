@@ -1732,6 +1732,10 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Keep Hermes/OpenClaw skills isolated by default. Set true only if you
+        # intentionally want Hermes to index an OpenClaw-owned skills directory
+        # such as ~/.openclaw/skills via external_dirs.
+        "allow_openclaw_external_dirs": False,
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

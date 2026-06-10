@@ -220,18 +220,19 @@ def get_skills_directory_mount(
     at ``<container_base>/external_skills/<index>``.
     """
     mounts = []
-    hermes_home = _resolve_hermes_home()
-    skills_dir = hermes_home / "skills"
-    if skills_dir.is_dir():
-        host_path = _safe_skills_path(skills_dir)
-        mounts.append({
-            "host_path": host_path,
-            "container_path": f"{container_base.rstrip('/')}/skills",
-        })
-
-    # Mount external skill dirs
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_local_skills_dir, get_external_skills_dirs
+
+        # Mount local skills dir (already filtered by get_local_skills_dir)
+        local_dir = get_local_skills_dir()
+        if local_dir and local_dir.is_dir():
+            host_path = _safe_skills_path(local_dir)
+            mounts.append({
+                "host_path": host_path,
+                "container_path": f"{container_base.rstrip('/')}/skills",
+            })
+
+        # Mount external skill dirs (already filtered by get_external_skills_dirs)
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if ext_dir.is_dir():
                 host_path = _safe_skills_path(ext_dir)
@@ -303,22 +304,23 @@ def iter_skills_files(
     """
     result: List[Dict[str, str]] = []
 
-    hermes_home = _resolve_hermes_home()
-    skills_dir = hermes_home / "skills"
-    if skills_dir.is_dir():
-        container_root = f"{container_base.rstrip('/')}/skills"
-        for item in skills_dir.rglob("*"):
-            if item.is_symlink() or not item.is_file():
-                continue
-            rel = item.relative_to(skills_dir)
-            result.append({
-                "host_path": str(item),
-                "container_path": f"{container_root}/{rel}",
-            })
-
-    # Include external skill dirs
     try:
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_local_skills_dir, get_external_skills_dirs
+
+        # Include local skills dir (already filtered by get_local_skills_dir)
+        local_dir = get_local_skills_dir()
+        if local_dir and local_dir.is_dir():
+            container_root = f"{container_base.rstrip('/')}/skills"
+            for item in local_dir.rglob("*"):
+                if item.is_symlink() or not item.is_file():
+                    continue
+                rel = item.relative_to(local_dir)
+                result.append({
+                    "host_path": str(item),
+                    "container_path": f"{container_root}/{rel}",
+                })
+
+        # Include external skill dirs (already filtered by get_external_skills_dirs)
         for idx, ext_dir in enumerate(get_external_skills_dirs()):
             if not ext_dir.is_dir():
                 continue

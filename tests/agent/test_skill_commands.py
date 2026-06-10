@@ -1,5 +1,6 @@
 """Tests for agent/skill_commands.py — skill slash command scanning and platform filtering."""
 
+import importlib
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -51,6 +52,26 @@ def _symlink_category(skills_dir: Path, linked_root: Path, category: str) -> Pat
 
 
 class TestScanSkillCommands:
+    def test_follows_current_hermes_home_after_import(self, tmp_path, monkeypatch):
+        home_a = tmp_path / "home-a"
+        home_b = tmp_path / "home-b"
+        _make_skill(home_a / "skills", "alpha")
+        _make_skill(home_b / "skills", "beta")
+
+        monkeypatch.setenv("HERMES_HOME", str(home_a))
+        import agent.skill_commands as skill_commands_module
+
+        importlib.reload(skills_tool_module)
+        importlib.reload(skill_commands_module)
+        assert skills_tool_module.SKILLS_DIR == home_a / "skills"
+
+        monkeypatch.setenv("HERMES_HOME", str(home_b))
+        with patch("agent.skill_utils.get_external_skills_dirs", return_value=[]):
+            result = skill_commands_module.scan_skill_commands()
+
+        assert "/beta" in result
+        assert "/alpha" not in result
+
     def test_finds_skills(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
             _make_skill(tmp_path, "my-skill")

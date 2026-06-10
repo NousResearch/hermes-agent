@@ -29,9 +29,42 @@ _IS_WINDOWS = platform.system() == "Windows"
 from pathlib import Path
 from typing import Dict, Optional, Any
 
-from hermes_constants import get_hermes_dir
+from hermes_constants import get_hermes_dir, get_hermes_home
 
 logger = logging.getLogger(__name__)
+
+_WHATSAPP_BRIDGE_DIR_ENV = "HERMES_WHATSAPP_BRIDGE_DIR"
+_SOURCE_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+
+
+def resolve_whatsapp_bridge_dir() -> Path:
+    """Return the packaged or source WhatsApp bridge directory."""
+    override = os.getenv(_WHATSAPP_BRIDGE_DIR_ENV, "").strip()
+    if override:
+        return Path(override).expanduser()
+    return _SOURCE_BRIDGE_DIR
+
+
+def prepare_whatsapp_bridge_dir(bridge_dir: Path) -> Path:
+    """Stage a packaged bridge into HERMES_HOME when it is not writable.
+
+    Source checkouts install ``node_modules`` next to ``bridge.js``. Packaged
+    installs such as Nix expose the bridge source from a read-only store path,
+    so dependency installation has to happen from a writable copy.
+    """
+    bridge_dir = Path(bridge_dir)
+    if (bridge_dir / "node_modules").exists() or os.access(bridge_dir, os.W_OK):
+        return bridge_dir
+    if not (bridge_dir / "bridge.js").exists():
+        return bridge_dir
+
+    staged_dir = get_hermes_home() / "platforms" / "whatsapp" / "bridge"
+    staged_dir.mkdir(parents=True, exist_ok=True)
+    for name in ("bridge.js", "allowlist.js", "package.json", "package-lock.json"):
+        src = bridge_dir / name
+        if src.exists():
+            shutil.copy2(src, staged_dir / name)
+    return staged_dir
 
 
 def _kill_port_process(port: int) -> None:
@@ -245,8 +278,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
     DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
     
-    # Default bridge location relative to the hermes-agent install
-    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    # Default bridge location relative to the hermes-agent install, with
+    # package-manager wrappers allowed to override it.
+    _DEFAULT_BRIDGE_DIR = _SOURCE_BRIDGE_DIR
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)
@@ -254,7 +288,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._bridge_port: int = config.extra.get("bridge_port", 3000)
         self._bridge_script: Optional[str] = config.extra.get(
             "bridge_script",
-            str(self._DEFAULT_BRIDGE_DIR / "bridge.js"),
+            str(resolve_whatsapp_bridge_dir() / "bridge.js"),
         )
         self._session_path: Path = Path(config.extra.get(
             "session_path",
@@ -587,8 +621,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
 
         try:
-            # Auto-install npm dependencies if node_modules doesn't exist
-            bridge_dir = bridge_path.parent
+            # Auto-install npm dependencies if node_modules doesn't exist.
+            # If the bridge source came from a read-only package store, first
+            # stage it under HERMES_HOME so npm has a writable working tree.
+            bridge_dir = prepare_whatsapp_bridge_dir(bridge_path.parent)
+            bridge_path = bridge_dir / bridge_path.name
             if not (bridge_dir / "node_modules").exists():
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
                 # Resolve npm path so Windows can execute the .cmd shim.

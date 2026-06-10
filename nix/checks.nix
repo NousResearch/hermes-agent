@@ -160,6 +160,35 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
           echo "ok" > $out/result
         '';
 
+        # Verify the WhatsApp bridge source is bundled for packaged installs.
+        # The Python adapter stages this read-only source under HERMES_HOME
+        # before npm installs its Node dependencies.
+        bundled-whatsapp-bridge = pkgs.runCommand "hermes-bundled-whatsapp-bridge" { } ''
+          set -e
+          echo "=== Checking bundled WhatsApp bridge ==="
+          BRIDGE_DIR=${hermes-agent}/share/hermes-agent/whatsapp-bridge
+          test -d "$BRIDGE_DIR" || (echo "FAIL: WhatsApp bridge directory missing"; exit 1)
+          echo "PASS: WhatsApp bridge directory exists"
+
+          test -f "$BRIDGE_DIR/bridge.js" || (echo "FAIL: bridge.js missing"; exit 1)
+          test -f "$BRIDGE_DIR/allowlist.js" || (echo "FAIL: allowlist.js missing"; exit 1)
+          test -f "$BRIDGE_DIR/package.json" || (echo "FAIL: package.json missing"; exit 1)
+          test -f "$BRIDGE_DIR/package-lock.json" || (echo "FAIL: package-lock.json missing"; exit 1)
+          echo "PASS: WhatsApp bridge source and lockfile present"
+
+          grep -q "HERMES_WHATSAPP_BRIDGE_DIR" ${hermes-agent}/bin/hermes || \
+            (echo "FAIL: HERMES_WHATSAPP_BRIDGE_DIR not in wrapper"; exit 1)
+          echo "PASS: HERMES_WHATSAPP_BRIDGE_DIR set in wrapper"
+
+          NODE=$(sed -n "s/^export HERMES_NODE='\(.*\)'/\1/p" ${hermes-agent}/bin/hermes)
+          "$NODE" --check "$BRIDGE_DIR/bridge.js"
+          echo "PASS: bridge.js parses with packaged Node"
+
+          echo "=== All bundled WhatsApp bridge checks passed ==="
+          mkdir -p $out
+          echo "ok" > $out/result
+        '';
+
         # Verify bundled i18n locale catalogs are present and resolvable.
         # Regression for #23943 / #27632 / #35374 — sealed Nix venvs dropped
         # locales/, surfacing raw i18n keys like gateway.reset.header_default.

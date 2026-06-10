@@ -103,6 +103,43 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
     return base
 
 
+class TestBridgePathResolution:
+    """Bridge path handling for packaged installs."""
+
+    def test_adapter_default_bridge_script_honors_env(self, tmp_path, monkeypatch):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.whatsapp import WhatsAppAdapter
+
+        bridge_dir = tmp_path / "packaged-bridge"
+        bridge_dir.mkdir()
+        monkeypatch.setenv("HERMES_WHATSAPP_BRIDGE_DIR", str(bridge_dir))
+
+        adapter = WhatsAppAdapter(PlatformConfig(enabled=True, extra={}))
+
+        assert adapter._bridge_script == str(bridge_dir / "bridge.js")
+
+    def test_prepare_stages_read_only_bridge_under_hermes_home(
+        self, tmp_path, monkeypatch
+    ):
+        from gateway.platforms.whatsapp import prepare_whatsapp_bridge_dir
+
+        hermes_home = tmp_path / "home"
+        source = tmp_path / "nix-store-bridge"
+        source.mkdir()
+        for name in ("bridge.js", "allowlist.js", "package.json", "package-lock.json"):
+            (source / name).write_text(f"// {name}\n")
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr("gateway.platforms.whatsapp.os.access", lambda *_a: False)
+
+        staged = prepare_whatsapp_bridge_dir(source)
+
+        expected = hermes_home / "platforms" / "whatsapp" / "bridge"
+        assert staged == expected
+        for name in ("bridge.js", "allowlist.js", "package.json", "package-lock.json"):
+            assert (expected / name).read_text() == f"// {name}\n"
+
+
 # ---------------------------------------------------------------------------
 # _close_bridge_log() unit tests
 # ---------------------------------------------------------------------------

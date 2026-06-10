@@ -82,6 +82,11 @@ let
   # compiled, so it never carries a __pycache__ dir to exclude.
   bundledLocales = lib.cleanSource ../locales;
 
+  bundledWhatsappBridge = lib.cleanSourceWith {
+    src = ../scripts/whatsapp-bridge;
+    filter = path: _type: !(lib.hasInfix "/node_modules/" path);
+  };
+
   runtimeDeps = [
     nodejs
     ripgrep
@@ -167,6 +172,7 @@ stdenv.mkDerivation (finalAttrs: {
     cp -r ${bundledSkills} $out/share/hermes-agent/skills
     cp -r ${bundledPlugins} $out/share/hermes-agent/plugins
     cp -r ${bundledLocales} $out/share/hermes-agent/locales
+    cp -r ${bundledWhatsappBridge} $out/share/hermes-agent/whatsapp-bridge
     cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
 
     mkdir -p $out/ui-tui
@@ -179,6 +185,7 @@ stdenv.mkDerivation (finalAttrs: {
           --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
           --set HERMES_BUNDLED_PLUGINS $out/share/hermes-agent/plugins \
           --set HERMES_BUNDLED_LOCALES $out/share/hermes-agent/locales \
+          --set HERMES_WHATSAPP_BRIDGE_DIR $out/share/hermes-agent/whatsapp-bridge \
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \

@@ -20,6 +20,7 @@ from agent.auxiliary_client import (
     aux_interrupt_protection,
     call_llm,
     extract_content_or_reasoning,
+    inflight_aux_count,
 )
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.context_compressor_summary import SummaryDispatchMixin
@@ -1679,6 +1680,12 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     """Default context engine: prune tool results, protect head/tail, summarize the middle
     with an LLM, and iteratively update the previous summary on later compactions."""
 
+    # Upper bound on consecutive should_compress() checks deferred by the
+    # defer_while_aux_inflight gate.  Keeps sustained auxiliary traffic from
+    # starving compression: past this many deferrals in a row, compression
+    # fires even with calls still in flight.
+    DEFER_MAX_CONSECUTIVE_CHECKS = 3
+
     @property
     def name(self) -> str:
         return "compressor"
@@ -1787,6 +1794,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             # Raise-only small-context floor; must run after context_length resolves and before threshold_tokens derives.
             self.threshold_percent = self._effective_threshold_percent(self._resolved_context_length, self._base_threshold_percent)
             self._emit_init_summary_once()
+            self._warn_if_defer_gate_inert()
         return self._resolved_context_length
 
     @property
@@ -1871,6 +1879,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._previous_summary = self._summary_has_user_turn = self._last_summary_error = None
         self._last_aux_model_failure_error = self._last_aux_model_failure_model = None
         self._consecutive_timeout_failures = 0
+        self._consecutive_defer_checks = 0
         # Turns unrecoverably dropped by a static fallback, so callers can warn.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = self._last_feasibility_skip = False
@@ -2199,6 +2208,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         self._tail_token_budget = None
         _ = self.tail_token_budget  # eager recompute, same timing as before
         self.max_summary_tokens = min(int(context_length * 0.05), _SUMMARY_TOKENS_CEILING)
+        self._warn_if_defer_gate_inert()
         # Old usage cannot price a new model. Clear it without arming the post-compaction
         # latch: the next response supplies usage or enables the usage-less fallback.
         self.last_prompt_tokens = self.last_completion_tokens = self.last_total_tokens = 0
@@ -2302,6 +2312,7 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
         custom_providers: list | None = None,
+        defer_while_aux_inflight: bool = False, defer_hard_ceiling: float = 0.95,
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
@@ -2343,6 +2354,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         # non-numeric, <=0) means "no reservation" so the threshold arithmetic never sees a non-int (e.g. a
         # test MagicMock).
         self.abort_on_summary_failure = abort_on_summary_failure
+        # When True, auto-compression is postponed while other auxiliary LLM
+        # calls are in flight (see should_compress).  The deferral is bounded
+        # twice: by the hard ceiling — a fraction of context_length past
+        # which compression fires regardless, because running out of context
+        # is worse than accelerator contention — and by
+        # DEFER_MAX_CONSECUTIVE_CHECKS, so sustained auxiliary traffic can
+        # never starve compression into riding the context all the way up.
+        self.defer_while_aux_inflight = bool(defer_while_aux_inflight)
+        self.defer_hard_ceiling = max(0.0, min(float(defer_hard_ceiling), 1.0))
+        self._consecutive_defer_checks = 0
 
         # Micro-compaction is OFF by default: each pass breaks the prompt-cache prefix every turn.
         self._micro_compact_enabled = False
@@ -2490,12 +2511,18 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def should_compress_info(self, prompt_tokens: int = None) -> "tuple[bool, str | None]":
         """Return ``(should_compress, reason)``.
         ``reason`` is None unless compression is needed but blocked: ``"cooldown:<seconds>"`` or
-        ``"ineffective"``. Callers should surface a warning when it is non-None."""
+        ``"ineffective"``. Callers should surface a warning when it is non-None.
+        With ``defer_while_aux_inflight`` an over-threshold check may also be deferred while other
+        auxiliary calls are in flight (bounded by ``defer_hard_ceiling`` and
+        ``DEFER_MAX_CONSECUTIVE_CHECKS``); a deferral returns ``(False, None)`` — transient and
+        self-resolving, it must not trigger the stuck-over-threshold warning."""
         tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
         if tokens < self.threshold_tokens:
             return False, None
         if self._automatic_compression_blocked():
             return False, self._compression_block_reason() or "blocked"
+        if self._deferred_for_inflight_aux(tokens):
+            return False, None
         return True, None
 
     def _compression_block_reason(self) -> "str | None":
@@ -2624,6 +2651,65 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             accumulated += msg_tokens
             cut = i
         return cut, accumulated
+
+    def _deferred_for_inflight_aux(self, tokens: int) -> bool:
+        """Return True when an over-threshold auto-compression should be
+        postponed because other auxiliary calls are in flight.
+
+        Contention deferral (opt-in): on single-accelerator local
+        deployments, a large compression prefill competes with in-flight
+        auxiliary calls (web_extract, vision, other sessions'
+        compressions, ...) for the same GPU and can push them past their
+        timeouts.  The deferral is bounded twice — by the hard ceiling
+        (running out of context is worse than contention) and by
+        DEFER_MAX_CONSECUTIVE_CHECKS (sustained auxiliary traffic must
+        not starve compression into riding the context up to the
+        ceiling).  Best-effort gate: an auxiliary call starting after
+        this check still overlaps the compression that follows.
+        """
+        if not self.defer_while_aux_inflight:
+            return False
+        ceiling_tokens = int(self.context_length * self.defer_hard_ceiling)
+        if (
+            tokens < ceiling_tokens
+            and self._consecutive_defer_checks < self.DEFER_MAX_CONSECUTIVE_CHECKS
+        ):
+            inflight = inflight_aux_count()
+            if inflight > 0:
+                self._consecutive_defer_checks += 1
+                if not self.quiet_mode:
+                    logger.info(
+                        "Compression deferred (%d/%d) — %d auxiliary "
+                        "call(s) in flight (~%d tokens < hard ceiling "
+                        "%d). Will re-check next turn.",
+                        self._consecutive_defer_checks,
+                        self.DEFER_MAX_CONSECUTIVE_CHECKS,
+                        inflight, tokens, ceiling_tokens,
+                    )
+                return True
+        self._consecutive_defer_checks = 0
+        return False
+
+    def _warn_if_defer_gate_inert(self) -> None:
+        """Warn when defer_while_aux_inflight can never defer.
+
+        With a small context window the MINIMUM_CONTEXT_LENGTH floor can
+        push threshold_tokens at or above the deferral ceiling — every
+        over-threshold check is then already past the ceiling and the gate
+        silently never applies.
+        """
+        if not self.defer_while_aux_inflight:
+            return
+        ceiling_tokens = int(self.context_length * self.defer_hard_ceiling)
+        if self.threshold_tokens >= ceiling_tokens and not self.quiet_mode:
+            logger.warning(
+                "compression.defer_while_aux_inflight is enabled but inert: "
+                "compression threshold (%d tokens) >= deferral ceiling (%d "
+                "tokens, %.0f%% of %d). Raise defer_hard_ceiling or use a "
+                "larger context window for the deferral to apply.",
+                self.threshold_tokens, ceiling_tokens,
+                self.defer_hard_ceiling * 100, self.context_length,
+            )
 
     def _prune_boundary(
         self, result: List[Dict[str, Any]], protect_tail_count: int, protect_tail_tokens: int | None,

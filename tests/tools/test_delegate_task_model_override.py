@@ -530,5 +530,116 @@ class TestPerTaskModelErrors(unittest.TestCase):
             self.assertEqual(kwargs["provider"], "openrouter")
 
 
+class TestStaleCredsReferenceRegression(unittest.TestCase):
+    """Regression test for stale `creds` reference (PR #43134 review).
+
+    xAI/Grok identified that override_acp_command still referenced
+    `creds.get("command")` instead of `task_creds.get("command")` after
+    per-task credential resolution.  The fix ensures the fallback chain
+    for acp_command uses the per-task credentials, not delegation-level.
+    """
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_task_creds_used_for_acp_command_fallback(
+        self, mock_creds, mock_cfg
+    ):
+        """When a task overrides provider and task_creds contains a 'command'
+        key, the fallback for override_acp_command must use task_creds, not
+        the delegation-level creds."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        # Delegation creds have one command, per-task has another
+        mock_creds.side_effect = [
+            {
+                "model": None,
+                "provider": None,
+                "base_url": None,
+                "api_key": None,
+                "api_mode": None,
+                "command": "delegation-command",
+            },
+            {
+                "model": "google/gemini-3-flash-preview",
+                "provider": "openrouter",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_key": "sk-task-key",
+                "api_mode": "chat_completions",
+                "command": "task-command",
+            },
+        ]
+
+        parent = _make_mock_parent()
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            mock_build.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    tasks=[{
+                        "goal": "Per-task provider test",
+                        "model": "google/gemini-3-flash-preview",
+                        "provider": "openrouter",
+                    }],
+                    parent_agent=parent,
+                )
+            )
+
+            self.assertIn("results", result)
+            # Verify _build_child_agent was called with task_creds fields
+            _, kwargs = mock_build.call_args
+            # The API key must come from per-task creds, not delegation creds
+            self.assertEqual(kwargs["override_api_key"], "sk-task-key")
+            self.assertEqual(kwargs["override_provider"], "openrouter")
+            # The acp_command fallback uses task_creds.get("command")
+            # which is "task-command" (not "delegation-command")
+            self.assertEqual(
+                kwargs["override_acp_command"], "task-command"
+            )
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_whitespace_model_stripped_before_resolution(
+        self, mock_creds, mock_cfg
+    ):
+        """Whitespace-only model string should be treated as not specified."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "glm-5", "provider": ""}
+        mock_creds.return_value = {
+            "model": "glm-5",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+
+        parent = _make_mock_parent()
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "Whitespace model", "model": "   "}],
+                    parent_agent=parent,
+                )
+            )
+
+            self.assertIn("results", result)
+            _, kwargs = MockAgent.call_args
+            # Whitespace-only model should NOT override delegation.model
+            self.assertEqual(kwargs["model"], "glm-5")
+
+
 if __name__ == "__main__":
     unittest.main()

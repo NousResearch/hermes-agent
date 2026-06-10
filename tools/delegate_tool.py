@@ -2489,10 +2489,15 @@ def delegate_task(
 
             # Per-task model/provider override (issue #18591).
             # Fallback chain: per-task field → delegation config → parent model.
-            task_model = t.get("model") or ""
-            task_provider = t.get("provider") or ""
+            # NOTE: .strip() guards against whitespace-only strings like "  ".
+            task_model = (t.get("model") or "").strip() or ""
+            task_provider = (t.get("provider") or "").strip() or ""
 
             # Resolve per-task credentials when provider or model is specified.
+            # NOTE (fail-fast): credential resolution failure for task N aborts
+            # the entire batch.  Already-spawned children from tasks 0..N-1 are
+            # orphaned.  Pre-validate all tasks first if partial-failure handling
+            # is needed (see review discussion on PR #43134).
             if task_provider or task_model:
                 task_creds = _resolve_task_credentials(
                     task_model=task_model,
@@ -3161,7 +3166,12 @@ def _resolve_task_credentials(
         task_resolved = _resolve_delegation_credentials(task_cfg, parent_agent)
     except ValueError as exc:
         return f"Cannot resolve per-task provider '{task_provider}': {exc}"
+    except (KeyError, LookupError) as exc:
+        return f"Configuration missing for per-task provider '{task_provider}': {exc}"
     except Exception as exc:
+        logger.exception(
+            "Unexpected error resolving per-task provider %s", task_provider
+        )
         return f"Error resolving per-task provider '{task_provider}': {exc}"
 
     # Ensure per-task model takes priority over whatever the provider resolved

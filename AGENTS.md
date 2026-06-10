@@ -31,6 +31,12 @@ main checkout).
 - Prefer Linear's GitHub integration or native PR attachments when available,
   but keep the human-readable Linear handoff comment even when auto-linking
   works.
+- For Linear work, use the connector for simple reads, creates, comments, and
+  status changes. For precise or structural operations such as attachments,
+  saved views, bulk cleanup, or anything the connector does not expose, go
+  straight to the authenticated Linear CLI/raw GraphQL path before calling it
+  blocked. Use browser/UI only when auth, visual setup, or unavailable API
+  surface requires it.
 - When user action is needed, lead the update with an `Action Items For You`
   list. Keep it short, concrete, and separate from agent-owned next steps; if
   there are no user actions, say `Action Items For You: None`. Keep the

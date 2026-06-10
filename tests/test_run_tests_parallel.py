@@ -293,3 +293,43 @@ def test_file_present_reports_truly_missing(tmp_path, monkeypatch):
     f = tmp_path / "nope.py"
     monkeypatch.setattr(rtp.Path, "exists", lambda self: False)
     assert rtp._file_present(f, attempts=3, delay=0.0) is False
+
+
+def test_exit4_exhausted_appends_forensics(tmp_path, monkeypatch):
+    """When exit-4 survives all retries, the output must carry filesystem
+    forensics (exists-now, parent-dir survey, git-dirty count) so a
+    CI-only 'file not found' is attributable from the log alone."""
+    rtp = _load_runner_module()
+    f = tmp_path / "test_vanishing.py"
+    f.write_text("def test_ok():\n    assert True\n")
+
+    def fake_spawn(cmd, repo_root, file_timeout, *, timeout_note="per-file timeout"):
+        return 4, "ERROR: file or directory not found"
+
+    monkeypatch.setattr(rtp, "_spawn_pytest_once", fake_spawn)
+    monkeypatch.setattr(rtp, "_EXIT4_RETRY_BACKOFF_SECONDS", 0.0)
+
+    file, rc, output, summary, _wall = rtp._run_one_file(f, [], tmp_path, 30.0)
+    assert rc == 4
+    assert "exit-4 forensics" in output
+    assert "exists=True" in output
+    assert f"retries_used={rtp._EXIT4_RETRY_ATTEMPTS}" in output
+    assert "git_dirty_entries=" in output
+
+
+def test_exit4_missing_file_forensics_reports_absent(tmp_path, monkeypatch):
+    """Genuinely-missing file: still fails fast (no retries) but the
+    forensics record exists=False for the log."""
+    rtp = _load_runner_module()
+    f = tmp_path / "test_never_existed.py"
+
+    def fake_spawn(cmd, repo_root, file_timeout, *, timeout_note="per-file timeout"):
+        return 4, "ERROR: file or directory not found"
+
+    monkeypatch.setattr(rtp, "_spawn_pytest_once", fake_spawn)
+
+    file, rc, output, summary, _wall = rtp._run_one_file(f, [], tmp_path, 30.0)
+    assert rc == 4
+    assert "exit-4 forensics" in output
+    assert "exists=False" in output
+    assert "retries_used=0" in output

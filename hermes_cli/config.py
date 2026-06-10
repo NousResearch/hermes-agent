@@ -806,6 +806,11 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    # Custom instructions — user-defined rules injected into every session's
+    # system prompt.  Editable from the desktop Settings → Chat panel or from
+    # the terminal via `hermes config set custom_instructions "..."`.
+    # Empty by default. Combined with SOUL.md (identity) at runtime.
+    "custom_instructions": "",
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,

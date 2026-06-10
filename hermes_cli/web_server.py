@@ -493,6 +493,10 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["stash", "discard"],
     },
+    "custom_instructions": {
+        "type": "text",
+        "description": "User-defined rules injected into every session's system prompt. Use this to set persistent behavior guidelines — e.g. coding conventions, response style, or safety rules.",
+    },
 }
 
 # Categories with fewer fields get merged into "general" to avoid tab sprawl.

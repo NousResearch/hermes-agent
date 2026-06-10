@@ -280,6 +280,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
   fallbackProviders: 'Fallback Models',
   toolsets: 'Enabled Toolsets',
   timezone: 'Timezone',
+  customInstructions: 'Custom Instructions',
   display: {
     personality: 'Personality',
     showReasoning: 'Reasoning Blocks'
@@ -431,6 +432,7 @@ export const FIELD_DESCRIPTIONS: Record<string, string> = defineFieldCopy({
   model: 'Used for new chats unless you pick a different model in the composer.',
   modelContextLength: "Leave at 0 to use the selected model's detected context window.",
   fallbackProviders: 'Backup provider:model entries to try if the default model fails.',
+  customInstructions: 'User-defined rules injected into every session system prompt. Use this to set persistent behavior guidelines, e.g. coding conventions or response style.',
   display: {
     personality: 'Default assistant style for new sessions.',
     showReasoning: 'Show reasoning sections when the backend provides them.'
@@ -509,7 +511,7 @@ export const SECTIONS: DesktopConfigSection[] = [
     id: 'chat',
     label: 'Chat',
     icon: MessageCircle,
-    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode']
+    keys: ['display.personality', 'timezone', 'display.show_reasoning', 'agent.image_input_mode', 'custom_instructions']
   },
   {
     id: 'appearance',

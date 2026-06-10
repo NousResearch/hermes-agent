@@ -99,6 +99,18 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback to hardcoded identity
         stable_parts.append(DEFAULT_AGENT_IDENTITY)
 
+    # Custom instructions — user-defined rules from config.yaml that are
+    # injected into every session's system prompt after the identity block.
+    # Editable from the desktop Settings → Chat panel.
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        _cfg_i = _load_cfg() or {}
+    except Exception:
+        _cfg_i = {}
+    _ci = _cfg_i.get("custom_instructions", "") if isinstance(_cfg_i, dict) else ""
+    if _ci and isinstance(_ci, str) and _ci.strip():
+        stable_parts.append(f"## Custom Instructions\n\n{_ci.strip()}")
+
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 

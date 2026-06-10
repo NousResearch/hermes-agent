@@ -6790,11 +6790,33 @@ class CronRecipeInstantiate(BaseModel):
 
 @app.get("/api/cron/recipes")
 async def list_cron_recipes():
-    """Return the recipe catalog as form schemas for the dashboard gallery."""
+    """Return the recipe catalog as form schemas for the dashboard gallery.
+
+    The ``deliver`` slot's options are rewritten from the user's actually
+    configured gateway platforms (plus the universal origin/local/all), so the
+    form never offers a platform that isn't connected.
+    """
     try:
         from cron.recipe_catalog import CATALOG, recipe_catalog_entry
 
-        return {"recipes": [recipe_catalog_entry(r) for r in CATALOG]}
+        deliver_options = None
+        try:
+            from cron.scheduler import cron_delivery_targets
+
+            platforms = [t["id"] for t in cron_delivery_targets() if t.get("id")]
+            deliver_options = ["origin", "local", *platforms]
+        except Exception:
+            _log.debug("cron_delivery_targets unavailable; using static deliver options", exc_info=True)
+
+        entries = []
+        for r in CATALOG:
+            entry = recipe_catalog_entry(r)
+            if deliver_options:
+                for f in entry.get("fields", []):
+                    if f.get("name") == "deliver":
+                        f["options"] = deliver_options
+            entries.append(entry)
+        return {"recipes": entries}
     except Exception as e:
         _log.exception("GET /api/cron/recipes failed")
         raise HTTPException(status_code=500, detail=str(e))

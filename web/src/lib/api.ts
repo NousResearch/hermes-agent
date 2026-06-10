@@ -1845,6 +1845,8 @@ export interface CronRecipeField {
   default: string | null;
   options: string[];
   optional: boolean;
+  /** When false, options are suggestions — any value is accepted. */
+  strict?: boolean;
   help: string;
 }
 

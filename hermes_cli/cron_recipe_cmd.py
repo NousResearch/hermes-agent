@@ -234,10 +234,20 @@ def _fmt_no_match(query: str) -> str:
     return msg
 
 
+def _manage_hint(surface: str) -> str:
+    """Post-create management hint. /cron is a CLI-only slash command; on
+    gateway platforms the user manages jobs by asking the agent (cronjob tool)
+    or from the dashboard."""
+    if surface == "cli":
+        return "Manage it with /cron."
+    return "Ask me to list, pause, or remove it any time."
+
+
 def handle_cron_recipe_command(
     args: str,
     *,
     origin: Optional[Dict[str, Any]] = None,
+    surface: str = "cli",
 ) -> RecipeCommandResult:
     """Dispatch a ``/cron-recipe`` invocation.
 
@@ -246,7 +256,9 @@ def handle_cron_recipe_command(
     command is fully handled and only ``text`` is shown.
 
     ``args`` is everything after ``/cron-recipe``. ``origin`` lets a directly
-    created job deliver back to the chat it was set up from.
+    created job deliver back to the chat it was set up from. ``surface``
+    (``"cli"`` | ``"gateway"``) picks the right wording for follow-up hints —
+    ``/cron`` only exists on the CLI.
     """
     try:
         from cron.recipe_catalog import fill_recipe, RecipeFillError
@@ -302,5 +314,5 @@ def handle_cron_recipe_command(
     return RecipeCommandResult(
         f"Scheduled '{recipe.title}'"
         + (f" ({sched})" if sched else "")
-        + f", delivering to {spec.get('deliver', 'origin')}. Manage it with /cron."
+        + f", delivering to {spec.get('deliver', 'origin')}. {_manage_hint(surface)}"
     )

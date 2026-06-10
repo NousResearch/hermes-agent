@@ -68,6 +68,11 @@ class RecipeSlot:
     options: tuple = ()       # for type="enum": allowed values
     optional: bool = False
     help: str = ""
+    # When False, ``options`` are suggestions rather than a closed set —
+    # any value is accepted (e.g. the deliver slot, where the real set of
+    # valid platforms depends on the user's configured gateways and is
+    # validated downstream by the cron scheduler).
+    strict: bool = True
 
     def __post_init__(self) -> None:
         if self.type not in _SLOT_TYPES:
@@ -105,7 +110,10 @@ _TIME = lambda default="08:00": RecipeSlot(  # noqa: E731 - concise factory
 _DELIVER = RecipeSlot(
     name="deliver", type="enum", label="Where to deliver?",
     default="origin", options=("origin", "local", "telegram", "discord", "email"),
-    help="origin = the chat you set this up from; local = save only, no message",
+    optional=False, strict=False,
+    help="origin = the chat you set this up from (or your configured home "
+    "channel when created from the dashboard); local = save only, no message; "
+    "or any connected platform name",
 )
 
 
@@ -324,7 +332,10 @@ CATALOG: List[CronRecipe] = [
         description="A periodic nudge during the day to drink water, stand up, "
         "and stretch.",
         category="general",
-        schedule_template="*/{interval_min} {start_hour}-{end_hour} * * 1-5",
+        # NOTE: cron minute-field steps (*/90) wrap per hour — */90 and */120
+        # both degrade to hourly. Use an hour-field step instead so the chosen
+        # cadence is what actually fires.
+        schedule_template="0 {start_hour}-{end_hour}/{interval_hours} * * 1-5",
         prompt_template=(
             "Send the user a brief, friendly nudge to drink some water, stand "
             "up, and stretch for a moment. Vary the wording each time so it "
@@ -332,9 +343,9 @@ CATALOG: List[CronRecipe] = [
         ),
         slots=[
             RecipeSlot(
-                name="interval_min", type="enum", label="How often?",
-                default="90", options=("60", "90", "120"),
-                help="minutes between nudges",
+                name="interval_hours", type="enum", label="How often?",
+                default="1", options=("1", "2", "3"),
+                help="hours between nudges",
             ),
             RecipeSlot(
                 name="start_hour", type="enum", label="Start hour",
@@ -494,6 +505,7 @@ def recipe_form_schema(recipe: CronRecipe) -> Dict[str, Any]:
                 "default": s.default,
                 "options": list(s.options),
                 "optional": s.optional,
+                "strict": s.strict,
                 "help": s.help,
             }
             for s in recipe.slots
@@ -543,6 +555,11 @@ def _humanize_schedule(recipe: CronRecipe) -> str:
         iv = next((s for s in recipe.slots if s.name == "interval_min"), None)
         every = (iv.default if iv else None) or sched.split("/")[1].split()[0]
         return f"every {every} minutes"
+    if "{interval_hours}" in sched:
+        iv = next((s for s in recipe.slots if s.name == "interval_hours"), None)
+        every = str((iv.default if iv else None) or "1")
+        scope = "weekdays, " if "* * 1-5" in sched else ""
+        return f"{scope}every hour" if every == "1" else f"{scope}every {every} hours"
     time_slot = next((s for s in recipe.slots if s.type == "time"), None)
     when = time_slot.default if time_slot else None
     if "* * 1-5" in sched:
@@ -651,9 +668,17 @@ def fill_recipe(
 
     Missing required (non-optional) slots raise RecipeFillError naming the
     slot, so a form can show field errors and the agent knows what to ask.
-    Enum values are checked against their options. The result is passed
-    straight to ``create_job`` — no second schema.
+    Unknown slot names are rejected (a typo'd ``tiem=07:15`` must not silently
+    create a job with the default time). Enum values are checked against their
+    options. The result is passed straight to ``create_job`` — no second schema.
     """
+    known = {s.name for s in recipe.slots}
+    unknown = sorted(set(values) - known)
+    if unknown:
+        raise RecipeFillError(
+            f"unknown slot{'s' if len(unknown) > 1 else ''}: "
+            f"{', '.join(unknown)} — valid: {', '.join(s.name for s in recipe.slots)}"
+        )
     resolved: Dict[str, Any] = {}
     for s in recipe.slots:
         raw = values.get(s.name, s.default)
@@ -661,7 +686,7 @@ def fill_recipe(
             if s.optional:
                 continue
             raise RecipeFillError(f"missing required value: {s.name} ({s.label})")
-        if s.type == "enum" and s.options and str(raw) not in {str(o) for o in s.options}:
+        if s.type == "enum" and s.strict and s.options and str(raw) not in {str(o) for o in s.options}:
             raise RecipeFillError(
                 f"{s.name}={raw!r} not allowed — one of {', '.join(map(str, s.options))}"
             )

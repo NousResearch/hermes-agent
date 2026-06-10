@@ -167,3 +167,22 @@ class TestExportRecipe:
         md = export_recipe(job, "body")
         assert "recipe" in md
         assert "automation" in md
+
+    def test_export_interval_job_without_display(self):
+        # Regression: parse_schedule stores interval periods as "minutes" —
+        # exporting a job with only the parsed schedule dict must round-trip
+        # the real interval, not fall back to the daily default.
+        job = {
+            "name": "poller",
+            "schedule": {"kind": "interval", "minutes": 30},
+            "skills": ["poller"],
+        }
+        md = export_recipe(job, "body")
+        spec = parse_recipe(md)
+        assert spec is not None
+        assert spec.schedule == "every 30m"
+
+        job["schedule"] = {"kind": "interval", "minutes": 120}
+        spec = parse_recipe(export_recipe(job, "body"))
+        assert spec is not None
+        assert spec.schedule == "every 2h"

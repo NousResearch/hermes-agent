@@ -80,7 +80,34 @@ class TestValidation:
 
     def test_bad_enum_rejected_and_names_slot(self):
         with pytest.raises(RecipeFillError, match="not allowed"):
-            fill_recipe(get_recipe("morning-brief"), {"time": "08:00", "deliver": "pigeon"})
+            fill_recipe(get_recipe("news-digest"), {"count": "42"})
+
+    def test_deliver_slot_accepts_any_platform(self):
+        # deliver is a non-strict enum: its options are suggestions, the real
+        # set of valid platforms depends on the user's configured gateways and
+        # is validated downstream by the cron scheduler.
+        spec = fill_recipe(get_recipe("morning-brief"), {"time": "08:00", "deliver": "slack"})
+        assert spec["deliver"] == "slack"
+
+    def test_unknown_slot_name_rejected(self):
+        # A typo'd slot must NOT silently create a job with the default value.
+        with pytest.raises(RecipeFillError, match="unknown slot"):
+            fill_recipe(get_recipe("morning-brief"), {"tiem": "07:15"})
+
+    def test_hydration_hourly_step_actually_fires_at_chosen_cadence(self):
+        # Regression: a minute-field step (*/90) silently wraps to hourly.
+        # The hour-field step form must produce the cadence the user picked.
+        croniter = pytest.importorskip("croniter").croniter
+        from datetime import datetime
+
+        spec = fill_recipe(get_recipe("hydration-move"), {"interval_hours": "2"})
+        it = croniter(spec["schedule"], datetime(2026, 6, 10, 8, 0))
+        first_three = [it.get_next(datetime) for _ in range(3)]
+        gaps = {
+            (b - a).total_seconds()
+            for a, b in zip(first_three, first_three[1:])
+        }
+        assert gaps == {7200.0}, f"expected 2h gaps, got {spec['schedule']} -> {first_three}"
 
     def test_text_slot_renders_into_prompt(self):
         spec = fill_recipe(

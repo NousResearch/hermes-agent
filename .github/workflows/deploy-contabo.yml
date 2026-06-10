@@ -327,7 +327,7 @@ jobs:
           # way: its gateway has the key wired (verified pre-flip), and even a
           # misconfigured proxy only pushes it onto the DeepSeek fallback.
           if [ -n "$PROXY_LOCKED" ]; then
-            LOCK_CHECK=$(docker exec hermes python3 - <<'PYEOF' 2>&1 || true
+            LOCK_CHECK=$(docker exec -i hermes python3 - <<'PYEOF' 2>&1 || true
           import json, urllib.request, urllib.error
 
           BASE = "http://127.0.0.1:11435"

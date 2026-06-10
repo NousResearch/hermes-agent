@@ -5142,6 +5142,15 @@ def cmd_gui(args: argparse.Namespace):
     if getattr(args, "cwd", None):
         env["HERMES_DESKTOP_CWD"] = str(Path(args.cwd).expanduser().resolve())
 
+    # Prevent electron-builder from auto-discovering a Developer ID cert
+    # for local development builds. If no explicit signing identity is
+    # configured (CSC_LINK / APPLE_SIGNING_IDENTITY), disable auto-discovery
+    # so codesign doesn't pick up an unrelated personal cert that can't
+    # validate its chain (errSecInternalComponent). Ad-hoc signing is
+    # applied post-build by _desktop_macos_relaunchable_fixup.
+    if sys.platform == "darwin" and not env.get("CSC_LINK") and not env.get("APPLE_SIGNING_IDENTITY"):
+        env["CSC_IDENTITY_AUTO_DISCOVERY"] = "false"
+
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)
     force_build = getattr(args, "force_build", False)

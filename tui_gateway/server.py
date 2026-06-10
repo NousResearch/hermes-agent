@@ -2102,11 +2102,19 @@ def _session_info(agent, session: dict | None = None) -> dict:
         yolo = bool(_YOLO_MODE_FROZEN) or session_yolo or _get_approval_mode() == "off"
     except Exception:
         yolo = False
+    resolved = _resolve_model()
+    agent_model = getattr(agent, "model", "")
+    is_default = agent_model == resolved and bool(agent_model)
+    # Also check explicit env overrides — if HERMES_MODEL is set, the user chose it explicitly
+    explicit_env = (os.environ.get("HERMES_MODEL", "") or os.environ.get("HERMES_INFERENCE_MODEL", "")).strip()
+    if explicit_env and agent_model != explicit_env:
+        is_default = False
     info: dict = {
-        "model": getattr(agent, "model", ""),
+        "model": agent_model,
         "reasoning_effort": reasoning_effort,
         "service_tier": service_tier,
         "fast": service_tier == "priority",
+        "is_default": is_default,
         "yolo": yolo,
         "tools": {},
         "skills": {},
@@ -3832,6 +3840,7 @@ def _fallback_session_info(session: dict) -> dict:
         "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
         "lazy": True,
         "model": _resolve_model(),
+        "is_default": True,
         "skills": {},
         "tools": {},
     }

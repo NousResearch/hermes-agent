@@ -3288,6 +3288,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._model_is_default = not model and (
             not _config_model or _config_model == _DEFAULT_CONFIG_MODEL
         )
+        # Track whether the *originally configured* model differs from the one
+        # actually running — i.e. a fallback provider is active.  Updated by
+        # _try_activate_fallback() on the agent, but also detected here by
+        # comparing self.model against _config_model.
+        self._model_on_fallback = False
 
         self._explicit_api_key = api_key
         self._explicit_base_url = base_url
@@ -3825,10 +3830,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if len(model_short) > 26:
             model_short = f"{model_short[:23]}..."
 
+        # Determine if this is the default model or running on fallback.
+        is_default = bool(getattr(self, "_model_is_default", False))
+        on_fallback = bool(getattr(agent, "_fallback_activated", False))
+        # If agent.model differs from self.model (the config default), also flag fallback.
+        if not on_fallback and agent and self.model:
+            on_fallback = (getattr(agent, "model", "") or "") != self.model
+
         elapsed_seconds = max(0.0, (datetime.now() - self.session_start).total_seconds())
         snapshot = {
             "model_name": model_name,
             "model_short": model_short,
+            "is_default": is_default,
+            "on_fallback": on_fallback,
             "duration": format_duration_compact(elapsed_seconds),
             "prompt_elapsed": self._format_prompt_elapsed(
                 getattr(self, "_prompt_start_time", None),
@@ -4103,14 +4117,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
 
+            # Build model label with optional default/fallback tag.
+            model_label = snapshot["model_short"]
+            if snapshot.get("on_fallback"):
+                model_label += " ↦fallback"
+            elif snapshot.get("is_default"):
+                model_label += " default"
+
             yolo_active = self._is_session_yolo_active()
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"⚕ {model_label} · {duration_label}"
                 if yolo_active:
                     text += " · ⚠ YOLO"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"⚕ {model_label}", percent_label]
                 compressions = snapshot.get("compressions", 0)
                 if compressions:
                     parts.append(f"🗜️ {compressions}")
@@ -4133,7 +4154,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 context_label = "ctx --"
 
             compressions = snapshot.get("compressions", 0)
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"⚕ {model_label}", context_label, percent_label]
             if compressions:
                 parts.append(f"🗜️ {compressions}")
             bg_count = snapshot.get("active_background_tasks", 0)
@@ -4166,13 +4187,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             duration_label = snapshot["duration"]
             yolo_active = self._is_session_yolo_active()
 
+            # Build model label with optional default/fallback tag.
+            model_display = snapshot["model_short"]
+            tag_style = "class:status-bar-dim"
+            if snapshot.get("on_fallback"):
+                model_display += " ↦fallback"
+                tag_style = "class:status-bar-yolo"
+            elif snapshot.get("is_default"):
+                model_display += " default"
+                tag_style = "class:status-bar-dim"
+
             if width < 52:
                 frags = [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
+                ]
+                if snapshot.get("on_fallback"):
+                    frags.append((tag_style, " ↦fallback"))
+                elif snapshot.get("is_default"):
+                    frags.append((tag_style, " default"))
+                frags.extend([
                     ("class:status-bar-dim", " · "),
                     ("class:status-bar-dim", duration_label),
-                ]
+                ])
                 if yolo_active:
                     frags.append(("class:status-bar-dim", " · "))
                     frags.append(("class:status-bar-yolo", "⚠ YOLO"))
@@ -4187,9 +4224,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
-                        ("class:status-bar-dim", " · "),
-                        (self._status_bar_context_style(percent), percent_label),
                     ]
+                    if snapshot.get("on_fallback"):
+                        frags.append((tag_style, " ↦fallback"))
+                    elif snapshot.get("is_default"):
+                        frags.append((tag_style, " default"))
+                    frags.append(("class:status-bar-dim", " · "))
+                    frags.append((self._status_bar_context_style(percent), percent_label))
                     if compressions:
                         frags.append(("class:status-bar-dim", " · "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))
@@ -4222,13 +4263,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     frags = [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
+                    ]
+                    if snapshot.get("on_fallback"):
+                        frags.append((tag_style, " ↦fallback"))
+                    elif snapshot.get("is_default"):
+                        frags.append((tag_style, " default"))
+                    frags.extend([
                         ("class:status-bar-dim", " │ "),
                         ("class:status-bar-dim", context_label),
                         ("class:status-bar-dim", " │ "),
                         (bar_style, self._build_context_bar(percent)),
                         ("class:status-bar-dim", " "),
                         (bar_style, percent_label),
-                    ]
+                    ])
                     if compressions:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append((self._compression_count_style(compressions), f"🗜️ {compressions}"))

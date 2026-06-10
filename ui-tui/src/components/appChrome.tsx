@@ -359,8 +359,10 @@ const shortModelLabel = (model: string) =>
     .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
     .trim()
 
-const modelLabel = (model: string, effort?: string, fast?: boolean) =>
-  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+const modelLabel = (model: string, effort?: string, fast?: boolean, isDefault?: boolean) => {
+  const parts = [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : '', isDefault && shortModelLabel(model) !== 'default' ? 'default' : ''].filter(Boolean)
+  return parts.join(' ')
+}
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
@@ -395,6 +397,7 @@ export function StatusRule({
   statusColor,
   model,
   modelFast,
+  modelIsDefault,
   modelReasoningEffort,
   indicatorStyle = 'kaomoji',
   notice,
@@ -423,7 +426,7 @@ export function StatusRule({
       : ''
 
   const bar = !segs.compactCtx && usage.context_max ? ctxBar(pct) : ''
-  const modelText = modelLabel(model, modelReasoningEffort, modelFast)
+  const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelIsDefault)
 
   // A credits notice replaces the status/verb slot, but only when idle —
   // while busy the FaceTicker always wins (R1 render priority). The notice
@@ -731,6 +734,7 @@ interface StatusRuleProps {
   cwdLabel: string
   model: string
   modelFast?: boolean
+  modelIsDefault?: boolean
   modelReasoningEffort?: string
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null

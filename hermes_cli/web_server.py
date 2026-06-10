@@ -246,7 +246,31 @@ def _has_valid_session_token(request: Request) -> bool:
 
 
 def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
+
+    Two auth schemes protect the dashboard, exactly one active per bind:
+
+    * **Loopback / ``--insecure`` mode** (``auth_required`` False): the
+      ephemeral ``_SESSION_TOKEN`` is injected into the SPA HTML and echoed
+      back via ``X-Hermes-Session-Token`` (or the legacy ``Bearer`` header).
+      Validate it here.
+    * **Gated / OAuth mode** (``auth_required`` True): ``_SESSION_TOKEN`` is
+      NOT injected (the SPA authenticates with a session cookie), so there is
+      no token to check. The ``gated_auth_middleware`` has already verified the
+      cookie before the request reached this handler — any non-public ``/api/``
+      route it lets through carries a verified ``request.state.session``. The
+      legacy ``auth_middleware`` likewise short-circuits in this mode. Requiring
+      the (absent) token here would 401 every cookie-authenticated request,
+      making plugin install/enable/disable and the other ``_require_token``
+      endpoints permanently unreachable behind the gate. Defer to the gate.
+    """
+    if getattr(request.app.state, "auth_required", False):
+        # Gate is authoritative. It attaches ``request.state.session`` on
+        # success and 401s otherwise, so a request that reached us is already
+        # authenticated. Belt-and-braces: confirm the session is present.
+        if getattr(request.state, "session", None) is not None:
+            return
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 

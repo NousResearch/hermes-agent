@@ -171,6 +171,7 @@ class ChatCompletionsTransport(ProviderTransport):
             if (
                 "codex_reasoning_items" in msg
                 or "codex_message_items" in msg
+                or "codex_compaction_items" in msg
                 or "tool_name" in msg
             ):
                 needs_sanitize = True
@@ -200,6 +201,7 @@ class ChatCompletionsTransport(ProviderTransport):
                 continue
             msg.pop("codex_reasoning_items", None)
             msg.pop("codex_message_items", None)
+            msg.pop("codex_compaction_items", None)
             msg.pop("tool_name", None)
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).
             # OpenAI's message schema has no ``_``-prefixed fields, so this

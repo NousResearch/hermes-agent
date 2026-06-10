@@ -925,6 +925,12 @@ def test_create_rejects_no_assignee(worker_env):
     assert json.loads(kt._handle_create({"title": "t"})).get("error")
 
 
+def test_create_rejects_ftd_control_plane_assignee(worker_env):
+    from tools import kanban_tools as kt
+    out = kt._handle_create({"title": "bad control child", "assignee": "ftd-control-plane"})
+    assert "reserved nonspawnable FTD control lane" in json.loads(out).get("error", "")
+
+
 def test_create_rejects_non_list_parents(worker_env):
     from tools import kanban_tools as kt
     out = kt._handle_create({"title": "t", "assignee": "a", "parents": 42})

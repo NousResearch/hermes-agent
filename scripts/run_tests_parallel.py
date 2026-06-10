@@ -41,6 +41,7 @@ import argparse
 import json
 import os
 import subprocess
+import tempfile
 import sys
 import threading
 import time
@@ -261,9 +262,19 @@ def _spawn_pytest_once(
     primary per-file run and the exit-4 retry loop so the lifecycle/cleanup
     logic lives in exactly one place.
     """
+    # Per-file state isolation: every pytest subprocess gets a FRESH
+    # HERMES_HOME. Without this, a test file that writes real config/state
+    # (save_config, session DBs, presence files) poisons the shared
+    # ~/.hermes for every later file in the same shard — failures then
+    # rotate with shard composition and reproduce nowhere else. Cross-FILE
+    # leakage through the home directory is exactly the class this
+    # per-file runner exists to prevent (see module docstring).
+    env = os.environ.copy()
+    env["HERMES_HOME"] = tempfile.mkdtemp(prefix="hermes-test-home-")
     proc = subprocess.Popen(
         cmd,
         cwd=repo_root,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,

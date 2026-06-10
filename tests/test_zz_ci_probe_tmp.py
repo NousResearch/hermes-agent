@@ -35,4 +35,9 @@ def test_zz_ci_probe():
     print(f"PROBE import tui_gateway.server -> {inspect.getsourcefile(server)}", file=sys.stderr)
     row = server._session_live_item("probe-sid", {"session_key": "k"}, "")
     print(f"PROBE live_item keys={sorted(row.keys())}", file=sys.stderr)
-    assert True
+    raise AssertionError(
+        "TEMP-PROBE-DIAGNOSTICS (intentional, delete file before merge): "
+        f"src_file={src_file} finally_unlink={has} "
+        f"live_item_keys={sorted(row.keys())} "
+        f"hermes_home={__import__('os').environ.get('HERMES_HOME', '<unset>')}"
+    )

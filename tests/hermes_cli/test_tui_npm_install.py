@@ -26,6 +26,12 @@ def _touch_tui_entry(root: Path) -> None:
     entry.write_text("console.log('tui')")
 
 
+def _assert_utf8_replace_capture(kwargs: dict) -> None:
+    assert kwargs["text"] is True
+    assert kwargs["encoding"] == "utf-8"
+    assert kwargs["errors"] == "replace"
+
+
 def test_need_install_when_ink_missing(tmp_path: Path, main_mod) -> None:
     (tmp_path / "package-lock.json").write_text("{}")
     assert main_mod._tui_need_npm_install(tmp_path) is True
@@ -228,6 +234,8 @@ def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
         "--include-workspace-root=false",
     ]
     assert calls[0][1]["cwd"] == str(tmp_path)
+    _assert_utf8_replace_capture(calls[0][1])
+    _assert_utf8_replace_capture(calls[1][1])
 
 
 def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
@@ -263,6 +271,8 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
         "--progress=false",
     ]
     assert calls[0][1]["cwd"] == str(tmp_path)
+    _assert_utf8_replace_capture(calls[0][1])
+    _assert_utf8_replace_capture(calls[1][1])
 
 
 def test_make_tui_argv_keeps_desktop_always_build_behaviour(
@@ -286,6 +296,35 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
 
     assert calls
     assert calls[0][0][0] == ["/bin/npm", "run", "build"]
+    _assert_utf8_replace_capture(calls[0][1])
+
+
+def test_make_tui_argv_decodes_dev_prebuild_with_utf8_replace(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    ink_dir = tmp_path / "packages" / "hermes-ink"
+    ink_dir.mkdir(parents=True)
+    tsx = tmp_path / "node_modules" / ".bin" / "tsx"
+    tsx.parent.mkdir(parents=True)
+    tsx.write_text("")
+
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=True)
+
+    assert argv == [str(tsx), "src/entry.tsx"]
+    assert cwd == tmp_path
+    assert calls[0][0][0] == ["/bin/npm", "run", "build"]
+    assert calls[0][1]["cwd"] == str(ink_dir)
+    _assert_utf8_replace_capture(calls[0][1])
 
 
 # ── _workspace_root helper ──────────────────────────────────────────

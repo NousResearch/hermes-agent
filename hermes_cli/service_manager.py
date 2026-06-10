@@ -739,13 +739,55 @@ class S6ServiceManager:
         """
         self._run_svc("-u", "start", name)
 
+    def _supervised_pid(self, name: str) -> int | None:
+        """Return the PID of the supervised gateway process, or None.
+
+        Parses ``s6-svstat`` output (``up (pid NNNN) ...``). Used to
+        mark an operator-initiated stop with the planned-stop marker so
+        the gateway's shutdown handler classifies the incoming SIGTERM
+        as intentional rather than an unexpected kill (issue #42675).
+        Best-effort: any parse/exec failure returns None.
+        """
+        import subprocess
+
+        try:
+            result = subprocess.run(
+                [f"{_S6_BIN_DIR}/s6-svstat", str(self.scandir / name)],
+                capture_output=True, text=True, timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if result.returncode != 0:
+            return None
+        m = re.search(r"\(pid (\d+)\)", result.stdout)
+        return int(m.group(1)) if m else None
+
     def stop(self, name: str) -> None:
         """Bring down a registered service (``s6-svc -d``).
+
+        Writes a planned-stop marker naming the supervised gateway PID
+        BEFORE sending the down command, so the gateway's shutdown
+        handler recognises this SIGTERM as an operator-initiated stop
+        and persists ``gateway_state=stopped`` (respecting the explicit
+        intent). Without the marker, an intentional ``hermes gateway
+        stop`` is indistinguishable from the container/s6 SIGTERM sent on
+        ``docker restart``; the latter must NOT persist ``stopped`` or
+        container_boot refuses to auto-start on the next boot (#42675).
+        The marker write is best-effort — a failure only means the stop
+        is treated as signal-initiated, which is the safe fallback.
 
         Raises:
             GatewayNotRegisteredError: no service directory for ``name``.
             S6CommandError: s6-svc exited non-zero for any other reason.
         """
+        pid = self._supervised_pid(name)
+        if pid is not None:
+            try:
+                from gateway.status import write_planned_stop_marker
+
+                write_planned_stop_marker(pid)
+            except Exception:
+                pass
         self._run_svc("-d", "stop", name)
 
     def restart(self, name: str) -> None:

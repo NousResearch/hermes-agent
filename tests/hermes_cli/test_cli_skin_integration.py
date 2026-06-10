@@ -114,3 +114,20 @@ class TestAnsiRichTextHelper:
     def test_strips_ansi_but_keeps_plain_text(self):
         text = _rich_text_from_ansi("\x1b[31mred\x1b[0m")
         assert text.plain == "red"
+
+
+class TestResumePanelAgentName:
+    """The resume recap must brand itself with the active skin, not a hardcoded name."""
+
+    def test_resume_label_uses_skin_agent_name(self):
+        from hermes_cli.cli_agent_setup_mixin import _resume_agent_name
+
+        set_active_skin("ares")
+        assert _resume_agent_name() == get_active_skin().get_branding("agent_name")
+        assert _resume_agent_name() != "Hermes"
+
+    def test_resume_label_falls_back_to_hermes_without_a_skin(self):
+        from hermes_cli import cli_agent_setup_mixin as mod
+
+        with patch("hermes_cli.skin_engine.get_active_skin", side_effect=RuntimeError("no skin")):
+            assert mod._resume_agent_name() == "Hermes"

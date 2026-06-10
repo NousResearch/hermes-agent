@@ -27,6 +27,20 @@ export interface ImageDetachResponse {
   count?: number
 }
 
+export interface FileAttachResponse {
+  attached?: boolean
+  message?: string
+  // Gateway-side absolute path the file was staged to.
+  path?: string
+  // Workspace-relative path used to build ref_text.
+  ref_path?: string
+  // Rewritten @file: ref that resolves on the gateway (workspace-relative).
+  ref_text?: string
+  // True when bytes/host file were copied into the session workspace.
+  uploaded?: boolean
+  name?: string
+}
+
 export interface SlashExecResponse {
   output?: string
   warning?: string

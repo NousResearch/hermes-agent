@@ -321,12 +321,19 @@ class TestStdioPgroupReaping:
 
         psutil = pytest.importorskip("psutil")
 
-        # Grandchild: sleep forever, write its pid then wait.
+        # Grandchild: sleep forever, write its pid then wait.  The pid file
+        # is written to a temp path and os.replace()d into place so the
+        # polling reader below can never observe a created-but-empty file
+        # (CI flake: int('') ValueError when the reader won the race between
+        # open('w') creating the file and write() filling it).
         grandchild_pid_file = tmp_path / "grandchild.pid"
         grandchild_script = tmp_path / "grandchild.py"
         grandchild_script.write_text(
             "import os, sys, time\n"
-            f"open({str(grandchild_pid_file)!r}, 'w').write(str(os.getpid()))\n"
+            f"tmp = {str(grandchild_pid_file)!r} + '.tmp'\n"
+            "with open(tmp, 'w') as f:\n"
+            "    f.write(str(os.getpid()))\n"
+            f"os.replace(tmp, {str(grandchild_pid_file)!r})\n"
             "while True:\n"
             "    time.sleep(0.5)\n"
         )

@@ -337,24 +337,43 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
     # NOTE: when the centralized index is available, parallel_search_sources
     # skips the external API sources and serves everything from "hermes-index".
-    # That source MUST therefore carry a high limit, or browse silently caps
-    # the entire hub at the default (50) — it shipped that way and surfaced
-    # ~136 of 88k skills. The external-source limits below only apply when the
-    # index is unavailable (offline / first run before the cache populates).
+    # That source MUST therefore carry a limit large enough to cover the whole
+    # catalog, or browse silently caps the hub — it shipped at 50 (surfaced
+    # ~136 of 88k skills), then 5000 (surfaced ~5.4k of 90k). The index is
+    # disk-cached and browse paginates client-side, so a ceiling above the
+    # current catalog size is the right call. The external-source limits below
+    # only apply when the index is unavailable (offline / first run before the
+    # cache populates).
     _PER_SOURCE_LIMIT = {
-        "hermes-index": 5000,
+        "hermes-index": 1000000,
         "official": 200, "skills-sh": 200, "well-known": 50,
         "github": 200, "clawhub": 500, "claude-marketplace": 100,
         "lobehub": 500, "browse-sh": 500,
     }
 
-    with c.status("[bold]Fetching skills from registries..."):
+    with c.status("[bold]Fetching skills from registries...") as status:
+        # Live progress: tick off each source as it resolves so the wait is
+        # visible instead of a frozen spinner. parallel_search_sources invokes
+        # this callback from the collecting thread as each source completes;
+        # the page itself is still rendered once, after the correctly-merged
+        # and trust-sorted result set is final (browse's ordering contract is
+        # computed over the whole set, so we never render a half-sorted page).
+        _done: List[str] = []
+
+        def _on_source_done(sid: str, count: int) -> None:
+            _done.append(f"{sid} ({count})")
+            status.update(
+                "[bold]Fetching skills from registries...[/]  "
+                f"[dim]done: {', '.join(_done)}[/]"
+            )
+
         all_results, source_counts, timed_out = parallel_search_sources(
             sources,
             query="",
             per_source_limits=_PER_SOURCE_LIMIT,
             source_filter=source,
             overall_timeout=30,
+            on_source_done=_on_source_done,
         )
 
     if not all_results:

@@ -164,6 +164,27 @@ function assistantMultiReasoningMessage(texts: string[]): ThreadMessage {
   } as ThreadMessage
 }
 
+function assistantSeparatedReasoningMessage(): ThreadMessage {
+  return {
+    id: 'assistant-reasoning-separated-1',
+    role: 'assistant',
+    content: [
+      { type: 'reasoning', text: ' Complete first thought.', status: { type: 'complete' } },
+      { type: 'text', text: 'Interim answer.' },
+      { type: 'reasoning', text: ' Streaming second thought.', status: { type: 'running' } }
+    ],
+    status: { type: 'running' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function assistantTodoMessage(
   todos: Array<{ content: string; id: string; status: 'cancelled' | 'completed' | 'in_progress' | 'pending' }>,
   running = true
@@ -489,7 +510,7 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(420)
   })
 
-  it('keeps sticky-bottom armed through viewport height changes during streaming', async () => {
+  it('does not follow streaming content growth even while parked at the bottom', async () => {
     const { container } = render(<StreamingHarness />)
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
@@ -508,6 +529,7 @@ describe('assistant-ui streaming renderer', () => {
 
     await wait(80)
 
+    // Park the user at the bottom of the current content.
     await act(async () => {
       viewport.scrollTop = 800
       fireEvent.scroll(viewport)
@@ -520,6 +542,9 @@ describe('assistant-ui streaming renderer', () => {
       fireEvent.scroll(viewport)
     })
 
+    // Content grows as tokens stream in. Streaming auto-follow is removed, so
+    // the viewport must NOT chase the new bottom — it stays where the user
+    // last left it.
     scrollHeight = 1_200
 
     await act(async () => {
@@ -529,7 +554,7 @@ describe('assistant-ui streaming renderer', () => {
     })
     await wait(0)
 
-    expect(viewport.scrollTop).toBe(1_200)
+    expect(viewport.scrollTop).toBe(760)
   })
 
   it('honors the first upward wheel scroll even when a programmatic bottom-pin scroll event is still pending', async () => {
@@ -566,7 +591,7 @@ describe('assistant-ui streaming renderer', () => {
     expect(viewport.scrollTop).toBe(420)
   })
 
-  it('keeps following final code-highlight growth when a run completes at bottom', async () => {
+  it('does not snap to the bottom on final code-highlight growth after a run completes', async () => {
     const { container } = render(<StreamingHarness />)
 
     const content = container.querySelector('[data-slot="aui_thread-content"]') as HTMLDivElement
@@ -588,10 +613,13 @@ describe('assistant-ui streaming renderer', () => {
 
     await wait(650)
 
+    // Completion re-measures (Shiki highlight) and grows the content. The
+    // post-run bottom lock is removed, so the viewport stays put instead of
+    // snapping to the new bottom.
     scrollHeight = 1_700
     await wait(0)
 
-    expect(viewport.scrollTop).toBe(1_700)
+    expect(viewport.scrollTop).toBe(800)
   })
 
   it('does not restart bottom-follow after completion when the user scrolled up', async () => {
@@ -676,6 +704,18 @@ describe('assistant-ui streaming renderer', () => {
     expect(reasoningParts.length).toBe(2)
     expect(reasoningParts[0]?.textContent).toBe('First thought.')
     expect(reasoningParts[1]?.textContent).toBe('Second thought.')
+  })
+
+  it('does not reopen an earlier completed thinking group when a later group is running', () => {
+    const { container } = render(<RunningMessageHarness message={assistantSeparatedReasoningMessage()} />)
+
+    const disclosures = container.querySelectorAll('[data-slot="aui_thinking-disclosure"]')
+    expect(disclosures.length).toBe(2)
+
+    expect(disclosures[0].querySelector('button')?.getAttribute('aria-expanded')).toBe('false')
+    expect(disclosures[1].querySelector('button')?.getAttribute('aria-expanded')).toBe('true')
+    expect(container.textContent).not.toContain('Complete first thought.')
+    expect(container.textContent).toContain('Interim answer.')
   })
 
   it('renders live todo rows during a running turn', () => {

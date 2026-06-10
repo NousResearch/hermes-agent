@@ -10,7 +10,70 @@ type Updater<T> = T | ((current: T) => T)
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
+// Cached copy of Settings → Sessions → Default project directory. The main
+// process persists this in project-dir.json, but the renderer must also honor it
+// when seeding $currentCwd — otherwise PR #37586's sticky localStorage home dir
+// wins and new sessions ignore the user's explicit picker choice.
+let configuredDefaultProjectDir = ''
+
 export const getRememberedWorkspaceCwd = (): string => storedString(WORKSPACE_CWD_KEY)?.trim() || ''
+
+export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
+
+export async function syncConfiguredDefaultProjectDir(): Promise<string> {
+  const settings = window.hermesDesktop?.settings?.getDefaultProjectDir
+
+  if (!settings) {
+    configuredDefaultProjectDir = ''
+
+    return ''
+  }
+
+  const { dir } = await settings()
+  configuredDefaultProjectDir = dir?.trim() || ''
+
+  return configuredDefaultProjectDir
+}
+
+/** Align the renderer workspace with the main-process default (home dir when
+ *  packaged, optional Settings override). Clears stale install-dir paths that
+ *  PR #37586's localStorage stickiness can preserve across the #37536 fix. */
+export async function ensureDefaultWorkspaceCwd(): Promise<void> {
+  const sanitize = window.hermesDesktop?.sanitizeWorkspaceCwd
+
+  if (!sanitize) {
+    return
+  }
+
+  await syncConfiguredDefaultProjectDir()
+  const configured = getConfiguredDefaultProjectDir()
+
+  const seedLiveCwd = (cwd: string) => {
+    if (cwd && !$activeSessionId.get()) {
+      setCurrentCwd(cwd)
+    }
+  }
+
+  if (configured) {
+    const { cwd } = await sanitize(configured)
+    seedLiveCwd(cwd)
+
+    return
+  }
+
+  const { cwd } = await sanitize(getRememberedWorkspaceCwd())
+  seedLiveCwd(cwd)
+}
+
+export function applyConfiguredDefaultProjectDir(dir: null | string | undefined): void {
+  configuredDefaultProjectDir = dir?.trim() || ''
+
+  // Cache only — new chats read this via workspaceCwdForNewSession(). Do not
+  // rewrite the live workspace (or localStorage) while a session is active.
+  if (configuredDefaultProjectDir && !$activeSessionId.get()) {
+    setCurrentCwd(configuredDefaultProjectDir)
+  }
+}
 
 interface AppAtom<T> {
   get: () => T
@@ -76,6 +139,34 @@ export const $connection = atom<HermesConnection | null>(null)
 export const $gatewayState = atom('idle')
 export const $sessions = atom<SessionInfo[]>([])
 export const $sessionsTotal = atom<number>(0)
+// Cron-job sessions (source === 'cron') are fetched as their own list so the
+// scheduler's always-newest sessions never crowd recents out of the page
+// budget. Powers the collapsed "Cron jobs" sidebar section.
+export const $cronSessions = atom<SessionInfo[]>([])
+// Max cron sessions fetched for the sidebar section (single bounded page). When
+// the fetch returns exactly this many rows we know more exist, so the section
+// badge renders "N+". Lives here so the controller (fetch) and sidebar (badge)
+// share one source of truth without a circular import.
+export const CRON_SECTION_LIMIT = 50
+// Messaging-platform sessions (telegram/discord/...) are fetched as their own
+// slice — separate from local recents — so each platform renders a
+// self-managed sidebar section and never interleaves with (or buries) local
+// chats in the recents page. One combined fetch seeds every platform; a
+// platform that exceeds this cap gets its own per-platform "load more".
+export const $messagingSessions = atom<SessionInfo[]>([])
+export const MESSAGING_SECTION_LIMIT = 100
+// Exact per-platform conversation totals, keyed by source id. Empty until a
+// per-platform "load more" fetch resolves it (the combined seed fetch only
+// knows the aggregate), so sections fall back to their loaded count.
+export const $messagingPlatformTotals = atom<Record<string, number>>({})
+// True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least
+// one platform may have more rows on disk than were loaded.
+export const $messagingTruncated = atom<boolean>(false)
+// Listable conversation count per profile (children excluded), keyed by profile
+// name. Lets the sidebar scope its "Load more" footer to the active profile so a
+// huge default profile doesn't keep "Load more" visible while browsing a small
+// one. Empty for single-profile users (fall back to $sessionsTotal).
+export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
@@ -114,6 +205,13 @@ export const setConnection = (next: Updater<HermesConnection | null>) => updateA
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
+export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
+export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
+export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>
+  updateAtom($messagingPlatformTotals, next)
+export const setMessagingTruncated = (next: Updater<boolean>) => updateAtom($messagingTruncated, next)
+export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
+  updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
@@ -135,6 +233,11 @@ export const setCurrentCwd = (next: Updater<string>) => {
   // empty cwd clears the key (|| null → removeItem).
   persistString(WORKSPACE_CWD_KEY, $currentCwd.get().trim() || null)
 }
+
+/** Workspace for a brand-new chat. Explicit Settings override wins; otherwise
+ *  fall back to the sticky last-used folder, then whatever is already live. */
+export const workspaceCwdForNewSession = (): string =>
+  getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
@@ -185,6 +288,47 @@ function clearSessionWatchdog(sessionId: string) {
   }
 }
 
+// A session's "working" flag clears the instant its turn ends, but the
+// cross-profile aggregator (listSessions with min_messages=1) only sees the
+// just-persisted first turn a beat later. The active chat is shielded from that
+// race by sessionsToKeep(), but a brand-new session that finished *while you
+// were viewing a different chat* is, at the next refresh, neither working,
+// pinned, nor active — so mergeSessionPage() evicts it. Nothing re-fetches
+// afterward, so it stays gone until the app restarts. (Repro: start a new chat,
+// then click another session before the first reply lands.)
+//
+// To bridge that window we keep a session in the merge keep-set for a short
+// grace period after its turn settles, giving the aggregator time to catch up.
+// Entries auto-expire, so this never accumulates and can't resurrect a deleted
+// session (mergeSessionPage only revives rows still present in the in-memory
+// list, which optimistic delete/archive already drops).
+const SESSION_SETTLE_GRACE_MS = 30 * 1000
+const settledSessionExpiry = new Map<string, number>()
+
+function markSessionSettled(sessionId: string) {
+  settledSessionExpiry.set(sessionId, Date.now() + SESSION_SETTLE_GRACE_MS)
+}
+
+function clearSessionSettled(sessionId: string) {
+  settledSessionExpiry.delete(sessionId)
+}
+
+/** Stored ids of sessions whose turn ended within the grace window. Prunes
+ *  expired entries as it reads, so it stays bounded without a timer. */
+export function getRecentlySettledSessionIds(now: number = Date.now()): string[] {
+  const live: string[] = []
+
+  for (const [id, expiry] of settledSessionExpiry) {
+    if (expiry > now) {
+      live.push(id)
+    } else {
+      settledSessionExpiry.delete(id)
+    }
+  }
+
+  return live
+}
+
 /** Call when a streaming event for a session lands. Refreshes the watchdog
  *  so the session keeps its "working" status as long as data keeps coming. */
 export function noteSessionActivity(sessionId: string | null | undefined) {
@@ -226,13 +370,24 @@ export function setSessionWorking(sessionId: string | null | undefined, working:
     return
   }
 
+  const wasWorking = $workingSessionIds.get().includes(sessionId)
+
   toggleMembership(setWorkingSessionIds, sessionId, working)
 
   // Bookend the watchdog: arm on enter, disarm on leave. A later
   // noteSessionActivity() from a streaming event refreshes the timer.
   if (working) {
+    clearSessionSettled(sessionId)
     armSessionWatchdog(sessionId)
   } else {
     clearSessionWatchdog(sessionId)
+
+    // Only grant grace on a real working→idle transition (updateSessionState
+    // re-asserts `false` on every state tick, which must not keep extending the
+    // window). This keeps the just-finished session visible long enough for the
+    // aggregator to return its now-persisted row.
+    if (wasWorking) {
+      markSessionSettled(sessionId)
+    }
   }
 }

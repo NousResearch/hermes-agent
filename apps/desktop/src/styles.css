@@ -5,6 +5,10 @@
 @import '@vscode/codicons/dist/codicon.css';
 @custom-variant dark (&:is(.dark *));
 
+/* Sidebar sections: tall viewports give each its own scroller; compact ones
+   (this variant) flatten everything into one shared scroll. See ChatSidebar. */
+@custom-variant compact (@media (max-height: 768px));
+
 @font-face {
   font-family: 'Collapse';
   font-style: normal;
@@ -60,7 +64,6 @@
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar: var(--sidebar);
 
-  --shadow-ink: var(--dt-foreground);
   --shadow-xs: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
   --shadow-sm:
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 6%, transparent),
@@ -69,19 +72,24 @@
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 8%, transparent),
     0 0.25rem 1rem color-mix(in srgb, #000 8%, transparent),
     0 1rem 2rem -1.5rem color-mix(in srgb, #000 18%, transparent);
+  /* Soft floating shadow for borderless modals/overlays. Single top light
+     source: every layer is centered (x=0) and cast downward, with negative
+     spread that grows with the blur so each layer is pulled horizontally inward
+     — the shadow pools below the panel instead of bleeding out every side.
+     Layered (contact → ambient) for a smooth, natural falloff. */
+  --shadow-nous:
+    0 0.125rem 0.25rem -0.125rem color-mix(in srgb, #000 7%, transparent),
+    0 0.5rem 0.75rem -0.375rem color-mix(in srgb, #000 6%, transparent),
+    0 1.25rem 1.75rem -0.875rem color-mix(in srgb, #000 6%, transparent),
+    0 2.25rem 3rem -1.75rem color-mix(in srgb, #000 0%, transparent);
+  /* Hairline border paired with --shadow-nous on borderless overlays.
+     currentColor resolves per-element, so it adapts to text color/theme. */
+  --stroke-nous: color-mix(in srgb, currentColor 3%, transparent);
   --shadow-lg:
     inset 0 0.0625rem 0 color-mix(in srgb, #fff 28%, transparent),
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-foreground) 8%, transparent),
     0 0.75rem 2rem color-mix(in srgb, #000 12%, transparent);
-  --shadow-header:
-    0 0.0625rem 0 color-mix(in srgb, var(--dt-foreground) 7%, transparent),
-    0 0.625rem 1.5rem -1.25rem color-mix(in srgb, #000 16%, transparent);
   --shadow-composer: 0 0.0625rem 0.125rem color-mix(in srgb, #000 5%, transparent);
-  --shadow-composer-focus:
-    0 0 0 0.125rem color-mix(in srgb, var(--dt-composer-ring) calc(10% * var(--composer-ring-strength)), transparent),
-    0 0 0 0.0625rem color-mix(in srgb, var(--dt-composer-ring) calc(22% * var(--composer-ring-strength)), transparent),
-    0 0.25rem 0.875rem color-mix(in srgb, #000 8%, transparent),
-    0 0.75rem 2rem -1.25rem color-mix(in srgb, #000 14%, transparent);
 }
 
 @layer base {
@@ -262,8 +270,12 @@
     --dt-user-bubble: var(--ui-chat-bubble-background);
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
-    --dt-font-sans: 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
-    --dt-font-mono: 'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace;
+    --dt-font-sans:
+      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
+      'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+    --dt-font-mono:
+      'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
+      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
@@ -278,11 +290,21 @@
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
     --conversation-text-font-size: 0.8125rem;
-    --conversation-tool-font-size: var(--conversation-text-font-size);
+    --conversation-tool-font-size: 0.6875rem;
     --conversation-caption-font-size: 0.75rem;
     --conversation-line-height: 1.125rem;
     --conversation-caption-line-height: 1rem;
     --conversation-turn-gap: 0.375rem;
+    /* Gap between top-level turn blocks (prose ↔ tools ↔ thinking) — enough air
+       that scaffolding reads as separate from the reply, not crammed into it. */
+    --turn-block-gap: 0.75rem;
+    /* Tight gap between tool rows inside a single action group, so a back-to-back
+       run still reads as one cohesive sequence. */
+    --tool-row-gap: 0.375rem;
+    /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
+       markdown block and between consecutive prose parts. Single knob; tweak
+       freely. */
+    --paragraph-gap: 0.45rem;
     --sticky-human-top: 0.23rem;
     --file-tree-row-height: 1.375rem;
 
@@ -600,28 +622,10 @@ button {
   -webkit-app-region: no-drag;
 }
 
-[data-slot='button'] {
-  box-shadow: none;
-  transition-duration: 100ms;
-}
-
-[data-slot='button'][data-variant='outline'],
-[data-slot='button'][data-variant='secondary'] {
-  border-color: var(--ui-stroke-secondary);
-  background: var(--ui-bg-tertiary);
-  color: var(--ui-text-primary);
-}
-
-[data-slot='button'][data-variant='ghost'] {
-  color: var(--ui-text-secondary);
-}
-
-[data-slot='button'][data-variant='outline']:hover,
-[data-slot='button'][data-variant='secondary']:hover,
-[data-slot='button'][data-variant='ghost']:hover {
-  background: var(--chrome-action-hover);
-  color: var(--ui-text-primary);
-}
+/* Button variant styling lives entirely in the cva in components/ui/button.tsx
+   (the single source of truth). Don't re-add [data-slot='button'] rules here —
+   attribute selectors out-specify the Tailwind utilities and silently override
+   the variants. */
 
 [data-slot='dropdown-menu-content'],
 [data-slot='select-content'],
@@ -798,13 +802,26 @@ canvas {
   font-size: inherit;
 }
 
-/* Streamed prose hangs slightly indented from the tool/todo column so the
-   reading column reads as a "reply" within the conversation gutter. Tools,
-   todos, and thinking blocks keep the existing --message-text-indent so they
-   remain flush with the user message text above them. */
-[data-slot='aui_assistant-message-content'] > .aui-md {
-  padding-inline-start: var(--md-text-indent, 0.5rem);
+/* Tailwind Typography sets `.prose :where(p) { margin: 1.25em }` (~16px). That
+   selector ties our `my-*` utility on specificity and wins on source order, so
+   paragraph spacing must be reclaimed here at higher specificity. One tight
+   top-margin (bottom zeroed to avoid doubling), first child reset to flush. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(p) {
+  margin-block: var(--paragraph-gap) 0;
 }
+
+/* First rendered element of a prose block is flush — the block-level gap above
+   (tool / paragraph) already provides the separation. Reach one level deep too:
+   Streamdown wraps blocks in a `div.space-y-*`, so the real first line is the
+   first child's first child. */
+[data-slot='aui_assistant-message-content'] .aui-md > :first-child,
+[data-slot='aui_assistant-message-content'] .aui-md > :first-child > :first-child {
+  margin-top: 0;
+}
+
+/* Prose, tools, todos, and thinking all share one left edge (the message
+   content's --message-text-indent). No extra prose indent — a single gutter
+   reads cleaner than a ragged tool-vs-reply column. */
 
 [data-slot='aui_user-message-root'] {
   top: var(--sticky-human-top);
@@ -816,12 +833,13 @@ canvas {
 }
 
 /* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
-   prompt doesn't dominate the viewport while you read the response stuck
-   beneath it. The clamp lifts on hover / focus (clicking the bubble opens the
-   edit composer, which already shows the full text). --human-msg-full is the
-   measured content height (set in UserMessage) so expand/collapse animates to
-   the real height instead of overshooting the cap. */
+   prompt doesn't dominate the viewport. The clamp lifts on focus only (clicking
+   opens the edit composer, which shows the full text) — not on hover, so the
+   bubble doesn't jump as the pointer passes over it. --human-msg-full is the
+   measured content height (set in UserMessage) so it animates to the real
+   height instead of overshooting the cap. */
 .sticky-human-clamp {
+  cursor: pointer;
   max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
   overflow: hidden;
   transition: max-height 0.08s cubic-bezier(0.4, 0, 0.2, 1);
@@ -832,7 +850,6 @@ canvas {
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 
-.composer-human-message:hover .sticky-human-clamp,
 .composer-human-message:focus-within .sticky-human-clamp {
   max-height: min(var(--human-msg-full, 24rem), 24rem);
   overflow-y: auto;
@@ -877,52 +894,46 @@ canvas {
 }
 
 .fit-text {
+  --fit-captured-length: initial;
+  --fit-support-sentinel: var(--fit-captured-length, 9999px);
+
   display: flex;
-  font-size: var(--fit-text-min, 1rem);
   container-type: inline-size;
-  --captured-length: initial;
-  --support-sentinel: var(--captured-length, 9999px);
 }
 
-.fit-text > [aria-hidden='true'] {
+.fit-text > [aria-hidden] {
   visibility: hidden;
 }
 
-.fit-text > :not([aria-hidden='true']) {
+.fit-text > :not([aria-hidden]) {
   flex-grow: 1;
   container-type: inline-size;
-  --captured-length: 100cqi;
-  --available-space: var(--captured-length);
+
+  --fit-captured-length: 100cqi;
+  --fit-available-space: var(--fit-captured-length);
 }
 
-.fit-text > :not([aria-hidden='true']) > * {
+.fit-text > :not([aria-hidden]) > * {
+  --fit-support-sentinel: inherit;
+  --fit-captured-length: 100cqi;
+  --fit-ratio: tan(atan2(var(--fit-available-space), var(--fit-available-space) - var(--fit-captured-length)));
+
   display: block;
-  inline-size: var(--available-space);
-  line-height: var(--fit-text-line-height, 1);
-  --support-sentinel: inherit;
-  --captured-length: 100cqi;
-  --ratio: tan(atan2(var(--available-space), var(--available-space) - var(--captured-length)));
-  --font-size: clamp(
-    var(--fit-text-min, 1em),
-    1em * var(--ratio),
-    var(--fit-text-max, infinity * 1px) - var(--support-sentinel)
+  inline-size: var(--fit-available-space);
+  font-size: clamp(
+    var(--fit-min, 1em),
+    1em * var(--fit-ratio),
+    var(--fit-max, infinity * 1px) - var(--fit-support-sentinel)
   );
-  font-size: var(--font-size);
 }
 
 @container (inline-size > 0) {
-  .fit-text > :not([aria-hidden='true']) > * {
+  .fit-text > :not([aria-hidden]) > * {
     white-space: nowrap;
   }
 }
 
-@property --captured-length {
-  syntax: '<length>';
-  initial-value: 0px;
-  inherits: true;
-}
-
-@property --captured-length2 {
+@property --fit-captured-length {
   syntax: '<length>';
   initial-value: 0px;
   inherits: true;
@@ -943,7 +954,6 @@ canvas {
 
 [data-slot='composer-surface'] {
   border-color: var(--ui-stroke-secondary) !important;
-  box-shadow: var(--shadow-composer) !important;
 }
 
 [data-slot='composer-fade'] {
@@ -993,7 +1003,7 @@ canvas {
 [data-slot='aui_assistant-message-content'] .aui-md [data-streamdown='code-block'] {
   contain: none;
   overflow: visible;
-  margin-block: 0.375rem !important;
+  margin-block: var(--paragraph-gap) 0 !important;
   padding: 0 !important;
   gap: 0 !important;
   border: 0 !important;
@@ -1007,6 +1017,11 @@ canvas {
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'] {
+  /* Streamdown nests blocks, so the container's child-combinator rhythm can't
+     reach the card. Carry the paragraph gap on the card itself (top-owned);
+     collapses cleanly with the wrapper's margin when one is present, and the
+     first-child reset still flushes a leading code block. */
+  margin-block: var(--paragraph-gap) 0;
   position: relative;
   transition:
     border-color 180ms ease-out,
@@ -1076,34 +1091,25 @@ canvas {
   opacity: 1;
 }
 
-/* Conversation block rhythm. Consecutive tool calls stay tight so a step
-   sequence reads as one action group; the gap between any scaffolding
-   block and adjacent prose bumps up so the model's reply visually
-   separates from its scaffolding. */
-[data-slot='tool-block'] + [data-slot='tool-block'] {
-  margin-top: 0.375rem;
-}
-
-[data-slot='tool-block']:has(> :nth-child(2)) + [data-slot='tool-block'] {
-  margin-top: 0.625rem;
-}
-
+/* Conversation block rhythm. assistant-ui renders each range as a direct child
+   of the message content with no per-part wrapper, so adjacency rules cover
+   every pairing — first block needs no reset, nested tool rows are untouched.
+   Two tiers: scaffolding (tool / thinking) gets a roomy block gap so it reads
+   as separate from the reply; consecutive prose collapses to a tight paragraph
+   rhythm so split-out text parts don't look like a big gap. */
+/* Scaffolding adjacent to anything → roomy block gap. */
 [data-slot='aui_assistant-message-content']
-  :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
-  + .aui-md,
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], .aui-md),
 [data-slot='aui_assistant-message-content']
-  .aui-md
+  > .aui-md
   + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
-  margin-top: 1rem;
+  margin-top: var(--turn-block-gap);
 }
 
-[data-slot='aui_assistant-message-content'] [data-slot='aui_thinking-disclosure'] + [data-slot='tool-block'],
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'] + [data-slot='aui_thinking-disclosure'] {
-  margin-top: 0.75rem;
-}
-
-[data-slot='aui_assistant-message-content'] > [data-slot='tool-block']:first-child {
-  margin-top: 0;
+/* Prose ↔ prose → tight paragraph rhythm, matching in-block paragraph spacing. */
+[data-slot='aui_assistant-message-content'] > .aui-md + .aui-md {
+  margin-top: var(--paragraph-gap);
 }
 
 /* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength. */
@@ -1187,4 +1193,43 @@ canvas {
   [data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'][data-streaming='true'] {
     animation: none;
   }
+}
+
+/* ── Keybind panel / edit overlay: small key chips ──────────────────────────
+   A quiet `kbd`-style chip shared by the shortcuts panel and the on-screen
+   editor so both read as the same control. No animation, no glow. */
+.kbd-cap {
+  display: inline-grid;
+  place-items: center;
+  min-width: 1.5rem;
+  height: 1.4rem;
+  padding: 0 0.4rem;
+  border-radius: 0.375rem;
+  font-family: var(--dt-font-mono, ui-monospace, monospace);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1;
+  color: color-mix(in srgb, var(--dt-foreground) 82%, transparent);
+  background: color-mix(in srgb, var(--ui-bg-elevated) 70%, transparent);
+  border: 1px solid var(--ui-stroke-secondary);
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--ui-stroke-tertiary) 50%, transparent);
+}
+
+/* Unbound slot: a hollow dashed chip inviting a binding. */
+.kbd-cap--ghost {
+  color: color-mix(in srgb, var(--dt-foreground) 42%, transparent);
+  background: none;
+  border-style: dashed;
+  border-color: var(--ui-stroke-tertiary);
+  box-shadow: none;
+  font-style: italic;
+}
+
+/* Waiting for a keypress: solid accent, no motion. */
+.kbd-capturing {
+  color: var(--theme-primary);
+  border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--ui-stroke-secondary)) !important;
+  border-style: solid;
+  background: color-mix(in srgb, var(--theme-primary) 9%, var(--ui-bg-elevated));
+  box-shadow: none;
 }

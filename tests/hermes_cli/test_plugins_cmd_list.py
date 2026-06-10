@@ -18,9 +18,9 @@ def _args(**kwargs):
 
 def test_filter_plugin_entries_enabled_only():
     entries = [
-        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None),
-        ("web-search-plus", "2.2.0", "Search", "git", None),
-        ("old-plugin", "1.0.0", "Old", "user", None),
+        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup"),
+        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus"),
+        ("old-plugin", "1.0.0", "Old", "user", None, "old-plugin"),
     ]
 
     filtered = plugins_cmd._filter_plugin_entries(
@@ -35,9 +35,9 @@ def test_filter_plugin_entries_enabled_only():
 
 def test_filter_plugin_entries_no_bundled():
     entries = [
-        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None),
-        ("drawthings-grpc", "0.3.0", "Draw Things", "user", None),
-        ("web-search-plus", "2.2.0", "Search", "git", None),
+        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup"),
+        ("drawthings-grpc", "0.3.0", "Draw Things", "user", None, "drawthings-grpc"),
+        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus"),
     ]
 
     filtered = plugins_cmd._filter_plugin_entries(
@@ -52,8 +52,8 @@ def test_filter_plugin_entries_no_bundled():
 
 def test_cmd_list_plain_compact_output(monkeypatch, capsys):
     entries = [
-        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None),
-        ("web-search-plus", "2.2.0", "Search", "git", None),
+        ("disk-cleanup", "2.0.0", "Bundled", "bundled", None, "disk-cleanup"),
+        ("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus"),
     ]
     monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
     monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"web-search-plus"})
@@ -69,7 +69,7 @@ def test_cmd_list_plain_compact_output(monkeypatch, capsys):
 
 
 def test_cmd_list_json_output(monkeypatch, capsys):
-    entries = [("web-search-plus", "2.2.0", "Search", "git", None)]
+    entries = [("web-search-plus", "2.2.0", "Search", "git", None, "web-search-plus")]
     monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
     monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"web-search-plus"})
     monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())

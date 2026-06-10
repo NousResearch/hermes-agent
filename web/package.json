@@ -28,7 +28,7 @@
     "qrcode": "^1.5.4",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "react-router-dom": "^7.14.1",
+    "react-router-dom": "^7.17.0",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1",
     "unicode-animations": "^1.0.3"

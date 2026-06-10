@@ -50,10 +50,6 @@ Pick the row that matches your goal:
 ### With the Hermes Desktop installer on macOS or Windows (recommended)
 To easily install the command-line and desktop applications, [download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
 
-### With the Hermes Desktop installer on Linux:
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh --include-desktop | bash
-```
 ### Without Hermes Desktop:
 For a command-line only install without Hermes Desktop, run:
 

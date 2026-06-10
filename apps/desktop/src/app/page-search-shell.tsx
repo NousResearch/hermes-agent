@@ -11,6 +11,7 @@ interface PageSearchShellProps extends React.ComponentProps<'section'> {
   filters?: ReactNode
   onSearchChange: (value: string) => void
   searchPlaceholder: string
+  searchTrailingAction?: ReactNode
   searchValue: string
   /** Hide the search field when there's nothing to search (empty dataset). */
   searchHidden?: boolean
@@ -23,6 +24,7 @@ export function PageSearchShell({
   filters,
   onSearchChange,
   searchPlaceholder,
+  searchTrailingAction,
   searchValue,
   searchHidden = false,
   ...props
@@ -58,6 +60,7 @@ export function PageSearchShell({
                   containerClassName="max-w-[45vw]"
                   onChange={onSearchChange}
                   placeholder={searchPlaceholder}
+                  trailingAction={searchTrailingAction}
                   value={searchValue}
                 />
               </div>

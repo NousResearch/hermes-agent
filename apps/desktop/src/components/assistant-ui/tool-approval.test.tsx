@@ -3,7 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesGateway } from '@/hermes'
 import { $gateway } from '@/store/gateway'
-import { $approvalRequest } from '@/store/prompts'
+import { $approvalRequest, clearAllPrompts, setApprovalRequest } from '@/store/prompts'
+import { $activeSessionId } from '@/store/session'
 
 import { PendingToolApproval } from './tool-approval'
 import type { ToolPart } from './tool-fallback-model'
@@ -13,7 +14,8 @@ function part(toolName: string): ToolPart {
 }
 
 function setRequest(command = 'rm -rf /tmp/x') {
-  $approvalRequest.set({ command, description: 'dangerous command', sessionId: 'sess-1' })
+  $activeSessionId.set('sess-1')
+  setApprovalRequest({ command, description: 'dangerous command', sessionId: 'sess-1' })
 }
 
 function mockGateway() {
@@ -25,7 +27,8 @@ function mockGateway() {
 
 afterEach(() => {
   cleanup()
-  $approvalRequest.set(null)
+  clearAllPrompts()
+  $activeSessionId.set(null)
   $gateway.set(null)
 })
 

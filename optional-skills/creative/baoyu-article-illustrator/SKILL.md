@@ -86,7 +86,7 @@ If the user asks for a different layout (e.g., images alongside the article, or 
 - [ ] Step 3: Confirm settings (clarify tool, one question at a time)
 - [ ] Step 4: Generate outline
 - [ ] Step 5: Generate prompts
-- [ ] Step 6: Generate images (image_generate)
+- [ ] Step 6: Generate images (raster backend, default `image_generate`)
 - [ ] Step 7: Finalize
 ```
 
@@ -157,14 +157,18 @@ For each illustration:
 
 ### Step 6: Generate Images
 
-For each prompt file:
+Use a real raster image-generation backend with the saved prompt files. Default to Hermes `image_generate`; if the current request explicitly selects another available raster backend, use that backend instead. Do not substitute code-rendered/manual artifacts (SVG, HTML/CSS/canvas, Pillow, Mermaid, graphviz, hand-positioned layout/text), and do not repair generated text by painting over the bitmap. If labels need to be exact, reduce the visible label set, revise the prompt, and regenerate.
+
+For the default `image_generate` path, for each prompt file:
 
 1. Call `image_generate(prompt=..., aspect_ratio=...)`. `image_generate` returns a JSON result containing an image URL; it does NOT write to disk and does NOT accept an output path.
 2. Map the prompt's `ASPECT` to `image_generate`'s enum: `16:9` → `landscape`, `9:16` → `portrait`, `1:1` → `square`. Custom ratios → nearest named aspect.
 3. Download the returned URL to `{output-dir}/NN-{type}-{slug}.png` via `terminal` (e.g. `curl -sSL -o "{output-dir}/NN-{type}-{slug}.png" "{url}"`).
 4. On generation failure, auto-retry once.
 
-Note: the underlying image-generation backend is user-configured (default: FAL FLUX 2 Klein 9B) and is NOT agent-selectable via `image_generate`. Do not write model names into prompts expecting them to route.
+For an explicitly selected alternate raster backend, follow that backend's invocation and output contract, but still save and verify the final raster image files in the output directory.
+
+Note: the underlying `image_generate` backend is user-configured and is NOT agent-selectable by prompt text. Do not write model names into prompts expecting them to route.
 
 ### Step 7: Finalize
 
@@ -204,4 +208,5 @@ Images: X/N generated
 4. **Prompt files are mandatory** — no image generation without a saved prompt file. The file is what lets you regenerate or switch backends later.
 5. **`image_generate` aspect ratios** — the tool supports `landscape`, `portrait`, and `square`. Custom ratios map to the nearest option.
 6. **`image_generate` returns a URL, not a local file** — always download via `terminal` (`curl`) before inserting local image paths into the article.
-7. **No backend selection from the agent** — `image_generate` uses whatever model the user configured (default: FAL FLUX 2 Klein 9B). Don't write `"use <model> to generate this"` into prompts expecting it to route.
+7. **No backend routing by prompt** — for the default `image_generate` path, use the user's configured backend/model. Only switch away from `image_generate` when the user explicitly selects another available raster backend. Don't write `"use <model>"` into prompts expecting it to route.
+8. **No code/manual rendering or text repair** — do not use code-rendered/manual artifacts (SVG, HTML/CSS/canvas, Pillow, Mermaid, graphviz, hand-positioned layout/text) or bitmap paint-overs as a shortcut for Baoyu article images. Regenerate from corrected prompts unless the user explicitly asks for a non-Baoyu/manual fallback, and label that output honestly.

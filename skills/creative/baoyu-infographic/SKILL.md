@@ -209,12 +209,14 @@ Save the assembled prompt to `prompts/infographic.md` using `write_file`.
 
 ### Step 6: Generate Image
 
-Use the `image_generate` tool with the assembled prompt from Step 5.
+Use a real raster image-generation backend with the assembled prompt from Step 5. Default to Hermes `image_generate`; if the current request explicitly selects another available raster backend, use that backend instead. Do not substitute code-rendered/manual artifacts (SVG, HTML/CSS/canvas, Pillow, Mermaid, graphviz, hand-positioned layout/text), and do not repair generated text by painting over the bitmap. If generated text is too dense or garbled, reduce the visible label set and regenerate through the same Baoyu layout/style.
 
-- Map aspect ratio to image_generate's format: `16:9` → `landscape`, `9:16` → `portrait`, `1:1` → `square`
-- For custom ratios, pick the closest named aspect
+For the default `image_generate` path:
+- Map aspect ratio to image_generate's format: `16:9` → `landscape`, `9:16` → `portrait`, `1:1` → `square`; custom ratios → nearest named aspect
 - On failure, auto-retry once
-- Save the resulting image URL/path to the output directory
+- Download the returned URL to the output directory and verify the file exists
+
+For an explicitly selected alternate raster backend, use that backend's supported aspect/output options, then save and verify the final raster file in the output directory.
 
 ### Step 7: Output Summary
 
@@ -235,3 +237,4 @@ Report: topic, layout, style, aspect, language, output path, files created.
 3. **One message per section** — each infographic section should convey one clear concept. Overloading sections reduces readability.
 4. **Style consistency** — the style definition from the references file must be applied consistently across the entire infographic. Don't mix styles.
 5. **image_generate aspect ratios** — the tool only supports `landscape`, `portrait`, and `square`. Custom ratios like `3:4` should map to the nearest option (portrait in that case).
+6. **No code/manual rendering or text repair** — do not use code-rendered/manual artifacts (SVG, HTML/CSS/canvas, Pillow, Mermaid, graphviz, hand-positioned layout/text) or bitmap paint-overs as a shortcut for Baoyu infographics. Regenerate from corrected prompts unless the user explicitly asks for a non-Baoyu/manual fallback, and label that output honestly.

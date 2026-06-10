@@ -228,12 +228,14 @@ Slug：从主题中取 2-4 个单词，使用 kebab-case。冲突时追加 `-YYY
 
 ### 第6步：生成图像
 
-使用 `image_generate` 工具，传入第5步组装的 prompt。
+使用真正的栅格图像生成后端和第5步组装的 prompt。默认使用 Hermes `image_generate`；如果当前请求明确选择另一个可用的栅格后端，则使用该后端。不要用代码渲染/手工产物（SVG、HTML/CSS/canvas、Pillow、Mermaid、graphviz、手工布局/摆字）替代，也不要在生成位图上手工涂改文字。如果生成文本过密或乱码，应减少可见标签，并用同一 Baoyu layout/style 重新生成。
 
-- 将宽高比映射到 image_generate 的格式：`16:9` → `landscape`，`9:16` → `portrait`，`1:1` → `square`
-- 自定义比例时，选择最接近的命名宽高比
+默认使用 `image_generate` 时：
+- 将宽高比映射到 image_generate 的格式：`16:9` → `landscape`，`9:16` → `portrait`，`1:1` → `square`；自定义比例使用最接近的命名宽高比
 - 失败时自动重试一次
-- 将生成的图像 URL/路径保存至输出目录
+- 下载返回的 URL 到输出目录，并验证文件存在
+
+如果用户明确选择另一个可用的栅格后端，则使用该后端支持的宽高比/输出选项，然后保存并验证最终栅格文件。
 
 ### 第7步：输出摘要
 
@@ -254,3 +256,4 @@ Slug：从主题中取 2-4 个单词，使用 kebab-case。冲突时追加 `-YYY
 3. **每节一个信息点** — 信息图的每个节应传达一个清晰概念。内容过载会降低可读性。
 4. **风格一致性** — 参考文件中的风格定义必须在整个信息图中一致应用，不得混用风格。
 5. **image_generate 宽高比** — 该工具仅支持 `landscape`、`portrait` 和 `square`。自定义比例如 `3:4` 应映射到最接近的选项（此例为 portrait）。
+6. **不要代码/手工渲染或涂改文字** — 不要用代码渲染/手工产物（SVG、HTML/CSS/canvas、Pillow、Mermaid、graphviz、手工布局/摆字）或位图涂改作为 Baoyu 信息图捷径。应修正 prompt 后重新生成；只有用户明确要求非 Baoyu/手工 fallback 时才使用，并且必须如实标注。

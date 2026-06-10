@@ -276,9 +276,15 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         return
 
     override_token = None
+    # Also patch SKILLS_DIR in tools.skills_tool so skill_view() resolves
+    # skills from the profile's directory, not the scheduler's default.
+    # See GitHub issue #5947.
+    import tools.skills_tool as _st
+    prior_skills_dir = _st.SKILLS_DIR
     try:
         override_token = set_hermes_home_override(profile_home)
         _hermes_home = profile_home
+        _st.SKILLS_DIR = profile_home / "skills"
         logger.info(
             "Job '%s': using Hermes profile '%s' (%s)",
             job_id,
@@ -288,6 +294,7 @@ def _job_profile_context(job_id: str, profile: Optional[str]):
         yield normalized_profile
     finally:
         _hermes_home = prior_override
+        _st.SKILLS_DIR = prior_skills_dir
         if override_token is not None:
             reset_hermes_home_override(override_token)
         # Delta-based restore: remove added keys, restore changed keys.
@@ -993,9 +1000,33 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     # Guard against path traversal, absolute path injection, and symlink
     # escape — scripts MUST reside within HERMES_HOME/scripts/.
+    # When running under a profile, also allow scripts from the default
+    # (~/.hermes/scripts/) directory as a fallback, so shared scripts
+    # don't need to be symlinked into every profile.  See issue #5947.
+    _in_scripts_dir = False
     try:
         path.relative_to(scripts_dir_resolved)
+        _in_scripts_dir = True
     except ValueError:
+        pass
+
+    if not _in_scripts_dir:
+        # Try fallback to the default scripts directory
+        from hermes_constants import get_hermes_home as _get_default_home
+        _default_scripts = _get_default_home() / "scripts"
+        _default_resolved = _default_scripts.resolve()
+        if _default_resolved != scripts_dir_resolved:
+            _fallback = (_default_scripts / raw).resolve() if not raw.is_absolute() else raw.resolve()
+            try:
+                _fallback.relative_to(_default_resolved)
+                if _fallback.exists():
+                    path = _fallback
+                    scripts_dir_resolved = _default_resolved
+                    _in_scripts_dir = True
+            except ValueError:
+                pass
+
+    if not _in_scripts_dir:
         return False, (
             f"Blocked: script path resolves outside the scripts directory "
             f"({scripts_dir_resolved}): {script_path!r}"

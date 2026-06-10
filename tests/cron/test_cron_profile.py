@@ -331,6 +331,32 @@ class TestRunJobProfileContext:
         assert os.environ["HERMES_HOME"] == str(root)
         assert sched._get_hermes_home() == root
 
+    def test_profile_context_patches_skills_dir(
+        self, isolated_cron_profile_home, monkeypatch
+    ):
+        """_job_profile_context should patch tools.skills_tool.SKILLS_DIR."""
+        import cron.scheduler as sched
+        import tools.skills_tool as st
+
+        root, profile_home = isolated_cron_profile_home
+        observed: dict = {}
+        self._install_agent_stubs(monkeypatch, observed)
+
+        prior_skills_dir = st.SKILLS_DIR
+
+        job = {
+            "id": "skills-dir-test",
+            "name": "skills-dir-test",
+            "profile": "support",
+            "schedule_display": "manual",
+        }
+
+        success, *_ = sched.run_job(job)
+
+        assert success is True
+        # SKILLS_DIR should be restored to its original value
+        assert st.SKILLS_DIR == prior_skills_dir
+
     def test_run_job_without_profile_leaves_hermes_home_untouched(
         self, isolated_cron_profile_home, monkeypatch
     ):

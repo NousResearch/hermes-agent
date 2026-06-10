@@ -662,9 +662,13 @@ describe('assistant-ui streaming renderer', () => {
 
   it('renders an incomplete streaming reasoning fenced code block as a code card', async () => {
     const { container } = render(<RunningReasoningHarness />)
-    const ui = within(container)
 
-    fireEvent.click(ui.getByRole('button', { name: /thinking/i }))
+    // While reasoning is still running the disclosure auto-opens — no click is
+    // needed, and clicking would collapse it. The text streams through
+    // SmoothStreamingText, revealing from empty over ~REVEAL_DRAIN_MS (500ms)
+    // via the rAF chain (the plain-text path renders synchronously, so its
+    // sibling test needs no pump), so drain the reveal before asserting.
+    await wait(600)
 
     await waitFor(() => {
       expect(container.querySelector('[data-slot="code-card"]')).toBeTruthy()

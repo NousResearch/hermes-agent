@@ -3,6 +3,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ToolsetConfig } from '@/types/hermes'
 
+// Radix DropdownMenu (the EnvVarActionsMenu trigger) drives open/close through
+// pointer capture and scrolls focused items into view — APIs jsdom doesn't
+// implement. Stub them so the menu opens under test.
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false
+  Element.prototype.setPointerCapture = () => {}
+  Element.prototype.releasePointerCapture = () => {}
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {}
+}
+
 const getToolsetConfig = vi.fn()
 const selectToolsetProvider = vi.fn()
 const setEnvVar = vi.fn()
@@ -93,8 +105,14 @@ describe('ToolsetConfigPanel', () => {
     const elevenlabs = await screen.findByRole('button', { name: /ElevenLabs/ })
     fireEvent.click(elevenlabs)
 
-    // Click "Set" to reveal the input for the unset key.
-    fireEvent.click(await screen.findByRole('button', { name: 'Set' }))
+    // The inline "Set" button was replaced by a 3-dot actions menu in the
+    // credentials-settings polish — open it (Radix opens on pointerdown) and
+    // pick "Set" to reveal the input.
+    const actionsTrigger = await screen.findByRole('button', { name: 'Actions for ELEVENLABS_API_KEY' })
+    fireEvent.pointerDown(actionsTrigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.pointerUp(actionsTrigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+    fireEvent.click(actionsTrigger)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Set' }))
 
     const input = await screen.findByPlaceholderText('ElevenLabs API key')
     fireEvent.change(input, { target: { value: 'sk-test-123' } })

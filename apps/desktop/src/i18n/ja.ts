@@ -58,6 +58,7 @@ export const ja = defineLocale({
       backendStopped: 'バックエンドが停止しました',
       desktopBootFailed: 'デスクトップの起動に失敗しました',
       gatewaySignInRequired: 'ゲートウェイへのサインインが必要です',
+      gatewayUnreachable: 'ゲートウェイに接続できません',
       ipcBridgeUnavailable: 'デスクトップ IPC ブリッジが利用できません。'
     },
     failure: {

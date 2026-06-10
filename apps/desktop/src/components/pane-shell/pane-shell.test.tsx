@@ -153,7 +153,9 @@ describe('PaneShell composition', () => {
 
     const rendered = render(
       <PaneShell>
-        <Pane id="files" side="left" width="240px">
+        {/* widthOverride only applies to resizable panes — that's where the
+            override originates (drag-resize). trackForPane gates on it. */}
+        <Pane id="files" resizable side="left" width="240px">
           files
         </Pane>
         <PaneMain>main</PaneMain>

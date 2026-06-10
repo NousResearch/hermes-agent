@@ -286,7 +286,87 @@ def _detach_transport_from_sessions(transport: Transport | None) -> list[str]:
     for sid, session in snapshot:
         if _detach_session_transport(session, transport):
             detached.append(sid)
+        # A disconnecting client also leaves the channel — drop its presence
+        # and tell remaining co-viewers (no-op when it wasn't a participant).
+        _drop_session_participant(sid, session, transport)
     return detached
+
+
+# --- Channel participant presence (channels Phase 3) -----------------------
+# "Who is viewing this session", derived from the live transports attached to
+# the session's fanout. Each viewer announces its device name when it attaches
+# (session.resume / session.activate / prompt.submit); we key the name by the
+# transport's id so a WS disconnect removes exactly that viewer. The change is
+# broadcast to every attached client as a ``session.participants`` event so
+# co-viewers see each other live. Degrades cleanly with no mesh/tailnet: a lone
+# local client is simply the only participant, and unnamed clients are omitted.
+
+def _participants_map(session: dict) -> dict[int, str]:
+    participants = session.get("participants")
+    if not isinstance(participants, dict):
+        participants = {}
+        session["participants"] = participants
+    return participants
+
+
+def _session_participants_payload(session: dict) -> list[dict]:
+    """Deduped viewer list: one entry per device name with a live-client count."""
+    counts: dict[str, int] = {}
+    for device in _participants_map(session).values():
+        name = (device or "").strip()
+        if not name:
+            continue
+        counts[name] = counts.get(name, 0) + 1
+    return [{"device": name, "count": counts[name]} for name in sorted(counts)]
+
+
+def _publish_session_participants(sid: str, session: dict | None) -> None:
+    if not sid or not session or session.get("_finalized"):
+        return
+    transport = session.get("transport")
+    if transport is None:
+        return
+    try:
+        transport.write(
+            {
+                "jsonrpc": "2.0",
+                "method": "event",
+                "params": {
+                    "type": "session.participants",
+                    "session_id": sid,
+                    "payload": {"participants": _session_participants_payload(session)},
+                },
+            }
+        )
+    except Exception:
+        logger.debug("failed to publish session participants", exc_info=True)
+
+
+def _record_session_participant(
+    sid: str, session: dict | None, transport: Transport | None, device: str | None
+) -> None:
+    """Tag *transport* as a viewer of *session* and broadcast the change.
+
+    No-op when the device name is empty/unchanged (so a re-submit from the same
+    client doesn't spam co-viewers) or when the transport is the shared stdio
+    sink (the TUI's own process, not a remote viewer).
+    """
+    name = (device or "").strip()
+    if not session or transport is None or not name or transport is _stdio_transport:
+        return
+    participants = _participants_map(session)
+    if participants.get(id(transport)) == name:
+        return
+    participants[id(transport)] = name
+    _publish_session_participants(sid, session)
+
+
+def _drop_session_participant(sid: str, session: dict | None, transport: Transport | None) -> None:
+    if not session or transport is None:
+        return
+    participants = session.get("participants")
+    if isinstance(participants, dict) and participants.pop(id(transport), None) is not None:
+        _publish_session_participants(sid, session)
 
 
 class _SlashWorker:
@@ -3527,6 +3607,10 @@ def _(rid, params: dict) -> dict:
         cols = int(params.get("cols", 80))
     except (TypeError, ValueError):
         cols = 80
+    # Which device is opening this session as a viewer (channels Phase 3). Local
+    # clients may omit it; a client attaching from ANOTHER device passes its name
+    # so co-viewers see it in the session.participants roster.
+    viewer_device = _sanitize_sender_device(params.get("viewer_device"))
     # ``profile`` (app-global remote mode): resume a session that lives in another
     # local profile's state.db. None/own profile → the launch profile (unchanged).
     profile = (params.get("profile") or "").strip() or None
@@ -3561,6 +3645,7 @@ def _(rid, params: dict) -> dict:
                 cols=cols,
                 touch=True,
                 transport=current_transport() or _stdio_transport,
+                viewer_device=viewer_device,
             )
             payload["resumed"] = target
             return _ok(rid, payload)
@@ -3616,6 +3701,7 @@ def _(rid, params: dict) -> dict:
                 cols=cols,
                 touch=True,
                 transport=current_transport() or _stdio_transport,
+                viewer_device=viewer_device,
             )
             payload["resumed"] = target
             return _ok(rid, payload)
@@ -3631,6 +3717,7 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _err(rid, 5000, f"resume failed: {e}")
         session = _sessions.get(sid) or {}
+    _record_session_participant(sid, session, current_transport(), viewer_device)
     return _ok(
         rid,
         {
@@ -3810,6 +3897,7 @@ def _live_session_payload(
     cols: int | None = None,
     touch: bool = False,
     transport: Transport | None = None,
+    viewer_device: str | None = None,
 ) -> dict:
     with session["history_lock"]:
         if cols is not None:
@@ -3822,6 +3910,9 @@ def _live_session_payload(
         )
         inflight = _inflight_snapshot(session)
         running = bool(session.get("running"))
+    # Record the viewer's presence outside the history lock (the emit does a
+    # transport write we don't want to hold the lock across).
+    _record_session_participant(sid, session, transport, viewer_device)
     payload = {
         "info": _fallback_session_info(session),
         "message_count": len(history),
@@ -3913,8 +4004,24 @@ def _(rid, params: dict) -> dict:
             session,
             touch=True,
             transport=current_transport() or _stdio_transport,
+            viewer_device=_sanitize_sender_device(params.get("viewer_device")),
         ),
     )
+
+
+@method("session.participants")
+def _(rid, params: dict) -> dict:
+    """Return the live viewers (device names) currently attached to a session.
+
+    Lets a client that just attached pull the initial channel roster instead of
+    waiting for the next attach/detach to emit a ``session.participants`` event.
+    """
+    sid = str(params.get("session_id") or "")
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    assert session is not None
+    return _ok(rid, {"participants": _session_participants_payload(session)})
 
 
 @method("session.delete")
@@ -4696,6 +4803,9 @@ def _(rid, params: dict) -> dict:
     # newest client steal the stream from earlier clients.
     if (t := current_transport()) is not None:
         _attach_session_transport(session, t)
+        # Sending implies viewing — register/refresh this device in the channel
+        # roster so co-viewers see who's here (channels Phase 3).
+        _record_session_participant(sid, session, t, sender_device)
     with session["history_lock"]:
         if session.get("running"):
             return _err(rid, 4009, "session busy")

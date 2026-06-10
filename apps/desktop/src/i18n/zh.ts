@@ -58,6 +58,7 @@ export const zh: Translations = {
       backendStopped: '后端已停止',
       desktopBootFailed: '桌面启动失败',
       gatewaySignInRequired: '需要登录网关',
+      gatewayUnreachable: '无法连接到网关',
       ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
     },
     failure: {

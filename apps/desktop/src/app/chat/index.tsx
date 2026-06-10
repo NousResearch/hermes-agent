@@ -53,6 +53,7 @@ import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from
 import type { ChatBarState } from './composer/types'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
+import { ParticipantChips } from './participant-chips'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser, threadLoadingState } from './thread-loading'
 
@@ -150,6 +151,7 @@ function ChatHeader({
           </Button>
         </SessionActionsMenu>
       </div>
+      <ParticipantChips sessionId={selectedSessionId || activeSessionId || ''} />
     </header>
   )
 }

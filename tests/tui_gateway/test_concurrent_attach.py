@@ -207,3 +207,76 @@ def test_sanitize_sender_device(server):
     assert f(123) == ""
     assert f(["nope"]) == ""
     assert f("line\nbreaks\tcollapse") == "line breaks collapse"
+
+
+# -------------------------------------------------------------------------
+# Channel participant presence — who's viewing (channels Phase 3)
+# -------------------------------------------------------------------------
+
+def _roster(frame: dict) -> list[dict]:
+    return frame["params"]["payload"]["participants"]
+
+
+def test_recording_a_participant_broadcasts_the_roster(server):
+    t1 = RecordingTransport("desktop-a")
+    t2 = RecordingTransport("desktop-b")
+    session = _live_session(server, "chanP1", t1)
+    server._attach_session_transport(session, t2)
+
+    server._record_session_participant("chanP1", session, t1, "Omar's MacBook")
+
+    # Every co-viewer hears the roster change, not just the one who announced.
+    assert t1.event_types() == ["session.participants"]
+    assert t2.event_types() == ["session.participants"]
+    assert _roster(t2.frames[-1]) == [{"device": "Omar's MacBook", "count": 1}]
+
+
+def test_participants_dedup_by_device_with_a_live_client_count(server):
+    t1 = RecordingTransport("a")
+    t2 = RecordingTransport("b")
+    session = _live_session(server, "chanP2", t1)
+    server._attach_session_transport(session, t2)
+
+    # Same person on two clients collapses to one chip with count 2.
+    server._record_session_participant("chanP2", session, t1, "iPhone")
+    server._record_session_participant("chanP2", session, t2, "iPhone")
+
+    assert server._session_participants_payload(session) == [{"device": "iPhone", "count": 2}]
+
+
+def test_detach_drops_the_participant_and_rebroadcasts(server):
+    t1 = RecordingTransport("a")
+    t2 = RecordingTransport("b")
+    session = _live_session(server, "chanP3", t1)
+    server._attach_session_transport(session, t2)
+    server._record_session_participant("chanP3", session, t1, "MacBook")
+    server._record_session_participant("chanP3", session, t2, "iPhone")
+    t1.frames.clear()
+    t2.frames.clear()
+
+    server._detach_transport_from_sessions(t1)
+
+    # The remaining viewer sees the updated roster; the departed one is gone.
+    assert t2.event_types() == ["session.participants"]
+    assert _roster(t2.frames[-1]) == [{"device": "iPhone", "count": 1}]
+    assert t1.event_types() == []
+
+
+def test_record_participant_is_noop_for_empty_or_unchanged_device(server):
+    t1 = RecordingTransport("a")
+    session = _live_session(server, "chanP4", t1)
+
+    server._record_session_participant("chanP4", session, t1, "")
+    server._record_session_participant("chanP4", session, t1, None)
+    assert t1.event_types() == []  # nothing to announce
+
+    server._record_session_participant("chanP4", session, t1, "Mac")  # first → emit
+    server._record_session_participant("chanP4", session, t1, "Mac")  # unchanged → skip
+    assert t1.event_types() == ["session.participants"]
+
+
+def test_stdio_viewer_is_not_a_channel_participant(server):
+    # The TUI's own stdio sink is the local process, not a remote viewer.
+    session = _live_session(server, "chanP5", server._stdio_transport)
+    server._record_session_participant("chanP5", session, server._stdio_transport, "local-tui")
+    assert server._session_participants_payload(session) == []

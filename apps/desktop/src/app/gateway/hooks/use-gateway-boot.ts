@@ -97,6 +97,10 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    // Backoff is 1,2,4,8,15,15… s; the 6th attempt lands ~45s into a sustained
+    // outage. Past that we stop pretending it's transient and raise a
+    // recoverable boot error (the escape hatch) instead of an endless spinner.
+    const RECONNECT_ESCALATION_ATTEMPTS = 6
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
@@ -173,6 +177,15 @@ export function useGatewayBoot({
       // 1s, 2s, 4s … capped at 15s.
       const delay = Math.min(15_000, 1_000 * 2 ** Math.min(reconnectAttempt, 4))
       reconnectAttempt += 1
+      // After a sustained failure window (~45s of backoff, the >=6th attempt),
+      // surface a RECOVERABLE boot error so BootFailureOverlay (Use local
+      // gateway / Sign in / Retry) replaces the dead-end CONNECTING spinner.
+      // The backoff loop keeps running underneath; a later successful reconnect
+      // clears it (onState 'open' below). Only post-boot — initial-boot failure
+      // has its own error path.
+      if (bootCompleted && reconnectAttempt >= RECONNECT_ESCALATION_ATTEMPTS && !$desktopBoot.get().error) {
+        failDesktopBoot(translateNow('boot.errors.gatewayUnreachable'))
+      }
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null
         void attemptReconnect()
@@ -220,6 +233,11 @@ export function useGatewayBoot({
         reconnectAttempt = 0
         reauthNotified = false
         clearReconnectTimer()
+        // Recovered from the prolonged-drop escape hatch: clear the recoverable
+        // boot error and hide the overlay now that we're connected again.
+        if ($desktopBoot.get().error) {
+          completeDesktopBoot()
+        }
       } else if (bootCompleted && (st === 'closed' || st === 'error')) {
         // The socket dropped after a healthy boot (typically sleep/wake). Try
         // to bring it back instead of leaving the composer stuck disabled.

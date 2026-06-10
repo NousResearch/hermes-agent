@@ -26,6 +26,7 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   $localDeviceName,
+  type SessionParticipant,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -37,6 +38,7 @@ import {
   setCurrentUsage,
   setLocalDeviceName,
   setSessionActivityStatus,
+  setSessionParticipants,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -754,6 +756,14 @@ export function useMessageStream({
           } else if (text && ['lifecycle', 'compressing', 'process', 'status'].includes(kind)) {
             setSessionActivityStatus({ kind, text })
           }
+        }
+      } else if (event.type === 'session.participants') {
+        // Channel presence: who's viewing this session (channels Phase 3). Keyed
+        // by session id so co-viewer chips render for the active session even
+        // when the roster event targets a background one.
+        if (explicitSid) {
+          const list = Array.isArray(payload?.participants) ? (payload.participants as SessionParticipant[]) : []
+          setSessionParticipants(explicitSid, list)
         }
       } else if (event.type === 'message.start') {
         if (!sessionId) {

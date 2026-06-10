@@ -221,6 +221,20 @@ export const $sessionActivityStatus = atom<SessionActivityStatus | null>(null)
 // sender_device on prompts sent to REMOTE gateways (channels Phase 2b).
 export const $localDeviceName = atom('')
 
+// One viewer device in a session's channel roster (deduped, with a live-client
+// count when the same device watches from more than one window).
+export interface SessionParticipant {
+  device: string
+  count: number
+}
+
+// Channel presence (channels Phase 3): who is currently viewing each session,
+// keyed by session id. Fed by `session.participants` gateway events; the header
+// renders co-viewer chips for the active session (filtering out THIS device).
+// Empty/solo-local sessions simply hold no entry, so the chip row is absent
+// with no mesh/tailnet involved.
+export const $sessionParticipants = atom<Record<string, SessionParticipant[]>>({})
+
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
@@ -274,6 +288,30 @@ export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelP
 export const setSessionActivityStatus = (next: Updater<SessionActivityStatus | null>) =>
   updateAtom($sessionActivityStatus, next)
 export const setLocalDeviceName = (next: Updater<string>) => updateAtom($localDeviceName, next)
+
+// Replace the channel roster for one session. An empty roster drops the key so
+// the map doesn't accumulate stale entries as the user moves between sessions.
+export const setSessionParticipants = (sessionId: string, participants: SessionParticipant[]) => {
+  if (!sessionId) {
+    return
+  }
+
+  const current = $sessionParticipants.get()
+
+  if (participants.length === 0) {
+    if (!(sessionId in current)) {
+      return
+    }
+
+    const next = { ...current }
+    delete next[sessionId]
+    $sessionParticipants.set(next)
+
+    return
+  }
+
+  $sessionParticipants.set({ ...current, [sessionId]: participants })
+}
 
 // Watchdog tracking — when does a "working" session count as stuck?
 // Long-running tool calls (LLM inference, long shell commands, web fetches)

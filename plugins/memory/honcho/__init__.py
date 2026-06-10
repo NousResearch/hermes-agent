@@ -439,22 +439,44 @@ class HonchoMemoryProvider(MemoryProvider):
         # not treat that partially initialized state as usable.
         session = self._manager.get_or_create(self._session_key)
 
-        # ----- B6: Memory file migration (one-time, for new sessions) -----
+        # ----- B6: Memory file migration (one-time, guarded by marker) -----
         # Skip under per-session strategy: every Hermes run creates a fresh
         # Honcho session by design, so uploading MEMORY.md/USER.md/SOUL.md to
         # each one would flood the backend with short-lived duplicates instead
         # of performing a one-time migration.
+        #
+        # A marker file (.honcho_migration_done) in the memories directory
+        # prevents re-running the migration for every new session.  Without
+        # the marker, ``not session.messages`` is True for *every* fresh
+        # session, causing the migration to repeat and flood the deriver
+        # with duplicate ``<prior_memory_file>`` uploads.  See #43731.
         try:
-            if not session.messages and cfg.session_strategy != "per-session":
-                from hermes_constants import get_hermes_home
-                mem_dir = str(get_hermes_home() / "memories")
-                self._manager.migrate_memory_files(self._session_key, mem_dir)
-                logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
-            elif cfg.session_strategy == "per-session":
+            if cfg.session_strategy == "per-session":
                 logger.debug(
                     "Honcho memory file migration skipped: per-session strategy creates a fresh session per run (%s)",
                     self._session_key,
                 )
+            else:
+                from pathlib import Path as _Path
+                from hermes_constants import get_hermes_home
+                mem_dir = str(get_hermes_home() / "memories")
+                _marker = _Path(mem_dir) / ".honcho_migration_done"
+                if _marker.exists():
+                    logger.debug(
+                        "Honcho memory file migration skipped: marker already exists (%s)",
+                        self._session_key,
+                    )
+                elif not session.messages:
+                    self._manager.migrate_memory_files(self._session_key, mem_dir)
+                    # Write marker so migration never re-runs for this workspace
+                    try:
+                        _marker.write_text(
+                            f"migrated={self._session_key}\n",
+                            encoding="utf-8",
+                        )
+                    except OSError:
+                        pass  # best-effort; next run will retry
+                    logger.debug("Honcho memory file migration attempted for new session: %s", self._session_key)
         except Exception as e:
             logger.debug("Honcho memory file migration skipped: %s", e)
 

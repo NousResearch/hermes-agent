@@ -336,19 +336,23 @@ class TestSlackNativeSlashes:
             )
 
     def test_includes_aliases_as_first_class_slashes(self):
-        """Aliases (/btw, /bg, /reset) must be registered as standalone
+        """Aliases (/btw, /bg, /reset, …) must be registered as standalone
         slashes — this is the whole point of native-slashes parity.
 
-        Note: Slack's manifest hard-caps slash commands at 50
-        (``_SLACK_MAX_SLASH_COMMANDS``). Canonical names win slots first,
-        then aliases, so the lowest-priority aliases can be clamped off
-        once the registry fills the cap (e.g. ``/q`` once ``/version``
-        landed). The surviving aliases below still prove alias parity;
-        anything dropped remains reachable via ``/hermes <command>``."""
-        names = {n for n, _d, _h in slack_native_slashes()}
+        Asserts the contract (aliases are surfaced as first-class slashes),
+        not a specific alias's survival of Slack's 50-slash clamp — which alias
+        lands last shifts whenever a canonical command is added, so pinning one
+        name (previously ``q``) made this a change-detector.
+        """
+        slashes = slack_native_slashes()
+        names = {n for n, _d, _h in slashes}
+        # Aliases that sort early in the registry always fit under the cap.
         assert "btw" in names
         assert "bg" in names
         assert "reset" in names
+        # And at least one alias is surfaced as an alias entry (description
+        # carries the "Alias for /…" marker), proving the alias pass ran.
+        assert any(d.startswith("Alias for /") for _n, d, _h in slashes)
 
     def test_telegram_parity(self):
         """Every Telegram bot command must be registerable on Slack too.

@@ -606,6 +606,63 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+def _apply_write_gate(action: str, target: str, content: Optional[str],
+                      old_text: Optional[str]) -> Optional[str]:
+    """Evaluate the memory write gate. Returns a JSON tool-result string when
+    the write should NOT proceed normally (blocked or staged), or None when the
+    caller should perform the real write.
+
+    Only the mutating actions (add/replace/remove) are gated.
+    """
+    if action not in {"add", "replace", "remove"}:
+        return None
+
+    try:
+        from tools import write_approval as wa
+    except Exception:
+        # If the gate module can't load, fail open (current behaviour) rather
+        # than blocking all memory writes.
+        return None
+
+    # Build a small inline summary/detail for the foreground approval prompt.
+    label = "user profile" if target == "user" else "memory"
+    if action == "add":
+        summary = f"add to {label}"
+        detail = content or ""
+    elif action == "replace":
+        summary = f"replace in {label}"
+        detail = f"old: {old_text}\nnew: {content}"
+    else:  # remove
+        summary = f"remove from {label}"
+        detail = old_text or ""
+
+    decision = wa.evaluate_gate(wa.MEMORY, inline_summary=summary, inline_detail=detail)
+
+    if decision.allow:
+        return None
+
+    if decision.blocked:
+        return tool_error(decision.message, success=False)
+
+    # stage
+    payload = {
+        "action": action,
+        "target": target,
+        "content": content,
+        "old_text": old_text,
+    }
+    record = wa.stage_write(
+        wa.MEMORY, payload,
+        summary=f"{summary}: {detail[:120]}",
+        origin=wa.current_origin(),
+    )
+    return json.dumps(
+        {"success": True, "staged": True, "pending_id": record["id"],
+         "message": decision.message},
+        ensure_ascii=False,
+    )
+
+
 def memory_tool(
     action: str,
     target: str = "memory",
@@ -623,6 +680,12 @@ def memory_tool(
 
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
+
+    # Write gate: off blocks the write; approve stages it (background) or
+    # prompts inline (foreground). on (default) passes straight through.
+    gate_result = _apply_write_gate(action, target, content, old_text)
+    if gate_result is not None:
+        return gate_result
 
     if action == "add":
         if not content:
@@ -652,7 +715,23 @@ def check_memory_requirements() -> bool:
     return True
 
 
-# =============================================================================
+def apply_memory_pending(payload: Dict[str, Any], store: "MemoryStore") -> Dict[str, Any]:
+    """Replay a staged memory write directly against the store, bypassing the
+    write gate. Called by the /memory approve handler.
+
+    Returns the store's result dict.
+    """
+    action = payload.get("action")
+    target = payload.get("target", "memory")
+    content = payload.get("content") or ""
+    old_text = payload.get("old_text") or ""
+    if action == "add":
+        return store.add(target, content)
+    if action == "replace":
+        return store.replace(target, old_text, content)
+    if action == "remove":
+        return store.remove(target, old_text)
+    return {"success": False, "error": f"Unknown staged action '{action}'."}
 # OpenAI Function-Calling Schema
 # =============================================================================
 

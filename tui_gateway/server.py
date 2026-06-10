@@ -2949,7 +2949,7 @@ def _make_agent(
             requested=requested_provider,
             target_model=model or None,
         )
-    return AIAgent(
+    agent_kwargs = dict(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
         provider=runtime.get("provider"),
@@ -2979,6 +2979,15 @@ def _make_agent(
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
+    # Phase 3 Brain-host seam (central-brain-openclaw.md §11 "3c/3d").
+    # Default OFF — zero import cost when the flag is absent.
+    if os.environ.get("HERMES_BRAIN_HOST", "").strip() == "1":
+        from agent.brain_host import AgentSpec, BrainHost
+
+        return BrainHost.get().build_agent(
+            AgentSpec(intent="tui_gateway", kwargs=agent_kwargs)
+        )
+    return AIAgent(**agent_kwargs)
 
 
 def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):

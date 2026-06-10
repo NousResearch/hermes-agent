@@ -77,7 +77,16 @@ jobs:
         # fails if the lock is out of sync with pyproject.toml), giving a
         # reproducible env. It also creates .venv itself, so no separate
         # `uv venv` step is needed.
-        run: uv sync --locked --python 3.11 --extra all --extra dev
+        #
+        # The trailing extras beyond all/dev are the lazy-install features
+        # (tools/lazy_deps.py) that tests exercise for real: provider.anthropic,
+        # stt/tts.mistral, image.fal, terminal.modal, terminal.daytona,
+        # memory.hindsight, search.parallel. The hermetic test env forbids
+        # mid-run pip installs (HERMES_DISABLE_LAZY_INSTALLS=1 in
+        # tests/conftest.py), so the SDKs those tests need must be in the
+        # venv up front — resolved from uv.lock like everything else, which
+        # also honors the exact supply-chain pins these extras carry.
+        run: uv sync --locked --python 3.11 --extra all --extra dev --extra anthropic --extra mistral --extra fal --extra modal --extra daytona --extra hindsight --extra parallel-web
 
       - name: Minimize uv cache
         # Optimized for CI: prunes pre-built wheels that are cheap to

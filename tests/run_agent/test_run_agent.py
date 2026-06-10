@@ -1566,7 +1566,10 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
 
         assert kwargs["max_tokens"] == 32000
-        assert kwargs["reasoning_effort"] == "medium"
+        # Upstream contract: thinking XOR reasoning_effort (sending both risks
+        # Moonshot "cannot specify both" 400s). Default call → thinking only.
+        assert "reasoning_effort" not in kwargs
+        assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
 
     def test_kimi_coding_endpoint_respects_custom_effort(self, agent):
         """reasoning_effort should reflect reasoning_config.effort when set."""
@@ -1621,7 +1624,7 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
 
         assert kwargs["max_tokens"] == 32000
-        assert kwargs["reasoning_effort"] == "medium"
+        assert "reasoning_effort" not in kwargs
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
 
     def test_moonshot_cn_endpoint_sends_max_tokens_and_reasoning(self, agent):
@@ -1635,7 +1638,7 @@ class TestBuildApiKwargs:
         kwargs = agent._build_api_kwargs(messages)
 
         assert kwargs["max_tokens"] == 32000
-        assert kwargs["reasoning_effort"] == "medium"
+        assert "reasoning_effort" not in kwargs
         assert kwargs["extra_body"]["thinking"] == {"type": "enabled"}
 
     def test_provider_preferences_injected(self, agent):

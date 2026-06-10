@@ -168,6 +168,7 @@ class PlatformRegistry:
 
     def __init__(self) -> None:
         self._entries: dict[str, PlatformEntry] = {}
+        self._card_action_handlers: dict[tuple[str, str], Callable[..., Any]] = {}
 
     def register(self, entry: PlatformEntry) -> None:
         """Register a platform adapter entry.
@@ -254,6 +255,48 @@ class PlatformRegistry:
                 exc_info=True,
             )
             return None
+
+    def register_card_action_handler(
+        self,
+        platform_name: str,
+        action_type: str,
+        handler: Callable[..., Any],
+    ) -> None:
+        """Register a plugin handler for an interactive card action.
+
+        The registry is intentionally platform-neutral. Adapters own the shape
+        of the callback kwargs and the response contract they accept.
+        """
+        platform_key = str(platform_name or "").strip().lower()
+        action_key = str(action_type or "").strip()
+        if not platform_key:
+            raise ValueError("platform_name is required")
+        if not action_key:
+            raise ValueError("action_type is required")
+        if not callable(handler):
+            raise TypeError("handler must be callable")
+        self._card_action_handlers[(platform_key, action_key)] = handler
+        logger.debug(
+            "Registered %s card action handler: %s",
+            platform_key,
+            action_key,
+        )
+
+    def unregister_card_action_handler(self, platform_name: str, action_type: str) -> bool:
+        """Remove a card-action handler. Returns True if it existed."""
+        platform_key = str(platform_name or "").strip().lower()
+        action_key = str(action_type or "").strip()
+        return self._card_action_handlers.pop((platform_key, action_key), None) is not None
+
+    def get_card_action_handler(
+        self,
+        platform_name: str,
+        action_type: str,
+    ) -> Optional[Callable[..., Any]]:
+        """Return the registered handler for a platform card action."""
+        platform_key = str(platform_name or "").strip().lower()
+        action_key = str(action_type or "").strip()
+        return self._card_action_handlers.get((platform_key, action_key))
 
 
 # Module-level singleton

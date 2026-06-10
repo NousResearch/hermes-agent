@@ -721,6 +721,56 @@ def _send_media_via_adapter(
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
 
 
+def _apply_cron_delivery_transform(
+    *,
+    job: dict,
+    content: str,
+    delivery_content: str,
+    target: dict,
+) -> tuple[str, dict]:
+    """Let plugins rewrite one cron delivery payload.
+
+    The hook is intentionally small: plugins can replace the text that will be
+    sent and attach platform metadata. Invalid returns are ignored so cron
+    delivery remains fail-open.
+    """
+    try:
+        from hermes_cli.plugins import discover_plugins, has_hook, invoke_hook
+
+        discover_plugins()
+        if not has_hook("transform_cron_delivery"):
+            return delivery_content, {}
+        hook_results = invoke_hook(
+            "transform_cron_delivery",
+            job=job,
+            content=content,
+            delivery_content=delivery_content,
+            target=dict(target),
+        )
+    except Exception as exc:
+        logger.debug("transform_cron_delivery hook error: %s", exc)
+        return delivery_content, {}
+
+    for hook_result in hook_results:
+        if not isinstance(hook_result, dict):
+            continue
+        transformed_content = delivery_content
+        if hook_result.get("content") is not None:
+            transformed_content = str(hook_result["content"])
+        metadata = hook_result.get("metadata")
+        transformed_metadata = dict(metadata) if isinstance(metadata, dict) else {}
+        return transformed_content, transformed_metadata
+
+    return delivery_content, {}
+
+
+def _delivery_metadata_for_target(metadata: dict, thread_id: Optional[str]) -> Optional[dict]:
+    merged = dict(metadata or {})
+    if thread_id:
+        merged.setdefault("thread_id", thread_id)
+    return merged or None
+
+
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
@@ -766,10 +816,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     else:
         delivery_content = content
 
-    # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
-    media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
-    media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
     try:
         config = load_gateway_config()
@@ -784,6 +831,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+        target_delivery_content, delivery_metadata = _apply_cron_delivery_transform(
+            job=job,
+            content=content,
+            delivery_content=delivery_content,
+            target=target,
+        )
+
+        # Extract MEDIA: tags so attachments are forwarded as files, not raw text
+        media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(target_delivery_content)
+        media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
@@ -822,7 +879,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
-            send_metadata = {"thread_id": thread_id} if thread_id else None
+            send_metadata = _delivery_metadata_for_target(delivery_metadata, thread_id)
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
                 text_to_send = cleaned_delivery_content.strip()
@@ -885,7 +942,16 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         if not delivered:
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
-            coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
+            send_metadata = _delivery_metadata_for_target(delivery_metadata, thread_id)
+            coro = _send_to_platform(
+                platform,
+                pconfig,
+                chat_id,
+                cleaned_delivery_content,
+                thread_id=thread_id,
+                media_files=media_files,
+                metadata=send_metadata,
+            )
             try:
                 result = asyncio.run(coro)
             except RuntimeError:
@@ -895,7 +961,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # fresh thread that has no running loop.
                 coro.close()
                 with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                    future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                    future = pool.submit(
+                        asyncio.run,
+                        _send_to_platform(
+                            platform,
+                            pconfig,
+                            chat_id,
+                            cleaned_delivery_content,
+                            thread_id=thread_id,
+                            media_files=media_files,
+                            metadata=send_metadata,
+                        ),
+                    )
                     result = future.result(timeout=30)
             except Exception as e:
                 msg = f"delivery to {platform_name}:{chat_id} failed: {e}"

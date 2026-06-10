@@ -70,6 +70,84 @@ class TestResolveOrigin:
         assert _resolve_origin(job) is None
 
 
+class TestCronDeliveryTransformHook:
+    def test_transform_hook_can_rewrite_content_and_attach_metadata(self, monkeypatch):
+        from cron import scheduler as sched
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        job = {"id": "job-transform", "name": "Monitor", "deliver": "feishu"}
+        target = {"platform": "feishu", "chat_id": "oc_home", "thread_id": "thread-1"}
+        sent = []
+
+        async def fake_send_to_platform(
+            platform,
+            pconfig,
+            chat_id,
+            message,
+            thread_id=None,
+            media_files=None,
+            force_document=False,
+            metadata=None,
+        ):
+            sent.append(
+                {
+                    "platform": platform,
+                    "chat_id": chat_id,
+                    "message": message,
+                    "thread_id": thread_id,
+                    "media_files": media_files,
+                    "metadata": metadata,
+                }
+            )
+            return {"success": True, "message_id": "om_card"}
+
+        def fake_invoke_hook(hook_name, **kwargs):
+            assert hook_name == "transform_cron_delivery"
+            assert kwargs["job"] is job
+            assert kwargs["content"] == "raw monitor digest"
+            assert kwargs["delivery_content"] == "raw monitor digest"
+            assert kwargs["target"] == target
+            return [
+                {
+                    "content": "interactive fallback text",
+                    "metadata": {
+                        "rich_delivery_example": {
+                            "batch_id": "batch-1",
+                        }
+                    },
+                }
+            ]
+
+        monkeypatch.setattr(sched, "_resolve_delivery_targets", lambda _job: [target])
+        monkeypatch.setattr(sched, "load_config", lambda: {"cron": {"wrap_response": False}})
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(platforms={Platform.FEISHU: PlatformConfig(enabled=True)}),
+        )
+        monkeypatch.setattr("tools.send_message_tool._send_to_platform", fake_send_to_platform)
+        monkeypatch.setattr("hermes_cli.plugins.discover_plugins", lambda: None)
+        monkeypatch.setattr("hermes_cli.plugins.has_hook", lambda hook_name: hook_name == "transform_cron_delivery")
+        monkeypatch.setattr("hermes_cli.plugins.invoke_hook", fake_invoke_hook)
+
+        assert _deliver_result(job, "raw monitor digest") is None
+
+        assert sent == [
+            {
+                "platform": Platform.FEISHU,
+                "chat_id": "oc_home",
+                "message": "interactive fallback text",
+                "thread_id": "thread-1",
+                "media_files": [],
+                "metadata": {
+                    "thread_id": "thread-1",
+                    "rich_delivery_example": {
+                        "batch_id": "batch-1",
+                    },
+                },
+            }
+        ]
+
+
 class TestResolveDeliveryTarget:
     def test_origin_delivery_preserves_thread_id(self):
         job = {

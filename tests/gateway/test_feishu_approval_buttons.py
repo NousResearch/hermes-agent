@@ -549,6 +549,89 @@ class TestCardActionCallbackResponse:
         assert response is not None
         assert response.card is None
 
+    def test_registered_plugin_card_action_returns_inline_card(self, _patch_callback_card_types):
+        from gateway.platform_registry import platform_registry
+
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data(
+            {
+                "hermes_card_action": "example_card_action",
+                "decision": "ignored",
+            }
+        )
+        card = {
+            "header": {
+                "template": "green",
+                "title": {"tag": "plain_text", "content": "Handled"},
+            },
+            "elements": [{"tag": "markdown", "content": "Plugin handled the click."}],
+        }
+        calls = []
+
+        def handler(**kwargs):
+            calls.append(kwargs)
+            return {"card": card}
+
+        platform_registry.register_card_action_handler(
+            "feishu",
+            "example_card_action",
+            handler,
+        )
+        try:
+            response = adapter._on_card_action_trigger(data)
+        finally:
+            platform_registry.unregister_card_action_handler(
+                "feishu",
+                "example_card_action",
+            )
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.type == "raw"
+        assert response.card.data == card
+        assert calls
+        assert calls[0]["adapter"] is adapter
+        assert calls[0]["action_value"]["decision"] == "ignored"
+
+    def test_registered_plugin_card_action_can_match_legacy_value_key(self, _patch_callback_card_types):
+        from gateway.platform_registry import platform_registry
+
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        data = _make_card_action_data(
+            {
+                "example_card_action": "confirm",
+                "pending_id": "pending-1",
+            }
+        )
+        card = {
+            "header": {
+                "template": "green",
+                "title": {"tag": "plain_text", "content": "Handled"},
+            },
+            "elements": [],
+        }
+
+        platform_registry.register_card_action_handler(
+            "feishu",
+            "example_card_action",
+            lambda **_kwargs: {"card": card},
+        )
+        try:
+            response = adapter._on_card_action_trigger(data)
+        finally:
+            platform_registry.unregister_card_action_handler(
+                "feishu",
+                "example_card_action",
+            )
+
+        assert response is not None
+        assert response.card is not None
+        assert response.card.data == card
+
     def test_falls_back_to_open_id_when_name_not_cached(self, _patch_callback_card_types):
         adapter = _make_adapter()
         adapter._loop = MagicMock()

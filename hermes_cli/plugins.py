@@ -153,6 +153,12 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "allow"}  /  None             -> normal dispatch
     # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
     "pre_gateway_dispatch",
+    # Cron delivery transform hook. Fired once per delivery target after the
+    # scheduler has produced the user-facing delivery text and before sending.
+    # Plugins may return a dict with:
+    #   {"content": "...", "metadata": {...}}
+    # Non-dict returns are ignored; the first valid dict wins.
+    "transform_cron_delivery",
     # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
     # command needs user approval -- fires BOTH for CLI-interactive prompts
     # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
@@ -819,6 +825,30 @@ class PluginContext:
             "Plugin %s registered platform: %s",
             self.manifest.name,
             name,
+        )
+
+    def register_card_action_handler(
+        self,
+        platform: str,
+        action_type: str,
+        handler: Callable,
+    ) -> None:
+        """Register a platform card-action handler.
+
+        Platform adapters that support interactive cards can look up handlers
+        by platform/action_type and delegate plugin-owned button clicks without
+        translating them into synthetic slash commands. The handler contract is
+        platform-owned; Feishu passes ``adapter``, ``data``, ``event``,
+        ``action_value``, and ``loop`` keyword arguments.
+        """
+        from gateway.platform_registry import platform_registry
+
+        platform_registry.register_card_action_handler(platform, action_type, handler)
+        logger.debug(
+            "Plugin %s registered %s card action handler: %s",
+            self.manifest.name,
+            platform,
+            action_type,
         )
 
     # -- hook registration --------------------------------------------------

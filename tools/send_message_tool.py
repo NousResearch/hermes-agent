@@ -6,6 +6,7 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -494,6 +495,7 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    metadata=None,
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -521,14 +523,14 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                metadata = {}
+                send_metadata = dict(metadata or {})
                 if thread_id:
-                    metadata["thread_id"] = thread_id
+                    send_metadata.setdefault("thread_id", thread_id)
                 if platform_name == "ntfy" and chat_id:
-                    metadata["publish_topic"] = chat_id
-                if not metadata:
-                    metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                    send_metadata["publish_topic"] = chat_id
+                if not send_metadata:
+                    send_metadata = None
+                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=send_metadata)
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -546,13 +548,28 @@ async def _send_via_adapter(
 
     if entry is not None and entry.standalone_sender_fn is not None:
         try:
+            sender_kwargs = {
+                "thread_id": thread_id,
+                "media_files": media_files,
+                "force_document": force_document,
+            }
+            if metadata:
+                try:
+                    signature = inspect.signature(entry.standalone_sender_fn)
+                    parameters = signature.parameters
+                    accepts_metadata = "metadata" in parameters or any(
+                        param.kind is inspect.Parameter.VAR_KEYWORD
+                        for param in parameters.values()
+                    )
+                except (TypeError, ValueError):
+                    accepts_metadata = False
+                if accepts_metadata:
+                    sender_kwargs["metadata"] = metadata
             result = await entry.standalone_sender_fn(
                 pconfig,
                 chat_id,
                 chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
+                **sender_kwargs,
             )
         except asyncio.CancelledError:
             raise
@@ -580,7 +597,16 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    metadata=None,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -650,6 +676,38 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         chunks = BasePlatformAdapter.truncate_message(message, max_len, len_fn=_len_fn)
     else:
         chunks = [message]
+
+    # If a built-in platform has been re-registered by a plugin and the caller
+    # supplied plugin metadata, let the registry path handle the send. This is
+    # how out-of-process cron delivery can use plugin-owned rich payloads while
+    # ordinary built-in text sends keep their existing fast paths.
+    has_plugin_metadata = isinstance(metadata, dict) and any(
+        key != "thread_id" for key in metadata
+    )
+    if has_plugin_metadata:
+        try:
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(platform.value if hasattr(platform, "value") else str(platform))
+        except Exception:
+            entry = None
+        if entry is not None and entry.standalone_sender_fn is not None:
+            last_result = None
+            for i, chunk in enumerate(chunks):
+                is_last = (i == len(chunks) - 1)
+                result = await _send_via_adapter(
+                    platform,
+                    pconfig,
+                    chat_id,
+                    chunk,
+                    thread_id=thread_id,
+                    media_files=media_files if is_last else [],
+                    force_document=force_document,
+                    metadata=metadata,
+                )
+                if isinstance(result, dict) and result.get("error"):
+                    return result
+                last_result = result
+            return last_result
 
     # --- Telegram: special handling for media attachments ---
     if platform == Platform.TELEGRAM:
@@ -815,6 +873,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document,
+                metadata=metadata,
             )
 
         if isinstance(result, dict) and result.get("error"):

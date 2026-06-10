@@ -51,6 +51,7 @@ import asyncio
 import collections
 import hashlib
 import hmac
+import inspect
 import itertools
 import json
 import logging
@@ -214,6 +215,7 @@ _FEISHU_WEBHOOK_BODY_TIMEOUT_SECONDS = 30          # max seconds to read request
 _FEISHU_WEBHOOK_ANOMALY_THRESHOLD = 25             # consecutive error responses before WARNING log
 _FEISHU_WEBHOOK_ANOMALY_TTL_SECONDS = 6 * 60 * 60  # anomaly tracker TTL (6 hours) — matches openclaw
 _FEISHU_CARD_ACTION_DEDUP_TTL_SECONDS = 15 * 60    # card action token dedup window (15 min)
+_CARD_ACTION_NOT_HANDLED = object()
 
 _APPROVAL_CHOICE_MAP: Dict[str, str] = {
     "approve_once": "once",
@@ -2549,11 +2551,101 @@ class FeishuAdapter(BasePlatformAdapter):
                 action_value=action_value,
                 loop=loop,
             )
+        plugin_action = (
+            action_value.get("hermes_card_action")
+            if isinstance(action_value, dict)
+            else None
+        )
+        if not plugin_action and isinstance(action_value, dict):
+            plugin_action = self._registered_card_action_key(action_value)
+        if plugin_action:
+            plugin_response = self._handle_registered_card_action(
+                data=data,
+                event=event,
+                action_value=action_value,
+                loop=loop,
+                action_type=str(plugin_action),
+            )
+            if plugin_response is not _CARD_ACTION_NOT_HANDLED:
+                return plugin_response
 
         self._submit_on_loop(loop, self._handle_card_action_event(data))
         if P2CardActionTriggerResponse is None:
             return None
         return P2CardActionTriggerResponse()
+
+    @staticmethod
+    def _registered_card_action_key(action_value: Dict[str, Any]) -> Optional[str]:
+        """Return a registered handler key present directly in action_value."""
+        try:
+            from gateway.platform_registry import platform_registry
+        except Exception:
+            return None
+        for key in action_value:
+            try:
+                if platform_registry.get_card_action_handler("feishu", str(key)) is not None:
+                    return str(key)
+            except Exception:
+                continue
+        return None
+
+    def _handle_registered_card_action(
+        self,
+        *,
+        data: Any,
+        event: Any,
+        action_value: Dict[str, Any],
+        loop: Any,
+        action_type: str,
+    ) -> Any:
+        """Delegate plugin-owned card actions registered for Feishu."""
+        try:
+            from gateway.platform_registry import platform_registry
+            handler = platform_registry.get_card_action_handler("feishu", action_type)
+        except Exception:
+            logger.debug("[Feishu] Failed to resolve card action handler", exc_info=True)
+            handler = None
+        if handler is None:
+            return _CARD_ACTION_NOT_HANDLED
+
+        try:
+            result = handler(
+                adapter=self,
+                data=data,
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        except Exception:
+            logger.warning(
+                "[Feishu] Card action handler %s failed",
+                action_type,
+                exc_info=True,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if inspect.isawaitable(result):
+            self._submit_on_loop(loop, result)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        return self._build_registered_card_action_response(result)
+
+    @staticmethod
+    def _build_registered_card_action_response(result: Any) -> Any:
+        """Build the SDK callback response from a plugin handler return."""
+        if P2CardActionTriggerResponse is None:
+            return None
+        if result is not None and not isinstance(result, dict):
+            return result
+
+        response = P2CardActionTriggerResponse()
+        card_payload = result.get("card") if isinstance(result, dict) else None
+        if card_payload is not None and CallBackCard is not None:
+            card = CallBackCard()
+            card.type = str(result.get("card_type", "raw")) if isinstance(result, dict) else "raw"
+            card.data = card_payload
+            response.card = card
+        return response
 
     @staticmethod
     def _loop_accepts_callbacks(loop: Any) -> bool:

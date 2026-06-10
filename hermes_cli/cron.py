@@ -9,7 +9,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -187,6 +187,100 @@ def cron_status():
     print()
 
 
+def _scripts_dir_for_cron() -> Path:
+    """Return the scripts directory used by cron jobs.
+
+    Prefer ``cron.jobs.CRON_DIR.parent`` over a fresh ``get_hermes_home()`` call
+    so tests and profile-aware callers that monkeypatch cron storage inspect the
+    same Hermes home the jobs were loaded from.
+    """
+    from cron.jobs import CRON_DIR
+
+    return CRON_DIR.parent / "scripts"
+
+
+def _script_health_issue(script: str) -> Optional[str]:
+    """Return a human-readable script issue, or ``None`` when the path is OK."""
+    scripts_dir = _scripts_dir_for_cron().resolve()
+    raw = Path(script).expanduser()
+    path = raw.resolve() if raw.is_absolute() else (scripts_dir / raw).resolve()
+
+    try:
+        path.relative_to(scripts_dir)
+    except ValueError:
+        return f"script resolves outside HERMES_HOME/scripts: {script!r}"
+
+    if not path.exists():
+        return f"script not found: {path}"
+    if not path.is_file():
+        return f"script path is not a file: {path}"
+    return None
+
+
+def _cron_doctor_issues_for_job(job: Dict[str, Any]) -> List[str]:
+    issues: List[str] = []
+
+    last_status = str(job.get("last_status") or "").strip().lower()
+    if last_status and last_status != "ok":
+        err = str(job.get("last_error") or "unknown error").strip()
+        issues.append(f"last run failed: {err}")
+
+    delivery_err = str(job.get("last_delivery_error") or "").strip()
+    if delivery_err:
+        issues.append(f"last delivery failed: {delivery_err}")
+
+    if job.get("enabled", True) and job.get("state") not in {"paused", "completed"}:
+        if not job.get("next_run_at"):
+            issues.append("active job has no next_run_at")
+
+    script = str(job.get("script") or "").strip()
+    if job.get("no_agent") and not script:
+        issues.append("no-agent job has no script")
+    if script:
+        script_issue = _script_health_issue(script)
+        if script_issue:
+            issues.append(script_issue)
+
+    workdir = str(job.get("workdir") or "").strip()
+    if workdir and not Path(workdir).expanduser().exists():
+        issues.append(f"workdir not found: {workdir}")
+
+    return issues
+
+
+def cron_doctor() -> int:
+    """Run read-only cron health checks and return a shell-friendly status."""
+    from cron.jobs import list_jobs
+
+    jobs = list_jobs(include_disabled=False)
+    findings: List[tuple[Dict[str, Any], List[str]]] = []
+    for job in jobs:
+        issues = _cron_doctor_issues_for_job(job)
+        if issues:
+            findings.append((job, issues))
+
+    if not findings:
+        print(color("✓ Cron doctor found no issues", Colors.GREEN))
+        if jobs:
+            print(color(f"  Checked {len(jobs)} active job(s).", Colors.DIM))
+        else:
+            print(color("  No active jobs configured.", Colors.DIM))
+        return 0
+
+    issue_count = sum(len(issues) for _, issues in findings)
+    print(color(f"Cron doctor found {issue_count} issue(s) across {len(findings)} job(s):", Colors.YELLOW))
+    print()
+    for job, issues in findings:
+        job_id = job.get("id", "?")
+        name = job.get("name", "(unnamed)")
+        print(f"  {color(job_id, Colors.YELLOW)} {name}")
+        for issue in issues:
+            print(f"    - {issue}")
+    print()
+    print(color("Next: fix the listed job config, then run `hermes cron doctor` again.", Colors.DIM))
+    return 1
+
+
 def cron_create(args):
     # Defense: reject cron jobs that contain gateway lifecycle commands.
     # Prevents agents from scheduling their own restart/stop, which creates
@@ -339,6 +433,9 @@ def cron_command(args):
         cron_status()
         return 0
 
+    if subcmd == "doctor":
+        return cron_doctor()
+
     if subcmd == "tick":
         cron_tick()
         return 0
@@ -362,5 +459,5 @@ def cron_command(args):
         return _job_action("remove", args.job_id, "Removed")
 
     print(f"Unknown cron command: {subcmd}")
-    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|tick]")
+    print("Usage: hermes cron [list|create|edit|pause|resume|run|remove|status|doctor|tick]")
     sys.exit(1)

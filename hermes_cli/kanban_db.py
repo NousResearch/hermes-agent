@@ -1439,6 +1439,27 @@ def connect(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    # Guard against resurrecting archived/deleted boards: if board.json
+    # marks the board as archived and the DB doesn't already exist on
+    # disk, refuse to create it.  Stale dashboard/gateway watch paths
+    # can hand us an archived slug — without this guard the mkdir +
+    # init_db below creates an empty stub that list_boards() treats as
+    # an active board.  See #43243.
+    if board is not None and not path.exists():
+        slug = _normalize_board_slug(board) or DEFAULT_BOARD
+        if slug != DEFAULT_BOARD:
+            meta_path = board_metadata_path(slug)
+            if meta_path.exists():
+                try:
+                    import json as _json
+                    raw = _json.loads(meta_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict) and raw.get("archived"):
+                        raise ValueError(
+                            f"Board '{slug}' is archived; refusing to "
+                            f"create a new database for it."
+                        )
+                except (OSError, _json.JSONDecodeError):
+                    pass
     path.parent.mkdir(parents=True, exist_ok=True)
     with _cross_process_init_lock(path):
         # Cheap byte-level check first — catches the #29507 TLS-overwrite shape
@@ -1543,6 +1564,23 @@ def init_db(
         path = db_path
     else:
         path = kanban_db_path(board=board)
+    # Guard against resurrecting archived/deleted boards — same logic
+    # as in connect().  See #43243.
+    if board is not None and not path.exists():
+        slug = _normalize_board_slug(board) or DEFAULT_BOARD
+        if slug != DEFAULT_BOARD:
+            meta_path = board_metadata_path(slug)
+            if meta_path.exists():
+                try:
+                    import json as _json
+                    raw = _json.loads(meta_path.read_text(encoding="utf-8"))
+                    if isinstance(raw, dict) and raw.get("archived"):
+                        raise ValueError(
+                            f"Board '{slug}' is archived; refusing to "
+                            f"create a new database for it."
+                        )
+                except (OSError, _json.JSONDecodeError):
+                    pass
     path.parent.mkdir(parents=True, exist_ok=True)
     resolved = str(path.resolve())
     # Clear the cache entry so the underlying connect() re-runs the

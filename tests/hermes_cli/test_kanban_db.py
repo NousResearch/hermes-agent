@@ -4372,3 +4372,86 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+# ---------------------------------------------------------------------------
+# Archived board resurrection guard (#43243)
+# ---------------------------------------------------------------------------
+
+
+class TestArchivedBoardResurrectionGuard:
+    """connect() and init_db() must refuse to create a DB for archived boards."""
+
+    def test_connect_refuses_archived_board(self, tmp_path, monkeypatch):
+        """connect(board='old') raises ValueError when board.json says archived."""
+        monkeypatch.setattr(kb, "boards_root", lambda: tmp_path / "boards")
+        boards = tmp_path / "boards"
+        board_dir = boards / "old"
+        board_dir.mkdir(parents=True)
+        # Write archived board.json
+        import json
+        (board_dir / "board.json").write_text(
+            json.dumps({"slug": "old", "archived": True, "name": "Old"}),
+            encoding="utf-8",
+        )
+        # No kanban.db exists yet — connect should refuse to create it
+        assert not (board_dir / "kanban.db").exists()
+        with pytest.raises(ValueError, match="archived"):
+            kb.connect(board="old")
+        # DB must NOT have been created
+        assert not (board_dir / "kanban.db").exists()
+
+    def test_init_db_refuses_archived_board(self, tmp_path, monkeypatch):
+        """init_db(board='old') raises ValueError when board.json says archived."""
+        monkeypatch.setattr(kb, "boards_root", lambda: tmp_path / "boards")
+        boards = tmp_path / "boards"
+        board_dir = boards / "old"
+        board_dir.mkdir(parents=True)
+        import json
+        (board_dir / "board.json").write_text(
+            json.dumps({"slug": "old", "archived": True, "name": "Old"}),
+            encoding="utf-8",
+        )
+        assert not (board_dir / "kanban.db").exists()
+        with pytest.raises(ValueError, match="archived"):
+            kb.init_db(board="old")
+        assert not (board_dir / "kanban.db").exists()
+
+    def test_connect_allows_non_archived_board(self, tmp_path, monkeypatch):
+        """connect(board='active') works normally when board.json says not archived."""
+        monkeypatch.setattr(kb, "boards_root", lambda: tmp_path / "boards")
+        boards = tmp_path / "boards"
+        board_dir = boards / "active"
+        board_dir.mkdir(parents=True)
+        import json
+        (board_dir / "board.json").write_text(
+            json.dumps({"slug": "active", "archived": False, "name": "Active"}),
+            encoding="utf-8",
+        )
+        conn = kb.connect(board="active")
+        try:
+            # Should work — schema initialized
+            conn.execute("SELECT 1").fetchone()
+        finally:
+            conn.close()
+
+    def test_connect_allows_archived_board_when_db_exists(self, tmp_path, monkeypatch):
+        """connect(board='old') works if kanban.db already exists on disk
+        (e.g., admin wants to read data from an archived board)."""
+        monkeypatch.setattr(kb, "boards_root", lambda: tmp_path / "boards")
+        boards = tmp_path / "boards"
+        board_dir = boards / "old"
+        board_dir.mkdir(parents=True)
+        import json
+        (board_dir / "board.json").write_text(
+            json.dumps({"slug": "old", "archived": True, "name": "Old"}),
+            encoding="utf-8",
+        )
+        # Pre-create an empty DB file so the guard's `not path.exists()` is False
+        (board_dir / "kanban.db").touch()
+        # connect() should proceed (the guard only fires when DB is missing)
+        conn = kb.connect(board="old")
+        try:
+            conn.execute("SELECT 1").fetchone()
+        finally:
+            conn.close()

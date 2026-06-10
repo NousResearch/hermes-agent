@@ -127,10 +127,24 @@ The gateway calls the transport with action dicts. Source of truth:
 | `send` | `chat_id`, `content`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 | `edit` | `chat_id`, `message_id`, `content`, `metadata?` | `{success: bool, error?}` |
 | `typing` | `chat_id` | `{success: bool}` |
+| `follow_up` | `session_key`, `kind`, `content`, `metadata?` | `{success: bool, message_id?, error?}` |
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least
 `{name, type}`. Media actions follow the same envelope shape (deferred to a
 later contract revision; additive).
+
+**`follow_up` (A2 capability action).** Some inbound payloads carry a credential
+that acts on the **shared** bot identity (e.g. a Discord interaction follow-up
+token). Per §6 the connector strips that at the edge and binds it in its
+capability vault keyed by the session; it **never reaches the gateway**. To use
+it, the gateway issues `follow_up` naming the **session it is already in**
+(`session_key`) plus the capability `kind` (e.g. `discord.interaction_token`) —
+**never a token**. The connector resolves the real value from its vault,
+enforces the tenant match (tenant B can never wield tenant A's capability), and
+egresses. `success: false` when the capability is absent/expired or the tenant
+doesn't match — the gateway has nothing to retry with, by design (a leaked
+gateway holds zero capability material). Source of truth:
+`gateway/relay/transport.py` (`send_follow_up`) + `gateway/relay/adapter.py`.
 
 ---
 
@@ -148,16 +162,44 @@ The interrupt rides the same per-turn bidirectional socket as inbound/outbound.
 
 ---
 
-## 6. Signed-body handling (passthrough plane)
+## 6. Trust boundary & signed-body handling (A2)
+
+**The connector is the sole crypto/identity boundary. The gateway re-validates
+nothing.**
 
 Webhook signatures (Discord ed25519, Twilio HMAC, WeCom BizMsgCrypt) are
-computed over **exact raw bytes**. The connector:
+computed over exact raw bytes, and some payloads are *encrypted* with a shared
+secret. The connector fronts a **shared** bot for many tenants and holds every
+tenant's platform secrets, so it:
 
-- **verifies at the edge** for coarse per-tenant auth/ratelimit/routing (it holds
-  tenant secrets), AND
-- **forwards the signed body byte-for-byte** (no JSON re-serialize, no header
-  reordering) so the gateway's existing crypto validates against unmodified
-  bytes.
+- **verifies / decrypts at the edge** (the only place the secrets live),
+- **normalizes** the payload into a tenant-scoped `MessageEvent` (§3),
+- **strips any shared-identity capability** out of the payload and binds it in
+  its capability vault, keyed by the session (see §4 `follow_up`),
+- **forwards only the sanitized `MessageEvent`** — never the raw signed body.
+
+The gateway therefore performs **no** platform signature/crypto verification on
+the relay path; it trusts the normalized event. This is an enforced invariant on
+the gateway side (`tests/gateway/relay/test_relay_sheds_crypto.py`: the relay
+package imports/calls no platform-crypto).
+
+**Why not "forward the signed body byte-for-byte so the gateway re-validates"?**
+That earlier model is incoherent under an untrusted, disposable tenant gateway:
+
+- Re-validating Twilio HMAC / WeCom crypto would require handing the gateway the
+  **shared signing secret** — which is itself the leak, and on a shared bot it's
+  a *cross-tenant* leak.
+- WeCom payloads are encrypted with the shared secret; the connector must decrypt
+  at the edge just to route, so forwarding ciphertext would again require giving
+  the gateway the secret.
+- A Discord interaction token lives **inside** the signed JSON body — you cannot
+  both preserve the bytes and strip the credential; they are the same bytes.
+
+So byte-preservation is abandoned deliberately: the connector re-serializes the
+sanitized event and the gateway trusts it. This also unifies the passthrough and
+relay planes — both are "verify at the edge → emit a normalized event," differing
+only in transport. See `docs/capability-trust-boundary.md` (connector repo:
+`gateway-gateway`) for the full A2 rationale and the connector-side vault.
 
 ---
 

@@ -45,6 +45,9 @@ ACP_REGISTRY_MANIFEST = REPO_ROOT / "acp_registry" / "agent.json"
 
 # Auto-extracted from noreply emails + manual overrides
 AUTHOR_MAP = {
+    "ondrej.drapalik@gmail.com": "OndrejDrapalik",
+    "tomasz.panek@gmail.com": "tomekpanek",
+    "philipadsouza@gmail.com": "PhilipAD",
     "zhuhaoyu0909@icloud.com": "underthestars-zhy",
     "raysun12142006@gmail.com": "yanxue06",
     "alberto.regalado@ymail.com": "ARegalado1",
@@ -129,6 +132,7 @@ AUTHOR_MAP = {
     "wangpuv@hotmail.com": "wangpuv",
     "202622897+ticketclosed-wontfix@users.noreply.github.com": "ticketclosed-wontfix",
     "wuxuebin1993@gmail.com": "victorGPT",
+    "xiaoxingitee@gmail.com": "xiaoxinova",
     "wei.chen.coder@gmail.com": "wenchengxucool",
     "frowte3k@gmail.com": "Frowtek",
     "211828103+julio-cloudvisor@users.noreply.github.com": "julio-cloudvisor",
@@ -1037,6 +1041,7 @@ AUTHOR_MAP = {
     "zhang9w0v5@qq.com": "zhang9w0v5",
     "fuleinist@outlook.com": "fuleinist",
     "43494187+Llugaes@users.noreply.github.com": "Llugaes",
+    "xiangji.chen@centurygame.com": "Llugaes",
     "fengtianyu88@users.noreply.github.com": "fengtianyu88",
     "l.moncany@gmail.com": "lmoncany",
     "fatinghenji@users.noreply.github.com": "fatinghenji",
@@ -1476,6 +1481,7 @@ AUTHOR_MAP = {
     # v0.15.0 additions
     "glen@workmanfirearms.com": "sgtworkman",
     "jorge.fuenmayort@gmail.com": "jfuenmayor",
+    "josh.dow@prepad.io": "joshuadow",  # PR #43004 salvage (desktop WS session rebind)
     "mordred@inaugust.com": "emonty",
     "rodrigoeq@hotmail.com": "rodrigoeqnit",
     "soliva.johnpaul@icloud.com": "jonpol01",
@@ -1501,6 +1507,7 @@ AUTHOR_MAP = {
     "singhsanidhya741@gmail.com": "sanidhyasin",  # PR #40403 salvage (model.default_headers for custom OpenAI-compatible providers, #40033)
     "josephjohnson.joel@gmail.com": "JoelJJohnson",  # PR #39913 salvage (Windows ConPTY dashboard chat bridge)
     "andreas@schwarz-ketsch.de": "Nea74",  # PR #40022 co-author credit (same Windows ConPTY bridge design)
+    "chanhokyim@gmail.com": "joel611",  # PR #33958 salvage (DISCORD_ALLOWED_ROLES role_authorized gateway flag)
 }
 
 

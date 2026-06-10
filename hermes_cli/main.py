@@ -499,6 +499,7 @@ from hermes_cli import __version__, __release_date__
 # (god-file decomposition Phase 2). Re-imported here so select_provider_and_model and
 # existing test monkeypatches (hermes_cli.main._model_flow_*) keep resolving unchanged.
 from hermes_cli.model_setup_flows import (
+    _prompt_auth_credentials_choice,
     _model_flow_openrouter,
     _model_flow_nous,
     _model_flow_openai_codex,
@@ -2830,7 +2831,12 @@ def select_provider_and_model(args=None):
         member_labels = [
             provider_labels.get(m, m) for m in selected_members
         ]
-        member_idx = _prompt_provider_choice(member_labels, default=member_default)
+        group_label = ordered[provider_idx][1].split(" ▸", 1)[0]
+        member_idx = _prompt_provider_choice(
+            member_labels,
+            default=member_default,
+            title=f"Select {group_label} provider:",
+        )
         if member_idx is None:
             print("No change.")
             return
@@ -3263,6 +3269,7 @@ def _aux_flow_provider_model(
             model_list,
             current_model=current_model,
             pricing=pricing,
+            confirm_provider=provider_slug,
         )
         if selected is None:
             print("No change.")
@@ -3331,7 +3338,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     print(f"{display_name}: custom ({short_url})" + (f" · {model}" if model else ""))
 
 
-def _prompt_provider_choice(choices, *, default=0):
+def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
     """Show provider selection menu with curses arrow-key navigation.
 
     Falls back to a numbered list when curses is unavailable (e.g. piped
@@ -3341,7 +3348,7 @@ def _prompt_provider_choice(choices, *, default=0):
     try:
         from hermes_cli.setup import _curses_prompt_choice
 
-        idx = _curses_prompt_choice("Select provider:", choices, default)
+        idx = _curses_prompt_choice(title, choices, default)
         if idx >= 0:
             print()
             return idx
@@ -3349,7 +3356,7 @@ def _prompt_provider_choice(choices, *, default=0):
         pass
 
     # Fallback: numbered list
-    print("Select provider:")
+    print(title)
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
         print(f"  {marker} {i}. {c}")
@@ -5226,12 +5233,31 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
+                # Still failing and the user hasn't pinned a mirror: GitHub's
+                # Electron release host is likely blocked/throttled (the repeating
+                # "retrying" download log). Retry once via npmmirror.com — the
+                # de-facto Electron community mirror (Alibaba). @electron/get
+                # SHASUM-checks the download, but the SHASUMS come from the same
+                # mirror, so that guards against a corrupt/partial download, NOT
+                # a compromised mirror: reaching for it is an explicit trust
+                # trade-off we only make AFTER the canonical GitHub download has
+                # failed, and we never override a user-pinned ELECTRON_MIRROR.
+                print("  ⚠ Desktop build still failing; the Electron download from "
+                      "GitHub looks blocked. Retrying once via a public mirror "
+                      "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
+                mirror_env = dict(env)
+                mirror_env["ELECTRON_MIRROR"] = "https://npmmirror.com/mirrors/electron/"
+                _stop_desktop_processes_locking_build(desktop_dir)
+                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
                     print("  If this says \"Access is denied\" on Hermes.exe, close any")
                     print("  running Hermes desktop window and retry.")
+                print("  If the log shows Electron download retries, rebuild via a mirror:")
+                print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
@@ -11166,6 +11192,27 @@ def main():
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
     )
 
+    sessions_repair = sessions_subparsers.add_parser(
+        "repair",
+        help="Repair a malformed state.db schema so hidden sessions reappear",
+        description=(
+            "Recover a state.db whose schema is malformed (e.g. 'table "
+            "messages_fts already exists'), which makes Desktop/Dashboard show "
+            "no sessions. A backup is made first; sessions and messages are "
+            "preserved and the FTS search index is rebuilt if needed."
+        ),
+    )
+    sessions_repair.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Only report whether the database opens cleanly; do not modify it",
+    )
+    sessions_repair.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the timestamped backup copy (not recommended)",
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -11195,6 +11242,53 @@ def main():
     def cmd_sessions(args):
         import json as _json
 
+        action = args.sessions_action
+
+        # 'repair' must run BEFORE opening SessionDB(): a malformed schema is
+        # exactly the case where SessionDB() can't open, so it operates on the
+        # raw file path instead.
+        if action == "repair":
+            from hermes_state import (
+                DEFAULT_DB_PATH,
+                _db_opens_cleanly,
+                repair_state_db_schema,
+            )
+
+            db_path = DEFAULT_DB_PATH
+            if not db_path.exists():
+                print(f"No session database at {db_path} (nothing to repair).")
+                return
+            reason = _db_opens_cleanly(db_path)
+            if reason is None:
+                print(f"✓ {db_path} opens cleanly — no repair needed.")
+                return
+            print(f"✗ {db_path} does not open cleanly: {reason}")
+            if getattr(args, "check_only", False):
+                return
+            print("Repairing (a backup copy is made first)…")
+            report = repair_state_db_schema(
+                db_path, backup=not getattr(args, "no_backup", False)
+            )
+            if report.get("repaired"):
+                if report.get("backup_path"):
+                    print(f"  backup: {report['backup_path']}")
+                print(f"  strategy: {report.get('strategy')}")
+                try:
+                    from hermes_state import SessionDB
+
+                    n = SessionDB()._conn.execute(
+                        "SELECT COUNT(*) FROM sessions"
+                    ).fetchone()[0]
+                    print(f"✓ Repaired — {n} sessions recovered.")
+                except Exception:
+                    print("✓ Repaired.")
+            else:
+                print(f"✗ Repair failed: {report.get('error')}")
+                if report.get("backup_path"):
+                    print(f"  A backup is preserved at: {report['backup_path']}")
+                print("  Keep state.db and the backup; do not delete them.")
+            return
+
         try:
             from hermes_state import SessionDB
 
@@ -11202,8 +11296,6 @@ def main():
         except Exception as e:
             print(f"Error: Could not open session database: {e}")
             return
-
-        action = args.sessions_action
 
         # Hide third-party tool sessions by default, but honour explicit --source
         _source = getattr(args, "source", None)

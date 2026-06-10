@@ -1653,6 +1653,19 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
+        # Approval gate for memory writes (add/replace/remove), applied to BOTH
+        # foreground agent turns and the background self-improvement review fork
+        # (the source of unprompted "wrong assumption" saves users reported).
+        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        #   true            — require approval: foreground writes prompt inline
+        #                     (entries are small enough to review in a chat
+        #                     bubble); background-review writes are staged
+        #                     instead of committed (a daemon thread cannot block
+        #                     on a prompt). Review staged entries with
+        #                     /memory pending, /memory approve <id>,
+        #                     /memory reject <id>.
+        # To disable memory entirely, use memory_enabled: false instead.
+        "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
@@ -1757,6 +1770,18 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Approval gate for skill_manage (create/edit/patch/write_file/delete/
+        # remove_file), applied to BOTH foreground agent turns and the
+        # background self-improvement review fork.
+        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        #   true            — require approval: stage the write for review
+        #                     instead of committing (a SKILL.md is too large to
+        #                     review inline, so skills always stage rather than
+        #                     prompt). List with /skills pending, inspect with
+        #                     /skills diff <id> (full diff — CLI/dashboard/file,
+        #                     never crammed into a chat bubble), apply with
+        #                     /skills approve <id> or drop with /skills reject <id>.
+        "write_approval": False,
     },
 
     # Curator — background skill maintenance.
@@ -2440,7 +2465,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 28,
+    "_config_version": 29,
 }
 
 # =============================================================================
@@ -4711,6 +4736,34 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
 
+    # ── Version 28 → 29: rename memory/skills write_mode → write_approval ──
+    # The tri-state write_mode (on|off|approve) was replaced by a clear boolean
+    # write_approval (default false = gate off, writes flow freely; true =
+    # require approval). Only an explicit "approve" carried gating intent, so
+    # it maps to true; everything else (on/off/unset) → false. The old
+    # "off = block all writes" mode is dropped — memory_enabled: false disables
+    # memory entirely. Only rewrite a key the user actually persisted; never
+    # invent one.
+    if current_ver < 29:
+        config = read_raw_config()
+        touched = False
+        for subsystem in ("memory", "skills"):
+            sub = config.get(subsystem)
+            if not isinstance(sub, dict) or "write_mode" not in sub:
+                continue
+            old = sub.pop("write_mode")
+            old_norm = old.strip().lower() if isinstance(old, str) else old
+            sub["write_approval"] = (old_norm == "approve")
+            config[subsystem] = sub
+            touched = True
+            results["config_added"].append(
+                f"{subsystem}.write_mode → write_approval={sub['write_approval']}"
+            )
+        if touched:
+            save_config(config)
+            if not quiet:
+                print("  ✓ Renamed write_mode → write_approval (boolean gate)")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -5696,19 +5749,21 @@ def save_env_value(key: str, value: str):
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, env_path)
-        # Restore original permissions before _secure_file may tighten them.
+        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
+        # instead of letting _secure_file unconditionally tighten to 0600.
         if original_mode is not None:
             try:
                 os.chmod(env_path, original_mode)
             except OSError:
                 pass
+        else:
+            _secure_file(env_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
-    _secure_file(env_path)
 
     os.environ[key] = value
     invalidate_env_cache()

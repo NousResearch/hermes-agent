@@ -1953,6 +1953,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_code: Optional[int] = None
         self._draining = False
         self._restart_requested = False
+        # Set by shutdown_signal_handler when a SIGTERM/SIGINT arrived
+        # WITHOUT a planned-stop / takeover marker — i.e. an unexpected
+        # external signal (container/s6 SIGTERM on `docker restart` or
+        # image upgrade, OOM-killer, bare `kill`). Distinct from an
+        # operator-requested stop, which writes a marker first. Used by
+        # _stop_impl to decide whether to persist gateway_state=stopped
+        # (see issue #42675): an unexpected signal must NOT persist
+        # "stopped", or container_boot refuses to auto-start the gateway
+        # on the next boot.
+        self._signal_initiated_shutdown = False
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
@@ -5952,7 +5962,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
-            self._update_runtime_status("stopped", self._exit_reason)
+            # Persist the terminal gateway_state. The default is "stopped",
+            # but when this teardown was triggered by an UNEXPECTED external
+            # signal (container/s6 SIGTERM on `docker restart` or image
+            # upgrade, OOM-killer, bare `kill`) we instead persist "running"
+            # to preserve the operator's run-intent across the restart.
+            #
+            # On Docker (s6-overlay), container_boot.py reads gateway_state
+            # on the next boot and only auto-starts gateways whose last
+            # state was "running" (_AUTOSTART_STATES). Persisting "stopped"
+            # — or leaving the mid-shutdown "draining" marker in place — for
+            # a routine `docker compose up --force-recreate` permanently
+            # suppresses auto-start, so the messaging channels silently stay
+            # dark until the operator manually restarts (issue #42675).
+            #
+            # An operator-initiated stop (`hermes gateway stop`,
+            # systemd/launchd ExecStop, the s6 stop path, Ctrl+C) writes a
+            # planned-stop marker BEFORE signalling, so it is classified as
+            # a planned stop (not signal-initiated) and correctly persists
+            # "stopped" — respecting the explicit intent. A restart also
+            # persists "stopped" here; the restarting process brings the
+            # gateway back up itself.
+            if getattr(self, "_signal_initiated_shutdown", False) and not self._restart_requested:
+                logger.info(
+                    "Gateway stopped by an unexpected signal — persisting "
+                    "gateway_state=running so container_boot auto-starts on "
+                    "the next boot (issue #42675)"
+                )
+                self._update_runtime_status("running", self._exit_reason)
+            else:
+                self._update_runtime_status("stopped", self._exit_reason)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
@@ -7016,6 +7055,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
+
+        if canonical == "memory":
+            return await self._handle_memory_command(event)
 
         if canonical == "fast":
             return await self._handle_fast_command(event)
@@ -9325,6 +9367,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._voice_input_callback = self._handle_voice_channel_input
         if hasattr(adapter, "_on_voice_disconnect"):
             adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+        # Let the adapter's inactivity timer see the live voice-reply mode so it
+        # doesn't disconnect a deliberately text-only (/voice off) session.
+        if hasattr(adapter, "_voice_mode_getter"):
+            adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
+                self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+            )
 
         try:
             success = await adapter.join_voice_channel(voice_channel)
@@ -11496,7 +11544,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # when we successfully transcribed the audio — it's redundant.
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
-                return prefix
+                return prefix, successful_transcripts
             if user_text:
                 return f"{prefix}\n\n{user_text}", successful_transcripts
             return prefix, successful_transcripts
@@ -15711,6 +15759,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
         else:
             _signal_initiated_shutdown = True
+            # Mirror onto the runner so _stop_impl can suppress the
+            # gateway_state=stopped persist for unexpected signals
+            # (container/s6 SIGTERM on restart, OOM, bare kill) — see
+            # issue #42675. Operator-initiated stops set a planned-stop
+            # marker first, land in the `planned_stop` branch above, and
+            # leave this flag False so they DO persist "stopped".
+            runner._signal_initiated_shutdown = True
             logger.info(
                 "Received %s — initiating shutdown",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",

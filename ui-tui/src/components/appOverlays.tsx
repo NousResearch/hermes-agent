@@ -11,6 +11,7 @@ import { FloatBox } from './appChrome.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
 import { OverlayHint } from './overlayControls.js'
+import { PluginsHub } from './pluginsHub.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SkillsHub } from './skillsHub.js'
 
@@ -125,6 +126,7 @@ export function FloatingOverlays({
     overlay.pager ||
     overlay.sessions ||
     overlay.skillsHub ||
+    overlay.pluginsHub ||
     completions.length
 
   if (!hasAny) {
@@ -171,6 +173,12 @@ export function FloatingOverlays({
       {overlay.skillsHub && (
         <FloatBox color={theme.color.border}>
           <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={theme} />
+        </FloatBox>
+      )}
+
+      {overlay.pluginsHub && (
+        <FloatBox color={theme.color.border}>
+          <PluginsHub gw={gw} onClose={() => patchOverlayState({ pluginsHub: false })} t={theme} />
         </FloatBox>
       )}
 

@@ -5063,6 +5063,41 @@ class TestMaxTokensParam:
         result = agent._max_tokens_param(4096)
         assert result == {"max_completion_tokens": 4096}
 
+    # ── Model-name fallback for non-openai.com endpoints serving newer families ──
+
+    def test_returns_max_completion_tokens_for_gpt5_on_custom_endpoint(self, agent):
+        """Custom OpenAI-compatible endpoint serving gpt-5.x must also use
+        max_completion_tokens — otherwise the server 400s on max_tokens."""
+        agent.base_url = "https://my-gateway.example.com/v1"
+        agent.model = "gpt-5.4"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_gpt4o_on_openrouter(self, agent):
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "openai/gpt-4o-mini"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_o1_on_custom_endpoint(self, agent):
+        agent.base_url = "https://custom.example.com/v1"
+        agent.model = "o1-preview"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+    def test_returns_max_tokens_for_classic_gpt4_on_openrouter(self, agent):
+        """Classic gpt-4 (non-omni) still uses max_tokens. Don't over-match."""
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.model = "openai/gpt-4-turbo"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_tokens": 4096}
+
+    def test_returns_max_tokens_for_llama_on_local(self, agent):
+        agent.base_url = "http://localhost:11434/v1"
+        agent.model = "llama3"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_tokens": 4096}
+
 
 class TestGpt5ApiModeRouting:
     """Verify provider-specific GPT-5 API-mode routing."""

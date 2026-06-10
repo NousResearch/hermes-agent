@@ -3030,7 +3030,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
-        """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
+        """Handle model picker inline keyboard callbacks (mp:/mm:/mc:/mb:/mx:/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")
@@ -3115,6 +3115,55 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await query.answer()
 
+        elif data.startswith("mc:"):
+            # --- Expensive model confirmed: perform the switch ---
+            try:
+                idx = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+
+            model_list = state.get("model_list", [])
+            if idx < 0 or idx >= len(model_list):
+                await query.answer(text="Invalid model index.")
+                return
+
+            model_id = model_list[idx]
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_model_selected")
+
+            if not callback:
+                await query.answer(text="Picker expired.")
+                return
+
+            switch_failed = False
+            try:
+                result_text = await callback(chat_id, model_id, provider_slug)
+            except Exception as exc:
+                logger.error("Model picker switch failed: %s", exc)
+                result_text = f"Error switching model: {exc}"
+                switch_failed = True
+
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(result_text),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(
+                        text=result_text,
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            await query.answer(
+                text="Switch failed." if switch_failed else "Model switched!"
+            )
+            self._model_picker_state.pop(chat_id, None)
+
         elif data.startswith("mm:"):
             # --- Model selected: perform the switch ---
             try:
@@ -3137,10 +3186,42 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
+
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                warning = await asyncio.to_thread(
+                    expensive_model_warning,
+                    model_id,
+                    provider=provider_slug,
+                )
+            except Exception:
+                warning = None
+            if warning is not None:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Switch anyway", callback_data=f"mc:{idx}")],
+                    [
+                        InlineKeyboardButton("◀ Back", callback_data="mb"),
+                        InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+                    ],
+                ])
+                await query.edit_message_text(
+                    text=self.format_message(
+                        f"⚠ *Expensive Model Warning*\n\n{warning.message}"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                )
+                await query.answer(text="Confirm expensive model")
+                return
+
+            switch_failed = False
+            try:
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
                 result_text = f"Error switching model: {exc}"
+                switch_failed = True
 
             # Edit message to show confirmation, remove buttons
             try:
@@ -3159,7 +3240,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
-            await query.answer(text="Model switched!")
+            await query.answer(
+                text="Switch failed." if switch_failed else "Model switched!"
+            )
 
             # Clean up state
             self._model_picker_state.pop(chat_id, None)
@@ -3260,7 +3343,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name = getattr(query.from_user, "first_name", None)
 
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mpg:", "mm:", "mb", "mx", "mg:")):
+        if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)

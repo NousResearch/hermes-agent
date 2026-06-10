@@ -23,6 +23,7 @@ export const SIDEBAR_SESSIONS_PAGE_SIZE = 50
 const SIDEBAR_PINNED_STORAGE_KEY = 'hermes.desktop.pinnedSessions'
 const SIDEBAR_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.agentsGroupedByWorkspace'
 const SIDEBAR_CRON_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarCronOpen'
+const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const PANES_FLIPPED_STORAGE_KEY = 'hermes.desktop.panesFlipped'
@@ -68,6 +69,10 @@ export const $sidebarRecentsOpen = atom(true)
 // default (it only renders at all when cron sessions exist) so the
 // scheduler's `[IMPORTANT: …]` first-message previews don't spam recents.
 export const $sidebarCronOpen = atom(storedBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, false))
+// Messaging platform sections collapse by default (they can be numerous and
+// tall). We persist the ids the user has *explicitly expanded*, so the default
+// stays collapsed unless they've opened a platform before.
+export const $sidebarMessagingOpenIds = atom<string[]>(storedStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY))
 export const $sidebarAgentsGrouped = atom(storedBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false))
 // When true, the sessions sidebar moves to the right and the file browser +
 // preview rail move to the left — a mirror of the default layout.
@@ -77,6 +82,7 @@ export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
 $pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
 $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
+$sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))
 $sidebarWorkspaceOrderIds.subscribe(ids => persistStringArray(SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY, [...ids]))
 $sidebarAgentsGrouped.subscribe(grouped => persistBoolean(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, grouped))
@@ -137,6 +143,14 @@ export function setSidebarRecentsOpen(open: boolean) {
 
 export function setSidebarCronOpen(open: boolean) {
   $sidebarCronOpen.set(open)
+}
+
+export function toggleSidebarMessagingOpen(sourceId: string) {
+  const current = $sidebarMessagingOpenIds.get()
+
+  $sidebarMessagingOpenIds.set(
+    current.includes(sourceId) ? current.filter(id => id !== sourceId) : [...current, sourceId]
+  )
 }
 
 export function setSidebarAgentsGrouped(grouped: boolean) {

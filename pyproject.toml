@@ -61,6 +61,16 @@ dependencies = [
   "prompt_toolkit==3.0.52",
   # Cron scheduler (built-in feature — scheduled cron/interval jobs use croniter).
   "croniter==6.0.0",
+  # ``packaging`` is imported directly on three production paths but was never
+  # declared, so it only reached users transitively (pip/uv pull it for other
+  # tools). The slim official Docker image ships without it, where the
+  # try/except-ImportError fallbacks silently degrade: Hindsight's
+  # ``_meets_minimum_version`` disables update_mode='append' (#40503),
+  # tools/lazy_deps.py treats every version constraint as satisfied, and
+  # hermes_cli/main.py drops to naive requirement parsing. Pure-Python
+  # py3-none-any wheel, no compiled extensions — safe to ship everywhere.
+  # Pinned to the version already resolved in uv.lock (no resolution churn).
+  "packaging==26.0",
   # Markdown -> HTML conversion for rich message delivery (Matrix
   # `formatted_body`, and the `send_message` tool's HTML path). Now on the
   # DEFAULT delivery path, not matrix-specific: without it both
@@ -72,7 +82,10 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.12.1",  # CVE-2026-32597
+  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
+  # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
+  # and GHSA-qccp-gfcp-xxvc (header leak across origins).
+  "urllib3>=2.7.0,<3",
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -272,6 +285,20 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 # venv) drop the catalogs and gateway/CLI commands surface raw i18n keys like
 # `gateway.reset.header_default` (#27632, #35374, #23943).
 locales = ["locales/*.yaml"]
+# Shipped MCP catalog (optional-mcps/<name>/manifest.yaml). Same bare-data-dir
+# case as locales: data-files ships it in the wheel, `graft optional-mcps` in
+# MANIFEST.in ships it in the sdist. Without this, `hermes mcp catalog` and the
+# dashboard catalog screen come up empty on packaged installs even though the
+# manifests exist in the repo (hermes_cli/mcp_catalog.py:_catalog_root resolves
+# the packaged dir; list_catalog() returns [] when it's missing).
+#
+# data-files flattens every glob match into its single target dir, so each
+# catalog entry needs its OWN target to preserve the per-entry directory the
+# catalog iterates over (a shared `optional-mcps/*/*` glob would collapse all
+# manifests into one colliding optional-mcps/manifest.yaml). One target per
+# entry; tests/test_packaging_metadata.py enforces an entry per optional-mcps/<name>.
+"optional-mcps/linear" = ["optional-mcps/linear/manifest.yaml"]
+"optional-mcps/n8n" = ["optional-mcps/n8n/manifest.yaml"]
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
@@ -300,12 +327,12 @@ markers = [
     "integration: marks tests requiring external services (API keys, Modal, etc.)",
     "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
 ]
-# pytest-timeout: per-test 30s hard cap with signal method.
+# pytest-timeout: per-test 30s hard cap with cross-platform thread method.
 # This is the fallback inside each per-file pytest subprocess (see
 # scripts/run_tests_parallel.py). Per-file isolation gives every test
 # file a fresh Python interpreter; pytest-timeout catches Python-level
 # hangs within a file.
-addopts = "-m 'not integration' --timeout=30 --timeout-method=signal"
+addopts = "-m 'not integration' --timeout=30 --timeout-method=thread"
 
 [tool.ty.environment]
 python-version = "3.13"

@@ -292,6 +292,25 @@ class TestSaveEnvValueSecure:
             env_mode = (tmp_path / ".env").stat().st_mode & 0o777
             assert env_mode == 0o600
 
+    def test_save_env_value_preserves_existing_file_mode_on_posix(self, tmp_path):
+        """Regression for #31518: pre-existing .env mode (e.g. 0640 for a
+        Docker bind-mount that the operator chose) survives subsequent
+        writes. Previously _secure_file ran unconditionally after the
+        mode-restore branch and re-tightened to 0600.
+        """
+        if os.name == "nt":
+            return
+
+        env_path = tmp_path / ".env"
+        env_path.write_text("EXISTING=value\n")
+        os.chmod(env_path, 0o640)
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_env_value("TENOR_API_KEY", "sk-test-secret")
+
+        env_mode = env_path.stat().st_mode & 0o777
+        assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
+
 
 class TestRemoveEnvValue:
     def test_removes_key_from_env_file(self, tmp_path):
@@ -1056,3 +1075,50 @@ class TestEnvWriteDenylist:
         # But the write path still refuses to update it
         with pytest.raises(ValueError, match="denylist"):
             save_env_value("LD_PRELOAD", "/tmp/evil.so")
+
+
+class TestWriteApprovalMigration:
+    """Version 28→29 renames memory/skills write_mode → write_approval (bool).
+
+    Only an explicit ``approve`` carried gating intent and maps to ``True``;
+    ``on``/``off``/unset map to ``False`` (gate off). The old ``write_mode`` key
+    is removed. Only a persisted key is rewritten — never invented.
+    """
+
+    def _write(self, tmp_path, body: str):
+        (tmp_path / "config.yaml").write_text(body)
+
+    def test_approve_maps_to_true(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path,
+                        "_config_version: 28\nmemory:\n  write_mode: approve\n"
+                        "skills:\n  write_mode: approve\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["memory"]["write_approval"] is True
+            assert raw["skills"]["write_approval"] is True
+            assert "write_mode" not in raw["memory"]
+            assert "write_mode" not in raw["skills"]
+
+    def test_on_and_off_map_to_false(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            # YAML 1.1 parses bare on/off as bools — write_mode could be either
+            # the string or the bool; both legacy "not gating" values → False.
+            self._write(tmp_path,
+                        "_config_version: 28\nmemory:\n  write_mode: 'on'\n"
+                        "skills:\n  write_mode: 'off'\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert raw["memory"]["write_approval"] is False
+            assert raw["skills"]["write_approval"] is False
+
+    def test_unset_key_defaults_to_false(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            self._write(tmp_path, "_config_version: 28\nmemory:\n  memory_enabled: true\n")
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            # No write_mode was persisted, so the rename is a no-op; the missing-
+            # field pass then seeds the default (False = gate off). Either way the
+            # gate ends up off and there's no leftover write_mode key.
+            assert raw["memory"].get("write_approval", False) is False
+            assert "write_mode" not in raw.get("memory", {})

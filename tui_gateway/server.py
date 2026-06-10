@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -167,6 +168,24 @@ _LEONIDAS_FEATURE_FLAGS = {
     "semantic_projection_input": False,
     "improvement_propose": False,
 }
+_LEONIDAS_PLAN_CONTRACT_VERSION = "leonidas.hermes.plan.v1"
+_LEONIDAS_PLAN_REQUEST_KINDS = frozenset(
+    {
+        "hermes_shell_prompt_plan",
+        "hermes_run_followup_plan",
+        "hermes_next_action_plan",
+    }
+)
+_LEONIDAS_PLAN_ERROR_CODES = frozenset(
+    {
+        "invalid_request",
+        "unsupported_contract_version",
+        "unsupported_request_kind",
+        "planning_unavailable",
+        "planning_refused",
+        "timeout",
+    }
+)
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -181,6 +200,7 @@ _LONG_HANDLERS = frozenset(
     {
         "browser.manage",
         "cli.exec",
+        "leonidas.plan",
         "plugins.manage",
         "session.branch",
         "session.compress",
@@ -825,6 +845,196 @@ def _leonidas_capabilities_payload() -> dict:
         raise ValueError("invalid Leonidas capability features")
 
     return {"methods": methods, "features": features}
+
+
+_JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def _plan_error_envelope(code: str, message: str) -> dict:
+    if code == "policy_refusal":
+        code = "planning_refused"
+    if code not in _LEONIDAS_PLAN_ERROR_CODES:
+        code = "planning_unavailable"
+    return {
+        "contract_version": _LEONIDAS_PLAN_CONTRACT_VERSION,
+        "error": {"code": code, "message": message},
+    }
+
+
+def _extract_json_blob(raw: str) -> dict | None:
+    if not raw:
+        return None
+    stripped = _JSON_FENCE_RE.sub("", raw.strip())
+    first = stripped.find("{")
+    last = stripped.rfind("}")
+    if first == -1 or last == -1 or last <= first:
+        return None
+    try:
+        parsed = json.loads(stripped[first : last + 1])
+    except Exception:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _session_main_runtime(session: dict) -> dict | None:
+    agent = session.get("agent")
+    if agent is None:
+        return None
+    return {
+        "provider": getattr(agent, "provider", None),
+        "model": getattr(agent, "model", None),
+        "base_url": getattr(agent, "base_url", None),
+        "api_key": getattr(agent, "api_key", None),
+        "api_mode": getattr(agent, "api_mode", None),
+    }
+
+
+def _validate_leonidas_plan_request(params: dict) -> tuple[dict | None, dict | None]:
+    if not isinstance(params, dict):
+        return None, _plan_error_envelope("invalid_request", "request params must be an object")
+
+    contract_version = params.get("contract_version")
+    if contract_version != _LEONIDAS_PLAN_CONTRACT_VERSION:
+        return None, _plan_error_envelope(
+            "unsupported_contract_version",
+            f"unsupported contract_version: {contract_version!r}",
+        )
+
+    request_kind = params.get("request_kind")
+    if not isinstance(request_kind, str) or request_kind not in _LEONIDAS_PLAN_REQUEST_KINDS:
+        return None, _plan_error_envelope(
+            "unsupported_request_kind",
+            f"unsupported request_kind: {request_kind!r}",
+        )
+
+    session_id = params.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None, _plan_error_envelope("invalid_request", "session_id is required")
+
+    profile = params.get("profile")
+    if not isinstance(profile, dict):
+        return None, _plan_error_envelope("invalid_request", "profile is required")
+    profile_id = profile.get("profile_id")
+    profile_version = profile.get("profile_version")
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        return None, _plan_error_envelope("invalid_request", "profile.profile_id is required")
+    if not isinstance(profile_version, str) or not profile_version.strip():
+        return None, _plan_error_envelope("invalid_request", "profile.profile_version is required")
+
+    planning_context = params.get("planning_context")
+    if not isinstance(planning_context, dict):
+        return None, _plan_error_envelope("invalid_request", "planning_context is required")
+
+    request = dict(params)
+    request["session_id"] = session_id.strip()
+    request["request_kind"] = request_kind
+    request["profile"] = {"profile_id": profile_id.strip(), "profile_version": profile_version.strip()}
+    return request, None
+
+
+def _validate_plan_response_payload(payload: Any) -> dict | None:
+    if not isinstance(payload, dict):
+        return None
+    summary = payload.get("summary")
+    decisions = payload.get("decisions")
+    if not isinstance(summary, str) or not summary.strip():
+        return None
+    if not isinstance(decisions, list) or not decisions:
+        return None
+
+    normalized_decisions: list[dict] = []
+    for decision in decisions:
+        if not isinstance(decision, dict):
+            return None
+        decision_type = decision.get("decision_type")
+        action = decision.get("action")
+        reason = decision.get("reason")
+        if not isinstance(decision_type, str) or not decision_type.strip():
+            return None
+        if not isinstance(action, dict):
+            return None
+        action_kind = action.get("action_kind")
+        if not isinstance(action_kind, str) or not action_kind.strip():
+            return None
+        if not isinstance(reason, str) or not reason.strip():
+            return None
+        normalized_decisions.append(decision)
+
+    normalized = {
+        "contract_version": _LEONIDAS_PLAN_CONTRACT_VERSION,
+        "summary": summary.strip(),
+        "decisions": normalized_decisions,
+    }
+    return normalized
+
+
+def _build_leonidas_plan_messages(request: dict) -> list[dict[str, str]]:
+    prompt_envelope = {
+        "contract_version": request["contract_version"],
+        "request_kind": request["request_kind"],
+        "command": request.get("command", "leonidas"),
+        "session_id": request["session_id"],
+        "repository_root": request.get("repository_root"),
+        "gateway_ready_token": request.get("gateway_ready_token"),
+        "profile": request["profile"],
+        "summary_hint": request.get("summary_hint", ""),
+        "planning_context": request["planning_context"],
+        "contract": request.get("contract") or {},
+        "response_contract": request.get("response_contract") or {
+            "summary": "string",
+            "decisions": "array of HermesSupervisorDecision",
+        },
+    }
+
+    system_prompt = (
+        "You are the Hermes planning adapter for Leonidas.\n"
+        "Return one JSON object only. Do not wrap it in code fences or prose.\n"
+        "The object must have exactly two keys: summary and decisions.\n"
+        "summary is a short plain-language plan summary.\n"
+        "decisions is an array of typed Leonidas-compatible decisions.\n"
+        "Each decision must include decision_type, action, and reason.\n"
+        "action must include action_kind and any required action fields.\n"
+        "Keep the plan bounded and do not add extra commentary."
+    )
+    user_prompt = json.dumps(prompt_envelope, ensure_ascii=False, indent=2, sort_keys=True)
+    return [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+
+
+def _plan_with_llm(request: dict, session: dict, timeout: float = 60.0) -> dict:
+    try:
+        from agent.auxiliary_client import call_llm, get_auxiliary_extra_body
+    except Exception as exc:
+        return _plan_error_envelope("planning_unavailable", f"auxiliary client unavailable: {exc}")
+
+    runtime = _session_main_runtime(session)
+    try:
+        response = call_llm(
+            task="leonidas_plan",
+            main_runtime=runtime,
+            messages=_build_leonidas_plan_messages(request),
+            temperature=0,
+            max_tokens=1200,
+            timeout=timeout,
+            extra_body=get_auxiliary_extra_body() or None,
+        )
+    except Exception as exc:
+        msg = str(exc).strip() or type(exc).__name__
+        code = "timeout" if "timeout" in msg.lower() else "planning_unavailable"
+        return _plan_error_envelope(code, msg)
+
+    try:
+        raw = response.choices[0].message.content or ""
+    except Exception:
+        raw = ""
+
+    parsed = _extract_json_blob(raw)
+    normalized = _validate_plan_response_payload(parsed)
+    if normalized is None:
+        return _plan_error_envelope("planning_unavailable", "planner returned malformed JSON")
+    return normalized
 
 
 def method(name: str):
@@ -8021,6 +8231,44 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, _leonidas_capabilities_payload())
     except Exception as e:
         return _err(rid, 5036, str(e))
+
+
+@method("leonidas.plan")
+def _(rid, params: dict) -> dict:
+    request, envelope = _validate_leonidas_plan_request(params)
+    if envelope is not None:
+        return _ok(rid, envelope)
+
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return _ok(
+            rid,
+            _plan_error_envelope(
+                "planning_unavailable",
+                err.get("error", {}).get("message", "session unavailable"),
+            ),
+        )
+
+    try:
+        wait_err = _wait_agent(session, rid)
+    except Exception as exc:
+        wait_err = _err(rid, 5032, str(exc))
+    if wait_err:
+        return _ok(
+            rid,
+            _plan_error_envelope(
+                "planning_unavailable",
+                wait_err.get("error", {}).get("message", "agent unavailable"),
+            ),
+        )
+
+    try:
+        return _ok(rid, _plan_with_llm(request, session))
+    except Exception as exc:
+        return _ok(
+            rid,
+            _plan_error_envelope("planning_unavailable", str(exc) or type(exc).__name__),
+        )
 
 
 @method("model.options")

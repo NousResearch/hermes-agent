@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
@@ -230,6 +232,17 @@ class _BrokenStdout:
         return None
 
 
+class _CaptureTransport:
+    def __init__(self):
+        self.payloads: list[dict] = []
+        self.event = threading.Event()
+
+    def write(self, obj: dict) -> bool:
+        self.payloads.append(obj)
+        self.event.set()
+        return True
+
+
 def test_write_json_serializes_concurrent_writes(monkeypatch):
     out = _ChunkyStdout()
     monkeypatch.setattr(server, "_real_stdout", out)
@@ -388,6 +401,252 @@ def test_leonidas_capabilities_fails_closed_when_payload_build_fails(monkeypatch
         "jsonrpc": "2.0",
         "id": "1",
         "error": {"code": 5036, "message": "capabilities unavailable"},
+    }
+
+
+def test_dispatch_routes_leonidas_plan_through_async_pool(monkeypatch):
+    server._sessions["plan-sid"] = {
+        "session_key": "plan-key",
+        "agent_ready": threading.Event(),
+    }
+    server._sessions["plan-sid"]["agent_ready"].set()
+    try:
+        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
+        monkeypatch.setattr(
+            server,
+            "_plan_with_llm",
+            lambda request, session, timeout=60.0: {
+                "contract_version": "leonidas.hermes.plan.v1",
+                "summary": "async summary",
+                "decisions": [
+                    {
+                        "decision_type": "stop",
+                        "action": {"action_kind": "stop"},
+                        "reason": "async reason",
+                    }
+                ],
+            },
+        )
+
+        transport = _CaptureTransport()
+        resp = server.dispatch(
+            {
+                "id": "1",
+                "method": "leonidas.plan",
+                "params": _base_leonidas_plan_request("hermes_next_action_plan"),
+            },
+            transport=transport,
+        )
+
+        assert resp is None
+        assert transport.event.wait(2.0)
+        assert transport.payloads == [
+            {
+                "jsonrpc": "2.0",
+                "id": "1",
+                "result": {
+                    "contract_version": "leonidas.hermes.plan.v1",
+                    "summary": "async summary",
+                    "decisions": [
+                        {
+                            "decision_type": "stop",
+                            "action": {"action_kind": "stop"},
+                            "reason": "async reason",
+                        }
+                    ],
+                },
+            }
+        ]
+    finally:
+        server._sessions.pop("plan-sid", None)
+
+
+def _base_leonidas_plan_request(request_kind: str) -> dict:
+    return {
+        "contract_version": "leonidas.hermes.plan.v1",
+        "request_kind": request_kind,
+        "command": "leonidas",
+        "session_id": "plan-sid",
+        "profile": {"profile_id": "coding", "profile_version": "0.1.0"},
+        "planning_context": {"context_kind": "raw_prompt", "request": {}},
+    }
+
+
+@pytest.mark.parametrize(
+    "request_kind,decision_type,action_kind",
+    [
+        ("hermes_shell_prompt_plan", "normalize_prompt", "normalize_prompt"),
+        ("hermes_run_followup_plan", "approve_run", "approve_run"),
+        ("hermes_next_action_plan", "stop", "stop"),
+    ],
+)
+def test_leonidas_plan_returns_structured_result_for_supported_kinds(
+    monkeypatch, request_kind, decision_type, action_kind
+):
+    server._sessions["plan-sid"] = {
+        "session_key": "plan-key",
+        "agent_ready": threading.Event(),
+    }
+    server._sessions["plan-sid"]["agent_ready"].set()
+    try:
+        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
+
+        def fake_plan(request, session, timeout=60.0):
+            assert request["request_kind"] == request_kind
+            assert request["profile"]["profile_id"] == "coding"
+            return {
+                "contract_version": "leonidas.hermes.plan.v1",
+                "summary": f"{request_kind} summary",
+                "decisions": [
+                    {
+                        "decision_type": decision_type,
+                        "action": {"action_kind": action_kind},
+                        "reason": f"{request_kind} reason",
+                    }
+                ],
+            }
+
+        monkeypatch.setattr(server, "_plan_with_llm", fake_plan)
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "leonidas.plan",
+                "params": _base_leonidas_plan_request(request_kind),
+            }
+        )
+
+        assert resp == {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "result": {
+                "contract_version": "leonidas.hermes.plan.v1",
+                "summary": f"{request_kind} summary",
+                "decisions": [
+                    {
+                        "decision_type": decision_type,
+                        "action": {"action_kind": action_kind},
+                        "reason": f"{request_kind} reason",
+                    }
+                ],
+            },
+        }
+    finally:
+        server._sessions.pop("plan-sid", None)
+
+
+def test_leonidas_plan_normalizes_legacy_policy_refusal_error_code():
+    assert server._plan_error_envelope("policy_refusal", "legacy refusal") == {
+        "contract_version": "leonidas.hermes.plan.v1",
+        "error": {
+            "code": "planning_refused",
+            "message": "legacy refusal",
+        },
+    }
+
+
+def test_leonidas_plan_returns_structured_error_for_bad_request(monkeypatch):
+    server._sessions["plan-sid"] = {
+        "session_key": "plan-key",
+        "agent_ready": threading.Event(),
+    }
+    server._sessions["plan-sid"]["agent_ready"].set()
+    try:
+        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
+        monkeypatch.setattr(
+            server,
+            "_plan_with_llm",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+        )
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "leonidas.plan",
+                "params": {
+                    "contract_version": "wrong.version",
+                    "request_kind": "hermes_shell_prompt_plan",
+                    "session_id": "plan-sid",
+                    "profile": {"profile_id": "coding", "profile_version": "0.1.0"},
+                    "planning_context": {"context_kind": "raw_prompt", "request": {}},
+                },
+            }
+        )
+
+        assert resp == {
+            "jsonrpc": "2.0",
+            "id": "1",
+            "result": {
+                "contract_version": "leonidas.hermes.plan.v1",
+                "error": {
+                    "code": "unsupported_contract_version",
+                    "message": "unsupported contract_version: 'wrong.version'",
+                },
+            },
+        }
+    finally:
+        server._sessions.pop("plan-sid", None)
+
+
+def test_leonidas_plan_normalizes_legacy_policy_refusal_error_code():
+    assert server._plan_error_envelope("policy_refusal", "legacy refusal") == {
+        "contract_version": "leonidas.hermes.plan.v1",
+        "error": {
+            "code": "planning_refused",
+            "message": "legacy refusal",
+        },
+    }
+
+
+def test_leonidas_plan_returns_structured_error_for_missing_fields():
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "leonidas.plan",
+            "params": {
+                "contract_version": "leonidas.hermes.plan.v1",
+                "request_kind": "hermes_shell_prompt_plan",
+                "session_id": "plan-sid",
+                "planning_context": {"context_kind": "raw_prompt", "request": {}},
+            },
+        }
+    )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {
+            "contract_version": "leonidas.hermes.plan.v1",
+            "error": {"code": "invalid_request", "message": "profile is required"},
+        },
+    }
+
+
+def test_leonidas_plan_returns_structured_error_for_unsupported_kind():
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "leonidas.plan",
+            "params": {
+                "contract_version": "leonidas.hermes.plan.v1",
+                "request_kind": "unsupported_kind",
+                "session_id": "plan-sid",
+                "profile": {"profile_id": "coding", "profile_version": "0.1.0"},
+                "planning_context": {"context_kind": "raw_prompt", "request": {}},
+            },
+        }
+    )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {
+            "contract_version": "leonidas.hermes.plan.v1",
+            "error": {
+                "code": "unsupported_request_kind",
+                "message": "unsupported request_kind: 'unsupported_kind'",
+            },
+        },
     }
 
 

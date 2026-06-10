@@ -16,8 +16,10 @@ import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 
+import { hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, BUILTIN_THEMES, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
+import { $userThemes, resolveTheme } from './user-themes'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
@@ -41,7 +43,7 @@ const resolveMode = (mode: ThemeMode, systemDark = matchesQuery('(prefers-color-
   mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
 
 const normalizeSkin = (name: string | null): string =>
-  name && BUILTIN_THEMES[name] && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
+  name && resolveTheme(name) && !RETIRED_SKINS.has(name) ? name : DEFAULT_SKIN_NAME
 
 const normalizeMode = (value: string | null): ThemeMode =>
   value === 'light' || value === 'dark' || value === 'system' ? value : 'light'
@@ -71,44 +73,8 @@ const readBootProfileKey = () => normalizeProfileKey(storedString(LAST_PROFILE_K
 const rememberActiveProfileKey = (profile: string) => persistString(LAST_PROFILE_KEY, profile)
 
 // ─── Color math (for synthesised light variants of dark-only skins) ────────
-
-function hexToRgb(hex: string): [number, number, number] | null {
-  const clean = hex.trim().replace(/^#/, '')
-
-  if (!/^[0-9a-f]{6}$/i.test(clean)) {
-    return null
-  }
-
-  return [0, 2, 4].map(i => parseInt(clean.slice(i, i + 2), 16)) as [number, number, number]
-}
-
-const rgbToHex = ([r, g, b]: [number, number, number]) =>
-  `#${[r, g, b].map(n => Math.round(n).toString(16).padStart(2, '0')).join('')}`
-
-function mix(a: string, b: string, amount: number): string {
-  const ar = hexToRgb(a)
-  const br = hexToRgb(b)
-
-  return ar && br
-    ? rgbToHex([ar[0] + (br[0] - ar[0]) * amount, ar[1] + (br[1] - ar[1]) * amount, ar[2] + (br[2] - ar[2]) * amount])
-    : a
-}
-
-function readableOn(hex: string): string {
-  const rgb = hexToRgb(hex)
-
-  if (!rgb) {
-    return '#ffffff'
-  }
-
-  const [r, g, b] = rgb.map(v => {
-    const c = v / 255
-
-    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
-  })
-
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.58 ? '#161616' : '#ffffff'
-}
+// hexToRgb / mix / readableOn live in ./color so the VS Code converter shares
+// the exact same math.
 
 function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
   const accent = seed.colors.ring || seed.colors.primary
@@ -148,7 +114,7 @@ function synthLightColors(seed: DesktopTheme): DesktopThemeColors {
 
 /** Returns the seed palette for a given skin + mode (no overrides applied). */
 export function getBaseColors(skinName: string, mode: 'light' | 'dark'): DesktopThemeColors {
-  const seed = BUILTIN_THEMES[skinName] ?? nousTheme
+  const seed = resolveTheme(skinName) ?? nousTheme
 
   if (mode === 'dark') {
     return seed.darkColors ?? seed.colors
@@ -158,7 +124,7 @@ export function getBaseColors(skinName: string, mode: 'light' | 'dark'): Desktop
 }
 
 function deriveTheme(skinName: string, mode: 'light' | 'dark'): DesktopTheme {
-  const seed = BUILTIN_THEMES[skinName] ?? nousTheme
+  const seed = resolveTheme(skinName) ?? nousTheme
 
   return {
     ...seed,
@@ -286,7 +252,15 @@ interface ThemeContextValue {
   theme: DesktopTheme
   themeName: string
   mode: ThemeMode
+  /** The light/dark switch the user picked. */
   resolvedMode: 'light' | 'dark'
+  /**
+   * The mode actually painted, derived from the active background's luminance.
+   * Differs from `resolvedMode` for skins that keep a bright surface in "dark"
+   * (or vice-versa). Surface-bound UI (e.g. the terminal palette) should key off
+   * this so it matches what's on screen instead of inverting.
+   */
+  renderedMode: 'light' | 'dark'
   availableThemes: Array<{ name: string; label: string; description: string }>
   setTheme: (name: string) => void
   setMode: (mode: ThemeMode) => void
@@ -299,6 +273,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   themeName: DEFAULT_SKIN_NAME,
   mode: 'light',
   resolvedMode: 'light',
+  renderedMode: 'light',
   availableThemes: SKIN_LIST,
   setTheme: () => {},
   setMode: () => {}
@@ -309,6 +284,20 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // appearance shows. Single-profile users only ever see "default", so their
   // behavior is unchanged.
   const profileKey = normalizeProfileKey(useStore($activeGatewayProfile))
+
+  // Built-ins + user-installed themes. Reactive so an import shows up live in
+  // the palette, settings grid, and `/skin` without a reload.
+  const userThemes = useStore($userThemes)
+
+  const availableThemes = useMemo(
+    () =>
+      [...Object.values(BUILTIN_THEMES), ...Object.values(userThemes)].map(({ name, label, description }) => ({
+        name,
+        label,
+        description
+      })),
+    [userThemes]
+  )
 
   const [themeName, setThemeNameState] = useState(() =>
     typeof window === 'undefined' ? DEFAULT_SKIN_NAME : skinPref.resolve(readBootProfileKey())
@@ -329,6 +318,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
   const activeTheme = useMemo(() => deriveTheme(themeName, resolvedMode), [themeName, resolvedMode])
+
+  // What actually gets painted (matches the `.dark` class applyTheme toggles).
+  const renderedMode = useMemo(
+    () => renderedModeFor(activeTheme.colors, resolvedMode),
+    [activeTheme, resolvedMode]
+  )
 
   useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
 
@@ -351,8 +346,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // (`appearance.toggleMode`) so it shows up in the hotkey map and is rebindable.
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme: activeTheme, themeName, mode, resolvedMode, availableThemes: SKIN_LIST, setTheme, setMode }),
-    [activeTheme, themeName, mode, resolvedMode, setTheme, setMode]
+    () => ({ theme: activeTheme, themeName, mode, resolvedMode, renderedMode, availableThemes, setTheme, setMode }),
+    [activeTheme, themeName, mode, resolvedMode, renderedMode, availableThemes, setTheme, setMode]
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

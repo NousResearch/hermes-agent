@@ -1,6 +1,8 @@
 """Tests for tools/skills_hub.py — source adapters, lock file, taps, dedup logic."""
 
 import json
+import time
+from typing import List, Optional
 from unittest.mock import patch, MagicMock
 
 import httpx
@@ -14,13 +16,15 @@ from tools.skills_hub import (
     UrlSource,
     WellKnownSkillSource,
     OptionalSkillSource,
-    SkillMeta,
+    SkillSource,
     SkillBundle,
+    SkillMeta,
     HubLockFile,
     TapsManager,
     bundle_content_hash,
     check_for_skill_updates,
     create_source_router,
+    parallel_search_sources,
     unified_search,
     append_audit_log,
     _skill_meta_to_dict,
@@ -2201,3 +2205,80 @@ class TestInstallPathSafety:
 
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
+
+
+# ---------------------------------------------------------------------------
+# parallel_search_sources — overall_timeout must be honoured even when a
+# source blocks for far longer than the budget (regression: the executor used
+# `with ... as pool`, whose __exit__ calls shutdown(wait=True) and blocked the
+# caller on the slow worker, making overall_timeout a no-op).
+# ---------------------------------------------------------------------------
+
+
+class _FakeSource(SkillSource):
+    def __init__(self, sid: str, sleep: float = 0.0, results=None):
+        self._sid = sid
+        self._sleep = sleep
+        self._results = results or []
+
+    def source_id(self) -> str:
+        return self._sid
+
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        if self._sleep:
+            time.sleep(self._sleep)
+        return list(self._results)
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        return None
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        return None
+
+
+class TestParallelSearchSourcesTimeout:
+    def _meta(self, sid: str) -> SkillMeta:
+        return SkillMeta(
+            name=f"{sid}-skill",
+            description="x",
+            source=sid,
+            identifier=f"{sid}/x",
+            trust_level="community",
+        )
+
+    def test_slow_source_does_not_block_caller(self):
+        """A source sleeping well past overall_timeout must not stall the
+        return. Before the fix the executor's `with` block waited on the slow
+        worker (~5s); now the call returns promptly and reports the source as
+        timed out."""
+        fast = _FakeSource("fast", sleep=0.0, results=[self._meta("fast")])
+        slow = _FakeSource("slow", sleep=5.0, results=[self._meta("slow")])
+
+        start = time.monotonic()
+        all_results, source_counts, timed_out_ids = parallel_search_sources(
+            [fast, slow], query="q", overall_timeout=0.3,
+        )
+        elapsed = time.monotonic() - start
+
+        # Must return long before the slow source's 5s sleep finishes.
+        assert elapsed < 2.0, f"call blocked for {elapsed:.2f}s (timeout not honoured)"
+        assert "slow" in timed_out_ids
+        # Fast source still delivered its result and is not flagged timed out.
+        assert source_counts.get("fast") == 1
+        assert "fast" not in timed_out_ids
+        assert any(r.source == "fast" for r in all_results)
+
+    def test_all_fast_sources_complete_without_timeout(self):
+        """Happy path: when every source finishes within budget, none are
+        flagged and all results are collected."""
+        a = _FakeSource("a", results=[self._meta("a")])
+        b = _FakeSource("b", results=[self._meta("b")])
+
+        all_results, source_counts, timed_out_ids = parallel_search_sources(
+            [a, b], query="q", overall_timeout=5.0,
+        )
+
+        assert timed_out_ids == []
+        assert source_counts.get("a") == 1
+        assert source_counts.get("b") == 1
+        assert len(all_results) == 2

@@ -474,8 +474,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if block_result is not None:
             continue
         if agent.tool_start_callback:
+            # usage= feeds the desktop's live context bar; legacy callbacks
+            # (CLI, upstream consumers, tests) still take the bare 3-arg form,
+            # so retry positionally when the receiver rejects the kwarg.
             try:
                 agent.tool_start_callback(tc.id, name, args, usage=usage)
+            except TypeError:
+                try:
+                    agent.tool_start_callback(tc.id, name, args)
+                except Exception as cb_err:
+                    logging.debug(f"Tool start callback error: {cb_err}")
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -752,6 +760,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         if not blocked and agent.tool_complete_callback:
             try:
                 agent.tool_complete_callback(tc.id, name, args, function_result, usage=_usage)
+            except TypeError:
+                    try:
+                        agent.tool_complete_callback(tc.id, name, args, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool complete callback error: {cb_err}")
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 
@@ -936,6 +949,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _t_usage = _context_usage_for_tool_events(agent, messages)
             try:
                 agent.tool_start_callback(tool_call.id, function_name, function_args, usage=_t_usage)
+            except TypeError:
+                try:
+                    agent.tool_start_callback(tool_call.id, function_name, function_args)
+                except Exception as cb_err:
+                    logging.debug(f"Tool start callback error: {cb_err}")
             except Exception as cb_err:
                 logging.debug(f"Tool start callback error: {cb_err}")
 
@@ -1102,6 +1120,25 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
+        elif function_name == "read_terminal":
+            def _execute(next_args: dict) -> Any:
+                from tools.read_terminal_tool import read_terminal_tool as _read_terminal_tool
+                return _read_terminal_tool(
+                    start_line=next_args.get("start_line"),
+                    count=next_args.get("count"),
+                    callback=getattr(agent, "read_terminal_callback", None),
+                )
+            function_result, function_args = _run_agent_tool_execution_middleware(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                execute=_execute,
+            )
+            tool_duration = time.time() - tool_start_time
+            if agent._should_emit_quiet_tool_messages():
+                agent._vprint(f"  {_get_cute_tool_message_impl('read_terminal', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
             tasks_arg = function_args.get("tasks")
             if tasks_arg and isinstance(tasks_arg, list):
@@ -1375,6 +1412,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _sc_usage = _context_usage_for_tool_events(agent, messages)
             try:
                 agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result, usage=_sc_usage)
+            except TypeError:
+                    try:
+                        agent.tool_complete_callback(tool_call.id, function_name, function_args, function_result)
+                    except Exception as cb_err:
+                        logging.debug(f"Tool complete callback error: {cb_err}")
             except Exception as cb_err:
                 logging.debug(f"Tool complete callback error: {cb_err}")
 

@@ -2665,12 +2665,23 @@ def _xai_wait_for_callback(
     result: dict[str, Any],
     *,
     timeout_seconds: float = 180.0,
+    manual_paste_redirect_uri: Optional[str] = None,
 ) -> dict[str, Any]:
     deadline = time.monotonic() + max(5.0, timeout_seconds)
+    if manual_paste_redirect_uri and sys.stdin.isatty():
+        print()
+        print("If xAI shows a Grok Build code instead of redirecting,")
+        print("paste that code here and press Enter.")
     try:
         while time.monotonic() < deadline:
             if result["code"] or result["error"]:
                 return result
+            if manual_paste_redirect_uri:
+                raw_paste = _read_ready_stdin_line()
+                if raw_paste and raw_paste.strip():
+                    pasted = _parse_pasted_callback(raw_paste)
+                    pasted["_manual_paste"] = True
+                    return pasted
             time.sleep(0.1)
     finally:
         server.shutdown()
@@ -2692,6 +2703,21 @@ def _xai_wait_for_callback(
         provider="xai-oauth",
         code="xai_callback_timeout",
     )
+
+
+def _read_ready_stdin_line() -> Optional[str]:
+    """Return one pending stdin line without blocking, if the terminal has one."""
+    try:
+        if not sys.stdin.isatty():
+            return None
+        import select
+
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        if not ready:
+            return None
+        return sys.stdin.readline()
+    except Exception:
+        return None
 
 
 def _spotify_token_payload_to_state(
@@ -6149,6 +6175,40 @@ def _reset_config_provider() -> Path:
     return config_path
 
 
+def _confirm_expensive_model_selection(
+    model_id: str,
+    *,
+    provider: str = "",
+    base_url: str = "",
+    api_key: str = "",
+) -> bool:
+    """Prompt before saving a model whose known pricing exceeds guardrails."""
+    try:
+        from hermes_cli.model_cost_guard import expensive_model_warning
+
+        warning = expensive_model_warning(
+            model_id,
+            provider=provider,
+            base_url=base_url,
+            api_key=api_key,
+        )
+    except Exception:
+        warning = None
+    if warning is None:
+        return True
+
+    print()
+    print("=" * 72)
+    print(warning.message)
+    print("=" * 72)
+    try:
+        response = input("Switch anyway? [y/N]: ").strip().lower()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return False
+    return response in {"y", "yes"}
+
+
 def _prompt_model_selection(
     model_ids: List[str],
     current_model: str = "",
@@ -6156,6 +6216,9 @@ def _prompt_model_selection(
     unavailable_models: Optional[List[str]] = None,
     portal_url: str = "",
     unavailable_message: str = "",
+    confirm_provider: str = "",
+    confirm_base_url: str = "",
+    confirm_api_key: str = "",
 ) -> Optional[str]:
     """Interactive model selection. Puts current_model first with a marker. Returns chosen model ID or None.
 
@@ -6168,6 +6231,18 @@ def _prompt_model_selection(
     from hermes_cli.models import _format_price_per_mtok
 
     _unavailable = unavailable_models or []
+
+    def _confirmed_selection(mid: str) -> Optional[str]:
+        if not mid:
+            return None
+        if confirm_provider and not _confirm_expensive_model_selection(
+            mid,
+            provider=confirm_provider,
+            base_url=confirm_base_url,
+            api_key=confirm_api_key,
+        ):
+            return None
+        return mid
 
     # Reorder: current model first, then the rest (deduplicated)
     ordered = []
@@ -6284,13 +6359,13 @@ def _prompt_model_selection(
             return None
         print()
         if idx < len(ordered):
-            return ordered[idx]
+            return _confirmed_selection(ordered[idx])
         elif idx == len(ordered):
             try:
                 custom = input("Enter model name: ").strip()
             except (EOFError, KeyboardInterrupt):
                 return None
-            return custom if custom else None
+            return _confirmed_selection(custom) if custom else None
         return None
     except (ImportError, NotImplementedError, OSError, subprocess.SubprocessError):
         pass
@@ -6322,10 +6397,10 @@ def _prompt_model_selection(
                 return None
             idx = int(choice)
             if 1 <= idx <= n:
-                return ordered[idx - 1]
+                return _confirmed_selection(ordered[idx - 1])
             elif idx == n + 1:
                 custom = input("Enter model name: ").strip()
-                return custom if custom else None
+                return _confirmed_selection(custom) if custom else None
             elif idx == n + 2:
                 return None
             print(f"Please enter 1-{n + 2}")
@@ -6669,6 +6744,7 @@ def _xai_oauth_loopback_login(
     authorization_endpoint = discovery["authorization_endpoint"]
     token_endpoint = discovery["token_endpoint"]
 
+    allow_missing_state = False
     if manual_paste:
         # No HTTP listener — synthesize a redirect_uri matching what
         # the server would have bound to so the authorize URL the user
@@ -6695,6 +6771,7 @@ def _xai_oauth_loopback_login(
         print("Open this URL to authorize Hermes with xAI:")
         print(authorize_url)
         callback = _prompt_manual_callback_paste(redirect_uri)
+        allow_missing_state = True
     else:
         server, thread, callback_result, redirect_uri = _xai_start_callback_server()
         try:
@@ -6734,6 +6811,7 @@ def _xai_oauth_loopback_login(
                     thread,
                     callback_result,
                     timeout_seconds=max(30.0, timeout_seconds * 9),
+                    manual_paste_redirect_uri=redirect_uri,
                 )
             except AuthError as exc:
                 if (
@@ -6750,6 +6828,7 @@ def _xai_oauth_loopback_login(
                 callback = _prompt_manual_callback_paste(redirect_uri)
                 if callback.get("code") is None and callback.get("error") is None:
                     raise exc
+                allow_missing_state = True
         except Exception:
             try:
                 server.shutdown()
@@ -6770,7 +6849,7 @@ def _xai_oauth_loopback_login(
             code="xai_authorization_failed",
         )
     callback_state = callback.get("state")
-    # Manual-paste bare-code path: when a user pastes only the opaque
+    # Manual bare-code paths: when a user pastes only the opaque
     # authorization code (no ``code=``/``state=`` query parameters),
     # ``_parse_pasted_callback`` returns ``state=None``.  xAI's consent
     # page renders the code in-page rather than redirecting through the
@@ -6778,10 +6857,12 @@ def _xai_oauth_loopback_login(
     # VPS, container consoles) the bare code is the only thing the user
     # can obtain.  PKCE (code_verifier) still binds the exchange to this
     # client, so the local state-equality check is redundant on the
-    # bare-code path — we substitute the locally generated state to keep
+    # bare-code paths — we substitute the locally generated state to keep
     # the rest of the validation chain (and the token exchange) unchanged.
     # See #26923 (AccursedGalaxy comment, 2026-05-20).
-    if callback_state is None and manual_paste:
+    if callback.get("_manual_paste"):
+        allow_missing_state = True
+    if callback_state is None and (manual_paste or allow_missing_state):
         callback_state = state
     if callback_state != state:
         raise AuthError(
@@ -7698,6 +7779,9 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                     unavailable_models=unavailable_models,
                     portal_url=_portal,
                     unavailable_message=unavailable_message,
+                    confirm_provider="nous",
+                    confirm_base_url=inference_base_url,
+                    confirm_api_key=runtime_key,
                 )
             elif unavailable_models:
                 _url = (_portal or DEFAULT_NOUS_PORTAL_URL).rstrip("/")

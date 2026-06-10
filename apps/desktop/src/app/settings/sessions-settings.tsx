@@ -8,7 +8,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
-import { setSessions } from '@/store/session'
+import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
@@ -196,6 +196,7 @@ function DefaultProjectDirSetting() {
 
       setDir(result.dir)
       setFallback(result.defaultLabel)
+      applyConfiguredDefaultProjectDir(result.dir)
     })
 
     return () => {
@@ -221,7 +222,8 @@ function DefaultProjectDirSetting() {
 
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
-      notify({ durationMs: 2_000, kind: 'success', message: s.defaultDirUpdated })
+      applyConfiguredDefaultProjectDir(result.dir)
+      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated })
     } catch (err) {
       notifyError(err, s.updateDirFailed)
     } finally {
@@ -241,6 +243,8 @@ function DefaultProjectDirSetting() {
     try {
       await settings.setDefaultProjectDir(null)
       setDir(null)
+      applyConfiguredDefaultProjectDir(null)
+      await ensureDefaultWorkspaceCwd()
     } catch (err) {
       notifyError(err, s.clearDirFailed)
     } finally {
@@ -268,7 +272,7 @@ function DefaultProjectDirSetting() {
             )}
           </div>
         }
-        description={dir || s.defaultsTo(fallback || '~/hermes-projects')}
+        description={dir || s.defaultsTo(fallback || '~')}
         title={dir ? dir : s.notSet}
       />
     </div>

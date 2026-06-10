@@ -823,6 +823,15 @@ export interface Translations {
     groupAriaUngrouped: string
     groupTitleGrouped: string
     groupTitleUngrouped: string
+    archiveAllTitle: string
+    archiveAllAria: string
+    archiveAllDialogTitle: string
+    archiveAllDialogDesc: string
+    archiveAllConfirm: string
+    archiveAllCancel: string
+    archiveAllSubmitting: string
+    archiveAllChecked: (count: number) => string
+    archiveAllNone: string
     allPinned: string
     shiftClickHint: string
     noWorkspace: string

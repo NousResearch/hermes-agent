@@ -599,6 +599,32 @@ function TelegramOnboardingPanel({
     setNewAllowedId("");
   };
 
+  // restart_started only means the `hermes gateway restart` child spawned —
+  // not that the restart will succeed (e.g. systemd linger missing, service
+  // manager failure). Poll the action status briefly and surface a non-zero
+  // exit via the manual-restart banner. Note: in no-service installs the
+  // child becomes the foreground gateway and never exits, so "still running
+  // when the window closes" counts as success.
+  const watchRestartOutcome = async () => {
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const st = await api.getActionStatus("gateway-restart", 5);
+        if (st.running) continue;
+        if (st.exit_code !== 0 && st.exit_code !== null) {
+          onRestartNeeded();
+          showToast(
+            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            "error",
+          );
+        }
+        return;
+      } catch {
+        // transient fetch error; keep polling
+      }
+    }
+  };
+
   const apply = async () => {
     if (!setup) return;
     if (allowedIds.length === 0) {
@@ -616,6 +642,7 @@ function TelegramOnboardingPanel({
         showToast("Telegram saved; gateway restarting…", "success");
         setRestartNeeded(false);
         setTimeout(() => void onChanged(), 4000);
+        void watchRestartOutcome();
       } else if (result.restart_started === undefined && result.needs_restart) {
         try {
           await api.restartGateway();

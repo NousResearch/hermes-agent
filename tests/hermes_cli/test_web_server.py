@@ -1399,6 +1399,7 @@ class TestWebServerEndpoints:
             }
 
         monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+        ws._ACTION_PROCS.pop("gateway-restart", None)
         restart_calls = []
 
         class FakeRestartProc:
@@ -1471,6 +1472,7 @@ class TestWebServerEndpoints:
             }
 
         monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+        ws._ACTION_PROCS.pop("gateway-restart", None)
 
         def fail_spawn_action(subcommand, name):
             assert subcommand == ["gateway", "restart"]
@@ -1501,6 +1503,65 @@ class TestWebServerEndpoints:
         assert env["TELEGRAM_BOT_TOKEN"] == "123456:SECRET"
         assert env["TELEGRAM_ALLOWED_USERS"] == "123456789"
         assert load_config()["platforms"]["telegram"]["enabled"] is True
+
+    def test_telegram_onboarding_apply_reuses_inflight_gateway_restart(
+        self, monkeypatch
+    ):
+        """A live in-flight gateway restart is reused instead of spawning a
+        second racing ``hermes gateway restart`` child (e.g. when a stale
+        cached frontend also fires its own restart call)."""
+        import hermes_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            if method == "POST":
+                return {
+                    "pairing_id": "pair-reuse",
+                    "poll_token": "poll-secret",
+                    "suggested_username": "hermes_pair_reuse_bot",
+                    "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_reuse_bot",
+                    "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_reuse_bot",
+                    "expires_at": "2027-05-18T00:00:00.000Z",
+                }
+            return {
+                "status": "ready",
+                "bot_username": "hermes_pair_reuse_bot",
+                "owner_user_id": 123456789,
+                "token": "123456:SECRET",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        class FakeRunningProc:
+            pid = 5151
+
+            def poll(self):
+                return None  # still running
+
+        monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", FakeRunningProc())
+
+        def fail_spawn_action(subcommand, name):
+            raise AssertionError("must not spawn a second concurrent restart")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+        ready = self.client.get("/api/messaging/telegram/onboarding/pair-reuse")
+        assert ready.status_code == 200
+
+        applied = self.client.post(
+            "/api/messaging/telegram/onboarding/pair-reuse/apply",
+            json={"allowed_user_ids": ["123456789"]},
+        )
+
+        assert applied.status_code == 200
+        applied_data = applied.json()
+        assert applied_data["needs_restart"] is False
+        assert applied_data["restart_started"] is True
+        assert applied_data["restart_pid"] == 5151
 
     def test_telegram_onboarding_apply_requires_ready_pairing(self, monkeypatch):
         import hermes_cli.web_server as ws

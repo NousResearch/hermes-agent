@@ -1,15 +1,3 @@
-// Terminal theming, matched to VS Code / Cursor's integrated terminal:
-//   1. ANSI palette is VS Code's exact light/dark table (below), keyed off the
-//      *painted* mode (renderedMode, the luminance-derived class applyTheme
-//      toggles) — not the user's light/dark setting, so skins that invert read
-//      right.
-//   2. The terminal background is painted with the live skin surface
-//      (--ui-editor-surface-background) at runtime via withSurface(), so the
-//      pane blends into the app instead of showing a flat #1e1e1e/#fff slab.
-//   3. minimumContrastRatio (set on the Terminal) clamps foregrounds against
-//      that surface, killing the over-saturated "cotton candy" look while
-//      keeping colors crisp. Contrast needs an opaque bg, hence (2) over real
-//      transparency.
 import type { ITheme, Terminal } from '@xterm/xterm'
 import type { CSSProperties } from 'react'
 

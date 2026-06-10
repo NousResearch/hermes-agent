@@ -3010,9 +3010,11 @@ async function applyUpdatesPosixInApp(opts: any) {
   emitUpdateProgress({ stage: 'restart', message: 'Installing the updated app and restarting…', percent: 95 })
 
   // Detached swapper: wait for THIS process to exit (so the bundle is free),
-  // ditto the rebuilt app over the running one, clear quarantine, relaunch.
+  // then atomically replace the running .app, clear quarantine, and reopen it.
+  // If the swap fails, fall back to launching the freshly rebuilt bundle
+  // directly so we do not leave the user with a dead quit.
   const swapScript = `#!/bin/bash
-set -u
+set -euo pipefail
 APP_PID=${process.pid}
 SRC=${shellQuote(rebuiltApp)}
 DST=${shellQuote(targetApp)}
@@ -3020,13 +3022,21 @@ for _ in $(seq 1 240); do
   kill -0 "$APP_PID" 2>/dev/null || break
   sleep 0.5
 done
+cleanup() { rm -rf "$DST.hermes-update-old" 2>/dev/null || true; }
+trap cleanup EXIT
 if [ "$SRC" != "$DST" ]; then
-  if /usr/bin/ditto "$SRC" "$DST.hermes-update-new"; then
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
-    mv "$DST" "$DST.hermes-update-old" 2>/dev/null || rm -rf "$DST"
-    mv "$DST.hermes-update-new" "$DST"
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
+  if ! /usr/bin/ditto "$SRC" "$DST.hermes-update-new"; then
+    echo "[updates] ditto failed" >&2
+    /usr/bin/open "$SRC"
+    exit 0
   fi
+  mv "$DST" "$DST.hermes-update-old" 2>/dev/null || rm -rf "$DST"
+  if ! mv "$DST.hermes-update-new" "$DST"; then
+    echo "[updates] destination replace failed" >&2
+    /usr/bin/open "$SRC"
+    exit 0
+  fi
+  rm -rf "$DST.hermes-update-old" 2>/dev/null || true
 fi
 /usr/bin/xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
 /usr/bin/open "$DST"

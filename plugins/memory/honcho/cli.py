@@ -391,6 +391,100 @@ def _migrate_pin_key(block: dict) -> bool:
     return True
 
 
+def _gateway_platforms() -> list[str] | None:
+    """Connected gateway platforms, or None if undetectable.
+
+    Identity mapping only affects gateway runtime users, so setup gates the
+    whole step on this.  Best-effort and dependency-free: the memory plugin
+    must not hard-depend on the gateway package, so the import is lazy and
+    guarded (matching the idiom hermes_cli already uses for gateway refs).
+    """
+    try:
+        from gateway.config import load_gateway_config
+        return [p.value for p in load_gateway_config().get_connected_platforms()]
+    except Exception:
+        return None
+
+
+def _collect_operator_aliases(existing: dict, peer_target: str) -> dict:
+    """Prompt for the operator's per-platform runtime IDs, aliasing each to
+    ``peer_target``.  Existing entries are preserved."""
+    aliases = dict(existing)
+    print(f"\n  Add runtime IDs that should alias to peer '{peer_target}'.")
+    print("  Leave blank to skip a platform.  Existing aliases are preserved.")
+    for platform_label, alias_hint in (
+        ("Telegram UID", "e.g. 86701400"),
+        ("Discord snowflake", "e.g. 491827364"),
+        ("Slack user ID", "e.g. U04ABCDEF"),
+        ("Matrix MXID", "e.g. @you:matrix.org"),
+    ):
+        entered = _prompt(f"  {platform_label} ({alias_hint})", default="").strip()
+        if entered:
+            aliases[entered] = peer_target
+    return aliases
+
+
+def _apply_runtime_prefix(
+    hermes_host: dict, current_prefix: str, prefix_from_root: bool, label: str
+) -> None:
+    """Write a host-level runtimePeerPrefix only when it diverges from an
+    inherited root value; otherwise let the root cascade stand."""
+    new_prefix = _prompt(label, default=current_prefix or "").strip()
+    if new_prefix and not (prefix_from_root and new_prefix == current_prefix):
+        hermes_host["runtimePeerPrefix"] = new_prefix
+
+
+def _echo_identity_mapping(hermes_host: dict) -> None:
+    """Show the resulting keys so the operator can verify what was written."""
+    aliases = hermes_host.get("userPeerAliases")
+    prefix = hermes_host.get("runtimePeerPrefix")
+    print("  resolved →")
+    print(f"    pinUserPeer       = {bool(hermes_host.get('pinUserPeer'))}")
+    print(f"    userPeerAliases   = {aliases if aliases else '{}'}")
+    print(f"    runtimePeerPrefix = {prefix if prefix else '(none)'}")
+
+
+def _configure_raw_identity_mapping(
+    hermes_host: dict,
+    current_pin: bool,
+    current_aliases: dict,
+    current_prefix: str,
+    aliases_from_root: bool,
+    prefix_from_root: bool,
+) -> None:
+    """Power-user escape hatch: set the three resolver knobs directly."""
+    print("\n  Raw identity-mapping keys (resolver tries them top-down):")
+    pin_in = _prompt(
+        "pinUserPeer — pin all gateway users to your peer? (true/false)",
+        default=str(bool(current_pin)).lower(),
+    ).strip().lower()
+    pin = pin_in in {"true", "t", "yes", "y", "1"}
+    _scrub_identity_mapping(hermes_host)
+    hermes_host["pinUserPeer"] = pin
+    if pin:
+        return
+    aliases = (
+        dict(current_aliases)
+        if isinstance(current_aliases, dict) and not aliases_from_root
+        else {}
+    )
+    print("  userPeerAliases — 'runtime_id=peer' pairs (blank line to finish):")
+    while True:
+        entry = _prompt("    alias", default="").strip()
+        if not entry:
+            break
+        if "=" in entry:
+            rid, peer = (p.strip() for p in entry.split("=", 1))
+            if rid and peer:
+                aliases[rid] = peer
+    if aliases:
+        hermes_host["userPeerAliases"] = aliases
+    _apply_runtime_prefix(
+        hermes_host, current_prefix, prefix_from_root,
+        "runtimePeerPrefix — namespace for unknown IDs (blank for none)",
+    )
+
+
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:
     suffix = f" [{default}]" if default else ""
     sys.stdout.write(f"  {label}{suffix}: ")
@@ -560,18 +654,15 @@ def cmd_setup(args) -> None:
     if new_workspace:
         hermes_host["workspace"] = new_workspace
 
-    # --- 3b. Deployment shape ---
-    # Determines how runtime user identities (Telegram UIDs, Discord
-    # snowflakes, etc.) map to Honcho peers in gateway sessions.  Three
-    # shapes cover the realistic deployments; each writes a different
-    # combination of pinPeerName / userPeerAliases / runtimePeerPrefix.
-    # See plugins/memory/honcho/README.md for the resolver ladder.
+    # --- 3b. Gateway identity mapping ---
+    # These keys only affect the Hermes GATEWAY (Telegram/Discord/Slack/...),
+    # the one entrypoint that supplies a runtime user ID.  CLI/TUI/desktop/ACP
+    # sessions have no runtime ID and fall through to peerName, so the step is
+    # moot off-gateway — gate it behind detection.
     #
-    # Detection must mirror the gateway resolver: root-level config and
-    # ``pinUserPeer`` (which outranks ``pinPeerName`` at the same level)
-    # both affect effective routing, so reading host-only fields would
-    # mis-classify a profile that inherits its mapping from root or uses
-    # the newer canonical key.
+    # Detection mirrors the gateway resolver: root-level config and the
+    # canonical ``pinUserPeer`` both affect routing, so host-only reads would
+    # mis-classify a profile that inherits its mapping from root.
     (
         current_pin,
         current_aliases,
@@ -587,102 +678,109 @@ def cmd_setup(args) -> None:
     else:
         current_shape = "multi"
 
-    print("\n  Deployment shape (how gateway users map to peers):")
-    print("    single -- all platforms route to your peer (recommended for personal use)")
-    print("    multi  -- each platform user gets their own peer (multi-user bots)")
-    print("    hybrid -- multi-user, but YOUR runtime IDs alias to your peer")
-    print("    skip   -- don't touch identity-mapping config")
-    new_shape = _prompt("Deployment shape", default=current_shape).strip().lower()
-
-    # Transitioning single → multi orphans the peerName pool for runtime users
-    # (their resolved peers go from peerName to runtime-derived IDs with empty
-    # history).  Steer the operator toward hybrid so their own continuity is
-    # preserved via alias mappings.
-    if current_shape == "single" and new_shape == "multi":
-        peer_target = hermes_host.get("peerName") or current_peer or "user"
-        print(
-            f"\n  ⚠ Switching from single to multi will orphan memory accumulated\n"
-            f"    under peer '{peer_target}'.  Existing runtime users (Telegram,\n"
-            f"    Discord, etc.) will resolve to fresh, empty peers."
-        )
-        print("    To keep your own continuity, choose 'hybrid' and alias your\n"
-              "    runtime IDs back to peerName.")
-        confirm = _prompt("Continue with multi anyway? (yes/hybrid/no)", default="hybrid").strip().lower()
-        if confirm in {"hybrid", "h"}:
-            new_shape = "hybrid"
-        elif confirm not in {"yes", "y"}:
-            new_shape = "skip"
-
-    # Each shape branch scrubs every peer-mapping key before writing its own,
-    # so a stale alias/prefix/pin from an earlier run starts clean.
-    if new_shape == "single":
-        _scrub_identity_mapping(hermes_host)
-        hermes_host["pinUserPeer"] = True
-        print(f"  pinUserPeer=true → all gateway users route to '{hermes_host.get('peerName', '?')}'.")
-    elif new_shape == "multi":
-        # Preserve operator-curated, host-level aliases so multi → multi
-        # re-runs don't drop them.  Root-sourced aliases are left to
-        # cascade naturally and are NOT copied down into the host.
-        prior_aliases = (
-            dict(current_aliases)
-            if isinstance(current_aliases, dict) and not aliases_from_root
-            else {}
-        )
-        _scrub_identity_mapping(hermes_host)
-        hermes_host["pinUserPeer"] = False
-        # Do NOT auto-write ``userPeerAliases: {}``: an empty host map
-        # would override any root-level ``userPeerAliases`` the operator
-        # set as a cross-host baseline, silently disabling those aliases.
-        # Absence is the right "no host opinion" signal.
-        if prior_aliases:
-            hermes_host["userPeerAliases"] = prior_aliases
-        _prefix_default = current_prefix or ""
-        _new_prefix = _prompt(
-            "Runtime peer prefix (e.g. 'telegram_', blank for none)",
-            default=_prefix_default,
-        ).strip()
-        # Only write a host-level prefix when the operator typed one that
-        # diverges from the inherited root value; otherwise let the root
-        # cascade continue unmodified.
-        if _new_prefix and not (prefix_from_root and _new_prefix == current_prefix):
-            hermes_host["runtimePeerPrefix"] = _new_prefix
-        print("  Multi-user mode: each runtime ID → own peer. Use 'hermes honcho status' to inspect.")
-    elif new_shape == "hybrid":
-        # Hybrid encodes operator intent at the host level: collect existing
-        # entries (host or root) so the wizard never silently drops a known
-        # alias, then write the combined map.  Materialising root entries
-        # into the host is the right move here — once the operator answers
-        # the alias prompts for a host, they're declaring "this host owns
-        # the mapping".
-        existing_aliases = dict(current_aliases) if isinstance(current_aliases, dict) else {}
-        _scrub_identity_mapping(hermes_host)
-        hermes_host["pinUserPeer"] = False
-        peer_target = hermes_host.get("peerName") or current_peer or "user"
-        print(f"\n  Add runtime IDs that should alias to peer '{peer_target}'.")
-        print("  Leave blank to skip a platform.  Existing aliases are preserved.")
-        for platform_label, alias_hint in (
-            ("Telegram UID", "e.g. 86701400"),
-            ("Discord snowflake", "e.g. 491827364"),
-            ("Slack user ID", "e.g. U04ABCDEF"),
-            ("Matrix MXID", "e.g. @you:matrix.org"),
-        ):
-            entered = _prompt(f"  {platform_label} ({alias_hint})", default="").strip()
-            if entered:
-                existing_aliases[entered] = peer_target
-        if existing_aliases:
-            hermes_host["userPeerAliases"] = existing_aliases
-        _prefix_default = current_prefix or ""
-        _new_prefix = _prompt(
-            "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)",
-            default=_prefix_default,
-        ).strip()
-        if _new_prefix and not (prefix_from_root and _new_prefix == current_prefix):
-            hermes_host["runtimePeerPrefix"] = _new_prefix
-        print(f"  Hybrid mode: your runtime IDs → '{peer_target}', others → own peer.")
-    elif new_shape == "skip":
-        pass  # leave config untouched
+    gw_platforms = _gateway_platforms()
+    if gw_platforms is None:
+        print("\n  Gateway identity mapping routes platform users to memory peers.")
+        run_mapping = _prompt(
+            "Running the Hermes gateway (Telegram/Discord/etc.)? (y/N)",
+            default="n",
+        ).strip().lower() in {"y", "yes"}
+    elif not gw_platforms:
+        print("\n  No gateway platforms connected — identity mapping only affects")
+        print("  gateway users, so this step doesn't apply here.")
+        run_mapping = _prompt(
+            "Configure gateway mapping anyway? (y/N)", default="n",
+        ).strip().lower() in {"y", "yes"}
     else:
-        print(f"  Unknown shape '{new_shape}' — leaving identity-mapping config untouched.")
+        print(f"\n  Gateway platforms detected: {', '.join(gw_platforms)}")
+        run_mapping = True
+
+    if run_mapping:
+        peer_target = hermes_host.get("peerName") or current_peer or "user"
+        default_choice = {"single": "1", "hybrid": "2", "multi": "3"}.get(current_shape, "3")
+        print("\n  How should gateway users map to memory peers?")
+        print("    [1] just me — everyone collapses to your peer")
+        print("    [2] me + other people — keep mine pooled, others separate")
+        print("    [3] only other people — everyone gets their own peer")
+        print("    [s] skip (leave untouched)   [e] edit raw keys")
+        choice = _prompt("Choice", default=default_choice).strip().lower()
+
+        if choice in {"2", "me+others", "both"}:
+            pooled = _prompt(
+                "  Keep my own memory pooled across platforms? (Y/n)", default="y",
+            ).strip().lower()
+            shape = "hybrid" if pooled in {"y", "yes", ""} else "multi"
+        elif choice in {"1", "me", "just-me"}:
+            shape = "single"
+        elif choice in {"3", "others"}:
+            shape = "multi"
+        elif choice in {"e", "edit", "raw"}:
+            shape = "raw"
+        else:
+            shape = "skip"
+
+        # Un-pinning a currently-pinned profile without aliasing strands the
+        # pooled peerName history; steer the operator toward pooling instead.
+        if current_pin and shape == "multi":
+            print(
+                f"\n  ⚠ Un-pinning will orphan memory accumulated under peer\n"
+                f"    '{peer_target}'.  Existing gateway users resolve to fresh,\n"
+                f"    empty peers."
+            )
+            confirm = _prompt(
+                "  Pool my own memory instead (alias my IDs to peerName)? (Y/n)",
+                default="y",
+            ).strip().lower()
+            if confirm in {"y", "yes", ""}:
+                shape = "hybrid"
+
+        # Each branch scrubs every peer-mapping key first so a stale alias,
+        # prefix, or pin from an earlier run starts clean.
+        if shape == "single":
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = True
+            print(f"  All gateway users route to '{peer_target}'.")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "multi":
+            # Preserve operator-curated host-level aliases across multi → multi
+            # re-runs.  Root-sourced aliases cascade naturally and are NOT
+            # copied down — an empty host map would mask a root baseline.
+            prior_aliases = (
+                dict(current_aliases)
+                if isinstance(current_aliases, dict) and not aliases_from_root
+                else {}
+            )
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = False
+            if prior_aliases:
+                hermes_host["userPeerAliases"] = prior_aliases
+            _apply_runtime_prefix(
+                hermes_host, current_prefix, prefix_from_root,
+                "Runtime peer prefix (e.g. 'telegram_', blank for none)",
+            )
+            print("  Each gateway user → own peer.")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "hybrid":
+            existing_aliases = dict(current_aliases) if isinstance(current_aliases, dict) else {}
+            _scrub_identity_mapping(hermes_host)
+            hermes_host["pinUserPeer"] = False
+            merged = _collect_operator_aliases(existing_aliases, peer_target)
+            if merged:
+                hermes_host["userPeerAliases"] = merged
+            _apply_runtime_prefix(
+                hermes_host, current_prefix, prefix_from_root,
+                "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)",
+            )
+            print(f"  Your runtime IDs → '{peer_target}', others → own peer.")
+            _echo_identity_mapping(hermes_host)
+        elif shape == "raw":
+            _configure_raw_identity_mapping(
+                hermes_host, current_pin, current_aliases, current_prefix,
+                aliases_from_root, prefix_from_root,
+            )
+            _echo_identity_mapping(hermes_host)
+        else:  # skip
+            print("  Identity mapping left untouched.")
 
     # --- 4. Observation mode ---
     current_obs = hermes_host.get("observationMode") or cfg.get("observationMode", "directional")

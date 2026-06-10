@@ -408,6 +408,10 @@ export const en: Translations = {
     setupNeeded: "Setup needed",
     disabledForCli: "Disabled for CLI",
     more: "+{count} more",
+    profileSelector: "Profile",
+    currentProfile: "current ({name})",
+    managingProfile:
+      "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
   },
 
   config: {

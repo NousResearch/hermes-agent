@@ -3349,19 +3349,29 @@ function installZoomShortcuts(window) {
   // The menu items handle this on macOS (where the menu is always present),
   // but on Linux/Windows the menu is null and Chromium's default handler
   // would use the full 0.2 step, so we intercept here for consistency.
+  //
+  // On macOS, Cmd+Plus is physically Cmd+Shift+= so we must accept '=' with
+  // the shift modifier when the meta key is down — otherwise zoom-in via the
+  // keyboard is silently dropped on macOS keyboards where + sits on the = key.
   const ZOOM_STEP = 0.1
   window.webContents.on('before-input-event', (event, input) => {
     const mod = IS_MAC ? input.meta : input.control
-    if (!mod || input.alt || input.shift) return
+    if (!mod || input.alt) return
 
     const key = input.key
     if (key === '0') {
+      if (input.shift) return // Cmd+Shift+0 is profile.toggleAll, not zoom
       event.preventDefault()
       setAndPersistZoomLevel(window, 0)
-    } else if (key === '=' || key === '+') {
+    } else if (key === '=') {
+      // Cmd+= / Cmd+Shift+= (Cmd+Plus on US layout) — zoom in.
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
-    } else if (key === '-') {
+    } else if (key === '+' && !input.shift) {
+      // Cmd+Plus on layouts where + is its own key (no shift needed).
+      event.preventDefault()
+      setAndPersistZoomLevel(window, window.webContents.getZoomLevel() + ZOOM_STEP)
+    } else if (key === '-' && !input.shift) {
       event.preventDefault()
       setAndPersistZoomLevel(window, window.webContents.getZoomLevel() - ZOOM_STEP)
     }
@@ -4834,6 +4844,16 @@ function wireCommonWindowHandlers(win) {
     event.preventDefault()
     openExternalUrl(url)
   })
+
+  // Restore zoom after in-page hash navigation (session switch, settings,
+  // etc.).  Electron's setZoomLevel is supposed to survive hash changes, but
+  // defensive restoration costs nothing and guards against platform quirks.
+  win.webContents.on('did-navigate-in-page', () => restorePersistedZoomLevel(win))
+
+  // Restore zoom after any full renderer reload (crash recovery, etc.).  The
+  // createWindow() one-time path handles the initial load; this persistent
+  // handler covers every subsequent lifecycle event.
+  win.webContents.on('did-finish-load', () => restorePersistedZoomLevel(win))
 }
 
 // Secondary "session windows" — one extra OS window per chat so a user can

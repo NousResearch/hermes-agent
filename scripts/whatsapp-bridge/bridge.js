@@ -29,6 +29,15 @@ import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+
+function getProxyUrl() {
+  return process.env.HTTPS_PROXY || process.env.https_proxy ||
+    process.env.HTTP_PROXY || process.env.http_proxy || '';
+}
+const PROXY_URL = getProxyUrl();
+const proxyAgent = PROXY_URL ? new HttpsProxyAgent(PROXY_URL) : undefined;
+if (proxyAgent) console.log(`🌐 Using proxy for WhatsApp WebSocket: ${PROXY_URL}`);
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -185,6 +194,7 @@ async function startSocket() {
     version,
     auth: state,
     logger,
+    agent: proxyAgent,
     printQRInTerminal: false,
     browser: ['Hermes Agent', 'Chrome', '120.0'],
     syncFullHistory: false,

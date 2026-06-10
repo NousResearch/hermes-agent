@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+import gateway.platforms.base as base_platform
 from gateway.config import Platform, PlatformConfig, StreamingConfig
 from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType, SendResult
 from gateway.session import SessionSource
@@ -1074,6 +1075,54 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
     sent_texts = [call["content"] for call in adapter.sent]
     assert sent_texts == ["done", "💾 Skill 'prospect-scanner' created."]
     assert released == [True]
+
+
+@pytest.mark.asyncio
+async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
+    monkeypatch,
+):
+    """A stuck post-delivery callback must not keep the typing task alive."""
+    monkeypatch.setattr(base_platform, "_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS", 0.01)
+    adapter = ProgressCaptureAdapter()
+    events = []
+
+    async def _handler(event):
+        return "done"
+
+    async def _post_delivery_cb():
+        events.append("callback-start")
+        await asyncio.Event().wait()
+
+    async def _stop_typing(chat_id):
+        events.append("typing-stopped")
+        await ProgressCaptureAdapter.stop_typing(adapter, chat_id)
+
+    adapter.set_message_handler(_handler)
+    adapter.stop_typing = _stop_typing
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+        thread_id="17585",
+    )
+    event = MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="msg-1",
+    )
+    session_key = "agent:main:telegram:group:-1001:17585"
+    adapter._active_sessions[session_key] = asyncio.Event()
+    adapter._post_delivery_callbacks[session_key] = _post_delivery_cb
+
+    await asyncio.wait_for(
+        adapter._process_message_background(event, session_key), timeout=1.0
+    )
+
+    assert [call["content"] for call in adapter.sent] == ["done"]
+    assert events[:2] == ["typing-stopped", "callback-start"]
+    assert any(call["metadata"] == {"stopped": True} for call in adapter.typing)
 
 
 @pytest.mark.asyncio

@@ -40,6 +40,15 @@ const path = require('node:path')
 const https = require('node:https')
 const { spawn } = require('node:child_process')
 
+const IS_WINDOWS = process.platform === 'win32'
+
+function hiddenWindowsChildOptions(options = {}) {
+  if (!IS_WINDOWS || Object.prototype.hasOwnProperty.call(options, 'windowsHide')) {
+    return options
+  }
+  return { ...options, windowsHide: true }
+}
+
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
 const STAMP_REF_RE = /^[0-9A-Za-z._/-]{1,200}$/
 const DEFAULT_GITHUB_REPOSITORY = 'NousResearch/hermes-agent'
@@ -273,7 +282,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
     const ps = process.platform === 'win32' ? 'powershell.exe' : 'pwsh'
     const fullArgs = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath, ...args]
 
-    const child = spawn(ps, fullArgs, {
+    const child = spawn(ps, fullArgs, hiddenWindowsChildOptions({
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
         ...process.env,
@@ -282,7 +291,7 @@ function spawnPowerShell(scriptPath, args, { emit, stageName, abortSignal, herme
         // choice rather than re-computing the default.
         HERMES_HOME: hermesHome || process.env.HERMES_HOME || ''
       }
-    })
+    }))
 
     let stdout = ''
     let stderr = ''

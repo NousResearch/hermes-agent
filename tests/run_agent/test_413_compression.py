@@ -229,11 +229,14 @@ class TestHTTP413Compression:
             agent.run_conversation("hello", conversation_history=big_history)
 
         assert len(persist_calls) >= 1, "Expected at least one _persist_session call"
-        for hist in persist_calls:
-            assert hist is None, (
-                f"conversation_history should be None after mid-loop compression, "
-                f"got list with {len(hist)} items"
-            )
+        # The turn-start crash-resilience persist legitimately carries the
+        # original history (it runs before the 413 ever happens); the #7001
+        # invariant is that every persist AFTER mid-loop compression passes
+        # None so the flush targets the compression-created session.
+        assert persist_calls[-1] is None, (
+            f"conversation_history should be None after mid-loop compression, "
+            f"got list with {len(persist_calls[-1])} items"
+        )
 
     def test_context_overflow_clears_conversation_history_on_persist(self, agent):
         """After context-overflow compression, _persist_session must receive None history."""
@@ -268,11 +271,12 @@ class TestHTTP413Compression:
             agent.run_conversation("hello", conversation_history=big_history)
 
         assert len(persist_calls) >= 1
-        for hist in persist_calls:
-            assert hist is None, (
-                f"conversation_history should be None after context-overflow compression, "
-                f"got list with {len(hist)} items"
-            )
+        # See test_413_clears_conversation_history_on_persist: the turn-start
+        # persist precedes the overflow; post-compression persists must be None.
+        assert persist_calls[-1] is None, (
+            f"conversation_history should be None after context-overflow compression, "
+            f"got list with {len(persist_calls[-1])} items"
+        )
 
     def test_400_context_length_triggers_compression(self, agent):
         """A 400 with 'maximum context length' should trigger compression, not abort as generic 4xx.

@@ -140,6 +140,19 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
 
+    def test_npm_install_uses_workspace_web_scope(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_ok):
+            result = _build_web_ui(web_dir)
+        assert result is True
+        install_cmd = mock_run.call_args[0][0]
+        assert "--workspace" in install_cmd
+        assert install_cmd[install_cmd.index("--workspace") + 1] == "web"
+
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
         """npm run build now goes through _run_with_idle_timeout (issue #33788).
 
@@ -205,7 +218,7 @@ class TestBuildWebUISkipsWhenFresh:
 
         assert result is True
         args, kwargs = mock_run.call_args
-        assert args[0] == ["/usr/bin/npm", "ci", "--silent"]
+        assert args[0] == ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
         assert kwargs["cwd"] == tmp_path
 
 

@@ -68,6 +68,9 @@ export type GatewayEventPayload = {
   kind?: string
   // gateway.ready (the emitting gateway's resolved device name)
   device_name?: string
+  // terminal.read.request (GUI agent reading the in-app terminal pane)
+  start?: number
+  count?: number
 }
 
 export function textPart(text: string): ChatMessagePart {

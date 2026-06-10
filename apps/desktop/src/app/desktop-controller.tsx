@@ -14,6 +14,13 @@ import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { autoArchiveOldSessions, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
+  isMessagingSource,
+  LOCAL_SESSION_SOURCE_IDS,
+  MESSAGING_SESSION_SOURCE_IDS,
+  normalizeSessionSource
+} from '../lib/session-source'
+import { refreshCronJobs } from '../store/cron'
+import {
   $panesFlipped,
   $pinnedSessionIds,
   $sessionsLimit,
@@ -27,26 +34,39 @@ import {
   SIDEBAR_SESSIONS_PAGE_SIZE,
   unpinSession
 } from '../store/layout'
-import { refreshCronJobs } from '../store/cron'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
-import { $activeGatewayProfile, $freshSessionRequest, normalizeProfileKey, refreshActiveProfile } from '../store/profile'
+import {
+  $activeGatewayProfile,
+  $freshSessionRequest,
+  $profileScope,
+  ALL_PROFILES,
+  normalizeProfileKey,
+  refreshActiveProfile
+} from '../store/profile'
 import {
   $activeSessionId,
   $currentCwd,
   $freshDraftReady,
   $gatewayState,
+  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
   $workingSessionIds,
+  CRON_SECTION_LIMIT,
   mergeSessionPage,
+  MESSAGING_SECTION_LIMIT,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
+  setCronSessions,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentModel,
   setCurrentProvider,
   setMessages,
+  setMessagingPlatformTotals,
+  setMessagingSessions,
+  setMessagingTruncated,
   setSessionProfileTotals,
   setSessions,
   setSessionsLoading,
@@ -93,6 +113,27 @@ import type { StatusbarItem } from './shell/statusbar-controls'
 import type { TitlebarTool } from './shell/titlebar-controls'
 import { useGroupRegistry } from './shell/use-group-registry'
 import { UpdatesOverlay } from './updates-overlay'
+
+// The recents list is local-only: cron rows resolve pins via their own slice,
+// and each messaging platform (telegram, discord, …) is fetched separately into
+// its own self-managed sidebar section (refreshMessagingSessions). Excluding
+// both here — from the page AND its server-side totals — keeps "Load more"
+// paging through interactive local chats instead of advertising gateway threads
+// that would never appear in this section.
+const SIDEBAR_EXCLUDED_SOURCES = ['cron', ...MESSAGING_SESSION_SOURCE_IDS]
+// The messaging slice is the inverse: drop cron + every local source so only
+// external-platform conversations remain, then split per platform in the UI.
+const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
+
+// Cheap signature compare so slice refreshes only swap the atom (and re-render
+// the sidebar) when the visible rows actually changed.
+function sameSessionSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
+  if (a.length !== b.length) {
+    return false
+  }
+
+  return a.every((session, i) => session.id === b[i]?.id && session.title === b[i]?.title)
+}
 
 const AgentsView = lazy(async () => ({ default: (await import('./agents')).AgentsView }))
 const ArtifactsView = lazy(async () => ({ default: (await import('./artifacts')).ArtifactsView }))
@@ -226,6 +267,67 @@ export function DesktopController() {
     }
   }, [])
 
+  // Cron-job sessions as their own bounded list, independent of the recents
+  // page so the scheduler's always-newest rows never consume its budget. The
+  // sidebar lists cron *jobs*, not run sessions — this slice exists so a pinned
+  // cron run still resolves into the Pinned section via sessionByAnyId.
+  const refreshCronSessions = useCallback(async () => {
+    try {
+      const { sessions } = await listAllProfileSessions(CRON_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+        source: 'cron'
+      })
+
+      setCronSessions(prev => (sameSessionSignature(prev, sessions) ? prev : sessions))
+    } catch {
+      // Non-fatal: cron pins just resolve from stale rows until the next pass.
+    }
+  }, [])
+
+  // Messaging-platform sessions as their own slice, fetched separately from
+  // local recents so each platform renders a self-managed section and never
+  // competes with local chats for the recents page budget. One combined fetch
+  // seeds every platform; the sidebar splits the rows per source.
+  const refreshMessagingSessions = useCallback(async () => {
+    try {
+      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+        excludeSources: MESSAGING_EXCLUDED_SOURCES
+      })
+
+      // Drop any non-messaging source the broad exclude didn't catch (custom
+      // sources) — those stay in local recents, not a platform section.
+      const rows = result.sessions.filter(s => isMessagingSource(s.source))
+
+      setMessagingSessions(prev => (sameSessionSignature(prev, rows) ? prev : rows))
+      // Hit the cap → at least one platform may have more on disk than loaded,
+      // so platform sections offer their own per-platform "load more".
+      setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
+    } catch {
+      // Non-fatal: the messaging sections just stay empty/stale.
+    }
+  }, [])
+
+  // Page a single platform's section independently (mirrors the per-profile
+  // pager): fetch that source's next window and merge it back in place, leaving
+  // every other platform's rows untouched. Resolves the platform's exact total.
+  const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
+    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
+    const loaded = $messagingSessions.get().filter(inPlatform).length
+
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
+      source: platform
+    })
+
+    const incoming = result.sessions.filter(inPlatform)
+
+    setMessagingSessions(prev => [
+      ...prev.filter(s => !inPlatform(s)),
+      ...mergeSessionPage(prev.filter(inPlatform), incoming, sessionsToKeep())
+    ])
+
+    const total = result.total ?? incoming.length
+    setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
+  }, [])
+
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
@@ -253,6 +355,7 @@ export function DesktopController() {
       // Only run auto-archive on the first refresh (boot). Subsequent
       // cascading refreshes from message events skip this to save a round-trip.
       const isFirst = requestId <= 2
+
       if (isFirst) {
         try {
           await autoArchiveOldSessions([...preserveIds])
@@ -266,8 +369,20 @@ export function DesktopController() {
       // clutter the sidebar.
       // Unified cross-profile list (served read-only off each profile's
       // state.db; no per-profile backend is spawned). Single-profile users get
-      // the same rows tagged profile="default".
-      const result = await listAllProfileSessions(limit, 1)
+      // the same rows tagged profile="default". Cron + messaging sources are
+      // excluded here — page and totals alike — and fetched as their own
+      // slices, so "Load more" math always matches the rows this section lists.
+      // Scope to the active profile (not always 'all') so a profile with few
+      // recent sessions isn't windowed out of the cross-profile recency page.
+      // Read at call time (not a dep) so this callback's identity stays stable
+      // for useGatewayBoot/usePromptActions; the scope-change effect below
+      // triggers the refetch.
+      const scope = $profileScope.get()
+      const sessionProfile = scope === ALL_PROFILES ? 'all' : scope
+
+      const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
+        excludeSources: SIDEBAR_EXCLUDED_SOURCES
+      })
 
       if (refreshSessionsRequestRef.current === requestId) {
         setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
@@ -279,12 +394,24 @@ export function DesktopController() {
         setSessionsLoading(false)
       }
     }
-  }, [])
+
+    void refreshCronSessions()
+    void refreshMessagingSessions()
+  }, [refreshCronSessions, refreshMessagingSessions])
 
   const loadMoreSessions = useCallback(() => {
     bumpSessionsLimit()
     void refreshSessions()
   }, [refreshSessions])
+
+  // Refetch when the profile scope flips: the recents fetch is scoped to the
+  // active profile, so without this a freshly-scoped profile would keep
+  // whatever page the previous scope loaded.
+  const profileScope = useStore($profileScope)
+
+  useEffect(() => {
+    void refreshSessions()
+  }, [profileScope, refreshSessions])
 
   // ALL-profiles view pages one profile at a time: fetch that profile's next
   // page and merge it in place, leaving every other profile's rows untouched.
@@ -292,7 +419,11 @@ export function DesktopController() {
     const key = normalizeProfileKey(profile)
     const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
     const loaded = $sessions.get().filter(inKey).length
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key)
+
+    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
+      excludeSources: SIDEBAR_EXCLUDED_SOURCES
+    })
+
     const keep = sessionsToKeep(key)
 
     setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)])
@@ -635,6 +766,7 @@ export function DesktopController() {
       onArchiveAllSessions={() => archiveAllSessions().then(() => refreshSessions())}
       onArchiveSession={sessionId => void archiveSession(sessionId)}
       onDeleteSession={sessionId => void removeSession(sessionId)}
+      onLoadMoreMessaging={loadMoreMessagingForPlatform}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}
       onLoadMoreSessions={loadMoreSessions}
       onManageCronJob={() => navigate(CRON_ROUTE)}

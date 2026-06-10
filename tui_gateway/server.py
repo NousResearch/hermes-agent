@@ -216,12 +216,30 @@ sys.stdout = sys.stderr
 _stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 
 
+class _DropTransport:
+    """Detached WS sink: keep sessions resumable without writing stale frames."""
+
+    def write(self, obj: dict) -> bool:
+        return False
+
+    def close(self) -> None:
+        return None
+
+
+# Detached websocket sessions use a drop sink instead of stdio. Desktop embeds
+# the gateway in-process and captures stdout into logs, so stale JSON-RPC frames
+# must not fall through there while the session waits for resume or reap.
+_detached_ws_transport = _DropTransport()
+
+
 def _session_has_live_transport(session: dict | None) -> bool:
     if not session or session.get("_finalized"):
         return False
     transport = session.get("transport")
     if isinstance(transport, FanoutTransport):
         return transport.has_transports(excluding={id(_stdio_transport)})
+    if transport is _detached_ws_transport:
+        return False
     return transport is not None and transport is not _stdio_transport
 
 
@@ -234,7 +252,7 @@ def _attach_session_transport(session: dict | None, transport: Transport | None)
     if isinstance(current, FanoutTransport):
         current.attach(transport)
         return
-    if current is None or current is _stdio_transport:
+    if current is None or current is _stdio_transport or current is _detached_ws_transport:
         session["transport"] = transport
         return
     fanout = FanoutTransport(current)
@@ -247,11 +265,14 @@ def _detach_session_transport(session: dict | None, transport: Transport | None)
         return False
     current = session.get("transport")
     if current is transport:
-        session["transport"] = _stdio_transport
+        # Last client gone: park on the drop sentinel (NOT real stdio) so the
+        # desktop's in-process gateway doesn't leak stale frames to stdout and
+        # the WS-orphan reaper can recognize the session as detached.
+        session["transport"] = _detached_ws_transport
         return True
     if isinstance(current, FanoutTransport) and current.detach(transport):
         if not current.has_transports():
-            session["transport"] = _stdio_transport
+            session["transport"] = _detached_ws_transport
         return True
     return False
 
@@ -417,18 +438,35 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         except Exception:
             pass
 
+    # Close the slash-worker subprocess as part of finalize itself, not just
+    # in the callers. Defense-in-depth: every session-end path goes through
+    # _finalize_session (it's the single ``_finalized``-guarded chokepoint), so
+    # folding worker cleanup in here means a future code path that calls
+    # _finalize_session directly — without the surrounding _teardown_session /
+    # _shutdown_sessions worker.close() — can't reintroduce the #38095 leak.
+    # Idempotent: _SlashWorker.close() is poll()-guarded, so the explicit
+    # close() still in those callers is harmless.
+    try:
+        worker = session.get("slash_worker")
+        if worker:
+            worker.close()
+    except Exception:
+        pass
 
-def _teardown_session(session: dict | None) -> None:
+
+def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
     """Fully tear down a session: finalize, unregister, close agent + worker.
 
-    Shared by ``session.close`` and the orphaned-WS-session reaper so the
-    slash-worker subprocess is always closed exactly once via the same path.
-    Idempotent: the ``_finalized`` guard in ``_finalize_session`` and the
-    ``poll()`` guard in ``_SlashWorker.close`` make repeat calls harmless.
+    Shared by ``session.close`` and the orphaned-WS-session reaper. The
+    slash-worker subprocess is closed inside ``_finalize_session`` (the single
+    finalize chokepoint); this still unregisters the approval notifier and
+    closes the in-process agent. Idempotent: the ``_finalized`` guard in
+    ``_finalize_session`` and the ``poll()`` guard in ``_SlashWorker.close``
+    make repeat calls harmless.
     """
     if not session:
         return
-    _finalize_session(session)
+    _finalize_session(session, end_reason=end_reason)
     try:
         from tools.approval import unregister_gateway_notify
 
@@ -441,12 +479,22 @@ def _teardown_session(session: dict | None) -> None:
             agent.close()
     except Exception:
         pass
-    try:
-        worker = session.get("slash_worker")
-        if worker:
-            worker.close()
-    except Exception:
-        pass
+    # NOTE: the slash-worker is closed inside _finalize_session (the single
+    # _finalized-guarded chokepoint), exactly once. We deliberately do NOT
+    # re-close it here — _teardown_session's job beyond finalize is
+    # unregistering the notifier and closing the in-process agent.
+
+
+def _attach_worker(sid: str, session: dict, worker) -> None:
+    """Store worker on session iff sid still maps to it, else close it — a
+    concurrent teardown already popped the session and would orphan the
+    worker. Closes the create/close race at every slash-worker spawn site."""
+    with _sessions_lock:
+        if _sessions.get(sid) is session:
+            session["slash_worker"] = worker
+            return
+    worker.close()
+
 
 
 def _ws_session_is_orphaned(session: dict | None) -> bool:
@@ -465,6 +513,20 @@ def _ws_session_is_orphaned(session: dict | None) -> bool:
     return not _session_has_live_transport(session)
 
 
+def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
+    """Single idempotent teardown for one session: pop it under the sessions
+    lock, then finalize, unregister notify, close agent + slash worker via the
+    shared ``_teardown_session`` path. Returns True iff it closed a live
+    session. The ``_finalized`` / worker ``_closed`` guards make concurrent or
+    repeat calls (e.g. session.close racing the WS-orphan reaper) harmless."""
+    with _sessions_lock:
+        session = _sessions.pop(sid, None)
+    if session is None:
+        return False
+    _teardown_session(session, end_reason=end_reason)
+    return True
+
+
 def _schedule_ws_orphan_reap(sid: str) -> None:
     """After a grace window, reap session ``sid`` iff it's still orphaned.
 
@@ -476,19 +538,58 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         return
 
     def _reap() -> None:
+        # Serialize the orphan re-check against session.resume (which re-binds a
+        # live transport under _session_resume_lock and would make this session
+        # non-orphaned). The actual pop + teardown then goes through the shared
+        # _close_session_by_id funnel so the dict mutation happens under
+        # _sessions_lock — consistent with every other _sessions mutator.
         with _session_resume_lock:
-            session = _sessions.get(sid)
-            if not _ws_session_is_orphaned(session):
+            if not _ws_session_is_orphaned(_sessions.get(sid)):
                 return
-            _sessions.pop(sid, None)
-        try:
-            _teardown_session(session)
-        except Exception:
-            pass
+            _close_session_by_id(sid, end_reason="ws_orphan_reap")
 
     timer = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
     timer.daemon = True
     timer.start()
+
+
+def _close_sessions_for_transport(
+    transport, *, end_reason: str = "ws_disconnect"
+) -> tuple[int, int]:
+    """On transport disconnect, reap the sessions that opted into
+    close_on_disconnect (sidecar/dashboard) immediately via the unified
+    ``_close_session_by_id`` path, and park the rest on the drop sentinel so
+    later emits don't hit a dead socket.
+
+    Fanout-aware: a session co-viewed through other live clients only loses
+    this one transport and is otherwise untouched — reap/park decisions apply
+    solely to sessions whose LAST live transport just detached. Non-flagged
+    detached sessions are handed to the grace-windowed WS-orphan reaper
+    (``_schedule_ws_orphan_reap``): a quick reconnect / session.resume that
+    re-binds a live transport cancels the reap. This is the single
+    WS-disconnect teardown entry point.
+
+    Returns ``(reaped, detached)`` counts for disconnect-path observability."""
+    reaped = 0
+    detached = 0
+    for sid in _detach_transport_from_sessions(transport):
+        with _sessions_lock:
+            session = _sessions.get(sid)
+        if session is None:
+            continue
+        # Other live clients remain attached through the fanout — not detached.
+        if _session_has_live_transport(session):
+            continue
+        if session.get("close_on_disconnect"):
+            _close_session_by_id(sid, end_reason=end_reason)
+            reaped += 1
+        else:
+            detached += 1
+            try:
+                _schedule_ws_orphan_reap(sid)
+            except Exception:
+                pass
+    return reaped, detached
 
 
 def _shutdown_sessions() -> None:
@@ -556,6 +657,40 @@ def _profile_home(profile: str | None) -> Path | None:
     if home.resolve() == Path(_hermes_home).resolve():
         return None
     return home if (home / "state.db").exists() or home.exists() else None
+
+
+# Placeholder ``terminal.cwd`` values that don't name a real directory — the
+# gateway resolves these to the home dir at runtime, so they must NOT be treated
+# as an explicit workspace (mirrors gateway/run.py's config bridge).
+_CWD_PLACEHOLDERS = {".", "auto", "cwd"}
+
+
+def _profile_configured_cwd(profile_home: Path | None) -> str | None:
+    """Resolve a non-launch profile's ``terminal.cwd`` from its own config.yaml.
+
+    The desktop's app-global remote mode serves every profile from one backend,
+    so the process-global ``TERMINAL_CWD`` belongs to the *launch* profile. A new
+    session bound to another profile must take its workspace from THAT profile's
+    config, not the stale env var (issue #40334). Returns an absolute, existing
+    directory, or None for placeholders / missing / invalid paths.
+    """
+    if profile_home is None:
+        return None
+    try:
+        import yaml
+
+        p = Path(profile_home) / "config.yaml"
+        if not p.exists():
+            return None
+        with open(p, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        raw = str((data.get("terminal") or {}).get("cwd") or "").strip()
+        if not raw or raw in _CWD_PLACEHOLDERS:
+            return None
+        resolved = os.path.abspath(os.path.expanduser(raw))
+        return resolved if os.path.isdir(resolved) else None
+    except Exception:
+        return None
 
 
 def write_json(obj: dict) -> bool:
@@ -878,9 +1013,13 @@ def _normalize_completion_path(path_part: str) -> str:
 
 
 def _completion_cwd(params: dict | None = None) -> str:
+    params = params or {}
     raw = (
-        (params or {}).get("cwd")
-        or _sessions.get((params or {}).get("session_id") or "", {}).get("cwd")
+        params.get("cwd")
+        or _sessions.get(params.get("session_id") or "", {}).get("cwd")
+        # A session bound to another profile resolves its workspace from THAT
+        # profile's config before falling back to the launch profile's env var.
+        or _profile_configured_cwd(_profile_home(params.get("profile")))
         or os.environ.get("TERMINAL_CWD")
         or os.getcwd()
     )
@@ -918,6 +1057,30 @@ def _git_branch_for_cwd(cwd: str) -> str:
         return ""
 
 
+def _terminal_task_cwd(session: dict | None) -> str:
+    """Return the cwd that terminal_tool should use for this TUI session.
+
+    ``_completion_cwd`` validates paths on the host so file completion does not
+    point at nonsense.  Non-local terminal backends are different: their cwd is
+    inside the target environment, so an SSH path like /home/user/workspace may
+    not exist on the local macOS host but is still the correct execution cwd.
+    """
+    backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    if backend and backend != "local":
+        raw = os.environ.get("TERMINAL_CWD", "").strip()
+        if not raw:
+            try:
+                terminal_cfg = _load_cfg().get("terminal", {})
+                if isinstance(terminal_cfg, dict):
+                    raw = str(terminal_cfg.get("cwd") or "").strip()
+            except Exception:
+                raw = ""
+        if raw and raw not in {".", "auto", "cwd"}:
+            return raw
+
+    return _session_cwd(session)
+
+
 def _session_cwd(session: dict | None) -> str:
     if session and session.get("cwd"):
         return str(session["cwd"])
@@ -931,7 +1094,7 @@ def _register_session_cwd(session: dict | None) -> None:
         from tools.terminal_tool import register_task_env_overrides
 
         register_task_env_overrides(
-            session["session_key"], {"cwd": _session_cwd(session)}
+            session["session_key"], {"cwd": _terminal_task_cwd(session)}
         )
     except Exception:
         pass
@@ -1478,7 +1641,7 @@ def _tool_progress_enabled(sid: str) -> bool:
     return _session_tool_progress_mode(sid) != "off"
 
 
-def _restart_slash_worker(session: dict):
+def _restart_slash_worker(sid: str, session: dict):
     worker = session.get("slash_worker")
     if worker:
         try:
@@ -1486,12 +1649,18 @@ def _restart_slash_worker(session: dict):
         except Exception:
             pass
     try:
-        session["slash_worker"] = _SlashWorker(
+        new_worker = _SlashWorker(
             session["session_key"],
             getattr(session.get("agent"), "model", _resolve_model()),
         )
     except Exception:
         session["slash_worker"] = None
+        return
+    # Route through the same store-iff-still-mapped guard as the spawn sites:
+    # the post-turn restart runs as `running` flips false, exactly when a
+    # close_on_disconnect reap can pop this session — a bare store would orphan
+    # the fresh worker (it self-heals only on gateway exit via the watchdog).
+    _attach_worker(sid, session, new_worker)
 
 
 def _persist_model_switch(result) -> None:
@@ -1512,7 +1681,13 @@ def _persist_model_switch(result) -> None:
     save_config(cfg)
 
 
-def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
+def _apply_model_switch(
+    sid: str,
+    session: dict,
+    raw_input: str,
+    *,
+    confirm_expensive_model: bool = False,
+) -> dict:
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -1569,6 +1744,27 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
 
+    if not confirm_expensive_model:
+        try:
+            from hermes_cli.model_cost_guard import expensive_model_warning
+
+            warning = expensive_model_warning(
+                result.new_model,
+                provider=result.target_provider,
+                base_url=result.base_url or current_base_url,
+                api_key=result.api_key or current_api_key,
+                model_info=result.model_info,
+            )
+        except Exception:
+            warning = None
+        if warning is not None:
+            return {
+                "value": result.new_model,
+                "warning": warning.message,
+                "confirm_required": True,
+                "confirm_message": warning.message,
+            }
+
     if agent:
         agent.switch_model(
             new_model=result.new_model,
@@ -1577,7 +1773,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
             base_url=result.base_url,
             api_mode=result.api_mode,
         )
-        _restart_slash_worker(session)
+        _restart_slash_worker(sid, session)
         _emit("session.info", sid, _session_info(agent, session))
 
     os.environ["HERMES_MODEL"] = result.new_model
@@ -1597,7 +1793,11 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
-    return {"value": result.new_model, "warning": result.warning_message or ""}
+    return {
+        "value": result.new_model,
+        "warning": result.warning_message or "",
+        "confirm_required": False,
+    }
 
 
 def _compress_session_history(
@@ -1724,7 +1924,7 @@ def _sync_session_key_after_compress(
         session["pending_title"] = None
     if restart_slash_worker:
         try:
-            _restart_slash_worker(session)
+            _restart_slash_worker(sid, session)
         except Exception:
             pass
 
@@ -2287,6 +2487,14 @@ def _agent_cbs(sid: str) -> dict:
         "clarify_callback": lambda q, c: _block(
             "clarify.request", sid, {"question": q, "choices": c}
         ),
+        # read_terminal tool (desktop GUI): same blocking bridge as clarify — the
+        # renderer answers terminal.read.respond with the serialized buffer.
+        "read_terminal_callback": lambda start=None, count=None: _block(
+            "terminal.read.request",
+            sid,
+            {k: v for k, v in (("start", start), ("count", count)) if v is not None},
+            timeout=30,
+        ),
     }
 
 
@@ -2635,7 +2843,7 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         session["history_version"] = int(session.get("history_version", 0)) + 1
     info = _session_info(new_agent, session)
     _emit("session.info", sid, info)
-    _restart_slash_worker(session)
+    _restart_slash_worker(sid, session)
     return info
 
 
@@ -3521,7 +3729,6 @@ def _session_live_item(sid: str, session: dict, current_sid: str = "") -> dict:
         "message_count": len(history),
         "model": str(getattr(agent, "model", "") or _resolve_model()),
         "preview": preview,
-        "session_id": sid,
         "session_key": key,
         "started_at": float(session.get("created_at") or now),
         "status": status,
@@ -3646,12 +3853,25 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5036, f"could not enumerate active sessions: {e}")
 
+    # Liveness filter (#38950): a session whose teardown has begun (``_finalized``)
+    # is dead — its agent/worker are being released and it is no longer
+    # attachable — but it can briefly remain in ``_sessions`` until the reaper
+    # pops it. Counting these inflated the footer's "N sessions" count. We do
+    # NOT filter on the WS-detached drop sentinel: a detached session is still
+    # attachable via a quick reconnect / session.resume until the grace-reap
+    # finalizes it, and a standalone ``hermes --tui`` session legitimately rides
+    # the real stdio transport and must stay visible.
     # Keep the natural creation/insertion order from ``_sessions``.  The
     # frontend marks the focused session with ``current``; it should not jump to
     # the top just because the user switched to it.
-    rows = [_session_live_item(sid, session, current) for sid, session in snapshot]
+    rows = [
+        _session_live_item(sid, session, current)
+        for sid, session in snapshot
+        if not session.get("_finalized")
+    ]
     for sid, session in snapshot:
-        _publish_session_presence(sid, session)
+        if not session.get("_finalized"):
+            _publish_session_presence(sid, session)
     return _ok(rid, {"sessions": rows})
 
 
@@ -5665,6 +5885,12 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "answer")
 
 
+@method("terminal.read.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string of the serialized terminal buffer + line metadata.
+    return _respond(rid, params, "text")
+
+
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
     return _respond(rid, params, "password")
@@ -5733,13 +5959,31 @@ def _(rid, params: dict) -> dict:
                     if session.get("agent") is None:
                         return _err(rid, 5032, "agent initialization failed")
                 result = _apply_model_switch(
-                    params.get("session_id", ""), session, value
+                    params.get("session_id", ""),
+                    session,
+                    value,
+                    confirm_expensive_model=bool(
+                        params.get("confirm_expensive_model", False)
+                    ),
                 )
             else:
-                result = _apply_model_switch("", {"agent": None}, value)
+                result = _apply_model_switch(
+                    "",
+                    {"agent": None},
+                    value,
+                    confirm_expensive_model=bool(
+                        params.get("confirm_expensive_model", False)
+                    ),
+                )
             return _ok(
                 rid,
-                {"key": key, "value": result["value"], "warning": result["warning"]},
+                {
+                    "key": key,
+                    "value": result["value"],
+                    "warning": result["warning"],
+                    "confirm_required": result.get("confirm_required", False),
+                    "confirm_message": result.get("confirm_message", ""),
+                },
             )
         except Exception as e:
             return _err(rid, 5001, str(e))

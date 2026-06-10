@@ -27,7 +27,8 @@
   },
   "overrides": {
     "lodash": "4.18.1",
-    "dompurify": "3.4.7"
+    "dompurify": "3.4.7",
+    "shell-quote": "1.8.4"
   },
   "engines": {
     "node": ">=20.0.0"

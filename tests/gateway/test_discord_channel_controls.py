@@ -245,6 +245,47 @@ async def test_normal_channel_still_auto_threads(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_threaded_free_response_channel_bypasses_mention_and_auto_threads(adapter, monkeypatch):
+    """Threaded free-response channels should process unmentioned messages and still auto-thread."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_THREADED_CHANNELS", "901")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_AUTO_THREAD", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    fake_thread = FakeThread(channel_id=999, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+
+    message = make_message(channel=FakeTextChannel(channel_id=901), content="hello without mention")
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.source.chat_type == "thread"
+
+
+@pytest.mark.asyncio
+async def test_threaded_free_response_parent_matches_thread_replies(adapter, monkeypatch):
+    """Threads under a threaded free-response parent should process replies without mention."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_THREAD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL", "false")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_THREADED_CHANNELS", "901")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+
+    parent = FakeTextChannel(channel_id=901, name="oscar")
+    thread = FakeThread(channel_id=902, name="thread-in-oscar", parent=parent)
+    message = make_message(channel=thread, content="reply without mention")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_no_thread_channels_csv_parsing(adapter, monkeypatch):
     """Multiple no_thread channel IDs parsed from CSV."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -322,6 +363,25 @@ def test_config_bridges_no_thread_channels(monkeypatch, tmp_path):
 
     import os
     assert os.getenv("DISCORD_NO_THREAD_CHANNELS") == "333"
+
+
+def test_config_bridges_threaded_free_response_channels(monkeypatch, tmp_path):
+    """gateway/config.py bridges discord.free_response_threaded_channels to env var."""
+    import yaml
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(yaml.dump({
+        "discord": {
+            "free_response_threaded_channels": ["444", "555"],
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_THREADED_CHANNELS", "")
+
+    from gateway.config import load_gateway_config
+    load_gateway_config()
+
+    import os
+    assert os.getenv("DISCORD_FREE_RESPONSE_THREADED_CHANNELS") == "444,555"
 
 
 def test_config_env_var_takes_precedence(monkeypatch, tmp_path):

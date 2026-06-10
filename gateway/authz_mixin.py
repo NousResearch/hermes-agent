@@ -209,7 +209,10 @@ class GatewayAuthorizationMixin:
 
         # Adapter-verified role auth: the Discord adapter already confirmed the
         # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.
-        if getattr(source, "role_authorized", False):
+        # Compare with ``is True`` so the real bool field authorizes while a
+        # MagicMock source (test fixtures using ``object.__new__`` runners with
+        # mock sources) does not auto-truthy through this gate (see pitfall #13).
+        if getattr(source, "role_authorized", False) is True:
             return True
 
         if getattr(source, "is_bot", False):

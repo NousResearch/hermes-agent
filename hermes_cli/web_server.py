@@ -2149,6 +2149,105 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
     return config
 
 
+@app.get("/api/memory/overview")
+async def get_memory_overview(subject_limit: int = 50, day_limit: int = 30):
+    try:
+        from hermes_state import SessionDB
+        from hermes_cli.memory_wiki import build_memory_overview
+
+        db = SessionDB()
+        try:
+            return build_memory_overview(
+                db,
+                subject_limit=max(1, min(subject_limit, 200)),
+                day_limit=max(1, min(day_limit, 120)),
+            )
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/memory/overview failed")
+        raise HTTPException(status_code=500, detail="Memory overview failed")
+
+
+@app.get("/api/memory/subjects")
+async def get_memory_subjects(q: str = "", limit: int = 100):
+    try:
+        from hermes_state import SessionDB
+        from hermes_cli.memory_wiki import build_memory_subjects
+
+        safe_limit = max(1, min(limit, 500))
+        query = q.strip()
+        db = SessionDB()
+        try:
+            subjects = build_memory_subjects(db, limit=safe_limit, query=query or None)
+            return {"subjects": subjects, "query": query, "limit": safe_limit}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/memory/subjects failed")
+        raise HTTPException(status_code=500, detail="Memory subjects failed")
+
+
+@app.get("/api/memory/subjects/{slug}")
+async def get_memory_subject(slug: str):
+    try:
+        from hermes_state import SessionDB
+        from hermes_cli.memory_wiki import get_memory_subject as load_memory_subject
+
+        db = SessionDB()
+        try:
+            subject = load_memory_subject(db, slug)
+        finally:
+            db.close()
+        if subject is None:
+            raise HTTPException(status_code=404, detail="Memory subject not found")
+        return {"subject": subject}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/memory/subjects/%s failed", slug)
+        raise HTTPException(status_code=500, detail="Memory subject failed")
+
+
+@app.get("/api/memory/days")
+async def get_memory_days(limit: int = 60):
+    try:
+        from hermes_state import SessionDB
+        from hermes_cli.memory_wiki import build_daily_logs
+
+        safe_limit = max(1, min(limit, 365))
+        db = SessionDB()
+        try:
+            daily_logs = build_daily_logs(db, limit_days=safe_limit)
+            return {"daily_logs": daily_logs, "limit": safe_limit}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/memory/days failed")
+        raise HTTPException(status_code=500, detail="Memory days failed")
+
+
+@app.get("/api/memory/days/{date}")
+async def get_memory_day(date: str):
+    try:
+        from hermes_state import SessionDB
+        from hermes_cli.memory_wiki import get_daily_log
+
+        db = SessionDB()
+        try:
+            daily_log = get_daily_log(db, date)
+        finally:
+            db.close()
+        if daily_log is None:
+            raise HTTPException(status_code=404, detail="Memory day not found")
+        return {"daily_log": daily_log}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("GET /api/memory/days/%s failed", date)
+        raise HTTPException(status_code=500, detail="Memory day failed")
+
+
 @app.get("/api/config")
 async def get_config():
     config = _normalize_config_for_web(load_config())

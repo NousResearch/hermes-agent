@@ -91,6 +91,22 @@ interface SessionEntry {
   title: string
 }
 
+// cmdk defaults to fuzzy subsequence scoring, so "color" matches anything with
+// c…o…l…o…r scattered across it. Use case-insensitive multi-term substring
+// matching instead: every typed word must literally appear in the item's
+// value/keywords, which keeps results tight and predictable.
+const paletteFilter = (value: string, search: string, keywords?: string[]): number => {
+  const needle = search.trim().toLowerCase()
+
+  if (!needle) {
+    return 1
+  }
+
+  const haystack = `${value} ${keywords?.join(' ') ?? ''}`.toLowerCase()
+
+  return needle.split(/\s+/).every(term => haystack.includes(term)) ? 1 : 0
+}
+
 type SessionRow = Awaited<ReturnType<typeof listSessions>>['sessions'][number]
 
 const toSessionEntry = (session: SessionRow): SessionEntry => ({
@@ -489,7 +505,7 @@ export function CommandPalette() {
           className="fixed left-1/2 top-[14vh] z-[210] w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-lg duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95"
         >
           <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
-          <Command className="bg-transparent" loop>
+          <Command className="bg-transparent" filter={paletteFilter} loop>
             {activePage && (
               <button
                 className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"

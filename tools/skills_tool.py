@@ -745,6 +745,294 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return tool_error(str(e), success=False)
 
 
+# ── Skill peek (description-only, no full content load) ───────────────────
+
+
+def skill_peek(names: "list[str]", task_id: Optional[str] = None) -> str:
+    """Return name + description only for one or more skills.
+
+    Use this BEFORE skill_view() to decide if a skill is actually relevant
+    to the current task. Reads skill metadata and may inspect a short excerpt
+    when frontmatter omits a description, but does not load the full skill body.
+    Much cheaper than skill_view() (~10 tokens vs ~500-2000 tokens per skill).
+
+    Args:
+        names: List of skill names to peek at (max 10).
+        task_id: Optional task identifier.
+
+    Returns:
+        JSON list of {name, description, category, tags} — no full content.
+    """
+    try:
+        if not isinstance(names, list):
+            return json.dumps(
+                {"success": False, "error": "names must be a list of strings"}
+            )
+        if not names:
+            return json.dumps({"success": False, "error": "names must be non-empty list"})
+        if any(not isinstance(name, str) for name in names):
+            return json.dumps(
+                {"success": False, "error": "each item in names must be a string"}
+            )
+        names = names[:10]  # hard cap
+        results = []
+
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+
+        all_dirs = []
+        if SKILLS_DIR.exists():
+            all_dirs.append(SKILLS_DIR)
+        all_dirs.extend(get_external_skills_dirs())
+
+        def _skill_name(skill: Dict[str, Any]) -> str:
+            return (skill.get("name") or "").strip()
+
+        def _skill_category(skill: Dict[str, Any]) -> str:
+            return (skill.get("category") or "").strip()
+
+        def _full_skill_name(skill: Dict[str, Any]) -> str:
+            name = _skill_name(skill)
+            if not name:
+                return ""
+            if "/" in name:
+                return name
+            category = _skill_category(skill)
+            return f"{category}/{name}" if category else name
+
+        def _basename(skill_name: str) -> str:
+            return skill_name.rsplit("/", 1)[-1] if skill_name else ""
+
+        def _record_candidate(store, skill_md: Path, skill_dir: Optional[Path]) -> None:
+            try:
+                key = skill_md.resolve()
+            except Exception:
+                key = skill_md
+            if key in store["seen"]:
+                return
+            store["seen"].add(key)
+            store["items"].append((skill_dir, skill_md))
+
+        for name in names:
+            query = name.strip()
+            if not query:
+                results.append(
+                    {
+                        "name": name,
+                        "found": False,
+                        "description": None,
+                        "error": "name must not be empty",
+                    }
+                )
+                continue
+
+            query_lower = query.lower()
+            exact = {"seen": set(), "items": []}
+            basename = {"seen": set(), "items": []}
+
+            for search_dir in all_dirs:
+                direct_path = search_dir / query
+                if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
+                    _record_candidate(exact, direct_path / "SKILL.md", direct_path)
+                elif direct_path.with_suffix(".md").exists():
+                    _record_candidate(exact, direct_path.with_suffix(".md"), None)
+
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    rel_name = found_skill_md.parent.relative_to(search_dir).as_posix()
+                    rel_lower = rel_name.lower()
+                    parent_name = found_skill_md.parent.name
+                    parent_lower = parent_name.lower()
+                    if rel_name == query or rel_lower == query_lower:
+                        _record_candidate(exact, found_skill_md, found_skill_md.parent)
+                    elif parent_name == query or parent_lower == query_lower:
+                        _record_candidate(basename, found_skill_md, found_skill_md.parent)
+
+                for found_md in search_dir.rglob(f"{query}.md"):
+                    if found_md.name != "SKILL.md":
+                        _record_candidate(exact, found_md, None)
+
+            if exact["items"]:
+                candidates = exact["items"]
+            else:
+                candidates = basename["items"]
+
+            if not candidates:
+                results.append({"name": name, "found": False, "description": None})
+                continue
+
+            if len(candidates) > 1:
+                match_names = []
+                seen_matches = set()
+                for skill_dir, skill_md in candidates:
+                    try:
+                        content = skill_md.read_text(encoding="utf-8")[:4000]
+                        frontmatter, _ = _parse_frontmatter(content)
+                    except Exception:
+                        frontmatter = {}
+                    display_name = str(frontmatter.get("name") or skill_md.parent.name or query)
+                    category = _get_category_from_path(skill_md)
+                    full_name = f"{category}/{display_name}" if category else display_name
+                    if full_name not in seen_matches:
+                        seen_matches.add(full_name)
+                        match_names.append(full_name)
+                results.append(
+                    {
+                        "name": name,
+                        "found": False,
+                        "ambiguous": True,
+                        "description": None,
+                        "matches": match_names,
+                        "hint": (
+                            "Use the full skill path (e.g. category/skill-name) to "
+                            "disambiguate this skill."
+                        ),
+                    }
+                )
+                continue
+
+            skill_dir, skill_md = candidates[0]
+            try:
+                content = skill_md.read_text(encoding="utf-8")[:4000]
+                frontmatter, body = _parse_frontmatter(content)
+            except Exception:
+                frontmatter, body = {}, ""
+
+            description = frontmatter.get("description", "")
+            if not description:
+                for line in body.strip().split("\n"):
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        description = line
+                        break
+
+            if len(description) > MAX_DESCRIPTION_LENGTH:
+                description = description[:MAX_DESCRIPTION_LENGTH - 3] + "..."
+
+            category = _get_category_from_path(skill_md)
+            results.append(
+                {
+                    "name": str(frontmatter.get("name") or skill_md.parent.name or name),
+                    "found": True,
+                    "description": description or "",
+                    "category": category or "",
+                    "tags": _parse_tags(
+                        (frontmatter.get("metadata", {}) or {}).get("hermes", {}).get("tags")
+                        if isinstance(frontmatter.get("metadata"), dict)
+                        else ""
+                    ),
+                    "hint": "Use skill_view(name) to load full content if this skill is needed.",
+                }
+            )
+        return json.dumps({"success": True, "skills": results}, ensure_ascii=False)
+    except Exception as e:
+        return tool_error(str(e), success=False)
+
+
+SKILL_PEEK_SCHEMA = {
+    "name": "skill_peek",
+    "description": (
+        "Check name + description for one or more skills without loading their full content. "
+        "Call this BEFORE skill_view() to decide if a skill is actually needed. "
+        "Use when a skill name looks potentially relevant but you're unsure — peek at its "
+        "description first, then load only if confirmed relevant. "
+        "Returns: name, description, category, tags. Does NOT return skill body/instructions."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "names": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "List of skill names to peek at (max 10).",
+            },
+        },
+        "required": ["names"],
+    },
+}
+
+registry.register(
+    name="skill_peek",
+    toolset="skills",
+    schema=SKILL_PEEK_SCHEMA,
+    handler=lambda args, **kw: skill_peek(
+        names=args.get("names", []), task_id=kw.get("task_id")
+    ),
+    check_fn=check_skills_requirements,
+    emoji="🔍",
+)
+
+
+# ── Skill unload (signal agent to release active skill context) ───────────
+
+
+def skill_unload(name: str, task_id: Optional[str] = None) -> str:
+    """Signal that a previously loaded skill is no longer needed.
+
+    Injects a dismissal notice into the conversation so the agent treats
+    the skill as inactive and stops applying its instructions. Use this
+    after completing a task that required a skill — it frees token budget
+    for future tool calls and prevents stale skill instructions from
+    bleeding into unrelated tasks.
+
+    Args:
+        name: Name of the skill to unload.
+        task_id: Optional task identifier.
+
+    Returns:
+        JSON confirmation with skill name and dismissal message.
+    """
+    try:
+        if not name or not name.strip():
+            return json.dumps({"success": False, "error": "name is required"})
+        name = name.strip()
+        return json.dumps(
+            {
+                "success": True,
+                "name": name,
+                "message": (
+                    f"[Skill '{name}' unloaded] The instructions from this skill are now "
+                    "dismissed. Do not continue applying them unless the skill is explicitly "
+                    "reloaded for a new task."
+                ),
+                "hint": "Skill context released. Proceed without its instructions.",
+            },
+            ensure_ascii=False,
+        )
+    except Exception as e:
+        return tool_error(str(e), success=False)
+
+
+SKILL_UNLOAD_SCHEMA = {
+    "name": "skill_unload",
+    "description": (
+        "Dismiss a previously loaded skill from the active session context. "
+        "Call this after completing any task for which you loaded a skill. "
+        "Prevents stale skill instructions from bleeding into unrelated tasks "
+        "and frees token budget. Always unload skills when the task is done."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {
+                "type": "string",
+                "description": "Name of the skill to unload (e.g. 'flutter-managing-state').",
+            },
+        },
+        "required": ["name"],
+    },
+}
+
+registry.register(
+    name="skill_unload",
+    toolset="skills",
+    schema=SKILL_UNLOAD_SCHEMA,
+    handler=lambda args, **kw: skill_unload(
+        name=args.get("name", ""), task_id=kw.get("task_id")
+    ),
+    check_fn=check_skills_requirements,
+    emoji="📤",
+)
+
+
 # ── Plugin skill serving ──────────────────────────────────────────────────
 
 

@@ -262,8 +262,11 @@ class TestBuildSkillsSystemPrompt:
         )
         result = build_skills_system_prompt()
         assert "python-debug" in result
-        assert "Debug Python scripts" in result
         assert "available_skills" in result
+        assert "4-step skill workflow" in result
+        assert "skill_peek(name)" in result
+        assert "skill_view(name)" in result
+        assert "3-step skill workflow" not in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -322,7 +325,6 @@ class TestBuildSkillsSystemPrompt:
             result = build_skills_system_prompt()
 
         assert "imessage" in result
-        assert "Send iMessages" in result
 
     def test_excludes_disabled_skills(self, monkeypatch, tmp_path):
         """Skills in the user's disabled list should not appear in the system prompt."""

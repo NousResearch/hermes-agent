@@ -369,7 +369,8 @@ def test_auth_add_nous_oauth_honors_custom_label(tmp_path, monkeypatch):
     assert payload["providers"]["nous"]["label"] == "my-nous"
 
 
-def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("auth_type", [None, "oauth"])
+def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch, auth_type):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, {"version": 1, "providers": {}})
     token = _jwt_with_email("codex@example.com")
@@ -389,9 +390,13 @@ def test_auth_add_codex_oauth_persists_pool_entry(tmp_path, monkeypatch):
 
     class _Args:
         provider = "openai-codex"
-        auth_type = "oauth"
         api_key = None
         label = None
+
+    # Regression coverage for #42712: `hermes auth add openai-codex`
+    # without `--type oauth` must choose the Codex device-code OAuth flow,
+    # not the generic API-key prompt.
+    setattr(_Args, "auth_type", auth_type)
 
     auth_add_command(_Args())
 

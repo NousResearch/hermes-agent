@@ -341,8 +341,17 @@ _AUTH_PATTERNS = [
     "forbidden",
     "invalid token",
     "token expired",
+    "token has expired",
     "token revoked",
     "access denied",
+    # AWS SSO / Bedrock: botocore raises TokenRetrievalError with this exact
+    # text when the cached SSO token has expired and silent refresh failed.
+    # Without these, the message classifies as `unknown` (retryable) and burns
+    # the full retry budget before fallback instead of failing over immediately.
+    "retrieving token from sso",
+    "token has expired and refresh failed",
+    "error loading sso token",
+    "sso session associated with this profile has expired",
 ]
 
 # Anthropic thinking block signature patterns

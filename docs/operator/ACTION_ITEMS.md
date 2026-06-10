@@ -1,6 +1,6 @@
 # Action Items For You
 
-Current status: none.
+Current status: 1 open item.
 
 Use Linear as the durable source of truth for operator action items. This file is
 the quick side-panel index: keep it short, current, and link to the Linear issue
@@ -10,7 +10,7 @@ Linear view: [Hermes - Action Items For Jesse](https://linear.app/agents-n-such/
 
 ## Open
 
-- None.
+- [HERMES-10](https://linear.app/agents-n-such/issue/HERMES-10/track-studio-hermes-spotify-and-apple-music-integrations): Complete Apple Music MusicKit setup on Studio so the installed `apple_music` MCP can use catalog/library/playlist tools. Needed: Apple Developer Team ID, MusicKit Key ID, `.p8` private key stored locally, and Music User Token from the MCP setup flow. Do not put secrets in chat or Linear.
 
 ## Recently Cleared
 

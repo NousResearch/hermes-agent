@@ -1461,7 +1461,7 @@ def test_legacy_kb_slash_commands_are_supported_but_not_registered(monkeypatch):
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {"result": {"total": 0, "items": []}},
+            "mcp_kb_engine_prod_review_inbox": {"result": {"total": 0, "items": []}},
             "mcp_kb_engine_prod_attention_cockpit": {"result": {"readiness": {"status": "ready"}}},
             "mcp_kb_engine_prod_run_health": {"result": {"active": [], "recent": []}},
             "mcp_kb_engine_prod_workflow_plan_request": {"result": {"status": "ready"}},
@@ -1934,7 +1934,7 @@ def test_kb_queue_skip_uses_server_window_when_available(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = SequencedFakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": [
+            "mcp_kb_engine_prod_review_inbox": [
                 {
                     "result": {
                         "total": 3,
@@ -1990,7 +1990,7 @@ def test_kb_queue_skip_uses_server_window_when_available(monkeypatch, tmp_path):
     if asyncio.iscoroutine(skip_card):
         skip_card = asyncio.run(skip_card)
 
-    assert ctx.calls[-1] == ("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5, "offset": 1})
+    assert ctx.calls[-1] == ("mcp_kb_engine_prod_review_inbox", {"scope": "proposals", "limit": 5, "offset": 1})
     assert "Advanced to the next kb-engine review window" in skip_card["text"]
     assert "Keio University" in skip_card["text"]
 
@@ -2074,13 +2074,40 @@ def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
     assert adapter.sent[0]["actions"] == []
 
 
-def test_kbqueue_review_todo_item_shows_todo_native_actions(monkeypatch):
+def test_kb_review_queue_refuses_legacy_queue_fallback_without_review_inbox(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
             "mcp_kb_engine_prod_queue_summary": {
+                "result": {
+                    "total": 1,
+                    "items": [{"title": "Legacy Queue Item"}],
+                }
+            }
+        }
+    )
+    adapter = FakeKbActionsAdapter()
+    hook = build_pre_gateway_dispatch_hook(ctx)
+
+    result = hook(event=_event("/kb review queue"), gateway=_authorized_gateway(adapter), session_store=None)
+    _drain_scheduled_tasks()
+
+    assert result == {"action": "skip", "reason": "kb_journeys"}
+    assert ctx.calls == [("mcp_kb_engine_prod_review_inbox", {"scope": "proposals", "limit": 5})]
+    assert "KB data is not available yet." in adapter.sent[0]["text"]
+    assert "mcp_kb_engine_prod_review_inbox" in adapter.sent[0]["text"]
+    assert "Legacy Queue Item" not in adapter.sent[0]["text"]
+
+
+def test_kbqueue_review_todo_item_shows_todo_native_actions(monkeypatch):
+    from plugins.kb_journeys import build_pre_gateway_dispatch_hook
+
+    monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
+    ctx = FakeContext(
+        {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 1,
                     "items": [
@@ -2140,7 +2167,7 @@ def test_kbqueue_review_item_renders_descriptor_preview_and_confirm_buttons(monk
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 1,
                     "items": [
@@ -2364,7 +2391,7 @@ def test_kbqueue_confirm_advances_to_backend_next_review_card(monkeypatch):
     ]
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 2,
                     "items": [
@@ -2704,7 +2731,7 @@ def test_kbqueue_decision_can_be_previewed_and_confirmed_by_text_command(monkeyp
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 1,
                     "items": [
@@ -2847,7 +2874,7 @@ def test_kbqueue_text_confirm_uses_preview_scope_when_queue_shifts(monkeypatch, 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = SequencedFakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": [
+            "mcp_kb_engine_prod_review_inbox": [
                 {
                     "result": {
                         "total": 2,
@@ -2914,7 +2941,7 @@ def test_kbqueue_reject_all_previews_visible_window_only(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 11,
                     "items": [
@@ -3052,7 +3079,7 @@ def test_kbqueue_bare_reply_uses_visible_iterative_item_state(monkeypatch, tmp_p
             "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
                 "result": {"status": "applied", "ok": True, "git": {"after": {"changed_count": 2}}}
             },
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "counts": {"proposals": 1},
                     "items": [
@@ -3133,7 +3160,7 @@ def test_kbqueue_bare_reply_records_options_presented_as_pending_action(monkeypa
             "mcp_kb_engine_prod_queue_batch_decide_confirmed": {
                 "result": {"status": "applied", "ok": True, "git": {"after": {"changed_count": 1}}}
             },
-            "mcp_kb_engine_prod_queue_summary": {"result": {"counts": {"proposals": 0}, "items": []}},
+            "mcp_kb_engine_prod_review_inbox": {"result": {"counts": {"proposals": 0}, "items": []}},
         }
     )
     adapter = FakeKbActionsAdapter()
@@ -3186,7 +3213,7 @@ def test_kbqueue_todo_complete_decision_uses_queue_decision_contract(monkeypatch
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 1,
                     "items": [
@@ -3245,7 +3272,7 @@ def test_kbqueue_decision_supports_batch_text_commands_and_legacy_alias(monkeypa
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 3,
                     "items": [
@@ -3299,7 +3326,7 @@ def test_queue_preview_failure_does_not_offer_confirm(monkeypatch):
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 1,
                     "items": [

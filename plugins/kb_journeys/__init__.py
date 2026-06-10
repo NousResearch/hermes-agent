@@ -4928,12 +4928,7 @@ def _queue_summary_payload(
     _, data, errors = _dispatch_first(
         ctx,
         target,
-        [
-            ("review.inbox", dict(args)),
-            ("queue.summary", dict(args)),
-            ("workbench.queue", dict(args)),
-            ("queue.preview", {"limit": limit}),
-        ],
+        [("review.inbox", dict(args))],
     )
     return data, errors
 

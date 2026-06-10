@@ -625,7 +625,39 @@ export function usePromptActions({
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
-        await requestGateway('prompt.submit', { session_id: sessionId, text, ...remoteSenderParams() })
+
+        // On sleep/wake the gateway's in-memory session may have been cleared
+        // while the desktop app still holds the old session ID, so the first
+        // prompt.submit returns "session not found". Resume the durable stored
+        // session to re-register it, adopt the fresh live ID, and retry once.
+        let submitErr: unknown = null
+
+        try {
+          await requestGateway('prompt.submit', { session_id: sessionId, text, ...remoteSenderParams() })
+        } catch (firstErr) {
+          const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
+
+          if (/session not found/i.test(firstMsg) && selectedStoredSessionIdRef.current) {
+            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+              session_id: selectedStoredSessionIdRef.current
+            })
+
+            const recoveredId = resumed?.session_id
+
+            if (recoveredId) {
+              activeSessionIdRef.current = recoveredId
+              await requestGateway('prompt.submit', { session_id: recoveredId, text, ...remoteSenderParams() })
+            } else {
+              submitErr = firstErr
+            }
+          } else {
+            submitErr = firstErr
+          }
+        }
+
+        if (submitErr !== null) {
+          throw submitErr
+        }
 
         if (usingComposerAttachments) {
           clearComposerAttachments()
@@ -667,6 +699,7 @@ export function usePromptActions({
     },
     [
       activeSessionId,
+      activeSessionIdRef,
       busyRef,
       copy,
       createBackendSessionForSend,

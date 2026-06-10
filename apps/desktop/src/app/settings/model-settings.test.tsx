@@ -68,15 +68,16 @@ describe('ModelSettings', () => {
     await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalled())
 
     // Open the provider Select — every provider from the full payload should be
-    // listed, including the unconfigured one with its "set up" hint.
+    // listed, including unconfigured ones (the old endpoint hid those).
     const triggers = await screen.findAllByRole('combobox')
     fireEvent.click(triggers[0])
 
     // "Nous" shows in both the trigger and the open list; the unconfigured
-    // provider + its setup hint are the unique signal of the full universe.
+    // DeepSeek appearing at all is the unique signal of the full universe.
+    // (Activation is handled by the inline setup flow — covered by the next
+    // test — not a dropdown suffix, so we no longer assert a "set up" hint here.)
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(await screen.findByText(/DeepSeek/)).toBeTruthy()
-    expect(await screen.findByText(/set up/)).toBeTruthy()
   })
 
   it('activates an unconfigured api_key provider inline by saving its key', async () => {

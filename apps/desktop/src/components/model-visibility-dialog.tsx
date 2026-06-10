@@ -15,6 +15,8 @@ import {
   collapseModelFamilies,
   effectiveVisibleKeys,
   modelVisibilityKey,
+  providerFamilyIds,
+  toggleProviderVisibility,
   setVisibleModels
 } from '@/store/model-visibility'
 import type { ModelOptionProvider, ModelOptionsResponse } from '@/types/hermes'
@@ -71,6 +73,36 @@ export function ModelVisibilityDialog({
     setVisibleModels(next)
   }
 
+  const toggleProvider = (provider: ModelOptionProvider) => {
+    const currentStored = $visibleModels.get()
+    let next = new Set(effectiveVisibleKeys(currentStored, providers))
+
+    // Collect all family keys for this provider.
+    const familyIds = providerFamilyIds(provider)
+    const providerKeys = familyIds.map(id => modelVisibilityKey(provider.slug, id))
+
+    const anyVisible = providerKeys.some(k => next.has(k))
+
+    if (anyVisible) {
+      // Disable ALL models of this provider; leave tombstone to prevent
+      // effectiveVisibleKeys from re-adding defaults on reload.
+      for (const k of providerKeys) {
+        next.delete(k)
+      }
+      const tombstone = `${provider.slug}::`
+      next.add(tombstone)
+    } else {
+      // Enable ALL models — remove tombstone if present, add all family keys.
+      const tombstone = `${provider.slug}::`
+      next.delete(tombstone)
+      for (const k of providerKeys) {
+        next.add(k)
+      }
+    }
+
+    setVisibleModels(next)
+  }
+
   const q = search.trim().toLowerCase()
 
   const matches = (provider: ModelOptionProvider, model: string) =>
@@ -101,20 +133,47 @@ export function ModelVisibilityDialog({
             </div>
           ) : (
             providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
+              const allFamilies = collapseModelFamilies(provider.models ?? [])
 
-              if (models.length === 0) {
+              if (allFamilies.length === 0) {
                 return null
               }
 
+              // Always show the provider header + toggle, even when all models
+              // are disabled — otherwise user has no way to re-enable.
+              const families = allFamilies.filter(family => matches(provider, family.id))
+
               return (
                 <div className="py-0.5" key={provider.slug}>
-                  <div className="px-3 pb-0.5 pt-1 text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
-                    {provider.name}
-                  </div>
-                  {models.map(family => {
-                    const { name, tag } = modelDisplayParts(family.id)
+                  {(() => {
+                    const familyIds = providerFamilyIds(provider)
+                    const anyVisible = familyIds.some(
+                      id => visible.has(modelVisibilityKey(provider.slug, id))
+                    )
+
+                    return (
+                      <label className="flex cursor-pointer items-center gap-2 px-3 pb-0.5 pt-1 hover:bg-accent/50">
+                        <span className="text-[0.625rem] font-medium uppercase tracking-wide text-(--ui-text-tertiary)">
+                          {provider.name}
+                        </span>
+                        <Switch
+                          checked={anyVisible}
+                          className="ml-auto"
+                          onCheckedChange={() => toggleProvider(provider)}
+                        />
+                      </label>
+                    )
+                  })()}
+
+                  {/* Only render model rows that pass search filter AND are visible */}
+                  {families.map(family => {
                     const key = modelVisibilityKey(provider.slug, family.id)
+
+                    if (!visible.has(key)) {
+                      return null
+                    }
+
+                    const { name, tag } = modelDisplayParts(family.id)
 
                     return (
                       <label

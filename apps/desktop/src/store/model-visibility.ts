@@ -98,6 +98,54 @@ export function defaultVisibleKeys(providers: readonly ModelOptionProvider[]): S
   return keys
 }
 
+/** Collect all family base-ids that belong to a provider (from current
+ *  backend response). */
+export function providerFamilyIds(
+  provider: { slug: string; models?: readonly string[] },
+): string[] {
+  return collapseModelFamilies(provider.models ?? []).map(family => family.id)
+}
+
+/** Ensure every family of a provider is present in the visible set. */
+export function enableProvider(provider: { slug: string; models?: readonly string[] }, keys: Set<string>): void {
+  // Remove tombstone if present — this provider is now active again.
+  keys.delete(`${provider.slug}::`)
+
+  for (const id of providerFamilyIds(provider)) {
+    keys.add(modelVisibilityKey(provider.slug, id))
+  }
+}
+
+/** Remove every key belonging to a provider from the set, leaving a tombstone
+ *  (`slug::`) so `effectiveVisibleKeys` knows this was an intentional choice,
+ *  not "never customized". */
+export function disableProvider(provider: { slug: string; models?: readonly string[] }, keys: Set<string>): void {
+  const prefix = `${provider.slug}::`
+  for (const key of [...keys]) {
+    if (key.startsWith(prefix) && key.length > prefix.length) {
+      keys.delete(key)
+    }
+  }
+  // Tombstone — prevents defaults from being auto-added back.
+  keys.add(prefix)
+}
+
+/** Toggle an entire provider's visibility in one shot. If any family of the
+ *  provider is currently visible, disable all; otherwise enable all. */
+export function toggleProviderVisibility(
+  provider: { slug: string; models?: readonly string[] },
+  keys: Set<string>,
+): void {
+  const prefix = `${provider.slug}::`
+  const anyVisible = [...keys].some(key => key.startsWith(prefix) && key.length > prefix.length)
+
+  if (anyVisible) {
+    disableProvider(provider, keys)
+  } else {
+    enableProvider(provider, keys)
+  }
+}
+
 /** Resolve which keys are currently visible: the user's explicit set when
  *  configured, otherwise the curated default for the given providers. */
 export function effectiveVisibleKeys(

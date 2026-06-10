@@ -471,9 +471,15 @@ def _compute_tool_definitions(
             for i, td in enumerate(filtered_tools):
                 if td.get("function", {}).get("name") == "browser_navigate":
                     desc = td["function"].get("description", "")
-                    desc = desc.replace(
-                        " For simple information retrieval, prefer web_search or web_extract (faster, cheaper).",
+                    desc = re.sub(
+                        r"\s+[^.]*\bweb_search\b[^.]*\.",
                         "",
+                        desc,
+                    )
+                    desc = re.sub(
+                        r"\s+[^.]*\bweb_extract\b[^.]*\.",
+                        "",
+                        desc,
                     )
                     filtered_tools[i] = {
                         "type": "function",

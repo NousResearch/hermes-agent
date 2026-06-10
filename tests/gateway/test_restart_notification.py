@@ -445,7 +445,7 @@ async def test_send_restart_notification_skips_stale_marker_missing_identity(tmp
     }))
 
     runner, adapter = make_restart_runner()
-    runner._is_user_authorized = MagicMock(return_value=False)
+    runner._is_user_authorized = MagicMock(return_value=True)
     adapter.send = AsyncMock()
 
     delivered_target = await runner._send_restart_notification()

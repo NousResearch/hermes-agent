@@ -1250,8 +1250,6 @@ class GatewaySlashCommandsMixin:
             # files from trying to message arbitrary platform targets.
             if event.source.user_id:
                 notify_data["user_id"] = event.source.user_id
-            if event.source.chat_type:
-                notify_data["chat_type"] = event.source.chat_type
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
             if event.message_id:

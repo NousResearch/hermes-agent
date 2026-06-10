@@ -587,6 +587,46 @@ def test_configure_callback_port_uses_explicit_port():
     assert cfg["_resolved_port"] == 54321
 
 
+def test_configure_callback_port_reuses_cached_client_redirect_port(tmp_path, monkeypatch):
+    """Cached client registrations must keep using their registered port."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    storage = HermesTokenStorage("summ")
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "summ.client.json").write_text(json.dumps({
+        "client_id": "client-123",
+        "redirect_uris": ["http://127.0.0.1:57727/callback"],
+    }))
+
+    cfg = {"redirect_port": 0}
+    port = _configure_callback_port(cfg, storage)
+
+    assert port == 57727
+    assert cfg["_resolved_port"] == 57727
+
+
+def test_configure_callback_port_explicit_overrides_cached_client_port(tmp_path, monkeypatch):
+    """Explicit config wins over any cached registration."""
+    from tools.mcp_oauth import _configure_callback_port
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    storage = HermesTokenStorage("summ")
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True)
+    (token_dir / "summ.client.json").write_text(json.dumps({
+        "client_id": "client-123",
+        "redirect_uris": ["http://127.0.0.1:57727/callback"],
+    }))
+
+    cfg = {"redirect_port": 54321}
+    port = _configure_callback_port(cfg, storage)
+
+    assert port == 54321
+    assert cfg["_resolved_port"] == 54321
+
+
 def test_build_oauth_auth_preserves_server_url_path():
     """server_url with path is forwarded to OAuthClientProvider unmodified.
 

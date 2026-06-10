@@ -433,7 +433,7 @@ class MCPOAuthManager:
                 "authorization."
             )
 
-        _configure_callback_port(cfg)
+        _configure_callback_port(cfg, storage)
         client_metadata = _build_client_metadata(cfg)
         _maybe_preregister_client(storage, cfg, client_metadata)
 

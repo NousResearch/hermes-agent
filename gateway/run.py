@@ -1994,6 +1994,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
+        self._pending_native_audio_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
@@ -7580,19 +7581,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             pass
 
         if audio_file_paths:
-            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
-            for _apath in audio_file_paths:
-                _basename = os.path.basename(_apath)
-                _parts = _basename.split("_", 2)
-                _display = _parts[2] if len(_parts) >= 3 else _basename
-                _display = re.sub(r'[^\w.\- ]', '_', _display)
-                _agent_path = _to_agent_path(_apath)
-                _note = (
-                    f"[The user sent an audio file attachment: '{_display}'. "
-                    f"It is saved at: {_agent_path}. "
-                    f"Ask the user what they'd like you to do with it, or pass the path to a transcription or media tool.]"
+            # Decide routing: native (attach audio to model) vs text (STT transcription).
+            _audio_mode = self._decide_audio_input_mode()
+            if _audio_mode == "native":
+                # Defer attachment to the run_conversation call site.
+                pending_audio = getattr(self, "_pending_native_audio_paths_by_session", None)
+                if pending_audio is None:
+                    pending_audio = {}
+                    self._pending_native_audio_paths_by_session = pending_audio
+                pending_audio[session_key] = list(audio_file_paths)
+                logger.info(
+                    "Audio routing: native (model supports audio). %d audio file(s) will be attached inline.",
+                    len(audio_file_paths),
                 )
-                message_text = f"{_note}\n\n{message_text}"
+            else:
+                from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
+                for _apath in audio_file_paths:
+                    _basename = os.path.basename(_apath)
+                    _parts = _basename.split("_", 2)
+                    _display = _parts[2] if len(_parts) >= 3 else _basename
+                    _display = re.sub(r'[^\w.\- ]', '_', _display)
+                    _agent_path = _to_agent_path(_apath)
+                    _note = (
+                        f"[The user sent an audio file attachment: '{_display}'. "
+                        f"It is saved at: {_agent_path}. "
+                        f"Ask the user what they'd like you to do with it, or pass the path to a transcription or media tool.]"
+                    )
+                    message_text = f"{_note}\n\n{message_text}"
 
         if event.media_urls and event.message_type == MessageType.DOCUMENT:
             import mimetypes as _mimetypes
@@ -7692,6 +7707,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _consume_pending_native_image_paths(self, session_key: str) -> List[str]:
         pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
+        if not pending_native:
+            return []
+        return list(pending_native.pop(session_key, []) or [])
+
+    def _consume_pending_native_audio_paths(self, session_key: str) -> List[str]:
+        pending_native = getattr(self, "_pending_native_audio_paths_by_session", None)
         if not pending_native:
             return []
         return list(pending_native.pop(session_key, []) or [])
@@ -11390,6 +11411,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("image_routing: decision failed, falling back to text — %s", exc)
             return "text"
 
+    def _decide_audio_input_mode(self) -> str:
+        """Resolve the audio-input routing for the currently active model.
+
+        Returns ``"native"`` (attach audio on the user turn) or ``"stt"``
+        (transcribe via STT and prepend the text). See
+        agent/audio_routing.py for the full decision table.
+
+        The active provider/model are read from config.yaml so the decision
+        tracks ``/model`` switches automatically on the next message.
+        """
+        try:
+            from agent.audio_routing import decide_audio_input_mode
+            from agent.auxiliary_client import _read_main_model, _read_main_provider
+            from hermes_cli.config import load_config
+
+            cfg = load_config()
+            provider = _read_main_provider()
+            model = _read_main_model()
+            return decide_audio_input_mode(provider, model, cfg)
+        except Exception as exc:
+            logger.debug("audio_routing: decision failed, falling back to stt — %s", exc)
+            return "stt"
+
     async def _enrich_message_with_vision(
         self,
         user_text: str,
@@ -14264,6 +14308,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _run_message = message
                 else:
                     _run_message = message
+
+                # If audio was deferred for native attachment, wrap as multimodal content.
+                _native_audio = self._consume_pending_native_audio_paths(session_key)
+                if _native_audio:
+                    try:
+                        from agent.audio_routing import build_audio_content_parts
+                        _audio_parts, _audio_skipped = build_audio_content_parts(
+                            message if isinstance(_run_message, str) else "",
+                            _native_audio,
+                        )
+                        if _audio_skipped:
+                            logger.warning(
+                                "Native audio attachment: skipped %d unreadable path(s): %s",
+                                len(_audio_skipped), _audio_skipped,
+                            )
+                        if _audio_parts:
+                            # Merge with existing image parts if present
+                            if isinstance(_run_message, list):
+                                _run_message = _run_message + _audio_parts
+                            else:
+                                _run_message = _audio_parts
+                    except Exception as _audio_exc:
+                        logger.warning(
+                            "Native audio attachment failed, falling back to text: %s",
+                            _audio_exc,
+                        )
 
                 _api_run_message = _wrap_current_message_with_observed_context(
                     _run_message,

@@ -47,6 +47,19 @@ logger = logging.getLogger("gateway.run")
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
+    def _typed_command_prefix_for(self, platform) -> str:
+        """Return the prefix users can always type to reach Hermes commands.
+
+        Reads the adapter's ``typed_command_prefix`` capability flag
+        (default "/"). Slack and Matrix return "!" because typed "/"
+        commands are blocked in Slack threads / reserved by Matrix clients;
+        their adapters rewrite "!command" to "/command" on receive.
+        Instruction text built for those platforms must show the prefix
+        that actually works when typed.
+        """
+        adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
+        return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
@@ -1324,13 +1337,14 @@ class GatewaySlashCommandsMixin:
                 # an explicit decision).
                 return await _finish_switch()
 
+            _p = self._typed_command_prefix_for(event.source.platform)
             return await self._request_slash_confirm(
                 event=event,
                 command="model",
                 title="Expensive Model Warning",
                 message=(
                     f"⚠️ **Expensive Model Warning**\n\n{_cost_warning.message}\n\n"
-                    "_Text fallback: reply `/approve` to switch or `/cancel` to keep "
+                    f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep "
                     "the current model._"
                 ),
                 handler=_on_cost_confirm,

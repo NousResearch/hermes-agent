@@ -203,6 +203,8 @@ describe('usePromptActions /goal', () => {
         } as never)
 
         capturedMessages.splice(0, capturedMessages.length, ...next.messages)
+
+        return next
       }
     })
 

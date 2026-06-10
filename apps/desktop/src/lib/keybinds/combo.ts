@@ -10,8 +10,7 @@
 // Control+Tab. Off macOS, Control already *is* `mod`, so `canonicalizeCombo`
 // folds `ctrl` → `mod`.
 
-export const IS_MAC =
-  typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '')
+export const IS_MAC = typeof navigator !== 'undefined' && /mac/i.test(navigator.platform || navigator.userAgent || '')
 
 // event.code → canonical base token. Letters/digits map to their lowercase
 // character; everything else uses an explicit name so combos read cleanly.
@@ -140,33 +139,38 @@ function labelForBase(base: string): string {
   return base.length === 1 ? base.toUpperCase() : base
 }
 
-// Human-readable label, e.g. "⌘⇧K" on macOS, "Ctrl+Shift+K" elsewhere.
-export function formatCombo(combo: string): string {
+function labelForMod(mod: string): string {
+  if (mod === 'mod') {
+    return IS_MAC ? '⌘' : 'Ctrl'
+  }
+
+  if (mod === 'ctrl') {
+    return IS_MAC ? '⌃' : 'Ctrl'
+  }
+
+  if (mod === 'alt') {
+    return IS_MAC ? '⌥' : 'Alt'
+  }
+
+  if (mod === 'shift') {
+    return IS_MAC ? '⇧' : 'Shift'
+  }
+
+  return mod
+}
+
+// Per-key display tokens, e.g. ["⌘", "K"] on macOS, ["Ctrl", "K"] elsewhere —
+// one cap per token for <KbdGroup>.
+export function comboTokens(combo: string): string[] {
   const parts = combo.split('+')
   const base = parts.pop() ?? ''
-  const mods = parts
 
-  const modLabels = mods.map(mod => {
-    if (mod === 'mod') {
-      return IS_MAC ? '⌘' : 'Ctrl'
-    }
+  return [...parts.map(labelForMod), labelForBase(base)]
+}
 
-    if (mod === 'ctrl') {
-      return IS_MAC ? '⌃' : 'Ctrl'
-    }
-
-    if (mod === 'alt') {
-      return IS_MAC ? '⌥' : 'Alt'
-    }
-
-    if (mod === 'shift') {
-      return IS_MAC ? '⇧' : 'Shift'
-    }
-
-    return mod
-  })
-
-  const tokens = [...modLabels, labelForBase(base)]
+// Human-readable label, e.g. "⌘⇧K" on macOS, "Ctrl+Shift+K" elsewhere.
+export function formatCombo(combo: string): string {
+  const tokens = comboTokens(combo)
 
   return IS_MAC ? tokens.join('') : tokens.join('+')
 }
@@ -178,9 +182,9 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 
   return Boolean(
     el?.isContentEditable ||
-      el instanceof HTMLInputElement ||
-      el instanceof HTMLTextAreaElement ||
-      el instanceof HTMLSelectElement
+    el instanceof HTMLInputElement ||
+    el instanceof HTMLTextAreaElement ||
+    el instanceof HTMLSelectElement
   )
 }
 

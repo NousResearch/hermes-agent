@@ -252,7 +252,15 @@ interface ThemeContextValue {
   theme: DesktopTheme
   themeName: string
   mode: ThemeMode
+  /** The light/dark switch the user picked. */
   resolvedMode: 'light' | 'dark'
+  /**
+   * The mode actually painted, derived from the active background's luminance.
+   * Differs from `resolvedMode` for skins that keep a bright surface in "dark"
+   * (or vice-versa). Surface-bound UI (e.g. the terminal palette) should key off
+   * this so it matches what's on screen instead of inverting.
+   */
+  renderedMode: 'light' | 'dark'
   availableThemes: Array<{ name: string; label: string; description: string }>
   setTheme: (name: string) => void
   setMode: (mode: ThemeMode) => void
@@ -265,6 +273,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   themeName: DEFAULT_SKIN_NAME,
   mode: 'light',
   resolvedMode: 'light',
+  renderedMode: 'light',
   availableThemes: SKIN_LIST,
   setTheme: () => {},
   setMode: () => {}
@@ -310,6 +319,12 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const resolvedMode = resolveMode(mode, systemDark)
   const activeTheme = useMemo(() => deriveTheme(themeName, resolvedMode), [themeName, resolvedMode])
 
+  // What actually gets painted (matches the `.dark` class applyTheme toggles).
+  const renderedMode = useMemo(
+    () => renderedModeFor(activeTheme.colors, resolvedMode),
+    [activeTheme, resolvedMode]
+  )
+
   useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
 
   // Assign to whichever profile is live right now (read fresh so the callbacks
@@ -331,8 +346,8 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // (`appearance.toggleMode`) so it shows up in the hotkey map and is rebindable.
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ theme: activeTheme, themeName, mode, resolvedMode, availableThemes, setTheme, setMode }),
-    [activeTheme, themeName, mode, resolvedMode, availableThemes, setTheme, setMode]
+    () => ({ theme: activeTheme, themeName, mode, resolvedMode, renderedMode, availableThemes, setTheme, setMode }),
+    [activeTheme, themeName, mode, resolvedMode, renderedMode, availableThemes, setTheme, setMode]
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

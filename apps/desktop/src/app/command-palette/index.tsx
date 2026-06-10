@@ -4,7 +4,9 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import { KbdGroup } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listSessions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -12,7 +14,6 @@ import {
   Activity,
   Archive,
   BarChart3,
-  Check,
   ChevronLeft,
   ChevronRight,
   Clock,
@@ -31,12 +32,15 @@ import {
   Settings,
   Settings2,
   Sun,
+  Terminal,
   Users,
   Wrench,
   Zap
 } from '@/lib/icons'
+import { comboTokens } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
+import { $bindings } from '@/store/keybinds'
 import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
 import { isUserTheme, resolveTheme } from '@/themes/user-themes'
@@ -60,7 +64,8 @@ import { prettyName } from '../settings/helpers'
 import { MarketplaceThemePage } from './marketplace-theme-page'
 
 interface PaletteItem {
-  active?: boolean
+  /** Keybind action id — its live combo renders as a hotkey hint. */
+  action?: string
   icon: IconComponent
   id: string
   /** Keep the palette open after running (live-preview pickers like theme/mode). */
@@ -95,6 +100,22 @@ interface SessionEntry {
   id: string
   preview?: string
   title: string
+}
+
+// cmdk defaults to fuzzy subsequence scoring, so "color" matches anything with
+// c…o…l…o…r scattered across it. Use case-insensitive multi-term substring
+// matching instead: every typed word must literally appear in the item's
+// value/keywords, which keeps results tight and predictable.
+const paletteFilter = (value: string, search: string, keywords?: string[]): number => {
+  const needle = search.trim().toLowerCase()
+
+  if (!needle) {
+    return 1
+  }
+
+  const haystack = `${value} ${keywords?.join(' ') ?? ''}`.toLowerCase()
+
+  return needle.split(/\s+/).every(term => haystack.includes(term)) ? 1 : 0
 }
 
 type SessionRow = Awaited<ReturnType<typeof listSessions>>['sessions'][number]
@@ -180,8 +201,9 @@ function themeSupportsMode(name: string, target: 'light' | 'dark'): boolean {
 export function CommandPalette() {
   const { t } = useI18n()
   const open = useStore($commandPaletteOpen)
+  const bindings = useStore($bindings)
   const navigate = useNavigate()
-  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
+  const { availableThemes, setMode, setTheme } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
 
@@ -254,20 +276,61 @@ export function CommandPalette() {
       {
         heading: cc.goTo,
         items: [
-          { icon: Plus, id: 'nav-new', keywords: ['chat', 'create'], label: cc.nav.newChat.title, run: go(NEW_CHAT_ROUTE) },
-          { icon: Settings, id: 'nav-settings', label: cc.nav.settings.title, run: go(SETTINGS_ROUTE) },
           {
+            action: 'session.new',
+            icon: Plus,
+            id: 'nav-new',
+            keywords: ['chat', 'create'],
+            label: cc.nav.newChat.title,
+            run: go(NEW_CHAT_ROUTE)
+          },
+          {
+            action: 'view.showTerminal',
+            icon: Terminal,
+            id: 'nav-terminal',
+            keywords: ['terminal', 'shell', 'console'],
+            label: t.keybinds.actions['view.showTerminal'],
+            run: () => setTerminalTakeover(true)
+          },
+          {
+            action: 'nav.settings',
+            icon: Settings,
+            id: 'nav-settings',
+            label: cc.nav.settings.title,
+            run: go(SETTINGS_ROUTE)
+          },
+          {
+            action: 'nav.skills',
             icon: Wrench,
             id: 'nav-skills',
             keywords: ['tools', 'toolsets'],
             label: cc.nav.skills.title,
             run: go(SKILLS_ROUTE)
           },
-          { icon: MessageCircle, id: 'nav-messaging', label: cc.nav.messaging.title, run: go(MESSAGING_ROUTE) },
-          { icon: Package, id: 'nav-artifacts', label: cc.nav.artifacts.title, run: go(ARTIFACTS_ROUTE) },
-          { icon: Clock, id: 'nav-cron', keywords: ['schedule', 'jobs'], label: t.shell.statusbar.cron, run: go(CRON_ROUTE) },
-          { icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
-          { icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) }
+          {
+            action: 'nav.messaging',
+            icon: MessageCircle,
+            id: 'nav-messaging',
+            label: cc.nav.messaging.title,
+            run: go(MESSAGING_ROUTE)
+          },
+          {
+            action: 'nav.artifacts',
+            icon: Package,
+            id: 'nav-artifacts',
+            label: cc.nav.artifacts.title,
+            run: go(ARTIFACTS_ROUTE)
+          },
+          {
+            action: 'nav.cron',
+            icon: Clock,
+            id: 'nav-cron',
+            keywords: ['schedule', 'jobs'],
+            label: t.shell.statusbar.cron,
+            run: go(CRON_ROUTE)
+          },
+          { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
+          { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) }
         ]
       },
       {
@@ -414,9 +477,7 @@ export function CommandPalette() {
         title: t.settings.appearance.themeTitle,
         placeholder: t.settings.appearance.themeDesc,
         groups: [
-          // Pinned at the top: drills into the Marketplace browser. Activating an
-          // import only sets the skin (never the mode), so the current light/dark
-          // preference is preserved.
+          // Pinned at the top: drills into the Marketplace browser.
           {
             items: [
               {
@@ -428,10 +489,9 @@ export function CommandPalette() {
               }
             ]
           },
-          // Built-ins and imported families both list under the mode(s) they
-          // support; picking one sets skin + mode at once. Keep the palette open
-          // to preview. A multi-variant import (GitHub, Solarized) appears in
-          // both groups and switches variants with the mode.
+          // Built-ins and imported families list under the mode(s) they support;
+          // picking sets skin + mode at once. A multi-variant import (GitHub,
+          // Solarized) appears in both groups and switches variants with the mode.
           ...(['light', 'dark'] as const).map(groupMode => ({
             heading: groupMode === 'light' ? t.settings.modeOptions.light.label : t.settings.modeOptions.dark.label,
             items: availableThemes
@@ -458,7 +518,6 @@ export function CommandPalette() {
           {
             heading: t.settings.appearance.colorMode,
             items: THEME_MODES.map(entry => ({
-              active: mode === entry.mode,
               icon: entry.icon,
               id: `mode-${entry.mode}`,
               keepOpen: true,
@@ -477,7 +536,7 @@ export function CommandPalette() {
         groups: []
       }
     }),
-    [availableThemes, mode, resolvedMode, setMode, setTheme, t, themeName]
+    [availableThemes, setMode, setTheme, t]
   )
 
   const activePage = page ? subPages[page] : null
@@ -508,7 +567,7 @@ export function CommandPalette() {
           className="fixed left-1/2 top-[14vh] z-[210] w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-lg duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95"
         >
           <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
-          <Command className="bg-transparent" loop>
+          <Command className="bg-transparent" filter={paletteFilter} loop>
             {activePage && (
               <button
                 className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
@@ -553,6 +612,8 @@ export function CommandPalette() {
                 >
                   {group.items.map(item => {
                     const Icon = item.icon
+                    const combo = item.action ? bindings[item.action]?.[0] : undefined
+                    const keys = combo ? comboTokens(combo) : null
 
                     return (
                       <CommandItem
@@ -564,10 +625,11 @@ export function CommandPalette() {
                       >
                         <Icon className="size-4 shrink-0 text-muted-foreground" />
                         <span className="truncate">{item.label}</span>
-                        {item.to ? (
-                          <ChevronRight className="ml-auto size-4 shrink-0 text-muted-foreground/70" />
-                        ) : (
-                          <Check className={cn('ml-auto size-4 text-foreground', !item.active && 'invisible')} />
+                        {keys && <KbdGroup className="ml-auto" keys={keys} />}
+                        {item.to && (
+                          <ChevronRight
+                            className={cn('size-4 shrink-0 text-muted-foreground/70', !keys && 'ml-auto')}
+                          />
                         )}
                       </CommandItem>
                     )

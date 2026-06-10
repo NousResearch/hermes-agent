@@ -48,19 +48,27 @@ export function buildThemeFromMarketplace(result: DesktopMarketplaceThemeResult)
     const label = file.label || raw.name || result.displayName
     const { mode, theme } = convertVscodeColorTheme(raw, { label, source: result.extensionId })
 
-    return { mode, palette: theme.colors }
+    return { mode, palette: theme.colors, terminal: theme.terminal }
   })
 
-  const fallback = variants[0].palette
-  const light = variants.find(variant => variant.mode === 'light')?.palette
-  const dark = variants.find(variant => variant.mode === 'dark')?.palette
+  const fallback = variants[0]
+  const light = variants.find(variant => variant.mode === 'light') ?? fallback
+  const dark = variants.find(variant => variant.mode === 'dark') ?? fallback
+
+  // The terminal ANSI palette tracks the painted variant the same way colors do
+  // (light → terminal, dark → darkTerminal); each falls back to the other so a
+  // single-variant import still themes the terminal in both modes.
+  const terminal = light.terminal ?? dark.terminal
+  const darkTerminal = dark.terminal ?? light.terminal
 
   return {
     name: vscodeThemeSlug(result.displayName),
     label: result.displayName,
     description: `VS Code · ${result.extensionId}`,
-    colors: light ?? dark ?? fallback,
-    darkColors: dark ?? light ?? fallback
+    colors: light.palette,
+    darkColors: dark.palette,
+    ...(terminal ? { terminal } : {}),
+    ...(darkTerminal ? { darkTerminal } : {})
   }
 }
 

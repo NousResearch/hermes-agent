@@ -237,6 +237,24 @@ def _derive_responses_function_call_id(
     return f"fc_{digest}"
 
 
+# chatgpt.com/backend-api/codex caps input item ids at 64 chars and rejects
+# longer ones with HTTP 400 ``string_above_max_length``. With store=False the
+# backend returns ~400-char encrypted message ids; echoing them back on replay
+# fails the whole request. ``id`` is optional on replayed assistant messages,
+# so drop any id the backend would refuse rather than send it.
+_MAX_REPLAY_ITEM_ID_LEN = 64
+
+
+def _replayable_item_id(raw_id: Any) -> Optional[str]:
+    """Return a backend-legal input item id, or None to omit the id."""
+    if not isinstance(raw_id, str):
+        return None
+    candidate = raw_id.strip()
+    if not candidate or len(candidate) > _MAX_REPLAY_ITEM_ID_LEN:
+        return None
+    return candidate
+
+
 # ---------------------------------------------------------------------------
 # Schema conversion
 # ---------------------------------------------------------------------------
@@ -462,9 +480,9 @@ def _chat_messages_to_responses_input(
                             "status": _normalize_responses_message_status(raw_item.get("status")),
                             "content": normalized_content_parts,
                         }
-                        item_id = raw_item.get("id")
-                        if isinstance(item_id, str) and item_id.strip():
-                            replay_item["id"] = item_id.strip()
+                        item_id = _replayable_item_id(raw_item.get("id"))
+                        if item_id:
+                            replay_item["id"] = item_id
                         phase = raw_item.get("phase")
                         if isinstance(phase, str) and phase.strip():
                             replay_item["phase"] = phase.strip()
@@ -716,9 +734,9 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 "status": _normalize_responses_message_status(item.get("status")),
                 "content": normalized_content,
             }
-            item_id = item.get("id")
-            if isinstance(item_id, str) and item_id.strip():
-                normalized_item["id"] = item_id.strip()
+            item_id = _replayable_item_id(item.get("id"))
+            if item_id:
+                normalized_item["id"] = item_id
             phase = item.get("phase")
             if isinstance(phase, str) and phase.strip():
                 normalized_item["phase"] = phase.strip()

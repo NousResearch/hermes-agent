@@ -3,9 +3,13 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _MAX_REPLAY_ITEM_ID_LEN,
+    _chat_messages_to_responses_input,
     _format_responses_error,
     _normalize_codex_response,
     _preflight_codex_api_kwargs,
+    _preflight_codex_input_items,
+    _replayable_item_id,
 )
 
 
@@ -284,3 +288,98 @@ def test_normalize_codex_response_failed_with_message_only():
     )
     with pytest.raises(RuntimeError, match=r"^model error$"):
         _normalize_codex_response(response)
+
+
+# ---------------------------------------------------------------------------
+# Replay item id length cap
+# ---------------------------------------------------------------------------
+# chatgpt.com/backend-api/codex rejects input item ids longer than 64 chars
+# with HTTP 400 string_above_max_length. With store=False the backend returns
+# ~400-char encrypted message ids; echoing them back on replay fails the whole
+# request, so over-long ids must be omitted (id is optional on replayed
+# assistant messages).
+
+_LEGAL_ID = "msg_" + "a" * 60  # exactly 64 chars
+_ENCRYPTED_ID = "msg_" + "x" * 400  # store=False style encrypted id
+
+
+def test_replayable_item_id_accepts_backend_legal_ids():
+    assert _replayable_item_id(_LEGAL_ID) == _LEGAL_ID
+    assert _replayable_item_id("  msg_123  ") == "msg_123"
+
+
+def test_replayable_item_id_rejects_overlong_empty_and_non_string():
+    assert len(_LEGAL_ID) == _MAX_REPLAY_ITEM_ID_LEN
+    assert _replayable_item_id(_LEGAL_ID + "a") is None
+    assert _replayable_item_id(_ENCRYPTED_ID) is None
+    assert _replayable_item_id("   ") is None
+    assert _replayable_item_id(None) is None
+    assert _replayable_item_id(123) is None
+
+
+def _assistant_message_with_replay_id(item_id):
+    return {
+        "role": "assistant",
+        "content": "hello",
+        "codex_message_items": [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "id": item_id,
+                "phase": "final",
+                "content": [{"type": "output_text", "text": "hello"}],
+            }
+        ],
+    }
+
+
+def test_replay_drops_overlong_encrypted_message_ids():
+    items = _chat_messages_to_responses_input(
+        [_assistant_message_with_replay_id(_ENCRYPTED_ID)]
+    )
+    replayed = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
+    assert len(replayed) == 1
+    # The over-long id is omitted; the rest of the item replays intact.
+    assert "id" not in replayed[0]
+    assert replayed[0]["phase"] == "final"
+    assert replayed[0]["content"] == [{"type": "output_text", "text": "hello"}]
+
+
+def test_replay_preserves_backend_legal_message_ids():
+    items = _chat_messages_to_responses_input(
+        [_assistant_message_with_replay_id(_LEGAL_ID)]
+    )
+    replayed = [i for i in items if i.get("type") == "message" and i.get("role") == "assistant"]
+    assert len(replayed) == 1
+    assert replayed[0]["id"] == _LEGAL_ID
+
+
+def test_preflight_drops_overlong_message_ids():
+    normalized = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "id": _ENCRYPTED_ID,
+                "content": [{"type": "output_text", "text": "hi"}],
+            }
+        ]
+    )
+    assert len(normalized) == 1
+    assert "id" not in normalized[0]
+
+
+def test_preflight_preserves_backend_legal_message_ids():
+    normalized = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "id": "  msg_short  ",
+                "content": [{"type": "output_text", "text": "hi"}],
+            }
+        ]
+    )
+    assert len(normalized) == 1
+    assert normalized[0]["id"] == "msg_short"

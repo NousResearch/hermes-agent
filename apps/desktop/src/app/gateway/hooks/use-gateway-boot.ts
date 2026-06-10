@@ -29,6 +29,7 @@ import {
   $connection,
   $sessions,
   $workingSessionIds,
+  ensureDefaultWorkspaceCwd,
   setConnection,
   setSessionsLoading
 } from '@/store/session'
@@ -351,6 +352,7 @@ export function useGatewayBoot({
           message: translateNow('boot.steps.loadingSettings'),
           progress: 97
         })
+        await ensureDefaultWorkspaceCwd()
         await callbacksRef.current.refreshHermesConfig()
 
         if (cancelled) {

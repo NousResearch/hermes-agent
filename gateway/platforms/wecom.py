@@ -687,6 +687,9 @@ class WeComAdapter(BasePlatformAdapter):
                 title = str(appmsg.get("title") or "").strip()
                 if title:
                     text_parts.append(title)
+                url = str(appmsg.get("url") or appmsg.get("link") or "").strip()
+                if url:
+                    text_parts.append(url)
 
         quote = body.get("quote") if isinstance(body.get("quote"), dict) else {}
         quote_type = str(quote.get("msgtype") or "").lower()

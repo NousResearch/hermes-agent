@@ -146,6 +146,11 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
+_TOOL_CALL_BRACKET_RE = re.compile(
+    r"\[TOOL_CALL\]\s*(.*?)\s*\[/TOOL_CALL\]",
+    re.DOTALL | re.IGNORECASE,
+)
+
 # ---------------------------------------------------------------------------
 # Regex patterns
 # ---------------------------------------------------------------------------
@@ -2266,7 +2271,14 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
-        return content.strip()
+        text = content.strip()
+        if not text:
+            return text
+        match = _TOOL_CALL_BRACKET_RE.search(text)
+        if match:
+            payload = match.group(1).strip() or "unknown command"
+            return f"⚠️ Unresolved tool call: {payload}"
+        return text
 
     # =========================================================================
     # Inbound event handlers

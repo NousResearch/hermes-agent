@@ -3470,7 +3470,21 @@ def run_conversation(
                 }
             elif hasattr(agent, "_codex_incomplete_retries"):
                 agent._codex_incomplete_retries = 0
-            
+
+            # ── Bridge [TOOL_CALL] extraction ───────────────────────────────────
+            # PR #21/#22: model may emit [TOOL_CALL]...[/TOOL_CALL] in content
+            # instead of (or in addition to) native tool_calls.  Build these into
+            # assistant_message.tool_calls BEFORE the guard below so bracket-only
+            # calls are also routed to _execute_tool_calls.
+            from agent.chat_completion_helpers import _extract_bracket_tool_calls
+            _raw_content = assistant_message.content or ""
+            if isinstance(_raw_content, str) and "[TOOL_CALL]" in _raw_content:
+                _bridge_calls, _stripped = _extract_bracket_tool_calls(agent, _raw_content)
+                if _bridge_calls:
+                    assistant_message.content = _stripped
+                    existing = list(assistant_message.tool_calls) if assistant_message.tool_calls else []
+                    assistant_message.tool_calls = existing + _bridge_calls
+
             # Check for tool calls
             if assistant_message.tool_calls:
                 if not agent.quiet_mode:

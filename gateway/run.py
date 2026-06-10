@@ -560,6 +560,26 @@ _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
 _OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
 
+_MATERIAL_INGEST_INTENT_RE = re.compile(
+    r"(?:"
+    r"入库|归档|保存(?:到|进)?知识库|放(?:进|到)?知识库|整理(?:这个|这份)?(?:文件|资料)|"
+    r"处理(?:这份)?资料|转\s*Markdown|source\s*包|source包"
+    r")",
+    re.IGNORECASE,
+)
+_GITHUB_RESOURCE_URL_RE = re.compile(
+    r"https?://(?:www\.)?github\.com/[^\s)]+/(?:"
+    r"actions(?:/|$)"
+    r"|pull/"
+    r"|issues/"
+    r"|commit/"
+    r"|tree/"
+    r"|blob/"
+    r"|jobs(?:/|$)"
+    r")",
+    re.IGNORECASE,
+)
+
 
 def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
     """Return True for Telegram group turns that may include observed chatter.
@@ -573,6 +593,38 @@ def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool
     """
 
     return bool(channel_prompt and _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER in channel_prompt)
+
+
+def _looks_like_material_ingest_intent(text: str) -> bool:
+    """Return True when the user explicitly wants a resource handled as material."""
+    return bool(text and _MATERIAL_INGEST_INTENT_RE.search(text))
+
+
+def _contains_github_resource_url(text: str) -> bool:
+    """Return True for GitHub URLs that should stay in the normal text path."""
+    return bool(text and _GITHUB_RESOURCE_URL_RE.search(text))
+
+
+def _should_add_material_context(event: "MessageEvent", message_text: str) -> bool:
+    """Return True when inbound text should be treated as material candidate text.
+
+    Plain text commands stay in the normal agent path.  Only actual attachments
+    or text that explicitly asks to ingest/archive/organize material should get
+    the extra material-handling context.  GitHub repo URLs, PRs, issues,
+    commits, trees, blobs, Actions pages, and jobs pages are treated as normal
+    links unless the user explicitly asks for material handling.
+    """
+    text = (message_text or "").strip()
+    if not text:
+        return False
+    if _looks_like_material_ingest_intent(text):
+        return True
+    if _contains_github_resource_url(text):
+        return False
+    media_urls = getattr(event, "media_urls", None) or []
+    if media_urls and getattr(event, "message_type", None) == MessageType.DOCUMENT:
+        return True
+    return False
 
 
 def _build_gateway_agent_history(
@@ -7585,47 +7637,54 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 message_text = f"{_note}\n\n{message_text}"
 
-        if event.media_urls and event.message_type == MessageType.DOCUMENT:
+        if _should_add_material_context(event, message_text):
             import mimetypes as _mimetypes
             from tools.credential_files import to_agent_visible_cache_path
 
             _TEXT_EXTENSIONS = {".txt", ".md", ".csv", ".log", ".json", ".xml", ".yaml", ".yml", ".toml", ".ini", ".cfg"}
-            for i, path in enumerate(event.media_urls):
-                mtype = event.media_types[i] if i < len(event.media_types) else ""
-                if mtype in {"", "application/octet-stream"}:
-                    _ext = os.path.splitext(path)[1].lower()
-                    if _ext in _TEXT_EXTENSIONS:
-                        mtype = "text/plain"
+            if event.media_urls and event.message_type == MessageType.DOCUMENT:
+                for i, path in enumerate(event.media_urls):
+                    mtype = event.media_types[i] if i < len(event.media_types) else ""
+                    if mtype in {"", "application/octet-stream"}:
+                        _ext = os.path.splitext(path)[1].lower()
+                        if _ext in _TEXT_EXTENSIONS:
+                            mtype = "text/plain"
+                        else:
+                            guessed, _ = _mimetypes.guess_type(path)
+                            if guessed:
+                                mtype = guessed
+                    if not mtype.startswith(("application/", "text/")):
+                        continue
+
+                    basename = os.path.basename(path)
+                    parts = basename.split("_", 2)
+                    display_name = parts[2] if len(parts) >= 3 else basename
+                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+
+                    # Translate host cache path to in-container path if running under Docker backend.
+                    # This ensures the agent receives a path it can open inside its sandbox, as the
+                    # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
+                    agent_path = to_agent_visible_cache_path(path)
+
+                    if mtype.startswith("text/"):
+                        context_note = (
+                            f"[The user sent a text document: '{display_name}'. "
+                            f"Its content has been included below. "
+                            f"The file is also saved at: {agent_path}]"
+                        )
                     else:
-                        guessed, _ = _mimetypes.guess_type(path)
-                        if guessed:
-                            mtype = guessed
-                if not mtype.startswith(("application/", "text/")):
-                    continue
-
-                basename = os.path.basename(path)
-                parts = basename.split("_", 2)
-                display_name = parts[2] if len(parts) >= 3 else basename
-                display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-
-                # Translate host cache path to in-container path if running under Docker backend.
-                # This ensures the agent receives a path it can open inside its sandbox, as the
-                # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
-                agent_path = to_agent_visible_cache_path(path)
-
-                if mtype.startswith("text/"):
-                    context_note = (
-                        f"[The user sent a text document: '{display_name}'. "
-                        f"Its content has been included below. "
-                        f"The file is also saved at: {agent_path}]"
-                    )
-                else:
-                    context_note = (
-                        f"[The user sent a document: '{display_name}'. "
-                        f"The file is saved at: {agent_path}. "
-                        f"Ask the user what they'd like you to do with it.]"
-                    )
-                message_text = f"{context_note}\n\n{message_text}"
+                        context_note = (
+                            f"[The user sent a document: '{display_name}'. "
+                            f"The file is saved at: {agent_path}. "
+                            f"Ask the user what they'd like you to do with it.]"
+                        )
+                    message_text = f"{context_note}\n\n{message_text}"
+            else:
+                message_text = (
+                    "[The user explicitly asked to ingest, archive, or organize this material. "
+                    "Treat it as a material-handling request.]\n\n"
+                    f"{message_text}"
+                )
 
         if getattr(event, "reply_to_text", None) and event.reply_to_message_id:
             # Always inject the reply-to pointer — even when the quoted text

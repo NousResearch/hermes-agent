@@ -454,6 +454,47 @@ class GatewaySlashCommandsMixin:
 
         return "\n".join(lines)
 
+    async def _handle_sessions_command(self, event: MessageEvent) -> str:
+        """Handle /sessions — list recent sessions on messaging platforms."""
+        source = event.source
+        platform = source.platform.value if source and source.platform else None
+
+        if not self._session_db or not platform:
+            return "Session database is not available."
+
+        limit = 10
+        raw_args = event.get_command_args().strip()
+        if raw_args:
+            try:
+                limit = max(1, min(50, int(raw_args.split()[0])))
+            except (ValueError, IndexError):
+                pass
+
+        try:
+            sessions = self._session_db.list_sessions_rich(
+                source=platform, limit=limit
+            )
+        except Exception as e:
+            logger.warning("[sessions] list_sessions_rich failed: %s", e, exc_info=True)
+            sessions = []
+
+        if not sessions:
+            return "No recent sessions found."
+
+        lines = ["**Recent sessions:**", ""]
+        for i, s in enumerate(sessions, 1):
+            sid = s.get("id", "?")
+            title = s.get("title") or "(untitled)"
+            started = s.get("started_at", 0)
+            ts = datetime.fromtimestamp(started).strftime("%m-%d %H:%M") if started else "?"
+            msgs = s.get("message_count", "?")
+            lines.append(f"{i}. **{title}**")
+            lines.append(f"   ID: `{sid}` · {ts} · {msgs} messages")
+            lines.append("")
+
+        lines.append("For full session management, use `hermes sessions list` in your terminal.")
+        return "\n".join(lines)
+
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
         from gateway.run import _AGENT_PENDING_SENTINEL

@@ -22,6 +22,7 @@ import {
   X,
 } from "lucide-react";
 import spinners from "unicode-animations";
+import { useNavigate } from "react-router-dom";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
 import { api } from "@/lib/api";
 import type { ActiveProfileInfo, ProfileInfo } from "@/lib/api";
@@ -96,6 +97,7 @@ function ProfileActionsMenu({
   onEditDescription,
   onEditModel,
   onEditSoul,
+  onManageSkills,
   onRename,
   onSetActive,
 }: ProfileActionsMenuProps) {
@@ -205,6 +207,16 @@ function ProfileActionsMenu({
             type="button"
             role="menuitem"
             className={itemClass}
+            onClick={run(onManageSkills)}
+          >
+            <Package className="h-4 w-4" />
+            {labels.manageSkills}
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            className={itemClass}
             onClick={run(onCopyCommand)}
           >
             <Terminal className="h-4 w-4" />
@@ -241,6 +253,7 @@ function ProfileActionsMenu({
 }
 
 export default function ProfilesPage() {
+  const navigate = useNavigate();
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [activeInfo, setActiveInfo] = useState<ActiveProfileInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -291,6 +304,10 @@ export default function ProfilesPage() {
       modelSaved: p.modelSaved ?? "Model updated",
       modelSelect: p.modelSelect ?? "Select a model",
       actions: p.actions ?? "Actions",
+      manageSkills: p.manageSkills ?? "Manage skills & tools",
+      activeSetHint:
+        p.activeSetHint ??
+        "Applies to new CLI/gateway runs. This dashboard still manages its own profile — use “Manage skills & tools” to edit {name}.",
     };
   }, [t.profiles]);
 
@@ -480,7 +497,14 @@ export default function ProfilesPage() {
       // The backend normalizes/validates the name; trust the canonical
       // value it returns rather than the raw input.
       const { active } = await api.setActiveProfile(name);
-      showToast(`${L.activeSet}: ${active}`, "success");
+      // "Set as active" only flips the sticky default for FUTURE CLI/gateway
+      // invocations — it does NOT retarget this running dashboard. Say so,
+      // or users assume skill/tool toggles now apply to the activated
+      // profile (they don't — that's what "Manage skills & tools" is for).
+      showToast(
+        `${L.activeSet}: ${active} — ${L.activeSetHint.replace("{name}", active)}`,
+        "success",
+      );
       setActiveInfo((prev) =>
         prev ? { ...prev, active } : { active, current: active },
       );
@@ -1110,6 +1134,7 @@ export default function ProfilesPage() {
                             editModel: L.editModel,
                             editDescription: L.editDescription,
                             editSoul: t.profiles.editSoul,
+                            manageSkills: L.manageSkills,
                             openInTerminal: t.profiles.openInTerminal,
                             rename: t.profiles.rename,
                             delete: t.common.delete,
@@ -1121,6 +1146,11 @@ export default function ProfilesPage() {
                           onEditDescription={() => openDescEditor(p)}
                           onEditModel={() => openModelEditor(p)}
                           onEditSoul={() => openSoulEditor(p.name)}
+                          onManageSkills={() =>
+                            navigate(
+                              `/skills?profile=${encodeURIComponent(p.name)}`,
+                            )
+                          }
                           onRename={() => {
                             setRenamingFrom(p.name);
                             setRenameTo(p.name);
@@ -1375,6 +1405,7 @@ interface ProfileActionsMenuProps {
     editDescription: string;
     editModel: string;
     editSoul: string;
+    manageSkills: string;
     openInTerminal: string;
     rename: string;
     setActive: string;
@@ -1385,6 +1416,7 @@ interface ProfileActionsMenuProps {
   onEditDescription: () => void;
   onEditModel: () => void;
   onEditSoul: () => void;
+  onManageSkills: () => void;
   onRename: () => void;
   onSetActive: () => void;
 }

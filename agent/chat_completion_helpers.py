@@ -1005,11 +1005,17 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             }
             # Defence-in-depth: redact credentials from tool call arguments
             # before they enter conversation history. Tool execution uses the
-            # raw API response object, not this dict, so redacting the
-            # persisted shape is safe and only affects storage. Catches the
-            # case where a model accidentally inlines a secret into a tool
-            # call (e.g. `terminal(command="curl -H 'Authorization: Bearer
-            # sk-...'")`). (#19798)
+            # raw API response object, not this dict, so the CURRENT tool call
+            # still runs with real values — but this dict IS replayed to the
+            # model on subsequent turns, so the model sees *** in its own
+            # history afterwards. That is intentional: the contract is that
+            # models reference secrets indirectly (env expansion, source .env)
+            # rather than inlining literal values — see SECRET_HANDLING_GUIDANCE
+            # in agent/prompt_builder.py. A model that inlines a secret anyway
+            # gets one working call; copying *** on the next turn fails loudly
+            # instead of silently persisting the credential. Users who need
+            # raw inline credentials can opt out via
+            # `security.redact_secrets: false`. (#19798, #43083)
             if isinstance(tc_dict["function"]["arguments"], str):
                 from agent.redact import redact_sensitive_text
                 tc_dict["function"]["arguments"] = redact_sensitive_text(

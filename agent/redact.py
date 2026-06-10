@@ -323,6 +323,17 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
+def is_redaction_enabled() -> bool:
+    """Return True when global secret redaction is enabled.
+
+    Reflects ``security.redact_secrets`` in config.yaml (bridged to the
+    ``HERMES_REDACT_SECRETS`` env var at startup). Fixed for the lifetime
+    of the process, so callers may bake the result into per-session state
+    (e.g. the cached system prompt) without cache-invalidation risk.
+    """
+    return _REDACT_ENABLED
+
+
 def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 

@@ -304,6 +304,30 @@ TASK_COMPLETION_GUIDANCE = (
     "is always better than inventing a result."
 )
 
+# Secret-handling guidance.  Injected only when global secret redaction is
+# enabled (security.redact_secrets, default True).  With redaction on, any
+# literal credential the model writes into a tool call or message is stored
+# as ``***`` in conversation history — so a model that inlines a password
+# once will copy the ``***`` placeholder on the next turn and the command
+# fails (#43083).  The contract: reference secrets indirectly (shell env
+# expansion, `source .env`, reading at execution time) so the raw value
+# never needs to round-trip through context.  Resolved once at session
+# start from a process-lifetime flag, so the system prompt stays
+# byte-stable for the whole conversation (cache-safe).
+SECRET_HANDLING_GUIDANCE = (
+    "# Handling secrets\n"
+    "Secret redaction is enabled: credentials (API keys, passwords, tokens) are "
+    "replaced with *** in your stored conversation history. A literal secret you "
+    "write into a command will appear as *** when you see it again — so never "
+    "copy credential values from earlier turns, and never inline a secret you "
+    "read from a file directly into a command. Reference secrets indirectly "
+    "instead: use shell variable expansion (`PGPASSWORD=\"$PGPASSWORD\" psql ...`), "
+    "`source .env` or `export $(grep -v '^#' .env | xargs)` before the command, "
+    "or have the command read the credential file itself at execution time. If "
+    "you see *** where a real value is needed, re-read the original source "
+    "(.env, config file) and use indirection — do not paste *** into commands."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

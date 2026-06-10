@@ -34,6 +34,7 @@ from agent.prompt_builder import (
     MEMORY_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     PLATFORM_HINTS,
+    SECRET_HANDLING_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
     STEER_CHANNEL_NOTE,
@@ -110,6 +111,16 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
         stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
+    # Secret-handling guidance: only meaningful when the agent has tools
+    # (the failure mode is credentials round-tripping through tool-call
+    # history) and global redaction is on. is_redaction_enabled() is
+    # process-lifetime-stable, so this block never changes mid-session
+    # (cache-safe). (#43083)
+    if agent.valid_tool_names:
+        from agent.redact import is_redaction_enabled
+        if is_redaction_enabled():
+            stable_parts.append(SECRET_HANDLING_GUIDANCE)
 
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []

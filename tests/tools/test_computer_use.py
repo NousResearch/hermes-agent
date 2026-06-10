@@ -338,7 +338,7 @@ class TestCaptureResponse:
         from tools.computer_use.backend import CaptureResult
         from tools.computer_use import tool as cu_tool
 
-        fake_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+        fake_png = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAADUlEQVR4nGNgGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
 
         class FakeBackend:
             def start(self): pass
@@ -372,11 +372,41 @@ class TestCaptureResponse:
         assert any(p.get("type") == "image_url" for p in out["content"])
         assert any(p.get("type") == "text" for p in out["content"])
 
+    def test_capture_tiny_image_returns_text_json(self):
+        """Providers can reject <8px images, so placeholders must be omitted."""
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use import tool as cu_tool
+
+        tiny_png = "iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAC0lEQVR4nGNgQAcAABIAAXfx+gAAAAAASUVORK5CYII="
+
+        cap = CaptureResult(
+            mode="som",
+            width=0,
+            height=0,
+            png_b64=tiny_png,
+            elements=[
+                UIElement(index=1, role="AXButton", label="Continue", bounds=(10, 20, 30, 30)),
+            ],
+            app="Safari",
+            window_title="Example",
+            png_bytes_len=68,
+        )
+
+        with patch.object(cu_tool, "_should_route_through_aux_vision",
+                          return_value=False):
+            out = cu_tool._capture_response(cap)
+
+        parsed = json.loads(out)
+        assert parsed["width"] == 2
+        assert parsed["height"] == 2
+        assert "screenshot omitted" in parsed["summary"]
+        assert parsed["elements"][0]["label"] == "Continue"
+
     def test_capture_som_with_elements_formats_index(self):
         from tools.computer_use.backend import CaptureResult, UIElement
         from tools.computer_use import tool as cu_tool
 
-        fake_png = "iVBORw0KGgo="
+        fake_png = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAADUlEQVR4nGNgGAUgAAABCAABgukLHQAAAABJRU5ErkJggg=="
 
         class FakeBackend:
             def start(self): pass

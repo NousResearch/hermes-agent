@@ -25,6 +25,7 @@ import json
 import logging
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -802,6 +803,23 @@ def check_command_security(command: str) -> dict:
             findings = []
             summary = ""
 
+    # Tirith's confusable_text rule correctly treats U+3002 (Japanese
+    # ideographic full stop) as a dot lookalike, but normal Japanese prompts
+    # passed as shell arguments use it as sentence punctuation. Do not make
+    # harmless `hermes chat -q '日本語。ASCII...'` smoke tests require approval.
+    # Keep the finding when U+3002 appears inside a domain-like ASCII token
+    # (`example。com`), where dot confusion is security-relevant.
+    if findings:
+        non_suppressible = [
+            f for f in findings
+            if not _is_cjk_sentence_full_stop_confusable_finding(f, command)
+        ]
+        if len(non_suppressible) != len(findings):
+            findings = non_suppressible
+            if not findings:
+                action = "allow"
+                summary = ""
+
     return {"action": action, "findings": findings, "summary": summary}
 
 
@@ -820,3 +838,32 @@ def _is_app_tld_finding(finding: dict) -> bool:
         if val is not None and ".app" in str(val).lower():
             return True
     return False
+
+
+def _is_cjk_sentence_full_stop_confusable_finding(finding: dict, command: str) -> bool:
+    """Return True for benign U+3002-as-sentence-punctuation findings.
+
+    Tirith reports U+3002 because it can stand in for a period. That matters
+    inside URL/domain-like tokens, but Japanese natural-language prompts use
+    U+3002 as ordinary punctuation and commonly mix CJK text with ASCII tool
+    names or command snippets. Suppress only the narrow case where every piece
+    of evidence is U+3002 and the command contains no ASCII-token domain shape
+    joined by that character.
+    """
+    if not isinstance(finding, dict):
+        return False
+    if finding.get("rule_id") != "confusable_text":
+        return False
+
+    evidence = finding.get("evidence") or []
+    if not evidence:
+        return False
+    if not all(isinstance(item, dict) and item.get("hex") == "U+3002" for item in evidence):
+        return False
+
+    # Preserve the warning for domain-like tokens such as example。com or
+    # https://example。com, where U+3002 is intentionally dot-like.
+    if re.search(r"[A-Za-z0-9-]+\u3002[A-Za-z0-9-]+", command):
+        return False
+
+    return True

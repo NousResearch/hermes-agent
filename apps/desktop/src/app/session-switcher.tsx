@@ -8,6 +8,7 @@ import { cn } from '@/lib/utils'
 import { $attentionSessionIds, $workingSessionIds } from '@/store/session'
 import { $switcherIndex, $switcherOpen, $switcherSessions, closeSwitcher } from '@/store/session-switcher'
 
+import { HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from './floating-hud'
 import { sessionRoute } from './routes'
 
 // Compact session-switcher HUD — keyboard-driven from `use-keybinds`, rows
@@ -39,22 +40,31 @@ export function SessionSwitcher() {
   }
 
   return createPortal(
-    <div className="fixed inset-0 z-[220] flex select-none items-center justify-center">
+    <>
+      {/* Transparent click-catcher: click-away closes, but no dim/blur. */}
       <div
-        className="absolute inset-0 bg-black/15 backdrop-blur-[1px]"
+        className="fixed inset-0 z-[219]"
         onMouseDown={e => {
           e.preventDefault()
           closeSwitcher()
         }}
       />
-      <div className="relative max-h-[min(26rem,70vh)] w-[min(20rem,calc(100vw-2rem))] overflow-y-auto rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) p-1 shadow-lg">
+      <div
+        className={cn(
+          HUD_POSITION,
+          HUD_SURFACE,
+          'dt-portal-scrollbar z-[220] max-h-[min(22rem,64vh)] w-[min(19rem,calc(100vw-2rem))] select-none overflow-y-auto p-1'
+        )}
+      >
         {sessions.map((session, i) => {
           const selected = i === index
 
           return (
             <div
               className={cn(
-                'flex cursor-pointer items-center gap-2 rounded px-1.5 py-1 text-xs leading-tight',
+                'flex cursor-pointer items-center rounded leading-tight',
+                HUD_ITEM,
+                HUD_TEXT,
                 selected ? 'bg-accent text-accent-foreground' : 'text-(--ui-text-secondary) hover:bg-(--ui-row-hover-background)'
               )}
               key={session.id}
@@ -80,7 +90,7 @@ export function SessionSwitcher() {
           )
         })}
       </div>
-    </div>,
+    </>,
     document.body
   )
 }

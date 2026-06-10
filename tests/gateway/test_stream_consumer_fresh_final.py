@@ -466,6 +466,81 @@ class TestCancelledBestEffortDeliveryFinalizes:
         assert consumer.final_content_delivered is True
 
 
+class TestGotDoneOverflowSplitNotRefinalized:
+    """A got_done finalize edit that split-and-delivered across continuation
+    messages must not be followed by the redundant requires-finalize edit.
+
+    After a split, the consumer adopts the last continuation as the live
+    message and the redundant finalize edit re-submits the FULL accumulated
+    text against it; the adapter pre-flights that into another overflow
+    split, editing chunk 1 over the continuation and re-sending the rest,
+    so the user sees duplicated chunks. The finalize signal was already
+    carried by the split edit itself.
+    """
+
+    def _consumer(self, adapter):
+        # High interval/threshold so the only edit is the got_done finalize.
+        return GatewayStreamConsumer(
+            adapter=adapter,
+            chat_id="chat",
+            config=StreamConsumerConfig(
+                edit_interval=10.0, buffer_threshold=10_000, cursor=" ▉",
+            ),
+        )
+
+    @pytest.mark.asyncio
+    async def test_split_finalize_edit_is_not_refinalized(self):
+        adapter = _make_adapter()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True,
+            message_id="cont_2",
+            continuation_message_ids=("cont_2",),
+        ))
+        consumer = self._consumer(adapter)
+        consumer.on_delta("oversize **markdown** final reply")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)  # preview send lands; no interval edits
+        consumer.finish()
+        await task
+
+        finalize_edits = [
+            c for c in adapter.edit_message.call_args_list
+            if c.kwargs.get("finalize")
+        ]
+        assert len(finalize_edits) == 1, (
+            "split finalize edit must not be re-finalized; the redundant "
+            "edit re-splits the full text into the adopted continuation "
+            "and duplicates chunks on screen"
+        )
+        assert consumer.final_response_sent is True
+        assert consumer.final_content_delivered is True
+
+    @pytest.mark.asyncio
+    async def test_non_split_finalize_edit_still_gets_explicit_refinalize(self):
+        """The narrow fix must not regress the requires-finalize contract:
+        a normal (non-split) got_done edit is still followed by the
+        explicit finalize edit (#25010 semantics unchanged)."""
+        adapter = _make_adapter()
+        adapter.REQUIRES_EDIT_FINALIZE = True
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(
+            success=True, message_id="initial_preview",
+        ))
+        consumer = self._consumer(adapter)
+        consumer.on_delta("short final reply")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        finalize_edits = [
+            c for c in adapter.edit_message.call_args_list
+            if c.kwargs.get("finalize")
+        ]
+        assert len(finalize_edits) == 2
+        assert consumer.final_response_sent is True
+
+
 class TestStreamConsumerConfigFreshFinalField:
     """The dataclass field must exist and default to 0 (disabled)."""
 

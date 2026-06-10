@@ -746,6 +746,28 @@ except (ValueError, TypeError):
     )
     _GATEWAY_HEALTH_TIMEOUT = 3.0
 
+_SESSION_LIST_DEFAULT_LIMIT = 20
+_SESSION_LIST_MAX_LIMIT = 100
+
+
+def _clamp_sessions_list_limit(value: int) -> int:
+    """Clamp dashboard session list page size to a safe positive range."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return _SESSION_LIST_DEFAULT_LIMIT
+    return max(1, min(_SESSION_LIST_MAX_LIMIT, parsed))
+
+
+def _clamp_sessions_list_offset(value: int) -> int:
+    """Clamp dashboard session list offset to a non-negative integer."""
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, parsed)
+
+
 # DEPRECATED (scheduled for removal): GATEWAY_HEALTH_URL / GATEWAY_HEALTH_TIMEOUT.
 # Cross-container / cross-host gateway liveness detection will be folded into a
 # first-class dashboard config key so it's no longer Docker-adjacent lore buried
@@ -1798,6 +1820,8 @@ async def get_sessions(
             status_code=400,
             detail="order must be one of: created, recent",
         )
+    limit = _clamp_sessions_list_limit(limit)
+    offset = _clamp_sessions_list_offset(offset)
     try:
         from hermes_state import SessionDB
         db = SessionDB()

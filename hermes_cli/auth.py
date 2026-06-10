@@ -3907,6 +3907,8 @@ def _pool_codex_access_token() -> str:
                 numeric = float(value)
                 if numeric <= 0:
                     return None
+                # Assumes numeric values > 1,000,000,000,000 are in milliseconds
+                # (epoch ms > November 2001) and converts them to seconds.
                 return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
             if isinstance(value, str):
                 raw = value.strip()

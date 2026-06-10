@@ -1660,6 +1660,8 @@ async def get_sessions(
     min_messages: int = 0,
     archived: str = "exclude",
     order: str = "created",
+    source: str = None,
+    exclude_sources: str = None,
     full: bool = False,
 ):
     """List sessions.
@@ -1694,7 +1696,15 @@ async def get_sessions(
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
             include_archived = archived == "include"
+            # Optional source scoping: ``source`` includes a single class,
+            # ``exclude_sources`` (comma-separated) drops classes. The desktop
+            # uses these to split recents (exclude cron+messaging) from the
+            # cron and per-platform sections (source=...) into independent
+            # lists whose totals match their own rows.
+            exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
             sessions = db.list_sessions_rich(
+                source=source or None,
+                exclude_sources=exclude_list or None,
                 limit=limit,
                 offset=offset,
                 min_message_count=min_message_count,
@@ -1703,6 +1713,8 @@ async def get_sessions(
                 order_by_last_active=order == "recent",
             )
             total = db.surfaced_session_count(
+                source=source or None,
+                exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,
@@ -1734,6 +1746,8 @@ async def get_profiles_sessions(
     archived: str = "exclude",
     order: str = "recent",
     profile: str = "all",
+    source: str = None,
+    exclude_sources: str = None,
     full: bool = False,
 ):
     """Unified, read-only session list aggregated across ALL profiles.
@@ -1773,6 +1787,10 @@ async def get_profiles_sessions(
     min_message_count = max(0, min_messages)
     archived_only = archived == "only"
     include_archived = archived == "include"
+    # Source scoping (see /api/sessions): recents pass exclude_sources to keep
+    # cron/messaging rows (and their counts) out of the unified page; the cron
+    # and per-platform sections pass source= for their own slices.
+    exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
     per_profile = min(max(limit + offset, limit), 100)
@@ -1792,6 +1810,8 @@ async def get_profiles_sessions(
         try:
             db = SessionDB(db_path=db_path, read_only=True)
             rows = db.list_sessions_rich(
+                source=source or None,
+                exclude_sources=exclude_list or None,
                 limit=per_profile,
                 offset=0,
                 min_message_count=min_message_count,
@@ -1800,6 +1820,8 @@ async def get_profiles_sessions(
                 order_by_last_active=order == "recent",
             )
             profile_total = db.session_count(
+                source=source or None,
+                exclude_sources=exclude_list or None,
                 min_message_count=min_message_count,
                 include_archived=include_archived,
                 archived_only=archived_only,

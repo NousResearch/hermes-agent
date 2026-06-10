@@ -301,6 +301,91 @@ class TestWebServerEndpoints:
         assert captured["list"] == 3
         assert captured["count"] == 3
 
+    def test_get_sessions_forwards_source_filters_to_page_and_total(self, monkeypatch):
+        """?source= / ?exclude_sources= must reach BOTH the page query and the
+        count.
+
+        The desktop splits the sidebar into recents (exclude_sources=cron +
+        messaging platforms) and per-source sections (source=...). If either
+        param is dropped from the count — exactly what happened in a fork
+        merge — the totals include rows the section never lists, so its
+        "Load more" advertises pages that can never arrive.
+        """
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, source=None, exclude_sources=None, **kwargs):
+                captured["list"] = (source, exclude_sources)
+                return []
+
+            def surfaced_session_count(self, source=None, exclude_sources=None, **kwargs):
+                captured["count"] = (source, exclude_sources)
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+
+        resp = self.client.get("/api/sessions?limit=5&exclude_sources=cron,telegram")
+        assert resp.status_code == 200
+        assert captured["list"] == (None, ["cron", "telegram"])
+        assert captured["count"] == (None, ["cron", "telegram"])
+
+        resp = self.client.get("/api/sessions?limit=5&source=cron")
+        assert resp.status_code == 200
+        assert captured["list"] == ("cron", None)
+        assert captured["count"] == ("cron", None)
+
+    def test_profiles_sessions_source_scoping_keeps_totals_honest(self):
+        """/api/profiles/sessions rows and totals must share the source filter.
+
+        Seeds one DB with local, cron, and telegram sessions, then checks the
+        three sidebar slices: recents (exclude cron+telegram), the cron slice
+        (source=cron), and a platform pager (source=telegram). Each response's
+        ``total`` must equal the rows that slice can ever list — the sidebar
+        derives "Load more" visibility from exactly this equality.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid, source in [
+                ("scope-local-1", "cli"),
+                ("scope-local-2", "tui"),
+                ("scope-cron-1", "cron"),
+                ("scope-telegram-1", "telegram"),
+            ]:
+                db.create_session(session_id=sid, source=source)
+        finally:
+            db.close()
+
+        recents = self.client.get(
+            "/api/profiles/sessions?limit=20&exclude_sources=cron,telegram"
+        )
+        assert recents.status_code == 200
+        body = recents.json()
+        ids = {s["id"] for s in body["sessions"] if s["id"].startswith("scope-")}
+        assert ids == {"scope-local-1", "scope-local-2"}
+        assert not any(s["source"] in ("cron", "telegram") for s in body["sessions"])
+        assert body["total"] == len(body["sessions"])
+
+        cron = self.client.get("/api/profiles/sessions?limit=20&source=cron")
+        assert cron.status_code == 200
+        body = cron.json()
+        assert {s["id"] for s in body["sessions"] if s["id"].startswith("scope-")} == {"scope-cron-1"}
+        assert all(s["source"] == "cron" for s in body["sessions"])
+        assert body["total"] == len(body["sessions"])
+
+        telegram = self.client.get("/api/profiles/sessions?limit=20&source=telegram")
+        assert telegram.status_code == 200
+        body = telegram.json()
+        assert {s["id"] for s in body["sessions"] if s["id"].startswith("scope-")} == {"scope-telegram-1"}
+        assert body["total"] == len(body["sessions"])
+
     def _create_session_with_heavy_fields(self, session_id: str) -> None:
         from hermes_state import SessionDB
 

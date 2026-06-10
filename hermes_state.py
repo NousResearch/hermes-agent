@@ -31,7 +31,31 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+
+def _default_db_path() -> Path:
+    """Return the current default state.db path.
+
+    Resolved at CALL time, not at import time, so test fixtures that
+    monkeypatch ``HERMES_HOME`` (e.g. ``tests/conftest.py``'s
+    ``_hermetic_environment``) and per-test ``monkeypatch.setattr``
+    on ``hermes_state.DEFAULT_DB_PATH`` actually take effect.
+
+    Historical bug: ``DEFAULT_DB_PATH`` was a module-level constant
+    computed once at import. Code paths calling ``SessionDB()`` without
+    a ``db_path=`` argument would write to the cached value, bypassing
+    HERMES_HOME overrides and polluting the real ``~/.hermes/state.db``
+    with test fixtures (e.g. ``user_id="u1"``). See the u1-orphan
+    investigation in ``memory/2026-06-10.md`` for the full postmortem.
+    """
+    return get_hermes_home() / "state.db"
+
+
+# Backwards-compatible alias. Returns the CURRENT default at call time
+# when used as a function (``DEFAULT_DB_PATH()``), and falls back to the
+# import-time snapshot for legacy code that treats it as a Path
+# (``DEFAULT_DB_PATH / "foo"``). New code should use ``_default_db_path()``
+# or pass ``db_path=`` explicitly.
+DEFAULT_DB_PATH = _default_db_path()
 
 SCHEMA_VERSION = 15
 
@@ -604,7 +628,10 @@ class SessionDB:
     _CHECKPOINT_EVERY_N_WRITES = 50
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        # Call-time resolution so HERMES_HOME overrides (test fixtures,
+        # multi-profile setups, or runtime env changes) are honored.
+        # See ``_default_db_path`` for the historical bug.
+        self.db_path = db_path or _default_db_path()
         self.read_only = read_only
 
         self._lock = threading.Lock()

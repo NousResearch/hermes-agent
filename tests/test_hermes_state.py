@@ -1527,6 +1527,68 @@ class TestPruneSessions:
             assert db.get_session(sid) is None
 
 
+class TestDefaultDBPathResolvesAtCallTime:
+    """``_default_db_path()`` must honor the current ``HERMES_HOME`` env var,
+    not the value frozen at module import.
+
+    Historical bug: ``DEFAULT_DB_PATH`` was a module-level constant. Code
+    that called ``SessionDB()`` without ``db_path=`` would write to the
+    cached value (the real ``~/.hermes/state.db``), bypassing test
+    fixtures that set ``HERMES_HOME`` to a per-test tempdir. The result
+    was test pollution: e.g. fixtures using ``user_id="u1"`` left orphan
+    rows in production state.db. See ``hermes_state._default_db_path``
+    docstring for full postmortem.
+    """
+
+    def test_default_db_path_honors_hermes_home_change(self, tmp_path, monkeypatch):
+        """Setting HERMES_HOME after hermes_state is imported must be picked
+        up by ``_default_db_path()`` on the very next call — not require
+        a re-import."""
+        # _hermetic_environment has already set HERMES_HOME=tmp_path, so the
+        # first call returns the test tempdir. We then simulate the
+        # "load hermes_state at import, override env var later" sequence
+        # explicitly to lock in the contract.
+        from hermes_state import _default_db_path, get_hermes_home
+
+        # 1. Current HERMES_HOME (set by autouse fixture) is the tempdir.
+        assert str(_default_db_path()).startswith(str(tmp_path)), (
+            f"expected default to honor HERMES_HOME={tmp_path}, "
+            f"got {_default_db_path()}"
+        )
+
+        # 2. Override HERMES_HOME at runtime. The next call MUST pick it up.
+        new_home = tmp_path / "rewritten_home"
+        new_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(new_home))
+        assert _default_db_path() == new_home / "state.db"
+        assert get_hermes_home() == new_home
+
+    def test_sessiondb_default_honors_hermes_home(self, tmp_path, monkeypatch):
+        """``SessionDB()`` with no args must use the current default path,
+        not the value frozen at import. This is the regression that allowed
+        test pollution to leak into the real ``~/.hermes/state.db``."""
+        from hermes_state import SessionDB, _default_db_path
+
+        new_home = tmp_path / "explicit_home"
+        new_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(new_home))
+
+        db = SessionDB()  # no db_path= — must use current HERMES_HOME
+        assert db.db_path == _default_db_path()
+        assert str(db.db_path).startswith(str(new_home)), (
+            f"SessionDB() wrote outside the new HERMES_HOME: {db.db_path}"
+        )
+
+    def test_explicit_db_path_overrides_default(self, tmp_path, monkeypatch):
+        """When the caller passes ``db_path=`` explicitly, that wins over
+        HERMES_HOME. This is the standard test isolation pattern."""
+        from hermes_state import SessionDB
+
+        explicit = tmp_path / "explicit_state.db"
+        db = SessionDB(db_path=explicit)
+        assert db.db_path == explicit
+
+
 class TestPruneEmptyOrphanSessions:
     """``prune_empty_orphan_sessions`` — clean up rows that were created for
     inbound platform events that never invoked the LLM.

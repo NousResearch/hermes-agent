@@ -867,6 +867,28 @@ def run_conversation(
                 # unless the active provider needs it) so the fallback request
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
+
+                # Cross-mode fallback bridge: when the api_mode changed (e.g.
+                # codex_responses → anthropic_messages), strip provider-specific
+                # fields from api_messages and rebuild the system prompt so the
+                # new provider sees clean messages and current skill context.
+                _bridge = getattr(agent, "_pending_context_bridge", None)
+                if _bridge:
+                    agent._pending_context_bridge = None
+                    try:
+                        from agent.fallback_context_bridge import apply_fallback_context_bridge
+                        apply_fallback_context_bridge(
+                            agent,
+                            api_messages,
+                            _bridge["old_api_mode"],
+                            _bridge["new_api_mode"],
+                        )
+                    except Exception as _bridge_exc:
+                        logger.warning(
+                            "fallback_context_bridge failed (non-fatal): %s",
+                            _bridge_exc,
+                        )
+
                 api_kwargs = agent._build_api_kwargs(api_messages)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)

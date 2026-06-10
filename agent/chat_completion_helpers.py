@@ -1156,6 +1156,7 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
             fb_api_mode = "bedrock_converse"
 
         old_model = agent.model
+        old_api_mode = getattr(agent, "api_mode", "chat_completions") or "chat_completions"
 
         # Clear the per-config context_length override so the fallback
         # model's actual context window is resolved instead of inheriting
@@ -1274,6 +1275,22 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
                 provider=agent.provider,
                 api_mode=agent.api_mode,
             )
+
+        # When the api_mode changes (e.g. codex_responses → anthropic_messages
+        # or chat_completions), the already-built api_messages in the retry loop
+        # contain provider-specific fields (codex_reasoning_items, encrypted
+        # reasoning blobs) that the new provider rejects.  Flag the mismatch so
+        # conversation_loop can run the context bridge before the next request.
+        if old_api_mode != fb_api_mode:
+            agent._pending_context_bridge = {
+                "old_api_mode": old_api_mode,
+                "new_api_mode": fb_api_mode,
+            }
+            # Invalidate the cached system prompt so it rebuilds for the new
+            # provider on the next request, re-injecting current skill context.
+            agent._cached_system_prompt = None
+        else:
+            agent._pending_context_bridge = None
 
         agent._buffer_status(
             f"🔄 Primary model failed — switching to fallback: "

@@ -5942,7 +5942,27 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
 
     api_key = ""
     key_source = ""
-    api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
+    if provider_id == "anthropic":
+        # The registry tuple lists ANTHROPIC_API_KEY first because it also
+        # backs "is configured" checks, but the runtime credential must follow
+        # the adapter's documented OAuth-first order (ANTHROPIC_TOKEN →
+        # CLAUDE_CODE_OAUTH_TOKEN → Claude Code credential store with refresh
+        # → ANTHROPIC_API_KEY).  Iterating the tuple here would let a stale
+        # ANTHROPIC_API_KEY shadow a valid OAuth token and 401 every launch.
+        from agent.anthropic_adapter import resolve_anthropic_token
+        from hermes_cli.config import get_env_value
+        token = (resolve_anthropic_token() or "").strip()
+        if has_usable_secret(token):
+            api_key = token
+            key_source = next(
+                (
+                    var for var in pconfig.api_key_env_vars
+                    if (get_env_value(var) or "").strip() == token
+                ),
+                "claude-code-credentials",
+            )
+    if not api_key:
+        api_key, key_source = _resolve_api_key_provider_secret(provider_id, pconfig)
 
     # No-auth LM Studio: substitute a placeholder so runtime / auxiliary_client
     # see the local server as configured. doctor still reports unconfigured

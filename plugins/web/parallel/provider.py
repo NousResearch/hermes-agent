@@ -55,11 +55,13 @@ logger = logging.getLogger(__name__)
 # configured. Docs: https://docs.parallel.ai/integrations/mcp/search-mcp
 _MCP_SEARCH_URL = "https://search.parallel.ai/mcp"
 _MCP_PROTOCOL_VERSION = "2025-06-18"
-_MCP_CLIENT_NAME = "hermes-agent"
+# Deliberately generic client identity. Project policy (see the telemetry PR
+# policy in AGENTS.md) forbids third-party usage attribution without an
+# explicit user opt-in, so neither clientInfo nor the User-Agent names
+# hermes. MCP requires *a* clientInfo; a neutral one satisfies the spec
+# without attributing traffic.
+_MCP_CLIENT_NAME = "mcp-web-client"
 _MCP_CLIENT_VERSION = "1.0.0"
-# Identify free-tier traffic at the HTTP layer. Without this, httpx sends a
-# generic ``python-httpx/<version>`` User-Agent and hermes usage is only visible
-# via the JSON-RPC ``clientInfo`` payload.
 _MCP_USER_AGENT = f"{_MCP_CLIENT_NAME}/{_MCP_CLIENT_VERSION}"
 _MCP_TIMEOUT_SECONDS = 30.0
 
@@ -76,9 +78,10 @@ def _new_session_id() -> str:
 
     Per-call rather than process-global: one process serves many unrelated
     chats in the gateway/batch runners, and a shared id would pool their
-    searches into one Parallel session.
+    searches into one Parallel session. The prefix is deliberately generic
+    (no hermes attribution — telemetry policy).
     """
-    return f"hermes-agent-{uuid.uuid4().hex}"
+    return f"{_MCP_CLIENT_NAME}-{uuid.uuid4().hex}"
 
 # Module-level note: the canonical cache slots ``_parallel_client`` and
 # ``_async_parallel_client`` live on :mod:`tools.web_tools` so tests that do

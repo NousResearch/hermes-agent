@@ -30,15 +30,16 @@ class TestMcpHeaders:
         assert h["Accept"] == "application/json, text/event-stream"
         assert "Mcp-Session-Id" not in h
 
-    def test_identifies_hermes_via_user_agent(self):
-        # Free-tier traffic is attributable at the HTTP layer (not just via the
-        # JSON-RPC clientInfo payload), on both the anonymous and keyed paths.
-        assert pp._mcp_headers(session_id=None, api_key=None)["User-Agent"].startswith(
-            "hermes-agent/"
-        )
-        assert pp._mcp_headers(session_id="sid", api_key="pk-live")["User-Agent"].startswith(
-            "hermes-agent/"
-        )
+    def test_user_agent_is_generic_not_hermes(self):
+        # Telemetry policy: no third-party usage attribution without opt-in.
+        # The UA must be set (not python-httpx default) but must not name
+        # hermes, on both the anonymous and keyed paths.
+        for ua in (
+            pp._mcp_headers(session_id=None, api_key=None)["User-Agent"],
+            pp._mcp_headers(session_id="sid", api_key="pk-live")["User-Agent"],
+        ):
+            assert ua == f"{pp._MCP_CLIENT_NAME}/{pp._MCP_CLIENT_VERSION}"
+            assert "hermes" not in ua.lower()
 
     def test_session_id_and_bearer_when_present(self):
         h = pp._mcp_headers(session_id="sid-123", api_key="pk-live")
@@ -280,7 +281,7 @@ class TestMcpWebFetch:
         assert args["name"] == "web_fetch"
         assert args["arguments"]["urls"] == urls
         assert args["arguments"]["full_content"] is True
-        assert args["arguments"]["session_id"].startswith("hermes-agent-")
+        assert args["arguments"]["session_id"].startswith(f"{pp._MCP_CLIENT_NAME}-")
 
     def test_prefers_full_content_over_excerpts(self):
         payload = {"results": [
@@ -354,7 +355,7 @@ class TestKeyedV1Search:
         # honors the caller's limit via advanced_settings.max_results
         assert captured["advanced_settings"] == {"max_results": 7}
         assert captured["mode"] == "advanced"            # v1 default
-        assert captured["session_id"].startswith("hermes-agent-")  # per-call id
+        assert captured["session_id"].startswith(f"{pp._MCP_CLIENT_NAME}-")  # per-call id
         assert len(out["data"]["web"]) == 7              # client-side slice
         # paid path: no free-tier attribution, no [Parallel] label signal
         assert "attribution" not in out

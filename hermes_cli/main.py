@@ -259,7 +259,7 @@ import shutil
 import stat
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag as _add_accept_hooks_flag
@@ -7918,6 +7918,84 @@ def _cmd_update_pip(args):
     print("✓ Update complete! Restart hermes to use the new version.")
 
 
+# Default threshold for "low memory" host that needs pre-stop before pip
+# install. Set just above the 1.6 GB Alibaba-Lightweight class that the
+# original report (#26770) hit — those boxes OOM-kill the gateway when
+# pip's resolver runs alongside an active Python+Node gateway process.
+# Servers with > 2 GB available comfortably tolerate the overlap, so we
+# only pre-stop when memory is actually tight.
+_UPDATE_PRESTOP_DEFAULT_THRESHOLD_MB = 2048
+
+
+def _available_memory_mb() -> Optional[int]:
+    """Best-effort available-RAM probe in MB. Returns None when unsupported.
+
+    Prefers ``psutil`` (already a hard dependency on every platform).  Falls
+    back to ``/proc/meminfo`` on Linux for the rare environment where psutil
+    is unavailable.  Any failure returns ``None`` so the caller can treat
+    "unknown" as "do not pre-stop" (preserve current behaviour). (#26770)
+    """
+    try:
+        import psutil  # type: ignore
+
+        return int(psutil.virtual_memory().available / (1024 * 1024))
+    except Exception:
+        pass
+
+    try:
+        with open("/proc/meminfo", "r") as fp:
+            for line in fp:
+                if line.startswith("MemAvailable:"):
+                    # `MemAvailable:    1234 kB`
+                    return int(line.split()[1]) // 1024
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+def _should_prestop_gateway_for_update(gateway_mode: bool) -> Tuple[bool, str]:
+    """Decide whether to stop the current-profile gateway BEFORE pip install.
+
+    Returns ``(should_stop, reason)``.  The reason is human-readable and
+    surfaced in the update log when we do stop, or kept for debug
+    otherwise.
+
+    Hard guards:
+    - When ``gateway_mode`` is True the update process IS the gateway's
+      child (spawned by the gateway's ``/update`` command).  Stopping the
+      gateway would kill us before pip even starts.  Never pre-stop in
+      that mode.
+    - Operator override via ``HERMES_UPDATE_PRESTOP_GATEWAY`` — set to
+      ``1``/``true``/``yes`` to force, ``0``/``false``/``no`` to skip.
+
+    Otherwise: stop iff available memory is below the threshold.  The
+    threshold is configurable via ``HERMES_UPDATE_PRESTOP_THRESHOLD_MB``
+    (defaults to ``_UPDATE_PRESTOP_DEFAULT_THRESHOLD_MB``).
+    """
+    if gateway_mode:
+        return False, "running inside gateway"
+
+    override = os.environ.get("HERMES_UPDATE_PRESTOP_GATEWAY", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True, "HERMES_UPDATE_PRESTOP_GATEWAY=1 (operator override)"
+    if override in {"0", "false", "no", "off"}:
+        return False, "HERMES_UPDATE_PRESTOP_GATEWAY=0 (operator override)"
+
+    avail = _available_memory_mb()
+    if avail is None:
+        return False, "available memory unknown"
+
+    threshold_raw = os.environ.get("HERMES_UPDATE_PRESTOP_THRESHOLD_MB", "")
+    try:
+        threshold = int(threshold_raw) if threshold_raw else _UPDATE_PRESTOP_DEFAULT_THRESHOLD_MB
+    except ValueError:
+        threshold = _UPDATE_PRESTOP_DEFAULT_THRESHOLD_MB
+
+    if avail < threshold:
+        return True, f"available memory {avail} MB < {threshold} MB threshold"
+    return False, f"available memory {avail} MB ≥ {threshold} MB threshold"
+
+
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
@@ -8316,6 +8394,37 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
+
+        # On low-memory hosts (e.g. 1–2 GB lightweight VMs), keeping the gateway
+        # alive while pip's resolver runs causes an OOM-kill (#26770).  Pre-stop
+        # the current-profile gateway here when available memory is below the
+        # threshold; the auto-restart block at the end of this function will
+        # bring it back up after deps land.  Skipped when running inside the
+        # gateway (we would kill our own parent) and when the operator opted
+        # out via HERMES_UPDATE_PRESTOP_GATEWAY=0.
+        _prestop_did_stop = False
+        try:
+            _prestop_decision, _prestop_reason = _should_prestop_gateway_for_update(
+                gateway_mode
+            )
+            if _prestop_decision:
+                try:
+                    from hermes_cli.gateway import stop_profile_gateway as _stop_profile_gateway
+                    print(
+                        f"→ Stopping gateway before dependency install ({_prestop_reason})..."
+                    )
+                    if _stop_profile_gateway():
+                        _prestop_did_stop = True
+                        print("  ✓ Gateway stopped; will be restarted after update")
+                    else:
+                        print("  ℹ No running gateway found for this profile")
+                except Exception as _stop_exc:
+                    logger.debug("Pre-update gateway stop failed: %s", _stop_exc)
+            else:
+                logger.debug("Pre-update gateway pre-stop skipped: %s", _prestop_reason)
+        except Exception as _decision_exc:
+            logger.debug("Pre-update gateway pre-stop decision failed: %s", _decision_exc)
+
         print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 

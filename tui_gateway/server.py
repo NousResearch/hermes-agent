@@ -2004,6 +2004,38 @@ def _get_usage(agent) -> dict:
     return usage
 
 
+def _restore_session_usage(agent, stored: dict) -> None:
+    """Restore cumulative token counters from a stored session row.
+
+    When ``session.resume`` builds a fresh agent its counters start at zero.
+    The real cumulative usage lives in ``state.db`` (written by
+    ``update_token_counts`` on every API call).  Without this restore the
+    ``session.info`` / ``session.usage`` payloads report all-zero usage
+    which shows as ``0/1.0M-0%`` in the Desktop status bar for gateway
+    sessions viewed after the fact.
+    """
+    agent.session_input_tokens = stored.get("input_tokens") or 0
+    agent.session_output_tokens = stored.get("output_tokens") or 0
+    agent.session_cache_read_tokens = stored.get("cache_read_tokens") or 0
+    agent.session_cache_write_tokens = stored.get("cache_write_tokens") or 0
+    agent.session_reasoning_tokens = stored.get("reasoning_tokens") or 0
+    agent.session_total_tokens = (
+        agent.session_input_tokens
+        + agent.session_output_tokens
+        + agent.session_cache_read_tokens
+        + agent.session_cache_write_tokens
+        + agent.session_reasoning_tokens
+    )
+    agent.session_api_calls = stored.get("api_call_count") or 0
+    # Preserve cost estimate if available
+    cost_usd = stored.get("estimated_cost_usd")
+    if cost_usd:
+        agent.session_estimated_cost_usd = float(cost_usd)
+    cost_status = stored.get("cost_status")
+    if cost_status:
+        agent.session_cost_status = cost_status
+
+
 def _probe_credentials(agent) -> str:
     """Light credential check at session creation — returns warning or ''."""
     try:
@@ -3662,6 +3694,11 @@ def _(rid, params: dict) -> dict:
             # state.db; home override is active here so config/skills/model
             # resolve to the profile too.
             agent = _make_agent(sid, target, session_id=target, session_db=db)
+            # Restore cumulative token counters from the stored session so
+            # that session.info / session.usage shows correct usage instead
+            # of all zeros when viewing gateway sessions in Desktop.
+            if found:
+                _restore_session_usage(agent, found)
         finally:
             _clear_session_context(tokens)
     except Exception as e:

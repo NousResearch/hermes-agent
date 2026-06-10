@@ -116,6 +116,8 @@ class OpenRouterProfile(ProviderProfile):
         the same backend server across turns.
         """
         extra_body: dict[str, Any] = {}
+        top_level: dict[str, Any] = {}
+        extra_headers: dict[str, Any] = {}
         if supports_reasoning:
             # Reasoning-mandatory Anthropic models (Claude 4.6+ / fable /
             # future named models) use *adaptive* thinking: the model decides
@@ -132,18 +134,36 @@ class OpenRouterProfile(ProviderProfile):
             # The only reliable behavior is to omit ``reasoning`` and let the
             # model default to adaptive. See hermes-agent#42991 (disable case)
             # and the tool-replay follow-up.
+            #
+            # ``reasoning.effort`` being ignored does NOT mean these models have
+            # no effort lever — OpenRouter honors the requested effort on the
+            # top-level ``verbosity`` field instead (it maps to Anthropic's
+            # ``output_config.effort``; ``reasoning.effort`` is accepted but
+            # ignored — confirmed by OpenRouter's Claude migration docs and a
+            # live token-spend probe in hermes-agent#43432). Route the existing
+            # ``reasoning_config["effort"]`` (sourced from
+            # ``agent.reasoning_effort``) onto ``verbosity`` so the knob the user
+            # already sets keeps working for these models. We still send NO
+            # ``reasoning`` field, preserving the #42991 400 fix.
             if _anthropic_reasoning_is_mandatory(model):
-                pass  # omit reasoning entirely → adaptive default
+                cfg = reasoning_config or {}
+                effort = cfg.get("effort")
+                # Only emit when effort is actually requested and reasoning
+                # isn't explicitly disabled. Otherwise omit ``verbosity`` so the
+                # model keeps its own adaptive default (``high``).
+                if cfg.get("enabled", True) is not False and effort and effort != "none":
+                    top_level["verbosity"] = effort
             elif reasoning_config is not None:
                 extra_body["reasoning"] = dict(reasoning_config)
             else:
                 extra_body["reasoning"] = {"enabled": True, "effort": "medium"}
 
-        extra_headers: dict[str, Any] = {}
         if session_id and model and model.startswith(("x-ai/grok-", "xai/grok-")):
             extra_headers["x-grok-conv-id"] = session_id
+        if extra_headers:
+            top_level["extra_headers"] = extra_headers
 
-        return extra_body, {"extra_headers": extra_headers} if extra_headers else {}
+        return extra_body, top_level
 
 
 openrouter = OpenRouterProfile(

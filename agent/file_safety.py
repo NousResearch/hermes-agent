@@ -25,6 +25,27 @@ def _hermes_root_path() -> Path:
         return Path(os.path.expanduser("~/.hermes"))
 
 
+# Credential / secret stores under a Hermes home dir (and the global Hermes
+# root) that the agent must never read *or* write through file tools.
+# ``get_read_block_error`` enforces the read block; ``is_write_denied`` enforces
+# the write block. Sharing one list guarantees the invariant "every credential
+# file hidden from reads is also protected from overwrites" — a
+# read-blocked-but-writable file (the prior state of ``auth.lock``,
+# ``auth/google_oauth.json`` and ``cache/bws_cache.json``) still let a
+# prompt-injected ``write_file`` corrupt the OAuth token store, the Bitwarden
+# secret cache, or the auth lock. Names are relative to a Hermes home dir;
+# nested entries use ``os.path.join`` so the separator is correct per platform.
+CREDENTIAL_FILE_NAMES: tuple[str, ...] = (
+    "auth.json",
+    "auth.lock",
+    ".anthropic_oauth.json",
+    ".env",
+    "webhook_subscriptions.json",
+    os.path.join("auth", "google_oauth.json"),
+    os.path.join("cache", "bws_cache.json"),
+)
+
+
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
@@ -104,12 +125,18 @@ def is_write_denied(path: str) -> bool:
         if resolved.startswith(prefix):
             return True
 
-    # Hermes control-plane files: block both the ACTIVE profile's view
-    # (hermes_home) AND the global root view. Without the root pass, a
+    # Hermes control-plane + credential files: block both the ACTIVE profile's
+    # view (hermes_home) AND the global root view. Without the root pass, a
     # profile-mode session leaves <root>/auth.json + <root>/config.yaml
     # writable — letting a prompt-injected write_file overwrite the global
     # files that every profile inherits from (same shape as #15981).
-    control_file_names = ("auth.json", "config.yaml", "webhook_subscriptions.json")
+    #
+    # Every credential file blocked from *reading* (CREDENTIAL_FILE_NAMES) is
+    # blocked from *writing* here too, so a file too sensitive to read can never
+    # be silently overwritten. ``config.yaml`` is the one extra: write-denied to
+    # protect the profile, but intentionally still readable (see
+    # get_read_block_error / test_config_yaml_not_blocked).
+    denied_file_names = ("config.yaml",) + CREDENTIAL_FILE_NAMES
     mcp_tokens_dir_name = "mcp-tokens"
 
     hermes_dirs = []
@@ -122,7 +149,7 @@ def is_write_denied(path: str) -> bool:
             continue
 
     for base_real in hermes_dirs:
-        for name in control_file_names:
+        for name in denied_file_names:
             try:
                 if resolved == os.path.realpath(os.path.join(base_real, name)):
                     return True
@@ -241,21 +268,13 @@ def get_read_block_error(path: str) -> Optional[str]:
             )
 
     # Credential / secret stores. Exact-file matches under either
-    # HERMES_HOME or <root>.
-    credential_file_names = (
-        "auth.json",
-        "auth.lock",
-        ".anthropic_oauth.json",
-        ".env",
-        "webhook_subscriptions.json",
-        os.path.join("auth", "google_oauth.json"),
-        # Bitwarden Secrets Manager disk cache: stores plaintext secret values
-        # to avoid re-fetching across back-to-back CLI invocations. The file
-        # was introduced by #31968 but not added to this guard.
-        os.path.join("cache", "bws_cache.json"),
-    )
+    # HERMES_HOME or <root>. Shared with is_write_denied via
+    # CREDENTIAL_FILE_NAMES so a file hidden from reads is always protected
+    # from overwrites too. (Bitwarden's cache/bws_cache.json stores plaintext
+    # secret values — added in #31968; the Gemini auth/google_oauth.json holds
+    # OAuth refresh/access tokens.)
     for hd in hermes_dirs:
-        for name in credential_file_names:
+        for name in CREDENTIAL_FILE_NAMES:
             try:
                 blocked = (hd / name).resolve()
             except Exception:

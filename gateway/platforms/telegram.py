@@ -3837,6 +3837,49 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         return error
 
+    async def play_tts(
+        self,
+        chat_id: str,
+        audio_path: str,
+        **kwargs,
+    ) -> SendResult:
+        """Send auto-TTS as a Telegram voice bubble when possible.
+
+        Telegram exposes playback speed controls on voice notes.  Edge TTS and
+        some other providers produce MP3/WAV files, which Telegram's Bot API
+        treats as music/audio attachments without the same voice-note UX.  For
+        auto-TTS replies, convert playable audio to Opus/Ogg first and then use
+        sendVoice; keep normal MEDIA: MP3 attachments on the document/audio
+        route unless they explicitly opt into voice delivery.
+        """
+        ext = os.path.splitext(audio_path)[1].lower()
+        if ext not in {".ogg", ".opus"}:
+            converted_path: Optional[str] = None
+            try:
+                from tools.tts_tool import _convert_to_opus
+
+                converted_path = await asyncio.to_thread(_convert_to_opus, audio_path)
+                if converted_path and os.path.exists(converted_path):
+                    return await self.send_voice(
+                        chat_id=chat_id,
+                        audio_path=converted_path,
+                        **kwargs,
+                    )
+            except Exception as convert_err:
+                logger.warning(
+                    "[%s] Auto-TTS Opus conversion failed; sending original audio: %s",
+                    self.name,
+                    convert_err,
+                )
+            finally:
+                if converted_path and converted_path != audio_path:
+                    try:
+                        os.remove(converted_path)
+                    except OSError:
+                        pass
+
+        return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
     async def send_voice(
         self,
         chat_id: str,

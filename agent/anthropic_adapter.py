@@ -925,30 +925,41 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    # Try macOS Keychain first (covers Claude Code >=2.1.114)
+    def _read_credentials_file() -> Optional[Dict[str, Any]]:
+        cred_path = Path.home() / ".claude" / ".credentials.json"
+        if cred_path.exists():
+            try:
+                data = json.loads(cred_path.read_text(encoding="utf-8"))
+                oauth_data = data.get("claudeAiOauth")
+                if oauth_data and isinstance(oauth_data, dict):
+                    access_token = oauth_data.get("accessToken", "")
+                    if access_token:
+                        return {
+                            "accessToken": access_token,
+                            "refreshToken": oauth_data.get("refreshToken", ""),
+                            "expiresAt": oauth_data.get("expiresAt", 0),
+                            "source": "claude_code_credentials_file",
+                        }
+            except (json.JSONDecodeError, OSError, IOError) as e:
+                logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
+        return None
+
+    # Try macOS Keychain first (covers Claude Code >=2.1.114), but do not let
+    # an expired/unrefreshable Keychain entry shadow a still-valid JSON-file
+    # credential. Claude Code migrations can leave both stores populated, and
+    # the Keychain entry may be stale while ~/.claude/.credentials.json is fresh.
     kc_creds = _read_claude_code_credentials_from_keychain()
-    if kc_creds:
+    file_creds = _read_credentials_file()
+
+    if kc_creds and is_claude_code_token_valid(kc_creds):
         return kc_creds
+    if file_creds and is_claude_code_token_valid(file_creds):
+        return file_creds
 
-    # Fall back to JSON file
-    cred_path = Path.home() / ".claude" / ".credentials.json"
-    if cred_path.exists():
-        try:
-            data = json.loads(cred_path.read_text(encoding="utf-8"))
-            oauth_data = data.get("claudeAiOauth")
-            if oauth_data and isinstance(oauth_data, dict):
-                access_token = oauth_data.get("accessToken", "")
-                if access_token:
-                    return {
-                        "accessToken": access_token,
-                        "refreshToken": oauth_data.get("refreshToken", ""),
-                        "expiresAt": oauth_data.get("expiresAt", 0),
-                        "source": "claude_code_credentials_file",
-                    }
-        except (json.JSONDecodeError, OSError, IOError) as e:
-            logger.debug("Failed to read ~/.claude/.credentials.json: %s", e)
-
-    return None
+    # If neither credential is currently valid, prefer Keychain so the refresh
+    # path still uses Claude Code's newest storage location; otherwise fall back
+    # to the JSON file credential.
+    return kc_creds or file_creds
 
 
 def is_claude_code_token_valid(creds: Dict[str, Any]) -> bool:

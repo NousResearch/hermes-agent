@@ -287,9 +287,13 @@ def _is_blocked_device(filepath: str) -> bool:
 # terminal tool's approval system.  These match prefixes after os.path.realpath.
 _SENSITIVE_PATH_PREFIXES = (
     "/etc/", "/boot/", "/usr/lib/systemd/",
-    "/private/etc/", "/private/var/",
+    "/private/etc/",
+    # macOS mirrors sensitive /var state under /private/var.  Keep the guard
+    # focused on system-owned locations; /private/var/folders is the normal
+    # per-user temp root used by pytest/tmp_path and is safe to write.
+    "/private/var/db/", "/private/var/root/", "/private/var/run/",
 )
-_SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock"}
+_SENSITIVE_EXACT_PATHS = {"/var/run/docker.sock", "/run/docker.sock", "/private/var/run/docker.sock"}
 
 _hermes_config_resolved: str | None = None
 _hermes_config_resolved_loaded = False

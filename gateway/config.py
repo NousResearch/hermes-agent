@@ -1959,6 +1959,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             except Exception as e:
                 logger.debug("check_fn for %s raised: %s", entry.name, e)
                 continue
+
+            # check_fn() is dependency availability for many platform plugins,
+            # not credential readiness.  Do not auto-enable a plugin platform
+            # unless its declared required env vars are actually present;
+            # otherwise installed-but-unconfigured adapters (notably Discord)
+            # enter reconnect loops even when config.yaml says enabled: false.
+            if entry.required_env:
+                missing_required = [
+                    env_name for env_name in entry.required_env
+                    if not (os.getenv(env_name) or "").strip()
+                ]
+                if missing_required:
+                    continue
+
             platform = Platform(entry.name)
             existing_cfg = config.platforms.get(platform)
             # Seed candidate extras from ``env_enablement_fn`` so plugins

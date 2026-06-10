@@ -878,9 +878,24 @@ def _has_any_command_tts_provider(tts_config: Optional[Dict[str, Any]] = None) -
 # ===========================================================================
 # ffmpeg Opus conversion (Edge TTS MP3 -> OGG Opus for Telegram)
 # ===========================================================================
+def _resolve_ffmpeg() -> Optional[str]:
+    """Return an ffmpeg executable path, including common macOS service paths."""
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg:
+        return ffmpeg
+    for candidate in (
+        "/opt/homebrew/bin/ffmpeg",  # Apple Silicon Homebrew, often absent from launchd PATH
+        "/usr/local/bin/ffmpeg",     # Intel Homebrew / common user install
+        "/opt/local/bin/ffmpeg",     # MacPorts
+    ):
+        if os.path.exists(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _has_ffmpeg() -> bool:
     """Check if ffmpeg is available on the system."""
-    return shutil.which("ffmpeg") is not None
+    return _resolve_ffmpeg() is not None
 
 
 def _convert_to_opus(mp3_path: str) -> Optional[str]:
@@ -893,13 +908,14 @@ def _convert_to_opus(mp3_path: str) -> Optional[str]:
     Returns:
         Path to the .ogg file, or None if conversion fails.
     """
-    if not _has_ffmpeg():
+    ffmpeg = _resolve_ffmpeg()
+    if not ffmpeg:
         return None
 
     ogg_path = mp3_path.rsplit(".", 1)[0] + ".ogg"
     try:
         result = subprocess.run(
-            ["ffmpeg", "-i", mp3_path, "-acodec", "libopus",
+            [ffmpeg, "-i", mp3_path, "-acodec", "libopus",
              "-ac", "1", "-b:a", "64k", "-vbr", "off", ogg_path, "-y"],
             capture_output=True, timeout=30,
             stdin=subprocess.DEVNULL,
@@ -938,11 +954,17 @@ async def _generate_edge_tts(text: str, output_path: str, tts_config: Dict[str, 
     edge_config = tts_config.get("edge", {})
     voice = edge_config.get("voice", DEFAULT_EDGE_VOICE)
     speed = float(edge_config.get("speed", tts_config.get("speed", 1.0)))
+    pitch = edge_config.get("pitch", tts_config.get("pitch"))
+    volume = edge_config.get("volume", tts_config.get("volume"))
 
     kwargs = {"voice": voice}
     if speed != 1.0:
         pct = round((speed - 1.0) * 100)
         kwargs["rate"] = f"{pct:+d}%"
+    if pitch:
+        kwargs["pitch"] = str(pitch)
+    if volume:
+        kwargs["volume"] = str(volume)
 
     communicate = _edge_tts.Communicate(text, **kwargs)
     await communicate.save(output_path)
@@ -2064,7 +2086,15 @@ def text_to_speech_tool(
     # and needs ffmpeg for conversion.
     from gateway.session_context import get_session_env
     platform = get_session_env("HERMES_SESSION_PLATFORM", "").lower()
-    want_opus = (platform == "telegram")
+    # Prefer Opus/Ogg when running inside Telegram so audio arrives as a
+    # native voice bubble.  Some tool invocations are launched outside the
+    # gateway request task, so HERMES_SESSION_PLATFORM can be unavailable even
+    # though the user is chatting from Telegram.  ``tts.prefer_opus`` gives
+    # Telegram-heavy installs a safe config-level override while preserving the
+    # default MP3 behavior for CLI/desktop users.
+    want_opus = (platform == "telegram") or bool(
+        tts_config.get("prefer_opus") or tts_config.get("telegram_voice")
+    )
 
     # Determine output path
     if output_path:

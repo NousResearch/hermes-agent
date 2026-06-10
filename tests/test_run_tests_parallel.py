@@ -185,3 +185,111 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
             f"diag={diag!r} test_pid={test_pid} test_pgid={test_pgid}; "
             f"runner output:\n{proc.stdout}"
         )
+
+
+# ---------------------------------------------------------------------------
+# exit-4 retry loop (transient "file or directory not found" on loaded runners)
+# ---------------------------------------------------------------------------
+
+import importlib.util as _importlib_util  # noqa: E402
+
+
+def _load_runner_module():
+    """Import scripts/run_tests_parallel.py as a module for in-process tests."""
+    repo_root = Path(__file__).resolve().parent.parent
+    path = repo_root / "scripts" / "run_tests_parallel.py"
+    spec = _importlib_util.spec_from_file_location("_rtp_under_test", path)
+    mod = _importlib_util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_exit4_retry_recovers_when_file_exists(tmp_path, monkeypatch):
+    """A file that exits 4 transiently then passes must be retried and recover.
+
+    Simulates the loaded-CI transient: the per-file pytest subprocess reports
+    "file or directory not found" (exit 4) on the first attempts even though
+    the file is on disk, then succeeds. The runner must retry and report pass.
+    """
+    rtp = _load_runner_module()
+    f = tmp_path / "test_transient.py"
+    f.write_text("def test_ok():\n    assert True\n")
+
+    calls = {"n": 0}
+
+    def fake_spawn(cmd, repo_root, file_timeout, *, timeout_note="per-file timeout"):
+        calls["n"] += 1
+        # First two attempts: transient exit-4. Third: success.
+        if calls["n"] < 3:
+            return 4, "ERROR: file or directory not found\nno tests ran in 0.00s"
+        return 0, "1 passed"
+
+    monkeypatch.setattr(rtp, "_spawn_pytest_once", fake_spawn)
+    monkeypatch.setattr(rtp, "_EXIT4_RETRY_BACKOFF_SECONDS", 0.0)  # no real sleep
+
+    file, rc, output, summary, _wall = rtp._run_one_file(f, [], tmp_path, 30.0)
+    assert rc == 0, f"expected recovery to pass, got rc={rc}, output={output!r}"
+    assert calls["n"] == 3, f"expected 3 attempts (1 + 2 retries), got {calls['n']}"
+
+
+def test_exit4_no_retry_when_file_genuinely_missing(tmp_path, monkeypatch):
+    """Exit 4 on a file that does NOT exist must fail fast without retrying.
+
+    Guards the narrowing: we only retry while the file is present on disk, so a
+    real typo / deleted file surfaces immediately instead of looping.
+    """
+    rtp = _load_runner_module()
+    missing = tmp_path / "test_does_not_exist.py"  # never created
+
+    calls = {"n": 0}
+
+    def fake_spawn(cmd, repo_root, file_timeout, *, timeout_note="per-file timeout"):
+        calls["n"] += 1
+        return 4, "ERROR: file or directory not found"
+
+    monkeypatch.setattr(rtp, "_spawn_pytest_once", fake_spawn)
+    monkeypatch.setattr(rtp, "_EXIT4_RETRY_BACKOFF_SECONDS", 0.0)
+
+    file, rc, output, summary, _wall = rtp._run_one_file(missing, [], tmp_path, 30.0)
+    assert rc == 4, f"genuinely-missing file should keep rc=4, got {rc}"
+    assert calls["n"] == 1, f"missing file must NOT be retried, got {calls['n']} calls"
+
+
+def test_exit4_retry_gives_up_after_max_attempts(tmp_path, monkeypatch):
+    """If the transient never clears, we stop after the bounded attempt count."""
+    rtp = _load_runner_module()
+    f = tmp_path / "test_persistent_transient.py"
+    f.write_text("def test_ok():\n    assert True\n")
+
+    calls = {"n": 0}
+
+    def fake_spawn(cmd, repo_root, file_timeout, *, timeout_note="per-file timeout"):
+        calls["n"] += 1
+        return 4, "ERROR: file or directory not found"
+
+    monkeypatch.setattr(rtp, "_spawn_pytest_once", fake_spawn)
+    monkeypatch.setattr(rtp, "_EXIT4_RETRY_BACKOFF_SECONDS", 0.0)
+
+    file, rc, output, summary, _wall = rtp._run_one_file(f, [], tmp_path, 30.0)
+    assert rc == 4
+    # 1 initial + _EXIT4_RETRY_ATTEMPTS retries.
+    assert calls["n"] == 1 + rtp._EXIT4_RETRY_ATTEMPTS
+
+
+def test_file_present_tolerates_transient_negative(tmp_path, monkeypatch):
+    """_file_present must not conclude 'missing' on a single flaky stat."""
+    rtp = _load_runner_module()
+    f = tmp_path / "test_flaky_stat.py"
+    f.write_text("x = 1\n")
+
+    seq = iter([False, False, True])  # first two stats flake, third succeeds
+    monkeypatch.setattr(rtp.Path, "exists", lambda self: next(seq))
+    assert rtp._file_present(f, attempts=3, delay=0.0) is True
+
+
+def test_file_present_reports_truly_missing(tmp_path, monkeypatch):
+    """_file_present returns False when the file is absent across all checks."""
+    rtp = _load_runner_module()
+    f = tmp_path / "nope.py"
+    monkeypatch.setattr(rtp.Path, "exists", lambda self: False)
+    assert rtp._file_present(f, attempts=3, delay=0.0) is False

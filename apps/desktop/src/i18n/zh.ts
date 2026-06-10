@@ -297,7 +297,16 @@ export const zh: Translations = {
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
-      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`
+      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
+      installTitle: '从 VS Code 安装',
+      installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',
+      installPlaceholder: 'publisher.extension',
+      installButton: '安装',
+      installing: '安装中…',
+      installError: '无法安装该主题。',
+      installed: name => `已安装「${name}」。`,
+      removeTheme: '移除主题',
+      importedBadge: '已导入'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -829,6 +838,17 @@ export const zh: Translations = {
     settings: '设置',
     changeTheme: '更改主题...',
     changeColorMode: '更改颜色模式...',
+    installTheme: {
+      title: '安装主题...',
+      placeholder: '搜索 VS Code Marketplace...',
+      loading: '正在搜索 Marketplace...',
+      error: '无法连接到 Marketplace。',
+      empty: '没有匹配的主题。',
+      install: '安装',
+      installing: '安装中...',
+      installed: '已安装',
+      installs: count => `${count} 次安装`
+    },
     settingsFields: '设置字段',
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',

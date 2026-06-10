@@ -33,7 +33,10 @@ main checkout).
   works.
 - When user action is needed, lead the update with an `Action Items For You`
   list. Keep it short, concrete, and separate from agent-owned next steps; if
-  there are no user actions, say `Action Items For You: None`.
+  there are no user actions, say `Action Items For You: None`. Keep the
+  durable action item in Linear when it is a real task; use
+  `docs/operator/ACTION_ITEMS.md` as a short side-panel index that links to the
+  Linear issue.
 - Do not design a new subsystem until you have reported the reuse scan. Before
   implementing new behavior, search existing Hermes mechanisms, nearby tests,
   and docs; then state what is reused, what new code/config is necessary, and

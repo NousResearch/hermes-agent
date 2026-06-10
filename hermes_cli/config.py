@@ -589,7 +589,7 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_default_hermes_root, get_hermes_home  # noqa: F811,E402
 from utils import atomic_replace
 
 def get_config_path() -> Path:
@@ -5332,6 +5332,22 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             return copy.deepcopy(cached[2]) if want_deepcopy else cached[2]
 
         config = copy.deepcopy(DEFAULT_CONFIG)
+
+        # Profile config inheritance: when loading a profile config, merge
+        # the default root user config (~/.hermes/config.yaml) as a base
+        # layer so providers, custom_providers, and other dict-typed keys
+        # are inherited without manual duplication.  Profile-specific values
+        # override the defaults.  See issue #43713.
+        _default_root_config = get_default_hermes_root() / "config.yaml"
+        if config_path != _default_root_config:
+            try:
+                if _default_root_config.exists():
+                    with open(_default_root_config, encoding="utf-8") as f:
+                        _base_user_config = yaml.safe_load(f) or {}
+                    if isinstance(_base_user_config, dict) and _base_user_config:
+                        config = _deep_merge(config, _base_user_config)
+            except Exception:
+                pass  # corrupted default config, proceed with DEFAULT_CONFIG
 
         if cache_key is not None:
             try:

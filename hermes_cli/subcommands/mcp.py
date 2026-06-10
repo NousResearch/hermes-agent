@@ -6,6 +6,7 @@ Handler injected to avoid importing ``main``.
 
 from __future__ import annotations
 
+import argparse
 from typing import Callable
 
 from hermes_cli.subcommands._shared import add_accept_hooks_flag
@@ -52,7 +53,13 @@ def build_mcp_parser(subparsers, *, cmd_mcp: Callable) -> None:
         "--command", dest="mcp_command", help="Stdio command (e.g. npx)"
     )
     mcp_add_p.add_argument(
-        "--args", nargs="*", default=[], help="Arguments for stdio command"
+        # Use REMAINDER so the stdio server receives every token after
+        # ``--args`` verbatim, including values that look like flags
+        # (``--autoConnect``, ``--no-usage-statistics``, etc.) and quoted
+        # npx package specifiers. nargs="*" silently drops everything past
+        # the first value when mcp add is invoked through a subparser
+        # (see https://github.com/NousResearch/hermes-agent/issues/NN).
+        "--args", nargs=argparse.REMAINDER, default=[], help="Arguments for stdio command"
     )
     mcp_add_p.add_argument("--auth", choices=["oauth", "header"], help="Auth method")
     mcp_add_p.add_argument("--preset", help="Known MCP preset name")

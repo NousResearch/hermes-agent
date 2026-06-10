@@ -382,6 +382,21 @@ class TestUpdateCommandPlatformGate:
     interfaces (ACP, API server, webhooks) must be blocked.
     """
 
+    @pytest.fixture(autouse=True)
+    def block_real_update_spawn(self, tmp_path):
+        """Stop a passing gate from spawning a REAL detached ``setsid hermes
+        update --gateway`` against this checkout.  On detached-HEAD CI
+        checkouts (every pull_request run) that update switches the working
+        tree to origin/main and the restore step is skipped when detached,
+        poisoning every test process started afterwards.
+        """
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen"):
+            yield
+
     @pytest.mark.asyncio
     async def test_blocks_programmatic_interface(self, monkeypatch):
         """``Platform.WEBHOOK`` is not a messaging platform and must be

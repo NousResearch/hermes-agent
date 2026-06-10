@@ -1755,6 +1755,32 @@ def _read_main_provider() -> str:
     return ""
 
 
+def _read_main_runtime_credentials() -> Tuple[str, str, str]:
+    """Read model.base_url/api_key/api_mode from config.yaml.
+
+    ``_read_main_provider`` / ``_read_main_model`` intentionally expose only
+    routing identity.  Vision auto-routing also needs the live credential
+    surface for OpenAI-compatible gateways saved under ``model`` so it does not
+    rebuild an auxiliary client against a provider default endpoint.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        model_cfg = cfg.get("model", {})
+        if isinstance(model_cfg, dict):
+            base_url = model_cfg.get("base_url", "")
+            api_key = model_cfg.get("api_key", "")
+            api_mode = model_cfg.get("api_mode", "")
+            return (
+                base_url.strip() if isinstance(base_url, str) else "",
+                api_key.strip() if isinstance(api_key, str) else "",
+                api_mode.strip() if isinstance(api_mode, str) else "",
+            )
+    except Exception:
+        pass
+    return "", "", ""
+
+
 # Process-local override set by AIAgent at session/turn start. Single-threaded
 # per turn — no lock needed. Cleared by ``clear_runtime_main()``.
 _RUNTIME_MAIN_PROVIDER: str = ""
@@ -4181,6 +4207,23 @@ def resolve_vision_provider_client(
         #   2. OpenRouter  (vision-capable aggregator fallback)
         #   3. Nous Portal (vision-capable aggregator fallback)
         #   4. Stop
+        runtime = _normalize_main_runtime(None)
+        cfg_base_url, cfg_api_key, cfg_api_mode = _read_main_runtime_credentials()
+        runtime_base_url = (
+            str(runtime.get("base_url") or "")
+            or _RUNTIME_MAIN_BASE_URL
+            or cfg_base_url
+        )
+        runtime_api_key = (
+            runtime.get("api_key")
+            or _RUNTIME_MAIN_API_KEY
+            or cfg_api_key
+        )
+        runtime_api_mode = (
+            str(runtime.get("api_mode") or "")
+            or _RUNTIME_MAIN_API_MODE
+            or cfg_api_mode
+        )
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in {"auto", ""}:
@@ -4226,9 +4269,24 @@ def resolve_vision_provider_client(
                     main_provider,
                 )
             else:
+                rpc_provider = main_provider
+                explicit_base_url = None
+                explicit_api_key = None
+                if runtime_base_url and (
+                    main_provider == "custom"
+                    or main_provider.startswith("custom:")
+                    or main_provider == "openai-api"
+                ):
+                    rpc_provider = "custom" if main_provider.startswith("custom:") else main_provider
+                    explicit_base_url = runtime_base_url
+                    explicit_api_key = runtime_api_key or None
+                elif runtime_api_key:
+                    explicit_api_key = runtime_api_key
                 rpc_client, rpc_model = resolve_provider_client(
-                    main_provider, vision_model,
-                    api_mode=resolved_api_mode,
+                    rpc_provider, vision_model,
+                    explicit_base_url=explicit_base_url,
+                    explicit_api_key=explicit_api_key,
+                    api_mode=runtime_api_mode or resolved_api_mode,
                     is_vision=True)
                 if rpc_client is not None:
                     logger.info(

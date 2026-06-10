@@ -16,6 +16,16 @@ from __future__ import annotations
 from unittest.mock import MagicMock, patch
 
 
+class _FakeAsyncOpenAI:
+    instances = []
+
+    def __init__(self, **kwargs):
+        self.kwargs = kwargs
+        self.base_url = kwargs.get("base_url")
+        self.api_key = kwargs.get("api_key")
+        _FakeAsyncOpenAI.instances.append(self)
+
+
 
 # ── Text aux tasks — _resolve_auto ──────────────────────────────────────────
 
@@ -267,6 +277,90 @@ class TestResolveVisionMainFirst:
         # Should use mimo-v2.5 (vision override), not mimo-v2-pro (text main)
         assert mock_resolve.call_args.args[1] == "mimo-v2.5"
         assert mock_resolve.call_args.kwargs.get("is_vision") is True
+
+    def test_openai_api_main_vision_inherits_custom_base_url_for_async_client(self):
+        """openai-api vision auto must keep the live custom gateway URL."""
+        import agent.auxiliary_client as mod
+
+        _FakeAsyncOpenAI.instances.clear()
+        mod.clear_runtime_main()
+        try:
+            mod.set_runtime_main(
+                "openai-api",
+                "vision-main-model",
+                base_url="https://gateway.example/v1",
+                api_key="gateway-key",
+            )
+            with patch(
+                "agent.auxiliary_client._read_main_provider", return_value="openai-api",
+            ), patch(
+                "agent.auxiliary_client._read_main_model", return_value="vision-main-model",
+            ), patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, None, None),
+            ), patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "openai-api",
+                    "api_key": "official-openai-key",
+                    "base_url": "https://api.openai.com/v1",
+                },
+            ), patch(
+                "openai.AsyncOpenAI", _FakeAsyncOpenAI,
+            ):
+                provider, client, model = mod.resolve_vision_provider_client(
+                    async_mode=True)
+        finally:
+            mod.clear_runtime_main()
+
+        assert provider == "openai-api"
+        assert client is _FakeAsyncOpenAI.instances[-1]
+        assert model == "vision-main-model"
+        assert client.kwargs["api_key"] == "gateway-key"
+        assert client.kwargs["base_url"].rstrip("/") == "https://gateway.example/v1"
+
+    def test_openai_api_main_vision_inherits_custom_base_url_from_config(self, tmp_path, monkeypatch):
+        """Config-only vision auto must honor model.base_url/model.api_key."""
+        import agent.auxiliary_client as mod
+
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "model:\n"
+            "  default: vision-main-model\n"
+            "  provider: openai-api\n"
+            "  base_url: https://gateway.example/v1\n"
+            "  api_key: gateway-key\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        _FakeAsyncOpenAI.instances.clear()
+        mod.clear_runtime_main()
+        try:
+            with patch(
+                "agent.auxiliary_client._resolve_task_provider_model",
+                return_value=("auto", None, None, None, None),
+            ), patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={
+                    "provider": "openai-api",
+                    "api_key": "official-openai-key",
+                    "base_url": "https://api.openai.com/v1",
+                },
+            ), patch(
+                "openai.AsyncOpenAI", _FakeAsyncOpenAI,
+            ):
+                provider, client, model = mod.resolve_vision_provider_client(
+                    async_mode=True)
+        finally:
+            mod.clear_runtime_main()
+
+        assert provider == "openai-api"
+        assert client is _FakeAsyncOpenAI.instances[-1]
+        assert model == "vision-main-model"
+        assert client.kwargs["api_key"] == "gateway-key"
+        assert client.kwargs["base_url"].rstrip("/") == "https://gateway.example/v1"
 
     def test_copilot_vision_sets_vision_header(self, monkeypatch):
         """Copilot vision requests include the header required for vision routing."""

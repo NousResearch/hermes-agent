@@ -9,7 +9,7 @@ import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, sessionPinId } from '@/store/session'
 import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -107,6 +107,8 @@ export function SidebarSessionRow({
 
           writeSessionDrag(event.dataTransfer, {
             id: session.id,
+            pinId: sessionPinId(session),
+            pinned: isPinned,
             profile: session.profile || 'default',
             title
           })

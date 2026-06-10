@@ -5369,6 +5369,15 @@ def test_browser_manage_connect_default_local_reports_launch_hint(monkeypatch):
                 "hermes_cli.browser_connect.get_chrome_debug_candidates",
                 return_value=[],
             ),
+            # On macOS ``manual_chrome_debug_command`` falls back to a
+            # hardcoded ``open -a "Google Chrome"`` command even when the
+            # candidate list is empty, which would replace the "No
+            # supported..." hint asserted below. Stub it so the test is
+            # hermetic on every platform.
+            patch(
+                "hermes_cli.browser_connect.manual_chrome_debug_command",
+                return_value=None,
+            ),
         ):
             resp = server.handle_request(
                 {

@@ -92,6 +92,38 @@ class TestUsageCachedAgent:
         assert "Compressions: 1" in result
 
     @pytest.mark.asyncio
+    async def test_usage_command_includes_last_context_budget(self):
+        agent = _make_mock_agent()
+        agent._last_context_budget = {
+            "total_tokens": 42_000,
+            "context_length": 200_000,
+            "percent_of_context": 21.0,
+            "message_count": 12,
+            "tool_count": 87,
+            "buckets": {
+                "tool_schemas": 20_000,
+                "prior_messages": 15_000,
+                "memory_context": 5_000,
+                "current_user": 2_000,
+            },
+            "largest_messages": [
+                {"index": 4, "role": "tool", "tokens": 9_000},
+            ],
+        }
+        runner = _make_runner(SK, cached_agent=agent)
+        event = MagicMock()
+
+        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
+             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
+            mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
+            result = await runner._handle_usage_command(event)
+
+        assert "Last request context budget" in result
+        assert "42,000/200,000" in result
+        assert "tool_schemas ~20,000" in result
+        assert "memory_context ~5,000" in result
+
+    @pytest.mark.asyncio
     async def test_running_agent_preferred_over_cache(self):
         """When agent is in both dicts, the running one wins."""
         running = _make_mock_agent(session_api_calls=10, session_total_tokens=80_000)

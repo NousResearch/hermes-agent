@@ -28,6 +28,7 @@ import uuid
 from typing import Any, Dict, List, Optional
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.context_budget import build_context_budget_report, compact_context_budget_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.iteration_budget import IterationBudget
@@ -750,6 +751,20 @@ def run_conversation(
         approx_request_tokens = estimate_request_tokens_rough(
             api_messages, tools=agent.tools or None
         )
+        try:
+            _context_length = getattr(agent.context_compressor, "context_length", None)
+            agent._last_context_budget = build_context_budget_report(
+                api_messages=api_messages,
+                tools=agent.tools or None,
+                model=getattr(agent, "model", "") or "",
+                provider=getattr(agent, "provider", "") or "",
+                context_length=_context_length,
+                session_id=getattr(agent, "session_id", "") or "",
+                api_call_count=api_call_count,
+            )
+            logger.info(compact_context_budget_log(agent._last_context_budget))
+        except Exception:
+            logger.debug("context budget report failed", exc_info=True)
 
         _runtime_context_error = _ollama_context_limit_error(
             agent, approx_request_tokens

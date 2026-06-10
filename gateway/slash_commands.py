@@ -2971,6 +2971,15 @@ class GatewaySlashCommandsMixin:
             if ctx.last_prompt_tokens:
                 pct = min(100, ctx.last_prompt_tokens / ctx.context_length * 100) if ctx.context_length else 0
                 lines.append(t("gateway.usage.label_context", used=f"{ctx.last_prompt_tokens:,}", total=f"{ctx.context_length:,}", pct=f"{pct:.0f}"))
+            budget = getattr(agent, "_last_context_budget", None)
+            if budget:
+                try:
+                    from agent.context_budget import format_context_budget_report
+                    lines.append("")
+                    lines.append("**Last request context budget**")
+                    lines.extend(format_context_budget_report(budget, markdown=True))
+                except Exception:
+                    pass
             if ctx.compression_count:
                 lines.append(t("gateway.usage.label_compressions", count=ctx.compression_count))
 

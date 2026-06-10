@@ -1,38 +1,79 @@
 import type { ITheme, Terminal } from '@xterm/xterm'
 import type { CSSProperties } from 'react'
 
-// Solarized-derived palette, but with bright ANSI 8–15 promoted to real
-// accent variants instead of Schoonover's UI grays. Hermes' TUI skins (gold,
-// crimson, ...) emit bright SGR codes that would otherwise wash out to gray.
-// We always render the dark canvas — the app's light surfaces can't host the
-// default skin without dropping below readable contrast.
-export const TERMINAL_BG = '#002b36'
-
-const THEME: ITheme = {
-  background: TERMINAL_BG,
-  foreground: '#839496',
-  cursor: '#93a1a1',
-  cursorAccent: TERMINAL_BG,
-  selectionBackground: '#586e7555',
-  black: '#073642',
-  red: '#dc322f',
-  green: '#859900',
-  yellow: '#b58900',
-  blue: '#268bd2',
-  magenta: '#d33682',
-  cyan: '#2aa198',
-  white: '#eee8d5',
-  brightBlack: '#586e75',
-  brightRed: '#f25c54',
-  brightGreen: '#b3d437',
-  brightYellow: '#f7c948',
-  brightBlue: '#5fb3ff',
-  brightMagenta: '#ff6ab4',
-  brightCyan: '#5cd9c8',
-  brightWhite: '#fdf6e3'
+// VS Code's default integrated-terminal palette (terminalColorRegistry.ts) — a
+// fixed table per theme type, not luminance-derived. Light/dark diverge on
+// purpose so each stays legible (e.g. mustard yellow on white).
+const DARK_THEME: ITheme = {
+  background: '#1e1e1e',
+  foreground: '#cccccc',
+  cursor: '#cccccc',
+  cursorAccent: '#1e1e1e',
+  selectionBackground: '#264f7866',
+  black: '#000000',
+  red: '#cd3131',
+  green: '#0dbc79',
+  yellow: '#e5e510',
+  blue: '#2472c8',
+  magenta: '#bc3fbc',
+  cyan: '#11a8cd',
+  white: '#e5e5e5',
+  brightBlack: '#666666',
+  brightRed: '#f14c4c',
+  brightGreen: '#23d18b',
+  brightYellow: '#f5f543',
+  brightBlue: '#3b8eea',
+  brightMagenta: '#d670d6',
+  brightCyan: '#29b8db',
+  brightWhite: '#e5e5e5'
 }
 
-export const terminalTheme = (): ITheme => THEME
+const LIGHT_THEME: ITheme = {
+  background: '#ffffff',
+  foreground: '#333333',
+  cursor: '#333333',
+  cursorAccent: '#ffffff',
+  selectionBackground: '#add6ff80',
+  black: '#000000',
+  red: '#cd3131',
+  green: '#00bc00',
+  yellow: '#949800',
+  blue: '#0451a5',
+  magenta: '#bc05bc',
+  cyan: '#0598bc',
+  white: '#555555',
+  brightBlack: '#666666',
+  brightRed: '#cd3131',
+  brightGreen: '#14ce14',
+  brightYellow: '#b5ba00',
+  brightBlue: '#0451a5',
+  brightMagenta: '#bc05bc',
+  brightCyan: '#0598bc',
+  brightWhite: '#a5a5a5'
+}
+
+// Palette by painted mode. `background` is only a fallback — withSurface swaps
+// in the live skin surface at runtime; minimumContrastRatio keeps colors crisp.
+export const terminalTheme = (mode: 'light' | 'dark'): ITheme => (mode === 'dark' ? DARK_THEME : LIGHT_THEME)
+
+// Resolve --ui-editor-surface-background (a color-mix on the skin seed) to a
+// concrete rgb for the WebGL renderer + contrast clamp. Custom props don't
+// resolve via getComputedStyle, so probe a real background-color. Read AFTER
+// applyTheme repaints (mount / rAF post-change) or it lags a frame behind.
+export function resolveSurfaceColor(fallback: string): string {
+  if (typeof document === 'undefined' || !document.body) {
+    return fallback
+  }
+
+  const probe = document.createElement('span')
+  probe.style.cssText =
+    'position:absolute;visibility:hidden;pointer-events:none;background-color:var(--ui-editor-surface-background)'
+  document.body.appendChild(probe)
+  const resolved = getComputedStyle(probe).backgroundColor
+  probe.remove()
+
+  return resolved && resolved !== 'rgba(0, 0, 0, 0)' ? resolved : fallback
+}
 
 export const isMacPlatform = () => navigator.platform.toLowerCase().includes('mac')
 

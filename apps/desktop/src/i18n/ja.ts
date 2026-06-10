@@ -1605,6 +1605,8 @@ export const ja = defineLocale({
       branch: branch => `ブランチ ${branch}`,
       closeCommandCenter: 'コマンドセンターを閉じる',
       openCommandCenter: 'コマンドセンターを開く',
+      showTerminal: 'ターミナルを表示',
+      hideTerminal: 'ターミナルを非表示',
       gateway: 'ゲートウェイ',
       gatewayReady: '準備完了',
       gatewayNeedsSetup: '設定が必要',
@@ -1660,8 +1662,7 @@ export const ja = defineLocale({
     tryAgain: '再試行',
     loadingTree: 'ファイルツリーを読み込み中',
     loadingFiles: 'ファイルを読み込み中',
-    terminalFocus: 'ターミナルビューにフォーカス',
-    terminalSplit: '分割ビューに戻る',
+    terminalHide: 'ターミナルを非表示',
     addToChat: 'チャットに追加'
   },
 

@@ -1134,6 +1134,8 @@ export interface Translations {
       branch: (branch: string) => string
       closeCommandCenter: string
       openCommandCenter: string
+      showTerminal: string
+      hideTerminal: string
       gateway: string
       gatewayReady: string
       gatewayNeedsSetup: string
@@ -1189,8 +1191,7 @@ export interface Translations {
     tryAgain: string
     loadingTree: string
     loadingFiles: string
-    terminalFocus: string
-    terminalSplit: string
+    terminalHide: string
     addToChat: string
   }
 

@@ -1,11 +1,12 @@
 """
-Agentic stall-retry (dflash Q4 premature-EOS workaround).
+Agentic stall-retry (local quantized-model premature-EOS workaround).
 
-dflash (Qwen3.6-27B Q4_K_M, lucebox spec-decode) sometimes emits EOS right
-after a short action preamble ("Let me check X:") on agentic decision turns,
-ending the turn with NO tool_call -> the agent loop treats it as a final
-answer and stops mid-task. Higher-precision weights (the stock Q6 lane on the
-same host) continue to a real tool call on the identical prompt.
+Local quantized models (e.g. aggressive low-bit quants with speculative
+decoding) sometimes emit EOS right after a short action preamble ("Let me
+check X:") on agentic decision turns, ending the turn with NO tool_call ->
+the agent loop treats it as a final answer and stops mid-task.
+Higher-precision weights (e.g. a higher-bit lane on the same host) continue
+to a real tool call on the identical prompt.
 
 This module detects that stall signature on a no-tool-call turn and retries
 the turn against a higher-quality model lane, with a small recovery nudge that
@@ -48,7 +49,8 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 # Action-preamble signature: the turn announced an action but produced no tool
-# call. These English phrases match the observed dflash stall corpus; broader
+# call. These English phrases match the observed local quantized-model stall
+# corpus; broader
 # language-agnostic fallbacks below still catch trailing-colon and incomplete
 # final fragments without pretending this regex is multilingual.
 _ACTION_RE = re.compile(
@@ -280,8 +282,8 @@ def looks_like_incomplete_final_fragment(
 ) -> bool:
     """True when a short no-tool final looks cut off mid-sentence.
 
-    dflash can occasionally stop with ordinary visible prose after a tool
-    result, e.g. ``"... and some"``. That is not an action preamble, but it is
+    Local quantized models can occasionally stop with ordinary visible prose
+    after a tool result, e.g. ``"... and some"``. That is not an action preamble, but it is
     still unsafe to persist as the final answer in a tool loop.
     """
     if has_tool_calls or finish_reason not in ("stop", "length"):
@@ -300,7 +302,7 @@ def looks_like_incomplete_final_fragment(
 def _action_after_completion(content: str) -> bool:
     """True when a response says some step is complete, then promises work.
 
-    The dflash phone failure hit this exact shape:
+    An observed local quantized-model failure hit this exact shape:
     "Onboarding complete. Now let me read the STATUS.md ..."
 
     The earlier completion word is not a final answer when a later clause is
@@ -321,7 +323,8 @@ def _ends_with_action_promise(content: str) -> bool:
     The generic stall heuristic is intentionally length-capped because long
     prose is often a real answer. Explicit tail promises are different: a long
     diagnostic can still end with "Let me check that:" and no tool call, which
-    is the exact dflash premature-stop shape this module exists to recover.
+    is the exact local quantized-model premature-stop shape this module
+    exists to recover.
     """
     tail = (content or "").strip()[-_ACTION_TAIL_CHARS:]
     if not tail:
@@ -745,14 +748,14 @@ def activate_stall_retry_runtime(
         )
         try:
             agent._emit_status(
-                "↻ dflash stalled repeatedly; using "
+                "↻ Primary model stalled repeatedly; using "
                 f"{resolved_model} for the rest of this turn. "
                 "Primary model will be restored next turn."
             )
         except Exception:
             try:
                 agent._vprint(
-                    f"{getattr(agent, 'log_prefix', '')}↻ dflash stalled "
+                    f"{getattr(agent, 'log_prefix', '')}↻ Primary model stalled "
                     f"repeatedly; using {resolved_model} for the rest of this turn.",
                     force=True,
                 )
@@ -802,7 +805,8 @@ def looks_like_stall(content: str, finish_reason: str, has_tool_calls: bool,
     # a trailing colon strongly implies "about to do something".
     if c.endswith(":"):
         return True
-    # dflash can also stop after a tool result with ordinary-looking prose that
+    # Local quantized models can also stop after a tool result with
+    # ordinary-looking prose that
     # is simply cut off mid-sentence (for example after a CLI interrupt resumes
     # the turn). In an agentic tool loop, a short no-tool stop that declares no
     # completion and lacks a natural ending is safer to retry than to persist as
@@ -846,8 +850,8 @@ def retry_on_stall(
         )
         # Build kwargs exactly as the normal turn would, then override only the
         # model name. Safe when the retry lane is served by the SAME provider/
-        # endpoint as agent.model (e.g. taro serves both dflash and the Q6 lane),
-        # so no client rebuild is needed.
+        # endpoint as agent.model (e.g. one host serving multiple local
+        # quantization lanes), so no client rebuild is needed.
         api_kwargs = agent._build_api_kwargs(retry_messages)
         orig_model = api_kwargs.get("model")
         same_model_retry = retry_model == orig_model

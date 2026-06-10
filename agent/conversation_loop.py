@@ -793,7 +793,8 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
-    # Agentic stall-retry guard: dflash can stall more than once in a long
+    # Agentic stall-retry guard: local quantized models can stall more than
+    # once in a long
     # tool loop. Count total attempts for telemetry, but only consume the
     # terminal budget when the retry lane fails to produce forward progress.
     # A recovered tool call is work advanced, not a reason to kill the turn.
@@ -3674,7 +3675,7 @@ def run_conversation(
                 agent._codex_incomplete_retries = 0
 
             # ── Agentic stall-retry (opt-in via HERMES_STALL_RETRY_MODEL) ──
-            # dflash Q4 can stop right after an action preamble ("Let me
+            # Local quantized models can stop right after an action preamble ("Let me
             # check X") without producing the promised tool_call. Retry the
             # exact same turn on the configured higher-quality lane before
             # the final-response branch sees it. If it still returns no tool

@@ -194,7 +194,7 @@ def test_retry_on_stall_switches_model_and_returns_tool_calls(monkeypatch) -> No
         _is_anthropic_oauth=False,
         log_prefix="",
         _build_api_kwargs=lambda messages: {
-            "model": "dflash",
+            "model": "local-q4",
             "messages": messages,
             "stream": True,
         },
@@ -246,7 +246,7 @@ def test_retry_on_stall_can_accept_visible_content(monkeypatch) -> None:
         _is_anthropic_oauth=False,
         log_prefix="",
         _build_api_kwargs=lambda messages: {
-            "model": "dflash",
+            "model": "local-q4",
             "messages": messages,
             "stream": True,
         },
@@ -287,7 +287,7 @@ def test_retry_on_stall_still_rejects_content_without_accept_content(monkeypatch
         _is_anthropic_oauth=False,
         log_prefix="",
         _build_api_kwargs=lambda messages: {
-            "model": "dflash",
+            "model": "local-q4",
             "messages": messages,
             "stream": True,
         },
@@ -421,7 +421,7 @@ def test_retry_on_stall_uses_agent_config_when_env_is_absent(monkeypatch) -> Non
             "max_per_turn": 7,
         },
         _build_api_kwargs=lambda messages: {
-            "model": "dflash",
+            "model": "local-q4",
             "messages": messages,
             "stream": True,
         },
@@ -512,7 +512,7 @@ def test_activate_stall_retry_runtime_promotes_for_current_turn(monkeypatch) -> 
         captured["context_model"] = dict(kwargs)
 
     agent = SimpleNamespace(
-        model="dflash",
+        model="local-q4",
         provider="custom",
         base_url="http://primary:8080/v1",
         api_key="primary-key",
@@ -556,7 +556,7 @@ def test_activate_stall_retry_runtime_promotes_for_current_turn(monkeypatch) -> 
     assert str(agent.base_url) == "http://taro:8080/v1"
     assert agent._fallback_activated is True
     assert agent._stall_retry_runtime_promoted is True
-    assert agent._stall_retry_promoted_from == "dflash"
+    assert agent._stall_retry_promoted_from == "local-q4"
     assert agent._transport_cache == {}
     assert captured["resolve_kwargs"]["provider"] == "taro"
     assert captured["context_model"]["model"] == "qwen3.6-27b-256k"
@@ -600,7 +600,7 @@ def test_retry_on_stall_uses_configured_retry_provider(monkeypatch) -> None:
             "api_key_env": "HERMES_RETRY_TEST_KEY",
         },
         _build_api_kwargs=lambda messages: {
-            "model": "dflash",
+            "model": "local-q4",
             "messages": messages,
             "stream": True,
         },
@@ -656,7 +656,7 @@ def test_retry_on_stall_can_disable_retry_nudge(monkeypatch) -> None:
             "telemetry": False,
         },
         _build_api_kwargs=lambda messages: {
-            "model": "dflash",
+            "model": "local-q4",
             "messages": messages,
             "stream": True,
         },
@@ -688,7 +688,7 @@ def test_stall_retry_telemetry_writes_bounded_local_jsonl(tmp_path) -> None:
     log_path = tmp_path / "stall-retry.ndjson"
     agent = SimpleNamespace(
         session_id="s1",
-        model="dflash",
+        model="local-q4",
         provider="nous",
         _stall_retry_config={
             "telemetry": True,
@@ -708,7 +708,7 @@ def test_stall_retry_telemetry_writes_bounded_local_jsonl(tmp_path) -> None:
     event = json.loads(lines[0])
     assert event["event"] == "detected"
     assert event["session_id"] == "s1"
-    assert event["model"] == "dflash"
+    assert event["model"] == "local-q4"
     assert event["provider"] == "nous"
     assert event["retry_model"] == "qwen3.6-27b-256k"
     assert event["content_chars"] > len(event["content_preview"])

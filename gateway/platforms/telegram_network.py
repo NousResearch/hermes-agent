@@ -205,7 +205,9 @@ async def discover_fallback_ips() -> list[str]:
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
         doh_tasks = [_query_doh_provider(client, p) for p in _DOH_PROVIDERS]
-        system_dns_task = asyncio.to_thread(_resolve_system_dns)
+        system_dns_task = asyncio.wait_for(
+            asyncio.to_thread(_resolve_system_dns), timeout=_DOH_TIMEOUT
+        )
         results = await asyncio.gather(system_dns_task, *doh_tasks, return_exceptions=True)
 
     # results[0] = system DNS IPs (set), results[1:] = DoH IP lists

@@ -629,6 +629,143 @@ class DiscordAdapter(BasePlatformAdapter):
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
 
+    async def _await_bot_task_cleanup(self) -> None:
+        """Cancel/await the background discord.py start task.
+
+        ``commands.Bot.start()`` runs in ``self._bot_task`` for the lifetime of
+        the connection. Closing the client makes that task exit, often by
+        raising a Discord transport/auth exception. If we neither await nor
+        cancel it, asyncio logs ``Task exception was never retrieved`` during
+        reconnects and shutdown.
+        """
+
+        task = self._bot_task
+        self._bot_task = None
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logger.debug("[%s] Suppressed Discord bot task exception during cleanup", self.name, exc_info=True)
+
+    async def _cleanup_client_runtime(self) -> None:
+        """Close the Discord client and await all background connection tasks."""
+
+        client = self._client
+        if client is not None:
+            try:
+                is_closed = False
+                is_closed_fn = getattr(client, "is_closed", None)
+                if callable(is_closed_fn):
+                    try:
+                        is_closed = bool(is_closed_fn())
+                    except Exception:
+                        is_closed = False
+                if not is_closed:
+                    await client.close()
+            except Exception:
+                logger.debug("[%s] Failed to close Discord client during cleanup", self.name, exc_info=True)
+
+        await self._await_bot_task_cleanup()
+
+        if self._post_connect_task and not self._post_connect_task.done():
+            self._post_connect_task.cancel()
+            try:
+                await self._post_connect_task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug("[%s] Suppressed Discord post-connect task exception during cleanup", self.name, exc_info=True)
+
+        self._client = None
+        self._ready_event.clear()
+        self._post_connect_task = None
+
+    def _ready_timeout_seconds(self) -> float:
+        return 30.0
+
+    def _classify_bot_start_exception(self, exc: BaseException) -> tuple[str, str, bool]:
+        """Map early discord.py startup failures to gateway fatal-error semantics."""
+
+        login_failure_cls = getattr(discord, "LoginFailure", None) if DISCORD_AVAILABLE and discord is not None else None
+        http_exception_cls = getattr(discord, "HTTPException", None) if DISCORD_AVAILABLE and discord is not None else None
+
+        if isinstance(login_failure_cls, type) and isinstance(exc, login_failure_cls):
+            return (
+                "discord_auth_failed",
+                f"Discord authentication failed: {exc}",
+                False,
+            )
+
+        if isinstance(http_exception_cls, type) and isinstance(exc, http_exception_cls):
+            status = getattr(exc, "status", None)
+            if status == 401:
+                return (
+                    "discord_auth_failed",
+                    f"Discord authentication failed: {exc}",
+                    False,
+                )
+
+        text = str(exc).lower()
+        if "improper token" in text or "401 unauthorized" in text:
+            return (
+                "discord_auth_failed",
+                f"Discord authentication failed: {exc}",
+                False,
+            )
+
+        return (
+            "discord_connect_failed",
+            f"Discord startup failed before on_ready: {exc}",
+            True,
+        )
+
+    async def _wait_for_ready_or_start_failure(self) -> None:
+        """Wait until Discord is ready, or surface the real startup failure."""
+
+        task = self._bot_task
+        if task is None:
+            raise RuntimeError("Discord bot task was not started")
+
+        ready_waiter = asyncio.create_task(self._ready_event.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                {task, ready_waiter},
+                timeout=self._ready_timeout_seconds(),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            if not ready_waiter.done():
+                ready_waiter.cancel()
+                try:
+                    await ready_waiter
+                except asyncio.CancelledError:
+                    pass
+
+        if not done:
+            raise asyncio.TimeoutError()
+        if self._ready_event.is_set():
+            return
+
+        if task.cancelled():
+            message = "Discord bot task was cancelled before on_ready was fired"
+            self._set_fatal_error("discord_connect_cancelled", message, retryable=True)
+            raise RuntimeError(message)
+
+        exc = task.exception()
+        if exc is None:
+            message = "Discord bot task exited before on_ready was fired"
+            self._set_fatal_error("discord_connect_failed", message, retryable=True)
+            raise RuntimeError(message)
+
+        code, message, retryable = self._classify_bot_start_exception(exc)
+        self._set_fatal_error(code, message, retryable=retryable)
+        raise exc
+
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
@@ -726,14 +863,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # connected to Discord gateway and both fire on_message, causing
             # double responses.
             if self._client is not None:
-                try:
-                    if not self._client.is_closed():
-                        await self._client.close()
-                except Exception:
-                    logger.debug("[%s] Failed to close previous Discord client", self.name)
-                finally:
-                    self._client = None
-                    self._ready_event.clear()
+                await self._cleanup_client_runtime()
 
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
@@ -895,17 +1025,23 @@ class DiscordAdapter(BasePlatformAdapter):
             # Start the bot in background
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
 
-            # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            # Wait for ready, but fail fast if the background start task dies first.
+            await self._wait_for_ready_or_start_failure()
 
             self._running = True
             return True
 
+        except asyncio.CancelledError:
+            await self._cleanup_client_runtime()
+            self._release_platform_lock()
+            raise
         except asyncio.TimeoutError:
+            await self._cleanup_client_runtime()
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
+            await self._cleanup_client_runtime()
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
             self._release_platform_lock()
             return False
@@ -919,23 +1055,8 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as e:  # pragma: no cover - defensive logging
                 logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
 
-        if self._client:
-            try:
-                await self._client.close()
-            except Exception as e:  # pragma: no cover - defensive logging
-                logger.warning("[%s] Error during disconnect: %s", self.name, e, exc_info=True)
-
-        if self._post_connect_task and not self._post_connect_task.done():
-            self._post_connect_task.cancel()
-            try:
-                await self._post_connect_task
-            except asyncio.CancelledError:
-                pass
-
+        await self._cleanup_client_runtime()
         self._running = False
-        self._client = None
-        self._ready_event.clear()
-        self._post_connect_task = None
 
         self._release_platform_lock()
 

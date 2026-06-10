@@ -602,6 +602,25 @@ class TestDiscoverFallbackIps:
         assert ips == ["149.154.167.220"]
 
     @pytest.mark.asyncio
+    async def test_stalled_system_dns_does_not_block_doh_results(self, monkeypatch):
+        client = FakeDoHClient({
+            "https://dns.google": (200, _doh_answer("149.154.167.220")),
+            "https://cloudflare-dns.com": (200, _doh_answer("149.154.167.221")),
+        })
+        monkeypatch.setattr(tnet.httpx, "AsyncClient", lambda **kw: client)
+        monkeypatch.setattr(tnet, "_DOH_TIMEOUT", 0.01)
+
+        def slow_system_dns():
+            import time
+            time.sleep(0.05)
+            return {"149.154.166.110"}
+
+        monkeypatch.setattr(tnet, "_resolve_system_dns", slow_system_dns)
+
+        ips = await tnet.discover_fallback_ips()
+        assert ips == ["149.154.167.220", "149.154.167.221"]
+
+    @pytest.mark.asyncio
     async def test_system_dns_failure_keeps_all_doh_ips(self, monkeypatch):
         """If system DNS fails, nothing gets excluded — all DoH IPs kept."""
         self._patch_doh(monkeypatch, {

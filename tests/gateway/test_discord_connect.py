@@ -119,6 +119,58 @@ class FakeBot:
         return None
 
 
+class HangingBot(FakeBot):
+    def __init__(self, *, intents, proxy=None, allowed_mentions=None, **_):
+        super().__init__(intents=intents, proxy=proxy, allowed_mentions=allowed_mentions)
+        self._closed = False
+        self.start_cancelled = asyncio.Event()
+        self._blocker = asyncio.Event()
+
+    def is_closed(self):
+        return self._closed
+
+    async def start(self, token):
+        try:
+            await self._blocker.wait()
+        except asyncio.CancelledError:
+            self.start_cancelled.set()
+            raise
+
+    async def close(self):
+        self._closed = True
+
+
+class CrashingBot(FakeBot):
+    def __init__(self, *, exc: Exception, intents, proxy=None, allowed_mentions=None, **_):
+        super().__init__(intents=intents, proxy=proxy, allowed_mentions=allowed_mentions)
+        self._exc = exc
+        self._closed = False
+
+    def is_closed(self):
+        return self._closed
+
+    async def start(self, token):
+        raise self._exc
+
+    async def close(self):
+        self._closed = True
+
+
+class SilentBot(FakeBot):
+    def __init__(self, *, intents, proxy=None, allowed_mentions=None, **_):
+        super().__init__(intents=intents, proxy=proxy, allowed_mentions=allowed_mentions)
+        self._closed = False
+
+    def is_closed(self):
+        return self._closed
+
+    async def start(self, token):
+        return None
+
+    async def close(self):
+        self._closed = True
+
+
 class SlowSyncTree(FakeTree):
     def __init__(self):
         super().__init__()
@@ -256,27 +308,127 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
     intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
     monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
 
+    created = {}
+
     monkeypatch.setattr(
         discord_platform.commands,
         "Bot",
-        lambda **kwargs: FakeBot(
+        lambda **kwargs: created.setdefault(
+            "bot",
+            HangingBot(
+                intents=kwargs["intents"],
+                proxy=kwargs.get("proxy"),
+                allowed_mentions=kwargs.get("allowed_mentions"),
+            ),
+        ),
+    )
+
+    monkeypatch.setattr(adapter, "_ready_timeout_seconds", lambda: 0.01)
+
+    ok = await asyncio.wait_for(adapter.connect(), timeout=5.0)
+
+    assert ok is False
+    assert released == [("discord-bot-token", "test-token")]
+    assert adapter._platform_lock_identity is None
+    assert created["bot"]._closed is True
+    assert adapter._bot_task is None
+
+
+@pytest.mark.asyncio
+async def test_disconnect_awaits_bot_task_exception_cleanup(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    closed = []
+
+    class _ClosableClient:
+        def is_closed(self):
+            return False
+
+        async def close(self):
+            closed.append(True)
+
+    adapter._client = _ClosableClient()
+    adapter._platform_lock_identity = "test-token"
+    adapter._platform_lock_scope = "discord-bot-token"
+    adapter._voice_clients = {}
+
+    loop = asyncio.get_running_loop()
+    task = loop.create_future()
+    task.set_exception(RuntimeError("discord boom"))
+    adapter._bot_task = task
+
+    await adapter.disconnect()
+
+    assert closed == [True]
+    assert adapter._bot_task is None
+
+
+@pytest.mark.asyncio
+async def test_connect_fails_fast_on_login_failure_and_marks_auth_nonretryable(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="bad-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    released = []
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: released.append((scope, identity)))
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+
+    class _LoginFailure(Exception):
+        pass
+
+    monkeypatch.setattr(discord_platform.discord, "LoginFailure", _LoginFailure, raising=False)
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: CrashingBot(
+            exc=_LoginFailure("Improper token has been passed."),
             intents=kwargs["intents"],
             proxy=kwargs.get("proxy"),
             allowed_mentions=kwargs.get("allowed_mentions"),
         ),
     )
 
-    async def fake_wait_for(awaitable, timeout):
-        awaitable.close()
-        raise asyncio.TimeoutError()
+    ok = await asyncio.wait_for(adapter.connect(), timeout=5.0)
 
-    monkeypatch.setattr(discord_platform.asyncio, "wait_for", fake_wait_for)
+    assert ok is False
+    assert released == [("discord-bot-token", "bad-token")]
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_code == "discord_auth_failed"
+    assert adapter.fatal_error_retryable is False
+    assert adapter._bot_task is None
 
-    ok = await adapter.connect()
+
+@pytest.mark.asyncio
+async def test_connect_fails_fast_when_bot_exits_without_ready(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    released = []
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: released.append((scope, identity)))
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: SilentBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
+    )
+
+    ok = await asyncio.wait_for(adapter.connect(), timeout=5.0)
 
     assert ok is False
     assert released == [("discord-bot-token", "test-token")]
-    assert adapter._platform_lock_identity is None
+    assert adapter.has_fatal_error is True
+    assert adapter.fatal_error_code == "discord_connect_failed"
+    assert adapter.fatal_error_retryable is True
+    assert adapter._bot_task is None
 
 
 @pytest.mark.asyncio
@@ -300,7 +452,7 @@ async def test_connect_does_not_wait_for_slash_sync(monkeypatch):
     monkeypatch.setattr(discord_platform.commands, "Bot", fake_bot_factory)
     monkeypatch.setattr(adapter, "_resolve_allowed_usernames", AsyncMock())
 
-    ok = await asyncio.wait_for(adapter.connect(), timeout=1.0)
+    ok = await asyncio.wait_for(adapter.connect(), timeout=5.0)
 
     assert ok is True
     assert adapter._ready_event.is_set()

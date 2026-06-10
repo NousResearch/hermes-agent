@@ -111,15 +111,24 @@ def test_workspace_tui_install_ignores_uninstalled_unrelated_workspaces(
             "apps/bootstrap-installer": {
               "name": "@hermes/bootstrap-installer",
               "version": "0.0.1",
-              "dependencies": {"@tauri-apps/api": "^2.0.0"}
+              "dependencies": {"@tauri-apps/api": "^2.0.0"},
+              "devDependencies": {"typescript": "^6.0.0"}
             },
             "node_modules/@tauri-apps/api": {"version": "2.0.0"},
+            "apps/bootstrap-installer/node_modules/typescript": {"version": "6.0.3"},
             "ui-tui": {
               "name": "hermes-tui",
               "version": "0.0.1",
-              "dependencies": {"foo": "1.0.0"}
+              "dependencies": {"foo": "1.0.0"},
+              "devDependencies": {"typescript": "^6.0.0"}
             },
-            "node_modules/foo": {"version": "1.0.0"}
+            "node_modules/foo": {
+              "version": "1.0.0",
+              "dependencies": {"nanoid": "^3.0.0"}
+            },
+            "node_modules/nanoid": {"version": "5.1.11"},
+            "node_modules/foo/node_modules/nanoid": {"version": "3.3.12"},
+            "node_modules/typescript": {"version": "6.0.3"}
           }
         }"""
     )
@@ -129,9 +138,15 @@ def test_workspace_tui_install_ignores_uninstalled_unrelated_workspaces(
             "ui-tui": {
               "name": "hermes-tui",
               "version": "0.0.1",
-              "dependencies": {"foo": "1.0.0"}
+              "dependencies": {"foo": "1.0.0"},
+              "devDependencies": {"typescript": "^6.0.0"}
             },
-            "node_modules/foo": {"version": "1.0.0"}
+            "node_modules/foo": {
+              "version": "1.0.0",
+              "dependencies": {"nanoid": "^3.0.0"}
+            },
+            "node_modules/foo/node_modules/nanoid": {"version": "3.3.12"},
+            "node_modules/typescript": {"version": "6.0.3"}
           }
         }"""
     )
@@ -298,12 +313,84 @@ def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
     assert install_cmd[:7] == [
         "/bin/npm",
         "install",
+        "--prefix",
+        str(tmp_path),
         "--workspace",
         "ui-tui",
         "--workspace",
+    ]
+    assert install_cmd[7:11] == [
         "ui-tui/packages/hermes-ink",
         "--include-workspace-root=false",
+        "--silent",
+        "--no-fund",
     ]
+    assert calls[0][1]["cwd"] == str(tmp_path)
+
+
+def test_make_tui_argv_passes_prefix_for_desktop_workspace_install(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    install_cmd = calls[0][0][0]
+    assert install_cmd[:5] == [
+        "/bin/npm",
+        "install",
+        "--prefix",
+        str(tmp_path),
+        "--workspace",
+    ]
+    assert calls[0][1]["cwd"] == str(tmp_path)
+
+
+def test_make_tui_argv_scopes_npm_install_on_termux_workspace_args(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    ink_dir = tui_dir / "packages" / "hermes-ink"
+    ink_dir.mkdir(parents=True)
+    (ink_dir / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    install_cmd = calls[0][0][0]
+    assert "--workspace" in install_cmd
+    assert "ui-tui" in install_cmd
+    assert "ui-tui/packages/hermes-ink" in install_cmd
+    assert "--include-workspace-root=false" in install_cmd
     assert calls[0][1]["cwd"] == str(tmp_path)
 
 
@@ -332,6 +419,8 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
     assert calls[0][0][0] == [
         "/bin/npm",
         "install",
+        "--prefix",
+        str(tmp_path),
         "--workspace",
         "ui-tui",
         "--silent",
@@ -362,7 +451,7 @@ def test_make_tui_argv_keeps_desktop_always_build_behaviour(
     main_mod._make_tui_argv(tmp_path, tui_dev=False)
 
     assert calls
-    assert calls[0][0][0] == ["/bin/npm", "run", "build"]
+    assert calls[0][0][0] == ["/bin/npm", "--prefix", str(tmp_path), "run", "build"]
 
 
 # ── _workspace_root helper ──────────────────────────────────────────

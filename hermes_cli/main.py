@@ -1316,8 +1316,37 @@ def _npm_lock_dependency_names(pkg: dict) -> set[str]:
     return names
 
 
+def _npm_lock_dependency_entries(
+    packages: dict,
+    installed: dict,
+    by_package_name: dict[str, list[str]],
+    parent: str,
+    dep_name: str,
+) -> list[str]:
+    root_entry = f"node_modules/{dep_name}"
+    nested_entry = f"{parent}/node_modules/{dep_name}"
+    candidates = []
+
+    if root_entry in packages:
+        candidates.append(root_entry)
+    if nested_entry in packages:
+        candidates.append(nested_entry)
+    candidates.extend(
+        entry
+        for entry in by_package_name.get(dep_name, [])
+        if entry not in candidates
+    )
+
+    installed_candidates = [entry for entry in candidates if entry in installed]
+    if installed_candidates:
+        return installed_candidates
+
+    return candidates
+
+
 def _tui_relevant_lock_entries(
     packages: dict,
+    installed: dict,
     root: Path,
     ws_root: Path,
 ) -> set[str]:
@@ -1358,7 +1387,13 @@ def _tui_relevant_lock_entries(
                 pending.append(resolved)
 
         for dep_name in _npm_lock_dependency_names(pkg):
-            for dep_entry in by_package_name.get(dep_name, []):
+            for dep_entry in _npm_lock_dependency_entries(
+                packages,
+                installed,
+                by_package_name,
+                name,
+                dep_name,
+            ):
                 if dep_entry not in relevant:
                     relevant.add(dep_entry)
                     pending.append(dep_entry)
@@ -1480,7 +1515,7 @@ def _tui_need_npm_install(root: Path) -> bool:
     def comparable(pkg: dict) -> dict:
         return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
 
-    relevant = _tui_relevant_lock_entries(wanted, root, ws_root)
+    relevant = _tui_relevant_lock_entries(wanted, installed, root, ws_root)
     for name, pkg in wanted.items():
         if not name:
             continue
@@ -1715,6 +1750,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             [
                 npm,
                 "install",
+                "--prefix",
+                str(npm_cwd),
                 *npm_workspace_args,
                 "--silent",
                 "--no-fund",
@@ -1745,7 +1782,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         npm = _node_bin("npm")
         ink_dir = tui_dir / "packages" / "hermes-ink"
         result = subprocess.run(
-            [npm, "run", "build"],
+            [npm, "--prefix", str(ink_dir), "run", "build"],
             cwd=str(ink_dir),
             capture_output=True,
             text=True,
@@ -1761,7 +1798,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         tsx = tui_dir / "node_modules" / ".bin" / "tsx"
         if tsx.exists():
             return [str(tsx), "src/entry.tsx"], tui_dir
-        return [npm, "start"], tui_dir
+        return [npm, "--prefix", str(tui_dir), "start"], tui_dir
 
     # Desktop/dev launches retain the historical "always rebuild" behaviour.
     # Termux cold starts use the freshness check because esbuild startup is
@@ -1773,7 +1810,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     if should_build:
         npm = _node_bin("npm")
         result = subprocess.run(
-            [npm, "run", "build"],
+            [npm, "--prefix", str(tui_dir), "run", "build"],
             cwd=str(tui_dir),
             capture_output=True,
             text=True,

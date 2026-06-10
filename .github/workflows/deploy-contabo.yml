@@ -149,13 +149,32 @@ jobs:
           if not blocks:
               fail("no-proxy-provider-block-in-config")
 
+          # The bootstrap is AUTHORITATIVE for the lock: a :11435 block whose
+          # api_key isn't a keys.json-known tenant key (e.g. a pre-tenant-auth
+          # placeholder the SDK required) is REPLACED with the hermes key, and
+          # any key_env/api_key_env indirection on the block is dropped — after
+          # the flip, only keys.json keys authenticate, so leaving an unknown
+          # key in place would 401 Hermes. (Run #33 deferred on exactly this:
+          # WIRED_FAIL runtime-resolved-unknown-key.) One-time backup of the
+          # original config preserves rollback (yaml round-trip drops comments).
           changed = 0
           for b in blocks:
-              has_key = bool(str(b.get("api_key") or "").strip())
+              cur = str(b.get("api_key") or "").strip()
               has_env = bool(str(b.get("key_env") or b.get("api_key_env") or "").strip())
-              if not has_key and not has_env:
-                  b["api_key"] = key
-                  changed += 1
+              if cur in mapping and not has_env:
+                  continue  # already a known tenant key, nothing to do
+              backup = cfg_path + ".pre-proxy-lock.bak"
+              if changed == 0 and not os.path.exists(backup):
+                  import shutil
+                  shutil.copy2(cfg_path, backup)
+              if cur and cur not in mapping:
+                  print(f"replacing unknown api_key (len={len(cur)}) on {b.get('base_url')}")
+              b["api_key"] = key
+              for stale in ("key_env", "api_key_env"):
+                  if stale in b:
+                      del b[stale]
+                      print(f"dropped {stale} indirection on {b.get('base_url')}")
+              changed += 1
           if changed:
               tmp = cfg_path + ".tmp"
               with open(tmp, "w", encoding="utf-8") as f:
@@ -189,10 +208,13 @@ jobs:
               rt = resolve_runtime_provider()
               if MARKER in str(rt.get("base_url") or ""):
                   rk = str(rt.get("api_key") or "")
+                  src = rt.get("source")
                   if not rk or rk == "no-key-required":
-                      fail("runtime-resolution-dropped-key")
+                      fail(f"runtime-resolution-dropped-key (source={src})")
                   if rk not in mapping:
-                      fail("runtime-resolved-unknown-key")
+                      # Key came from somewhere other than the wired config
+                      # (e.g. a credential-pool entry) — surface where.
+                      fail(f"runtime-resolved-unknown-key (source={src}, len={len(rk)})")
               # Primary not on :11435 → proxy is in the fallback chain, whose
               # inline api_key path is exercised by the repo test suite.
           except SystemExit:

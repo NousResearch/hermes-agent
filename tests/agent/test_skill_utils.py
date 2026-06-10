@@ -5,6 +5,7 @@ from unittest.mock import patch
 from agent.skill_utils import (
     extract_skill_conditions,
     iter_skill_index_files,
+    get_project_local_skills_dirs,
     skill_matches_platform,
 )
 
@@ -197,3 +198,46 @@ class TestSkillMatchesPlatformTermux:
             "agent.skill_utils.is_termux", return_value=False
         ):
             assert skill_matches_platform(fm) is True
+
+
+# ── Project-local skill discovery (#4667) ───────────────────────────────────
+
+
+def _make_project(root):
+    """A git repo with a project-local .claude/skills/demo skill."""
+    (root / ".git").mkdir()
+    skill = root / ".claude" / "skills" / "demo"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: demo\ndescription: x\n---\n")
+    return root
+
+
+def test_project_local_disabled_by_default(tmp_path):
+    """With the flag off, nothing is discovered even inside a project."""
+    proj = _make_project(tmp_path)
+    with patch("agent.skill_utils._project_local_enabled", return_value=False):
+        assert get_project_local_skills_dirs(cwd=proj) == []
+
+
+def test_project_local_discovers_claude_skills(tmp_path):
+    """When enabled, <project-root>/.claude/skills is discovered from the cwd."""
+    proj = _make_project(tmp_path)
+    with patch("agent.skill_utils._project_local_enabled", return_value=True):
+        dirs = get_project_local_skills_dirs(cwd=proj)
+    assert (proj / ".claude" / "skills").resolve() in dirs
+
+
+def test_project_local_walks_up_to_git_root(tmp_path):
+    """A nested cwd resolves to the git root's project-local skills."""
+    proj = _make_project(tmp_path)
+    nested = proj / "src" / "deep"
+    nested.mkdir(parents=True)
+    with patch("agent.skill_utils._project_local_enabled", return_value=True):
+        dirs = get_project_local_skills_dirs(cwd=nested)
+    assert (proj / ".claude" / "skills").resolve() in dirs
+
+
+def test_project_local_empty_outside_project(tmp_path):
+    """Outside any project (no .claude/skills above cwd) returns nothing."""
+    with patch("agent.skill_utils._project_local_enabled", return_value=True):
+        assert get_project_local_skills_dirs(cwd=tmp_path) == []

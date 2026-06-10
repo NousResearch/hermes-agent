@@ -7381,7 +7381,7 @@ async def install_skill_hub(body: SkillInstallRequest):
     if not identifier:
         raise HTTPException(status_code=400, detail="identifier is required")
     try:
-        proc = _spawn_hermes_action(["skills", "install", identifier], "skills-install")
+        proc = _spawn_hermes_action(["skills", "install", identifier, "--yes"], "skills-install")
     except Exception as exc:
         _log.exception("Failed to spawn skills install")
         raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}")
@@ -8082,7 +8082,7 @@ async def create_profile_endpoint(body: ProfileCreate):
             continue
         try:
             proc = _spawn_hermes_action(
-                ["-p", body.name, "skills", "install", ident],
+                ["-p", body.name, "skills", "install", ident, "--yes"],
                 "skills-install",
             )
             hub_installs.append({"identifier": ident, "pid": proc.pid})

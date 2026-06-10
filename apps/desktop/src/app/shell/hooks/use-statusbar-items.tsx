@@ -357,22 +357,12 @@ export function useStatusbarItems({
         title: copy.openCron,
         to: CRON_ROUTE,
         variant: 'action'
-      },
-      {
-        className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
-        hidden: !chatOpen,
-        icon: <Terminal className="size-3.5" />,
-        id: 'terminal',
-        onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
-        title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
-        variant: 'action'
       }
     ],
     [
       agentsOpen,
       bgFailed,
       bgRunning,
-      chatOpen,
       commandCenterOpen,
       copy,
       gatewayMenuContent,
@@ -382,7 +372,6 @@ export function useStatusbarItems({
       inferenceStatus?.reason,
       openAgents,
       subagentsRunning,
-      terminalTakeover,
       toggleCommandCenter
     ]
   )
@@ -458,11 +447,21 @@ export function useStatusbarItems({
               variant: 'action' as const
             })
       },
+      {
+        className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
+        hidden: !chatOpen,
+        icon: <Terminal className="size-3.5" />,
+        id: 'terminal',
+        onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
+        title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
+        variant: 'action'
+      },
       clientVersionItem,
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
       busy,
+      chatOpen,
       contextBar,
       contextUsage,
       copy,
@@ -473,6 +472,7 @@ export function useStatusbarItems({
       modelMenuContent,
       sessionStartedAt,
       showYoloToggle,
+      terminalTakeover,
       toggleYolo,
       turnStartedAt,
       clientVersionItem,

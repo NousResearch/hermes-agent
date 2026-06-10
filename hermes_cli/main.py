@@ -334,21 +334,66 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
-    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
+    profile_index = None
 
-    # 1. Check for explicit -p / --profile flag
-    for i, arg in enumerate(argv):
+    def _inside_mcp_add_args(index: int) -> bool:
+        """True once argv reaches `hermes mcp add ... --args <command argv>`.
+
+        ``mcp add --args`` is command-argv passthrough. Flags after that point
+        belong to the child MCP command (for example Docker MCP Toolkit's
+        ``--profile``), not to Hermes' own profile selector.
+        """
+        try:
+            mcp_index = argv.index("mcp", 0, index)
+            argv.index("add", mcp_index + 1, index)
+        except ValueError:
+            return False
+        return True
+
+    # 1. Check for explicit -p / --profile flag. Historically this worked even
+    # after the subcommand (`hermes chat -p coder`), so keep scanning broadly.
+    # The exception is command-argv passthrough regions such as `mcp add --args`.
+    value_flags = {
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+    }
+    optional_value_flags = {"-c", "--continue"}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            break
+        if arg == "--args" and _inside_mcp_add_args(i):
+            break
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             profile_name = argv[i + 1]
             consume = 2
+            profile_index = i
             break
-        elif arg.startswith("--profile="):
+        if arg.startswith("--profile="):
             profile_name = arg.split("=", 1)[1]
             consume = 1
+            profile_index = i
             break
+        if "=" not in arg and arg in value_flags and i + 1 < len(argv):
+            i += 2
+        elif (
+            "=" not in arg
+            and arg in optional_value_flags
+            and i + 1 < len(argv)
+            and not argv[i + 1].startswith("-")
+        ):
+            i += 2
+        else:
+            i += 1
 
     # 1b. Reject values that can't be valid profile names (e.g. pytest's
     # "-p no:xdist" would be misread as profile "no:xdist" otherwise).
@@ -360,6 +405,7 @@ def _apply_profile_override() -> None:
         if not _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
             profile_name = None
             consume = 0
+            profile_index = None
 
     # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
     # only when it already points to a specific profile directory.  The
@@ -407,16 +453,9 @@ def _apply_profile_override() -> None:
             return
         os.environ["HERMES_HOME"] = hermes_home
         # Strip the flag from argv so argparse doesn't choke
-        if consume > 0:
-            for i, arg in enumerate(argv):
-                if arg in {"--profile", "-p"}:
-                    start = i + 1  # +1 because argv is sys.argv[1:]
-                    sys.argv = sys.argv[:start] + sys.argv[start + consume :]
-                    break
-                elif arg.startswith("--profile="):
-                    start = i + 1
-                    sys.argv = sys.argv[:start] + sys.argv[start + 1 :]
-                    break
+        if consume > 0 and profile_index is not None:
+            start = profile_index + 1  # +1 because argv is sys.argv[1:]
+            sys.argv = sys.argv[:start] + sys.argv[start + consume :]
 
 
 _apply_profile_override()

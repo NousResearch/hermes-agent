@@ -138,3 +138,80 @@ class TestApplyProfileOverrideHermesHomeGuard:
         _apply_profile_override()
 
         assert os.environ.get("HERMES_HOME") is None
+
+    def test_subcommand_profile_flag_is_not_consumed(self, tmp_path, monkeypatch):
+        """Command argv flags named --profile must stay with that command.
+
+        Docker Desktop's MCP Toolkit uses `docker mcp gateway run --profile ...`.
+        When that argv is passed through `hermes mcp add --args`, the early
+        profile pre-parser must not interpret the Docker profile as a Hermes
+        profile.
+        """
+        hermes_root = tmp_path / ".hermes"
+        hermes_root.mkdir(parents=True, exist_ok=True)
+        argv = [
+            "hermes",
+            "mcp",
+            "add",
+            "docker-research",
+            "--command",
+            "docker",
+            "--args",
+            "mcp",
+            "gateway",
+            "run",
+            "--profile",
+            "research",
+        ]
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setattr(sys, "argv", list(argv))
+
+        from hermes_cli.main import _apply_profile_override
+        _apply_profile_override()
+
+        assert os.environ.get("HERMES_HOME") is None
+        assert sys.argv == argv
+
+    def test_profile_after_chat_subcommand_is_still_consumed(self, tmp_path, monkeypatch):
+        """Profile flags historically work after normal Hermes subcommands."""
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+            argv=["hermes", "chat", "-p", "coder", "-q", "hello"],
+        )
+
+        assert result is not None
+        assert result.endswith("coder")
+        assert sys.argv == ["hermes", "chat", "-q", "hello"]
+
+    def test_top_level_profile_after_value_flag_is_consumed(self, tmp_path, monkeypatch):
+        """Top-level --profile still works after other top-level value flags."""
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+            argv=["hermes", "-m", "gpt-5", "--profile", "coder", "chat"],
+        )
+
+        assert result is not None
+        assert result.endswith("coder")
+        assert sys.argv == ["hermes", "-m", "gpt-5", "chat"]
+
+    def test_top_level_profile_after_continue_flag_is_consumed(self, tmp_path, monkeypatch):
+        """--continue has an optional value, so a following --profile is a flag."""
+        result = _run_apply_profile_override(
+            tmp_path,
+            monkeypatch,
+            hermes_home=None,
+            active_profile="coder",
+            argv=["hermes", "--continue", "--profile", "coder"],
+        )
+
+        assert result is not None
+        assert result.endswith("coder")
+        assert sys.argv == ["hermes", "--continue"]

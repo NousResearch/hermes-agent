@@ -1378,6 +1378,33 @@ class TestBuildSafeEnv:
         assert "DATABASE_URL" not in result
         assert "API_SECRET" not in result
 
+    def test_windows_location_vars_passed_without_secrets(self):
+        """Windows launcher tools need location vars, but secrets stay filtered."""
+        from tools.mcp_tool import _build_safe_env
+
+        fake_env = {
+            "PATH": r"C:\Windows\System32",
+            "ProgramFiles": r"C:\Program Files",
+            "ProgramData": r"C:\ProgramData",
+            "ProgramW6432": r"C:\Program Files",
+            "LOCALAPPDATA": r"C:\Users\alice\AppData\Local",
+            "APPDATA": r"C:\Users\alice\AppData\Roaming",
+            "USERPROFILE": r"C:\Users\alice",
+            "GITHUB_TOKEN": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+            "OPENAI_API_KEY": "sk-proj-abc123",
+        }
+        with patch.dict("os.environ", fake_env, clear=True):
+            result = _build_safe_env(None)
+
+        assert result["ProgramFiles"] == r"C:\Program Files"
+        assert result["ProgramData"] == r"C:\ProgramData"
+        assert result["ProgramW6432"] == r"C:\Program Files"
+        assert result["LOCALAPPDATA"].endswith("Local")
+        assert result["APPDATA"].endswith("Roaming")
+        assert result["USERPROFILE"] == r"C:\Users\alice"
+        assert "GITHUB_TOKEN" not in result
+        assert "OPENAI_API_KEY" not in result
+
 
 # ---------------------------------------------------------------------------
 # _sanitize_error

@@ -148,6 +148,18 @@ SEND_MESSAGE_SCHEMA = {
             "message": {
                 "type": "string",
                 "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/report.pdf') in the message — the platform will deliver it as a native media attachment."
+            },
+            "buttons": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Button label shown to the user"},
+                        "callback_data": {"type": "string", "description": "Data sent back when the button is tapped (Telegram callback_data)"}
+                    },
+                    "required": ["text", "callback_data"]
+                },
+                "description": "Optional inline keyboard buttons (Telegram only). Each button has 'text' (label) and 'callback_data' (payload sent on tap). Buttons are arranged in a single row. Ignored on non-Telegram platforms."
             }
         },
         "required": []
@@ -178,6 +190,7 @@ def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
+    buttons = args.get("buttons")  # Optional inline keyboard buttons (Telegram only)
     if not target or not message:
         return tool_error("Both 'target' and 'message' are required when action='send'")
 
@@ -320,6 +333,7 @@ def _handle_send(args):
                 thread_id=thread_id,
                 media_files=media_files,
                 force_document=force_document_attachments,
+                buttons=buttons,
             )
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
@@ -580,7 +594,7 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False, buttons=None):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -665,6 +679,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 thread_id=thread_id,
                 disable_link_previews=disable_link_previews,
                 force_document=force_document,
+                buttons=buttons if is_last else None,
             )
             if isinstance(result, dict) and result.get("error"):
                 return result
@@ -837,7 +852,7 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False, buttons=None):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -922,6 +937,20 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         text_kwargs = dict(thread_kwargs)
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
+
+        # Build inline keyboard markup from buttons parameter (Telegram only).
+        # Each button becomes an InlineKeyboardButton in a single row.
+        if buttons and isinstance(buttons, list) and len(buttons) > 0:
+            try:
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(b["text"], callback_data=b["callback_data"])
+                     for b in buttons if isinstance(b, dict) and "text" in b and "callback_data" in b]
+                ])
+                if keyboard.inline_keyboard[0]:  # At least one valid button
+                    text_kwargs["reply_markup"] = keyboard
+            except Exception as kb_err:
+                logger.warning("send_message: failed to build inline keyboard: %s", kb_err)
 
         last_msg = None
         warnings = []

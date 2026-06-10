@@ -2846,3 +2846,142 @@ class TestSendTelegramThreadNotFoundRetry:
         finally:
             if media_path and os.path.exists(media_path):
                 os.unlink(media_path)
+
+
+class TestSendTelegramInlineKeyboard:
+    """Tests for the buttons parameter on _send_telegram (inline keyboard)."""
+
+    def test_buttons_schema_in_tool_definition(self):
+        """The send_message tool schema should include a 'buttons' parameter."""
+        from tools.send_message_tool import SEND_MESSAGE_SCHEMA
+        schema = SEND_MESSAGE_SCHEMA["parameters"]
+        assert "buttons" in schema["properties"]
+        btn_schema = schema["properties"]["buttons"]
+        assert btn_schema["type"] == "array"
+        assert "text" in btn_schema["items"]["properties"]
+        assert "callback_data" in btn_schema["items"]["properties"]
+
+    def test_send_telegram_with_buttons(self):
+        """Buttons should be converted to InlineKeyboardMarkup and passed as reply_markup."""
+        kwargs_seen = []
+
+        class FakeBot:
+            async def send_message(self, **kwargs):
+                kwargs_seen.append(kwargs)
+                return SimpleNamespace(message_id=1)
+
+        async def run_test():
+            with patch("telegram.Bot", return_value=FakeBot()):
+                return await _send_telegram(
+                    "fake-token", "-100123", "Choose an option:",
+                    buttons=[
+                        {"text": "✅ Approve", "callback_data": "approve:once"},
+                        {"text": "❌ Deny", "callback_data": "approve:deny"},
+                    ],
+                )
+
+        result = asyncio.run(run_test())
+        assert result["success"] is True
+        assert len(kwargs_seen) == 1
+        assert "reply_markup" in kwargs_seen[0]
+        markup = kwargs_seen[0]["reply_markup"]
+        # InlineKeyboardMarkup should have one row with two buttons
+        assert len(markup.inline_keyboard) == 1
+        assert len(markup.inline_keyboard[0]) == 2
+        assert markup.inline_keyboard[0][0].text == "✅ Approve"
+        assert markup.inline_keyboard[0][0].callback_data == "approve:once"
+        assert markup.inline_keyboard[0][1].text == "❌ Deny"
+        assert markup.inline_keyboard[0][1].callback_data == "approve:deny"
+
+    def test_send_telegram_without_buttons(self):
+        """Without buttons, no reply_markup should be set."""
+        kwargs_seen = []
+
+        class FakeBot:
+            async def send_message(self, **kwargs):
+                kwargs_seen.append(kwargs)
+                return SimpleNamespace(message_id=1)
+
+        async def run_test():
+            with patch("telegram.Bot", return_value=FakeBot()):
+                return await _send_telegram(
+                    "fake-token", "-100123", "Hello world",
+                )
+
+        result = asyncio.run(run_test())
+        assert result["success"] is True
+        assert "reply_markup" not in kwargs_seen[0]
+
+    def test_send_telegram_empty_buttons_list(self):
+        """Empty buttons list should not add reply_markup."""
+        kwargs_seen = []
+
+        class FakeBot:
+            async def send_message(self, **kwargs):
+                kwargs_seen.append(kwargs)
+                return SimpleNamespace(message_id=1)
+
+        async def run_test():
+            with patch("telegram.Bot", return_value=FakeBot()):
+                return await _send_telegram(
+                    "fake-token", "-100123", "Hello",
+                    buttons=[],
+                )
+
+        result = asyncio.run(run_test())
+        assert result["success"] is True
+        assert "reply_markup" not in kwargs_seen[0]
+
+    def test_send_telegram_buttons_with_invalid_entries(self):
+        """Buttons with missing fields should be filtered out."""
+        kwargs_seen = []
+
+        class FakeBot:
+            async def send_message(self, **kwargs):
+                kwargs_seen.append(kwargs)
+                return SimpleNamespace(message_id=1)
+
+        async def run_test():
+            with patch("telegram.Bot", return_value=FakeBot()):
+                return await _send_telegram(
+                    "fake-token", "-100123", "Choose:",
+                    buttons=[
+                        {"text": "Valid", "callback_data": "ok"},
+                        {"text": "Missing data"},  # no callback_data
+                        {"callback_data": "orphan"},  # no text
+                    ],
+                )
+
+        result = asyncio.run(run_test())
+        assert result["success"] is True
+        assert "reply_markup" in kwargs_seen[0]
+        markup = kwargs_seen[0]["reply_markup"]
+        # Only the valid button should remain
+        assert len(markup.inline_keyboard[0]) == 1
+        assert markup.inline_keyboard[0][0].text == "Valid"
+
+    def test_send_to_platform_passes_buttons_to_telegram(self):
+        """_send_to_platform should forward buttons to _send_telegram."""
+        from tools.send_message_tool import _send_to_platform
+
+        send_calls = []
+
+        async def mock_send_telegram(token, chat_id, message, **kwargs):
+            send_calls.append(kwargs)
+            return {"success": True, "message_id": 1}
+
+        async def run_test():
+            pconfig = SimpleNamespace(token="fake", extra={})
+            with patch("tools.send_message_tool._send_telegram", mock_send_telegram):
+                with patch("gateway.platforms.telegram.TelegramAdapter") as mock_adapter:
+                    mock_adapter.MAX_MESSAGE_LENGTH = 4096
+                    mock_adapter._message_thread_id_for_send = staticmethod(lambda x: None)
+                    with patch("tools.send_message_tool._send_to_platform", wraps=_send_to_platform):
+                        await _send_to_platform(
+                            Platform.TELEGRAM, pconfig, "-100123", "Pick one:",
+                            buttons=[{"text": "OK", "callback_data": "ok"}],
+                        )
+
+        asyncio.run(run_test())
+        assert len(send_calls) == 1
+        assert send_calls[0].get("buttons") == [{"text": "OK", "callback_data": "ok"}]

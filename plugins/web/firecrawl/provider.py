@@ -483,11 +483,16 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
             try:
                 logger.info("Firecrawl scraping: %s", url)
                 try:
+                    # Pass timeout (ms) to Firecrawl so the server-side deadline
+                    # matches our asyncio deadline.  Without this the API uses
+                    # its 30 s default, causing SCRAPE_TIMEOUT before our 60 s
+                    # client-side wait expires.  See #43272.
                     scrape_result = await asyncio.wait_for(
                         asyncio.to_thread(
                             _get_firecrawl_client().scrape,
                             url=url,
                             formats=formats,
+                            timeout=60_000,
                         ),
                         timeout=60,
                     )

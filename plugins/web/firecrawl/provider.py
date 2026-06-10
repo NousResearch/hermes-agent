@@ -55,6 +55,9 @@ from tools.website_policy import check_website_access
 
 logger = logging.getLogger(__name__)
 
+FIRECRAWL_SCRAPE_TIMEOUT_SECONDS = 60
+FIRECRAWL_SCRAPE_TIMEOUT_MS = FIRECRAWL_SCRAPE_TIMEOUT_SECONDS * 1000
+
 
 # ---------------------------------------------------------------------------
 # Lazy Firecrawl SDK proxy
@@ -488,8 +491,9 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                             _get_firecrawl_client().scrape,
                             url=url,
                             formats=formats,
+                            timeout=FIRECRAWL_SCRAPE_TIMEOUT_MS,
                         ),
-                        timeout=60,
+                        timeout=FIRECRAWL_SCRAPE_TIMEOUT_SECONDS,
                     )
                 except asyncio.TimeoutError:
                     logger.warning("Firecrawl scrape timed out for %s", url)
@@ -499,8 +503,9 @@ class FirecrawlWebSearchProvider(WebSearchProvider):
                             "title": "",
                             "content": "",
                             "error": (
-                                "Scrape timed out after 60s — page may be too large "
-                                "or unresponsive. Try browser_navigate instead."
+                                f"Scrape timed out after {FIRECRAWL_SCRAPE_TIMEOUT_SECONDS}s — "
+                                "page may be too large or unresponsive. "
+                                "Try browser_navigate instead."
                             ),
                         }
                     )

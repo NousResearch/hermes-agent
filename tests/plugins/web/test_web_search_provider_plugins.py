@@ -353,6 +353,52 @@ class TestAsyncExtractDispatch:
         assert p is not None
         assert inspect.iscoroutinefunction(p.extract) is True
 
+    def test_firecrawl_extract_passes_timeout_to_scrape(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from plugins.web.firecrawl import provider as firecrawl_provider
+
+        scrape_calls: list[dict[str, object]] = []
+
+        class DummyFirecrawlClient:
+            def scrape(self, **kwargs: object) -> dict[str, object]:
+                scrape_calls.append(kwargs)
+                return {
+                    "markdown": "example body",
+                    "metadata": {
+                        "title": "Example",
+                        "sourceURL": kwargs["url"],
+                    },
+                }
+
+        monkeypatch.setattr(
+            firecrawl_provider,
+            "_get_firecrawl_client",
+            lambda: DummyFirecrawlClient(),
+        )
+        monkeypatch.setattr(
+            firecrawl_provider,
+            "check_website_access",
+            lambda _url: None,
+        )
+        monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
+
+        result = asyncio.run(
+            firecrawl_provider.FirecrawlWebSearchProvider().extract(
+                ["https://example.com/slow"],
+                format="markdown",
+            )
+        )
+
+        assert scrape_calls == [
+            {
+                "url": "https://example.com/slow",
+                "formats": ["markdown"],
+                "timeout": 60000,
+            }
+        ]
+        assert result[0]["content"] == "example body"
+
     def test_exa_extract_is_sync(self) -> None:
         _ensure_plugins_loaded()
         from agent.web_search_registry import get_provider

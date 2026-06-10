@@ -1255,7 +1255,7 @@ export const zh: Translations = {
     archiveAllChecked: count => `将归档 ${count} 个可见会话。`,
     archiveAllNone: '没有可归档的会话。',
     allPinned: '这里的全部已置顶。取消置顶某个对话即可在最近中显示。',
-    shiftClickHint: 'Shift+ 单击对话以置顶 · 拖动以重新排序',
+    shiftClickHint: '将对话拖到此处，或 Shift+ 单击以置顶',
     noWorkspace: '无工作区',
     newSessionIn: label => `在 ${label} 中新建会话`,
     reorderWorkspace: label => `重新排序工作区 ${label}`,

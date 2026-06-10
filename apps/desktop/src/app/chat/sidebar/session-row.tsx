@@ -95,6 +95,7 @@ export function SidebarSessionRow({
           dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
           className
         )}
+        data-session-id={session.id}
         data-working={isWorking ? 'true' : undefined}
         draggable
         onDragStart={event => {

@@ -1185,7 +1185,7 @@ export const ja = defineLocale({
     archiveAllChecked: count => `表示中の ${count} 件のセッションが対象になります。`,
     archiveAllNone: 'アーカイブするセッションはありません。',
     allPinned: 'ここにあるものはすべてピン留めされています。チャットのピン留めを解除すると最近のものに表示されます。',
-    shiftClickHint: 'Shift クリックでピン留め · ドラッグで並べ替え',
+    shiftClickHint: 'チャットをここにドラッグ、または Shift クリックでピン留め',
     noWorkspace: 'ワークスペースなし',
     newSessionIn: label => `${label} で新しいセッション`,
     reorderWorkspace: label => `ワークスペース ${label} を並べ替え`,

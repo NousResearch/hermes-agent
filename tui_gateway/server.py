@@ -763,6 +763,40 @@ def _status_update(sid: str, kind: str, text: str | None = None):
     )
 
 
+def _registry_task_event(event: str, snapshot: dict) -> None:
+    """AgentTaskRegistry observer → ``task.started`` / ``task.completed``
+    push events (Phase 5 Task 2.2) so clients stop polling task.list.
+
+    Routing mirrors background.complete: the record's session_id IS the
+    parent session that owns the task, so the event lands on that session's
+    transport via the normal ``_emit`` path.  Records without a session_id
+    have no owning client → skip.  The wire payload is the registry snapshot
+    itself; both event types are brand new, so this is additive only —
+    nothing existing changes shape.
+    """
+    name = {"started": "task.started", "completed": "task.completed"}.get(event)
+    sid = snapshot.get("session_id")
+    if name is None or not sid:
+        return
+    _emit(name, sid, snapshot)
+
+
+def _install_task_observer() -> None:
+    # Guarded like every other registry call: a registry failure must never
+    # break gateway startup (additive-first ruling).
+    try:
+        from action_runtime.task_registry import get_registry
+
+        get_registry().set_observer(_registry_task_event)
+    except Exception:
+        logger.debug("task observer install failed", exc_info=True)
+
+
+# Module-init wiring, same pattern as _start_idle_reaper() above: the gateway
+# process owns the registry's single observer seam (set_observer docstring).
+_install_task_observer()
+
+
 def _estimate_image_tokens(width: int, height: int) -> int:
     """Very rough UI estimate for image prompt cost.
 
@@ -4603,7 +4637,10 @@ def _registry_task_entries(session_dir, legacy_entries: list[dict]) -> list[dict
                 "session_id": snap.get("session_id") or session_dir.name,
                 "finished_at": snap.get("finished_at") or snap.get("started_at") or 0,
                 "started_at": snap.get("started_at"),
-                "label": snap.get("goal") or "",
+                # Q5 parity: prefer the record's explicit display label
+                # (additive snapshot key) over the goal fallback older
+                # ledger lines need.
+                "label": snap.get("label") or snap.get("goal") or "",
                 "count": 1,
                 # Additive keys — absent on legacy entries; clients that
                 # predate Step 6b ignore them.
@@ -4660,7 +4697,10 @@ def _ledger_snapshot_to_tree(snap: dict, session_dir) -> dict:
     task_id = snap.get("task_id")
     started_at = snap.get("started_at")
     finished_at = snap.get("finished_at")
-    label = snap.get("goal") or snap.get("intent") or ""
+    goal = snap.get("goal") or snap.get("intent") or ""
+    # Q5 parity: prefer the record's explicit display label (additive
+    # snapshot key) over the goal-derived fallback older ledger lines need.
+    label = snap.get("label") or goal
     status = snap.get("status")
     subagent: dict = {
         # Keys mirror the TUI's SubagentProgress (what spawn_tree.save
@@ -4669,14 +4709,24 @@ def _ledger_snapshot_to_tree(snap: dict, session_dir) -> dict:
         "parentId": snap.get("parent_task_id"),
         "depth": snap.get("depth") or 0,
         "index": 0,
-        "goal": label,
+        "goal": goal or label,
         "status": _SNAPSHOT_STATUS_TO_SUBAGENT.get(status, status),
         "toolCount": snap.get("tool_count") or 0,
     }
     if snap.get("model"):
         subagent["model"] = snap["model"]
-    if snap.get("last_tool"):
-        # The ledger only records the LAST tool — an honest partial list.
+    raw_tools = snap.get("tools")
+    tools = (
+        [t for t in raw_tools if isinstance(t, str) and t]
+        if isinstance(raw_tools, list)
+        else []
+    )
+    if tools:
+        # Q5 parity: the accumulated tools tail (update_progress) — the
+        # same names-only list the record now carries.
+        subagent["tools"] = tools
+    elif snap.get("last_tool"):
+        # Pre-parity lines only record the LAST tool — an honest partial list.
         subagent["tools"] = [snap["last_tool"]]
     if isinstance(started_at, (int, float)):
         # Subagent-level startedAt is ms epoch in the TUI (the top-level
@@ -4685,6 +4735,12 @@ def _ledger_snapshot_to_tree(snap: dict, session_dir) -> dict:
         if isinstance(finished_at, (int, float)):
             subagent["durationSeconds"] = max(float(finished_at - started_at), 0.0)
     summary = _ledger_result_text(snap.get("result"))
+    if not summary:
+        # Q5 parity fallback: the record-level error summary (lifted from
+        # result.error by complete()) when the result carries no text.
+        err = snap.get("error")
+        if isinstance(err, str) and err.strip():
+            summary = err
     if summary:
         # `summary` is the field the TUI renders as the node body.
         subagent["summary"] = summary
@@ -6168,8 +6224,22 @@ def _(rid, params: dict) -> dict:
 # task.cancel returns found=false for these tasks for now (doc §Step 4).
 
 
+def _param_trace_id(params: dict) -> Optional[str]:
+    """Optional caller-supplied trace correlation id (§12 trace plumbing):
+    a non-empty string, else None. Never synthesized — absent means a
+    pre-trace caller, and every downstream render is absent-when-None."""
+    trace_id = params.get("trace_id")
+    if isinstance(trace_id, str) and trace_id:
+        return trace_id
+    return None
+
+
 def _registry_register_bg(
-    task_id: str, goal: str, intent: str, session_id: str | None = None
+    task_id: str,
+    goal: str,
+    intent: str,
+    session_id: str | None = None,
+    trace_id: str | None = None,
 ) -> None:
     try:
         from action_runtime.task_registry import AgentTaskRecord, get_registry
@@ -6179,7 +6249,10 @@ def _registry_register_bg(
                 task_id=task_id,
                 session_id=session_id or None,
                 goal=goal[:120],
+                # Q5 parity: bg tasks have no distinct label — alias the goal.
+                label=goal[:120],
                 intent=intent,
+                trace_id=trace_id,
             )
         )
     except Exception:
@@ -6187,7 +6260,10 @@ def _registry_register_bg(
 
 
 def _registry_complete_bg(
-    task_id: str, text: str = "", exc: Optional[BaseException] = None
+    task_id: str,
+    text: str = "",
+    exc: Optional[BaseException] = None,
+    trace_id: Optional[str] = None,
 ) -> None:
     try:
         from action_runtime.contract import (
@@ -6200,7 +6276,10 @@ def _registry_complete_bg(
 
         if exc is None:
             result = ExecutionResult(
-                task_id=task_id, status=Status.SUCCEEDED, outputs={"output": text}
+                task_id=task_id,
+                status=Status.SUCCEEDED,
+                outputs={"output": text},
+                trace_id=trace_id,
             )
         else:
             result = ExecutionResult(
@@ -6209,6 +6288,7 @@ def _registry_complete_bg(
                 error=ExecError(
                     type=ErrorType.INTERNAL, retryable=False, message=str(exc)
                 ),
+                trace_id=trace_id,
             )
         get_registry().complete(task_id, result)
     except Exception:
@@ -6224,11 +6304,16 @@ def _(rid, params: dict) -> dict:
     if not text:
         return _err(rid, 4012, "text required")
     task_id = f"bg_{uuid.uuid4().hex[:6]}"
+    trace_id = _param_trace_id(params)
 
     def run():
         session_tokens = _set_session_context(task_id, cwd=_session_cwd(session))
         _registry_register_bg(
-            task_id, goal=text, intent="tui-background", session_id=parent
+            task_id,
+            goal=text,
+            intent="tui-background",
+            session_id=parent,
+            trace_id=trace_id,
         )
         try:
             from agent.brain_host_gate import build_agent
@@ -6245,14 +6330,14 @@ def _(rid, params: dict) -> dict:
                 if isinstance(result, dict)
                 else str(result)
             )
-            _registry_complete_bg(task_id, text=final_text)
+            _registry_complete_bg(task_id, text=final_text, trace_id=trace_id)
             _emit(
                 "background.complete",
                 parent,
                 {"task_id": task_id, "text": final_text},
             )
         except Exception as e:
-            _registry_complete_bg(task_id, exc=e)
+            _registry_complete_bg(task_id, exc=e, trace_id=trace_id)
             _emit(
                 "background.complete",
                 parent,
@@ -6280,6 +6365,7 @@ def _(rid, params: dict) -> dict:
 
     task_id = f"preview_{uuid.uuid4().hex[:6]}"
     parent = params.get("session_id", "")
+    trace_id = _param_trace_id(params)
     parent_history = _preview_restart_history(session)
     has_history = bool(parent_history)
     prompt = "\n".join(
@@ -6329,7 +6415,11 @@ def _(rid, params: dict) -> dict:
         # invalid client path, which would silently fall back to the launch dir.
         session_tokens = _set_session_context(task_id, cwd=(preview_cwd or _session_cwd(session)))
         _registry_register_bg(
-            task_id, goal=prompt, intent="preview-restart", session_id=parent
+            task_id,
+            goal=prompt,
+            intent="preview-restart",
+            session_id=parent,
+            trace_id=trace_id,
         )
         try:
             from agent.brain_host_gate import build_agent
@@ -6362,10 +6452,10 @@ def _(rid, params: dict) -> dict:
                 if isinstance(result, dict)
                 else str(result)
             )
-            _registry_complete_bg(task_id, text=text)
+            _registry_complete_bg(task_id, text=text, trace_id=trace_id)
             _emit("preview.restart.complete", parent, {"task_id": task_id, "text": text})
         except Exception as e:
-            _registry_complete_bg(task_id, exc=e)
+            _registry_complete_bg(task_id, exc=e, trace_id=trace_id)
             _emit(
                 "preview.restart.complete",
                 parent,
@@ -8852,7 +8942,7 @@ def _delegate_aggregate_to_result(task_id: str, raw: Any) -> "ExecutionResult":
 
 
 def _task_submit_delegate(
-    rid, params: dict, task_id: str
+    rid, params: dict, task_id: str, trace_id: Optional[str] = None
 ) -> tuple[Optional["ExecutionResult"], Optional[dict]]:
     """task.submit intent="delegate" core (Phase 5 Step 5).
 
@@ -8862,6 +8952,10 @@ def _task_submit_delegate(
     ``_delegate_aggregate_to_result``. Returns a ``(result, err)`` pair
     mirroring ``_slash_exec_core``'s triple: ``err`` is a JSON-RPC error dict
     for parameter/session rejections, in which case ``result`` is ``None``.
+
+    ``trace_id`` (§12 trace plumbing) is threaded onto the parent
+    AgentTaskRecord and the final ExecutionResult — set BEFORE the registry
+    ``complete()`` so the persisted snapshot carries it too.
     """
     inputs = params.get("inputs")
     if not isinstance(inputs, dict):
@@ -8934,14 +9028,23 @@ def _task_submit_delegate(
                 agent_ref: Any = weakref.ref(agent)
             except TypeError:
                 agent_ref = agent
+            # Q5 parity: the batch's display label, summarized the same way
+            # the TUI labels a turn (first two goals joined " · " —
+            # summarizeLabel in ui-tui spawnHistoryStore.ts).
+            goals = [str(t.get("goal") or "").strip() for t in tasks]
+            batch_label = " · ".join(g for g in goals[:2] if g)[:120] or (
+                f"{len(tasks)} task{'' if len(tasks) == 1 else 's'}"
+            )
             get_registry().register(
                 AgentTaskRecord(
                     task_id=task_id,
                     session_id=str(params.get("session_id") or "") or None,
                     goal=str(tasks[0].get("goal") or "")[:120],
+                    label=batch_label,
                     intent="delegate",
                     model=getattr(agent, "model", None),
                     agent_ref=agent_ref,
+                    trace_id=trace_id,
                 )
             )
         except Exception:
@@ -8966,6 +9069,10 @@ def _task_submit_delegate(
                     message=f"delegate engine error: {e}",
                 ),
             )
+        if trace_id is not None:
+            # Before complete(): the registry snapshot embeds the rich result,
+            # so the _tasks.jsonl line carries the trace_id too.
+            result.trace_id = trace_id
 
         try:
             from action_runtime.task_registry import get_registry
@@ -9029,8 +9136,14 @@ def _(rid, params: dict) -> dict:
     if not isinstance(task_id, str) or not task_id:
         task_id = str(uuid.uuid4())
 
+    # §12 trace plumbing (additive): an optional caller-supplied trace_id is
+    # threaded onto the parent record and the final ExecutionResult, and
+    # echoed in the rich wire — absent means a pre-trace caller and the wire
+    # stays byte-identical (result_to_wire_rich omits the key when None).
+    trace_id = _param_trace_id(params)
+
     if intent == "delegate":
-        result, err = _task_submit_delegate(rid, params, task_id)
+        result, err = _task_submit_delegate(rid, params, task_id, trace_id=trace_id)
     else:
         inputs = params.get("inputs")
         if not isinstance(inputs, dict):
@@ -9045,6 +9158,11 @@ def _(rid, params: dict) -> dict:
         result, _legacy_wire, err = _slash_exec_core(rid, core_params, task_id=task_id)
     if err:
         return err
+    if trace_id is not None:
+        # Both intents: the slash core's adapters are trace-agnostic, and the
+        # delegate core already set it (idempotent re-set here) — either way
+        # the rich wire below echoes it.
+        result.trace_id = trace_id
 
     from action_runtime import result_to_wire_rich
 

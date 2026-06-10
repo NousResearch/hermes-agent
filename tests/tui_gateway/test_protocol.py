@@ -1225,6 +1225,39 @@ def test_task_submit_propagates_slash_core_errors(server):
     assert resp["error"]["code"] == 4001
 
 
+def test_task_submit_slash_echoes_trace_id(server):
+    """Task 2.1 (§12 trace plumbing): an optional params.trace_id is threaded
+    onto the final ExecutionResult and echoed in the rich wire. The unset case
+    stays byte-identical — pinned by the exact-dict assert in
+    test_task_submit_slash_happy_path_returns_rich_result above."""
+    sid = "test-session"
+    worker = _FakeSlashWorker()
+    server._sessions[sid] = {"session_key": sid, "agent": None, "slash_worker": worker}
+    _clear_task_results(server)
+
+    resp = server.handle_request({
+        "id": "r-task-trace",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "slash",
+            "inputs": {"command": "help"},
+            "task_id": "task-tr-1",
+            "trace_id": "trace-abc",
+        },
+    })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "task_id": "task-tr-1",
+        "status": "succeeded",
+        "outputs": {"output": "worker:help"},
+        "error": None,
+        "side_effects": [],
+        "trace_id": "trace-abc",
+    }
+
+
 # ── AgentTaskRegistry RPCs (Phase 5 Steps 3-4) ───────────────────────
 
 
@@ -1439,6 +1472,100 @@ def test_delegation_pause_writes_both_stores(server, registry, monkeypatch):
     assert registry.spawns_paused() is False
 
 
+# ── task.started / task.completed push events (Task 2.2) ─────────────
+
+
+def _capture_task_events(server, monkeypatch):
+    """Stub _emit and (re)install the observer: the module-init install
+    targeted the import-time singleton, which the registry fixture replaced
+    with a fresh one. _registry_task_event resolves _emit at call time, so
+    the monkeypatched stub captures what would hit the wire."""
+    events = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: events.append((event, sid, payload)),
+    )
+    server._install_task_observer()
+    return events
+
+
+def test_register_emits_task_started_event(server, registry, monkeypatch):
+    """register() on a session-owned record pushes task.started to the parent
+    session — wire payload is the registry snapshot itself."""
+    from action_runtime.task_registry import AgentTaskRecord
+
+    events = _capture_task_events(server, monkeypatch)
+    registry.register(AgentTaskRecord(
+        task_id="task-ev-1", session_id="sess-ev", goal="watch", intent="test",
+    ))
+
+    assert len(events) == 1
+    event, sid, payload = events[0]
+    assert event == "task.started"
+    assert sid == "sess-ev"
+    assert payload["task_id"] == "task-ev-1"
+    assert payload["status"] == "running"
+    assert payload["session_id"] == "sess-ev"
+
+
+def test_complete_emits_task_completed_event(server, registry, monkeypatch):
+    """A successful complete() pushes task.completed with the terminal
+    snapshot; a rejected late duplicate must not re-emit."""
+    from action_runtime.contract import ExecutionResult, Status
+    from action_runtime.task_registry import AgentTaskRecord
+
+    events = _capture_task_events(server, monkeypatch)
+    registry.register(AgentTaskRecord(task_id="task-ev-2", session_id="sess-ev"))
+    events.clear()
+
+    result = ExecutionResult(
+        task_id="task-ev-2", status=Status.SUCCEEDED, outputs={"output": "done"},
+    )
+    assert registry.complete("task-ev-2", result) is True
+    assert registry.complete("task-ev-2", result) is False  # late duplicate
+
+    assert len(events) == 1
+    event, sid, payload = events[0]
+    assert event == "task.completed"
+    assert sid == "sess-ev"
+    assert payload["task_id"] == "task-ev-2"
+    assert payload["status"] == "succeeded"
+    assert payload["result"]["outputs"] == {"output": "done"}
+
+
+def test_task_event_emit_failure_never_breaks_register_or_complete(
+    server, registry, monkeypatch
+):
+    """The observer call is guarded inside the registry: a transport bug in
+    _emit must never break the ledger."""
+    from action_runtime.task_registry import AgentTaskRecord, TaskStatus
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("transport down")
+
+    monkeypatch.setattr(server, "_emit", _boom)
+    server._install_task_observer()
+
+    rec = AgentTaskRecord(task_id="task-ev-3", session_id="sess-ev")
+    registry.register(rec)  # must not raise
+    assert registry.get("task-ev-3") is rec
+    assert registry.complete("task-ev-3", None) is True  # must not raise
+    assert registry.get("task-ev-3").status is TaskStatus.FAILED
+
+
+def test_task_events_skip_records_without_session_id(server, registry, monkeypatch):
+    """No session_id → no owning client → no emit (same skip rule the
+    snapshot wire-compat pin encodes)."""
+    from action_runtime.task_registry import AgentTaskRecord
+
+    events = _capture_task_events(server, monkeypatch)
+    registry.register(AgentTaskRecord(task_id="task-ev-4"))
+    registry.complete("task-ev-4", None)
+
+    assert events == []
+
+
 # ── task.submit intent="delegate" (Phase 5 Step 5) ───────────────────
 # The delegate engine is stubbed in sys.modules (run_agent-stub pattern
 # above): importing the real delegate_tool here would execute its import
@@ -1525,8 +1652,51 @@ def test_task_submit_delegate_all_success_returns_succeeded(
     assert record.intent == "delegate"
     assert record.status.value == "succeeded"
     assert record.session_id == sid
+    # Pre-trace caller: no trace_id key anywhere (Task 2.1 byte-compat pin).
+    assert "trace_id" not in resp["result"]
+    assert "trace_id" not in record.snapshot()
     # The turn claim is released once the batch finishes.
     assert server._sessions[sid]["running"] is False
+
+
+def test_task_submit_delegate_echoes_trace_id(server, registry, monkeypatch):
+    """Task 2.1 (§12): intent=delegate threads trace_id onto the parent
+    AgentTaskRecord AND the final ExecutionResult before complete(), so the
+    rich wire, the registry record, and its snapshot all correlate."""
+    sid = "test-session"
+    _delegate_session(server, sid)
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        return json.dumps({
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "done",
+                 "error": None},
+            ],
+            "total_duration_seconds": 1.0,
+        })
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    resp = server.handle_request({
+        "id": "r-del-trace",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "task_id": "task-del-tr",
+            "trace_id": "trace-del-1",
+        },
+    })
+
+    assert "error" not in resp
+    assert resp["result"]["trace_id"] == "trace-del-1"
+    record = registry.get("task-del-tr")
+    assert record.trace_id == "trace-del-1"
+    assert record.result.trace_id == "trace-del-1"
+    snap = record.snapshot()
+    assert snap["trace_id"] == "trace-del-1"
+    assert snap["result"]["trace_id"] == "trace-del-1"
 
 
 def test_task_submit_delegate_mixed_batch_is_partial(server, registry, monkeypatch):
@@ -1901,6 +2071,8 @@ def test_task_submit_delegate_persists_tasks_jsonl_line(
     assert entry["task_id"] == "task-e2e-1"
     assert entry["session_id"] == sid
     assert entry["status"] == "succeeded"
+    # Q5 parity: the batch label (single task -> its goal) rides the line.
+    assert entry["label"] == "a"
 
 
 def test_registry_register_bg_session_id_persists_on_complete(
@@ -1925,6 +2097,8 @@ def test_registry_register_bg_session_id_persists_on_complete(
     assert entry["task_id"] == "bg_abc123"
     assert entry["session_id"] == "sess-bg"
     assert entry["status"] == "succeeded"
+    # Q5 parity: bg records alias the goal as their label.
+    assert entry["label"] == "poke"
 
 
 # ── spawn_tree.list: legacy _index.jsonl + registry _tasks.jsonl (Step 6b) ──
@@ -1969,9 +2143,11 @@ def _write_legacy_snapshot(session_dir, fname, label="legacy run", **index_extra
 
 
 def _write_task_snapshot(
-    session_dir, task_id, goal="child goal", finished_at=300.0, result=None
+    session_dir, task_id, goal="child goal", finished_at=300.0, result=None, **extra
 ):
-    """One registry-completed line, as AgentTaskRegistry.complete() appends."""
+    """One registry-completed line, as AgentTaskRegistry.complete() appends.
+    ``extra`` carries the conditional snapshot keys (label/tools/error/...)
+    newer records emit."""
     snap = {
         "task_id": task_id,
         "parent_task_id": None,
@@ -1986,6 +2162,7 @@ def _write_task_snapshot(
         "last_tool": "bash",
         "result": result,
         "session_id": session_dir.name,
+        **extra,
     }
     with (session_dir / "_tasks.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(snap) + "\n")
@@ -2056,6 +2233,19 @@ def test_spawn_tree_list_merge_dedupes_by_task_id_preferring_legacy(
     assert by_id["sa-0-aaaa"] == legacy  # legacy entry, untouched
     assert by_id["sa-1-bbbb"]["label"] == "registry only"
     assert by_id["sa-1-bbbb"]["source"] == "registry"
+
+
+def test_spawn_tree_list_prefers_record_label(server, spawn_home):
+    """Q5 sunset progress: when the snapshot carries the additive "label"
+    key, the list entry uses it over the goal fallback."""
+    d = _spawn_session_dir(spawn_home)
+    _write_task_snapshot(
+        d, "sa-0-aaaa", goal="first goal", label="goal one · goal two"
+    )
+
+    (e,) = _spawn_tree_list(server)
+    assert e["label"] == "goal one · goal two"
+    assert e["source"] == "registry"
 
 
 def test_spawn_tree_list_skips_corrupt_tasks_lines(server, spawn_home):
@@ -2143,6 +2333,39 @@ def test_spawn_tree_load_ledger_returns_last_snapshot(server, spawn_home):
     assert sub["startedAt"] == 250_000.0  # ms epoch, like live subagents
     assert sub["durationSeconds"] == 150.0
     assert sub["summary"] == "rich answer text"  # the rendered node body
+
+
+def test_spawn_tree_load_ledger_prefers_q5_parity_fields(server, spawn_home):
+    """Q5 sunset progress: a snapshot carrying the additive label/tools/error
+    keys loads with the richer values — full tools tail over the last_tool
+    fallback, explicit label over the goal, error summary as the node body
+    when the result has no text."""
+    d = _spawn_session_dir(spawn_home)
+    _write_task_snapshot(
+        d,
+        "sa-0-aaaa",
+        goal="child goal",
+        label="goal one · goal two",
+        tools=["bash", "web_search", "bash"],
+        error="provider exploded",
+        result={
+            "task_id": "sa-0-aaaa",
+            "status": "failed",
+            "outputs": {},
+            "error": None,  # no message in the rich result itself
+            "side_effects": [],
+        },
+    )
+
+    resp = _spawn_tree_load(server, d / "_tasks.jsonl")
+
+    assert "error" not in resp
+    payload = resp["result"]
+    assert payload["label"] == "goal one · goal two"
+    (sub,) = payload["subagents"]
+    assert sub["goal"] == "child goal"  # the node keeps its own goal
+    assert sub["tools"] == ["bash", "web_search", "bash"]  # not ["bash"] tail
+    assert sub["summary"] == "provider exploded"
 
 
 def test_spawn_tree_load_ledger_task_id_param_picks_record(server, spawn_home):

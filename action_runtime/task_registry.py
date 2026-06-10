@@ -28,7 +28,7 @@ import time
 import weakref
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from action_runtime.contract import ExecutionResult
 
@@ -53,6 +53,12 @@ class TaskStatus(str, Enum):
 
 
 TERMINAL_STATUSES = frozenset(s for s in TaskStatus if s is not TaskStatus.RUNNING)
+
+# Cap on the accumulated ``AgentTaskRecord.tools`` tail — mirrors the TUI's
+# own accumulation for the spawn-tree payload (``pushTool = pushUnique(8)``
+# in ui-tui createGatewayEventHandler.ts): distinct-consecutive entries,
+# last 8 kept.  ``tool_count`` stays the true total.
+TOOLS_TAIL_CAP = 8
 
 
 @dataclass
@@ -83,6 +89,26 @@ class AgentTaskRecord:
     last_tool: Optional[str] = None
     result: Optional[ExecutionResult] = None
     idempotency_key: Optional[str] = None
+    # §12 trace plumbing: correlates one logical request across
+    # task → result → record. None = a pre-trace caller.
+    trace_id: Optional[str] = None
+    # Q5 sunset-progress parity fields (doc §Q5 ruling) — closing the gap
+    # with the TUI-assembled spawn_tree.save payload.  All default-empty and
+    # rendered absent-when-unset, so pre-existing snapshot shapes stay
+    # byte-identical (additive-first ruling).
+    #
+    # Display label — the legacy payload's top-level "label" (a single
+    # child's label IS its goal; a batch summarizes its goals).
+    label: Optional[str] = None
+    # Tail of distinct-consecutive tool NAMES accumulated by
+    # ``update_progress`` (cap TOOLS_TAIL_CAP — see constant above).  Names
+    # only: tool previews never reach the registry, so none are fabricated.
+    tools: list[str] = field(default_factory=list)
+    # One-line failure summary lifted from ``result.error`` by
+    # ``complete()`` — the same string the legacy per-child entry carries
+    # as "error".  Never synthesized on the result=None path
+    # (honest-status: no message exists).
+    error: Optional[str] = None
 
     def snapshot(self) -> dict:
         """Serializable view — no ``agent_ref``; result as the rich wire dict."""
@@ -107,6 +133,17 @@ class AgentTaskRecord:
             # the wire, so records without a session must keep the exact
             # pre-Step-6a shape (additive-first ruling).
             snap["session_id"] = self.session_id
+        if self.trace_id is not None:
+            # Same absent-when-None additive rule as session_id above.
+            snap["trace_id"] = self.trace_id
+        # Q5 parity fields, absent-when-unset (same additive rule).
+        if self.label is not None:
+            snap["label"] = self.label
+        if self.tools:
+            # Copy: the live list keeps mutating under update_progress.
+            snap["tools"] = list(self.tools)
+        if self.error is not None:
+            snap["error"] = self.error
         return snap
 
 
@@ -164,6 +201,41 @@ class AgentTaskRegistry:
         self._replay: dict[str, tuple[float, dict]] = {}
         self._lock = threading.Lock()
         self._spawns_paused = False
+        self._observer: Optional[Callable[[str, dict], None]] = None
+
+    # -- lifecycle observer (Task 2.2 push events) --------------------------
+
+    def set_observer(self, observer: Optional[Callable[[str, dict], None]]) -> None:
+        """Install the lifecycle observer, called as ``observer(event, snapshot)``
+        with event ``"started"`` (end of ``register()``) or ``"completed"``
+        (end of a successful ``complete()``) and the locked-built snapshot.
+
+        Single observer by design: the gateway process owns both the registry
+        and the client transport, so one callable is the whole seam — the
+        registry never imports gateway transport (doc §12), the gateway maps
+        these events onto its own ``_emit``.  Pass ``None`` to detach.  The
+        observer runs OUTSIDE the registry lock and is fully guarded — an
+        observer bug never breaks the ledger (see ``_notify``).
+        """
+        with self._lock:
+            self._observer = observer
+
+    def _notify(self, event: str, snapshot: dict) -> None:
+        """Invoke the observer outside the lock; whole call guarded so an
+        observer bug can never break register()/complete() — same best-effort
+        rule as ``_persist_task_snapshot``."""
+        observer = self._observer
+        if observer is None:
+            return
+        try:
+            observer(event, snapshot)
+        except Exception as exc:
+            logger.debug(
+                "task observer %s failed for %s: %s",
+                event,
+                snapshot.get("task_id"),
+                exc,
+            )
 
     # -- records ----------------------------------------------------------
 
@@ -172,6 +244,11 @@ class AgentTaskRegistry:
             record.started_at = time.time()
         with self._lock:
             self._records[record.task_id] = record
+            # Snapshot under the lock (same never-torn rule as complete());
+            # skipped entirely when nothing is listening.
+            snapshot = record.snapshot() if self._observer is not None else None
+        if snapshot is not None:
+            self._notify("started", snapshot)
 
     def get(self, task_id: str) -> Optional[AgentTaskRecord]:
         with self._lock:
@@ -204,8 +281,8 @@ class AgentTaskRegistry:
         FAILED (doc ruling: interrupted == FAILED, ErrorType.TRANSPORT — the
         ExecError itself is built by the Step 2 caller).  Returns False for
         an unknown task_id or one already terminal — a late second
-        ``complete()`` must never falsify the first result or double-append
-        to ``_tasks.jsonl``.
+        ``complete()`` must never falsify the first result, double-append
+        to ``_tasks.jsonl``, or re-notify the observer.
         """
         with self._lock:
             record = self._records.get(task_id)
@@ -215,6 +292,10 @@ class AgentTaskRegistry:
             record.status = (
                 TaskStatus(result.status.value) if result is not None else TaskStatus.FAILED
             )
+            if result is not None and result.error is not None and result.error.message:
+                # Q5 parity field: the one-line error summary the legacy
+                # per-child entry carries as "error".
+                record.error = result.error.message
             record.finished_at = time.time()
             record.agent_ref = None
             key = record.idempotency_key
@@ -231,6 +312,7 @@ class AgentTaskRegistry:
             self.remember(key, snapshot["result"])
         if session_id:
             _persist_task_snapshot(session_id, snapshot)
+        self._notify("completed", snapshot)
         return True
 
     def _evict_terminal_records(self) -> None:
@@ -267,6 +349,13 @@ class AgentTaskRegistry:
                 record.tool_count = tool_count
             if last_tool is not None:
                 record.last_tool = last_tool
+                # Q5 parity: accumulate the tools tail the TUI keeps for its
+                # spawn-tree payload — distinct-consecutive names, last
+                # TOOLS_TAIL_CAP kept; empty names never recorded.
+                if last_tool and (not record.tools or record.tools[-1] != last_tool):
+                    record.tools.append(last_tool)
+                    if len(record.tools) > TOOLS_TAIL_CAP:
+                        del record.tools[: len(record.tools) - TOOLS_TAIL_CAP]
             return True
 
     def interrupt(self, task_id: str, reason: Optional[str] = None) -> bool:

@@ -1599,6 +1599,8 @@ def _run_single_child(
                     ),
                     depth=_tui_depth,
                     goal=goal,
+                    # Q5 parity: a single child's display label IS its goal.
+                    label=goal,
                     intent="delegate",
                     model=(
                         getattr(child, "model", None)

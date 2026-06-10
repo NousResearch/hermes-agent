@@ -207,8 +207,11 @@ def result_to_wire_rich(result: ExecutionResult) -> dict:
     Every key is always present: ``error`` is ``None`` (not omitted) on
     success, ``side_effects`` is ``[]`` when nothing changed, and ``status``
     is the :class:`Status` enum's value string (e.g. ``"succeeded"``).
+    Sole exception: ``trace_id`` (§12 trace plumbing) appears ONLY when set —
+    absent-when-None keeps every pre-trace wire dict byte-identical (same
+    additive pattern as ``AgentTaskRecord.snapshot()``'s ``session_id``).
     """
-    return {
+    wire = {
         "task_id": result.task_id,
         "status": result.status.value,
         "outputs": result.outputs,
@@ -231,3 +234,6 @@ def result_to_wire_rich(result: ExecutionResult) -> dict:
             for s in result.side_effects
         ],
     }
+    if result.trace_id is not None:
+        wire["trace_id"] = result.trace_id
+    return wire

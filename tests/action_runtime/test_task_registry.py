@@ -12,6 +12,7 @@ import weakref
 from action_runtime.contract import ErrorType, ExecError, ExecutionResult, Status
 from action_runtime.task_registry import (
     TERMINAL_STATUSES,
+    TOOLS_TAIL_CAP,
     AgentTaskRecord,
     AgentTaskRegistry,
     TaskStatus,
@@ -98,6 +99,24 @@ def test_complete_with_none_result_maps_to_failed():
     rec = reg.get("t")
     assert rec.status is TaskStatus.FAILED
     assert rec.result is None
+    # Q5 parity: no message exists on the None-result path — never invented.
+    assert rec.error is None
+
+
+def test_complete_lifts_error_summary_from_result():
+    """Q5 parity: complete() copies result.error.message onto the record's
+    one-line "error" field; SUCCEEDED results leave it unset."""
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="fail"))
+    reg.register(AgentTaskRecord(task_id="ok"))
+
+    assert reg.complete("fail", _result(Status.FAILED)) is True
+    assert reg.get("fail").error == "boom"  # _result's ExecError message
+    assert reg.get_snapshot("fail")["error"] == "boom"
+
+    assert reg.complete("ok", _result()) is True
+    assert reg.get("ok").error is None
+    assert "error" not in reg.get_snapshot("ok")
 
 
 def test_complete_unknown_task_returns_false():
@@ -159,6 +178,30 @@ def test_update_progress_updates_running_record_fields():
     rec = reg.get("t")
     assert rec.tool_count == 4
     assert rec.last_tool == "terminal"
+
+
+def test_update_progress_accumulates_tools_tail():
+    """Q5 parity: last_tool updates accumulate into the tools tail —
+    distinct-consecutive names, last TOOLS_TAIL_CAP kept (the TUI's
+    pushUnique(8) semantics), empty names never recorded."""
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="t"))
+
+    reg.update_progress("t", last_tool="bash")
+    reg.update_progress("t", last_tool="bash")  # consecutive repeat collapses
+    reg.update_progress("t", last_tool="web_search")
+    reg.update_progress("t", last_tool="")  # empty: last_tool set, not appended
+    reg.update_progress("t", tool_count=9)  # no last_tool: tail untouched
+    rec = reg.get("t")
+    assert rec.tools == ["bash", "web_search"]
+    assert rec.last_tool == ""
+    assert rec.tool_count == 9
+
+    for i in range(TOOLS_TAIL_CAP + 3):
+        reg.update_progress("t", last_tool=f"tool-{i}")
+    tail = reg.get("t").tools
+    assert len(tail) == TOOLS_TAIL_CAP
+    assert tail[-1] == f"tool-{TOOLS_TAIL_CAP + 2}"  # newest kept, oldest dropped
 
 
 def test_update_progress_noop_on_missing_or_terminal():
@@ -407,6 +450,58 @@ def test_snapshot_includes_session_id_only_when_set():
     assert AgentTaskRecord(task_id="t", session_id="s").snapshot()["session_id"] == "s"
 
 
+def test_snapshot_includes_trace_id_only_when_set():
+    """Same absent-when-None additive rule as session_id (Task 2.1 §12):
+    pre-trace records keep the exact pre-trace snapshot shape."""
+    assert "trace_id" not in AgentTaskRecord(task_id="t").snapshot()
+    assert AgentTaskRecord(task_id="t", trace_id="tr-1").snapshot()["trace_id"] == "tr-1"
+
+
+def test_snapshot_includes_q5_parity_fields_only_when_set():
+    """Same absent-when-unset rule for the Q5 parity trio (label/tools/error):
+    records that predate the fields keep the exact prior snapshot shape."""
+    bare = AgentTaskRecord(task_id="t").snapshot()
+    assert "label" not in bare
+    assert "tools" not in bare
+    assert "error" not in bare
+
+    rich = AgentTaskRecord(
+        task_id="t", label="do x", tools=["bash", "web_search"], error="boom"
+    )
+    snap = rich.snapshot()
+    assert snap["label"] == "do x"
+    assert snap["tools"] == ["bash", "web_search"]
+    assert snap["error"] == "boom"
+    # The snapshot owns a copy — later live mutation can't tear it.
+    rich.tools.append("late")
+    assert snap["tools"] == ["bash", "web_search"]
+
+
+def test_ledger_line_carries_q5_parity_fields(tmp_path, monkeypatch):
+    """End-to-end: register with a label, accumulate tools via
+    update_progress, fail the result — the persisted _tasks.jsonl line
+    carries label/tools/error alongside the pre-existing keys."""
+    import json
+
+    _patch_home(monkeypatch, tmp_path)
+    reg = AgentTaskRegistry()
+    reg.register(
+        AgentTaskRecord(task_id="sa-0-aaaa", session_id="sess-1", goal="g", label="g")
+    )
+    reg.update_progress("sa-0-aaaa", tool_count=1, last_tool="bash")
+    reg.update_progress("sa-0-aaaa", tool_count=2, last_tool="web_search")
+    assert reg.complete("sa-0-aaaa", _result(Status.FAILED)) is True
+
+    lines = _tasks_file(tmp_path, "sess-1").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["label"] == "g"
+    assert entry["tools"] == ["bash", "web_search"]
+    assert entry["error"] == "boom"
+    assert entry["last_tool"] == "web_search"  # pre-existing keys untouched
+    assert entry["status"] == "failed"
+
+
 def test_two_completes_append_two_lines(tmp_path, monkeypatch):
     import json
 
@@ -422,6 +517,65 @@ def test_two_completes_append_two_lines(tmp_path, monkeypatch):
     entries = [json.loads(line) for line in lines]
     assert [e["task_id"] for e in entries] == ["sa-0-aaaa", "sa-1-bbbb"]
     assert [e["status"] for e in entries] == ["succeeded", "failed"]
+
+
+# ---------------------------------------------------------------------------
+# observer seam (Task 2.2 push events)
+# ---------------------------------------------------------------------------
+
+def test_observer_receives_started_and_completed_snapshots():
+    reg = AgentTaskRegistry()
+    events = []
+    reg.set_observer(lambda event, snap: events.append((event, snap)))
+
+    reg.register(AgentTaskRecord(task_id="t-obs", goal="watch"))
+    assert [e for e, _ in events] == ["started"]
+    assert events[0][1]["task_id"] == "t-obs"
+    assert events[0][1]["status"] == "running"
+
+    assert reg.complete("t-obs", _result()) is True
+    assert [e for e, _ in events] == ["started", "completed"]
+    assert events[1][1]["status"] == "succeeded"
+    assert events[1][1]["result"]["outputs"] == {"output": "ok"}
+
+
+def test_observer_exception_never_breaks_register_or_complete():
+    """set_observer guard: an observer bug must never break the ledger."""
+    reg = AgentTaskRegistry()
+
+    def _boom(event, snap):
+        raise RuntimeError("observer bug")
+
+    reg.set_observer(_boom)
+    rec = AgentTaskRecord(task_id="t-obs-boom")
+    reg.register(rec)  # must not raise
+    assert reg.get("t-obs-boom") is rec
+    assert reg.complete("t-obs-boom", _result()) is True  # must not raise
+    assert reg.get("t-obs-boom").status is TaskStatus.SUCCEEDED
+
+
+def test_rejected_complete_does_not_notify():
+    """Only a SUCCESSFUL complete() notifies — a late duplicate or an unknown
+    task_id must never re-emit task.completed downstream."""
+    reg = AgentTaskRegistry()
+    events = []
+    reg.register(AgentTaskRecord(task_id="t-obs-dup"))
+    reg.set_observer(lambda event, snap: events.append(event))
+
+    assert reg.complete("t-obs-dup", _result()) is True
+    assert reg.complete("t-obs-dup", _result(Status.FAILED)) is False
+    assert reg.complete("missing", _result()) is False
+    assert events == ["completed"]
+
+
+def test_set_observer_none_detaches():
+    reg = AgentTaskRegistry()
+    events = []
+    reg.set_observer(lambda event, snap: events.append(event))
+    reg.set_observer(None)
+    reg.register(AgentTaskRecord(task_id="t-obs-off"))
+    reg.complete("t-obs-off", _result())
+    assert events == []
 
 
 # ---------------------------------------------------------------------------

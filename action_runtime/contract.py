@@ -95,6 +95,9 @@ class ExecutionTask:
     constraints: Constraints = field(default_factory=Constraints)
     success_criteria: Optional[str] = None
     context_ref: Optional[str] = None      # session_id / memory pointer
+    # §12 observability: correlates ONE logical request across
+    # task → result → registry record. None = a pre-trace caller; the
+    # Runtime never synthesizes one.
     trace_id: Optional[str] = None
 
 
@@ -110,6 +113,9 @@ class ExecutionResult:
     error: Optional[ExecError] = None
     side_effects: list[SideEffect] = field(default_factory=list)
     needs_input: Optional[NeedsInput] = None
+    # Echo of ExecutionTask.trace_id (§12): correlates one logical request
+    # across task → result → registry record. None = a pre-trace caller;
+    # the rich wire renders it ONLY when set.
     trace_id: Optional[str] = None
 
     @property

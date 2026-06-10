@@ -9,6 +9,7 @@ cannot change the wire. (See docs/architecture/central-brain-openclaw.md §12.)
 from action_runtime import (
     ErrorType,
     ExecutionResult,
+    ExecutionTask,
     Status,
     cli_to_result,
     cli_to_wire,
@@ -260,3 +261,47 @@ def test_rich_wire_blocked_cli_keeps_enum_value_strings():
     assert isinstance(rich["status"], str)
     assert rich["error"]["type"] == "denied"
     assert rich["task_id"] is None  # never omitted, even when unset
+
+
+# ── Phase 5 Task 2.1: trace_id plumbing (§12 observability) ──────────
+
+
+def test_contract_trace_id_round_trip():
+    """trace_id rides both contract dataclasses; default None marks a
+    pre-trace caller (the Runtime never synthesizes one)."""
+    t = ExecutionTask(task_id="t-1", trace_id="trace-1")
+    assert t.trace_id == "trace-1"
+    r = ExecutionResult(task_id="t-1", status=Status.SUCCEEDED, trace_id=t.trace_id)
+    assert r.trace_id == "trace-1"
+
+
+def test_contract_trace_id_defaults_to_none():
+    assert ExecutionTask(task_id="t-1").trace_id is None
+    assert ExecutionResult(task_id="t-1", status=Status.SUCCEEDED).trace_id is None
+
+
+def test_rich_wire_omits_trace_id_when_unset():
+    """Byte-compat pin: a pre-trace result must render the EXACT pre-trace
+    rich dict — no trace_id key at all (absent-when-None, same additive
+    pattern as snapshot()'s session_id)."""
+    r = slash_to_result("done", _Effect(kind="", message=""), task_id="task-7")
+    assert result_to_wire_rich(r) == {
+        "task_id": "task-7",
+        "status": "succeeded",
+        "outputs": {"output": "done"},
+        "error": None,
+        "side_effects": [],
+    }
+
+
+def test_rich_wire_carries_trace_id_when_set():
+    r = slash_to_result("done", _Effect(kind="", message=""), task_id="task-8")
+    r.trace_id = "trace-8"
+    assert result_to_wire_rich(r) == {
+        "task_id": "task-8",
+        "status": "succeeded",
+        "outputs": {"output": "done"},
+        "error": None,
+        "side_effects": [],
+        "trace_id": "trace-8",
+    }

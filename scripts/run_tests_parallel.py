@@ -395,6 +395,38 @@ def _run_one_file(
             timeout_note=f"per-file timeout on exit-4 retry {attempt}",
         )
 
+    if rc == 4:
+        # Exit-4 survived the retries (or the file was judged absent).
+        # Capture filesystem forensics so a CI-only "file not found" can
+        # be diagnosed from the log instead of guessed at: does the file
+        # exist NOW, what does the parent dir hold, and is the git tree
+        # clean?  (June 2026: a PR-added test file repeatedly hit exit 4
+        # on one CI shard while passing locally — these lines exist so
+        # the next occurrence is attributable.)
+        forensics = [f"--- exit-4 forensics for {file} ---"]
+        try:
+            forensics.append(f"exists={file.exists()} retries_used={attempt}")
+            parent = file.parent
+            if parent.exists():
+                names = sorted(p.name for p in parent.iterdir())
+                sibling_hint = [n for n in names if file.stem[:12] in n]
+                forensics.append(
+                    f"parent={parent} entries={len(names)} "
+                    f"similar={sibling_hint[:5]}"
+                )
+            else:
+                forensics.append(f"parent={parent} MISSING")
+            git_st = subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo_root, capture_output=True, text=True, timeout=10,
+            )
+            dirty = git_st.stdout.strip().splitlines()
+            forensics.append(f"git_dirty_entries={len(dirty)}")
+            forensics.extend(f"  {line}" for line in dirty[:10])
+        except Exception as exc:  # noqa: BLE001 — forensics must never mask rc=4
+            forensics.append(f"(forensics error: {exc})")
+        output = output + "\n" + "\n".join(forensics)
+
     if rc == 5:
         # No tests collected — every test in the file was filtered out.
         # Treat as a pass; surface info in a slightly distinct status

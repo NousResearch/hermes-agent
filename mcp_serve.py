@@ -29,17 +29,20 @@ MCP client config (e.g. claude_desktop_config.json):
 
 from __future__ import annotations
 
+import inspect
 import json
 import logging
 import os
 import re
+import secrets
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence, Set
+from urllib.parse import parse_qs, urlencode
 
 logger = logging.getLogger("hermes.mcp_serve")
 
@@ -540,7 +543,144 @@ class EventBridge:
 # MCP Server
 # ---------------------------------------------------------------------------
 
-def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
+def _schema_property_to_annotation(prop: dict) -> Any:
+    prop_type = prop.get("type") if isinstance(prop, dict) else None
+    if isinstance(prop_type, list):
+        prop_type = next((item for item in prop_type if item != "null"), None)
+    if prop_type == "string":
+        return str
+    if prop_type == "integer":
+        return int
+    if prop_type == "number":
+        return float
+    if prop_type == "boolean":
+        return bool
+    if prop_type == "array":
+        return list
+    if prop_type == "object":
+        return dict
+    return Any
+
+
+def _safe_identifier(name: str) -> str:
+    cleaned = re.sub(r"\W", "_", name or "arg")
+    if not cleaned or cleaned[0].isdigit():
+        cleaned = f"arg_{cleaned}"
+    if cleaned in {"class", "def", "from", "global", "lambda", "pass", "return"}:
+        cleaned = f"{cleaned}_"
+    return cleaned
+
+
+def _make_registry_tool_wrapper(tool_name: str):
+    def _tool(**kwargs):
+        from tools.registry import registry
+        return registry.dispatch(tool_name, dict(kwargs))
+
+    _tool.__name__ = f"_mcp_registry_tool_{_safe_identifier(tool_name)}"
+    return _tool
+
+
+def _apply_schema_signature(wrapper, schema: dict) -> Any:
+    parameters_schema = schema.get("parameters") or {}
+    properties = parameters_schema.get("properties") or {}
+    required = set(parameters_schema.get("required") or [])
+    params = []
+    name_map: dict[str, str] = {}
+
+    for raw_name, prop in properties.items():
+        param_name = _safe_identifier(str(raw_name))
+        while param_name in name_map:
+            param_name = f"{param_name}_"
+        name_map[param_name] = str(raw_name)
+        default = inspect.Parameter.empty if raw_name in required else None
+        params.append(
+            inspect.Parameter(
+                param_name,
+                inspect.Parameter.KEYWORD_ONLY,
+                default=default,
+                annotation=_schema_property_to_annotation(prop if isinstance(prop, dict) else {}),
+            )
+        )
+
+    if name_map:
+        original = wrapper
+
+        def _mapped_tool(**kwargs):
+            return original(**{name_map.get(key, key): value for key, value in kwargs.items()})
+
+        _mapped_tool.__name__ = wrapper.__name__
+        wrapper = _mapped_tool
+
+    wrapper.__signature__ = inspect.Signature(params)  # type: ignore[attr-defined]
+    return wrapper
+
+
+def _register_registry_tools_as_mcp(
+    mcp,
+    *,
+    expose_toolsets: Optional[Sequence[str]] = None,
+    expose_tools: Optional[Sequence[str]] = None,
+    expose_plugin_tools: bool = False,
+) -> List[str]:
+    include_toolsets: Set[str] = set(_comma_values(expose_toolsets))
+    include_tools: Set[str] = set(_comma_values(expose_tools))
+    if not include_toolsets and not include_tools and not expose_plugin_tools:
+        return []
+
+    try:
+        from tools.registry import registry
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        discover_plugins()
+    except Exception as exc:
+        logger.warning("Could not discover plugin tools for MCP serving: %s", exc)
+        return []
+
+    plugin_tool_names = set(getattr(get_plugin_manager(), "_plugin_tool_names", set()))
+    registered: List[str] = []
+    for name in registry.get_all_tool_names():
+        entry = registry.get_entry(name)
+        if not entry:
+            continue
+        should_expose = (
+            name in include_tools
+            or entry.toolset in include_toolsets
+            or (expose_plugin_tools and name in plugin_tool_names)
+        )
+        if not should_expose:
+            continue
+        if entry.check_fn:
+            try:
+                if not entry.check_fn():
+                    continue
+            except Exception:
+                logger.debug("Skipping MCP-exposed tool %s because check_fn failed", name, exc_info=True)
+                continue
+
+        schema = {**(entry.schema or {}), "name": entry.name}
+        wrapper = _make_registry_tool_wrapper(entry.name)
+        wrapper = _apply_schema_signature(wrapper, schema)
+        mcp.add_tool(
+            wrapper,
+            name=entry.name,
+            description=entry.description or schema.get("description") or "Hermes tool",
+        )
+        tool = mcp._tool_manager.get_tool(entry.name)
+        if tool is not None:
+            tool.parameters = schema.get("parameters") or tool.parameters
+        registered.append(entry.name)
+
+    if registered:
+        logger.info("Exposed %d Hermes registry tools over MCP", len(registered))
+    return registered
+
+
+def create_mcp_server(
+    event_bridge: Optional[EventBridge] = None,
+    *,
+    expose_toolsets: Optional[Sequence[str]] = None,
+    expose_tools: Optional[Sequence[str]] = None,
+    expose_plugin_tools: bool = False,
+) -> "FastMCP":
     """Create and return the Hermes MCP server with all tools registered."""
     if not _MCP_SERVER_AVAILABLE:
         raise ImportError(
@@ -949,14 +1089,437 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         result = bridge.respond_to_approval(id, decision)
         return json.dumps(result, indent=2)
 
+    _register_registry_tools_as_mcp(
+        mcp,
+        expose_toolsets=expose_toolsets,
+        expose_tools=expose_tools,
+        expose_plugin_tools=expose_plugin_tools,
+    )
+
     return mcp
+
+
+# ---------------------------------------------------------------------------
+# Streamable HTTP authentication helpers
+# ---------------------------------------------------------------------------
+
+@dataclass
+class McpHttpAuthConfig:
+    """Authentication and OAuth-compatibility settings for HTTP MCP serving."""
+
+    psk: Optional[str] = None
+    psk_header: str = "X-Hermes-MCP-PSK"
+    allow_query_token: bool = False
+    oauth_compatible: bool = False
+    oauth_client_id: Optional[str] = None
+    oauth_client_secret: Optional[str] = None
+    public_base_url: str = "http://127.0.0.1:8666"
+    path: str = "/mcp"
+    token_ttl_seconds: int = 2_592_000
+    code_ttl_seconds: int = 300
+
+    def __post_init__(self) -> None:
+        self.path = _normalize_path(self.path)
+        self.public_base_url = self.public_base_url.rstrip("/")
+        if self.oauth_compatible and not self.oauth_client_id:
+            self.oauth_client_id = self.psk
+
+
+@dataclass
+class _IssuedToken:
+    token: str
+    client_id: str
+    expires_at: float
+
+
+@dataclass
+class _AuthorizationCode:
+    code: str
+    client_id: str
+    redirect_uri: str
+    expires_at: float
+
+
+class _OAuthTokenStore:
+    """Small in-memory token/code store for single-process HTTP MCP servers."""
+
+    def __init__(self) -> None:
+        self._tokens: Dict[str, _IssuedToken] = {}
+        self._codes: Dict[str, _AuthorizationCode] = {}
+        self._lock = threading.Lock()
+
+    def issue_token(self, client_id: str, ttl_seconds: int) -> str:
+        token = secrets.token_urlsafe(32)
+        with self._lock:
+            self._tokens[token] = _IssuedToken(
+                token=token,
+                client_id=client_id,
+                expires_at=time.time() + ttl_seconds,
+            )
+        return token
+
+    def validate_token(self, token: str) -> bool:
+        with self._lock:
+            issued = self._tokens.get(token)
+            if not issued:
+                return False
+            if issued.expires_at < time.time():
+                self._tokens.pop(token, None)
+                return False
+            return True
+
+    def issue_code(self, client_id: str, redirect_uri: str, ttl_seconds: int) -> str:
+        code = secrets.token_urlsafe(24)
+        with self._lock:
+            self._codes[code] = _AuthorizationCode(
+                code=code,
+                client_id=client_id,
+                redirect_uri=redirect_uri,
+                expires_at=time.time() + ttl_seconds,
+            )
+        return code
+
+    def consume_code(self, code: str, client_id: str) -> bool:
+        with self._lock:
+            issued = self._codes.pop(code, None)
+            if not issued:
+                return False
+            if issued.client_id != client_id:
+                return False
+            return issued.expires_at >= time.time()
+
+
+def _normalize_path(path: str) -> str:
+    path = (path or "/mcp").strip()
+    if not path.startswith("/"):
+        path = f"/{path}"
+    if len(path) > 1:
+        path = path.rstrip("/")
+    return path
+
+
+def _read_env_secret(env_name: Optional[str]) -> Optional[str]:
+    if not env_name:
+        return None
+    value = os.environ.get(env_name)
+    if value is None:
+        return None
+    value = value.strip()
+    return value or None
+
+
+def _comma_values(values: Optional[Sequence[str]]) -> List[str]:
+    result: List[str] = []
+    for item in values or []:
+        for part in str(item).split(","):
+            part = part.strip()
+            if part:
+                result.append(part)
+    return result
+
+
+def _extract_bearer_token(headers) -> Optional[str]:
+    auth = headers.get("authorization", "")
+    if auth.lower().startswith("bearer "):
+        token = auth[7:].strip()
+        return token or None
+    return None
+
+
+def _constant_time_equals(left: Optional[str], right: Optional[str]) -> bool:
+    if not left or not right:
+        return False
+    return secrets.compare_digest(str(left), str(right))
+
+
+def _client_secret_valid(config: McpHttpAuthConfig, supplied: Optional[str]) -> bool:
+    if not config.oauth_client_secret:
+        return True
+    return _constant_time_equals(config.oauth_client_secret, supplied)
+
+
+def _client_id_valid(config: McpHttpAuthConfig, supplied: Optional[str]) -> bool:
+    return _constant_time_equals(config.oauth_client_id, supplied)
+
+
+def _metadata_url(config: McpHttpAuthConfig) -> str:
+    return f"{config.public_base_url}/.well-known/oauth-protected-resource{config.path}"
+
+
+def _auth_challenge(config: McpHttpAuthConfig) -> str:
+    if config.oauth_compatible:
+        return f'Bearer resource_metadata="{_metadata_url(config)}"'
+    return "Bearer"
+
+
+def _is_authenticated(request, config: McpHttpAuthConfig, store: _OAuthTokenStore) -> bool:
+    bearer = _extract_bearer_token(request.headers)
+    if bearer:
+        if _constant_time_equals(config.psk, bearer):
+            return True
+        if config.oauth_compatible and store.validate_token(bearer):
+            return True
+
+    header_token = request.headers.get(config.psk_header)
+    if _constant_time_equals(config.psk, header_token):
+        return True
+
+    if config.allow_query_token:
+        query_token = request.query_params.get("access_token") or request.query_params.get("psk")
+        if _constant_time_equals(config.psk, query_token):
+            return True
+        if config.oauth_compatible and query_token and store.validate_token(query_token):
+            return True
+
+    return False
+
+
+def _configure_transport_security(server, host: str, allowed_hosts: Sequence[str], allowed_origins: Sequence[str]) -> None:
+    hosts = list(dict.fromkeys([host, "127.0.0.1", "localhost", *allowed_hosts]))
+    origins = list(dict.fromkeys([*allowed_origins]))
+    if origins and "null" not in origins:
+        origins.append("null")
+    try:
+        from mcp.server.transport_security import TransportSecuritySettings
+        server.settings.transport_security = TransportSecuritySettings(
+            allowed_hosts=hosts,
+            allowed_origins=origins,
+        )
+    except Exception as exc:  # pragma: no cover - depends on MCP SDK version
+        logger.debug("Could not configure MCP transport security: %s", exc)
+
+
+def create_streamable_http_app(
+    server,
+    *,
+    auth_config: Optional[McpHttpAuthConfig] = None,
+    health_path: str = "/health",
+):
+    """Create the Starlette app for Streamable HTTP, including optional auth.
+
+    The returned app serves the MCP endpoint at ``server.settings.streamable_http_path``.
+    If ``auth_config`` is provided, the MCP path requires either a PSK bearer/header
+    token or an OAuth-compatible bearer token issued by the local token endpoint.
+    """
+    if not hasattr(server, "streamable_http_app"):
+        raise RuntimeError("Installed MCP SDK does not support Streamable HTTP")
+
+    from starlette.middleware.base import BaseHTTPMiddleware
+    from starlette.responses import JSONResponse, PlainTextResponse, RedirectResponse
+
+    store = _OAuthTokenStore()
+    app = server.streamable_http_app()
+    health_path = _normalize_path(health_path)
+    config = auth_config
+
+    async def health(_request):
+        return PlainTextResponse("ok")
+
+    app.add_route(health_path, health, methods=["GET", "HEAD"])
+
+    if config and config.oauth_compatible:
+        async def authorization_server_metadata(_request):
+            return JSONResponse({
+                "issuer": config.public_base_url,
+                "authorization_endpoint": f"{config.public_base_url}{config.path}/authorize",
+                "token_endpoint": f"{config.public_base_url}{config.path}/token",
+                "response_types_supported": ["code"],
+                "grant_types_supported": ["authorization_code", "client_credentials"],
+                "token_endpoint_auth_methods_supported": ["none", "client_secret_post"],
+                "code_challenge_methods_supported": ["plain", "S256"],
+                "scopes_supported": ["mcp"],
+            })
+
+        async def protected_resource_metadata(_request):
+            return JSONResponse({
+                "resource": f"{config.public_base_url}{config.path}",
+                "authorization_servers": [config.public_base_url],
+                "bearer_methods_supported": ["header"],
+                "scopes_supported": ["mcp"],
+            })
+
+        async def authorize(request):
+            params = request.query_params
+            client_id = params.get("client_id")
+            redirect_uri = params.get("redirect_uri")
+            response_type = params.get("response_type")
+            state = params.get("state")
+
+            if response_type != "code":
+                return JSONResponse({"error": "unsupported_response_type"}, status_code=400)
+            if not _client_id_valid(config, client_id):
+                return JSONResponse({"error": "invalid_client"}, status_code=401)
+            if not redirect_uri:
+                return JSONResponse({"error": "invalid_request", "error_description": "redirect_uri is required"}, status_code=400)
+
+            code = store.issue_code(client_id or "", redirect_uri, config.code_ttl_seconds)
+            query = {"code": code}
+            if state is not None:
+                query["state"] = state
+            separator = "&" if "?" in redirect_uri else "?"
+            return RedirectResponse(f"{redirect_uri}{separator}{urlencode(query)}", status_code=302)
+
+        async def token(request):
+            body = (await request.body()).decode("utf-8")
+            parsed = parse_qs(body, keep_blank_values=True)
+            form = {key: values[-1] if values else "" for key, values in parsed.items()}
+            grant_type = form.get("grant_type")
+            client_id = form.get("client_id")
+            client_secret = form.get("client_secret")
+
+            if not _client_id_valid(config, client_id) or not _client_secret_valid(config, client_secret):
+                return JSONResponse({"error": "invalid_client"}, status_code=401)
+
+            if grant_type == "client_credentials":
+                access_token = store.issue_token(client_id or "", config.token_ttl_seconds)
+            elif grant_type == "authorization_code":
+                code = form.get("code")
+                if not store.consume_code(str(code or ""), str(client_id or "")):
+                    return JSONResponse({"error": "invalid_grant"}, status_code=400)
+                access_token = store.issue_token(client_id or "", config.token_ttl_seconds)
+            else:
+                return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+
+            return JSONResponse({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": config.token_ttl_seconds,
+                "scope": "mcp",
+            })
+
+        app.add_route("/.well-known/oauth-authorization-server", authorization_server_metadata, methods=["GET"])
+        app.add_route(f"/.well-known/oauth-protected-resource{config.path}", protected_resource_metadata, methods=["GET"])
+        app.add_route(f"{config.path}/authorize", authorize, methods=["GET"])
+        app.add_route(f"{config.path}/token", token, methods=["POST"])
+
+    if config:
+        class McpAuthMiddleware(BaseHTTPMiddleware):
+            async def dispatch(self, request, call_next):
+                path = request.url.path.rstrip("/") or "/"
+                mcp_path = config.path.rstrip("/") or "/"
+                if path == mcp_path and not _is_authenticated(request, config, store):
+                    return JSONResponse(
+                        {
+                            "error": "unauthorized",
+                            "hint": "Authenticate with OAuth bearer token, bearer/header PSK, or an enabled query token.",
+                        },
+                        status_code=401,
+                        headers={"WWW-Authenticate": _auth_challenge(config)},
+                    )
+                return await call_next(request)
+
+        app.add_middleware(McpAuthMiddleware)
+
+    return app
+
+
+def run_mcp_http_server(
+    *,
+    verbose: bool = False,
+    host: str = "127.0.0.1",
+    port: int = 8666,
+    path: str = "/mcp",
+    public_base_url: Optional[str] = None,
+    auth_token_env: Optional[str] = None,
+    auth_header: str = "X-Hermes-MCP-PSK",
+    allow_query_token: bool = False,
+    oauth_compatible: bool = False,
+    oauth_client_id_env: Optional[str] = None,
+    oauth_client_secret_env: Optional[str] = None,
+    token_ttl_seconds: int = 2_592_000,
+    code_ttl_seconds: int = 300,
+    allowed_hosts: Optional[Sequence[str]] = None,
+    allowed_origins: Optional[Sequence[str]] = None,
+    expose_toolsets: Optional[Sequence[str]] = None,
+    expose_tools: Optional[Sequence[str]] = None,
+    expose_plugin_tools: bool = False,
+    health_path: str = "/health",
+) -> None:
+    """Start the Hermes MCP server over Streamable HTTP."""
+    if not _MCP_SERVER_AVAILABLE:
+        print(
+            "Error: MCP HTTP server requires the 'mcp' package.\n"
+            f"Install with: {sys.executable} -m pip install 'mcp'",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    logging.basicConfig(level=logging.DEBUG if verbose else logging.WARNING, stream=sys.stderr)
+
+    path = _normalize_path(path)
+    base_url = (public_base_url or f"http://{host}:{port}").rstrip("/")
+    psk = _read_env_secret(auth_token_env)
+    oauth_client_id = _read_env_secret(oauth_client_id_env) if oauth_client_id_env else None
+    oauth_client_secret = _read_env_secret(oauth_client_secret_env) if oauth_client_secret_env else None
+
+    if (auth_token_env or oauth_compatible) and not psk and not oauth_client_id:
+        print(
+            "Error: HTTP auth requested but no auth token/client id was found in the configured environment variables.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    bridge = EventBridge()
+    bridge.start()
+    server = create_mcp_server(
+        event_bridge=bridge,
+        expose_toolsets=expose_toolsets,
+        expose_tools=expose_tools,
+        expose_plugin_tools=expose_plugin_tools,
+    )
+    server.settings.host = host
+    server.settings.port = int(port)
+    server.settings.streamable_http_path = path
+    server.settings.json_response = True
+    _configure_transport_security(
+        server,
+        host,
+        _comma_values(allowed_hosts),
+        _comma_values(allowed_origins),
+    )
+
+    auth_config = None
+    if psk or oauth_compatible:
+        auth_config = McpHttpAuthConfig(
+            psk=psk,
+            psk_header=auth_header,
+            allow_query_token=allow_query_token,
+            oauth_compatible=oauth_compatible,
+            oauth_client_id=oauth_client_id,
+            oauth_client_secret=oauth_client_secret,
+            public_base_url=base_url,
+            path=path,
+            token_ttl_seconds=token_ttl_seconds,
+            code_ttl_seconds=code_ttl_seconds,
+        )
+
+    app = create_streamable_http_app(server, auth_config=auth_config, health_path=health_path)
+
+    import uvicorn
+
+    try:
+        uvicorn.run(
+            app,
+            host=host,
+            port=int(port),
+            log_level="debug" if verbose else "warning",
+            access_log=not allow_query_token,
+        )
+    finally:
+        bridge.stop()
 
 
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
-def run_mcp_server(verbose: bool = False) -> None:
+def run_mcp_server(
+    verbose: bool = False,
+    *,
+    expose_toolsets: Optional[Sequence[str]] = None,
+    expose_tools: Optional[Sequence[str]] = None,
+    expose_plugin_tools: bool = False,
+) -> None:
     """Start the Hermes MCP server on stdio."""
     if not _MCP_SERVER_AVAILABLE:
         print(
@@ -974,7 +1537,12 @@ def run_mcp_server(verbose: bool = False) -> None:
     bridge = EventBridge()
     bridge.start()
 
-    server = create_mcp_server(event_bridge=bridge)
+    server = create_mcp_server(
+        event_bridge=bridge,
+        expose_toolsets=expose_toolsets,
+        expose_tools=expose_tools,
+        expose_plugin_tools=expose_plugin_tools,
+    )
 
     import asyncio
 

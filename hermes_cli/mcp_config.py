@@ -1047,8 +1047,37 @@ def mcp_command(args):
     action = getattr(args, "mcp_action", None)
 
     if action == "serve":
-        from mcp_serve import run_mcp_server
-        run_mcp_server(verbose=getattr(args, "verbose", False))
+        from mcp_serve import run_mcp_http_server, run_mcp_server
+        transport = getattr(args, "transport", "stdio") or "stdio"
+        if transport == "streamable-http":
+            run_mcp_http_server(
+                verbose=getattr(args, "verbose", False),
+                host=getattr(args, "host", "127.0.0.1"),
+                port=getattr(args, "port", 8666),
+                path=getattr(args, "path", "/mcp"),
+                public_base_url=getattr(args, "public_base_url", None),
+                auth_token_env=getattr(args, "auth_token_env", None),
+                auth_header=getattr(args, "auth_header", "X-Hermes-MCP-PSK"),
+                allow_query_token=getattr(args, "allow_query_token", False),
+                oauth_compatible=getattr(args, "oauth_compatible", False),
+                oauth_client_id_env=getattr(args, "oauth_client_id_env", None),
+                oauth_client_secret_env=getattr(args, "oauth_client_secret_env", None),
+                token_ttl_seconds=getattr(args, "oauth_token_ttl_seconds", 2592000),
+                code_ttl_seconds=getattr(args, "oauth_code_ttl_seconds", 300),
+                allowed_hosts=getattr(args, "allowed_host", []) or [],
+                allowed_origins=getattr(args, "allowed_origin", []) or [],
+                expose_toolsets=getattr(args, "expose_toolset", []) or [],
+                expose_tools=getattr(args, "expose_tool", []) or [],
+                expose_plugin_tools=getattr(args, "expose_plugin_tools", False),
+                health_path=getattr(args, "health_path", "/health"),
+            )
+        else:
+            run_mcp_server(
+                verbose=getattr(args, "verbose", False),
+                expose_toolsets=getattr(args, "expose_toolset", []) or [],
+                expose_tools=getattr(args, "expose_tool", []) or [],
+                expose_plugin_tools=getattr(args, "expose_plugin_tools", False),
+            )
         return
 
     # Catalog subcommands live in mcp_picker / mcp_catalog. Import lazily so

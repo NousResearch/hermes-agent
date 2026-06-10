@@ -95,6 +95,19 @@ def _clamp_trust(value: float) -> float:
     return max(_TRUST_MIN, min(_TRUST_MAX, value))
 
 
+def _fts5_safe_query(text: str) -> str:
+    """Turn free text into a crash-proof FTS5 MATCH query.
+
+    User/LLM search strings routinely contain FTS5 query syntax — a stray
+    double-quote, a ``key:value`` colon, a bare ``AND``/``OR``/``NEAR``, or a
+    parenthesis — which otherwise raises ``sqlite3.OperationalError`` from
+    ``MATCH``. Wrap each whitespace token in double quotes (escaping embedded
+    quotes) so every term is matched literally and AND-combined. Returns ``""``
+    when there are no usable tokens.
+    """
+    return " ".join('"' + tok.replace('"', '""') + '"' for tok in text.split() if tok)
+
+
 class MemoryStore:
     """SQLite-backed fact store with entity resolution and trust scoring."""
 
@@ -274,7 +287,18 @@ class MemoryStore:
                 LIMIT ?
             """
 
-            rows = self._conn.execute(sql, params).fetchall()
+            try:
+                rows = self._conn.execute(sql, params).fetchall()
+            except sqlite3.OperationalError:
+                # The raw text wasn't a valid FTS5 query (stray quote/colon/
+                # bare AND-OR-NEAR/paren). Retry with each token quoted as a
+                # literal phrase so the search degrades to a sane match instead
+                # of crashing the memory tool.
+                safe = _fts5_safe_query(query)
+                if not safe:
+                    return []
+                params[0] = safe
+                rows = self._conn.execute(sql, params).fetchall()
             results = [self._row_to_dict(r) for r in rows]
 
             if results:

@@ -167,13 +167,24 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertNotIn("messaging", result)
         self.assertNotIn("cronjob", result)
 
-    def test_preserves_composite_toolsets(self):
-        """Composite toolsets like hermes-cli are preserved — the dangerous
-        tools (send_message, cronjob) are subtracted via disabled_toolsets
-        passed to the child AIAgent constructor, not by dropping composites."""
+    def test_expands_composite_and_strips_blocked(self):
+        """Composite toolsets like hermes-cli are expanded to individual
+        toolsets, and blocked ones (messaging, cronjob) are stripped."""
         result = _strip_blocked_tools(["hermes-cli"])
-        self.assertIn("hermes-cli", result,
-                       "hermes-cli must be preserved; blocked tools removed via disabled_toolsets")
+        # hermes-cli should be expanded, not preserved as-is
+        self.assertNotIn("hermes-cli", result,
+                         "hermes-cli should be expanded to individual toolsets")
+        # Blocked toolsets must be absent
+        self.assertNotIn("messaging", result)
+        self.assertNotIn("cronjob", result)
+        self.assertNotIn("delegation", result)
+        self.assertNotIn("clarify", result)
+        self.assertNotIn("memory", result)
+        self.assertNotIn("code_execution", result)
+        # Non-blocked individual toolsets should be present
+        self.assertIn("terminal", result)
+        self.assertIn("file", result)
+        self.assertIn("web", result)
 
 
 class TestChildAgentDisabledToolsets(unittest.TestCase):

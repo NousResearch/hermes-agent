@@ -758,12 +758,14 @@ def _resolve_workspace_hint(parent_agent) -> Optional[str]:
 
 
 def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
-    """Remove toolsets whose names are explicitly blocked.
+    """Remove blocked toolsets, expanding composite toolsets first.
 
-    Composite toolsets (e.g. ``hermes-cli``) are preserved — the specific
-    dangerous tools (``send_message``, ``cronjob``) are subtracted via
-    ``disabled_toolsets`` passed to the child :class:`AIAgent` constructor
-    in :func:`_build_child_agent`.
+    Composite toolsets like ``hermes-cli`` bundle individual toolsets
+    (e.g. ``messaging``, ``cronjob``).  We expand composites to their
+    constituent toolsets, strip the blocked ones, and return the
+    remaining individual toolset names.  This ensures that children
+    never inherit ``send_message`` or ``cronjob`` even when the parent
+    uses a composite toolset.
     """
     blocked_toolset_names = {
         "delegation",
@@ -773,7 +775,46 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
         "messaging",
         "cronjob",
     }
-    return [t for t in toolsets if t not in blocked_toolset_names]
+
+    # Tools from blocked toolsets that we need to catch in composites.
+    _blocked_tools = {"send_message", "cronjob"}
+
+    # Step 1: Separate toolsets that contain blocked tools (need expansion)
+    # from clean toolsets (pass through unchanged).
+    needs_expansion: List[str] = []
+    clean: List[str] = []
+    for ts_name in toolsets:
+        if ts_name in blocked_toolset_names:
+            continue  # already blocked — skip
+        ts_def = TOOLSETS.get(ts_name)
+        ts_tools = set(ts_def.get("tools", [])) if ts_def else set()
+        if ts_tools & _blocked_tools:
+            # This toolset contains blocked tools — needs expansion
+            needs_expansion.append(ts_name)
+        else:
+            clean.append(ts_name)
+
+    # Step 2: Expand composite toolsets that contain blocked tools.
+    # Collect all their tool names, then find individual toolsets that
+    # are subsets.  Exclude the original composites from re-addition.
+    expanded_set: set[str] = set()
+    composite_names = set(needs_expansion)
+    if needs_expansion:
+        all_expanded_tools: set[str] = set()
+        for ts_name in needs_expansion:
+            ts_def = TOOLSETS.get(ts_name)
+            if ts_def:
+                all_expanded_tools.update(ts_def.get("tools", []))
+
+        for ts_name, ts_def in TOOLSETS.items():
+            if ts_name in blocked_toolset_names or ts_name in composite_names:
+                continue
+            ts_tools = set(ts_def.get("tools", []))
+            if ts_tools and ts_tools.issubset(all_expanded_tools):
+                expanded_set.add(ts_name)
+
+    result = list(dict.fromkeys(clean + sorted(expanded_set)))
+    return [t for t in result if t not in blocked_toolset_names]
 
 
 def _build_child_progress_callback(

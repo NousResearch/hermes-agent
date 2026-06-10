@@ -303,6 +303,36 @@ def test_observed_group_context_wraps_multimodal_current_message_without_mutatin
     assert wrapped[1] == original[1]
 
 
+def test_observed_group_context_marks_observed_audio_transcript_as_available():
+    from gateway.run import _wrap_current_message_with_observed_context
+
+    wrapped = _wrap_current_message_with_observed_context(
+        "[Bob|222]\nconsegue acessar esse audio que estou respondendo?",
+        (
+            "[Alice|111]\n"
+            "[audio 'voice.ogg' saved at: /tmp/audio.ogg]\n\n"
+            '[Observed audio transcript: "conteudo do audio" (path: /tmp/audio.ogg)]'
+        ),
+    )
+
+    assert "conteudo do audio" in wrapped
+    assert "The user sent a voice message" in wrapped
+    assert "Here's what they said: \"conteudo do audio\"" in wrapped
+    assert "Use the transcription above as the audio content" in wrapped
+    assert "[audio 'voice.ogg' saved at:" not in wrapped
+    assert "Observed audio transcript:" not in wrapped
+    assert not wrapped.startswith("[Observed Telegram group context")
+    assert wrapped.find("conteudo do audio") < wrapped.find("consegue acessar esse audio")
+
+
+def test_observed_audio_transcript_turn_persists_like_voice_message():
+    from gateway.run import _should_persist_clean_observed_message
+
+    assert _should_persist_clean_observed_message("[Alice]\nside chatter", None) is True
+    assert _should_persist_clean_observed_message("[Alice]\nside chatter", []) is True
+    assert _should_persist_clean_observed_message("[Alice]\n[audio saved]", ["transcrito"]) is False
+
+
 def test_observed_group_context_replays_normally_without_telegram_prompt():
     from gateway.run import _build_gateway_agent_history
 

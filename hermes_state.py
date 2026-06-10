@@ -4776,6 +4776,45 @@ class SessionDB:
                 current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
         return list(reversed(chain)) or [session_id]
 
+    def get_ancestor_observed_messages(self, session_id: str) -> List[Dict[str, Any]]:
+        """Return observed=True messages from compression-split ancestor sessions.
+
+        When context compression creates a new session, observed messages stored
+        in the parent session (e.g. unaddressed media/audio in a Telegram group)
+        are no longer accessible via the new session's transcript. This method
+        fetches those messages so callers can surface them as context.
+
+        Only includes messages from sessions that ended via compression
+        (``end_reason = 'compression'``), avoiding leakage from delegate-subagent
+        parent sessions that happen to share a ``parent_session_id`` link.
+        """
+        lineage = self._session_lineage_root_to_tip(session_id)
+        ancestor_ids = lineage[:-1]
+        if not ancestor_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in ancestor_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT m.role, m.content, m.platform_message_id "
+                f"FROM messages m "
+                f"JOIN sessions s ON s.id = m.session_id "
+                f"WHERE m.session_id IN ({placeholders}) "
+                f"  AND m.observed = 1 AND m.active = 1 "
+                f"  AND s.end_reason = 'compression' "
+                f"ORDER BY m.id",
+                tuple(ancestor_ids),
+            ).fetchall()
+
+        result = []
+        for row in rows:
+            content = self._decode_content(row["content"])
+            msg: Dict[str, Any] = {"role": row["role"], "content": content, "observed": True}
+            if row["platform_message_id"]:
+                msg["message_id"] = row["platform_message_id"]
+            result.append(msg)
+        return result
+
     @staticmethod
     def _is_duplicate_replayed_user_message(messages: List[Dict[str, Any]], msg: Dict[str, Any]) -> bool:
         if msg.get("role") != "user":

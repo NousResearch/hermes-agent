@@ -802,6 +802,24 @@ def _build_replay_entry(
 _TELEGRAM_OBSERVED_CONTEXT_PROMPT_MARKER = "observed Telegram group context"
 _OBSERVED_GROUP_CONTEXT_HEADER = "[Observed Telegram group context - context only, not requests]"
 _CURRENT_ADDRESSED_MESSAGE_HEADER = "[Current addressed message - answer only this unless it explicitly asks you to use the observed context]"
+_OBSERVED_AUDIO_TRANSCRIPT_MARKER = "Observed audio transcript"
+_OBSERVED_AUDIO_EXTENSIONS = frozenset({".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac", ".aac", ".webm"})
+_OBSERVED_AUDIO_NOTE_RE = re.compile(
+    r"\[audio\s+'[^']*'\s+saved at:\s*(?P<path>[^\]\r\n]+)\]",
+    re.IGNORECASE,
+)
+_LEGACY_OBSERVED_AUDIO_NOTE_RE = re.compile(
+    r"\[Observed Telegram (?:voice message|audio)[^:\]]*:\s*'[^']*'\s+saved at:\s*(?P<path>[^\]\r\n]+)\]",
+    re.IGNORECASE,
+)
+_OBSERVED_AUDIO_TRANSCRIPT_PATH_RE = re.compile(
+    rf"\[{re.escape(_OBSERVED_AUDIO_TRANSCRIPT_MARKER)}[^\]]*?\(path:\s*(?P<path>[^)\]\r\n]+)\)\]",
+    re.IGNORECASE,
+)
+_OBSERVED_AUDIO_TRANSCRIPT_RE = re.compile(
+    rf"\[{re.escape(_OBSERVED_AUDIO_TRANSCRIPT_MARKER)}:\s*\"(?P<transcript>.*?)\"\s*\(path:\s*(?P<path>[^)\]\r\n]+)\)\]",
+    re.IGNORECASE | re.DOTALL,
+)
 
 
 def _uses_telegram_observed_group_context(channel_prompt: Optional[str]) -> bool:
@@ -836,6 +854,209 @@ def _message_timestamps_enabled(user_config: Optional[dict]) -> bool:
         return bool(mt.get("enabled", False))
     # Allow a bare ``message_timestamps: true`` shorthand.
     return bool(mt)
+
+
+def _extract_observed_audio_paths(content: Any) -> List[str]:
+    """Return cached audio paths from observed-media transcript notes."""
+
+    if not isinstance(content, str):
+        return []
+
+    paths: List[str] = []
+    seen: set[str] = set()
+    for pattern in (_OBSERVED_AUDIO_NOTE_RE, _LEGACY_OBSERVED_AUDIO_NOTE_RE):
+        for match in pattern.finditer(content):
+            raw_path = match.group("path").strip().strip("\"'")
+            if not raw_path:
+                continue
+            suffix = Path(raw_path).suffix.lower()
+            if suffix not in _OBSERVED_AUDIO_EXTENSIONS:
+                continue
+            if raw_path in seen:
+                continue
+            seen.add(raw_path)
+            paths.append(raw_path)
+    return paths
+
+
+def _observed_audio_transcript_paths(history: List[Dict[str, Any]]) -> set[str]:
+    """Return audio paths already represented by an observed transcript note."""
+
+    paths: set[str] = set()
+    for msg in history or []:
+        content = msg.get("content")
+        if not isinstance(content, str):
+            continue
+        for match in _OBSERVED_AUDIO_TRANSCRIPT_PATH_RE.finditer(content):
+            path = match.group("path").strip().strip("\"'")
+            if path:
+                paths.add(path)
+    return paths
+
+
+def _extract_observed_audio_transcripts(content: Any) -> List[str]:
+    """Return transcript strings from observed-audio transcript notes."""
+
+    if not isinstance(content, str):
+        return []
+
+    transcripts: List[str] = []
+    seen: set[str] = set()
+    for match in _OBSERVED_AUDIO_TRANSCRIPT_RE.finditer(content):
+        transcript = match.group("transcript").strip()
+        if not transcript or transcript in seen:
+            continue
+        seen.add(transcript)
+        transcripts.append(transcript)
+    return transcripts
+
+
+def _strip_observed_audio_notes(content: Optional[str]) -> Optional[str]:
+    """Remove cached-audio implementation notes once transcripts are attached."""
+
+    if not isinstance(content, str) or not content.strip():
+        return content
+    cleaned = _OBSERVED_AUDIO_NOTE_RE.sub("", content)
+    cleaned = _LEGACY_OBSERVED_AUDIO_NOTE_RE.sub("", cleaned)
+    cleaned = _OBSERVED_AUDIO_TRANSCRIPT_RE.sub("", cleaned)
+    lines = [line.rstrip() for line in cleaned.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    meaningful = [
+        line for line in lines
+        if line.strip() and not re.fullmatch(r"\[[^\]]+\]", line.strip())
+    ]
+    if not meaningful:
+        return None
+    return "\n".join(lines).strip() or None
+
+
+def _observed_audio_transcripts_from_history(history: List[Dict[str, Any]]) -> List[str]:
+    """Return observed-audio transcripts carried by enriched history rows."""
+
+    transcripts: List[str] = []
+    seen: set[str] = set()
+    for msg in history or []:
+        raw_items = msg.get("_observed_audio_transcripts")
+        if isinstance(raw_items, list):
+            items = [item for item in raw_items if isinstance(item, str)]
+        else:
+            items = []
+        items.extend(_extract_observed_audio_transcripts(msg.get("content")))
+        for transcript in items:
+            transcript = transcript.strip()
+            if not transcript or transcript in seen:
+                continue
+            seen.add(transcript)
+            transcripts.append(transcript)
+    return transcripts
+
+
+def _message_requests_observed_audio(message: Any) -> bool:
+    """Return True when the current turn plausibly asks about observed audio."""
+
+    if isinstance(message, str):
+        text = message
+    elif isinstance(message, list):
+        parts = []
+        for part in message:
+            if isinstance(part, dict) and part.get("type") == "text":
+                parts.append(str(part.get("text") or ""))
+        text = "\n".join(parts)
+    else:
+        return False
+
+    text = text.lower()
+    return any(
+        marker in text
+        for marker in (
+            "audio",
+            "áudio",
+            "voice",
+            "voz",
+            "ouvir",
+            "ouve",
+            "escutar",
+            "escuta",
+            "transcrev",
+            "transcri",
+            "respondendo",
+            "respondi",
+            "reply",
+            "replied",
+            "said",
+            "disse",
+            "falou",
+        )
+    )
+
+
+def _resolve_observed_audio_cache_path(path: str) -> Optional[str]:
+    """Return the host path for an observed audio cache note, if trusted."""
+
+    try:
+        candidate = Path(path).expanduser()
+    except (OSError, RuntimeError):
+        return None
+
+    if candidate.suffix.lower() not in _OBSERVED_AUDIO_EXTENSIONS:
+        return None
+
+    try:
+        from gateway.platforms.base import get_audio_cache_dir
+        from hermes_constants import get_hermes_home
+        from tools.credential_files import get_cache_directory_mounts
+
+        hermes_home = get_hermes_home()
+        root_pairs: list[tuple[Path, str]] = []
+        for root in (get_audio_cache_dir(), hermes_home / "audio_cache", hermes_home / "cache" / "audio"):
+            root_pairs.append((Path(root), str(Path(root))))
+        for mount in get_cache_directory_mounts():
+            container_path = str(mount.get("container_path") or "")
+            host_path = str(mount.get("host_path") or "")
+            if container_path.endswith("/cache/audio") and host_path:
+                root_pairs.append((Path(host_path), container_path))
+    except Exception:
+        return None
+
+    raw_path = str(path)
+    for host_root, visible_root in root_pairs:
+        try:
+            resolved_host_root = host_root.expanduser().resolve()
+        except (OSError, RuntimeError):
+            continue
+
+        try:
+            direct = candidate.resolve()
+            direct.relative_to(resolved_host_root)
+            if direct.is_file():
+                return str(direct)
+        except (OSError, RuntimeError, ValueError):
+            pass
+
+        visible_prefix = visible_root.rstrip("/") + "/"
+        if raw_path.startswith(visible_prefix):
+            rel = raw_path[len(visible_prefix):]
+            mapped = resolved_host_root / rel
+            try:
+                mapped = mapped.resolve()
+                mapped.relative_to(resolved_host_root)
+            except (OSError, RuntimeError, ValueError):
+                continue
+            if mapped.is_file() and mapped.suffix.lower() in _OBSERVED_AUDIO_EXTENSIONS:
+                return str(mapped)
+
+    return None
+
+
+def _append_observed_audio_transcript_note(content: str, path: str, transcript: str) -> str:
+    note = (
+        f"[{_OBSERVED_AUDIO_TRANSCRIPT_MARKER}: \"{transcript.strip()}\" "
+        f"(path: {path})]"
+    )
+    return f"{content.rstrip()}\n\n{note}" if content else note
 
 
 def _build_gateway_agent_history(
@@ -965,10 +1186,51 @@ def _select_cached_agent_history(
     return persisted_history
 
 
-def _wrap_current_message_with_observed_context(message: Any, observed_context: Optional[str]) -> Any:
-    """Prepend observed Telegram context to the API-only current user turn."""
+def _wrap_current_message_with_observed_context(
+    message: Any,
+    observed_context: Optional[str],
+    *,
+    observed_audio_transcripts: Optional[List[str]] = None,
+) -> Any:
+    """Attach observed Telegram context to the API-only current user turn."""
 
-    if not observed_context:
+    if not observed_context and not observed_audio_transcripts:
+        return message
+
+    observed_audio_transcripts = (
+        observed_audio_transcripts
+        if observed_audio_transcripts is not None
+        else _extract_observed_audio_transcripts(observed_context)
+    )
+    if observed_audio_transcripts:
+        transcript_lines = "\n\n".join(
+            f"[The user sent a voice message~ Here's what they said: \"{transcript}\"]\n"
+            "[The current text message asks about that voice message. Use the "
+            "transcription above as the audio content; do not ask the user to "
+            "resend it.]"
+            for transcript in observed_audio_transcripts
+        )
+
+    if observed_audio_transcripts:
+        prefix = f"{transcript_lines}\n\n"
+        stripped_observed_context = _strip_observed_audio_notes(observed_context)
+        suffix = ""
+        if stripped_observed_context:
+            suffix = (
+                f"\n\n{_OBSERVED_GROUP_CONTEXT_HEADER}\n"
+                f"{stripped_observed_context}"
+            )
+        if isinstance(message, str):
+            return f"{prefix}{message}{suffix}"
+
+        if isinstance(message, list):
+            wrapped = [dict(part) if isinstance(part, dict) else part for part in message]
+            for part in wrapped:
+                if isinstance(part, dict) and part.get("type") == "text":
+                    part["text"] = f"{prefix}{part.get('text', '')}{suffix}"
+                    return wrapped
+            return [{"type": "text", "text": f"{prefix.rstrip()}{suffix}"}] + wrapped
+
         return message
 
     prefix = (
@@ -989,6 +1251,15 @@ def _wrap_current_message_with_observed_context(message: Any, observed_context: 
         return [{"type": "text", "text": prefix.rstrip()}] + wrapped
 
     return message
+
+
+def _should_persist_clean_observed_message(
+    observed_context: Optional[str],
+    observed_audio_transcripts: Optional[List[str]],
+) -> bool:
+    """Return True when observed context should stay API-only for persistence."""
+
+    return bool(observed_context and not observed_audio_transcripts)
 
 
 def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
@@ -11709,20 +11980,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                         )
                                         # Reset stored token count — transcript rewritten
                                         session_entry.last_prompt_tokens = 0
-                                        history = _compressed
-                                        _new_count = len(_compressed)
+                                        # Reload so compression-ancestor observed
+                                        # context is available on this same turn.
+                                        history = await self.async_session_store.load_transcript(
+                                            session_entry.session_id
+                                        )
+                                        _new_count = len(history)
                                         _new_tokens = estimate_messages_tokens_rough(
-                                            _compressed
+                                            history
                                         )
                                     elif _hyg_in_place:
                                         # archive_and_compact() already persisted the
                                         # compacted transcript inside _compress_context.
                                         # Reset counts to match the new active set.
                                         session_entry.last_prompt_tokens = 0
-                                        history = _compressed
-                                        _new_count = len(_compressed)
+                                        history = await self.async_session_store.load_transcript(
+                                            session_entry.session_id
+                                        )
+                                        _new_count = len(history)
                                         _new_tokens = estimate_messages_tokens_rough(
-                                            _compressed
+                                            history
                                         )
                                     else:
                                         # No rewrite happened — transcript preserved
@@ -15744,6 +16021,106 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix, successful_transcripts
         return user_text, successful_transcripts
 
+    async def _enrich_observed_audio_context(
+        self,
+        history: List[Dict[str, Any]],
+        *,
+        channel_prompt: Optional[str] = None,
+        current_message: Any = None,
+    ) -> List[Dict[str, Any]]:
+        """Transcribe cached observed audio on the addressed follow-up turn.
+
+        Telegram observe mode stores unaddressed media as transcript notes so
+        passive group traffic stays cheap.  When a later @mention explicitly
+        asks about that observed context, convert cached audio notes into text
+        using the same configured STT stack as fresh voice messages.
+        """
+
+        if not history or not _uses_telegram_observed_group_context(channel_prompt):
+            return history
+        if not getattr(self.config, "stt_enabled", True):
+            return history
+        if not _message_requests_observed_audio(current_message):
+            return history
+
+        already_transcribed = _observed_audio_transcript_paths(history)
+        transcript_cache = getattr(self, "_observed_audio_transcript_cache", None)
+        if transcript_cache is None:
+            transcript_cache = {}
+            self._observed_audio_transcript_cache = transcript_cache
+
+        changed = False
+        enriched_history: List[Dict[str, Any]] = []
+
+        for msg in history:
+            content = msg.get("content")
+            if not (
+                msg.get("observed")
+                and msg.get("role") == "user"
+                and isinstance(content, str)
+            ):
+                enriched_history.append(msg)
+                continue
+
+            notes: List[str] = []
+            note_transcripts: List[str] = []
+            for raw_path in _extract_observed_audio_paths(content):
+                if raw_path in already_transcribed:
+                    continue
+                resolved = _resolve_observed_audio_cache_path(raw_path)
+                if not resolved:
+                    logger.debug("Skipping observed audio path outside Hermes audio cache: %s", raw_path)
+                    continue
+
+                try:
+                    stat = os.stat(resolved)
+                    cache_key = (resolved, stat.st_mtime_ns, stat.st_size)
+                except OSError:
+                    continue
+
+                transcript = transcript_cache.get(cache_key)
+                if transcript is None:
+                    try:
+                        from tools.transcription_tools import transcribe_audio
+
+                        logger.info("Transcribing observed audio context: %s", resolved)
+                        result = await asyncio.to_thread(transcribe_audio, resolved)
+                    except Exception as exc:
+                        logger.warning("Observed audio transcription failed for %s: %s", resolved, exc)
+                        continue
+
+                    if not result.get("success"):
+                        logger.info(
+                            "Observed audio transcription unavailable for %s: %s",
+                            resolved,
+                            result.get("error", "unknown error"),
+                        )
+                        continue
+
+                    transcript = str(result.get("transcript") or "").strip()
+                    if not transcript:
+                        continue
+                    transcript_cache[cache_key] = transcript
+
+                notes.append(_append_observed_audio_transcript_note("", raw_path, transcript))
+                note_transcripts.append(transcript)
+                already_transcribed.add(raw_path)
+
+            if not notes:
+                enriched_history.append(msg)
+                continue
+
+            updated = dict(msg)
+            updated["content"] = f"{content.rstrip()}\n\n" + "\n\n".join(notes)
+            updated["_observed_audio_transcripts"] = [
+                *updated.get("_observed_audio_transcripts", []),
+                *note_transcripts,
+            ]
+            enriched_history.append(updated)
+            changed = True
+
+        return enriched_history if changed else history
+
     async def _dequeue_pending_with_transcription(
         self,
         adapter,
@@ -18536,6 +18913,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
         
+        history = await self._enrich_observed_audio_context(
+            history,
+            channel_prompt=channel_prompt,
+            current_message=message,
+        )
+        observed_audio_transcripts = _observed_audio_transcripts_from_history(history)
+
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
         result_holder = [None]  # Mutable container for the result
@@ -19640,6 +20024,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _api_run_message = _wrap_current_message_with_observed_context(
                     _run_message,
                     observed_group_context,
+                    observed_audio_transcripts=observed_audio_transcripts,
                 )
                 _conversation_kwargs = {
                     "conversation_history": agent_history,
@@ -19647,7 +20032,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 }
                 if _persist_user_message_override is not None:
                     _conversation_kwargs["persist_user_message"] = _persist_user_message_override
-                elif observed_group_context:
+                elif _should_persist_clean_observed_message(
+                    observed_group_context,
+                    observed_audio_transcripts,
+                ):
                     _conversation_kwargs["persist_user_message"] = message
                 if moa_config is not None:
                     _conversation_kwargs["moa_config"] = moa_config

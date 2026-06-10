@@ -744,6 +744,86 @@ class TestLoadTranscriptDBOnly:
         assert result[0]["content"] == "db-q"
         assert result[1]["content"] == "db-a"
 
+    def test_load_transcript_keeps_messages_when_db_lacks_ancestor_helper(self, tmp_path):
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = MagicMock(spec=["get_messages_as_conversation"])
+        store._db.get_messages_as_conversation.return_value = [
+            {"role": "user", "content": "db-q"},
+        ]
+
+        result = store.load_transcript("session_without_helper")
+
+        assert result == [{"role": "user", "content": "db-q"}]
+
+    def test_load_transcript_prepends_observed_compression_ancestors(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+
+        parent = "parent_session"
+        child = "child_session"
+        store._db.create_session(session_id=parent, source="gateway", model="m")
+        store._db.append_message(
+            session_id=parent,
+            role="user",
+            content="[Alice|111]\n[audio 'voice.ogg' saved at: /tmp/audio.ogg]",
+            observed=True,
+            platform_message_id="tg-1",
+        )
+        store._db.append_message(
+            session_id=parent,
+            role="user",
+            content="ordinary parent turn",
+            observed=False,
+        )
+        store._db.end_session(parent, "compression")
+        store._db.create_session(
+            session_id=child,
+            source="gateway",
+            model="m",
+            parent_session_id=parent,
+        )
+        store._db.append_message(session_id=child, role="user", content="current child turn")
+
+        result = store.load_transcript(child)
+
+        assert [msg["content"] for msg in result] == [
+            "[Alice|111]\n[audio 'voice.ogg' saved at: /tmp/audio.ogg]",
+            "current child turn",
+        ]
+        assert result[0]["observed"] is True
+        assert result[0]["message_id"] == "tg-1"
+
+    def test_load_transcript_ignores_non_compression_parent_observed_messages(self, tmp_path, monkeypatch):
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+
+        parent = "parent_session"
+        child = "child_session"
+        store._db.create_session(session_id=parent, source="gateway", model="m")
+        store._db.append_message(
+            session_id=parent,
+            role="user",
+            content="delegated parent context",
+            observed=True,
+        )
+        store._db.end_session(parent, "user_exit")
+        store._db.create_session(
+            session_id=child,
+            source="gateway",
+            model="m",
+            parent_session_id=parent,
+        )
+        store._db.append_message(session_id=child, role="user", content="current child turn")
+
+        result = store.load_transcript(child)
+
+        assert [msg["content"] for msg in result] == ["current child turn"]
+
 
 class TestSessionStoreSwitchSession:
     """Regression coverage for gateway /resume session switching semantics."""

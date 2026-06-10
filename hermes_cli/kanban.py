@@ -29,6 +29,31 @@ from hermes_cli import kanban_swarm as ks
 from hermes_cli.profiles import get_active_profile_name, get_profile_dir, seed_profile_skills
 
 
+_PRIORITY_ALIASES: dict[str, int] = {
+    "high": 3, "h": 3,
+    "medium": 2, "m": 2,
+    "low": 1, "l": 1,
+}
+
+
+def _parse_priority(raw: str) -> int:
+    """Accept ``--priority high`` (string alias) **or** ``--priority 3`` (int).
+
+    ``3`` → high, ``2`` → medium, ``1`` → low, ``0`` → no tiebreaker.
+    Aliases are case-insensitive.
+    """
+    raw_lower = raw.lower().strip()
+    if raw_lower in _PRIORITY_ALIASES:
+        return _PRIORITY_ALIASES[raw_lower]
+    try:
+        return int(raw)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid priority {raw!r}: expected an integer (0-3) or a "
+            f"string alias ({', '.join(sorted(set(_PRIORITY_ALIASES), key=lambda v: _PRIORITY_ALIASES[v] or v))})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Small formatting helpers
 # ---------------------------------------------------------------------------
@@ -315,7 +340,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_create.add_argument("--branch", default=None,
                           help="Branch name for worktree tasks, e.g. wt/t6-wire")
     p_create.add_argument("--tenant", default=None, help="Tenant namespace")
-    p_create.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_create.add_argument("--priority", type=_parse_priority, default=0,
+                          help="Priority tiebreaker (3/high, 2/medium, 1/low, 0)"[:45])
     p_create.add_argument("--triage", action="store_true",
                           help="Park in triage — a specifier will flesh out the spec and promote to todo")
     p_create.add_argument("--idempotency-key", default=None,
@@ -379,7 +405,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_swarm.add_argument("--verifier", required=True, help="Verifier profile")
     p_swarm.add_argument("--synthesizer", required=True, help="Synthesizer/writer profile")
     p_swarm.add_argument("--tenant", default=None, help="Tenant namespace")
-    p_swarm.add_argument("--priority", type=int, default=0, help="Priority tiebreaker")
+    p_swarm.add_argument("--priority", type=_parse_priority, default=0,
+                         help="Priority tiebreaker (3/high, 2/medium, 1/low, 0)"[:45])
     p_swarm.add_argument("--created-by", default=None, help="Creator/anchor profile")
     p_swarm.add_argument("--idempotency-key", default=None, help="Dedup key for the root card")
     p_swarm.add_argument("--json", action="store_true", help="Emit JSON output")

@@ -133,6 +133,12 @@ THREAT_PATTERNS = [
     (r'\$HOME/\.hermes/\.env|\~/\.hermes/\.env',
      "hermes_env_access", "critical", "exfiltration",
      "directly references Hermes secrets file"),
+    (r'\$HOME/\.hermes/(auth\.json|sessions|logs|memories|memory|profiles/[^\s/]+/(?:auth\.json|sessions|logs|memories|memory))|\~/\.hermes/(auth\.json|sessions|logs|memories|memory|profiles/[^\s/]+/(?:auth\.json|sessions|logs|memories|memory))',
+     "hermes_private_data_access", "critical", "exfiltration",
+     "directly references Hermes private auth/session/memory data"),
+    (r'\.hermes/(auth\.json|sessions|logs|memories|memory)',
+     "hermes_private_data_relative", "high", "exfiltration",
+     "references Hermes private auth/session/memory paths"),
     # Match `cat <secrets-file>` (reading credentials) but NOT `cat > <file>`
     # or `cat >> <file>`, which are output redirections that WRITE a file
     # (e.g. a setup doc telling the user to write their own keys into their

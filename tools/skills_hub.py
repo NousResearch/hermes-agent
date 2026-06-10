@@ -3497,7 +3497,18 @@ def _load_hermes_index() -> Optional[dict]:
 
     # Fetch from docs site
     try:
-        resp = httpx.get(HERMES_INDEX_URL, timeout=15, follow_redirects=True)
+        # Vercel/GitHub Pages may serve this large JSON with brotli.  Some
+        # brotlicffi/httpx combinations in uv-tool installs fail decoding that
+        # response, which makes the index look unavailable and forces the CLI
+        # down the much slower multi-registry fallback path.  Ask for gzip/plain
+        # encodings instead; the payload is still cacheable and avoids the
+        # decoder-specific failure mode.
+        resp = httpx.get(
+            HERMES_INDEX_URL,
+            timeout=15,
+            follow_redirects=True,
+            headers={"Accept-Encoding": "gzip, deflate"},
+        )
         if resp.status_code != 200:
             logger.debug("Hermes index fetch returned %d", resp.status_code)
             return _load_stale_index_cache()
@@ -3774,8 +3785,9 @@ def parallel_search_sources(
     if not active:
         return all_results, source_counts, timed_out_ids
 
-    with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
-        futures = {}
+    pool = ThreadPoolExecutor(max_workers=min(len(active), 8))
+    futures = {}
+    try:
         for src in active:
             lim = per_source_limits.get(src.source_id(), 50)
             fut = pool.submit(_search_one_source, src, query, lim)
@@ -3800,6 +3812,12 @@ def parallel_search_sources(
                     "Skills browse timed out waiting for: %s",
                     ", ".join(timed_out_ids),
                 )
+    finally:
+        # ThreadPoolExecutor.__exit__ always waits for running workers, which
+        # defeats the overall timeout when a remote registry stalls.  Search is
+        # best-effort, so return completed sources promptly and abandon the
+        # stragglers.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     return all_results, source_counts, timed_out_ids
 

@@ -2201,3 +2201,65 @@ class TestInstallPathSafety:
 
         assert not (skills_dir / "bad-skill" / "leak.txt").exists()
         assert secret.read_text() == "data exfiltration payload\n"
+
+
+# ---------------------------------------------------------------------------
+# Hermes index fetch / parallel source timeout hardening
+# ---------------------------------------------------------------------------
+
+
+def test_load_hermes_index_requests_non_brotli_encoding(monkeypatch, tmp_path):
+    import tools.skills_hub as hub
+
+    calls = {}
+
+    class Resp:
+        status_code = 200
+
+        def json(self):
+            return {"skills": []}
+
+    def fake_get(url, **kwargs):
+        calls.update(kwargs)
+        return Resp()
+
+    monkeypatch.setattr(hub, "HERMES_INDEX_CACHE_FILE", tmp_path / "index.json")
+    monkeypatch.setattr(hub.httpx, "get", fake_get)
+
+    assert hub._load_hermes_index() == {"skills": []}
+    assert calls["headers"]["Accept-Encoding"] == "gzip, deflate"
+
+
+def test_parallel_search_sources_does_not_wait_on_executor_shutdown(monkeypatch):
+    import concurrent.futures
+    import tools.skills_hub as hub
+
+    shutdown_calls = []
+
+    class DummyExecutor:
+        def __init__(self, max_workers):
+            self.max_workers = max_workers
+
+        def submit(self, fn, *args, **kwargs):
+            fut = concurrent.futures.Future()
+            fut.set_result(fn(*args, **kwargs))
+            return fut
+
+        def shutdown(self, wait=True, cancel_futures=False):
+            shutdown_calls.append((wait, cancel_futures))
+
+    class Source:
+        def source_id(self):
+            return "dummy"
+
+        def search(self, query, limit=50):
+            return [SkillMeta("safe", "desc", "dummy", "dummy/safe", "community")]
+
+    monkeypatch.setattr(concurrent.futures, "ThreadPoolExecutor", DummyExecutor)
+
+    results, counts, timed_out = hub.parallel_search_sources([Source()], "safe", overall_timeout=1)
+
+    assert [r.name for r in results] == ["safe"]
+    assert counts == {"dummy": 1}
+    assert timed_out == []
+    assert shutdown_calls == [(False, True)]

@@ -875,9 +875,10 @@ def test_install_deps_autosets_uv_link_mode_on_termux(monkeypatch):
     monkeypatch.setattr(hm, "_run_install_with_heartbeat", fake_run)
 
     env = {"PATH": "/usr/bin"}
-    hm._install_python_dependencies_with_optional_fallback(
-        ["uv", "pip"], env=env
-    )
+    with pytest.raises(subprocess.CalledProcessError):
+        hm._install_python_dependencies_with_optional_fallback(
+            ["uv", "pip"], env=env
+        )
 
     assert env.get("UV_LINK_MODE") == "copy", (
         f"UV_LINK_MODE should be auto-set on Termux, got env={env}"
@@ -897,9 +898,10 @@ def test_install_deps_preserves_user_uv_link_mode(monkeypatch):
     monkeypatch.setattr(hm, "_run_install_with_heartbeat", fake_run)
 
     env = {"UV_LINK_MODE": "symlink"}
-    hm._install_python_dependencies_with_optional_fallback(
-        ["uv", "pip"], env=env
-    )
+    with pytest.raises(subprocess.CalledProcessError):
+        hm._install_python_dependencies_with_optional_fallback(
+            ["uv", "pip"], env=env
+        )
 
     assert env["UV_LINK_MODE"] == "symlink", (
         f"User-set UV_LINK_MODE should be preserved, got env={env}"
@@ -921,9 +923,10 @@ def test_install_deps_passes_no_build_isolation_flag(monkeypatch):
 
     monkeypatch.setattr(hm, "_run_install_with_heartbeat", fake_run)
 
-    hm._install_python_dependencies_with_optional_fallback(
-        ["uv", "pip"], no_build_isolation=True
-    )
+    with pytest.raises(subprocess.CalledProcessError):
+        hm._install_python_dependencies_with_optional_fallback(
+            ["uv", "pip"], no_build_isolation=True
+        )
 
     assert "--no-build-isolation" in captured["cmd"], (
         f"--no-build-isolation should appear in install cmd, got: {captured['cmd']}"
@@ -945,7 +948,8 @@ def test_install_deps_no_build_isolation_off_by_default(monkeypatch):
 
     monkeypatch.setattr(hm, "_run_install_with_heartbeat", fake_run)
 
-    hm._install_python_dependencies_with_optional_fallback(["uv", "pip"])
+    with pytest.raises(subprocess.CalledProcessError):
+        hm._install_python_dependencies_with_optional_fallback(["uv", "pip"])
 
     assert "--no-build-isolation" not in captured["cmd"], (
         f"--no-build-isolation should NOT be in default install cmd, got: {captured['cmd']}"

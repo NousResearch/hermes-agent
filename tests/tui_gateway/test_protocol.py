@@ -1968,7 +1968,9 @@ def _write_legacy_snapshot(session_dir, fname, label="legacy run", **index_extra
     return entry
 
 
-def _write_task_snapshot(session_dir, task_id, goal="child goal", finished_at=300.0):
+def _write_task_snapshot(
+    session_dir, task_id, goal="child goal", finished_at=300.0, result=None
+):
     """One registry-completed line, as AgentTaskRegistry.complete() appends."""
     snap = {
         "task_id": task_id,
@@ -1982,7 +1984,7 @@ def _write_task_snapshot(session_dir, task_id, goal="child goal", finished_at=30
         "status": "succeeded",
         "tool_count": 3,
         "last_tool": "bash",
-        "result": None,
+        "result": result,
         "session_id": session_dir.name,
     }
     with (session_dir / "_tasks.jsonl").open("a", encoding="utf-8") as f:
@@ -2070,6 +2072,124 @@ def test_spawn_tree_list_skips_corrupt_tasks_lines(server, spawn_home):
     entries = _spawn_tree_list(server)
 
     assert sorted(e["task_id"] for e in entries) == ["sa-0-aaaa", "sa-1-bbbb"]
+
+
+# ── spawn_tree.load: legacy snapshots + registry _tasks.jsonl (gap 3) ──
+
+
+def _spawn_tree_load(server, path, **extra):
+    return server.handle_request({
+        "id": "r-st-load",
+        "method": "spawn_tree.load",
+        "params": {"path": str(path), **extra},
+    })
+
+
+def test_spawn_tree_load_legacy_snapshot_unchanged(server, spawn_home):
+    """Pin: a legacy snapshot path flows through the exact pre-existing code
+    path — the stored payload comes back verbatim."""
+    d = _spawn_session_dir(spawn_home)
+    _write_legacy_snapshot(d, "20260610T000000.json")
+
+    resp = _spawn_tree_load(server, d / "20260610T000000.json")
+
+    assert "error" not in resp
+    assert resp["result"] == {"session_id": "sess-1", "subagents": [{}, {}]}
+
+
+def test_spawn_tree_load_ledger_returns_last_snapshot(server, spawn_home):
+    """Loading the _tasks.jsonl path a registry-only list entry carries
+    synthesizes a legacy-shaped payload from the LAST ledger line."""
+    d = _spawn_session_dir(spawn_home)
+    _write_task_snapshot(d, "sa-0-aaaa", goal="first child", finished_at=300.0)
+    _write_task_snapshot(
+        d,
+        "sa-1-bbbb",
+        goal="second child",
+        finished_at=400.0,
+        result={
+            "task_id": "sa-1-bbbb",
+            "status": "succeeded",
+            "outputs": {"output": "rich answer text"},
+            "error": None,
+            "side_effects": [],
+        },
+    )
+
+    resp = _spawn_tree_load(server, d / "_tasks.jsonl")
+
+    assert "error" not in resp
+    payload = resp["result"]
+    assert set(payload) == {
+        "session_id", "started_at", "finished_at", "label", "subagents",
+        "task_id", "source",
+    }
+    assert payload["session_id"] == "sess-1"
+    assert payload["started_at"] == 250.0
+    assert payload["finished_at"] == 400.0
+    assert payload["label"] == "second child"
+    assert payload["task_id"] == "sa-1-bbbb"
+    assert payload["source"] == "registry"
+    # One node, the task itself — no fake children.
+    (sub,) = payload["subagents"]
+    assert sub["id"] == "sa-1-bbbb"
+    assert sub["parentId"] is None
+    assert sub["depth"] == 1
+    assert sub["goal"] == "second child"
+    assert sub["status"] == "completed"  # "succeeded" mapped to TUI vocabulary
+    assert sub["model"] == "test/model"
+    assert sub["toolCount"] == 3
+    assert sub["tools"] == ["bash"]
+    assert sub["startedAt"] == 250_000.0  # ms epoch, like live subagents
+    assert sub["durationSeconds"] == 150.0
+    assert sub["summary"] == "rich answer text"  # the rendered node body
+
+
+def test_spawn_tree_load_ledger_task_id_param_picks_record(server, spawn_home):
+    """An explicit task_id param selects that task's latest ledger line, not
+    the file's last line."""
+    d = _spawn_session_dir(spawn_home)
+    _write_task_snapshot(d, "sa-0-aaaa", goal="stale first write")
+    _write_task_snapshot(d, "sa-0-aaaa", goal="first child")  # later line wins
+    _write_task_snapshot(d, "sa-1-bbbb", goal="second child", finished_at=400.0)
+
+    resp = _spawn_tree_load(server, d / "_tasks.jsonl", task_id="sa-0-aaaa")
+
+    assert "error" not in resp
+    payload = resp["result"]
+    assert payload["task_id"] == "sa-0-aaaa"
+    assert payload["label"] == "first child"
+    assert payload["subagents"][0]["id"] == "sa-0-aaaa"
+
+    missing = _spawn_tree_load(server, d / "_tasks.jsonl", task_id="sa-9-zzzz")
+    assert missing["error"]["code"] == 5000
+
+
+def test_spawn_tree_load_ledger_skips_corrupt_lines(server, spawn_home):
+    """A corrupt trailing ledger line is skipped — the last VALID snapshot
+    loads, same lenient reads as spawn_tree.list."""
+    d = _spawn_session_dir(spawn_home)
+    _write_task_snapshot(d, "sa-0-aaaa", goal="only valid line")
+    with (d / "_tasks.jsonl").open("a", encoding="utf-8") as f:
+        f.write("{not json\n")
+
+    resp = _spawn_tree_load(server, d / "_tasks.jsonl")
+
+    assert "error" not in resp
+    assert resp["result"]["task_id"] == "sa-0-aaaa"
+    assert resp["result"]["label"] == "only valid line"
+
+
+def test_spawn_tree_load_missing_file_errors_gracefully(server, spawn_home):
+    """Missing files still produce the graceful 5000 error, never a crash —
+    both for legacy snapshot paths and for ledger paths."""
+    d = _spawn_session_dir(spawn_home)
+
+    legacy = _spawn_tree_load(server, d / "20260101T000000.json")
+    assert legacy["error"]["code"] == 5000
+
+    ledger = _spawn_tree_load(server, d / "_tasks.jsonl")
+    assert ledger["error"]["code"] == 5000
 
 
 def test_command_dispatch_queue_sends_message(server):

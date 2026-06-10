@@ -4618,6 +4618,90 @@ def _registry_task_entries(session_dir, legacy_entries: list[dict]) -> list[dict
         return []
 
 
+# Registry snapshot status -> the SubagentStatus vocabulary legacy snapshots
+# carry (ui-tui types.SubagentStatus).  "succeeded" is the only different
+# spelling; "partial" is the Q4 interrupted-mix aggregate, which the TUI
+# spells "interrupted".  Everything else ("failed", "running", ...) passes
+# through — the TUI normalizes values it doesn't know to a sane default.
+_SNAPSHOT_STATUS_TO_SUBAGENT = {"succeeded": "completed", "partial": "interrupted"}
+
+
+def _ledger_result_text(result) -> Optional[str]:
+    """Best-effort human text from a snapshot's rich result wire dict
+    ({task_id, status, outputs, error, side_effects} — see
+    adapters.result_to_wire_rich).  Prefers the plain ``outputs["output"]``
+    text, then the error message, then a compact JSON render of the outputs
+    bag so rich aggregates (e.g. delegate batches) aren't silently dropped."""
+    if not isinstance(result, dict):
+        return None
+    outputs = result.get("outputs")
+    if isinstance(outputs, dict):
+        text = outputs.get("output")
+        if isinstance(text, str) and text.strip():
+            return text
+    error = result.get("error")
+    if isinstance(error, dict):
+        msg = error.get("message")
+        if isinstance(msg, str) and msg.strip():
+            return msg
+    if isinstance(outputs, dict) and outputs:
+        try:
+            return json.dumps(outputs, ensure_ascii=False)[:2000]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _ledger_snapshot_to_tree(snap: dict, session_dir) -> dict:
+    """Synthesize a ``spawn_tree.save``-shaped payload from one registry
+    ledger snapshot (Step 6b deferred gap 3), so any client that renders a
+    legacy snapshot can load a registry-only list entry through the same
+    code.  The tree is the single completed task — no fake children."""
+    task_id = snap.get("task_id")
+    started_at = snap.get("started_at")
+    finished_at = snap.get("finished_at")
+    label = snap.get("goal") or snap.get("intent") or ""
+    status = snap.get("status")
+    subagent: dict = {
+        # Keys mirror the TUI's SubagentProgress (what spawn_tree.save
+        # persists in "subagents"); absent ones default client-side.
+        "id": task_id,
+        "parentId": snap.get("parent_task_id"),
+        "depth": snap.get("depth") or 0,
+        "index": 0,
+        "goal": label,
+        "status": _SNAPSHOT_STATUS_TO_SUBAGENT.get(status, status),
+        "toolCount": snap.get("tool_count") or 0,
+    }
+    if snap.get("model"):
+        subagent["model"] = snap["model"]
+    if snap.get("last_tool"):
+        # The ledger only records the LAST tool — an honest partial list.
+        subagent["tools"] = [snap["last_tool"]]
+    if isinstance(started_at, (int, float)):
+        # Subagent-level startedAt is ms epoch in the TUI (the top-level
+        # started_at below stays in seconds, like spawn_tree.save stores).
+        subagent["startedAt"] = float(started_at) * 1000.0
+        if isinstance(finished_at, (int, float)):
+            subagent["durationSeconds"] = max(float(finished_at - started_at), 0.0)
+    summary = _ledger_result_text(snap.get("result"))
+    if summary:
+        # `summary` is the field the TUI renders as the node body.
+        subagent["summary"] = summary
+    return {
+        # Exact spawn_tree.save payload shape, mapped from the snapshot.
+        "session_id": snap.get("session_id") or session_dir.name,
+        "started_at": float(started_at) if isinstance(started_at, (int, float)) else None,
+        "finished_at": finished_at or started_at or 0,
+        "label": label,
+        "subagents": [subagent],
+        # Additive keys, mirroring the registry list entries; clients that
+        # predate Step 6b ignore them.
+        "task_id": task_id,
+        "source": "registry",
+    }
+
+
 @method("spawn_tree.save")
 def _(rid, params: dict) -> dict:
     session_id = str(params.get("session_id") or "").strip()
@@ -4733,6 +4817,23 @@ def _(rid, params: dict) -> dict:
         resolved.relative_to(root)
     except (ValueError, OSError) as exc:
         return _err(rid, 4030, f"path outside spawn-trees root: {exc}")
+
+    # Step 6b deferred gap 3: registry-only list entries point "path" at the
+    # session's _tasks.jsonl ledger — multi-line JSONL the json.loads below
+    # can't parse whole.  Synthesize a legacy-shaped payload from the
+    # requested snapshot line instead (lenient line reads, corrupt lines
+    # skipped).  Legacy snapshot paths flow through the unchanged code below.
+    if resolved.name == _SPAWN_TREE_TASKS:
+        snapshots = _read_spawn_tree_tasks(resolved.parent)
+        task_id = str(params.get("task_id") or "").strip()
+        if task_id:
+            snapshots = [s for s in snapshots if s.get("task_id") == task_id]
+        if not snapshots:
+            what = f"task_id {task_id!r}" if task_id else "task snapshots"
+            return _err(rid, 5000, f"spawn_tree.load failed: no {what} in {resolved}")
+        # Later lines win — the ledger is append-only, so the last matching
+        # line is the latest snapshot (same rule as _registry_task_entries).
+        return _ok(rid, _ledger_snapshot_to_tree(snapshots[-1], resolved.parent))
 
     try:
         payload = json.loads(resolved.read_text(encoding="utf-8"))

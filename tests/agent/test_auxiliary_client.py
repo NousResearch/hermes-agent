@@ -3793,6 +3793,125 @@ class TestAuxUnhealthyCache:
             assert _is_provider_unhealthy("openrouter") is True
 
 
+# ---------------------------------------------------------------------------
+# auxiliary_is_nous stale-global reset (Nous tags leak regression)
+# ---------------------------------------------------------------------------
+
+class TestAuxiliaryIsNousStaleGlobalReset:
+    """Regression: a stale ``auxiliary_is_nous=True`` must not leak Nous tags.
+
+    ``auxiliary_is_nous`` is a module-level flag set by the auto-detection
+    chain when it lands on Nous Portal, and only reset inside
+    ``_resolve_auto()``. When a task resolves to an *explicit* provider
+    (e.g. ``auxiliary.title_generation.provider: opencode-zen``),
+    ``_resolve_auto()`` never runs, so a True value from a previous
+    auto→Nous call used to leak Nous Portal ``tags`` into the request body
+    (``_build_call_kwargs``: ``if provider == "nous" or auxiliary_is_nous``),
+    causing HTTP 400 'Extra inputs are not permitted, field: tags' on
+    non-Nous providers. call_llm()/async_call_llm() now reset the flag for
+    every non-auto resolution.
+    """
+
+    def _make_sync_client(self):
+        client = MagicMock()
+        client.base_url = "https://opencode.ai/zen/go/v1"
+        response = MagicMock()
+        client.chat.completions.create.return_value = response
+        return client, response
+
+    def test_sync_explicit_non_nous_provider_does_not_inherit_stale_nous_tags(
+        self, monkeypatch
+    ):
+        import agent.auxiliary_client as ac
+
+        # A previous call resolved via auto → Nous Portal and set the global.
+        monkeypatch.setattr(ac, "auxiliary_is_nous", True)
+
+        client, response = self._make_sync_client()
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "gemini-3-flash"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("opencode-zen", "gemini-3-flash", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._get_task_extra_body",
+            return_value={},
+        ):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is response
+        # The stale flag was reset for the explicit non-Nous provider...
+        assert ac.auxiliary_is_nous is False
+        # ...so no Nous Portal tags leaked into the outgoing request body.
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "tags" not in (kwargs.get("extra_body") or {})
+
+    @pytest.mark.asyncio
+    async def test_async_explicit_non_nous_provider_does_not_inherit_stale_nous_tags(
+        self, monkeypatch
+    ):
+        import agent.auxiliary_client as ac
+
+        monkeypatch.setattr(ac, "auxiliary_is_nous", True)
+
+        client = MagicMock()
+        client.base_url = "https://opencode.ai/zen/go/v1"
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(return_value=response)
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "gemini-3-flash"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("opencode-zen", "gemini-3-flash", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._get_task_extra_body",
+            return_value={},
+        ):
+            result = await async_call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is response
+        assert ac.auxiliary_is_nous is False
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "tags" not in (kwargs.get("extra_body") or {})
+
+    def test_sync_explicit_nous_provider_still_gets_portal_tags(self, monkeypatch):
+        """The reset must not strip tags from genuine explicit-Nous calls."""
+        import agent.auxiliary_client as ac
+        from agent.portal_tags import nous_portal_tags
+
+        monkeypatch.setattr(ac, "auxiliary_is_nous", False)
+
+        client, response = self._make_sync_client()
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "Hermes-4.5-405B"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("nous", "Hermes-4.5-405B", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._get_task_extra_body",
+            return_value={},
+        ):
+            result = call_llm(
+                task="title_generation",
+                messages=[{"role": "user", "content": "hello"}],
+            )
+
+        assert result is response
+        assert ac.auxiliary_is_nous is True
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert kwargs["extra_body"]["tags"] == nous_portal_tags()
+
+
 # ── auxiliary_max_tokens_param ──────────────────────────────────────────────
 
 

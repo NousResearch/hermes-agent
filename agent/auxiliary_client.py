@@ -42,6 +42,7 @@ Payment / credit exhaustion fallback:
 
 import contextlib
 import contextvars
+import functools
 import hashlib
 import inspect
 import json
@@ -6906,6 +6907,81 @@ def _obj_get(obj: Any, key: str, default: Any = None) -> Any:
     return value
 
 
+# ---------------------------------------------------------------------------
+# In-flight auxiliary call tracking
+# ---------------------------------------------------------------------------
+#
+# Process-wide registry of auxiliary LLM calls currently in flight, keyed by
+# task name.  Consumers (e.g. ContextCompressor with
+# ``compression.defer_while_aux_inflight``) use it to avoid scheduling heavy
+# auxiliary work — such as a large compression prefill — while other auxiliary
+# calls are running, because on single-accelerator local deployments
+# concurrent requests time-slice the GPU and can push each other past their
+# timeouts.  Counts span all sessions in the process (gateway included);
+# tracking covers the entire call, retries and fallbacks included.
+
+_INFLIGHT_AUX_LOCK = threading.Lock()
+_INFLIGHT_AUX_TASKS: Dict[str, int] = {}
+
+
+def _inflight_aux_begin(task: str) -> None:
+    if not task:
+        return
+    with _INFLIGHT_AUX_LOCK:
+        _INFLIGHT_AUX_TASKS[task] = _INFLIGHT_AUX_TASKS.get(task, 0) + 1
+
+
+def _inflight_aux_end(task: str) -> None:
+    if not task:
+        return
+    with _INFLIGHT_AUX_LOCK:
+        count = _INFLIGHT_AUX_TASKS.get(task, 0) - 1
+        if count > 0:
+            _INFLIGHT_AUX_TASKS[task] = count
+        else:
+            _INFLIGHT_AUX_TASKS.pop(task, None)
+
+
+def inflight_aux_count(exclude_tasks: Tuple[str, ...] = ()) -> int:
+    """Number of auxiliary LLM calls currently in flight, excluding ``exclude_tasks``.
+
+    No task is excluded by default.  In particular, ``compression`` counts:
+    a session checking ``should_compress()`` can never see its *own*
+    summarizer call (check and call are sequential within a turn), so any
+    in-flight compression belongs to another session — and concurrent
+    compression prefills are the heaviest contention source there is, the
+    primary thing the deferral gate exists to serialize.
+    """
+    with _INFLIGHT_AUX_LOCK:
+        return sum(
+            count for task, count in _INFLIGHT_AUX_TASKS.items()
+            if task not in exclude_tasks
+        )
+
+
+def _track_inflight_aux_sync(func):
+    @functools.wraps(func)
+    def wrapper(task: str = None, **kwargs):
+        _inflight_aux_begin(task)
+        try:
+            return func(task, **kwargs)
+        finally:
+            _inflight_aux_end(task)
+    return wrapper
+
+
+def _track_inflight_aux_async(func):
+    @functools.wraps(func)
+    async def wrapper(task: str = None, **kwargs):
+        _inflight_aux_begin(task)
+        try:
+            return await func(task, **kwargs)
+        finally:
+            _inflight_aux_end(task)
+    return wrapper
+
+
+@_track_inflight_aux_sync
 def call_llm(
     task: str = None,
     *,
@@ -7573,6 +7649,7 @@ def extract_content_or_reasoning(response) -> str:
     return ""
 
 
+@_track_inflight_aux_async
 async def async_call_llm(
     task: str = None,
     *,

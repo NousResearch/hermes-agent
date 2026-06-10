@@ -38,6 +38,12 @@ from typing import Any, Dict, List, Optional, Union
 # so they don't clutter the user's session history.
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
+# Maximum characters for a single bookend message content.  Compaction
+# summaries can be 50K+ characters; returning them via bookends defeats
+# the purpose of compression by reintroducing huge metadata into fresh
+# session prompts.
+_MAX_BOOKEND_CONTENT_LEN = 4000
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -105,6 +111,21 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     # Strip None values to keep payload tight, but always keep content
     # (absent content is meaningful — tool-call-only assistant turns).
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
+
+
+def _shape_bookend_message(m: Dict[str, Any]) -> Dict[str, Any]:
+    """Shape a bookend message, truncating content that exceeds the limit.
+
+    Compaction summaries and other generated metadata can be 50K+ characters.
+    Returning them via bookends defeats the purpose of compression by
+    reintroducing huge context into fresh session prompts.
+    """
+    shaped = _shape_message(m)
+    content = shaped.get("content")
+    if isinstance(content, str) and len(content) > _MAX_BOOKEND_CONTENT_LEN:
+        shaped["content"] = content[:_MAX_BOOKEND_CONTENT_LEN] + "\n... (truncated)"
+        shaped["_truncated"] = True
+    return shaped
 
 
 def _resolve_profile_db(profile: str):
@@ -471,9 +492,9 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
+            "bookend_start": [_shape_bookend_message(m) for m in (view.get("bookend_start") or [])],
             "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-            "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+            "bookend_end": [_shape_bookend_message(m) for m in (view.get("bookend_end") or [])],
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
         }

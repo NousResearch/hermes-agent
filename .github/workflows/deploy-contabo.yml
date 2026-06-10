@@ -387,6 +387,90 @@ jobs:
             fi
           fi
 
+          # ---- Fleet broker: give Hermes bounded host control ----------
+          # Hermes owns the fleet but lives in a container. This provisions an
+          # UNPRIVILEGED hermes-ops host user whose SSH key is forced to run ONLY
+          # the allowlisted broker (scripts/fleet_broker.py) — bounded docker /
+          # compose ops, never an arbitrary shell. The keypair is generated on
+          # the host (no manual key handling); the private key is dropped onto
+          # the gateway volume so the in-container `hermes fleet` client can
+          # reach the host over loopback ssh. Entirely additive and best-effort:
+          # any failure warns and the deploy proceeds (bots are unaffected).
+          (
+            set +e
+            FLEET_HOST_DIR=/opt/hermes/fleet
+            OPS_USER=hermes-ops
+            OPS_HOME=/home/$OPS_USER
+            KEYDIR="$FLEET_HOST_DIR/keys"
+
+            # 1. Unprivileged ops user in the docker group (no sudo). A real
+            #    shell is required for sshd to exec the forced command; the
+            #    forced command + restrictions are what bound it, not the shell.
+            if ! id "$OPS_USER" >/dev/null 2>&1; then
+              useradd -m -s /bin/bash -G docker "$OPS_USER" && echo "fleet: created $OPS_USER"
+            else
+              usermod -aG docker "$OPS_USER" 2>/dev/null || true
+            fi
+
+            # 2. Install the broker (root-owned, ops cannot modify its own
+            #    allowlist) + the host-path config it reads.
+            install -d -m 0755 "$FLEET_HOST_DIR"
+            install -m 0755 /opt/hermes/app/scripts/fleet_broker.py "$FLEET_HOST_DIR/fleet_broker.py"
+            cat > "$FLEET_HOST_DIR/fleet.conf" <<CONF
+          VOL_SRC=$VOL_SRC
+          GATEWAY_CONTAINER=hermes
+          CLIENTS_COMPOSE=$VOL_SRC/docker-compose.clients.yml
+          CONF
+            chmod 0644 "$FLEET_HOST_DIR/fleet.conf"
+            touch "$FLEET_HOST_DIR/audit.log"
+            chown "$OPS_USER" "$FLEET_HOST_DIR/audit.log"; chmod 0640 "$FLEET_HOST_DIR/audit.log"
+
+            # 3. Generate the broker keypair once (idempotent across deploys).
+            install -d -m 0700 "$KEYDIR"
+            if [ ! -f "$KEYDIR/id_ed25519" ]; then
+              ssh-keygen -t ed25519 -N '' -C 'hermes-fleet' -f "$KEYDIR/id_ed25519" >/dev/null \
+                && echo "fleet: generated broker keypair"
+            fi
+
+            # 4. Force the key to the broker. Reset authorized_keys each deploy
+            #    (single key) so the restrictions are always current.
+            install -d -m 0700 "$OPS_HOME/.ssh"; chown "$OPS_USER:$OPS_USER" "$OPS_HOME/.ssh"
+            printf '%s %s\n' \
+              "command=\"$FLEET_HOST_DIR/fleet_broker.py\",no-agent-forwarding,no-port-forwarding,no-X11-forwarding,no-user-rc,no-pty" \
+              "$(cat "$KEYDIR/id_ed25519.pub")" > "$OPS_HOME/.ssh/authorized_keys"
+            chown "$OPS_USER:$OPS_USER" "$OPS_HOME/.ssh/authorized_keys"
+            chmod 0600 "$OPS_HOME/.ssh/authorized_keys"
+
+            # 5. Hand the private key + host fingerprint to the container (the
+            #    same UID the gateway runs as, resolved live).
+            CUID=$(docker exec hermes id -u hermes 2>/dev/null || echo 10000)
+            CGID=$(docker exec hermes id -g hermes 2>/dev/null || echo 10000)
+            VOL_FLEET="$VOL_SRC/fleet"
+            install -d -m 0700 "$VOL_FLEET"
+            cp "$KEYDIR/id_ed25519" "$VOL_FLEET/id_ed25519"; chmod 0600 "$VOL_FLEET/id_ed25519"
+            ssh-keyscan -t ed25519 127.0.0.1 > "$VOL_FLEET/known_hosts" 2>/dev/null
+            chmod 0644 "$VOL_FLEET/known_hosts"
+            chown -R "$CUID:$CGID" "$VOL_FLEET"
+
+            # 6a. End-to-end proof: the EXACT path Hermes uses (in-container
+            #     client → volume key → loopback ssh → broker → docker ps).
+            if docker exec -u hermes -e HOME=/opt/data hermes \
+                 /opt/hermes/.venv/bin/python -m hermes_cli.fleet ps >/dev/null 2>&1; then
+              echo "fleet: ENABLED -- in-container client reached the host broker (ps OK)"
+            else
+              echo "fleet: WARN in-container client could not reach the broker (fleet ops unavailable; bots unaffected)"
+            fi
+            # 6b. Negative proof: an arbitrary command must be refused.
+            DENY=$(ssh -i "$KEYDIR/id_ed25519" -o StrictHostKeyChecking=accept-new \
+                     -o BatchMode=yes -o ConnectTimeout=10 "$OPS_USER@127.0.0.1" \
+                     'id; cat /etc/shadow' 2>&1)
+            if printf '%s' "$DENY" | grep -q 'denied'; then
+              echo "fleet: broker correctly DENIES non-allowlisted commands"
+            else
+              echo "fleet: WARN broker did not clearly deny an arbitrary command -- investigate: $DENY"
+            fi
+          ) || echo "fleet: WARN broker bootstrap hit an error (continuing; bots unaffected)"
+
           # ---- Registry match gate (Phase 2) ---------------------------
           # The "never run a bot twice" invariant, asserted post-health: the set
           # of per-profile gateways the SHARED container is actually running must

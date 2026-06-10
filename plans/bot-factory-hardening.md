@@ -179,3 +179,38 @@ real numbers to decide with.
 Phases 0–3 are pure hardening of what exists and have no business dependencies.
 Phase 4 needs the cost decision; everything before it makes that decision
 cheaper and reversible.
+
+## Phase 6 — Hermes owns the fleet (privileged orchestrator)
+
+Principle: **Hermes is the only actor that maintains the fleet** — it owns the
+code, spins new bots, and operates existing ones. Client bots stay unprivileged
+(consistent with the proxy lock: only Hermes reaches Claude).
+
+Two channels, both self-provisioned by the deploy (no manual key handling):
+
+1. **Code ownership — git-ops.** Hermes edits the repo and pushes to `main`; the
+   existing gated pipeline (`deploy-contabo.yml`: build → health gate →
+   proxy-lock gate) ships it. No new host surface.
+2. **Host fleet ops — a bounded SSH broker.** The deploy creates an
+   unprivileged `hermes-ops` host user whose SSH key is forced
+   (`command="…/fleet_broker.py"`, no-pty/no-forwarding) to run ONLY an
+   allowlisted set of `docker`/`compose` actions — never a shell. The broker
+   keypair is generated on the host and the private key dropped onto the gateway
+   volume; the in-container `hermes fleet` client
+   (`hermes_cli/fleet.py`, `python -m hermes_cli.fleet`) reaches it over loopback
+   ssh (the gateway runs `network_mode: host`). Every call is audited.
+
+Division of labor: the **registry-aware brain stays in-container** —
+`hermes fleet generate` runs the tested `compose_gen` to write
+`docker-compose.clients.yml` + `isolated.list` onto the volume; the host broker
+only runs `up`/`down`/`restart`/`apply`/`status`/`logs`/`ps` against those
+generated artifacts. This is what makes "graduate a client to its own container"
+(`isolation: container` → `fleet generate` → `fleet up <client>`) a Hermes-driven
+operation rather than a human host step.
+
+Known limitation (soft isolation): co-located client gateways run as the same
+`hermes` UID, so filesystem perms can't hide the broker key from them. The
+forced-command allowlist — not key secrecy — is the real boundary: the worst a
+co-located bot can do with the key is run the same bounded fleet ops. Graduating
+sensitive clients to their own containers (exactly what this tooling enables)
+restores hard isolation.

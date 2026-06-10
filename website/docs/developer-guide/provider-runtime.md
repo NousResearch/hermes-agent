@@ -162,7 +162,7 @@ Hermes supports a configured fallback provider chain — a list of `(provider, m
 
 ### How it works internally
 
-1. **Storage**: `AIAgent.__init__` stores the `fallback_model` dict and sets `_fallback_activated = False`.
+1. **Storage**: `AIAgent.__init__` normalizes `fallback_model` into `_fallback_chain` and sets `_fallback_activated = False`.
 
 2. **Trigger points**: `_try_activate_fallback()` is called from three places in the main retry loop in `run_agent.py`:
    - After max retries on invalid API responses (None choices, missing content)
@@ -184,12 +184,12 @@ Hermes supports a configured fallback provider chain — a list of `(provider, m
    - Gateway: `gateway/run.py._load_fallback_model()` reads `config.yaml` → passes to `AIAgent`
    - Validation: both `provider` and `model` keys must be non-empty, or fallback is disabled
 
-### What does NOT support fallback
+### Other execution paths
 
-- **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's provider but not the fallback config
-- **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above)
+- **Subagent delegation** (`tools/delegate_tool.py`): subagents inherit the parent's fallback provider chain by default, so delegated work can recover from the same rate-limit or credential failures as the parent.
+- **Auxiliary tasks**: use their own independent provider auto-detection chain (see Auxiliary model routing above).
 
-Cron jobs **do** support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. See [Cron Internals](./cron-internals.md).
+Cron jobs also support fallback: `run_job()` reads `fallback_providers` (or legacy `fallback_model`) from `config.yaml` and passes it to `AIAgent(fallback_model=...)`, matching the gateway's `_load_fallback_model()` pattern. See [Cron Internals](./cron-internals.md).
 
 ### Test coverage
 

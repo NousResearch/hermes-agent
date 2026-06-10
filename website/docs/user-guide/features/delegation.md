@@ -142,6 +142,25 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+## Named Delegation Profiles
+
+For recurring aux-worker policies, define free-form named profiles under `delegation.profiles` and select them with `delegate_task(..., delegation_profile="name")` or per task in a batch. Profiles can set provider/model, iteration and timeout limits, and tool policy without changing global delegation defaults:
+
+```yaml
+# In ~/.hermes/config.yaml
+delegation:
+  profiles:
+    deepseek_aux:
+      provider: deepseek
+      model: deepseek-v4-pro
+      toolsets: [file_readonly, web]
+      allowed_toolsets: [file_readonly, web]
+      max_iterations: 25
+      child_timeout_seconds: 600
+```
+
+`allowed_toolsets` is a hard cap: callers cannot widen that child back to `terminal`, `file`, `delegation`, or other toolsets outside the profile. In batch mode, top-level `delegation_profile` acts as the default, and `tasks[].delegation_profile` overrides it for that one child. Profile names are configuration keys, not built-in roles; the only delegation roles remain `leaf` and `orchestrator`.
+
 ## Toolset Selection Tips
 
 The `toolsets` parameter controls what tools the subagent has access to. Choose based on the task:
@@ -151,7 +170,8 @@ The `toolsets` parameter controls what tools the subagent has access to. Choose 
 | `["terminal", "file"]` | Code work, debugging, file editing, builds |
 | `["web"]` | Research, fact-checking, documentation lookup |
 | `["terminal", "file", "web"]` | Full-stack tasks (default) |
-| `["file"]` | Read-only analysis, code review without execution |
+| `["file_readonly"]` | Read-only analysis and code review without execution or file writes |
+| `["file"]` | File editing/review tasks that may need read/write/patch access |
 | `["terminal"]` | System administration, process management |
 
 Certain toolsets are blocked for subagents regardless of what you specify:
@@ -163,15 +183,19 @@ Certain toolsets are blocked for subagents regardless of what you specify:
 
 ## Max Iterations
 
-Each subagent has an iteration limit (default: 50) that controls how many tool-calling turns it can take:
+Each subagent has an iteration limit (default: 50) that controls how many tool-calling turns it can take. This is configured in `config.yaml`, either globally for all delegated children or inside a named profile:
 
-```python
-delegate_task(
-    goal="Quick file check",
-    context="Check if /etc/nginx/nginx.conf exists and print its first 10 lines",
-    max_iterations=10  # Simple task, don't need many turns
-)
+```yaml
+delegation:
+  max_iterations: 50
+  profiles:
+    quick_scout:
+      toolsets: [file_readonly]
+      allowed_toolsets: [file_readonly]
+      max_iterations: 10
 ```
+
+The model-facing `delegate_task` schema does not expose per-call `max_iterations`; configuration and named profiles are the authoritative path.
 
 ## Child Timeout
 

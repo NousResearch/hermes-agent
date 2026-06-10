@@ -175,6 +175,52 @@ class TestBasePlatformTopicSessions:
         ]
 
     @pytest.mark.asyncio
+    async def test_process_message_background_stops_typing_before_complete_hook(self):
+        adapter = DummyTelegramAdapter()
+        keep_typing_cancelled = asyncio.Event()
+        complete_hook_seen = asyncio.Event()
+        stop_calls = []
+        order = []
+
+        async def handler(_event):
+            await asyncio.sleep(0)
+            return "ack"
+
+        async def hold_typing(_chat_id, interval=2.0, metadata=None):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                order.append("typing-cancelled")
+                keep_typing_cancelled.set()
+
+        async def stop_typing(chat_id: str):
+            stop_calls.append(chat_id)
+            order.append("stop-typing")
+
+        async def on_processing_complete(event: MessageEvent, outcome: ProcessingOutcome) -> None:
+            order.append("complete")
+            assert keep_typing_cancelled.is_set()
+            adapter.processing_hooks.append(("complete", event.message_id, outcome))
+            complete_hook_seen.set()
+
+        adapter.set_message_handler(handler)
+        adapter._keep_typing = hold_typing
+        adapter.stop_typing = stop_typing
+        adapter.on_processing_complete = on_processing_complete
+
+        event = _make_event("-1001", "17585")
+        await adapter._process_message_background(event, build_session_key(event.source))
+
+        assert complete_hook_seen.is_set()
+        assert stop_calls
+        assert order.index("typing-cancelled") < order.index("complete")
+        assert order.index("stop-typing") < order.index("complete")
+        assert adapter.processing_hooks == [
+            ("start", "1"),
+            ("complete", "1", ProcessingOutcome.SUCCESS),
+        ]
+
+    @pytest.mark.asyncio
     async def test_process_message_background_marks_exception_unsuccessful(self):
         adapter = DummyTelegramAdapter()
 

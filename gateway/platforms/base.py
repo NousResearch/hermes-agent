@@ -4383,6 +4383,16 @@ class BasePlatformAdapter(ABC):
                         self.name, len(_response_pre_extract), event.source.chat_id,
                     )
 
+            # The user-visible reply has been delivered. Stop typing before
+            # post-delivery hooks/debounce cleanup so Discord does not keep
+            # refreshing "typing" after the response is already visible.
+            await _stop_typing_task()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(event.source.chat_id)
+            except Exception:
+                pass
+
             # Determine overall success for the processing hook
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
             await self._run_processing_hook(

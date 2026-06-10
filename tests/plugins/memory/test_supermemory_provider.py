@@ -15,11 +15,13 @@ from plugins.memory.supermemory import (
 
 
 class FakeClient:
-    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid",
+                 base_url: str = ""):
         self.api_key = api_key
         self.timeout = timeout
         self.container_tag = container_tag
         self.search_mode = search_mode
+        self.base_url = base_url
         self.add_calls = []
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
@@ -356,6 +358,71 @@ def test_invalid_search_mode_falls_back_to_default(monkeypatch, tmp_path):
     p = SupermemoryMemoryProvider()
     p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
     assert p._search_mode == "hybrid"
+
+
+# -- Base URL tests -------------------------------------------------------------
+
+
+def test_base_url_defaults_to_cloud(monkeypatch, tmp_path):
+    """Without config or env override, the client targets api.supermemory.ai."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.delenv("SUPERMEMORY_BASE_URL", raising=False)
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._base_url == "https://api.supermemory.ai"
+    assert p._client.base_url == "https://api.supermemory.ai"
+
+
+def test_base_url_env_var_override(monkeypatch, tmp_path):
+    """SUPERMEMORY_BASE_URL points the provider at a self-hosted server (trailing slash stripped)."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "http://localhost:6767/")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._base_url == "http://localhost:6767"
+    assert p._client.base_url == "http://localhost:6767"
+
+
+def test_base_url_config_overrides_env(monkeypatch, tmp_path):
+    """base_url in supermemory.json takes precedence over the env var."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.setenv("SUPERMEMORY_BASE_URL", "http://env-host:6767")
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    _save_supermemory_config({"base_url": "http://config-host:6767/"}, str(tmp_path))
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._base_url == "http://config-host:6767"
+    assert p._client.base_url == "http://config-host:6767"
+
+
+def test_ingest_conversation_uses_custom_base_url(monkeypatch):
+    """The raw urllib conversations ingest hits the configured base URL, not the cloud."""
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    client = _SupermemoryClient.__new__(_SupermemoryClient)
+    client._api_key = "test-key"
+    client._container_tag = "hermes"
+    client._timeout = 1.0
+    client._base_url = "http://localhost:6767"
+
+    captured = {}
+
+    class _FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResponse()
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    client.ingest_conversation("s1", [{"role": "user", "content": "hello there"}])
+    assert captured["url"] == "http://localhost:6767/v4/conversations"
 
 
 # -- Multi-container tests ----------------------------------------------------

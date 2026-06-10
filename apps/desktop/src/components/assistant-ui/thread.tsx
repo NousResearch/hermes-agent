@@ -58,7 +58,7 @@ import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
-import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
+import { HoistedTodoTool, latestTodoPartIndex } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
@@ -70,7 +70,6 @@ import { ImageGenerationPlaceholder } from '@/components/chat/image-generation-p
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
-import { CopyButton } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -86,7 +85,7 @@ import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runti
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
-import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
+import { Check, Copy, GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
@@ -216,7 +215,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
-  const hoistedTodos = useMemo(() => todosFromMessageContent(content), [content])
+  const hoistedTodoIndex = useMemo(() => latestTodoPartIndex(content), [content])
 
   const previewTargets = useMemo(() => {
     if (!messageText || !/(https?:\/\/|file:\/\/)/i.test(messageText)) {
@@ -246,7 +245,9 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
         className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
-        {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
+        {hoistedTodoIndex !== -1 && (
+          <MessagePrimitive.PartByIndex components={TODO_HOIST_COMPONENTS} index={hoistedTodoIndex} />
+        )}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
         {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}
         {previewTargets.length > 0 && (
@@ -353,22 +354,8 @@ const ImageGenerateTool: FC<ToolCallMessagePartProps> = ({ result }) => {
   )
 }
 
-const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
-  // todo parts are hoisted to a dedicated panel above the message content.
-  if (props.toolName === 'todo') {
-    return null
-  }
-
-  if (props.toolName === 'image_generate') {
-    return <ImageGenerateTool {...props} />
-  }
-
-  if (props.toolName === 'clarify') {
-    return <ClarifyTool {...props} />
-  }
-
-  return <ToolFallback {...props} />
-}
+// todo parts are hoisted to a dedicated panel above the message content.
+const InlineTodoToolPart: FC<ToolCallMessagePartProps> = () => null
 
 const ThinkingDisclosure: FC<{
   children: ReactNode
@@ -535,7 +522,18 @@ const MESSAGE_PARTS_COMPONENTS = {
   ReasoningGroup: ReasoningAccordionGroup,
   Text: MarkdownText,
   ToolGroup: ToolGroupSlot,
-  tools: { Fallback: ChainToolFallback }
+  tools: {
+    by_name: {
+      clarify: ClarifyTool,
+      image_generate: ImageGenerateTool,
+      todo: InlineTodoToolPart
+    },
+    Fallback: ToolFallback
+  }
+} as const
+
+const TODO_HOIST_COMPONENTS = {
+  tools: { by_name: { todo: HoistedTodoTool } }
 } as const
 
 const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
@@ -578,6 +576,25 @@ function formatMessageTimestamp(
   return SHORT_FMT.format(date)
 }
 
+const COPIED_RESET_MS = 1_500
+
+const CopyMessageButton: FC = () => {
+  const { t } = useI18n()
+  const isCopied = useAuiState(s => s.message.isCopied)
+  const Icon = isCopied ? Check : Copy
+
+  return (
+    <ActionBarPrimitive.Copy asChild copiedDuration={COPIED_RESET_MS}>
+      <TooltipIconButton
+        onClick={() => triggerHaptic('selection')}
+        tooltip={isCopied ? t.common.copied : t.assistant.thread.copy}
+      >
+        <Icon className="size-3.5" />
+      </TooltipIconButton>
+    </ActionBarPrimitive.Copy>
+  )
+}
+
 const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, onBranchInNewChat }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
@@ -599,7 +616,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
         )}
         data-slot="aui_msg-actions"
       >
-        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label={copy.copy} text={messageText} />
+        <CopyMessageButton />
         <ActionBarPrimitive.Reload asChild>
           <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
             <Codicon name="refresh" />

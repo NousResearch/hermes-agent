@@ -1,3 +1,4 @@
+import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { type FC } from 'react'
 
 import { Checkbox } from '@/components/ui/checkbox'
@@ -5,14 +6,14 @@ import { Loader2Icon } from '@/lib/icons'
 import { parseTodos, type TodoItem, type TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
 
-export function todosFromMessageContent(content: unknown): TodoItem[] {
+export function latestTodoPartIndex(content: unknown): number {
   if (!Array.isArray(content)) {
-    return []
+    return -1
   }
 
-  let latest: null | TodoItem[] = null
+  let latest = -1
 
-  for (const part of content) {
+  for (const [index, part] of content.entries()) {
     if (!part || typeof part !== 'object') {
       continue
     }
@@ -23,14 +24,12 @@ export function todosFromMessageContent(content: unknown): TodoItem[] {
       continue
     }
 
-    const parsed = parseTodos(row.result) ?? parseTodos(row.args)
-
-    if (parsed !== null) {
-      latest = parsed
+    if ((parseTodos(row.result) ?? parseTodos(row.args)) !== null) {
+      latest = index
     }
   }
 
-  return latest ?? []
+  return latest
 }
 
 const headerLabel = (todos: readonly TodoItem[]): string =>
@@ -68,7 +67,17 @@ const Checkmark: FC<{ status: TodoStatus; label: string }> = ({ status, label })
   )
 }
 
-export const HoistedTodoPanel: FC<{ todos: TodoItem[] }> = ({ todos }) => {
+export const HoistedTodoTool: FC<ToolCallMessagePartProps> = ({ args, result }) => {
+  const todos = parseTodos(result) ?? parseTodos(args)
+
+  if (!todos?.length) {
+    return null
+  }
+
+  return <HoistedTodoPanel todos={todos} />
+}
+
+const HoistedTodoPanel: FC<{ todos: TodoItem[] }> = ({ todos }) => {
   if (!todos.length) {
     return null
   }

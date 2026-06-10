@@ -2,12 +2,13 @@ import {
   type AppendMessage,
   AssistantRuntimeProvider,
   ExportedMessageRepository,
-  type ThreadMessage
+  type ThreadMessage,
+  useExternalMessageConverter
 } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo, useRef } from 'react'
+import { Suspense, useCallback, useMemo } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
@@ -194,7 +195,6 @@ export function ChatView({
   const introSeed = useStore($introSeed)
   const messages = useStore($messages)
   const selectedSessionId = useStore($selectedStoredSessionId)
-  const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
   const isRoutedSessionView = Boolean(routeSessionId(location.pathname))
 
   const showIntro =
@@ -253,13 +253,20 @@ export function ChatView({
     [contextSuggestions, currentModel, currentProvider, gatewayOpen, quickModels]
   )
 
+  const runtimeMessages = useExternalMessageConverter<ChatMessage>({
+    callback: toRuntimeMessage,
+    messages,
+    isRunning: busy,
+    joinStrategy: 'none'
+  })
+
   const runtimeMessageRepository = useMemo(() => {
     const items: { message: ThreadMessage; parentId: string | null }[] = []
     const branchParentByGroup = new Map<string, string | null>()
     let visibleParentId: string | null = null
     let headId: string | null = null
 
-    for (const message of messages) {
+    for (const [index, message] of messages.entries()) {
       let parentId = visibleParentId
 
       if (message.role === 'assistant' && message.branchGroupId) {
@@ -270,14 +277,7 @@ export function ChatView({
         parentId = branchParentByGroup.get(message.branchGroupId) ?? null
       }
 
-      const cachedMessage = runtimeMessageCacheRef.current.get(message)
-      const runtimeMessage = cachedMessage ?? toRuntimeMessage(message)
-
-      if (!cachedMessage) {
-        runtimeMessageCacheRef.current.set(message, runtimeMessage)
-      }
-
-      items.push({ message: runtimeMessage, parentId })
+      items.push({ message: runtimeMessages[index], parentId })
 
       if (!message.hidden) {
         visibleParentId = message.id
@@ -286,7 +286,7 @@ export function ChatView({
     }
 
     return ExportedMessageRepository.fromBranchableArray(items, { headId })
-  }, [messages])
+  }, [messages, runtimeMessages])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,

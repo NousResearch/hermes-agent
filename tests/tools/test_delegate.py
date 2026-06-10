@@ -169,7 +169,11 @@ class TestStripBlockedTools(unittest.TestCase):
 
     def test_expands_composite_and_strips_blocked(self):
         """Composite toolsets like hermes-cli are expanded to individual
-        toolsets, and blocked ones (messaging, cronjob) are stripped."""
+        toolsets, and all blocked ones are stripped — including other
+        composites that bundle blocked tools."""
+        from toolsets import resolve_toolset
+        from tools.delegate_tool import DELEGATE_BLOCKED_TOOLS
+
         result = _strip_blocked_tools(["hermes-cli"])
         # hermes-cli should be expanded, not preserved as-is
         self.assertNotIn("hermes-cli", result,
@@ -181,16 +185,30 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertNotIn("clarify", result)
         self.assertNotIn("memory", result)
         self.assertNotIn("code_execution", result)
+        # Other composites must NOT re-enter via subset matching
+        for ts in result:
+            self.assertFalse(ts.startswith("hermes-"),
+                             f"composite {ts} should not re-enter expanded result")
         # Non-blocked individual toolsets should be present
         self.assertIn("terminal", result)
         self.assertIn("file", result)
         self.assertIn("web", result)
+        # Resolved tools must not contain any blocked tool
+        all_tools = set()
+        for ts in result:
+            all_tools.update(resolve_toolset(ts))
+        self.assertTrue(
+            DELEGATE_BLOCKED_TOOLS.isdisjoint(all_tools),
+            f"blocked tools still present: {DELEGATE_BLOCKED_TOOLS & all_tools}"
+        )
 
 
 class TestChildAgentDisabledToolsets(unittest.TestCase):
     def test_build_child_agent_passes_disabled_toolsets(self):
-        """_build_child_agent must pass disabled_toolsets=["messaging", "cronjob"]
+        """_build_child_agent must pass all blocked toolsets as disabled_toolsets
         so that blocked tools are subtracted even from composite toolsets."""
+        from tools.delegate_tool import _DELEGATE_BLOCKED_TOOLSETS
+
         parent = _make_mock_parent(depth=0)
         parent.enabled_toolsets = ["hermes-cli"]
 
@@ -207,8 +225,8 @@ class TestChildAgentDisabledToolsets(unittest.TestCase):
             )
             _, kwargs = MockAgent.call_args
             self.assertEqual(
-                kwargs.get("disabled_toolsets"), ["messaging", "cronjob"],
-                "child AIAgent must disable messaging and cronjob toolsets"
+                kwargs.get("disabled_toolsets"), sorted(_DELEGATE_BLOCKED_TOOLSETS),
+                "child AIAgent must disable all blocked toolsets"
             )
 
 

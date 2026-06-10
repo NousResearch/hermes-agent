@@ -53,6 +53,21 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
     ]
 )
 
+# Toolset names whose constituent tools overlap with DELEGATE_BLOCKED_TOOLS.
+# Used in _strip_blocked_tools() and passed as disabled_toolsets to child agents
+# so that blocked tools are never available to delegated children — even when
+# the parent uses a composite toolset (e.g. ``hermes-cli``) that bundles them.
+_DELEGATE_BLOCKED_TOOLSETS = frozenset(
+    [
+        "clarify",         # clarify
+        "code_execution",  # execute_code
+        "cronjob",         # cronjob
+        "delegation",      # delegate_task
+        "memory",          # memory
+        "messaging",       # send_message
+    ]
+)
+
 
 # ---------------------------------------------------------------------------
 # Subagent approval callbacks
@@ -764,20 +779,11 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
     (e.g. ``messaging``, ``cronjob``).  We expand composites to their
     constituent toolsets, strip the blocked ones, and return the
     remaining individual toolset names.  This ensures that children
-    never inherit ``send_message`` or ``cronjob`` even when the parent
+    never inherit ``send_message``, ``cronjob``, ``delegate_task``,
+    ``clarify``, ``memory``, or ``execute_code`` even when the parent
     uses a composite toolset.
     """
-    blocked_toolset_names = {
-        "delegation",
-        "clarify",
-        "memory",
-        "code_execution",
-        "messaging",
-        "cronjob",
-    }
-
-    # Tools from blocked toolsets that we need to catch in composites.
-    _blocked_tools = {"send_message", "cronjob"}
+    blocked_toolset_names = _DELEGATE_BLOCKED_TOOLSETS
 
     # Step 1: Separate toolsets that contain blocked tools (need expansion)
     # from clean toolsets (pass through unchanged).
@@ -788,7 +794,7 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
             continue  # already blocked — skip
         ts_def = TOOLSETS.get(ts_name)
         ts_tools = set(ts_def.get("tools", [])) if ts_def else set()
-        if ts_tools & _blocked_tools:
+        if ts_tools & DELEGATE_BLOCKED_TOOLS:
             # This toolset contains blocked tools — needs expansion
             needs_expansion.append(ts_name)
         else:
@@ -796,7 +802,9 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
 
     # Step 2: Expand composite toolsets that contain blocked tools.
     # Collect all their tool names, then find individual toolsets that
-    # are subsets.  Exclude the original composites from re-addition.
+    # are subsets.  Exclude blocked toolsets and all composites from
+    # re-addition — composites bundle blocked tools and must not
+    # re-enter the child's enabled toolsets.
     expanded_set: set[str] = set()
     composite_names = set(needs_expansion)
     if needs_expansion:
@@ -810,7 +818,14 @@ def _strip_blocked_tools(toolsets: List[str]) -> List[str]:
             if ts_name in blocked_toolset_names or ts_name in composite_names:
                 continue
             ts_tools = set(ts_def.get("tools", []))
-            if ts_tools and ts_tools.issubset(all_expanded_tools):
+            if not ts_tools:
+                continue
+            # Exclude toolsets whose tools overlap with blocked tools —
+            # this prevents composites like hermes-api-server from
+            # re-entering the result via subset matching.
+            if ts_tools & DELEGATE_BLOCKED_TOOLS:
+                continue
+            if ts_tools.issubset(all_expanded_tools):
                 expanded_set.add(ts_name)
 
     result = list(dict.fromkeys(clean + sorted(expanded_set)))
@@ -1271,7 +1286,7 @@ def _build_child_agent(
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
         enabled_toolsets=child_toolsets,
-        disabled_toolsets=["messaging", "cronjob"],
+        disabled_toolsets=sorted(_DELEGATE_BLOCKED_TOOLSETS),
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",

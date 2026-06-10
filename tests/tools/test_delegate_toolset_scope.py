@@ -67,17 +67,38 @@ class TestToolsetIntersection:
         assert "web" in child
 
     def test_expands_composite_hermes_cli(self):
-        """hermes-cli is expanded to individual toolsets — blocked ones
-        (messaging, cronjob) are stripped from the result."""
+        """hermes-cli is expanded to individual toolsets — all blocked ones
+        are stripped and no composites re-enter the result."""
+        from tools.delegate_tool import DELEGATE_BLOCKED_TOOLS
+        from toolsets import resolve_toolset
+
         child = _strip_blocked_tools(["hermes-cli"])
         assert "hermes-cli" not in child, (
             "hermes-cli should be expanded to individual toolsets"
         )
+        # All blocked toolsets must be absent
         assert "messaging" not in child
         assert "cronjob" not in child
+        assert "delegation" not in child
+        assert "clarify" not in child
+        assert "memory" not in child
+        assert "code_execution" not in child
+        # No composites should re-enter
+        for ts in child:
+            assert not ts.startswith("hermes-"), (
+                f"composite {ts} should not re-enter expanded result"
+            )
+        # Safe individual toolsets should be present
         assert "terminal" in child
         assert "file" in child
         assert "web" in child
+        # Resolved tools must not contain any blocked tool
+        all_tools = set()
+        for ts in child:
+            all_tools.update(resolve_toolset(ts))
+        assert DELEGATE_BLOCKED_TOOLS.isdisjoint(all_tools), (
+            f"blocked tools still present: {DELEGATE_BLOCKED_TOOLS & all_tools}"
+        )
 
     def test_empty_intersection_yields_empty_toolsets(self):
         """If parent has no overlap with requested, child gets nothing extra."""

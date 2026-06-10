@@ -88,7 +88,7 @@ export function SidebarSessionRow({
     >
       <div
         className={cn(
-          'group relative grid min-h-[2.375rem] cursor-pointer grid-cols-[minmax(0,1fr)_auto_1.375rem] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+          'group relative grid min-h-[2.375rem] cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
           isSelected && 'bg-(--ui-row-active-background)',
           isWorking && 'text-foreground',
           dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
@@ -188,35 +188,43 @@ export function SidebarSessionRow({
             <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">{title}</span>
           </div>
         </button>
-        <div className="flex items-center justify-end px-1.5">
-          {/* An active session announces itself via the pulsing dot; the
-              timestamp only matters once it goes idle. */}
-          {!isWorking && (
-            <span className="pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary)">
-              {age}
-            </span>
-          )}
-        </div>
-        <div className="grid w-[1.375rem] place-items-center">
-          <SessionActionsMenu
-            onArchive={onArchive}
-            onDelete={onDelete}
-            onPin={onPin}
-            pinned={isPinned}
-            profile={session.profile}
-            sessionId={session.id}
-            title={title}
+        {/* Trailing slot: timestamp always visible; on hover/focus it slides
+            left to make room and the 3-dot menu slides in from the right —
+            both on screen at once. Transform/opacity only, so the title
+            column never reflows between states. The slot reserves the menu's
+            width up front (pr) so the row width is identical in both states. */}
+        <div className="relative flex h-full items-center justify-end self-stretch pl-1 pr-1.5">
+          <span
+            className={cn(
+              'pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-transform duration-150 ease-out',
+              // Slide left by the menu's footprint on hover so the age stays
+              // fully legible beside the revealed 3-dot button.
+              'group-hover:-translate-x-5 group-focus-within:-translate-x-5'
+            )}
           >
-            <Button
-              aria-label={r.actionsFor(title)}
-              className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
-              size="icon"
-              title={r.sessionActions}
-              variant="ghost"
+            {age}
+          </span>
+          <div className="absolute inset-y-0 right-1 grid place-items-center">
+            <SessionActionsMenu
+              onArchive={onArchive}
+              onDelete={onDelete}
+              onPin={onPin}
+              pinned={isPinned}
+              profile={session.profile}
+              sessionId={session.id}
+              title={title}
             >
-              <Codicon name="ellipsis" size="0.875rem" />
-            </Button>
-          </SessionActionsMenu>
+              <Button
+                aria-label={r.actionsFor(title)}
+                className="size-5 translate-x-1 scale-90 rounded-[4px] bg-transparent text-transparent opacity-0 transition-all duration-150 ease-out group-hover:translate-x-0 group-hover:scale-100 group-hover:text-(--ui-text-tertiary) group-hover:opacity-100 group-focus-within:translate-x-0 group-focus-within:scale-100 group-focus-within:opacity-100 hover:bg-(--ui-control-active-background)! hover:text-foreground! focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:opacity-100 focus-visible:ring-0 data-[state=open]:translate-x-0 data-[state=open]:scale-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
+                size="icon"
+                title={r.sessionActions}
+                variant="ghost"
+              >
+                <Codicon name="ellipsis" size="0.875rem" />
+              </Button>
+            </SessionActionsMenu>
+          </div>
         </div>
       </div>
     </SessionContextMenu>

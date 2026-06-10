@@ -503,34 +503,27 @@ def test_kb_workbench_renders_guided_decision_cards(monkeypatch):
     assert ctx.calls[-1] == ("mcp_kb_engine_prod_object_context", {"object_path": "accounts/acme/state.md"})
 
 
-def test_kb_review_opens_proposal_backed_decision_inbox(monkeypatch):
+def test_kb_review_opens_lifecycle_review_packet(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb_engine_prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_lifecycle_review": {
                 "result": {
-                    "scope": "proposals",
-                    "total": 1,
-                    "items": [
+                    "packet_type": "lifecycle_review.packet",
+                    "workflow": "Lifecycle Review",
+                    "stewardship_area": "KB Stewardship",
+                    "target": "situations",
+                    "mutation_performed": False,
+                    "candidates": [
                         {
-                            "item_id": "proposal_1",
-                            "kind": "proposal",
-                            "title": "Review Acme proposal",
-                            "summary": "Decide whether to admit the cleaned account note.",
-                            "proposal_ids": ["proposal_1"],
-                            "safe_actions": [
-                                {
-                                    "action_id": "review.approve",
-                                    "label": "Approve",
-                                    "preview_tool": "queue.decision_preview",
-                                    "confirm_tool": "queue.batch_decide_confirmed",
-                                    "params": {"decision": "approve"},
-                                    "mutation": "workspace_write",
-                                    "dashboard_owned_write": False,
-                                }
-                            ],
+                            "candidate_id": "cand_1",
+                            "title": "Review Acme launch lifecycle",
+                            "target_ref": "situations/2026-06-acme-launch",
+                            "recommended_action": "review",
+                            "summary": "Check whether the launch situation needs an update.",
+                            "evidence_refs": ["source:launch-review"],
                         }
                     ],
                 }
@@ -544,11 +537,11 @@ def test_kb_review_opens_proposal_backed_decision_inbox(monkeypatch):
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    assert ctx.calls[0] == ("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5})
+    assert ctx.calls[0] == ("mcp_kb_engine_prod_lifecycle_review", {"target": "situations", "dry_run": True})
     text = adapter.sent[0]["text"]
-    assert "KB Review" in text
-    assert "Review Acme proposal" in text
-    assert "Approve" in text
+    assert "Lifecycle Review" in text
+    assert "Review Acme launch lifecycle" in text
+    assert "Mutation: none" in text
 
 
 def test_kb_workbench_renders_situation_compact_rail_and_handoff_buttons(monkeypatch):
@@ -1224,7 +1217,7 @@ def test_kb_review_and_review_queue_prose_render_lifecycle_update_packet(monkeyp
     }
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {"result": lifecycle_update_packet},
+            "mcp_kb_engine_prod_lifecycle_review": {"result": lifecycle_update_packet},
         }
     )
     adapter = FakeKbActionsAdapter()
@@ -1237,8 +1230,8 @@ def test_kb_review_and_review_queue_prose_render_lifecycle_update_packet(monkeyp
     assert prose == {"action": "skip", "reason": "kb_journeys"}
     assert slash == {"action": "skip", "reason": "kb_journeys"}
     assert ctx.calls == [
-        ("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5}),
-        ("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5}),
+        ("mcp_kb_engine_prod_lifecycle_review", {"target": "situations", "dry_run": True}),
+        ("mcp_kb_engine_prod_lifecycle_review", {"target": "situations", "dry_run": True}),
     ]
     for sent in adapter.sent:
         text = sent["text"]
@@ -1565,7 +1558,7 @@ def test_kb_root_queue_dashboard_starts_guided_first_item(monkeypatch):
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 9,
                     "items": [
@@ -1589,7 +1582,7 @@ def test_kb_root_queue_dashboard_starts_guided_first_item(monkeypatch):
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    assert ctx.calls == [("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5})]
+    assert ctx.calls == [("mcp_kb_engine_prod_review_inbox", {"scope": "proposals", "limit": 5})]
     assert adapter.sent
     text = adapter.sent[0]["text"]
     assert "KB Review" in text
@@ -1613,7 +1606,7 @@ def test_kb_queue_guided_card_buttons_preview_and_skip(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 2,
                     "items": [
@@ -1840,7 +1833,7 @@ def test_kb_queue_tasks_renders_nonproposal_review_card_and_control_preview(monk
     }
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "scope": "tasks",
                     "total": 2,
@@ -1889,7 +1882,7 @@ def test_kb_queue_tasks_renders_nonproposal_review_card_and_control_preview(monk
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    assert ctx.calls[0] == ("mcp_kb_engine_prod_queue_summary", {"scope": "tasks", "limit": 5})
+    assert ctx.calls[0] == ("mcp_kb_engine_prod_review_inbox", {"scope": "tasks", "limit": 5})
     text = adapter.sent[0]["text"]
     assert "KB Review" in text
     assert "Confirm Acme launch contract" in text
@@ -2002,20 +1995,25 @@ def test_kb_queue_skip_uses_server_window_when_available(monkeypatch, tmp_path):
     assert "Keio University" in skip_card["text"]
 
 
-def test_kb_review_without_index_starts_guided_queue(monkeypatch):
+def test_kb_review_without_args_starts_lifecycle_review(monkeypatch):
     from plugins.kb_journeys import build_pre_gateway_dispatch_hook
 
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_lifecycle_review": {
                 "result": {
-                    "total": 1,
-                    "items": [
+                    "packet_type": "lifecycle_review.packet",
+                    "workflow": "Lifecycle Review",
+                    "stewardship_area": "KB Stewardship",
+                    "target": "situations",
+                    "mutation_performed": False,
+                    "candidates": [
                         {
-                            "item_id": "accounts/mistral",
+                            "candidate_id": "cand_1",
                             "title": "Mistral",
-                            "raw": {"proposal_ids": ["act_2"]},
+                            "target_ref": "situations/mistral",
+                            "recommended_action": "review",
                         }
                     ],
                 }
@@ -2029,9 +2027,9 @@ def test_kb_review_without_index_starts_guided_queue(monkeypatch):
     _drain_scheduled_tasks()
 
     assert result == {"action": "skip", "reason": "kb_journeys"}
-    assert ctx.calls == [("mcp_kb_engine_prod_queue_summary", {"scope": "proposals", "limit": 5})]
-    assert "KB Review" in adapter.sent[0]["text"]
-    assert "1 of 1 · Visible scope" in adapter.sent[0]["text"]
+    assert ctx.calls == [("mcp_kb_engine_prod_lifecycle_review", {"target": "situations", "dry_run": True})]
+    assert "Lifecycle Review" in adapter.sent[0]["text"]
+    assert "Mistral" in adapter.sent[0]["text"]
     assert "Use /kb review to list proposals." not in adapter.sent[0]["text"]
     assert "/kb review 1" not in adapter.sent[0]["text"]
 
@@ -2042,7 +2040,7 @@ def test_kbqueue_review_item_can_be_opened_by_text_command(monkeypatch):
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 2,
                     "items": [
@@ -2230,7 +2228,7 @@ def test_kbqueue_descriptor_confirm_carries_lease_session_and_blocks_stale_resul
     monkeypatch.setenv("HERMES_KB_MCP_TARGET", "kb-engine-prod")
     ctx = FakeContext(
         {
-            "mcp_kb_engine_prod_queue_summary": {
+            "mcp_kb_engine_prod_review_inbox": {
                 "result": {
                     "total": 1,
                     "items": [
@@ -2320,7 +2318,7 @@ def test_kbqueue_descriptor_confirm_carries_lease_session_and_blocks_stale_resul
     assert "Preview lease expired" in confirm_card["text"]
     assert "Review Reject Applied" not in confirm_card["text"]
     assert [call[0] for call in ctx.calls] == [
-        "mcp_kb_engine_prod_queue_summary",
+        "mcp_kb_engine_prod_review_inbox",
         "mcp_kb_engine_prod_queue_decision_preview",
         "mcp_kb_engine_prod_queue_batch_decide_confirmed",
     ]

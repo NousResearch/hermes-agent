@@ -240,12 +240,12 @@ def _prose_kb_command_from_text(text: str) -> tuple[str, str] | None:
     if match:
         verb = match.group(1)
         rest = (match.group(2) or "").strip()
-        return {"status": "kbstatus", "sync": "kbsync", "review": "kbqueue"}[verb], rest
+        return {"status": "kbstatus", "sync": "kbsync", "review": "kblifecycle"}[verb], rest
     if re.search(r"\breview queue\b", normalized) and re.search(
         r"\b(?:what(?: is|'s)?|show|list|open|view|display|check|pending|in)\b",
         normalized,
     ):
-        return "kbqueue", ""
+        return "kblifecycle", ""
     return None
 
 
@@ -4929,6 +4929,7 @@ def _queue_summary_payload(
         ctx,
         target,
         [
+            ("review.inbox", dict(args)),
             ("queue.summary", dict(args)),
             ("workbench.queue", dict(args)),
             ("queue.preview", {"limit": limit}),
@@ -6281,10 +6282,17 @@ def _kb_root_command(args: str) -> tuple[str, str]:
         return "kbqueue", rest
     if key == "review":
         review_head, _, review_tail = rest.partition(" ")
-        if review_head.strip().lower() in {"lifecycle", "stewardship"}:
+        review_mode = review_head.strip().lower()
+        if not review_mode:
+            return "kblifecycle", ""
+        if review_mode in {"lifecycle", "stewardship"}:
             return "kblifecycle", review_tail.strip()
-        if review_head.strip().lower() in {"proposal", "proposals", "queue", "inbox"}:
+        if review_mode in {"proposal", "proposals", "queue", "inbox"}:
             return "kbqueue", review_tail.strip()
+        if review_mode.isdigit() or review_mode in QUEUE_REPLY_DECISIONS:
+            return "kbqueue", rest
+        if "," in review_mode and all(part.strip().isdigit() for part in review_mode.split(",")):
+            return "kbqueue", rest
         return "kbqueue", rest
     if key in {"lifecycle", "stewardship"}:
         return "kblifecycle", rest
@@ -6307,7 +6315,7 @@ def _kb_command_help() -> dict[str, Any]:
                 "KB Commands",
                 "/kb status - prove lane, runtime, transport, publication, review, sync, dirtiness, and next action",
                 "/kb sync - preview evidence gathering and factual KB update workflow",
-                "/kb review - proposal-backed decision inbox",
+                "/kb review - lifecycle and proposal judgment inbox",
                 "Advanced/debug aliases are still accepted for operators, but these three verbs are the normal KB surface.",
             ]
         ),
@@ -6454,6 +6462,8 @@ def _card_for_command(
             ],
         )
         return _render_error("KB Runs", target, errors) if data is None else _render_runs(data)
+    if command == "kbreview" and not (args or "").strip():
+        return _render_lifecycle_review_command(ctx, target, "")
     if command in {"kbqueue", "kbreview"}:
         queue_scope, queue_args = _queue_scope_and_args(args)
         mode, indices, decision, confirm = _parse_queue_command_args(queue_args, command=command)

@@ -188,18 +188,23 @@ export function SidebarSessionRow({
             <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">{title}</span>
           </div>
         </button>
-        {/* Trailing slot: timestamp always visible; on hover/focus it slides
-            left to make room and the 3-dot menu slides in from the right —
-            both on screen at once. Transform/opacity only, so the title
-            column never reflows between states. The slot reserves the menu's
-            width up front (pr) so the row width is identical in both states. */}
+        {/* Trailing slot: on an IDLE row the timestamp is visible and, on
+            hover/focus, slides left to make room while the 3-dot menu slides
+            in from the right (both on screen at once). On an ACTIVE row the
+            pulsing orange dot on the left already signals "running", so the
+            timestamp is hidden — but its width is still reserved (opacity-0,
+            not unmounted) so the menu lands in the same spot and the row
+            height never shifts. Transform/opacity only — no layout reflow. */}
         <div className="relative flex h-full items-center justify-end self-stretch pl-1 pr-1.5">
           <span
             className={cn(
-              'pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-transform duration-150 ease-out',
+              'pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-[transform,opacity] duration-150 ease-out',
               // Slide left by the menu's footprint on hover so the age stays
               // fully legible beside the revealed 3-dot button.
-              'group-hover:-translate-x-5 group-focus-within:-translate-x-5'
+              'group-hover:-translate-x-5 group-focus-within:-translate-x-5',
+              // Active sessions: the orange dot is the status cue; hide the
+              // timestamp (keep its reserved width) for the whole active run.
+              isWorking && 'opacity-0'
             )}
           >
             {age}

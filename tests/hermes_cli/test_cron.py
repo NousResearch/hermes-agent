@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from cron.jobs import create_job, get_job, list_jobs
+from cron.jobs import create_job, get_job, list_jobs, load_jobs, save_jobs
 from hermes_cli import cron as cron_cli
 from hermes_cli.cron import cron_command
 from hermes_cli.subcommands.cron import build_cron_parser
@@ -128,6 +128,37 @@ class TestCronCommandLifecycle:
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
 
+
+class TestCronDoctor:
+    def test_doctor_reports_cron_health_issues(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Daily digest", schedule="every 1h", script="missing.py")
+        jobs = load_jobs()
+        jobs[0]["last_status"] = "error"
+        jobs[0]["last_error"] = "Provider returned error"
+        jobs[0]["last_delivery_error"] = "telegram timeout"
+        save_jobs(jobs)
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "Cron doctor found 3 issue(s)" in out
+        assert job["id"] in out
+        assert "last run failed: Provider returned error" in out
+        assert "last delivery failed: telegram timeout" in out
+        assert "script not found" in out
+
+    def test_doctor_reports_healthy_jobs(self, tmp_cron_dir, capsys):
+        scripts_dir = tmp_cron_dir / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        create_job(prompt="Daily digest", schedule="every 1h", script="ok.py")
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "✓ Cron doctor found no issues" in out
 
 
 class TestGatewayNotRunningWarning:

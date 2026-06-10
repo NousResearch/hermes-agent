@@ -209,6 +209,89 @@ def test_snapshot_excludes_agent_ref_and_embeds_rich_result():
 
 
 # ---------------------------------------------------------------------------
+# registry-backed persistence (Step 6a)
+# ---------------------------------------------------------------------------
+
+def _patch_home(monkeypatch, tmp_path):
+    import hermes_constants
+
+    monkeypatch.setattr(hermes_constants, "get_hermes_home", lambda: tmp_path)
+
+
+def _tasks_file(tmp_path, session_id):
+    return tmp_path / "spawn-trees" / session_id / "_tasks.jsonl"
+
+
+def test_complete_with_session_id_appends_one_jsonl_line(tmp_path, monkeypatch):
+    import json
+
+    _patch_home(monkeypatch, tmp_path)
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="sa-0-aaaa", session_id="sess-1", goal="g"))
+    assert reg.complete("sa-0-aaaa", _result()) is True
+
+    lines = _tasks_file(tmp_path, "sess-1").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 1
+    entry = json.loads(lines[0])
+    assert entry["task_id"] == "sa-0-aaaa"
+    assert entry["session_id"] == "sess-1"
+    assert entry["status"] == "succeeded"
+    assert entry["result"]["status"] == "succeeded"
+
+
+def test_complete_without_session_id_writes_nothing(tmp_path, monkeypatch):
+    _patch_home(monkeypatch, tmp_path)
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="t"))
+    assert reg.complete("t", _result()) is True
+    assert not (tmp_path / "spawn-trees").exists()
+
+
+def test_persist_failure_never_breaks_complete(tmp_path, monkeypatch):
+    from pathlib import Path
+
+    _patch_home(monkeypatch, tmp_path)
+
+    def _boom(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "open", _boom)
+
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="t", session_id="sess-1", agent_ref=_FakeAgent()))
+    assert reg.complete("t", _result()) is True  # persist failure swallowed
+
+    rec = reg.get("t")
+    assert rec.status is TaskStatus.SUCCEEDED  # record still terminalized
+    assert rec.agent_ref is None
+    assert rec.finished_at is not None
+
+
+def test_snapshot_includes_session_id_only_when_set():
+    """Wire-compat pin: task.status/task.list spread snapshot() byte-identical,
+    so the key must be absent on records without a session (additive-first)."""
+    assert "session_id" not in AgentTaskRecord(task_id="t").snapshot()
+    assert AgentTaskRecord(task_id="t", session_id="s").snapshot()["session_id"] == "s"
+
+
+def test_two_completes_append_two_lines(tmp_path, monkeypatch):
+    import json
+
+    _patch_home(monkeypatch, tmp_path)
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="sa-0-aaaa", session_id="sess-1"))
+    reg.register(AgentTaskRecord(task_id="sa-1-bbbb", session_id="sess-1"))
+    assert reg.complete("sa-0-aaaa", _result()) is True
+    assert reg.complete("sa-1-bbbb", _result(Status.FAILED)) is True
+
+    lines = _tasks_file(tmp_path, "sess-1").read_text(encoding="utf-8").splitlines()
+    assert len(lines) == 2
+    entries = [json.loads(line) for line in lines]
+    assert [e["task_id"] for e in entries] == ["sa-0-aaaa", "sa-1-bbbb"]
+    assert [e["status"] for e in entries] == ["succeeded", "failed"]
+
+
+# ---------------------------------------------------------------------------
 # singleton
 # ---------------------------------------------------------------------------
 

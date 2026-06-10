@@ -22,6 +22,7 @@ Design rulings this module encodes (doc §"Open questions", decided 2026-06-10):
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 import weakref
@@ -30,6 +31,8 @@ from enum import Enum
 from typing import Any, Optional
 
 from action_runtime.contract import ExecutionResult
+
+logger = logging.getLogger(__name__)
 
 
 class TaskStatus(str, Enum):
@@ -60,11 +63,14 @@ class AgentTaskRecord:
     the caller-supplied ``task.submit`` id — no rename needed.
     ``agent_ref`` holds the live AIAgent (a ``weakref.ref`` or the object
     itself) for interrupt routing; it is dropped on completion and never
-    serialized.
+    serialized.  ``session_id`` ties the record to its gateway session so
+    ``complete()`` can append the snapshot to that session's
+    ``_tasks.jsonl`` (Step 6a); ``None`` means no persistence.
     """
 
     task_id: str
     parent_task_id: Optional[str] = None
+    session_id: Optional[str] = None
     depth: int = 0
     goal: str = ""
     intent: str = ""
@@ -82,7 +88,7 @@ class AgentTaskRecord:
         """Serializable view — no ``agent_ref``; result as the rich wire dict."""
         from action_runtime.adapters import result_to_wire_rich
 
-        return {
+        snap = {
             "task_id": self.task_id,
             "parent_task_id": self.parent_task_id,
             "depth": self.depth,
@@ -96,6 +102,48 @@ class AgentTaskRecord:
             "last_tool": self.last_tool,
             "result": result_to_wire_rich(self.result) if self.result else None,
         }
+        if self.session_id is not None:
+            # Only when set: task.status / task.list spread snapshot() onto
+            # the wire, so records without a session must keep the exact
+            # pre-Step-6a shape (additive-first ruling).
+            snap["session_id"] = self.session_id
+        return snap
+
+
+# Per-session append-only ledger of completed-task snapshots (Step 6a),
+# living next to the TUI's legacy ``_index.jsonl`` in the same session dir
+# (server.py ``_spawn_tree_session_dir``).  Same no-lock append pattern as
+# ``_append_spawn_tree_index``: one ``f.write`` of the full line per open
+# in append mode, so concurrent completes from worker threads stay
+# crash-tolerant (doc risk R4).
+_TASKS_JSONL = "_tasks.jsonl"
+
+
+def _persist_task_snapshot(session_id: str, record: AgentTaskRecord) -> None:
+    """Append *record*'s snapshot to ``$HERMES_HOME/spawn-trees/<session_id>/_tasks.jsonl``.
+
+    Best-effort observability: the whole body is guarded — a persistence
+    failure can never break ``complete()``.  Imports are lazy so the module
+    stays import-light on paths that never persist.
+    """
+    try:
+        import json
+
+        from hermes_constants import get_hermes_home
+
+        snapshot = record.snapshot()
+        # Same directory-name sanitization as server._spawn_tree_session_dir,
+        # so registry lines land in the session dir the TUI already uses.
+        safe = (
+            "".join(c if c.isalnum() or c in "-_" else "_" for c in session_id)
+            or "unknown"
+        )
+        session_dir = get_hermes_home() / "spawn-trees" / safe
+        session_dir.mkdir(parents=True, exist_ok=True)
+        with (session_dir / _TASKS_JSONL).open("a", encoding="utf-8") as f:
+            f.write(json.dumps(snapshot, ensure_ascii=False) + "\n")
+    except Exception as exc:
+        logger.debug("task snapshot persist failed for %s: %s", session_id, exc)
 
 
 class AgentTaskRegistry:
@@ -148,8 +196,13 @@ class AgentTaskRegistry:
             record.finished_at = time.time()
             record.agent_ref = None
             key = record.idempotency_key
+            session_id = record.session_id
+        # Snapshot + file append happen outside the lock so I/O never
+        # blocks the ledger.
         if key is not None and result is not None:
             self.remember(key, record.snapshot())
+        if session_id:
+            _persist_task_snapshot(session_id, record)
         return True
 
     def interrupt(self, task_id: str) -> bool:

@@ -256,6 +256,8 @@ docker system prune -a --volumes       # EVERYTHING — named volumes too
 | Compose services can't reach each other | Wrong network or service name | Services use service name as hostname, check `docker compose config` |
 | Build cache not working | Layer order wrong in Dockerfile | Put rarely-changing layers first (deps before source code) |
 | Image too large | No multi-stage build, no .dockerignore | Use multi-stage builds, add `.dockerignore` |
+| Override file appends ports instead of replacing | `docker-compose.override.yml` merges port lists; it does not replace them | Edit the base `docker-compose.yml` directly or remove the original mapping explicitly |
+| Redis healthcheck fails with `NOAUTH` | Healthcheck uses bare `redis-cli ping` while Redis requires authentication | Pass the password from an environment variable, e.g. `redis-cli -a "$REDIS_PASSWORD" ping`, and do not hardcode secrets |
 
 ## Verification
 

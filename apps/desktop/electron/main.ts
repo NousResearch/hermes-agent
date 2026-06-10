@@ -1728,6 +1728,22 @@ function findPythonForRoot(root) {
   return findSystemPython()
 }
 
+/**
+ * Returns true when a source checkout has a managed venv Python (``.venv`` or
+ * ``venv``) alongside ``hermes_cli/main.py`` — the typical shape after
+ * install.ps1 / install.sh.  When *only* a system Python is available the
+ * backend resolver must smoke-test that ``hermes_cli`` is actually importable
+ * before trusting the candidate, since a system Python 3.11-3.13 with no
+ * ``hermes_cli`` installed (common on dev boxes) will otherwise produce a
+ * dead-on-arrival backend.
+ */
+function sourceRootHasVenvPython(root) {
+  const venvPaths = IS_WINDOWS
+    ? [path.join(root, '.venv', 'Scripts', 'python.exe'), path.join(root, 'venv', 'Scripts', 'python.exe')]
+    : [path.join(root, '.venv', 'bin', 'python'), path.join(root, 'venv', 'bin', 'python')]
+  return venvPaths.some(p => fileExists(p))
+}
+
 function findSystemPython() {
   if (!IS_WINDOWS) {
     // POSIX systems: PATH lookup is safe.
@@ -3447,8 +3463,11 @@ function resolveHermesBackend(backendArgs) {
   if (overrideRoot && isHermesSourceRoot(overrideRoot)) {
     const backend = createPythonBackend(overrideRoot, `Hermes source at ${overrideRoot}`, backendArgs)
 
-    if (backend) {
+    if (backend && (sourceRootHasVenvPython(overrideRoot) || canImportHermesCli(backend.command, { env: backend.env }))) {
       return backend
+    }
+    if (backend) {
+      rememberLog(`Overridden source root ${overrideRoot} has no venv Python and system Python ${backend.command} cannot import hermes_cli; falling through.`)
     }
   }
 
@@ -3459,8 +3478,11 @@ function resolveHermesBackend(backendArgs) {
   if (!IS_PACKAGED && isHermesSourceRoot(SOURCE_REPO_ROOT)) {
     const backend = createPythonBackend(SOURCE_REPO_ROOT, `Hermes source at ${SOURCE_REPO_ROOT}`, backendArgs)
 
-    if (backend) {
+    if (backend && (sourceRootHasVenvPython(SOURCE_REPO_ROOT) || canImportHermesCli(backend.command, { env: backend.env }))) {
       return backend
+    }
+    if (backend) {
+      rememberLog(`Source checkout has no venv Python and system Python ${backend.command} cannot import hermes_cli; falling through.`)
     }
   }
 

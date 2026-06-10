@@ -1040,11 +1040,11 @@ export function DesktopController() {
             }
             path="artifacts"
           />
-          <Route element={null} path="cron" />
-          <Route element={null} path="profiles" />
-          <Route element={null} path="settings" />
-          <Route element={null} path="command-center" />
-          <Route element={null} path="agents" />
+          <Route element={chatView} path="cron" />
+          <Route element={chatView} path="profiles" />
+          <Route element={chatView} path="settings" />
+          <Route element={chatView} path="command-center" />
+          <Route element={chatView} path="agents" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="new" />
           <Route element={<LegacySessionRedirect />} path="sessions/:sessionId" />
           <Route element={<Navigate replace to={NEW_CHAT_ROUTE} />} path="*" />

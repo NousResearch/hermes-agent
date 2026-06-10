@@ -32,4 +32,29 @@ describe('extractEmbeddedImages', () => {
     expect(result.cleanedText).toBe('first  mid  tail')
     expect(result.images).toEqual([SAMPLE_PNG_DATA_URL, second])
   })
+
+  it('lifts a JSON-wrapped envelope containing whitespace out of prose', () => {
+    const result = extractEmbeddedImages(
+      `before {"type": "image_url", "image_url": {"url": "${SAMPLE_PNG_DATA_URL}"}} after`
+    )
+
+    expect(result.cleanedText).toBe('before  after')
+    expect(result.images).toEqual([SAMPLE_PNG_DATA_URL])
+  })
+
+  it('ignores base64 runs shorter than 64 characters', () => {
+    const short = 'data:image/png;base64,' + 'A'.repeat(63)
+    const result = extractEmbeddedImages(`inline ${short} stays`)
+
+    expect(result.cleanedText).toBe(`inline ${short} stays`)
+    expect(result.images).toEqual([])
+  })
+
+  it('extracts a multi-megabyte payload without overflowing the regexp stack', () => {
+    const huge = 'data:image/png;base64,' + 'A'.repeat(6_000_000)
+    const result = extractEmbeddedImages(`screenshot incoming ${huge} done`)
+
+    expect(result.cleanedText).toBe('screenshot incoming  done')
+    expect(result.images).toEqual([huge])
+  })
 })

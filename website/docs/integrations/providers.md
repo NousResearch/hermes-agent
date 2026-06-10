@@ -21,6 +21,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
+| **LLMBase** | named custom provider in `config.yaml` with `LLMBASE_API_KEY` (OpenAI-compatible, provider: `llmbase`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
@@ -681,6 +682,61 @@ When switching providers, Hermes persists the base URL and provider to config so
 :::
 
 Everything below follows this same pattern — just change the URL, key, and model name.
+
+---
+
+### LLMBase — Sovereign Open-Source Model Platform
+
+[LLMBase](https://llmbase.ai) is a privacy-focused, sovereign AI platform for
+hosted open-source models. Its inference API speaks the OpenAI-compatible Chat
+Completions protocol, so Hermes can use it as a named custom provider.
+
+Create an API key in the LLMBase dashboard, add it to `~/.hermes/.env`, then add
+a `llmbase` custom provider in `~/.hermes/config.yaml`:
+
+```bash
+echo "LLMBASE_API_KEY=llmbase_..." >> ~/.hermes/.env
+```
+
+```yaml
+model:
+  provider: llmbase
+  model: deepseek/deepseek-v4-flash
+  base_url: https://api.llmbase.ai/v1
+  api_key: ${LLMBASE_API_KEY}
+  api_mode: chat_completions
+  max_tokens: 128
+
+custom_providers:
+  - name: llmbase
+    base_url: https://api.llmbase.ai/v1
+    api_key: ${LLMBASE_API_KEY}
+    api_mode: chat_completions
+    model: deepseek/deepseek-v4-flash
+```
+
+Run Hermes with the named provider:
+
+```bash
+hermes chat --provider llmbase --model deepseek/deepseek-v4-flash
+```
+
+List available models from LLMBase's OpenAI-compatible model endpoint:
+
+```bash
+curl https://api.llmbase.ai/v1/models \
+  -H "Authorization: Bearer $LLMBASE_API_KEY"
+```
+
+For agent-focused model discovery, LLMBase also exposes
+`https://api.llmbase.ai/v1/agents/models`.
+
+:::tip API key types
+Use a normal inference API key with the `llmbase_...` prefix for Hermes custom
+provider requests. LLMBase chat-agent keys with the `llmbase_chat_...` prefix
+are for subscription-backed agent tools and are not needed for this direct
+OpenAI-compatible setup.
+:::
 
 ---
 

@@ -1,0 +1,98 @@
+diff --git a/plugins/image_gen/openai-codex/__init__.py b/plugins/image_gen/openai-codex/__init__.py
+index 2b0fae4fd..24f04b7e8 100644
+--- a/plugins/image_gen/openai-codex/__init__.py
++++ b/plugins/image_gen/openai-codex/__init__.py
+@@ -237,7 +237,7 @@ def _build_responses_payload(
+             "quality": quality,
+             "output_format": "png",
+             "background": "opaque",
+-            "partial_images": 1,
++            "partial_images": 3,
+         }],
+         "tool_choice": {
+             "type": "allowed_tools",
+@@ -248,27 +248,39 @@ def _build_responses_payload(
+     }
+ 
+ 
+-def _extract_image_b64(value: Any) -> Optional[str]:
+-    """Return the newest image b64 embedded in a Responses event payload."""
+-    found: Optional[str] = None
++def _extract_image_b64(value: Any) -> Tuple[Optional[str], Optional[str]]:
++    """Return ``(final_b64, partial_b64)`` embedded in a Responses event payload.
++
++    The final image lives on ``image_generation_call.result``; ``partial_image_b64``
++    is a half-rendered streaming preview. They are returned separately so the
++    caller can *always* prefer the final result and only fall back to a partial
++    if no final ever arrives — saving a partial as the finished image produces a
++    soft, half-diffused PNG.
++    """
++    final: Optional[str] = None
++    partial: Optional[str] = None
+     if isinstance(value, dict):
+         if value.get("type") == "image_generation_call":
+             result = value.get("result")
+             if isinstance(result, str) and result:
+-                found = result
+-        partial = value.get("partial_image_b64")
+-        if isinstance(partial, str) and partial:
+-            found = partial
++                final = result
++        p = value.get("partial_image_b64")
++        if isinstance(p, str) and p:
++            partial = p
+         for child in value.values():
+-            nested = _extract_image_b64(child)
+-            if nested:
+-                found = nested
++            f, pa = _extract_image_b64(child)
++            if f:
++                final = f
++            if pa:
++                partial = pa
+     elif isinstance(value, list):
+         for child in value:
+-            nested = _extract_image_b64(child)
+-            if nested:
+-                found = nested
+-    return found
++            f, pa = _extract_image_b64(child)
++            if f:
++                final = f
++            if pa:
++                partial = pa
++    return final, partial
+ 
+ 
+ def _iter_sse_json(response: Any):
+@@ -341,7 +353,8 @@ def _collect_image_b64(
+     )
+     timeout = httpx.Timeout(300.0, connect=30.0, read=300.0, write=30.0, pool=30.0)
+ 
+-    image_b64: Optional[str] = None
++    final_b64: Optional[str] = None
++    partial_b64: Optional[str] = None
+     with httpx.Client(timeout=timeout, headers=headers) as http:
+         with http.stream("POST", f"{_CODEX_BASE_URL}/responses", json=payload) as response:
+             try:
+@@ -353,11 +366,15 @@ def _collect_image_b64(
+                     f"Codex Responses API returned HTTP {exc.response.status_code}: {body}"
+                 ) from exc
+             for event in _iter_sse_json(response):
+-                found = _extract_image_b64(event)
+-                if found:
+-                    image_b64 = found
+-
+-    return image_b64
++                f, p = _extract_image_b64(event)
++                if f:
++                    final_b64 = f
++                if p:
++                    partial_b64 = p
++
++    # Always prefer the finished image; a partial is a last-resort fallback so a
++    # half-rendered preview frame is never saved as the final PNG.
++    return final_b64 or partial_b64
+ 
+ 
+ # ---------------------------------------------------------------------------

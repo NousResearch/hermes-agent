@@ -1107,7 +1107,10 @@ class AIAgent:
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        from agent.chat_completion_helpers import estimate_request_context_tokens
+        from agent.chat_completion_helpers import (
+            estimate_request_context_tokens,
+            _reasoning_effort_scaled_timeout,
+        )
         est_tokens = estimate_request_context_tokens(api_payload)
         if est_tokens > 100_000:
             timeout = max(stale_base, 240.0)
@@ -1133,32 +1136,12 @@ class AIAgent:
         # HERMES_API_CALL_STALE_REASONING_MULTIPLIER (default 5.0 for
         # high/xhigh, 3.5 for medium, 1.0 for low/minimal/none).
         try:
-            _effort_level = ""
-            if isinstance(api_payload, dict):
-                _reasoning = api_payload.get("reasoning")
-                if isinstance(_reasoning, dict):
-                    _effort_level = str(_reasoning.get("effort", "")).strip().lower()
-                if not _effort_level:
-                    _effort_level = str(
-                        api_payload.get("reasoning_effort", "")
-                    ).strip().lower()
-            if not _effort_level:
-                # Fall back to the agent-level config if api_payload didn't
-                # carry it (some non-Responses paths).
-                _rc = getattr(self, "reasoning_config", None)
-                if isinstance(_rc, dict):
-                    _effort_level = str(_rc.get("effort", "")).strip().lower()
-
-            _high_mult = float(
-                os.getenv("HERMES_API_CALL_STALE_REASONING_MULTIPLIER", "5.0")
+            timeout = _reasoning_effort_scaled_timeout(
+                timeout,
+                api_payload,
+                self,
+                "HERMES_API_CALL_STALE_REASONING_MULTIPLIER",
             )
-            # Medium is the GPT-5+ default on many configs and still needs
-            # significant headroom over the 90s base; scale it sub-high.
-            _med_mult = _high_mult * 0.7
-            if _effort_level in {"high", "xhigh"}:
-                timeout = timeout * _high_mult
-            elif _effort_level == "medium":
-                timeout = timeout * _med_mult
             # low/minimal/none/'' keep the 1.0 multiplier (no change)
         except Exception:
             pass

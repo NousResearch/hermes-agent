@@ -221,6 +221,28 @@ def test_env_var_disables_multiplier_when_one(monkeypatch, tmp_path):
     assert agent._compute_non_stream_stale_timeout(payload) == 90.0
 
 
+def test_medium_effort_override_one_does_not_shrink_below_base(monkeypatch, tmp_path):
+    """The medium sub-multiplier must never reduce the stale timeout.
+
+    HERMES_API_CALL_STALE_REASONING_MULTIPLIER=1.0 is the documented way to
+    disable scaling. Since medium uses a lower multiplier than high, clamp it
+    at 1.0 instead of making the stale detector more aggressive than default.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".env").write_text("", encoding="utf-8")
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    monkeypatch.setenv("HERMES_API_CALL_STALE_REASONING_MULTIPLIER", "1.0")
+    _write_config(tmp_path, "")
+
+    agent = _make_agent(tmp_path)
+    payload = {
+        "model": "gpt-5.5",
+        "input": "hi",
+        "reasoning": {"effort": "medium"},
+    }
+    assert agent._compute_non_stream_stale_timeout(payload) == 90.0
+
+
 # ── fallback to self.reasoning_config when payload missing it ────────────
 
 

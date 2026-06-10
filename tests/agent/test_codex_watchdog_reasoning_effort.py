@@ -138,6 +138,87 @@ def test_default_effort_small_prompt_keeps_12s(tmp_path, monkeypatch):
     )
 
 
+def test_payload_high_effort_extends_idle_timeout_without_agent_attr(tmp_path, monkeypatch):
+    """The wire payload is the source of truth for stream effort.
+
+    Some call paths populate api_kwargs['reasoning'] without setting
+    agent.reasoning_config. Those still need the high-effort watchdog budget.
+    """
+    monkeypatch.delenv("HERMES_CODEX_HIGH_EFFORT_MULTIPLIER", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    agent = _make_codex_agent(tmp_path, monkeypatch, reasoning_effort=None)
+    tiny_kwargs = {
+        "model": "gpt-5.5",
+        "input": "hi",
+        "reasoning": {"effort": "high"},
+    }
+
+    captured = _capture_idle_and_ttfb(agent, monkeypatch, tiny_kwargs)
+    idle = captured.get("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS")
+    assert idle is not None
+    assert idle >= 60.0, (
+        f"expected payload effort=high to extend idle timeout, got {idle}s"
+    )
+
+
+def test_payload_medium_effort_extends_idle_timeout_without_agent_attr(tmp_path, monkeypatch):
+    """Medium effort is still non-low and needs more than the 12s bucket."""
+    monkeypatch.delenv("HERMES_CODEX_HIGH_EFFORT_MULTIPLIER", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    agent = _make_codex_agent(tmp_path, monkeypatch, reasoning_effort=None)
+    tiny_kwargs = {
+        "model": "gpt-5.5",
+        "input": "hi",
+        "reasoning": {"effort": "medium"},
+    }
+
+    captured = _capture_idle_and_ttfb(agent, monkeypatch, tiny_kwargs)
+    idle = captured.get("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS")
+    assert idle is not None
+    assert idle >= 42.0, (
+        f"expected payload effort=medium to extend idle timeout, got {idle}s"
+    )
+
+
+def test_medium_effort_multiplier_one_does_not_shrink_stream_timeout(tmp_path, monkeypatch):
+    """Disabling scaling must not make the stream watchdog more aggressive."""
+    monkeypatch.setenv("HERMES_CODEX_HIGH_EFFORT_MULTIPLIER", "1.0")
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    agent = _make_codex_agent(tmp_path, monkeypatch, reasoning_effort=None)
+    tiny_kwargs = {
+        "model": "gpt-5.5",
+        "input": "hi",
+        "reasoning": {"effort": "medium"},
+    }
+
+    captured = _capture_idle_and_ttfb(agent, monkeypatch, tiny_kwargs)
+    idle = captured.get("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS")
+    assert idle == 12.0
+
+
+def test_payload_effort_wins_over_agent_attr_for_stream_timeout(tmp_path, monkeypatch):
+    """Do not inflate stream watchdogs from stale agent-level reasoning_config.
+
+    api_kwargs is what will actually be sent over the wire, so a low-effort
+    payload must keep the small-prompt 12s budget even if agent state says high.
+    """
+    monkeypatch.delenv("HERMES_CODEX_HIGH_EFFORT_MULTIPLIER", raising=False)
+    monkeypatch.delenv("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS", raising=False)
+    agent = _make_codex_agent(tmp_path, monkeypatch, reasoning_effort="high")
+    tiny_kwargs = {
+        "model": "gpt-5.5",
+        "input": "hi",
+        "reasoning": {"effort": "low"},
+    }
+
+    captured = _capture_idle_and_ttfb(agent, monkeypatch, tiny_kwargs)
+    idle = captured.get("HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS")
+    assert idle is not None
+    assert idle == 12.0, (
+        f"expected payload effort=low to keep legacy idle timeout, got {idle}s"
+    )
+
+
 def test_multiplier_env_var_can_override(tmp_path, monkeypatch):
     """HERMES_CODEX_HIGH_EFFORT_MULTIPLIER=10 → 12s × 10 = 120s on tiny+xhigh."""
     monkeypatch.setenv("HERMES_CODEX_HIGH_EFFORT_MULTIPLIER", "10.0")
@@ -151,10 +232,7 @@ def test_multiplier_env_var_can_override(tmp_path, monkeypatch):
 
 def test_ttfb_also_extended_by_multiplier(tmp_path, monkeypatch):
     """The TTFB watchdog (separate from idle) must also be multiplied —
-    the first SSE event on xhigh can take >120s. With 5x default → 600s.
-
-    Captures by replacing the watchdog-arming sentinel that consumes the
-    final post-multiplier _ttfb_timeout value."""
+    the first SSE event on xhigh can take >120s. With 5x default → 600s."""
     from agent import chat_completion_helpers as h
 
     monkeypatch.delenv("HERMES_CODEX_HIGH_EFFORT_MULTIPLIER", raising=False)
@@ -162,30 +240,15 @@ def test_ttfb_also_extended_by_multiplier(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_CODEX_TTFB_DISABLE_ABOVE_TOKENS", "0")  # never disable
     agent = _make_codex_agent(tmp_path, monkeypatch, reasoning_effort="xhigh")
 
-    # Spy on _set_codex_watchdog_marker or whatever consumes the final
-    # post-multiplier _ttfb_timeout. Simpler: replace agent's
-    # _create_request_openai_client to introspect a sentinel we hide via
-    # logging — patch interruptible_api_call by capturing the local vars
-    # at the moment of first decision.
-    #
-    # Pragmatic shortcut: import the source, evaluate the inline computation
-    # with the same effort_multiplier branch that runs in production, and
-    # assert the math the production code does. This proves the *code* is
-    # correct without needing to hook a private local.
-    _ttfb_default = 120.0
-    _effort_multiplier = 5.0  # the default in chat_completion_helpers.py
-    expected_post_mult = _ttfb_default * _effort_multiplier
-    # Verify our default constants match production
-    src = open(h.__file__).read()
-    assert 'HERMES_CODEX_HIGH_EFFORT_MULTIPLIER", 5.0' in src or \
-           "HERMES_CODEX_HIGH_EFFORT_MULTIPLIER', 5.0" in src, (
-        "production default for HERMES_CODEX_HIGH_EFFORT_MULTIPLIER changed from 5.0 — "
-        "update this test's expected value."
-    )
-    assert "_ttfb_timeout = _ttfb_timeout * _effort_multiplier" in src, (
-        "production code no longer multiplies _ttfb_timeout by the effort multiplier — "
-        "the small-prompt + high-effort kill is back. THIS IS THE REGRESSION."
-    )
-    assert expected_post_mult == 600.0, (
-        f"calculation sanity: 120s * 5x should be 600s, got {expected_post_mult}"
-    )
+    scaled_calls = []
+    original = h._reasoning_effort_scaled_timeout
+
+    def _spy_scaled_timeout(timeout, api_payload, scaled_agent, env_name):
+        scaled = original(timeout, api_payload, scaled_agent, env_name)
+        scaled_calls.append((timeout, scaled, env_name))
+        return scaled
+
+    monkeypatch.setattr(h, "_reasoning_effort_scaled_timeout", _spy_scaled_timeout)
+    _capture_idle_and_ttfb(agent, monkeypatch, {"model": "gpt-5.5", "input": "hi"})
+
+    assert (120.0, 600.0, "HERMES_CODEX_HIGH_EFFORT_MULTIPLIER") in scaled_calls

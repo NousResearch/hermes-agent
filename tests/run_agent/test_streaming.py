@@ -843,18 +843,19 @@ class TestCodexStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == 3
 
-    def test_codex_remote_protocol_error_retries_then_raises(self):
-        """Transport errors from ``responses.create`` retry once then re-raise.
+    def test_codex_remote_protocol_error_retries_then_raises(self, monkeypatch):
+        """Transport errors from ``responses.create`` honor retry count.
 
         With the migration from ``responses.stream(...)`` to
         ``responses.create(stream=True)``, there is no longer a separate
         fallback function — the same call IS the streaming path.  When it
-        raises ``httpx.RemoteProtocolError``, we retry once (matching the
-        old behavior on the helper) and re-raise on the second failure.
+        raises ``httpx.RemoteProtocolError``, we retry according to
+        HERMES_CODEX_STREAM_RETRIES and re-raise after exhaustion.
         """
         from run_agent import AIAgent
         import httpx
 
+        monkeypatch.setenv("HERMES_CODEX_STREAM_RETRIES", "1")
         agent = AIAgent(
             api_key="test-key",
             base_url="https://openrouter.ai/api/v1",

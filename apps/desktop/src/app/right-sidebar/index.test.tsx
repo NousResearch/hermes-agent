@@ -2,11 +2,25 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesReadDirResult } from '@/global'
-import { $connection, setCurrentCwd } from '@/store/session'
+import { PREVIEW_PANE_ID } from '@/store/layout'
+import { getPaneStateSnapshot, setPaneOpen } from '@/store/panes'
+import { clearSessionPreviewRegistry } from '@/store/preview'
+import { $activeSessionId, $connection, setCurrentCwd } from '@/store/session'
 
 import { resetProjectTreeState } from './files/use-project-tree'
 
 import { RightSidebarPane } from './index'
+
+vi.mock('@/lib/local-preview', () => ({
+  normalizeOrLocalPreviewTarget: vi.fn(async (path: string) => ({
+    kind: 'file',
+    language: 'markdown',
+    previewKind: 'text',
+    source: path,
+    title: 'README.md',
+    url: path
+  }))
+}))
 
 const readDir = vi.fn<(path: string) => Promise<HermesReadDirResult>>()
 const selectPaths = vi.fn()
@@ -26,11 +40,44 @@ function installBridge() {
   ).hermesDesktop = { readDir, selectPaths }
 }
 
+class ResizeObserverMock {
+  private callback: ResizeObserverCallback
+
+  constructor(callback: ResizeObserverCallback) {
+    this.callback = callback
+  }
+
+  observe(target: Element) {
+    this.callback([{ target, contentRect: { height: 300, width: 400 } } as ResizeObserverEntry], this)
+  }
+
+  disconnect() {}
+  unobserve() {}
+}
+
 describe('RightSidebarPane', () => {
+  const originalResizeObserver = window.ResizeObserver
+  const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect
+
   beforeEach(() => {
+    window.ResizeObserver = ResizeObserverMock as unknown as typeof ResizeObserver
+    Element.prototype.getBoundingClientRect = vi.fn(() => ({
+      bottom: 300,
+      height: 300,
+      left: 0,
+      right: 400,
+      top: 0,
+      width: 400,
+      x: 0,
+      y: 0,
+      toJSON: () => ({})
+    }))
+    $activeSessionId.set('session-1')
     $connection.set(null)
+    clearSessionPreviewRegistry()
     resetProjectTreeState()
     setCurrentCwd('/repo')
+    setPaneOpen(PREVIEW_PANE_ID, false)
     readDir.mockReset()
     selectPaths.mockReset()
     readDir.mockResolvedValue(ok([{ name: 'README.md', path: '/repo/README.md', isDirectory: false }]))
@@ -40,8 +87,12 @@ describe('RightSidebarPane', () => {
 
   afterEach(() => {
     cleanup()
+    window.ResizeObserver = originalResizeObserver
+    Element.prototype.getBoundingClientRect = originalGetBoundingClientRect
+    $activeSessionId.set(null)
     $connection.set(null)
     setCurrentCwd('')
+    clearSessionPreviewRegistry()
     resetProjectTreeState()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
   })
@@ -52,7 +103,6 @@ describe('RightSidebarPane', () => {
     render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} onChangeCwd={onChangeCwd} />)
 
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh tree' }).hasAttribute('disabled')).toBe(false))
-
     readDir.mockClear()
 
     fireEvent.click(screen.getByRole('button', { name: 'Refresh tree' }))
@@ -71,5 +121,13 @@ describe('RightSidebarPane', () => {
       })
     )
     await waitFor(() => expect(onChangeCwd).toHaveBeenCalledWith('/repo-next'))
+  })
+
+  it('opens the preview pane when a file is previewed from the file tree', async () => {
+    render(<RightSidebarPane onActivateFile={vi.fn()} onActivateFolder={vi.fn()} onChangeCwd={vi.fn()} />)
+
+    fireEvent.doubleClick(await screen.findByText('README.md'))
+
+    await waitFor(() => expect(getPaneStateSnapshot(PREVIEW_PANE_ID)?.open).toBe(true))
   })
 })

@@ -9,8 +9,9 @@ import { useI18n } from '@/i18n'
 import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
-import { $panesFlipped } from '@/store/layout'
+import { $panesFlipped, PREVIEW_PANE_ID } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
+import { setPaneOpen } from '@/store/panes'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
 import { $currentCwd } from '@/store/session'
 
@@ -77,6 +78,7 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
       }
 
       setCurrentSessionPreviewTarget(preview, 'file-browser', path)
+      setPaneOpen(PREVIEW_PANE_ID, true)
     } catch (error) {
       notifyError(error, r.previewUnavailable)
     }

@@ -814,7 +814,16 @@ export function ChatBar({
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
 
-      if (!busy && !hasComposerPayload && queuedPrompts.length > 0) {
+      // Decide from the DOM, not React state. `hasComposerPayload` is derived
+      // from the AUI composer state, which lags the latest keystroke by a
+      // render, so on fast typing / IME the just-typed text isn't in state yet.
+      // Without the live read, a real message typed while prompts are queued
+      // would drain the queue instead of sending. submitDraft() re-syncs and
+      // sends the live editor text.
+      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+      const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
+
+      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
         void drainNextQueued()
 
         return
@@ -822,7 +831,10 @@ export function ChatBar({
 
       // Empty Enter while busy is a no-op — interrupting is explicit (Stop/Esc),
       // never a stray Enter after sending. With a payload, submitDraft queues it.
-      if (busy && !hasComposerPayload) {
+      // Gate on the live DOM payload (not the render-lagged composer state) so a
+      // message typed fast / via IME while busy still reaches submitDraft() and
+      // gets queued instead of being mistaken for an empty Enter.
+      if (busy && !hasLivePayload) {
         return
       }
 
@@ -1227,6 +1239,26 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    // Source the text from the DOM editor, not React state. The AUI composer
+    // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
+    // render, so on fast typing or IME composition the final keystroke(s) may
+    // not have synced yet — reading state here drops the message (Enter looks
+    // like it does nothing; typing a trailing space only "fixes" it because the
+    // extra input event forces a state sync). draftRef is updated on every
+    // input event; refresh it from the editor once more to also cover an
+    // in-flight keystroke that hasn't fired its input event yet.
+    const editor = editorRef.current
+    if (editor) {
+      const domText = composerPlainText(editor)
+      if (domText !== draftRef.current) {
+        draftRef.current = domText
+        aui.composer().setText(domText)
+      }
+    }
+
+    const text = draftRef.current
+    const payloadPresent = text.trim().length > 0 || attachments.length > 0
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
@@ -1237,12 +1269,12 @@ export function ChatBar({
       // busy guard for commands that genuinely need an idle session (skill
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
-      if (!attachments.length && SLASH_COMMAND_RE.test(draft.trim())) {
-        const submitted = draft
+      if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
+        const submitted = text
         triggerHaptic('submit')
         clearDraft()
         void onSubmit(submitted)
-      } else if (hasComposerPayload) {
+      } else if (payloadPresent) {
         queueCurrentDraft()
       } else {
         // Stop button (the only way to reach here while busy with an empty
@@ -1250,10 +1282,10 @@ export function ChatBar({
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (payloadPresent) {
+      const submitted = text
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()

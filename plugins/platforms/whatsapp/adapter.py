@@ -90,33 +90,80 @@ def _kill_port_process(port: int) -> None:
         pass
 
 
+def _bridge_pid_is_ours(pid: int, session_path: Path, expected_start) -> bool:
+    """True only if ``pid`` is alive AND still our node bridge for this session.
+
+    The PID is read from a file written by a previous run.  Once that process
+    exits and is reaped the kernel can recycle the number onto an unrelated
+    process — observed in the wild landing on a desktop browser's main process,
+    which a bare-liveness ``os.kill`` then SIGTERMed, closing the whole browser
+    at irregular intervals (every time the flapping bridge restarted).
+
+    Identity is confirmed two ways: the kernel start time captured when we wrote
+    the pidfile (definitive), and — for legacy pidfiles with no baseline — the
+    command line, which must contain ``node`` and this session's unique path.
+    A recycled PID (different start time / different cmdline) is never ours.
+    """
+    from gateway.status import _pid_exists
+    if not _pid_exists(pid):
+        return False
+    if expected_start is not None:
+        from gateway.status import get_process_start_time
+        # A matching (pid, start time) pair uniquely identifies the process.
+        return get_process_start_time(pid) == expected_start
+    # Legacy pidfile (no recorded start time): fall back to a command-line
+    # signature so a recycled PID is still never signalled.  If we cannot read
+    # the cmdline we refuse to kill rather than risk a stranger.
+    from gateway.status import _read_process_cmdline
+    cmdline = _read_process_cmdline(pid)
+    if not cmdline:
+        return False
+    return ("node" in cmdline) and (str(session_path) in cmdline)
+
+
 def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
     """Kill a bridge process recorded in a PID file from a previous run.
 
     The bridge writes ``bridge.pid`` into the session directory when it
     starts.  If the gateway crashed without a clean shutdown the old bridge
     process becomes orphaned — this helper finds and kills it.
+
+    Critically, the recorded PID is re-validated against the live process
+    (:func:`_bridge_pid_is_ours`) before any signal, so a recycled PID that now
+    names an unrelated process (e.g. the user's browser) is never killed.
     """
     pid_file = session_path / "bridge.pid"
     if not pid_file.exists():
         return
+    pid = None
+    recorded_start = None
     try:
-        pid = int(pid_file.read_text().strip())
-    except (ValueError, OSError, TypeError):
+        # Format: line 1 = pid, optional line 2 = kernel start time. Legacy
+        # files written before the guard existed have only the pid.
+        lines = pid_file.read_text().split("\n")
+        pid = int(lines[0].strip())
+        if len(lines) > 1 and lines[1].strip():
+            recorded_start = int(lines[1].strip())
+    except (ValueError, OSError, TypeError, IndexError):
         try:
             pid_file.unlink()
         except OSError:
             pass
         return
-    # ``os.kill(pid, 0)`` is NOT a no-op on Windows (bpo-14484) — use the
-    # cross-platform existence check before sending a real signal.
-    from gateway.status import _pid_exists
-    if _pid_exists(pid):
+    if _bridge_pid_is_ours(pid, session_path, recorded_start):
         try:
             os.kill(pid, signal.SIGTERM)
             logger.info("[whatsapp] Killed stale bridge PID %d from pidfile", pid)
         except (ProcessLookupError, PermissionError, OSError):
             pass
+    else:
+        from gateway.status import _pid_exists
+        if _pid_exists(pid):
+            logger.warning(
+                "[whatsapp] Not killing pidfile PID %d: it is no longer the "
+                "bridge (recycled onto an unrelated process); skipping to avoid "
+                "killing a stranger.", pid,
+            )
     try:
         pid_file.unlink()
     except OSError:
@@ -124,9 +171,17 @@ def _kill_stale_bridge_by_pidfile(session_path: Path) -> None:
 
 
 def _write_bridge_pidfile(session_path: Path, pid: int) -> None:
-    """Write the bridge PID to a file for later cleanup."""
+    """Write the bridge PID (and its kernel start time) for later cleanup.
+
+    The start time on line 2 lets a future run prove the PID still names this
+    exact process before signalling it, so a recycled PID can never be killed
+    as a "stale bridge". Older single-line files remain readable.
+    """
     try:
-        (session_path / "bridge.pid").write_text(str(pid))
+        from gateway.status import get_process_start_time
+        start = get_process_start_time(pid)
+        text = str(pid) if start is None else "{}\n{}".format(pid, start)
+        (session_path / "bridge.pid").write_text(text)
     except OSError:
         pass
 

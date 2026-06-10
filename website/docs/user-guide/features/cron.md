@@ -308,15 +308,15 @@ This applies only to cron deliveries. `TELEGRAM_HOME_CHANNEL_THREAD_ID` (used el
 
 ### Response wrapping
 
-By default, delivered cron output is wrapped with a header and footer so the recipient knows it came from a scheduled task:
+By default, delivered cron output appends a footer so the recipient knows it came from a scheduled task without pushing the actual result below metadata:
 
 ```
-Cronjob Response: Morning feeds
--------------
-
 <agent output here>
 
-Note: The agent cannot see this message, and therefore cannot respond to it.
+-------------
+Cronjob Response: Morning feeds
+(job_id: abc123)
+To stop or manage this job, send me a new message (e.g. "stop reminder Morning feeds").
 ```
 
 To deliver the raw agent output without the wrapper, set `cron.wrap_response` to `false`:
@@ -329,7 +329,7 @@ cron:
 
 ### Silent suppression
 
-If the agent's final response starts with `[SILENT]`, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target.
+If the agent's final response is exactly `[SILENT]` after trimming whitespace, delivery is suppressed entirely. The output is still saved locally for audit (in `~/.hermes/cron/output/`), but no message is sent to the delivery target. Responses that contain real report text plus `[SILENT]` are still delivered.
 
 This is useful for monitoring jobs that should only report when something is wrong:
 

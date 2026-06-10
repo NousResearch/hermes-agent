@@ -2330,10 +2330,38 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key)
                 if live:
+                    # For providers in _MODELS_DEV_PREFERRED (nvidia, zai,
+                    # deepseek, etc.), the live /v1/models endpoint returns
+                    # EVERYTHING — TTS, embedding, image gen, safety-guard,
+                    # content-safety models — not just agentic chat models.
+                    # Filter to tool-call-capable models so the /model picker
+                    # shows a usable list instead of 120 entries of which
+                    # only 54 are actually usable with an agent loop.
+                    if normalized in _MODELS_DEV_PREFERRED:
+                        try:
+                            from agent.models_dev import list_agentic_models
+                            agentic = list_agentic_models(normalized)
+                            if agentic:
+                                # Merge: live IDs that are also in agentic
+                                # (case-insensitive), preserving live order
+                                # so new models the API recently added show up.
+                                agentic_lower = {m.lower() for m in agentic}
+                                filtered = [m for m in live if m.lower() in agentic_lower]
+                                if filtered:
+                                    return filtered
+                        except Exception:
+                            pass
                     return live
-            # Use profile's fallback_models if defined
-            if _p.fallback_models:
-                return list(_p.fallback_models)
+            # Live fetch failed (no key, network error, or empty response).
+            # For providers in _MODELS_DEV_PREFERRED, fall through to the
+            # models.dev merge below instead of returning the sparse
+            # fallback_models list (which may be just 1-2 entries). This
+            # ensures NVIDIA (94 models in models.dev), zai, deepseek, etc.
+            # show their full catalog in the /model picker.
+            if normalized not in _MODELS_DEV_PREFERRED:
+                # Use profile's fallback_models if defined
+                if _p.fallback_models:
+                    return list(_p.fallback_models)
     except Exception:
         pass
 

@@ -632,7 +632,7 @@ def _handle_block(args: dict, **kw) -> str:
                     reason=reason,
                     board=board,
                     db_path=os.environ.get("HERMES_KANBAN_DB"),
-                    run_id=run_id,
+                    run_id=run.id if run else None,
                     source="tool",
                 )
             except Exception:

@@ -833,6 +833,57 @@ class TestLoadGatewayConfig:
             == "https://custom-proxy.example.com/bot"
         )
 
+    def test_bridges_whatsapp_bridge_port_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "whatsapp:\n"
+            "  bridge_port: 4000\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WHATSAPP].extra["bridge_port"] == 4000
+
+    def test_whatsapp_bridge_port_coerced_to_int(self, tmp_path, monkeypatch):
+        """bridge_port should be coerced to int even if YAML provides a string."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "whatsapp:\n"
+            "  bridge_port: '5000'\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.platforms[Platform.WHATSAPP].extra["bridge_port"] == 5000
+        assert isinstance(config.platforms[Platform.WHATSAPP].extra["bridge_port"], int)
+
+    def test_whatsapp_default_bridge_port_when_not_configured(self, tmp_path, monkeypatch):
+        """When bridge_port is not in config, extra should not contain it."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "whatsapp:\n"
+            "  require_mention: true\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert "bridge_port" not in config.platforms[Platform.WHATSAPP].extra
+
     def test_bridges_notice_delivery_from_config_yaml(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()

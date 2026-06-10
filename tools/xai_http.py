@@ -120,10 +120,18 @@ def resolve_xai_http_credentials(*, force_refresh: bool = False) -> Dict[str, st
         pass
 
     try:
-        from hermes_cli.auth import read_credential_pool
+        from hermes_constants import get_hermes_home
 
-        entries = read_credential_pool("xai-oauth")
-        if isinstance(entries, list):
+        profiles_dir = get_hermes_home() / "profiles"
+        for profile_auth in sorted(profiles_dir.glob("*/auth.json")):
+            try:
+                store = json.loads(profile_auth.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            pool = store.get("credential_pool") if isinstance(store, dict) else None
+            entries = pool.get("xai-oauth") if isinstance(pool, dict) else None
+            if not isinstance(entries, list):
+                continue
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue

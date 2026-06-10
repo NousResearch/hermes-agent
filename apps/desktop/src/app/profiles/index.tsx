@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { CodeEditor } from '@/components/chat/code-editor'
 import { PageLoader } from '@/components/page-loader'
+import { ProfileAvatar } from '@/components/profile-avatar'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import {
@@ -19,19 +20,27 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import {
   createProfile,
   deleteProfile,
+  deleteProfileAvatar,
   getProfileSoul,
   type ProfileInfo,
   renameProfile,
+  updateProfileAvatar,
   updateProfileSoul
 } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { AlertTriangle, Save } from '@/lib/icons'
-import { profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
+import { AlertTriangle, Pencil, Save, X } from '@/lib/icons'
 import { slug } from '@/lib/sanitize'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
-import { $profileColors, refreshProfiles } from '@/store/profile'
+import {
+  $profileAvatars,
+  normalizeProfileKey,
+  refreshProfiles,
+  removeProfileLocal,
+  renameProfileLocal,
+  setProfileAvatarLocal
+} from '@/store/profile'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import {
@@ -48,6 +57,8 @@ import {
   PanelRowMenu,
   PanelSectionLabel
 } from '../overlays/panel'
+
+import { useAvatarPicker } from './avatar-field'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -141,6 +152,10 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
       }
 
       await renameProfile(from, target)
+      // Optimistically re-key the cached list, cosmetics (color/order/avatar)
+      // and gateway routing to the new name so the rail repaints instantly and
+      // no reconnect loop is left dialing the old, now-torn-down backend.
+      renameProfileLocal(from, target)
       notify({ kind: 'success', title: p.renamed, message: `${from} → ${target}` })
       setSelectedName(target)
       await refresh()
@@ -157,6 +172,10 @@ export function ProfilesView({ onClose }: ProfilesViewProps) {
 
     try {
       await deleteProfile(pendingDelete.name)
+      // Optimistically drop the row/avatar and retarget any routing at the
+      // deleted profile to default, so the rail square disappears at once and
+      // its reconnect backoff stops respawning a backend for a gone directory.
+      removeProfileLocal(pendingDelete.name)
       notify({ kind: 'success', title: p.deleted, message: pendingDelete.name })
       setPendingDelete(null)
       setSelectedName(null)
@@ -290,18 +309,10 @@ function ProfileRow({
   onSelect: () => void
   profile: ProfileInfo
 }) {
-  const colors = useStore($profileColors)
-
   return (
     <PanelListRow
       active={active}
-      lead={
-        <ProfileGlyph
-          color={resolveProfileColor(profile.name, colors)}
-          isDefault={profile.is_default}
-          name={profile.name}
-        />
-      }
+      lead={<ProfileGlyph isDefault={profile.is_default} name={profile.name} />}
       menu={menu}
       onSelect={onSelect}
       rowKey={profile.name}
@@ -311,29 +322,85 @@ function ProfileRow({
 }
 
 // Leading glyph for a profile row, mirroring the sidebar rail: the default
-// profile gets the `home` icon; named profiles get a soft color-tinted square
-// with their initial in the profile's color.
-function ProfileGlyph({ color, isDefault, name }: { color: null | string; isDefault: boolean; name: string }) {
+// profile keeps the `home` icon; named profiles show their picture (or the
+// colored-initial fallback ProfileAvatar draws when no picture is set).
+function ProfileGlyph({ isDefault, name }: { isDefault: boolean; name: string }) {
   if (isDefault) {
     return <Codicon className="shrink-0 text-muted-foreground/70" name="home" size="0.9rem" />
   }
 
-  const hue = color ?? 'var(--ui-text-quaternary)'
+  return <ProfileAvatar className="size-4 rounded-[3px] text-[0.5rem]" name={name} />
+}
 
-  const initial =
-    name
-      .replace(/[^a-z0-9]/gi, '')
-      .charAt(0)
-      .toUpperCase() || '?'
+// The profile picture in the detail header, doubling as its editor: click to
+// pick a new image (hover reveals a pencil overlay), and a corner button removes
+// the current one. Mirrors the SOUL.md save pattern — optimistic local update
+// plus a success toast — so the rail and lists refresh instantly.
+function ProfileDetailAvatar({ name }: { name: string }) {
+  const { t } = useI18n()
+  const p = t.profiles
+  const pickAvatar = useAvatarPicker()
+  const avatars = useStore($profileAvatars)
+  const hasPicture = Boolean(avatars[normalizeProfileKey(name)])
+  const [busy, setBusy] = useState(false)
+
+  const handlePick = useCallback(async () => {
+    setBusy(true)
+
+    try {
+      const next = await pickAvatar()
+
+      if (next) {
+        await updateProfileAvatar(name, next)
+        setProfileAvatarLocal(name, next)
+        notify({ kind: 'success', title: p.pictureSaved, message: name })
+      }
+    } catch (err) {
+      notifyError(err, p.failedSavePicture)
+    } finally {
+      setBusy(false)
+    }
+  }, [name, p, pickAvatar])
+
+  const handleRemove = useCallback(async () => {
+    setBusy(true)
+
+    try {
+      await deleteProfileAvatar(name)
+      setProfileAvatarLocal(name, null)
+    } catch (err) {
+      notifyError(err, p.failedRemovePicture)
+    } finally {
+      setBusy(false)
+    }
+  }, [name, p])
 
   return (
-    <span
-      aria-hidden="true"
-      className="grid size-4 shrink-0 place-items-center rounded-[3px] text-[0.5rem] font-semibold uppercase leading-none"
-      style={{ backgroundColor: profileColorSoft(hue, 22), color: color ?? undefined }}
-    >
-      {initial}
-    </span>
+    <div className="group/avatar relative shrink-0">
+      <button
+        aria-label={hasPicture ? p.changePicture : p.choosePicture}
+        className="block rounded-lg outline-none ring-offset-2 ring-offset-background focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+        disabled={busy}
+        onClick={() => void handlePick()}
+        type="button"
+      >
+        <ProfileAvatar className="size-12 rounded-lg text-lg" name={name} />
+        <span className="absolute inset-0 grid place-items-center rounded-lg bg-black/45 text-white opacity-0 transition-opacity group-hover/avatar:opacity-100">
+          <Pencil className="size-4" />
+        </span>
+      </button>
+      {hasPicture && (
+        <button
+          aria-label={p.removePicture}
+          className="absolute -right-1.5 -top-1.5 grid size-5 place-items-center rounded-full border border-border bg-background text-muted-foreground opacity-0 transition hover:text-destructive group-hover/avatar:opacity-100 disabled:opacity-60"
+          disabled={busy}
+          onClick={() => void handleRemove()}
+          type="button"
+        >
+          <X className="size-3" />
+        </button>
+      )}
+    </div>
   )
 }
 
@@ -344,15 +411,18 @@ function ProfileDetail({ profile }: { profile: ProfileInfo }) {
   return (
     <PanelDetail>
       <header className="space-y-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profile.name}</h3>
-            {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
-            {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
+        <div className="flex items-start gap-3">
+          <ProfileDetailAvatar name={profile.name} />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h3 className="text-[0.95rem] font-semibold tracking-tight text-foreground">{profile.name}</h3>
+              {profile.is_default && <PanelPill tone="good">{p.defaultBadge}</PanelPill>}
+              {profile.has_env && <PanelPill tone="muted">.env</PanelPill>}
+            </div>
+            <p className="mt-1 truncate font-mono text-[0.66rem] text-muted-foreground/55" title={profile.path}>
+              {profile.path}
+            </p>
           </div>
-          <p className="mt-1 truncate font-mono text-[0.66rem] text-muted-foreground/55" title={profile.path}>
-            {profile.path}
-          </p>
         </div>
 
         <PanelMeta

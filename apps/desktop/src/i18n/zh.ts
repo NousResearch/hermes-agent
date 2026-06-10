@@ -1540,13 +1540,23 @@ export const zh: Translations = {
     deleted: '配置档案已删除',
     setupCopied: '安装命令已复制',
     soulSaved: 'SOUL.md 已保存',
+    pictureLabel: '头像',
+    pictureOptional: '可选',
+    choosePicture: '选择图片…',
+    changePicture: '更换',
+    removePicture: '移除',
+    pictureHint: '显示在配置档案侧栏和列表中。建议使用方形图片。',
+    pickPictureTitle: '选择配置档案头像',
+    pictureSaved: '配置档案头像已更新',
     failedLoad: '加载配置档案失败',
     failedDelete: '删除配置档案失败',
     failedCopy: '复制安装命令失败',
     failedLoadSoul: '加载 SOUL.md 失败',
     failedSaveSoul: '保存 SOUL.md 失败',
     failedCreate: '创建配置档案失败',
-    failedRename: '重命名配置档案失败'
+    failedRename: '重命名配置档案失败',
+    failedSavePicture: '保存配置档案头像失败',
+    failedRemovePicture: '移除配置档案头像失败'
   },
 
   cron: {

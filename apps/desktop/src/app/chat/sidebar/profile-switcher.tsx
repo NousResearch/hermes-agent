@@ -39,6 +39,7 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import {
   $activeGatewayProfile,
+  $profileAvatars,
   $profileColors,
   $profileCreateRequest,
   $profileOrder,
@@ -540,6 +541,12 @@ function ProfileSquare({
   const { t } = useI18n()
   const p = t.profiles
   const hue = color ?? 'var(--ui-text-quaternary)'
+  const avatars = useStore($profileAvatars)
+  const avatarUrl = avatars[normalizeProfileKey(label)]
+  // With a picture the color no longer paints the square's face (only the thin
+  // active ring), so the color affordances — long-press picker and the
+  // context-menu item — are hidden as long as the picture is set.
+  const recolorable = !avatarUrl
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
   const suppressClick = useRef(false)
@@ -591,7 +598,7 @@ function ProfileSquare({
                     )}
                     ref={setNodeRef}
                     style={{
-                      backgroundColor: profileColorSoft(hue, active ? 30 : 22),
+                      backgroundColor: avatarUrl ? undefined : profileColorSoft(hue, active ? 30 : 22),
                       boxShadow: [ring, lift].filter(Boolean).join(', ') || undefined,
                       color: color ?? undefined,
                       // Glide the dragged square between snapped cells with a little
@@ -626,6 +633,11 @@ function ProfileSquare({
 
                       suppressClick.current = false
                       clearPress()
+
+                      if (!recolorable) {
+                        return
+                      }
+
                       pressTimer.current = window.setTimeout(() => {
                         suppressClick.current = true
                         triggerHaptic('success')
@@ -635,7 +647,16 @@ function ProfileSquare({
                     onPointerLeave={clearPress}
                     onPointerUp={clearPress}
                   >
-                    {label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'}
+                    {avatarUrl ? (
+                      <img
+                        alt=""
+                        className="size-full rounded-[3px] object-cover"
+                        draggable={false}
+                        src={avatarUrl}
+                      />
+                    ) : (
+                      label.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'
+                    )}
                   </button>
                 </TooltipTrigger>
               </ContextMenuTrigger>
@@ -655,10 +676,12 @@ function ProfileSquare({
           // Suppress the refocus and the picker survives.
           onCloseAutoFocus={event => event.preventDefault()}
         >
-          <ContextMenuItem onSelect={() => setPickerOpen(true)}>
-            <Codicon name="symbol-color" size="0.875rem" />
-            <span>{p.color}</span>
-          </ContextMenuItem>
+          {recolorable && (
+            <ContextMenuItem onSelect={() => setPickerOpen(true)}>
+              <Codicon name="symbol-color" size="0.875rem" />
+              <span>{p.color}</span>
+            </ContextMenuItem>
+          )}
           <ContextMenuItem onSelect={onRename}>
             <Codicon name="text-size" size="0.875rem" />
             <span>{p.renameMenu}</span>

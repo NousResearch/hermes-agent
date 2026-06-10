@@ -1362,13 +1362,23 @@ export const en: Translations = {
     deleted: 'Profile deleted',
     setupCopied: 'Setup command copied',
     soulSaved: 'SOUL.md saved',
+    pictureLabel: 'Picture',
+    pictureOptional: 'optional',
+    choosePicture: 'Choose image...',
+    changePicture: 'Change',
+    removePicture: 'Remove',
+    pictureHint: 'Shown in the profile rail and lists. Square images work best.',
+    pickPictureTitle: 'Choose profile picture',
+    pictureSaved: 'Profile picture updated',
     failedLoad: 'Failed to load profiles',
     failedDelete: 'Failed to delete profile',
     failedCopy: 'Failed to copy setup command',
     failedLoadSoul: 'Failed to load SOUL.md',
     failedSaveSoul: 'Failed to save SOUL.md',
     failedCreate: 'Failed to create profile',
-    failedRename: 'Failed to rename profile'
+    failedRename: 'Failed to rename profile',
+    failedSavePicture: 'Failed to save profile picture',
+    failedRemovePicture: 'Failed to remove profile picture'
   },
 
   cron: {

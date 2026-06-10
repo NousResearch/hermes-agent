@@ -13,11 +13,14 @@ import {
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { createProfile, updateProfileSoul } from '@/hermes'
+import { createProfile, updateProfileAvatar, updateProfileSoul } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { setProfileAvatarLocal } from '@/store/profile'
 import type { ProfileInfo } from '@/types/hermes'
+
+import { AvatarField } from './avatar-field'
 
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 
@@ -44,6 +47,7 @@ export function CreateProfileDialog({
   const [name, setName] = useState('')
   const [cloneFrom, setCloneFrom] = useState<null | string>('default')
   const [soul, setSoul] = useState('')
+  const [avatar, setAvatar] = useState<null | string>(null)
   const [status, setStatus] = useState<'done' | 'idle' | 'saving'>('idle')
   const [error, setError] = useState<null | string>(null)
 
@@ -55,6 +59,7 @@ export function CreateProfileDialog({
     setName('')
     setCloneFrom('default')
     setSoul('')
+    setAvatar(null)
     setError(null)
     setStatus('idle')
   }, [open])
@@ -80,6 +85,11 @@ export function CreateProfileDialog({
 
       if (soul.trim()) {
         await updateProfileSoul(trimmed, soul)
+      }
+
+      if (avatar) {
+        await updateProfileAvatar(trimmed, avatar)
+        setProfileAvatarLocal(trimmed, avatar)
       }
 
       await onCreated?.(trimmed)
@@ -117,6 +127,8 @@ export function CreateProfileDialog({
             </p>
           </div>
 
+          <AvatarField busy={busy} name={trimmed} onChange={setAvatar} onError={setError} value={avatar} />
+
           <div className="grid gap-1.5">
             <label className="text-xs font-medium" htmlFor="new-profile-clone-from">
               {p.cloneFrom}
@@ -139,6 +151,7 @@ export function CreateProfileDialog({
             </Select>
             <p className="text-xs text-muted-foreground">{p.cloneFromDesc}</p>
           </div>
+
 
           <div className="grid gap-1.5">
             <label className="text-xs font-medium" htmlFor="new-profile-soul">

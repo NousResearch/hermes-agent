@@ -14,7 +14,7 @@ import {
 
 import { setMutableRef } from '@/lib/mutable-ref'
 import { cn } from '@/lib/utils'
-import { setThreadScrolledUp } from '@/store/thread-scroll'
+import { $threadScrolledUp, setThreadScrolledUp } from '@/store/thread-scroll'
 
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
@@ -406,7 +406,8 @@ function useThreadScrollAnchor({
     prevSessionKeyRef.current = sessionKey
     prevGroupCountRef.current = groupCount
 
-    if (enabled && (sessionChanged || becameNonEmpty)) {
+    const wasAtBottom = !$threadScrolledUp.get()
+    if (enabled && (becameNonEmpty || (sessionChanged && wasAtBottom))) {
       jumpToBottom()
     }
   }, [enabled, groupCount, jumpToBottom, sessionKey])

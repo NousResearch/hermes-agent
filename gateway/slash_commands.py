@@ -47,6 +47,86 @@ logger = logging.getLogger("gateway.run")
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
+    def _global_gateway_cwd(self) -> str:
+        raw = os.environ.get("TERMINAL_CWD", "").strip()
+        if raw:
+            path = Path(raw).expanduser()
+            if path.is_dir():
+                return str(path.resolve())
+        try:
+            return str(Path(os.getcwd()).resolve())
+        except Exception:
+            return str(Path.home().resolve())
+
+    def _session_db_cwd(self, session_id: str | None) -> str:
+        if not session_id or not getattr(self, "_session_db", None):
+            return ""
+        try:
+            row = self._session_db.get_session(session_id)
+        except Exception:
+            return ""
+        if not row:
+            return ""
+        cwd = str(row.get("cwd") or "").strip()
+        if not cwd:
+            return ""
+        path = Path(cwd).expanduser()
+        return str(path.resolve()) if path.is_dir() else ""
+
+    def _effective_gateway_cwd(self, session_id: str | None = None) -> str:
+        return self._session_db_cwd(session_id) or self._global_gateway_cwd()
+
+    def _workspace_source_label(self, session_id: str | None = None) -> str:
+        return (
+            t("gateway.workspace.source_session")
+            if self._session_db_cwd(session_id)
+            else t("gateway.workspace.source_global")
+        )
+
+    def _register_gateway_session_cwd(self, task_id: str, cwd: str) -> None:
+        if not task_id:
+            return
+        try:
+            from tools.terminal_tool import register_task_env_overrides
+
+            register_task_env_overrides(task_id, {"cwd": cwd})
+        except Exception:
+            logger.debug("gateway workspace cwd registration skipped", exc_info=True)
+
+    def _clear_gateway_session_cwd(self, task_id: str) -> None:
+        if not task_id:
+            return
+        try:
+            from tools.terminal_tool import clear_task_env_overrides
+
+            clear_task_env_overrides(task_id)
+        except Exception:
+            logger.debug("gateway workspace cwd clear skipped", exc_info=True)
+
+    def _refresh_gateway_session_runtime(self, session_key: str, task_id: str) -> None:
+        self._evict_cached_agent(session_key)
+        if not task_id:
+            return
+        try:
+            from tools.terminal_tool import cleanup_vm
+
+            cleanup_vm(task_id)
+        except Exception:
+            logger.debug("gateway workspace terminal cleanup skipped", exc_info=True)
+
+    def _carry_gateway_session_cwd(self, old_session_id: str, new_session_id: str) -> None:
+        if not old_session_id or not new_session_id or old_session_id == new_session_id:
+            return
+        cwd = self._session_db_cwd(old_session_id)
+        if not cwd:
+            return
+        try:
+            self._session_db.update_session_cwd(new_session_id, cwd)
+        except Exception:
+            logger.debug("failed to carry gateway session cwd", exc_info=True)
+        self._register_gateway_session_cwd(new_session_id, cwd)
+        self._clear_gateway_session_cwd(old_session_id)
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
@@ -1655,6 +1735,52 @@ class GatewaySlashCommandsMixin:
             )
 
         return t("gateway.set_home.success", name=chat_name, chat_id=chat_id)
+
+    async def _handle_workspace_command(self, event: MessageEvent) -> str:
+        """Handle /workspace -- bind this gateway session to a project cwd."""
+        source = event.source
+        session_entry = self.session_store.get_or_create_session(source)
+        session_key = session_entry.session_key
+        arg = event.get_command_args().strip()
+        global_cwd = self._global_gateway_cwd()
+
+        if not arg or arg.lower() in {"status", "show"}:
+            return t(
+                "gateway.workspace.status",
+                cwd=self._effective_gateway_cwd(session_entry.session_id),
+                source=self._workspace_source_label(session_entry.session_id),
+                global_cwd=global_cwd,
+            )
+
+        if arg.lower() in {"clear", "reset", "default"}:
+            if self._session_db:
+                try:
+                    self._session_db.update_session_cwd(session_entry.session_id, "")
+                except Exception:
+                    logger.debug("failed to clear gateway session cwd", exc_info=True)
+            self._clear_gateway_session_cwd(session_entry.session_id)
+            self._refresh_gateway_session_runtime(session_key, session_entry.session_id)
+            return t("gateway.workspace.cleared", cwd=global_cwd)
+
+        path = Path(os.path.expanduser(arg))
+        if not path.is_absolute():
+            return t("gateway.workspace.relative_rejected")
+        try:
+            resolved = path.resolve()
+        except Exception as exc:
+            return t("gateway.workspace.invalid", path=arg, error=str(exc))
+        if not resolved.is_dir():
+            return t("gateway.workspace.not_dir", path=str(resolved))
+
+        cwd = str(resolved)
+        if self._session_db:
+            try:
+                self._session_db.update_session_cwd(session_entry.session_id, cwd)
+            except Exception:
+                logger.debug("failed to persist gateway session cwd", exc_info=True)
+        self._register_gateway_session_cwd(session_entry.session_id, cwd)
+        self._refresh_gateway_session_runtime(session_key, session_entry.session_id)
+        return t("gateway.workspace.set", cwd=cwd)
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
         """Handle /voice [on|off|tts|channel|leave|status] command."""

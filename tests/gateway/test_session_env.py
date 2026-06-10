@@ -1,5 +1,6 @@
 import asyncio
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -227,6 +228,41 @@ def test_set_session_env_includes_session_key():
     # The exact post-clear value depends on context propagation from other
     # tests, so only check that our value was removed, not what replaced it.
     assert get_session_env("HERMES_SESSION_KEY") != "tg:-1001:17585"
+
+
+def test_set_session_env_includes_session_cwd(tmp_path):
+    """_set_session_env should pin DB-backed session cwd in runtime_cwd."""
+    from agent.runtime_cwd import resolve_agent_cwd
+
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="-1001",
+        chat_type="group",
+    )
+    session_key = "tg:-1001"
+    session_id = "sess-cwd"
+    runner._session_db = SimpleNamespace(
+        get_session=lambda sid: {"id": sid, "cwd": str(tmp_path)}
+    )
+    registered = []
+    runner._register_gateway_session_cwd = (
+        lambda task_id, cwd: registered.append((task_id, cwd))
+    )
+    context = SessionContext(
+        source=source,
+        connected_platforms=[],
+        home_channels={},
+        session_key=session_key,
+        session_id=session_id,
+    )
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert resolve_agent_cwd() == tmp_path
+        assert registered == [(session_id, str(tmp_path))]
+    finally:
+        runner._clear_session_env(tokens)
 
 
 def test_session_key_no_race_condition_with_contextvars(monkeypatch):

@@ -249,6 +249,16 @@ gateway:
     save_failed:           "无法保存主频道：{error}"
     success:               "✅ 主频道已设置为 **{name}**（ID：{chat_id}）。\n定时任务和跨平台消息将发送到此处。"
 
+  workspace:
+    source_session:         "会话覆盖"
+    source_global:          "全局默认"
+    status:                 "📁 **工作区：** `{cwd}`（{source}）\n全局默认：`{global_cwd}`\n使用 `/workspace /absolute/path` 绑定当前聊天，或使用 `/workspace clear` 回到全局默认。"
+    set:                    "✅ 当前聊天工作区已设置为：`{cwd}`\n此聊天后续会使用该目录作为项目上下文、文件工具、终端命令、@ 引用和回滚的工作目录。"
+    cleared:                "已清除工作区覆盖。后续将使用全局默认：`{cwd}`"
+    relative_rejected:      "请使用绝对路径，例如 `/workspace /home/me/project`。"
+    invalid:                "无效的工作区路径 `{path}`：{error}"
+    not_dir:                "工作区路径不是已存在的目录：`{path}`"
+
   status:
     header:                "📊 **Hermes 网关状态**"
     session_id:            "**会话 ID：** `{session_id}`"

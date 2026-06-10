@@ -43,6 +43,67 @@ def test_foreground_command_uses_registered_task_cwd_for_existing_environment(mo
     assert calls == [("pwd", {"timeout": 60, "cwd": "/workspace/acp"})]
 
 
+def test_shared_default_env_keeps_task_cwd_session_scoped(monkeypatch):
+    """CWD-only task overrides must not leak through the shared default env."""
+    created = []
+    calls = []
+
+    class FakeEnv:
+        env = {}
+
+        def __init__(self, cwd):
+            self.cwd = cwd
+
+        def execute(self, command, **kwargs):
+            calls.append((command, self.cwd, kwargs["cwd"]))
+            self.cwd = {
+                "pwd-a": "/workspace/a/subdir",
+                "pwd-c": "/workspace/c",
+            }.get(command, kwargs["cwd"])
+            return {"output": "ok", "returncode": 0}
+
+    def fake_create_environment(**kwargs):
+        created.append(kwargs)
+        return FakeEnv(kwargs["cwd"])
+
+    monkeypatch.setattr(terminal_tool, "_active_environments", {})
+    monkeypatch.setattr(terminal_tool, "_last_activity", {})
+    monkeypatch.setattr(
+        terminal_tool,
+        "_task_env_overrides",
+        {
+            "sess-a": {"cwd": "/workspace/a"},
+            "sess-c": {"cwd": "/workspace/c"},
+        },
+    )
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: _minimal_terminal_config(cwd="/global/config"))
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr(
+        terminal_tool,
+        "_check_all_guards",
+        lambda command, env_type: {"approved": True},
+    )
+
+    result_a = json.loads(terminal_tool.terminal_tool(command="pwd-a", task_id="sess-a"))
+    result_b = json.loads(terminal_tool.terminal_tool(command="pwd-b", task_id="sess-b"))
+    result_c = json.loads(terminal_tool.terminal_tool(command="pwd-c", task_id="sess-c"))
+    result_a_again = json.loads(terminal_tool.terminal_tool(command="pwd-a", task_id="sess-a"))
+
+    assert result_a["exit_code"] == result_b["exit_code"] == result_c["exit_code"] == 0
+    assert result_a_again["exit_code"] == 0
+    assert created[0]["task_id"] == "default"
+    assert created[0]["cwd"] == "/global/config"
+    assert calls == [
+        ("pwd-a", "/global/config", "/workspace/a"),
+        ("pwd-b", "/global/config", "/global/config"),
+        ("pwd-c", "/global/config", "/workspace/c"),
+        ("pwd-a", "/global/config", "/workspace/a/subdir"),
+    ]
+    assert terminal_tool._task_env_overrides["sess-a"]["cwd"] == "/workspace/a/subdir"
+    assert terminal_tool._active_environments["default"].cwd == "/global/config"
+
+
 def test_explicit_workdir_still_wins_over_registered_task_cwd(monkeypatch):
     calls = []
 

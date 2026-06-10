@@ -2936,6 +2936,13 @@ class TestCompressionChainProjection:
         assert tip_row["_lineage_root_id"] == "root1"
         assert tip_row["cwd"] == "/tmp/workspaces/tip"
 
+    def test_update_session_cwd_empty_clears_cwd(self, db):
+        db.create_session(session_id="s-cwd", source="telegram", cwd="/tmp/project")
+
+        db.update_session_cwd("s-cwd", "")
+
+        assert db.get_session("s-cwd")["cwd"] is None
+
     def test_list_without_projection_returns_raw_root(self, db):
         """project_compression_tips=False returns the raw parent-NULL root
         rows — useful for admin/debug UIs.

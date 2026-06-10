@@ -1236,11 +1236,11 @@ class SessionDB:
 
     def update_session_cwd(self, session_id: str, cwd: str) -> None:
         """Persist the session working directory when a frontend knows it."""
-        if not session_id or not cwd:
+        if not session_id:
             return
 
         def _do(conn):
-            conn.execute("UPDATE sessions SET cwd = ? WHERE id = ?", (cwd, session_id))
+            conn.execute("UPDATE sessions SET cwd = ? WHERE id = ?", (cwd or None, session_id))
 
         self._execute_write(_do)
     # ──────────────────────────────────────────────────────────────────────

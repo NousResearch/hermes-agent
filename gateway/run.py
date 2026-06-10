@@ -7070,6 +7070,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "sethome":
             return await self._handle_set_home_command(event)
 
+        if canonical == "workspace":
+            return await self._handle_workspace_command(event)
+
         if canonical == "compress":
             return await self._handle_compress_command(event)
 
@@ -8135,7 +8138,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
                                     if _hyg_new_sid != session_entry.session_id:
+                                        _hyg_old_sid = session_entry.session_id
                                         session_entry.session_id = _hyg_new_sid
+                                        self._carry_gateway_session_cwd(
+                                            _hyg_old_sid, _hyg_new_sid
+                                        )
                                         self.session_store._save()
                                         self._sync_telegram_topic_binding(
                                             source, session_entry,
@@ -8438,7 +8445,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
+                _old_session_id = session_entry.session_id
                 session_entry.session_id = agent_result["session_id"]
+                self._carry_gateway_session_cwd(
+                    _old_session_id, session_entry.session_id
+                )
                 self.session_store._save()
                 self._sync_telegram_topic_binding(
                     source, session_entry, reason="agent-result-compression",
@@ -11286,6 +11297,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         in a ``finally`` block.
         """
         from gateway.session_context import set_session_vars
+        cwd = ""
+        try:
+            cwd = self._session_db_cwd(context.session_id)
+            if cwd:
+                self._register_gateway_session_cwd(context.session_id, cwd)
+        except Exception:
+            cwd = ""
         return set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
@@ -11295,6 +11313,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
+            cwd=cwd,
         )
 
     def _clear_session_env(self, tokens: list) -> None:

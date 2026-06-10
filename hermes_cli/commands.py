@@ -114,6 +114,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("profile", "Show active profile name and home directory", "Info"),
     CommandDef("sethome", "Set this chat as the home channel", "Session",
                gateway_only=True, aliases=("set-home",)),
+    CommandDef("workspace", "Bind this chat to a project directory", "Session",
+               gateway_only=True, aliases=("cwd",), args_hint="[path|clear|status]"),
     CommandDef("resume", "Resume a previously-named session", "Session",
                args_hint="[name]"),
 

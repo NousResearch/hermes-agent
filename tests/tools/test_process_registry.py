@@ -580,10 +580,11 @@ class TestSpawnEnvSanitization:
 
         with patch("tools.process_registry.threading.Thread", return_value=fake_thread), \
             patch.object(registry, "_write_checkpoint"):
-            registry.spawn_via_env(env, "echo hello")
+            registry.spawn_via_env(env, "echo hello", cwd="/workspace/session")
 
         args, kwargs = env.commands[0]
         assert kwargs.get("rewrite_compound_background") is False
+        assert kwargs.get("cwd") == "/workspace/session"
 
     def test_env_poller_quotes_temp_paths_with_spaces(self, registry):
         session = _make_session(sid="proc_space")

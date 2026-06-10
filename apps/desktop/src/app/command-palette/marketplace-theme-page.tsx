@@ -11,6 +11,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 
+import { HUD_ITEM, HUD_TEXT } from '@/app/floating-hud'
 import type { DesktopMarketplaceSearchItem } from '@/global'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -74,7 +75,7 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
   }
 
   if (query.isLoading) {
-    return <Status icon={<Loader2 className="size-4 animate-spin" />} text={copy.loading} />
+    return <Status icon={<Loader2 className="size-3.5 animate-spin" />} text={copy.loading} />
   }
 
   if (query.isError) {
@@ -89,16 +90,18 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
 
   return (
     <div role="listbox">
-      {installError && (
-        <p className="px-3 pb-1.5 pt-2 text-[0.75rem] text-(--ui-red)">{installError}</p>
-      )}
+      {installError && <p className="px-2 pb-1 pt-1.5 text-[0.6875rem] text-(--ui-red)">{installError}</p>}
       {results.map(item => {
         const busy = installingId === item.extensionId
         const done = installed[item.extensionId]
 
         return (
           <button
-            className="flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition-colors hover:bg-(--chrome-action-hover) disabled:opacity-60 aria-disabled:opacity-60"
+            className={cn(
+              'flex w-full items-start rounded-md text-left transition-colors hover:bg-(--chrome-action-hover) disabled:opacity-60 aria-disabled:opacity-60',
+              HUD_ITEM,
+              HUD_TEXT
+            )}
             disabled={Boolean(installingId) && !busy}
             key={item.extensionId}
             onClick={() => void install(item)}
@@ -106,28 +109,28 @@ export function MarketplaceThemePage({ search, onPickTheme }: MarketplaceThemePa
             role="option"
             type="button"
           >
-            <Palette className="size-4 shrink-0 text-muted-foreground" />
+            <Palette className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
             <span className="flex min-w-0 flex-col">
               <span className="truncate font-medium">{item.displayName}</span>
-              <span className="truncate text-[0.75rem] text-muted-foreground/80">
+              <span className="truncate text-[0.6875rem] text-muted-foreground/80">
                 {item.publisher}
                 {item.installs > 0 ? ` · ${copy.installs(compactNumber.format(item.installs))}` : ''}
               </span>
             </span>
-            <span className="ml-auto flex shrink-0 items-center gap-1 text-[0.75rem] text-muted-foreground">
+            <span className="ml-auto mt-0.5 flex shrink-0 items-center gap-1 text-[0.6875rem] text-muted-foreground">
               {busy ? (
                 <>
-                  <Loader2 className="size-3.5 animate-spin" />
+                  <Loader2 className="size-3 animate-spin" />
                   {copy.installing}
                 </>
               ) : done ? (
                 <>
-                  <Check className="size-3.5 text-(--ui-green)" />
+                  <Check className="size-3 text-(--ui-green)" />
                   {copy.installed}
                 </>
               ) : (
                 <>
-                  <Download className="size-3.5" />
+                  <Download className="size-3" />
                   {copy.install}
                 </>
               )}
@@ -143,7 +146,7 @@ function Status({ icon, text, tone }: { icon?: React.ReactNode; text: string; to
   return (
     <div
       className={cn(
-        'flex items-center justify-center gap-2 px-3 py-8 text-sm',
+        'flex items-center justify-center gap-2 px-2 py-6 text-xs',
         tone === 'error' ? 'text-(--ui-red)' : 'text-muted-foreground'
       )}
     >

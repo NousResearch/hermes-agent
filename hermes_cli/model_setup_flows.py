@@ -25,6 +25,44 @@ import os
 import subprocess
 
 
+def _prompt_auth_credentials_choice(title: str) -> str:
+    """Prompt for reuse / reauthenticate / cancel with the standard radio UI.
+
+    Returns one of ``"use"``, ``"reauth"``, ``"cancel"``. Falls back to a
+    numbered prompt when curses is unavailable (piped stdin, non-TTY).
+    """
+    choices = [
+        "Use existing credentials",
+        "Reauthenticate (new OAuth login)",
+        "Cancel",
+    ]
+    try:
+        from hermes_cli.setup import _curses_prompt_choice
+
+        idx = _curses_prompt_choice(title, choices, 0)
+        if idx >= 0:
+            print()
+            return ("use", "reauth", "cancel")[idx]
+    except Exception:
+        pass
+
+    print(title)
+    for i, label in enumerate(choices, 1):
+        marker = "→" if i == 1 else " "
+        print(f"  {marker} {i}. {label}")
+    print()
+    try:
+        choice = input("  Choice [1/2/3]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        choice = "1"
+
+    if choice == "2":
+        return "reauth"
+    if choice == "3":
+        return "cancel"
+    return "use"
+
+
 def _model_flow_openrouter(config, current_model=""):
     """OpenRouter provider: ensure API key, then pick model."""
     from hermes_cli.main import _prompt_api_key
@@ -321,16 +359,9 @@ def _model_flow_openai_codex(config, current_model=""):
     if status.get("logged_in"):
         print("  OpenAI Codex credentials: ✓")
         print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
-        print()
-        try:
-            choice = input("  Choice [1/2/3]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            choice = "1"
+        choice = _prompt_auth_credentials_choice("OpenAI Codex credentials:")
 
-        if choice == "2":
+        if choice == "reauth":
             print("Starting a fresh OpenAI Codex login...")
             print()
             try:
@@ -350,7 +381,7 @@ def _model_flow_openai_codex(config, current_model=""):
             if not status.get("logged_in"):
                 print("Login failed.")
                 return
-        elif choice == "3":
+        elif choice == "cancel":
             return
     else:
         print("Not logged into OpenAI Codex. Starting login...")
@@ -411,16 +442,11 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
     if status.get("logged_in"):
         print("  xAI Grok OAuth (SuperGrok / Premium+) credentials: ✓")
         print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
-        print()
-        try:
-            choice = input("  Choice [1/2/3]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            choice = "1"
+        choice = _prompt_auth_credentials_choice(
+            "xAI Grok OAuth (SuperGrok / Premium+) credentials:"
+        )
 
-        if choice == "2":
+        if choice == "reauth":
             print("Starting a fresh xAI OAuth login...")
             print()
             try:
@@ -444,7 +470,7 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
             except Exception as exc:
                 print(f"Login failed: {exc}")
                 return
-        elif choice == "3":
+        elif choice == "cancel":
             return
     else:
         print("Not logged into xAI Grok OAuth (SuperGrok / Premium+). Starting login...")
@@ -2560,20 +2586,13 @@ def _model_flow_anthropic(config, current_model=""):
         elif cc_available:
             print("  Claude Code credentials: ✓ (auto-detected)")
         print()
-        print("    1. Use existing credentials")
-        print("    2. Reauthenticate (new OAuth login)")
-        print("    3. Cancel")
-        print()
-        try:
-            choice = input("  Choice [1/2/3]: ").strip()
-        except (KeyboardInterrupt, EOFError):
-            choice = "1"
+        choice = _prompt_auth_credentials_choice("Anthropic credentials:")
 
-        if choice == "2":
+        if choice == "reauth":
             needs_auth = True
-        elif choice == "3":
+        elif choice == "cancel":
             return
-        # choice == "1" or default: use existing, proceed to model selection
+        # choice == "use" or default: use existing, proceed to model selection
 
     if needs_auth:
         # Show auth method choice

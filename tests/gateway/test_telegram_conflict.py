@@ -44,7 +44,16 @@ def _no_auto_discovery(monkeypatch):
         return []
     monkeypatch.setattr("gateway.platforms.telegram.discover_fallback_ips", _noop)
     # Mock HTTPXRequest so the builder chain doesn't fail
-    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", lambda **kwargs: MagicMock())
+    requests = []
+
+    def _fake_request(**kwargs):
+        req = MagicMock()
+        req.kwargs = kwargs
+        requests.append(req)
+        return req
+
+    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", _fake_request)
+    return requests
 
 
 @pytest.mark.asyncio
@@ -62,6 +71,54 @@ async def test_connect_rejects_same_host_token_lock(monkeypatch):
     assert adapter.fatal_error_code == "telegram-bot-token_lock"
     assert adapter.has_fatal_error is True
     assert "already in use" in adapter.fatal_error_message
+
+
+@pytest.mark.asyncio
+async def test_connect_uses_bounded_httpx_limits(monkeypatch, _no_auto_discovery):
+    """Telegram requests use a smaller pool and short keepalive limits."""
+    monkeypatch.delenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_MAX_KEEPALIVE", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
+    adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
+
+    monkeypatch.setattr(
+        "gateway.status.acquire_scoped_lock",
+        lambda scope, identity, metadata=None: (True, None),
+    )
+    monkeypatch.setattr(
+        "gateway.status.release_scoped_lock",
+        lambda scope, identity: None,
+    )
+
+    updater = SimpleNamespace(start_polling=AsyncMock(), stop=AsyncMock(), running=True)
+    bot = SimpleNamespace(set_my_commands=AsyncMock(), delete_webhook=AsyncMock())
+    app = SimpleNamespace(
+        bot=bot,
+        updater=updater,
+        add_handler=MagicMock(),
+        initialize=AsyncMock(),
+        start=AsyncMock(),
+    )
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+    builder.build.return_value = app
+    monkeypatch.setattr(
+        "gateway.platforms.telegram.Application",
+        SimpleNamespace(builder=MagicMock(return_value=builder)),
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is True
+    assert len(_no_auto_discovery) == 2
+    for req in _no_auto_discovery:
+        assert req.kwargs["connection_pool_size"] == 20
+        limits = req.kwargs["httpx_kwargs"]["limits"]
+        assert limits.max_connections == 20
+        assert limits.max_keepalive_connections <= 10
+        assert limits.keepalive_expiry == 2.0
 
 
 @pytest.mark.asyncio

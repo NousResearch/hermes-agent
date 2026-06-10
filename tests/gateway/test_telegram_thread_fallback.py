@@ -12,6 +12,8 @@ import sys
 import types
 from types import SimpleNamespace
 
+from unittest.mock import AsyncMock
+
 import pytest
 
 from gateway.config import PlatformConfig, Platform
@@ -131,6 +133,7 @@ def _make_adapter():
     adapter._polling_conflict_count = 0
     adapter._polling_network_error_count = 0
     adapter._polling_error_callback_ref = None
+    adapter._app = None
     adapter.platform = Platform.TELEGRAM
     return adapter
 
@@ -1390,6 +1393,53 @@ async def test_thread_fallback_only_fires_once():
     # Second chunk: should use thread_id=None directly (effective_thread_id
     # was cleared per-chunk but the metadata doesn't change between chunks)
     # The key point: the message was delivered despite the invalid thread
+
+
+@pytest.mark.asyncio
+async def test_drain_general_connections_resets_general_request_only():
+    """The general Bot API pool (_request[1]) can be refreshed explicitly."""
+    adapter = _make_adapter()
+
+    polling_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    general_req = SimpleNamespace(shutdown=AsyncMock(), initialize=AsyncMock())
+    adapter._app = SimpleNamespace(
+        bot=SimpleNamespace(_request=(polling_req, general_req))
+    )
+
+    await adapter._drain_general_connections()
+
+    polling_req.shutdown.assert_not_called()
+    polling_req.initialize.assert_not_called()
+    general_req.shutdown.assert_awaited_once()
+    general_req.initialize.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_refreshes_general_pool_before_retrying_network_error():
+    """Send-path network errors refresh the general pool before retrying."""
+    adapter = _make_adapter()
+
+    attempt = [0]
+    refreshes = [0]
+
+    async def mock_send_message(**kwargs):
+        attempt[0] += 1
+        if attempt[0] == 1:
+            raise FakeNetworkError("connection reset")
+        return SimpleNamespace(message_id=203)
+
+    async def mock_drain_general_connections():
+        refreshes[0] += 1
+
+    adapter._bot = SimpleNamespace(send_message=mock_send_message)
+    adapter._drain_general_connections = mock_drain_general_connections
+
+    result = await adapter.send(chat_id="123", content="test message")
+
+    assert result.success is True
+    assert result.message_id == "203"
+    assert attempt[0] == 2
+    assert refreshes[0] == 1
 
 
 @pytest.mark.asyncio

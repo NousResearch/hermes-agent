@@ -22,7 +22,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from dataclasses import dataclass
@@ -742,7 +741,7 @@ def get_container_exec_info() -> Optional[dict]:
 
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home  # noqa: F811,E402
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, bounded_mkstemp, fast_safe_load
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -7472,7 +7471,7 @@ def sanitize_env_file() -> int:
         fixes = sum(1 for a, b in zip(original_lines, sanitized) if a != b)
         fixes += abs(len(sanitized) - len(original_lines))
 
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
+    fd, tmp_path = bounded_mkstemp(dir=str(env_path.parent), suffix=".tmp", prefix=".env_")
     try:
         with os.fdopen(fd, "w", **write_kw) as f:
             f.writelines(sanitized)
@@ -7601,7 +7600,7 @@ def save_env_value(key: str, value: str):
             lines[-1] += "\n"
         lines.append(f"{key}={serialized_value}\n")
     
-    fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+    fd, tmp_path = bounded_mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
     # Preserve original permissions so Docker volume mounts aren't clobbered.
     original_mode = None
     if env_path.exists():
@@ -7673,7 +7672,7 @@ def remove_env_value(key: str) -> bool:
     found = len(new_lines) < len(lines)
 
     if found:
-        fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
+        fd, tmp_path = bounded_mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
         # Preserve original permissions so Docker volume mounts aren't clobbered.
         original_mode = None
         try:

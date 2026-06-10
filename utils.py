@@ -6,7 +6,6 @@ import logging
 import os
 import shutil
 import stat
-import tempfile
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -88,6 +87,64 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+# Maximum distinct names bounded_mkstemp() tries before giving up.
+# Deliberately tiny: names carry 64 bits of randomness, so a genuine
+# collision is implausible, and the point is to fail fast on persistent
+# errors instead of inheriting tempfile's TMP_MAX retry budget.
+_BOUNDED_MKSTEMP_ATTEMPTS = 8
+
+# Windows reports "a directory with this name already exists" as EACCES
+# (bpo-22107), so a PermissionError there is ambiguous and worth one more
+# try under a different name.  On POSIX it is a real permission failure
+# and retrying cannot help.
+_MKSTEMP_RETRY_PERMISSION_ERROR = os.name == "nt"
+
+# Mirror tempfile's open flags so the created file behaves identically:
+# 0o600, exclusive create, no symlink following, binary mode on Windows.
+_MKSTEMP_FLAGS = os.O_RDWR | os.O_CREAT | os.O_EXCL
+if hasattr(os, "O_NOFOLLOW"):
+    _MKSTEMP_FLAGS |= os.O_NOFOLLOW
+if hasattr(os, "O_BINARY"):
+    _MKSTEMP_FLAGS |= os.O_BINARY
+
+
+def bounded_mkstemp(
+    dir: Union[str, Path], prefix: str = "tmp", suffix: str = ".tmp"
+) -> "tuple[int, str]":
+    """``tempfile.mkstemp`` with a small, bounded retry budget.
+
+    ``tempfile.mkstemp`` retries candidate names up to ``TMP_MAX`` times —
+    2**31-1 on Windows — and its bpo-22107 workaround treats every
+    ``PermissionError`` as a name collision whenever ``os.access(dir,
+    os.W_OK)`` claims the directory is writable.  ``os.access`` cannot see
+    ACL denials on Windows, so calling ``mkstemp`` in a directory the
+    process may not write to (sandboxed agent shells, hardened service
+    accounts) busy-spins one CPU core for hours instead of raising.
+    One-shot CLI commands hit this through the atomic-write helpers and
+    never exit.
+
+    This helper generates 64-bit random names itself and tries at most
+    ``_BOUNDED_MKSTEMP_ATTEMPTS`` of them: a real name collision moves on
+    to a fresh name, while an error that persists across every attempt is
+    a real filesystem problem and is re-raised within milliseconds.
+
+    Returns ``(fd, path)`` exactly like ``tempfile.mkstemp``.
+    """
+    last_error: "OSError | None" = None
+    for _ in range(_BOUNDED_MKSTEMP_ATTEMPTS):
+        path = os.path.join(str(dir), f"{prefix}{os.urandom(8).hex()}{suffix}")
+        try:
+            return os.open(path, _MKSTEMP_FLAGS, 0o600), path
+        except FileExistsError as exc:
+            last_error = exc
+        except PermissionError as exc:
+            if not _MKSTEMP_RETRY_PERMISSION_ERROR:
+                raise
+            last_error = exc
+    assert last_error is not None  # attempts >= 1, so the loop set or raised
+    raise last_error
+
+
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
@@ -166,7 +223,7 @@ def atomic_json_write(
     original_mode = None if mode is not None else _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)
 
-    fd, tmp_path = tempfile.mkstemp(
+    fd, tmp_path = bounded_mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
         suffix=".tmp",
@@ -252,7 +309,7 @@ def atomic_yaml_write(
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)
 
-    fd, tmp_path = tempfile.mkstemp(
+    fd, tmp_path = bounded_mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
         suffix=".tmp",
@@ -338,7 +395,7 @@ def atomic_roundtrip_yaml_update(
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)
-    fd, tmp_path = tempfile.mkstemp(
+    fd, tmp_path = bounded_mkstemp(
         dir=str(path.parent),
         prefix=f".{path.stem}_",
         suffix=".tmp",

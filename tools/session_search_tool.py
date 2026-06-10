@@ -55,6 +55,16 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
 
+# Prefixes that identify generated context-compaction handoff summaries.
+# These are inserted by agent/context_compressor.py as normal user/assistant
+# messages but contain machine-generated summary metadata — not user content.
+# They must be excluded from discovery bookends to avoid re-introducing huge
+# compaction payloads into fresh sessions via session_search.  (#43175)
+_COMPACTION_PREFIXES = (
+    "[CONTEXT COMPACTION",
+    "[CONTEXT SUMMARY]:",
+)
+
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     """Convert a Unix timestamp (float/int) or ISO string to a human-readable date.
@@ -79,6 +89,15 @@ def _format_timestamp(ts: Union[int, float, str, None]) -> str:
     except Exception as e:
         logging.debug("Unexpected error formatting timestamp %s: %s", ts, e, exc_info=True)
     return str(ts)
+
+
+def _is_compaction_summary(content: str) -> bool:
+    """Return True if *content* looks like a generated compaction handoff."""
+    if not content:
+        return False
+    stripped = content.lstrip()
+    return any(stripped.startswith(p) for p in _COMPACTION_PREFIXES)
+
 
 
 def _resolve_to_parent(db, session_id: str) -> str:
@@ -142,12 +161,30 @@ def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]
     )
 
 
-def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[str, Any]:
-    """Slim a message row for the tool response. Keeps content even if empty."""
+def _shape_message(
+    m: Dict[str, Any],
+    anchor_id: Optional[int] = None,
+    max_content_len: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Slim a message row for the tool response. Keeps content even if empty.
+
+    When *max_content_len* is set, ``content`` is truncated to that many
+    characters and ``content_truncated`` / ``original_content_chars`` metadata
+    is added so callers know the payload was bounded.
+    """
+    raw_content = m.get("content")
+    if max_content_len and raw_content and len(raw_content) > max_content_len:
+        content = raw_content[:max_content_len] + "…"
+        truncated = True
+        original_chars = len(raw_content)
+    else:
+        content = raw_content
+        truncated = False
+        original_chars = None
     entry = {
         "id": m.get("id"),
         "role": m.get("role"),
-        "content": m.get("content"),
+        "content": content,
         "timestamp": m.get("timestamp"),
     }
     if m.get("tool_name"):
@@ -158,6 +195,9 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
         entry["tool_call_id"] = m.get("tool_call_id")
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
+    if truncated:
+        entry["content_truncated"] = True
+        entry["original_content_chars"] = original_chars
     # Strip None values to keep payload tight, but always keep content
     # (absent content is meaningful — tool-call-only assistant turns).
     return {k: v for k, v in entry.items() if v is not None or k in ("content",)}
@@ -620,9 +660,17 @@ def _discover(
             "matched_role": match_info.get("role"),
             "match_message_id": msg_id,
             "snippet": match_info.get("snippet") or "",
-            "bookend_start": [_shape_message(m) for m in (view.get("bookend_start") or [])],
-            "messages": [_shape_message(m, anchor_id=msg_id) for m in (view.get("window") or [])],
-            "bookend_end": [_shape_message(m) for m in (view.get("bookend_end") or [])],
+            "bookend_start": [
+                _shape_message(m, max_content_len=1200)
+                for m in (view.get("bookend_start") or [])
+                if not _is_compaction_summary(m.get("content", ""))
+            ],
+            "messages": [_shape_message(m, anchor_id=msg_id, max_content_len=4000) for m in (view.get("window") or [])],
+            "bookend_end": [
+                _shape_message(m, max_content_len=1200)
+                for m in (view.get("bookend_end") or [])
+                if not _is_compaction_summary(m.get("content", ""))
+            ],
             "messages_before": view.get("messages_before", 0),
             "messages_after": view.get("messages_after", 0),
         }

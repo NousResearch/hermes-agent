@@ -1018,6 +1018,63 @@ def _split_wav_for_transcription(wav_path: str, *, max_file_size: int) -> List[s
 # Global reference to the active playback process so it can be interrupted.
 _active_playback: Optional[subprocess.Popen] = None
 _playback_lock = threading.Lock()
+_SYSTEM_PLAYER_FALLBACK_TIMEOUT = 300.0
+_SYSTEM_PLAYER_TIMEOUT_GRACE = 10.0
+_SYSTEM_PLAYER_MIN_TIMEOUT = 30.0
+_SYSTEM_PLAYER_MAX_TIMEOUT = 6 * 60 * 60.0
+
+
+def _probe_audio_duration(file_path: str) -> Optional[float]:
+    """Return audio duration in seconds using ffprobe, or None if unavailable."""
+    ffprobe = shutil.which("ffprobe")
+    if not ffprobe:
+        return None
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-show_entries",
+                "format=duration",
+                "-of",
+                "default=noprint_wrappers=1:nokey=1",
+                file_path,
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=5,
+            check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        duration = float((result.stdout or "").strip())
+    except ValueError:
+        return None
+    if duration <= 0:
+        return None
+    return duration
+
+
+def _system_player_timeout(file_path: str) -> float:
+    """Bound player waits while allowing legitimate long-form audio to finish."""
+    duration = _probe_audio_duration(file_path)
+    if duration is None:
+        return _SYSTEM_PLAYER_FALLBACK_TIMEOUT
+    return min(
+        max(duration + _SYSTEM_PLAYER_TIMEOUT_GRACE, _SYSTEM_PLAYER_MIN_TIMEOUT),
+        _SYSTEM_PLAYER_MAX_TIMEOUT,
+    )
+
+
+def _aplay_supports_file(file_path: str) -> bool:
+    """Return whether bare `aplay <file>` is appropriate for this file."""
+    return os.path.splitext(file_path)[1].lower() in {".wav", ".wave"}
 
 
 def stop_playback() -> None:
@@ -1089,9 +1146,10 @@ def play_audio_file(file_path: str) -> bool:
     if system == "Darwin":
         players.append(["afplay", file_path])
     players.append(["ffplay", "-nodisp", "-autoexit", "-loglevel", "quiet", file_path])
-    if system == "Linux":
+    if system == "Linux" and _aplay_supports_file(file_path):
         players.append(["aplay", "-q", file_path])
 
+    playback_timeout = _system_player_timeout(file_path)
     for cmd in players:
         exe = shutil.which(cmd[0])
         if exe:
@@ -1099,7 +1157,7 @@ def play_audio_file(file_path: str) -> bool:
                 proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
                 with _playback_lock:
                     _active_playback = proc
-                proc.wait(timeout=300)
+                proc.wait(timeout=playback_timeout)
                 with _playback_lock:
                     _active_playback = None
                 return True
@@ -1109,6 +1167,7 @@ def play_audio_file(file_path: str) -> bool:
                 proc.wait()
                 with _playback_lock:
                     _active_playback = None
+                return False
             except Exception as e:
                 logger.debug("System player %s failed: %s", cmd[0], e)
                 with _playback_lock:

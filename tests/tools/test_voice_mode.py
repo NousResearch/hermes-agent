@@ -920,6 +920,70 @@ class TestPlayAudioFile:
         result = play_audio_file("/nonexistent/file.wav")
         assert result is False
 
+    def test_uses_audio_duration_for_system_player_timeout(self, monkeypatch, tmp_path):
+        import subprocess
+
+        audio_path = tmp_path / "long.ogg"
+        audio_path.write_bytes(b"fake ogg bytes")
+
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}" if cmd in {"ffplay", "ffprobe"} else None)
+
+        def _fake_run(cmd, *args, **kwargs):
+            assert cmd[0].endswith("ffprobe")
+            return subprocess.CompletedProcess(cmd, 0, stdout="326.726500\n", stderr="")
+
+        monkeypatch.setattr("subprocess.run", _fake_run)
+
+        mock_proc = MagicMock()
+        mock_proc.wait.return_value = 0
+        mock_popen = MagicMock(return_value=mock_proc)
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        from tools.voice_mode import play_audio_file
+
+        assert play_audio_file(str(audio_path)) is True
+
+        timeout = mock_proc.wait.call_args.kwargs["timeout"]
+        assert timeout > 326.726500
+        assert timeout != 300
+
+    def test_does_not_offer_aplay_for_ogg_playback(self, monkeypatch, tmp_path):
+        audio_path = tmp_path / "speech.ogg"
+        audio_path.write_bytes(b"fake ogg bytes")
+
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}" if cmd == "aplay" else None)
+
+        mock_popen = MagicMock()
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        from tools.voice_mode import play_audio_file
+
+        assert play_audio_file(str(audio_path)) is False
+        mock_popen.assert_not_called()
+
+    def test_player_timeout_does_not_fall_through_to_next_player(self, monkeypatch, sample_wav):
+        import subprocess
+
+        def _fail_import():
+            raise ImportError("no sounddevice")
+
+        monkeypatch.setattr("tools.voice_mode._import_audio", _fail_import)
+        monkeypatch.setattr("platform.system", lambda: "Linux")
+        monkeypatch.setattr("shutil.which", lambda cmd: f"/usr/bin/{cmd}" if cmd in {"ffplay", "aplay"} else None)
+
+        mock_proc = MagicMock()
+        mock_proc.wait.side_effect = [subprocess.TimeoutExpired(["ffplay"], 300), 0]
+        mock_popen = MagicMock(return_value=mock_proc)
+        monkeypatch.setattr("subprocess.Popen", mock_popen)
+
+        from tools.voice_mode import play_audio_file
+
+        assert play_audio_file(sample_wav) is False
+        assert mock_popen.call_count == 1
+        mock_proc.kill.assert_called_once()
+
 
 # ============================================================================
 # cleanup_temp_recordings

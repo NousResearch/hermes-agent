@@ -5,6 +5,12 @@ import pytest
 import cli
 
 
+@pytest.fixture(autouse=True)
+def reset_single_query_finalize_state(monkeypatch):
+    monkeypatch.setattr(cli, "_single_query_finalize_attempted_session_ids", set())
+    monkeypatch.setattr(cli, "_cleanup_done", False)
+
+
 def test_finalize_single_query_runs_cleanup_without_reemitting_finalize_before_release(monkeypatch):
     calls = []
     fake_cli = SimpleNamespace(_release_active_session=lambda: calls.append(("release", {})))
@@ -68,6 +74,54 @@ def test_finalize_single_query_runs_cleanup_when_finalize_hook_fails(monkeypatch
     cli._finalize_single_query(fake_cli)
 
     assert calls == ["finalize", "cleanup", "release"]
+
+
+def test_finalize_single_query_signal_window_does_not_reemit_during_atexit(monkeypatch):
+    calls = []
+    fake_agent = SimpleNamespace(session_id="agent-session", platform="cli")
+    fake_cli = SimpleNamespace(
+        agent=fake_agent,
+        session_id="cli-session",
+        _release_active_session=lambda: calls.append(("release", {})),
+    )
+
+    def invoke_hook(name, **kwargs):
+        calls.append((name, kwargs))
+
+    def interrupted_cleanup(**_kwargs):
+        raise KeyboardInterrupt()
+
+    expected_finalize = (
+        "on_session_finalize",
+        {
+            "session_id": "agent-session",
+            "platform": "cli",
+            "reason": "shutdown",
+        },
+    )
+
+    original_run_cleanup = cli._run_cleanup
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", invoke_hook)
+    monkeypatch.setattr(cli, "_run_cleanup", interrupted_cleanup)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli._finalize_single_query(fake_cli)
+
+    assert calls == [expected_finalize, ("release", {})]
+
+    # Simulate later atexit cleanup after the interrupted one-shot path. The
+    # active agent may already be unavailable by then.
+    monkeypatch.setattr(cli, "_run_cleanup", original_run_cleanup)
+    monkeypatch.setattr(cli, "_active_agent_ref", None)
+    monkeypatch.setattr(cli, "_reset_terminal_input_modes_on_exit", lambda: None)
+    monkeypatch.setattr(cli, "_cleanup_all_terminals", lambda: None)
+    monkeypatch.setattr(cli, "_cleanup_all_browsers", lambda: None)
+    monkeypatch.setattr("tools.mcp_tool.shutdown_mcp_servers", lambda: None)
+    monkeypatch.setattr("agent.auxiliary_client.shutdown_cached_clients", lambda: None)
+
+    cli._run_cleanup()
+
+    assert calls == [expected_finalize, ("release", {})]
 
 
 def test_notify_single_query_session_finalize_uses_agent_session(monkeypatch):

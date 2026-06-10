@@ -34,7 +34,6 @@
     "eslint": "^9",
     "eslint-plugin-perfectionist": "^5",
     "eslint-plugin-react": "^7",
-    "eslint-plugin-react-compiler": "^19.1.0-rc.2",
     "eslint-plugin-react-hooks": "^7",
     "eslint-plugin-unused-imports": "^4",
     "globals": "^16",

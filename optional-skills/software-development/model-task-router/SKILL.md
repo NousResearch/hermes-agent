@@ -7,9 +7,8 @@ license: MIT
 metadata:
   hermes:
     tags: [model-routing, task-classification, cost-optimization, delegation, multi-model]
-    related_issues:
-      - https://github.com/NousResearch/hermes-agent/issues/30652
-      - https://github.com/NousResearch/hermes-agent/issues/16525
+    related_skills: [model-selection]
+    requires_toolsets: [terminal]
 ---
 
 # Model Task Router

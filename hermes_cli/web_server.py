@@ -8835,7 +8835,7 @@ async def pty_ws(ws: WebSocket) -> None:
             await reader_task
         except (asyncio.CancelledError, Exception):
             pass
-        bridge.close()
+        await asyncio.to_thread(bridge.close)
 
 
 # ---------------------------------------------------------------------------

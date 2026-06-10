@@ -273,6 +273,18 @@ class PtyBridge:
             while self._proc.isalive() and time.monotonic() < deadline:
                 time.sleep(0.02)
 
+        # Reap the child to prevent zombie accumulation.  After the
+        # signal loop the process is dead (or we gave up), but the OS
+        # still holds its entry until someone calls waitpid().  Without
+        # this, every Chat tab open/close leaks a zombie that piles up
+        # until the dashboard process itself exits.
+        try:
+            pid = self._proc.pid
+            if pid:
+                os.waitpid(pid, os.WNOHANG)
+        except (ChildProcessError, OSError):
+            pass  # already reaped or pid invalid
+
         try:
             self._proc.close(force=True)
         except Exception:

@@ -3375,3 +3375,45 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     }
     assert resolved["api_key"] == "pooled-key"
     assert resolved["source"] == "pool:lmstudio-pool"
+
+def test_shadowed_builtin_provider_entry_warns_once(monkeypatch, caplog):
+    """GitHub #43026: a ``providers.gemini`` routing entry is ignored because
+    ``gemini`` is a canonical built-in — the ignore must be loud, not silent,
+    and must fire at most once per provider per process."""
+    import logging
+
+    import hermes_cli.config as cfg
+
+    shadow_config = {
+        "providers": {
+            "gemini": {
+                "api_key": "AIzaSy-test",
+                "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+            }
+        }
+    }
+    monkeypatch.setattr(cfg, "load_config_readonly", lambda: shadow_config)
+    monkeypatch.setattr(rp, "_shadow_warned_providers", set())
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.runtime_provider"):
+        assert rp._get_named_custom_provider("gemini") is None
+        assert rp._get_named_custom_provider("gemini") is None
+
+    warnings = [r for r in caplog.records if "built-in provider" in r.getMessage()]
+    assert len(warnings) == 1, [r.getMessage() for r in caplog.records]
+    assert "gemini" in warnings[0].getMessage()
+
+
+def test_builtin_provider_without_user_entry_does_not_warn(monkeypatch, caplog):
+    """No providers./custom_providers entry for the built-in -> no warning."""
+    import logging
+
+    import hermes_cli.config as cfg
+
+    monkeypatch.setattr(cfg, "load_config_readonly", lambda: {})
+    monkeypatch.setattr(rp, "_shadow_warned_providers", set())
+
+    with caplog.at_level(logging.WARNING, logger="hermes_cli.runtime_provider"):
+        assert rp._get_named_custom_provider("gemini") is None
+
+    assert not [r for r in caplog.records if "built-in provider" in r.getMessage()]

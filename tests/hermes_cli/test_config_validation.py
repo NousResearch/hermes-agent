@@ -205,3 +205,84 @@ class TestConfigIssueDataclass:
         a = ConfigIssue("error", "msg", "hint")
         b = ConfigIssue("error", "msg", "hint")
         assert a == b
+
+
+class TestShadowedBuiltinProviderEntries:
+    """providers./custom_providers entries named after canonical built-in
+    providers are ignored by the runtime (their base_url/api_key silently do
+    nothing) — validate_config_structure must flag them (GitHub #43026)."""
+
+    def test_providers_routing_entry_shadowing_builtin_warns(self):
+        """The exact #43026 scenario — providers.gemini pointing at the
+        OpenAI-compatible endpoint still hits the native Gemini API."""
+        issues = validate_config_structure({
+            "providers": {
+                "gemini": {
+                    "api_key": "AIzaSy-test",
+                    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                }
+            },
+            "model": {"provider": "gemini", "default": "gemini-2.5-flash"},
+        })
+        warnings = [i for i in issues if i.severity == "warning" and "shadows" in i.message]
+        assert len(warnings) == 1
+        assert "gemini" in warnings[0].message
+        assert "Rename" in warnings[0].hint
+
+    def test_providers_timeout_only_entry_is_not_flagged(self):
+        """Per-provider timeout tuning under a built-in id is the documented
+        providers: schema (cli-config.yaml.example), not endpoint shadowing."""
+        issues = validate_config_structure({
+            "providers": {
+                "anthropic": {
+                    "request_timeout_seconds": 30,
+                    "models": {"claude-opus-4.6": {"timeout_seconds": 600}},
+                }
+            },
+            "model": {"provider": "anthropic", "default": "claude-opus-4.6"},
+        })
+        assert not [i for i in issues if "shadows" in i.message]
+
+    def test_non_builtin_provider_name_is_not_flagged(self):
+        issues = validate_config_structure({
+            "providers": {
+                "gemini-oai": {
+                    "key_env": "GEMINI_API_KEY",
+                    "base_url": "https://generativelanguage.googleapis.com/v1beta/openai",
+                }
+            },
+            "model": {"provider": "gemini-oai", "default": "gemini-2.5-flash"},
+        })
+        assert not [i for i in issues if "shadows" in i.message]
+
+    def test_custom_providers_entry_shadowing_builtin_warns(self):
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "nous", "base_url": "http://localhost:1234/v1", "api_key": "k"}
+            ],
+            "model": {"provider": "nous", "default": "test"},
+        })
+        assert [i for i in issues if "shadows" in i.message and "nous" in i.message]
+
+    def test_unreferenced_shadow_named_entry_is_not_flagged(self):
+        """An entry named after a built-in but selected via the explicit
+        ``custom:<name>`` menu key (model.provider stays ``custom``) is still
+        honored by the runtime — don't warn about it."""
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "gemini", "base_url": "https://example.com/v1"},
+            ],
+            "model": {"provider": "custom", "default": "test"},
+        })
+        assert not [i for i in issues if "shadows" in i.message]
+
+    def test_alias_name_is_not_flagged(self):
+        """Alias names (kimi -> kimi-coding) are honored as custom-provider
+        names by the runtime (#15743) — they are not shadowing."""
+        issues = validate_config_structure({
+            "custom_providers": [
+                {"name": "kimi", "base_url": "https://my-kimi.example.com/v1", "api_key": "k"}
+            ],
+            "model": {"provider": "kimi", "default": "test"},
+        })
+        assert not [i for i in issues if "shadows" in i.message]

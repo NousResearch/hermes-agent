@@ -5208,6 +5208,81 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
 # Fields that look like they should be inside custom_providers, not at root
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
 
+# Fields that make a ``providers.<id>`` entry a *routing* definition (endpoint /
+# credentials) rather than the documented per-provider timeout tuning schema
+# (request_timeout_seconds / stale_timeout_seconds / models), which is a valid
+# use of a built-in provider's id.
+_PROVIDER_ROUTING_FIELDS = {
+    "base_url", "api", "url", "api_key", "key_env", "api_key_env",
+    "api_mode", "transport", "model", "default_model",
+}
+
+
+def find_shadowed_builtin_provider_entries(
+    config: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Return canonical built-in provider ids that user config tries to redefine.
+
+    ``providers.<id>`` / ``custom_providers`` entries whose name equals a
+    canonical built-in provider id are deliberately ignored by the runtime
+    (``_get_named_custom_provider`` defers to the built-in so user config
+    cannot hijack it), which means their ``base_url`` / ``api_key`` silently
+    do nothing — the built-in's default endpoint and env-var credentials are
+    used instead (GitHub #43026). This helper surfaces those entries so both
+    ``validate_config_structure`` (hermes doctor) and the runtime resolver can
+    make the ignore loud.
+
+    Alias names (``kimi`` → ``kimi-coding``) are NOT shadowing — the runtime
+    honors those as custom-provider names. Only a raw name that is itself the
+    canonical id counts.
+
+    Cost note: this scans every providers./custom_providers entry and calls
+    ``resolve_provider`` per candidate name, which is fine for the validation
+    / doctor path it serves; the runtime hot path only consults it through
+    the once-per-provider memoized warning in ``runtime_provider``.
+    """
+    if config is None:
+        try:
+            config = load_config_readonly()
+        except Exception:
+            return []
+    try:
+        from hermes_cli.auth import AuthError, resolve_provider
+    except Exception:
+        return []
+
+    def _canonical_shadow(name: str) -> Optional[str]:
+        norm = (name or "").strip().lower().replace(" ", "-")
+        if not norm or norm in {"custom", "auto"}:
+            return None
+        try:
+            canonical = resolve_provider(norm)
+        except AuthError:
+            return None
+        except Exception:
+            logger.debug("shadow check: resolve_provider(%r) failed", norm, exc_info=True)
+            return None
+        return norm if (canonical or "").strip().lower() == norm else None
+
+    shadowed: List[str] = []
+    providers = config.get("providers")
+    if isinstance(providers, dict):
+        for key, entry in providers.items():
+            if not isinstance(entry, dict) or not (_PROVIDER_ROUTING_FIELDS & set(entry.keys())):
+                continue
+            hit = _canonical_shadow(str(key))
+            if hit and hit not in shadowed:
+                shadowed.append(hit)
+    custom_providers = config.get("custom_providers")
+    if isinstance(custom_providers, list):
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            hit = _canonical_shadow(str(entry.get("name", "")))
+            if hit and hit not in shadowed:
+                shadowed.append(hit)
+    return shadowed
+
 
 @dataclass
 class ConfigIssue:
@@ -5278,6 +5353,41 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         f"custom_providers[{i}] is missing 'base_url' field",
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
                     ))
+
+    # ── provider entries that shadow a built-in provider (#43026) ─────────
+    # The runtime deliberately ignores providers./custom_providers entries
+    # named after a canonical built-in provider when referenced by raw name,
+    # so their base_url/api_key silently do nothing and requests go to the
+    # built-in's default endpoint with env-var credentials — e.g.
+    # providers.gemini pointing at the OpenAI-compatible endpoint still hits
+    # the native Gemini API. Entries selected via an explicit ``custom:<name>``
+    # menu key are still honored, so only flag names the config actually
+    # routes to by raw name (model.provider / fallback_model providers).
+    referenced_providers = set()
+    _model_cfg = config.get("model")
+    if isinstance(_model_cfg, dict):
+        _p = str(_model_cfg.get("provider") or "").strip().lower().replace(" ", "-")
+        if _p:
+            referenced_providers.add(_p)
+    _fb_cfg = config.get("fallback_model")
+    _fb_entries = _fb_cfg if isinstance(_fb_cfg, list) else ([_fb_cfg] if isinstance(_fb_cfg, dict) else [])
+    for _fb_entry in _fb_entries:
+        if isinstance(_fb_entry, dict):
+            _p = str(_fb_entry.get("provider") or "").strip().lower().replace(" ", "-")
+            if _p:
+                referenced_providers.add(_p)
+    for name in find_shadowed_builtin_provider_entries(config):
+        if name not in referenced_providers:
+            continue
+        issues.append(ConfigIssue(
+            "warning",
+            f"providers/custom_providers entry '{name}' shadows the built-in '{name}' "
+            f"provider — its base_url/api_key are ignored and the built-in's default "
+            f"endpoint + environment credentials are used instead",
+            f"Rename the entry to a non-built-in name (e.g. '{name}-custom') and set "
+            f"model.provider to that name, or configure the built-in provider through "
+            f"its environment variables / 'hermes auth add {name}' and remove the entry",
+        ))
 
     # ── fallback_model: single dict OR list of dicts (chain) ─────────────
     fb = config.get("fallback_model")

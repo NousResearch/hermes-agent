@@ -10859,7 +10859,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
             # --- Approval selection: confirm the highlighted choice ---
             if self._approval_state:
+                # Snapshot buffer text before resolving — the approval handler
+                # clears _approval_state when the choice is not "view".
+                text = event.app.current_buffer.text.strip()
+                has_images = bool(self._attached_images)
                 self._handle_approval_selection()
+                # Forward buffered input only when the approval was actually
+                # resolved (not when "view" expanded the command in-place).
+                if self._approval_state is None and (text or has_images):
+                    images = list(self._attached_images) if has_images else []
+                    self._attached_images.clear()
+                    event.app.current_buffer.reset()
+                    payload = (text, images) if images else text
+                    if self._agent_running and not (text and _looks_like_slash_command(text)):
+                        self._interrupt_queue.put(payload)
+                    else:
+                        self._pending_input.put(payload)
                 event.app.invalidate()
                 return
 

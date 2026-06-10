@@ -565,6 +565,7 @@ def create_job(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: bool = False,
+    memory_enabled: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -614,6 +615,11 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        memory_enabled: When True, the cron job agent can access the memory
+                system (holographic memory, fact_store, memory tool). Default
+                False — cron system prompts could previously corrupt user
+                memory representations. Opt in per job when the job needs
+                to read/write memory (e.g. nightly fact-mining jobs).
 
     Returns:
         The created job dict
@@ -703,6 +709,7 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
         "profile": normalized_profile,
+        "memory_enabled": bool(memory_enabled),
     }
 
     jobs = load_jobs()

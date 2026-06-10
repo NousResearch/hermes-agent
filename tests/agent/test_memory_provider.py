@@ -64,8 +64,8 @@ class FakeMemoryProvider(MemoryProvider):
     def shutdown(self):
         self.shutdown_called = True
 
-    def on_turn_start(self, turn_number, message):
-        self.turn_starts.append((turn_number, message))
+    def on_turn_start(self, turn_number, message, **kwargs):
+        self.turn_starts.append((turn_number, message, kwargs))
 
     def on_session_end(self, messages):
         self.session_end_called = True
@@ -342,7 +342,21 @@ class TestMemoryManager:
         p = FakeMemoryProvider("p")
         mgr.add_provider(p)
         mgr.on_turn_start(3, "hello")
-        assert p.turn_starts == [(3, "hello")]
+        assert p.turn_starts == [(3, "hello", {})]
+
+    def test_on_turn_start_forwards_model_kwarg(self):
+        """model= kwarg must reach providers so they can record the conversing model.
+
+        Regression guard: turn_context.py calls
+        manager.on_turn_start(..., model=agent.model). Without this the model
+        name is silently dropped, and providers such as the Ragger plugin send
+        an empty model string to their backend.
+        """
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("p")
+        mgr.add_provider(p)
+        mgr.on_turn_start(1, "hi", model="claude-opus-4-8")
+        assert p.turn_starts == [(1, "hi", {"model": "claude-opus-4-8"})]
 
     def test_on_session_end(self):
         mgr = MemoryManager()

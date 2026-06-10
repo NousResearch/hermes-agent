@@ -373,6 +373,26 @@ class TestSkillView:
         assert result["name"] == "my-skill"
         assert "Step 1" in result["content"]
 
+    def test_view_skill_by_frontmatter_name_when_dir_differs(self, tmp_path):
+        # The on-disk directory ("alias-dir") differs from the skill's
+        # frontmatter name ("real-skill-name"). skills_list() exposes the
+        # frontmatter name, so skill_view(name) must resolve it too.
+        skill_dir = tmp_path / "alias-dir"
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            "---\n"
+            "name: real-skill-name\n"
+            "description: A skill whose directory name differs from its name.\n"
+            "---\n\n"
+            "# real-skill-name\n\n"
+            "Step 1: Do the thing.\n"
+        )
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            raw = skill_view("real-skill-name")
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "Step 1" in result["content"]
+
     def test_skill_view_applies_template_vars(self, tmp_path):
         with (
             patch("tools.skills_tool.SKILLS_DIR", tmp_path),

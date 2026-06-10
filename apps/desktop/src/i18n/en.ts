@@ -179,6 +179,15 @@ export const en: Translations = {
       'session.new': 'New session',
       'session.next': 'Next session',
       'session.prev': 'Previous session',
+      'session.slot.1': 'Switch to recent session 1',
+      'session.slot.2': 'Switch to recent session 2',
+      'session.slot.3': 'Switch to recent session 3',
+      'session.slot.4': 'Switch to recent session 4',
+      'session.slot.5': 'Switch to recent session 5',
+      'session.slot.6': 'Switch to recent session 6',
+      'session.slot.7': 'Switch to recent session 7',
+      'session.slot.8': 'Switch to recent session 8',
+      'session.slot.9': 'Switch to recent session 9',
       'session.focusSearch': 'Search sessions',
       'session.togglePin': 'Pin / unpin current session',
       'composer.focus': 'Focus composer',
@@ -293,8 +302,17 @@ export const en: Translations = {
       technicalDesc: 'Include raw tool args/results and low-level details.',
       themeTitle: 'Theme',
       themeDesc: 'Desktop palettes only. The selected mode is applied on top.',
-      themeProfileNote: (profile: string) =>
-        `Appearance is currently being managed by the ${profile} profile. Edit the theme in that profile to see changes reflected globally.`
+      themeProfileNote: profile => `Saved for the ${profile} profile — each profile keeps its own theme.`,
+      installTitle: 'Install from VS Code',
+      installDesc:
+        'Paste a Marketplace extension id (e.g. dracula-theme.theme-dracula) to convert its color theme into a desktop palette.',
+      installPlaceholder: 'publisher.extension',
+      installButton: 'Install',
+      installing: 'Installing…',
+      installError: 'Could not install that theme.',
+      installed: name => `Installed “${name}”.`,
+      removeTheme: 'Remove theme',
+      importedBadge: 'Imported'
     },
     fieldLabels: FIELD_LABELS,
     fieldDescriptions: FIELD_DESCRIPTIONS,
@@ -513,7 +531,7 @@ export const en: Translations = {
       defaultDirTitle: 'Default project directory',
       defaultDirDesc:
         'New sessions start in this folder unless you pick another. Leave it unset to use your home directory.',
-      defaultDirUpdated: 'Default project directory updated',
+      defaultDirUpdated: 'Default project directory updated — start a new chat (Ctrl/⌘+N) for it to take effect',
       defaultsTo: label => `Defaults to ${label}.`,
       change: 'Change',
       choose: 'Choose',
@@ -633,6 +651,17 @@ export const en: Translations = {
     settings: 'Settings',
     changeTheme: 'Change theme...',
     changeColorMode: 'Change color mode...',
+    installTheme: {
+      title: 'Install theme...',
+      placeholder: 'Search the VS Code Marketplace...',
+      loading: 'Searching the Marketplace...',
+      error: 'Could not reach the Marketplace.',
+      empty: 'No matching themes.',
+      install: 'Install',
+      installing: 'Installing...',
+      installed: 'Installed',
+      installs: count => `${count} installs`
+    },
     settingsFields: 'Settings fields',
     mcpServers: 'MCP servers',
     archivedChats: 'Archived chats',
@@ -1096,6 +1125,7 @@ export const en: Translations = {
       export: 'Export',
       rename: 'Rename',
       archive: 'Archive',
+      newWindow: 'New window',
       copyIdFailed: 'Could not copy session ID',
       actionsFor: title => `Actions for ${title}`,
       sessionActions: 'Session actions',
@@ -1141,7 +1171,7 @@ export const en: Translations = {
     ],
     startVoice: 'Start voice conversation',
     queueMessage: 'Queue message',
-    steer: 'Steer the current run (⌘⏎)',
+    steer: 'Steer the current run',
     stop: 'Stop',
     send: 'Send',
     speaking: 'Speaking',
@@ -1485,6 +1515,8 @@ export const en: Translations = {
       backendLabel: version => `backend v${version}`,
       closeCommandCenter: 'Close Command Center',
       openCommandCenter: 'Open Command Center',
+      showTerminal: 'Show terminal',
+      hideTerminal: 'Hide terminal',
       gateway: 'Gateway',
       gatewayReady: 'ready',
       gatewayNeedsSetup: 'needs setup',
@@ -1540,8 +1572,7 @@ export const en: Translations = {
     tryAgain: 'Try again',
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
-    terminalFocus: 'Focus terminal view',
-    terminalSplit: 'Return to split view',
+    terminalHide: 'Hide terminal',
     addToChat: 'Add to chat'
   },
 
@@ -1646,7 +1677,8 @@ export const en: Translations = {
       restoreCheckpoint: 'Restore checkpoint',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
-      sendEdited: 'Send edited message'
+      sendEdited: 'Send edited message',
+      attachingFile: 'Attaching…'
     },
     approval: {
       gatewayDisconnected: 'Hermes gateway is not connected',

@@ -26,6 +26,7 @@ import {
   $workingSessionIds,
   $yoloActive,
   getRememberedWorkspaceCwd,
+  workspaceCwdForNewSession,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -335,8 +336,9 @@ export function useSessionActions({
       })
       setSessionStartedAt(null)
       setTurnStartedAt(null)
-      // New chats inherit the current workspace.
-      setCurrentCwd(getRememberedWorkspaceCwd())
+      // New chats start in the configured default project dir when set,
+      // otherwise the sticky last-used workspace (PR #37586).
+      setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
       setYoloActive($desktopYoloDefault.get())
       clearComposerDraft()
@@ -358,7 +360,7 @@ export function useSessionActions({
         // Route the new chat to the chosen profile's backend (null = primary,
         // so single-profile users are unaffected).
         await ensureGatewayProfile($newChatProfile.get())
-        const cwd = $currentCwd.get().trim() || getRememberedWorkspaceCwd()
+        const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
         // Pass the owning profile so a new chat under a non-launch profile (global
         // remote mode) builds its agent + persists against THAT profile's home/db.
         const newChatProfile = $newChatProfile.get()

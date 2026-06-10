@@ -616,6 +616,51 @@ def _normalize_command_for_detection(command: str) -> str:
     command = command.replace('\x00', '')
     # Normalize Unicode (fullwidth Latin, halfwidth Katakana, etc.)
     command = unicodedata.normalize('NFKC', command)
+    # Strip shell backslash-escapes: r\m → rm. Prevents \-injection bypass.
+    command = re.sub(r'\\([^\n])', r'\1', command)
+    # Strip empty-string literals that split tokens: r''m → rm, r"\"m → rm.
+    command = re.sub(r"''|\"\"", '', command)
+    # Fold the resolved absolute active-profile home path into the canonical
+    # ~/.hermes/ form so the Hermes config/env patterns catch it. In Docker and
+    # gateway deployments the agent often references the resolved absolute path
+    # directly (e.g. `sed -i ... /home/hermes/.hermes/config.yaml`) rather than
+    # ~, $HOME, or $HERMES_HOME. Done at detection time (not via an import-time
+    # pattern snapshot) so it tracks the live HERMES_HOME even when that is set
+    # after this module is imported — as the hermetic test conftest does.
+    command = _rewrite_resolved_hermes_home(command)
+    return command
+
+
+def _rewrite_resolved_hermes_home(command: str) -> str:
+    """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
+
+    Resolves the active ``HERMES_HOME`` at call time (and its symlink-resolved
+    form) and replaces an occurrence of ``<home>/`` in *command* with
+    ``~/.hermes/`` so the static ``_HERMES_CONFIG_PATH`` / ``_HERMES_ENV_PATH``
+    patterns match. No-op when the path can't be resolved or doesn't appear.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        home = get_hermes_home().expanduser()
+        candidates = [
+            str(home).rstrip("/"),
+            str(home.resolve(strict=False)).rstrip("/"),
+        ]
+    except Exception:
+        return command
+    seen: set[str] = set()
+    for path in candidates:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        # Guard against a degenerate HERMES_HOME (e.g. "/" or "") rewriting
+        # unrelated paths: require an absolute path with at least one non-root
+        # component. The active profile home is always a real directory like
+        # /home/hermes/.hermes or a per-test tempdir, never a bare root.
+        normalized = path.rstrip("/")
+        if not normalized.startswith("/") or normalized.count("/") < 2:
+            continue
+        command = command.replace(normalized + "/", "~/.hermes/")
     return command
 
 

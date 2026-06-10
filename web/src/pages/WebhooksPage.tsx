@@ -381,8 +381,8 @@ export default function WebhooksPage() {
             <div className="flex flex-col gap-1">
               <span className="font-medium">Webhook platform disabled</span>
               <span className="text-muted-foreground">
-                The webhook platform must be enabled in your messaging settings
-                before you can create subscriptions. Enable it, then return to
+                The webhook platform must be enabled on the Channels page before
+                you can create subscriptions. Enable it there, then return to
                 this page.
               </span>
             </div>

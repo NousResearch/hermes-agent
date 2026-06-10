@@ -1,0 +1,7 @@
+name: browser-obscura
+version: 1.0.0
+description: "Obscura (https://github.com/h4ckf0r0day/obscura) local headless browser backend. Spawns `obscura serve` and drives it over CDP, a Rust engine with no Chrome or Node dependency (~70 MB binary, ~30 MB RAM). Opt-in via browser.cloud_provider: obscura; never auto-selected."
+author: h4ckf0r0day
+kind: backend
+provides_browser_providers:
+  - obscura

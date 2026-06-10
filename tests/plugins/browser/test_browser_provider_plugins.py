@@ -2,7 +2,7 @@
 
 Covers:
 
-- All three bundled plugins (browserbase, browser-use, firecrawl)
+- All bundled plugins (browserbase, browser-use, firecrawl, obscura)
   instantiate and self-report the expected ABC defaults.
 - Each plugin's ``is_available()`` correctly reflects env-var presence.
 - The browser_registry resolves an active provider in the documented
@@ -21,6 +21,7 @@ interface, the registry, and the plugin glue layer simultaneously.
 Mirrors ``tests/plugins/web/test_web_search_provider_plugins.py`` from
 PR #25182.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -44,6 +45,10 @@ def _clear_browser_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "FIRECRAWL_BROWSER_TTL",
         "TOOL_GATEWAY_DOMAIN",
         "TOOL_GATEWAY_USER_TOKEN",
+        "OBSCURA_BIN",
+        "OBSCURA_STEALTH",
+        "OBSCURA_PORT",
+        "OBSCURA_STARTUP_TIMEOUT",
     ):
         monkeypatch.delenv(k, raising=False)
 
@@ -72,14 +77,14 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestBundledPluginsRegister:
-    """All three bundled browser plugins discover and register correctly."""
+    """All bundled browser plugins discover and register correctly."""
 
-    def test_all_three_plugins_present_in_registry(self) -> None:
+    def test_all_bundled_plugins_present_in_registry(self) -> None:
         _ensure_plugins_loaded()
         from agent.browser_registry import list_providers
 
         names = sorted(p.name for p in list_providers())
-        assert names == ["browser-use", "browserbase", "firecrawl"]
+        assert names == ["browser-use", "browserbase", "firecrawl", "obscura"]
 
     @pytest.mark.parametrize(
         "plugin_name,expected_display",
@@ -87,6 +92,7 @@ class TestBundledPluginsRegister:
             ("browserbase", "Browserbase"),
             ("browser-use", "Browser Use"),
             ("firecrawl", "Firecrawl"),
+            ("obscura", "Obscura"),
         ],
     )
     def test_each_plugin_has_name_and_display_name(
@@ -102,7 +108,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "obscura"],
     )
     def test_each_plugin_has_setup_schema(self, plugin_name: str) -> None:
         """``get_setup_schema()`` returns a dict the picker can consume."""
@@ -121,7 +127,7 @@ class TestBundledPluginsRegister:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "obscura"],
     )
     def test_each_plugin_implements_full_lifecycle(self, plugin_name: str) -> None:
         """The ABC's three lifecycle methods are all overridden."""
@@ -135,9 +141,7 @@ class TestBundledPluginsRegister:
         # default — we check by comparing the function reference.
         assert type(provider).create_session is not BrowserProvider.create_session
         assert type(provider).close_session is not BrowserProvider.close_session
-        assert (
-            type(provider).emergency_cleanup is not BrowserProvider.emergency_cleanup
-        )
+        assert type(provider).emergency_cleanup is not BrowserProvider.emergency_cleanup
 
 
 # ---------------------------------------------------------------------------
@@ -313,7 +317,7 @@ class TestLegacyAbcAliases:
 
     @pytest.mark.parametrize(
         "plugin_name",
-        ["browserbase", "browser-use", "firecrawl"],
+        ["browserbase", "browser-use", "firecrawl", "obscura"],
     )
     def test_is_configured_delegates_to_is_available(self, plugin_name: str) -> None:
         _ensure_plugins_loaded()
@@ -348,7 +352,7 @@ class TestLegacyAbcAliases:
 
 
 class TestPickerIntegration:
-    """`_plugin_browser_providers()` exposes all three plugins as picker rows."""
+    """`_plugin_browser_providers()` exposes all bundled plugins as picker rows."""
 
     def test_picker_rows_match_registered_plugins(self) -> None:
         _ensure_plugins_loaded()
@@ -356,7 +360,7 @@ class TestPickerIntegration:
 
         rows = _plugin_browser_providers()
         names = sorted(r.get("browser_provider") for r in rows)
-        assert names == ["browser-use", "browserbase", "firecrawl"]
+        assert names == ["browser-use", "browserbase", "firecrawl", "obscura"]
 
     def test_picker_rows_carry_post_setup_hook(self) -> None:
         """Every browser plugin row has post_setup='agent_browser' so

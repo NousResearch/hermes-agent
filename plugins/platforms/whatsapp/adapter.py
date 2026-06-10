@@ -368,6 +368,36 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             or os.getenv("WHATSAPP_GROUP_ALLOWED_USERS")
         )
         self._mention_patterns = self._compile_mention_patterns()
+        self._reactions_enabled = self._coerce_bool_extra(
+            "reactions",
+            os.getenv("WHATSAPP_REACTIONS", "false").lower() in {"true", "1", "yes", "on"},
+        )
+        self._reaction_emoji = str(
+            config.extra.get("reaction_emoji")
+            or os.getenv("WHATSAPP_REACTION_EMOJI")
+            or "auto"
+        ).strip() or "auto"
+        self._reaction_allow_from = self._coerce_allow_list(
+            config.extra.get("reaction_allow_from")
+            or os.getenv("WHATSAPP_REACTION_ALLOWED_USERS")
+            or config.extra.get("allow_from")
+            or config.extra.get("allowFrom")
+            or os.getenv("WHATSAPP_ALLOWED_USERS")
+        )
+        self._reply_consider_allow_from = self._coerce_allow_list(
+            config.extra.get("reply_consider_allow_from")
+            or os.getenv("WHATSAPP_REPLY_CONSIDER_ALLOWED_USERS")
+            or config.extra.get("reaction_allow_from")
+            or os.getenv("WHATSAPP_REACTION_ALLOWED_USERS")
+            or config.extra.get("allow_from")
+            or config.extra.get("allowFrom")
+            or os.getenv("WHATSAPP_ALLOWED_USERS")
+        )
+        self._reaction_batch_delay_seconds = self._coerce_float_extra(
+            "reaction_batch_delay_seconds", 4.0
+        )
+        self._pending_reactions: Dict[str, Dict[str, Any]] = {}
+        self._pending_reaction_tasks: Dict[str, asyncio.Task] = {}
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
@@ -417,6 +447,164 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not math.isfinite(parsed) or parsed < 0:
             return float(default)
         return parsed
+
+    def _coerce_bool_extra(self, key: str, default: bool) -> bool:
+        """Read a boolean from ``config.extra`` with env-style string handling."""
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return bool(default)
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(value)
+
+    def _should_react_to_event(self, event: MessageEvent) -> bool:
+        """Return True when this inbound WhatsApp message should get a receipt reaction."""
+        if not self._reactions_enabled:
+            return False
+        if getattr(event.source, "chat_type", None) != "group":
+            return False
+        if not getattr(event, "message_id", None):
+            return False
+        sender_id = self._normalize_whatsapp_id(getattr(event.source, "user_id", None))
+        if self._reaction_allow_from and "*" not in self._reaction_allow_from and sender_id not in self._reaction_allow_from:
+            return False
+        return True
+
+    async def _react_to_event(self, event: MessageEvent) -> bool:
+        """Queue a native reaction for a recent WhatsApp event."""
+        if not self._should_react_to_event(event):
+            return False
+        message_id = getattr(event, "message_id", None)
+        if not message_id:
+            return False
+        self._queue_reaction_message_data(
+            chat_id=event.source.chat_id,
+            message_id=message_id,
+            sender_id=getattr(event.source, "user_id", None),
+            raw_message=event.raw_message or {},
+        )
+        return True
+
+    def _should_react_to_message_data(self, data: Dict[str, Any]) -> bool:
+        """Return True when raw incoming WhatsApp data should get a receipt reaction."""
+        if not self._reactions_enabled:
+            return False
+        if not data.get("isGroup", False):
+            return False
+        if not data.get("messageId"):
+            return False
+        sender_id = self._normalize_whatsapp_id(data.get("senderId") or data.get("from"))
+        if self._reaction_allow_from and "*" not in self._reaction_allow_from and sender_id not in self._reaction_allow_from:
+            return False
+        return True
+
+    def _reaction_batch_key(self, chat_id: str, sender_id: Optional[str]) -> str:
+        return f"{chat_id}:{self._normalize_whatsapp_id(sender_id) or 'unknown'}"
+
+    def _reaction_emoji_for_message_data(self, data: Dict[str, Any]) -> str:
+        configured = (self._reaction_emoji or "auto").strip()
+        if configured.lower() != "auto":
+            return configured
+        text = str(data.get("body") or "").lower()
+        if any(word in text for word in ("urgent", "stolen", "emergency", "asap", "now ", "ahora", "robar", "robado")):
+            return "🚨"
+        if "?" in text or any(word in text for word in ("can you", "could you", "please", "puedes", "puede", "favor", "investigate", "check", "revisa")):
+            return "👀"
+        if any(word in text for word in ("paid", "payment", "transfer", "receipt", "proof", "pago", "transferencia", "comprobante")):
+            return "✅"
+        if any(word in text for word in ("thanks", "thank you", "gracias", "great", "good", "perfecto", "excelente")):
+            return "🙏"
+        return "👍"
+
+    def _queue_reaction_message_data(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        sender_id: Optional[str],
+        raw_message: Dict[str, Any],
+    ) -> None:
+        """Debounce WhatsApp reactions so message bursts receive one receipt."""
+        key = self._reaction_batch_key(chat_id, sender_id)
+        self._pending_reactions[key] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "sender_id": sender_id,
+            "raw_message": raw_message,
+            "emoji": self._reaction_emoji_for_message_data(raw_message),
+        }
+        prior = self._pending_reaction_tasks.get(key)
+        if prior and not prior.done():
+            prior.cancel()
+        self._pending_reaction_tasks[key] = asyncio.create_task(self._flush_reaction_batch(key))
+
+    async def _flush_reaction_batch(self, key: str) -> None:
+        current_task = asyncio.current_task()
+        try:
+            await asyncio.sleep(self._reaction_batch_delay_seconds)
+            pending = self._pending_reactions.pop(key, None)
+            if not pending:
+                return
+            await self._react_to_message_data(
+                chat_id=pending["chat_id"],
+                message_id=pending["message_id"],
+                sender_id=pending.get("sender_id"),
+                raw_message=pending.get("raw_message") or {},
+                emoji=pending.get("emoji") or "👍",
+            )
+        except asyncio.CancelledError:
+            raise
+        finally:
+            if self._pending_reaction_tasks.get(key) is current_task:
+                self._pending_reaction_tasks.pop(key, None)
+
+    async def _react_to_message_data(
+        self,
+        *,
+        chat_id: str,
+        message_id: str,
+        sender_id: Optional[str],
+        raw_message: Dict[str, Any],
+        emoji: str,
+    ) -> bool:
+        """React natively to a recent WhatsApp message via the Node bridge."""
+        if not self._running or not self._http_session:
+            return False
+        try:
+            import aiohttp
+
+            payload = {
+                "chatId": chat_id,
+                "messageId": message_id,
+                "participant": raw_message.get("senderId") or raw_message.get("participant") or sender_id,
+                "emoji": emoji,
+            }
+            async with self._http_session.post(
+                f"http://127.0.0.1:{self._bridge_port}/react",
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=5),
+            ) as resp:
+                if resp.status == 200:
+                    logger.info(
+                        "[%s] Reacted to WhatsApp group message %s in %s with %s",
+                        self.name,
+                        message_id,
+                        chat_id,
+                        emoji,
+                    )
+                    return True
+                body = await resp.text()
+                logger.warning(
+                    "[%s] WhatsApp reaction failed (%s) for message %s in %s: %s",
+                    self.name,
+                    resp.status,
+                    message_id,
+                    chat_id,
+                    body[:300],
+                )
+        except Exception as exc:
+            logger.warning("[%s] WhatsApp reaction failed for %s in %s: %s", self.name, message_id, chat_id, exc)
+        return False
 
     def _effective_reply_prefix(self) -> str:
         """Return the prefix the Node bridge will add in self-chat mode."""
@@ -641,7 +829,29 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return True
         if self._message_mentions_bot(data):
             return True
-        return self._message_matches_mention_patterns(data)
+        if self._message_matches_mention_patterns(data):
+            return True
+        return self._should_consider_reply_to_reaction_sender_message(data)
+
+    def _should_consider_reply_to_reaction_sender_message(self, data: Dict[str, Any]) -> bool:
+        """Let approved Jacob-origin group messages reach the agent for reply/silence choice.
+
+        Native reactions are only a receipt signal. For approved senders, the
+        gateway should still dispatch the message so Jack can decide whether a
+        concise WhatsApp reply is useful.
+        """
+        if not self._reactions_enabled:
+            return False
+        if not self._coerce_bool_extra("reply_consider_reaction_senders", True):
+            return False
+        if not data.get("isGroup", False):
+            return False
+        sender_id = self._normalize_whatsapp_id(data.get("senderId") or data.get("from"))
+        if not sender_id:
+            return False
+        if self._reply_consider_allow_from:
+            return "*" in self._reply_consider_allow_from or sender_id in self._reply_consider_allow_from
+        return False
 
     def _should_observe_unmentioned_group_message(self, data: Dict[str, Any]) -> bool:
         """Return True when a group message should be stored but not dispatched."""
@@ -1426,6 +1636,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
     async def _build_message_event(self, data: Dict[str, Any]) -> Optional[MessageEvent]:
         """Build a MessageEvent from bridge message data, downloading images to cache."""
         try:
+            if self._should_react_to_message_data(data):
+                self._queue_reaction_message_data(
+                    chat_id=str(data.get("chatId") or ""),
+                    message_id=str(data.get("messageId") or ""),
+                    sender_id=data.get("senderId") or data.get("from"),
+                    raw_message=data,
+                )
+
             should_process = self._should_process_message(data)
             should_observe = False if should_process else self._should_observe_unmentioned_group_message(data)
             if not should_process and not should_observe:

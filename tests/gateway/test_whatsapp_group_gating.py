@@ -1,3 +1,5 @@
+from typing import Optional
+
 import json
 import pytest
 from unittest.mock import AsyncMock
@@ -7,7 +9,10 @@ from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
                   dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
-                  observe_unmentioned_group_messages=None):
+                  observe_unmentioned_group_messages=None,
+                  reactions=None, reaction_allow_from=None,
+                  reply_consider_reaction_senders=None,
+                  reply_consider_allow_from=None):
     from plugins.platforms.whatsapp.adapter import WhatsAppAdapter
 
     extra = {}
@@ -27,6 +32,14 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["group_allow_from"] = group_allow_from
     if observe_unmentioned_group_messages is not None:
         extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
+    if reactions is not None:
+        extra["reactions"] = reactions
+    if reaction_allow_from is not None:
+        extra["reaction_allow_from"] = reaction_allow_from
+    if reply_consider_reaction_senders is not None:
+        extra["reply_consider_reaction_senders"] = reply_consider_reaction_senders
+    if reply_consider_allow_from is not None:
+        extra["reply_consider_allow_from"] = reply_consider_allow_from
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -37,6 +50,13 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
     adapter._group_policy = str(extra.get("group_policy", "open")).strip().lower()
     adapter._group_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("group_allow_from"))
     adapter._mention_patterns = adapter._compile_mention_patterns()
+    adapter._reactions_enabled = adapter._coerce_bool_extra("reactions", False)
+    adapter._reaction_emoji = str(extra.get("reaction_emoji") or "auto")
+    adapter._reaction_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("reaction_allow_from"))
+    adapter._reply_consider_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("reply_consider_allow_from") or extra.get("reaction_allow_from"))
+    adapter._reaction_batch_delay_seconds = 4.0
+    adapter._pending_reactions = {}
+    adapter._pending_reaction_tasks = {}
     adapter._free_response_chats = adapter._whatsapp_free_response_chats()
     return adapter
 
@@ -478,3 +498,187 @@ def test_is_broadcast_chat_helper_recognizes_common_jids():
     assert WhatsAppAdapter._is_broadcast_chat("120363001234567890@g.us") is False
     assert WhatsAppAdapter._is_broadcast_chat("") is False
     assert WhatsAppAdapter._is_broadcast_chat(None) is False  # type: ignore[arg-type]
+
+
+def _reaction_event(chat_type="group", sender_id="5215551234567@s.whatsapp.net", message_id: Optional[str] = "ABC123"):
+    from gateway.platforms.base import MessageEvent, MessageType
+    from gateway.session import SessionSource
+
+    source = SessionSource(
+        platform=Platform.WHATSAPP,
+        chat_id="120363001234567890@g.us" if chat_type == "group" else sender_id,
+        chat_type=chat_type,
+        user_id=sender_id,
+    )
+    return MessageEvent(
+        text="hello",
+        message_type=MessageType.TEXT,
+        source=source,
+        raw_message={"senderId": sender_id},
+        message_id=message_id,
+    )
+
+
+def test_whatsapp_group_reactions_enabled_for_group_messages():
+    adapter = _make_adapter(reactions=True)
+
+    assert adapter._should_react_to_event(_reaction_event()) is True
+
+
+def test_whatsapp_group_reactions_skip_dms_and_missing_message_ids():
+    adapter = _make_adapter(reactions=True)
+
+    assert adapter._should_react_to_event(_reaction_event(chat_type="dm")) is False
+    assert adapter._should_react_to_event(_reaction_event(message_id=None)) is False
+
+
+def test_whatsapp_group_reactions_respect_sender_allowlist():
+    adapter = _make_adapter(
+        reactions=True,
+        reaction_allow_from=["5215551234567@s.whatsapp.net"],
+    )
+
+    assert adapter._should_react_to_event(
+        _reaction_event(sender_id="5215551234567@s.whatsapp.net")
+    ) is True
+    assert adapter._should_react_to_event(
+        _reaction_event(sender_id="5215559999999@s.whatsapp.net")
+    ) is False
+
+
+def test_whatsapp_group_reactions_happen_before_mention_gating_drop():
+    adapter = _make_adapter(
+        require_mention=True,
+        reactions=True,
+        reaction_allow_from=["5215551234567@s.whatsapp.net"],
+        observe_unmentioned_group_messages=False,
+        reply_consider_reaction_senders=False,
+    )
+    msg = _group_message(
+        "ordinary group chatter without a Jack mention",
+        messageId="MSG1",
+        senderId="5215551234567@s.whatsapp.net",
+        from_="5215551234567@s.whatsapp.net",
+    )
+    msg["from"] = msg.pop("from_")
+
+    assert adapter._should_process_message(msg) is False
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+    assert adapter._should_react_to_message_data(msg) is True
+
+
+def test_approved_reaction_sender_group_messages_are_considered_for_reply():
+    adapter = _make_adapter(
+        require_mention=True,
+        reactions=True,
+        reaction_allow_from=["5215551234567@s.whatsapp.net"],
+    )
+    msg = _group_message(
+        "Battery 4140 installed in NOW 3150 temporarily",
+        messageId="MSG1",
+        senderId="5215551234567@s.whatsapp.net",
+        from_="5215551234567@s.whatsapp.net",
+    )
+    msg["from"] = msg.pop("from_")
+
+    assert adapter._should_react_to_message_data(msg) is True
+    assert adapter._should_process_message(msg) is True
+    assert adapter._should_observe_unmentioned_group_message(msg) is False
+
+
+def test_non_approved_group_messages_stay_observe_only_when_unmentioned():
+    adapter = _make_adapter(
+        require_mention=True,
+        reactions=True,
+        reaction_allow_from=["5215551234567@s.whatsapp.net"],
+        observe_unmentioned_group_messages=True,
+    )
+    msg = _group_message(
+        "ordinary group chatter without a Jack mention",
+        messageId="MSG1",
+        senderId="5215559999999@s.whatsapp.net",
+        from_="5215559999999@s.whatsapp.net",
+    )
+    msg["from"] = msg.pop("from_")
+
+    assert adapter._should_react_to_message_data(msg) is False
+    assert adapter._should_process_message(msg) is False
+    assert adapter._should_observe_unmentioned_group_message(msg) is True
+
+
+def test_react_to_all_group_members_but_reply_consider_only_approved_senders():
+    adapter = _make_adapter(
+        require_mention=True,
+        reactions=True,
+        reaction_allow_from=["*"],
+        reply_consider_allow_from=["5215551234567@s.whatsapp.net"],
+        observe_unmentioned_group_messages=True,
+    )
+    jacob_msg = _group_message(
+        "Battery 4140 installed in NOW 3150 temporarily",
+        messageId="MSG1",
+        senderId="5215551234567@s.whatsapp.net",
+        from_="5215551234567@s.whatsapp.net",
+    )
+    other_msg = _group_message(
+        "ordinary group chatter without a Jack mention",
+        messageId="MSG2",
+        senderId="5215559999999@s.whatsapp.net",
+        from_="5215559999999@s.whatsapp.net",
+    )
+    jacob_msg["from"] = jacob_msg.pop("from_")
+    other_msg["from"] = other_msg.pop("from_")
+
+    assert adapter._should_react_to_message_data(jacob_msg) is True
+    assert adapter._should_process_message(jacob_msg) is True
+    assert adapter._should_react_to_message_data(other_msg) is True
+    assert adapter._should_process_message(other_msg) is False
+    assert adapter._should_observe_unmentioned_group_message(other_msg) is True
+
+
+def test_whatsapp_reaction_emoji_auto_matches_message_context():
+    adapter = _make_adapter(reactions=True)
+
+    assert adapter._reaction_emoji_for_message_data({"body": "Can you check this?"}) == "👀"
+    assert adapter._reaction_emoji_for_message_data({"body": "NOW 3140 is stolen"}) == "🚨"
+    assert adapter._reaction_emoji_for_message_data({"body": "payment proof sent"}) == "✅"
+    assert adapter._reaction_emoji_for_message_data({"body": "gracias"}) == "🙏"
+    assert adapter._reaction_emoji_for_message_data({"body": "FYI"}) == "👍"
+
+
+def test_whatsapp_reaction_queue_keeps_only_latest_message_in_burst(monkeypatch):
+    adapter = _make_adapter(reactions=True)
+    created = []
+
+    class FakeTask:
+        def __init__(self):
+            self.cancelled = False
+        def done(self):
+            return False
+        def cancel(self):
+            self.cancelled = True
+
+    def fake_create_task(coro):
+        coro.close()
+        task = FakeTask()
+        created.append(task)
+        return task
+
+    monkeypatch.setattr("plugins.platforms.whatsapp.adapter.asyncio.create_task", fake_create_task)
+    adapter._queue_reaction_message_data(
+        chat_id="120363001234567890@g.us",
+        message_id="MSG1",
+        sender_id="5215551234567@s.whatsapp.net",
+        raw_message={"body": "first", "senderId": "5215551234567@s.whatsapp.net"},
+    )
+    adapter._queue_reaction_message_data(
+        chat_id="120363001234567890@g.us",
+        message_id="MSG2",
+        sender_id="5215551234567@s.whatsapp.net",
+        raw_message={"body": "Can you check this?", "senderId": "5215551234567@s.whatsapp.net"},
+    )
+
+    key = adapter._reaction_batch_key("120363001234567890@g.us", "5215551234567@s.whatsapp.net")
+    assert created[0].cancelled is True
+    assert adapter._pending_reactions[key]["message_id"] == "MSG2"
+    assert adapter._pending_reactions[key]["emoji"] == "👀"

@@ -13,6 +13,7 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         "⚠ Auxiliary title generation failed: HTTP 400: Operation contains cybersecurity risk",
         "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
         "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
+        "ℹ Codex gpt-5.5 caps context at 272K, so auto-compaction was raised to 85% (from 45%).",
         "ℹ Configured compression model 'small-model' failed (timeout). Recovered using main model — check auxiliary.compression.model in config.yaml.",
         "⏳ Retrying in 4.2s (attempt 1/3)...",
         "⏱️ Rate limited. Waiting 30.0s (attempt 2/3)...",

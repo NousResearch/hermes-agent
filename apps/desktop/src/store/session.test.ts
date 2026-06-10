@@ -5,12 +5,14 @@ import type { SessionInfo } from '@/types/hermes'
 import {
   $activeSessionId,
   $attentionSessionIds,
+  $connection,
   $currentCwd,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
+  setCurrentCwd,
   setSessionAttention,
   setSessionWorking,
   workspaceCwdForNewSession
@@ -184,9 +186,12 @@ describe('mergeSessionPage', () => {
 describe('workspaceCwdForNewSession', () => {
   afterEach(() => {
     applyConfiguredDefaultProjectDir(null)
+    $connection.set(null)
     $currentCwd.set('')
     $activeSessionId.set(null)
     window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
   })
 
   it('prefers the configured default over the sticky remembered workspace', () => {
@@ -215,6 +220,26 @@ describe('workspaceCwdForNewSession', () => {
 
     expect($currentCwd.get()).toBe('/live/session/path')
     expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+  })
+
+  it('keeps remote workspace memory separate from local and other remotes', () => {
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/local/project')
+    $currentCwd.set('/live/session/path')
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+
+    expect(workspaceCwdForNewSession()).toBe('')
+
+    setCurrentCwd('/backend/project-a')
+    expect(workspaceCwdForNewSession()).toBe('/backend/project-a')
+
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(workspaceCwdForNewSession()).toBe('')
+
+    setCurrentCwd('/backend/project-b')
+    expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
+
+    $connection.set(null)
+    expect(workspaceCwdForNewSession()).toBe('/local/project')
   })
 })
 

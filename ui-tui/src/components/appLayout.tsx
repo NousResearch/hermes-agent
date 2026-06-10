@@ -5,10 +5,12 @@ import { Fragment, memo, useMemo, useRef } from 'react'
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
+import { useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { prevRenderedMsg } from '../domain/blockLayout.js'
+import { transcriptTailSlots } from '../domain/tailDock.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -61,21 +63,13 @@ const TranscriptPane = memo(function TranscriptPane({
   transcript
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
-
-  // LiveTodoPanel rides as a child of the latest user-message row so it
-  // visually belongs to the prompt and follows it during scroll. -1 when
-  // empty → row.index === -1 is always false → no render.
-  const lastUserIdx = useMemo(() => {
-    const items = transcript.historyItems
-
-    for (let i = items.length - 1; i >= 0; i--) {
-      if (items[i].role === 'user') {
-        return i
-      }
-    }
-
-    return -1
-  }, [transcript.historyItems])
+  const liveTodoCount = useTurnSelector(state => state.todos.length)
+  const tailSlots = transcriptTailSlots({
+    assistant: progress.showProgressArea,
+    queue: composer.queuedDisplay.length > 0,
+    todos: liveTodoCount > 0
+  })
+  const showTailDock = tailSlots.length > 0
 
   // Index of the first user-role message; every later user message gets a
   // small dash above it so multi-turn transcripts visually segment by
@@ -100,7 +94,7 @@ const TranscriptPane = memo(function TranscriptPane({
         ref={transcript.scrollRef}
         stickyScroll
       >
-        <Box flexDirection="column" paddingX={1}>
+        <Box flexDirection="column" flexGrow={1} paddingX={1}>
           {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (
@@ -135,22 +129,37 @@ const TranscriptPane = memo(function TranscriptPane({
                   t={ui.theme}
                 />
               )}
-
-              {row.index === lastUserIdx && <LiveTodoPanel />}
             </Box>
           ))}
 
           {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
-          <StreamingAssistant
-            cols={composer.cols}
-            compact={ui.compact}
-            detailsMode={ui.detailsMode}
-            detailsModeCommandOverride={ui.detailsModeCommandOverride}
-            prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
-            progress={progress}
-            sections={ui.sections}
-          />
+          {showTailDock ? <Box flexGrow={1} /> : null}
+
+          {tailSlots.map(slot =>
+            slot === 'queue' ? (
+              <QueuedMessages
+                cols={composer.cols}
+                key="queue"
+                queued={composer.queuedDisplay}
+                queueEditIdx={composer.queueEditIdx}
+                t={ui.theme}
+              />
+            ) : slot === 'todos' ? (
+              <LiveTodoPanel key="todos" />
+            ) : (
+              <StreamingAssistant
+                cols={composer.cols}
+                compact={ui.compact}
+                detailsMode={ui.detailsMode}
+                detailsModeCommandOverride={ui.detailsModeCommandOverride}
+                key="assistant"
+                prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
+                progress={progress}
+                sections={ui.sections}
+              />
+            )
+          )}
         </Box>
       </ScrollBox>
 
@@ -229,13 +238,6 @@ const ComposerPane = memo(function ComposerPane({
       }}
       paddingX={1}
     >
-      <QueuedMessages
-        cols={composer.cols}
-        queued={composer.queuedDisplay}
-        queueEditIdx={composer.queueEditIdx}
-        t={ui.theme}
-      />
-
       {ui.bgTasks.size > 0 && (
         <Text color={ui.theme.color.muted}>
           {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running

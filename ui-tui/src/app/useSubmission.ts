@@ -23,6 +23,7 @@ const DOUBLE_ENTER_MS = 450
 const SESSION_BUSY_RE = /session busy|waiting for model response/i
 
 const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
+const quotedPreview = (text: string) => `"${text.slice(0, 50)}${text.length > 50 ? '…' : ''}"`
 
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
@@ -112,7 +113,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
             composerActions.enqueue(submitText)
             patchUiState({ busy: true, status: 'queued for next turn' })
 
-            return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+            return sys(`queued: ${quotedPreview(submitText)}`)
           }
 
           sys(`error: ${e.message}`)
@@ -256,7 +257,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
             if (r?.status !== 'queued') {
               fallback('steer rejected — message queued for next turn')
+
+              return
             }
+
+            sys(`steer queued — arrives after next tool call: ${quotedPreview(full)}`)
           })
           .catch(() => fallback('steer failed — message queued for next turn'))
 

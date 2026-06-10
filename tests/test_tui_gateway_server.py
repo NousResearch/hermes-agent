@@ -2360,6 +2360,18 @@ def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypat
     assert server._load_cfg()["display"]["sections"]["thinking"] == "hidden"
 
 
+def test_session_info_reasoning_effort_none_when_disabled():
+    agent = types.SimpleNamespace(reasoning_config={"enabled": False})
+    info = server._session_info(agent)
+    assert info["reasoning_effort"] == "none"
+
+
+def test_session_info_reasoning_effort_empty_when_no_config():
+    agent = types.SimpleNamespace(reasoning_config=None)
+    info = server._session_info(agent)
+    assert info["reasoning_effort"] == ""
+
+
 def test_config_set_verbose_updates_session_mode_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(verbose_logging=False)

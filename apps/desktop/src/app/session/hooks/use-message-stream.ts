@@ -460,7 +460,8 @@ export function useMessageStream({
             busy: false,
             needsInput: false,
             pendingBranchGroup: null,
-            streamId: null
+            streamId: null,
+            turnStartedAt: null
           }
         }
 
@@ -550,7 +551,8 @@ export function useMessageStream({
           pendingBranchGroup: null,
           awaitingResponse: false,
           busy: false,
-          needsInput: false
+          needsInput: false,
+          turnStartedAt: null
         }
       })
 
@@ -608,7 +610,8 @@ export function useMessageStream({
           sawAssistantPayload: true,
           awaitingResponse: false,
           busy: false,
-          needsInput: false
+          needsInput: false,
+          turnStartedAt: null
         }
       })
     },
@@ -705,7 +708,8 @@ export function useMessageStream({
               if (busy) {
                 return {
                   ...state,
-                  busy
+                  busy,
+                  turnStartedAt: state.turnStartedAt ?? Date.now()
                 }
               }
 
@@ -718,7 +722,8 @@ export function useMessageStream({
                 awaitingResponse: false,
                 busy,
                 pendingBranchGroup: null,
-                streamId: null
+                streamId: null,
+                turnStartedAt: null
               }
             })
           }
@@ -783,7 +788,8 @@ export function useMessageStream({
           busy: true,
           awaitingResponse: true,
           sawAssistantPayload: false,
-          interrupted: false
+          interrupted: false,
+          turnStartedAt: Date.now()
         }))
 
         if (isActiveEvent) {

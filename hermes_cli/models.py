@@ -73,8 +73,10 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("openrouter/owl-alpha",                   "free"),
+    ("poolside/laguna-m.1:free",               "free"),
     ("tencent/hy3-preview:free",               "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
     ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
@@ -764,6 +766,64 @@ _NOUS_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
 _nous_recommended_cache: dict[str, tuple[dict[str, Any], float]] = {}
 
 
+def _nous_recommended_disk_path() -> "Path":
+    """Disk path for the persisted recommended-models cache."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "nous_recommended_cache.json"
+
+
+def _read_nous_recommended_disk(base: str) -> dict[str, Any] | None:
+    """Return the last-known-good payload for ``base`` from disk, or None.
+
+    The disk file is a JSON object keyed by portal base URL so staging and
+    prod don't collide:
+    ``{"<base>": {"data": {...}, "ts": <epoch_seconds>}}``.
+    """
+    try:
+        with open(_nous_recommended_disk_path(), encoding="utf-8") as fh:
+            blob = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(blob, dict):
+        return None
+    entry = blob.get(base)
+    if not isinstance(entry, dict):
+        return None
+    data = entry.get("data")
+    return data if isinstance(data, dict) and data else None
+
+
+def _write_nous_recommended_disk(base: str, data: dict[str, Any]) -> None:
+    """Persist ``data`` as the last-known-good payload for ``base``.
+
+    Merges into any existing per-base map, then writes atomically. Failures
+    are non-fatal (logged at debug) — the in-process cache still works.
+    """
+    if not data:
+        return
+    path = _nous_recommended_disk_path()
+    try:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                blob = json.load(fh)
+            if not isinstance(blob, dict):
+                blob = {}
+        except (OSError, json.JSONDecodeError):
+            blob = {}
+        blob[base] = {"data": data, "ts": time.time()}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(blob, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except OSError as exc:
+        import logging
+        logging.getLogger(__name__).debug(
+            "nous recommended-models disk cache write failed: %s", exc
+        )
+
+
 def fetch_nous_recommended_models(
     portal_base_url: str = "",
     timeout: float = 5.0,
@@ -774,12 +834,19 @@ def fetch_nous_recommended_models(
 
     Hits ``<portal>/api/nous/recommended-models``. The endpoint is public —
     no auth is required. Results are cached per portal URL for
-    ``_NOUS_RECOMMENDED_CACHE_TTL`` seconds; pass ``force_refresh=True`` to
-    bypass the cache.
+    ``_NOUS_RECOMMENDED_CACHE_TTL`` seconds in process; pass
+    ``force_refresh=True`` to bypass the in-process cache.
 
-    Returns the parsed JSON dict on success, or ``{}`` on any failure
-    (network, parse, non-2xx). Callers must treat missing/null fields as
-    "no recommendation" and fall back to their own default.
+    A successful live fetch is also persisted to a per-base disk cache
+    (``$HERMES_HOME/cache/nous_recommended_cache.json``) as last-known-good.
+    When the live fetch fails (network, parse, non-2xx) and the in-process
+    cache is empty, the disk copy is returned instead of ``{}`` — so a
+    transient Portal hiccup no longer silently drops the free/paid model
+    recommendations from the picker. Self-heals on the next successful fetch.
+
+    Returns the parsed JSON dict, or ``{}`` only when neither the network nor
+    any cache layer can supply data. Callers must treat missing/null fields
+    as "no recommendation" and fall back to their own default.
     """
     base = (portal_base_url or "https://portal.nousresearch.com").rstrip("/")
     now = time.monotonic()
@@ -801,6 +868,19 @@ def fetch_nous_recommended_models(
             data = {}
     except Exception:
         data = {}
+
+    if data:
+        # Live fetch succeeded — refresh both cache layers.
+        _nous_recommended_cache[base] = (data, now)
+        _write_nous_recommended_disk(base, data)
+        return data
+
+    # Live fetch failed. Fall back to the last-known-good disk copy so a
+    # transient Portal hiccup doesn't drop the recommendations entirely.
+    disk = _read_nous_recommended_disk(base)
+    if disk:
+        _nous_recommended_cache[base] = (disk, now)
+        return disk
 
     _nous_recommended_cache[base] = (data, now)
     return data

@@ -488,6 +488,53 @@ When `security.allow_lazy_installs: false` is set globally, `ensure()` raises `F
 
 
 
+### Thread-safe lazy singletons
+
+Plugins often cache an expensive object — an SDK client, an HTTP session, a connection pool — in a module-level variable built on first use:
+
+```python
+_client = None
+
+def get_client():
+    global _client
+    if _client is not None:
+        return _client
+    _client = ExpensiveClient(...)   # ← TOCTOU race
+    return _client
+```
+
+This is a footgun. Hermes runs multiple threads in one process (delegated tool calls, background workers, the self-improvement fork), so two threads can hit `get_client()` before `_client` is set, **both** pass the `is not None` check, **both** run the expensive build, and the second write clobbers the first — leaking whatever resource the loser opened (connection, file handle, background thread).
+
+Don't hand-roll the lock. Use the helpers in `plugins/plugin_utils.py`:
+
+```python
+from plugins.plugin_utils import lazy_singleton, SingletonSlot
+
+# Zero-arg accessor → decorate it:
+@lazy_singleton
+def get_client():
+    return ExpensiveClient(load_config())   # runs exactly once
+
+client = get_client()    # safe across threads
+get_client.reset()       # drop the instance (tests / teardown)
+
+
+# Accessor that takes a build argument → use a slot:
+_slot: SingletonSlot = SingletonSlot()
+
+def get_client(config=None):
+    return _slot.get(lambda: ExpensiveClient(resolve(config)))
+
+def reset_client():
+    _slot.reset()
+```
+
+Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The honcho memory plugin (`plugins/memory/honcho/client.py`) is the reference consumer.
+
+> Rule of thumb: any time you write `global _something` followed by a `is None` check and a build, reach for one of these instead.
+
+
+
 ### Conditional tool availability
 
 For tools that depend on optional libraries:

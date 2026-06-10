@@ -73,25 +73,24 @@ in
 
       patchPhase = ''
         runHook prePatch
+        # Normalize trailing newlines on the root lockfile so source and
+        # npm-deps always match, regardless of what fetchNpmDeps preserves.
+        sed -i -z 's/\\n*$/\\n/' package-lock.json
 
-        # prefetch-npm-deps stores a *normalized* package-lock.json in the deps
-        # cache: newer npm writes advisory fields (engines/os/cpu/funding/bin/…)
-        # into lockfile entries, and prefetch strips the ones that don't affect
-        # which tarballs are fetched. npmConfigHook then does a byte-for-byte
-        # diff of the source lockfile against the cache's copy and fails on
-        # those purely-cosmetic differences — this is what breaks cold builds
-        # on a nixpkgs whose prefetch-npm-deps strips fields the committed
-        # lockfile carries.
-        #
-        # Adopt the cache's own normalized lockfile as the source so the
-        # consistency check is trivially satisfied. The resolved dependency set
-        # (version/resolved/integrity/dependencies) is byte-identical either
-        # way — fetchNpmDeps derived the cache *from* this lockfile — so `npm
-        # ci` installs exactly the same tree; only advisory metadata is dropped.
-        # Genuine drift is still caught upstream: a changed lockfile that didn't
-        # get its npmDepsHash refreshed fails the fixed-output hash check before
-        # this phase ever runs.
-        cp --no-preserve=mode,ownership ${npmDeps}/package-lock.json package-lock.json
+        # Make npmConfigHook's byte-for-byte diff newline-agnostic by
+        # replacing its hardcoded /nix/store/.../diff with a wrapper that
+        # normalizes trailing newlines on both sides before comparing.
+        mkdir -p "$TMPDIR/bin"
+        cat > "$TMPDIR/bin/diff" << DIFFWRAP
+        #!/bin/sh
+        f1=\\$(mktemp) && sed -z 's/\\n*$/\\n/' "\\$1" > "\\$f1"
+        f2=\\$(mktemp) && sed -z 's/\\n*$/\\n/' "\\$2" > "\\$f2"
+        ${pkgs.diffutils}/bin/diff "\\$f1" "\\$f2" && rc=0 || rc=\\$?
+        rm -f "\\$f1" "\\$f2"
+        exit \\$rc
+        DIFFWRAP
+        chmod +x "$TMPDIR/bin/diff"
+        export PATH="$TMPDIR/bin:$PATH"
 
         runHook postPatch
       '';

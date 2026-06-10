@@ -4,6 +4,8 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $sessions, setSessions } from '@/store/session'
+import { $connection } from '@/store/session'
+import type { ComposerAttachment } from '@/store/composer'
 import type { SessionInfo } from '@/types/hermes'
 
 import { usePromptActions } from './use-prompt-actions'
@@ -42,7 +44,10 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 
 interface HarnessHandle {
   steerPrompt: (text: string) => Promise<boolean>
-  submitText: (text: string, options?: { attachments?: never[]; fromQueue?: boolean }) => Promise<boolean>
+  submitText: (
+    text: string,
+    options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
+  ) => Promise<boolean>
 }
 
 function Harness({
@@ -312,5 +317,94 @@ describe('usePromptActions steerPrompt', () => {
 
     expect(await handle!.steerPrompt('   ')).toBe(false)
     expect(requestGateway).not.toHaveBeenCalled()
+  })
+})
+
+describe('usePromptActions file attachment sync', () => {
+  afterEach(() => {
+    cleanup()
+    $connection.set(null)
+    vi.restoreAllMocks()
+  })
+
+  function fileAttachment(): ComposerAttachment {
+    return {
+      id: 'file:report.txt',
+      kind: 'file',
+      label: 'report.txt',
+      path: '/Users/alice/Downloads/report.txt',
+      refText: '@file:`/Users/alice/Downloads/report.txt`'
+    }
+  }
+
+  it('uploads file bytes via file.attach on a remote gateway and submits the rewritten ref', async () => {
+    // Remote gateway can't read the client-disk path, so the desktop must upload
+    // the bytes and submit the workspace-relative ref the gateway hands back —
+    // not the original /Users/... path (which would dead-end as "outside the
+    // allowed workspace").
+    $connection.set({ mode: 'remote' } as never)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          path: '/remote/work/.hermes/desktop-attachments/report.txt',
+          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          uploaded: true
+        } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const ok = await handle!.submitText('convert this to epub', { attachments: [fileAttachment()] })
+
+    expect(ok).toBe(true)
+    expect(calls.map(c => c.method)).toEqual(['file.attach', 'prompt.submit'])
+    expect(calls[0]?.params).toMatchObject({
+      session_id: RUNTIME_SESSION_ID,
+      path: '/Users/alice/Downloads/report.txt',
+      name: 'report.txt',
+      data_url: 'data:text/plain;base64,aGVsbG8='
+    })
+    expect(calls[1]?.params).toEqual({
+      session_id: RUNTIME_SESSION_ID,
+      text: '@file:.hermes/desktop-attachments/report.txt\n\nconvert this to epub'
+    })
+  })
+
+  it('passes the path directly via file.attach in local mode (no byte upload)', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      if (method === 'file.attach') {
+        return { attached: true, ref_text: '@file:data/report.txt', uploaded: false } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const ok = await handle!.submitText('summarize', { attachments: [fileAttachment()] })
+
+    expect(ok).toBe(true)
+    expect(calls[0]?.method).toBe('file.attach')
+    // Local mode sends no data_url — the gateway shares this disk.
+    expect(calls[0]?.params).not.toHaveProperty('data_url')
+    expect(calls[1]).toEqual({
+      method: 'prompt.submit',
+      params: { session_id: RUNTIME_SESSION_ID, text: '@file:data/report.txt\n\nsummarize' }
+    })
   })
 })

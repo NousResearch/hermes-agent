@@ -47,7 +47,7 @@ async def test_enrich_message_with_transcription_surfaces_path_when_stt_disabled
         "gateway.run._probe_audio_duration",
         new=AsyncMock(return_value="0:12"),
     ):
-        result = await runner._enrich_message_with_transcription(
+        result, transcripts = await runner._enrich_message_with_transcription(
             "caption",
             ["/tmp/voice.ogg"],
         )
@@ -56,6 +56,7 @@ async def test_enrich_message_with_transcription_surfaces_path_when_stt_disabled
     assert "voice message" in result.lower()
     assert "(duration: 0:12)" in result
     assert "caption" in result
+    assert transcripts == []
 
 
 @pytest.mark.asyncio
@@ -69,13 +70,14 @@ async def test_enrich_message_with_transcription_omits_duration_on_probe_failure
         "gateway.run._probe_audio_duration",
         new=AsyncMock(return_value=None),
     ):
-        result = await runner._enrich_message_with_transcription(
+        result, transcripts = await runner._enrich_message_with_transcription(
             "",
             ["/tmp/voice.ogg"],
         )
 
     assert "/tmp/voice.ogg" in result
     assert "duration" not in result.lower()
+    assert transcripts == []
 
 
 @pytest.mark.asyncio
@@ -89,7 +91,7 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
         "tools.transcription_tools.transcribe_audio",
         return_value={"success": False, "error": "VOICE_TOOLS_OPENAI_KEY not set"},
     ):
-        result = await runner._enrich_message_with_transcription(
+        result, transcripts = await runner._enrich_message_with_transcription(
             "caption",
             ["/tmp/voice.ogg"],
         )
@@ -97,6 +99,7 @@ async def test_enrich_message_with_transcription_avoids_bogus_no_provider_messag
     assert "No STT provider is configured" not in result
     assert "trouble transcribing" in result
     assert "caption" in result
+    assert transcripts == []
 
 
 @pytest.mark.asyncio

@@ -119,6 +119,20 @@ if (REMOTE_DISPLAY_REASON) {
     `[hermes] remote display detected (${REMOTE_DISPLAY_REASON}); disabling GPU hardware acceleration to prevent flicker`
   )
 }
+
+// Keep the renderer running at full speed while the window is in the background
+// or occluded. The chat transcript streams to screen through a
+// requestAnimationFrame-gated flush; Chromium pauses rAF (and clamps timers)
+// for backgrounded/occluded renderers, so without these the live answer stalls
+// whenever the window loses focus (switching to your editor mid-turn, detached
+// devtools, another window covering it) and only paints on refocus or refresh.
+// `backgroundThrottling: false` on the BrowserWindow covers the blurred case;
+// these process-level switches additionally stop Chromium from backgrounding or
+// occlusion-throttling the renderer. Must run before app `ready`.
+app.commandLine.appendSwitch('disable-renderer-backgrounding')
+app.commandLine.appendSwitch('disable-backgrounding-occluded-windows')
+app.commandLine.appendSwitch('disable-background-timer-throttling')
+
 const SOURCE_REPO_ROOT = path.resolve(APP_ROOT, '../..')
 
 // Build-time install stamp -- the git ref this .exe was built against.
@@ -3899,10 +3913,12 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const scoped = key ? config.profiles?.[key] || null : null
   const block = key ? scoped || {} : config.remote || {}
 
+  const envOverride = key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
-  const remoteUrl = String(block.url || '')
-  const mode = (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
+  const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
+  const mode = envOverride || (key ? scoped?.mode : config.mode) === 'remote' ? 'remote' : 'local'
 
   let remoteOauthConnected = false
   if (authMode === 'oauth' && remoteUrl) {
@@ -3928,7 +3944,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     remoteTokenSet: Boolean(remoteToken),
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
-    envOverride: key ? false : Boolean(process.env.HERMES_DESKTOP_REMOTE_URL)
+    envOverride
   }
 }
 
@@ -4687,7 +4703,16 @@ function createWindow() {
       webviewTag: true,
       sandbox: true,
       nodeIntegration: false,
-      devTools: true
+      devTools: true,
+      // Keep timers + requestAnimationFrame running at full speed when the
+      // window is blurred/occluded. The chat transcript streams to the screen
+      // through a requestAnimationFrame-gated flush (useSessionStateCache),
+      // so with Chromium's default background throttling the live answer
+      // stalls whenever this window isn't focused (e.g. you switch to your
+      // editor mid-turn, or open detached devtools) and only appears once you
+      // refocus or refresh. A streaming chat app must render in the
+      // background, so opt out — matching the secondary windows above.
+      backgroundThrottling: false
     }
   })
 

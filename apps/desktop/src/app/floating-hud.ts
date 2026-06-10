@@ -4,7 +4,9 @@
 // Each caller layers on its own z-index, width, and overflow.
 export const HUD_POSITION = 'fixed left-1/2 top-3 -translate-x-1/2'
 
-export const HUD_SURFACE = 'rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-xl'
+// Matches the app's borderless-overlay surface (dialog, keybind panel, …):
+// hairline `--stroke-nous` paired with the soft `--shadow-nous` float.
+export const HUD_SURFACE = 'rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous'
 
 // One row/text size for both HUDs (compact — two notches under `text-sm`).
 export const HUD_TEXT = 'text-xs'

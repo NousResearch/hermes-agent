@@ -33,9 +33,12 @@ import hashlib
 import hmac
 import json
 import logging
+import os
 import re
 import subprocess
+import sys
 import time
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
@@ -351,6 +354,116 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
+    def _validate_script_route(self, route_config: dict) -> Optional[str]:
+        """Validate a deterministic script route configuration.
+
+        Script routes are intentionally narrow: they may only execute files under
+        the active profile's ~/.hermes/scripts or the root ~/.hermes/scripts
+        directory. This prevents a webhook subscription from becoming arbitrary
+        filesystem execution.
+        """
+        script = str(route_config.get("script") or "").strip()
+        if not script:
+            return None
+        if route_config.get("deliver_only"):
+            return "cannot combine 'script' with deliver_only=true"
+        try:
+            script_path = Path(script).expanduser().resolve()
+            profile_scripts = Path(os.environ.get("HERMES_HOME", "")).expanduser() / "scripts"
+            root_scripts = Path.home() / ".hermes" / "scripts"
+            allowed_dirs = [profile_scripts.resolve(), root_scripts.resolve()]
+            if not any(str(script_path).startswith(str(base) + os.sep) or script_path == base for base in allowed_dirs):
+                return "script path is outside allowed Hermes scripts directories"
+            if not script_path.exists() or not script_path.is_file():
+                return "script path does not exist or is not a file"
+        except Exception as exc:
+            return "invalid script path: %s" % exc
+        return None
+
+    async def _execute_script_route(
+        self,
+        route_name: str,
+        route_config: dict,
+        raw_body: bytes,
+        payload: Dict[str, Any],
+        event_type: str,
+        delivery_id: str,
+    ) -> Any:
+        """Run a preconfigured local script for a signed webhook route."""
+        err = self._validate_script_route(route_config)
+        if err:
+            logger.error("[webhook] script route invalid route=%s error=%s", route_name, err)
+            return web.json_response({"status": "error", "error": err, "delivery_id": delivery_id}, status=500)
+
+        script = str(Path(str(route_config.get("script"))).expanduser().resolve())
+        timeout = int(route_config.get("script_timeout_seconds", 120) or 120)
+        env = os.environ.copy()
+        env.update({
+            "HERMES_WEBHOOK_ROUTE": route_name,
+            "HERMES_WEBHOOK_EVENT_TYPE": event_type,
+            "HERMES_WEBHOOK_DELIVERY_ID": delivery_id,
+        })
+        logger.info(
+            "[webhook] script-start route=%s script=%s event=%s delivery=%s",
+            route_name,
+            script,
+            event_type,
+            delivery_id,
+        )
+        try:
+            proc = await asyncio.to_thread(
+                subprocess.run,
+                [sys.executable, script],
+                input=raw_body.decode("utf-8", errors="replace"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=timeout,
+                env=env,
+            )
+        except subprocess.TimeoutExpired:
+            logger.error("[webhook] script-timeout route=%s script=%s delivery=%s", route_name, script, delivery_id)
+            return web.json_response({"status": "error", "error": "Script timed out", "delivery_id": delivery_id}, status=504)
+        except Exception as exc:
+            logger.exception("[webhook] script-exception route=%s script=%s delivery=%s", route_name, script, delivery_id)
+            return web.json_response({"status": "error", "error": "Script execution failed", "detail": str(exc), "delivery_id": delivery_id}, status=502)
+
+        if proc.returncode != 0:
+            logger.error(
+                "[webhook] script-fail route=%s script=%s delivery=%s returncode=%s stdout=%s stderr=%s",
+                route_name,
+                script,
+                delivery_id,
+                proc.returncode,
+                proc.stdout[-500:],
+                proc.stderr[-500:],
+            )
+            return web.json_response({
+                "status": "error",
+                "error": "Script failed",
+                "returncode": proc.returncode,
+                "stdout_bytes": len(proc.stdout.encode("utf-8")),
+                "stderr_bytes": len(proc.stderr.encode("utf-8")),
+                "delivery_id": delivery_id,
+            }, status=502)
+
+        logger.info(
+            "[webhook] script-ok route=%s script=%s delivery=%s stdout=%s stderr=%s",
+            route_name,
+            script,
+            delivery_id,
+            proc.stdout[-500:],
+            proc.stderr[-500:],
+        )
+        return web.json_response({
+            "status": "script_executed",
+            "route": route_name,
+            "event": event_type,
+            "delivery_id": delivery_id,
+            "stdout_bytes": len(proc.stdout.encode("utf-8")),
+            "stderr_bytes": len(proc.stderr.encode("utf-8")),
+        }, status=200)
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
@@ -519,6 +632,20 @@ class WebhookAdapter(BasePlatformAdapter):
                 status=200,
             )
         self._seen_deliveries[delivery_id] = now
+
+        # ── Deterministic script route ───────────────────────────
+        # Skip the agent entirely and execute one preconfigured local script.
+        # Script receives the raw request body on stdin plus HERMES_WEBHOOK_*
+        # environment variables. This is for fast, auditable pipeline triggers.
+        if route_config.get("script"):
+            return await self._execute_script_route(
+                route_name=route_name,
+                route_config=route_config,
+                raw_body=raw_body,
+                payload=payload,
+                event_type=event_type,
+                delivery_id=delivery_id,
+            )
 
         # ── Direct delivery mode (deliver_only) ─────────────────
         # Skip the agent entirely — the rendered prompt IS the message we

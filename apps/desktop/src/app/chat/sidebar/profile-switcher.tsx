@@ -83,8 +83,9 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
 // The active profile pops in its own color — the "where am I" cue. Single-
-// profile users see only the "+" (create their first profile); everything else
-// appears once a second profile exists.
+// profile users see the "+" (create their first profile) and the Manage
+// overflow (edit the default profile's SOUL.md); the colored named squares
+// and the default↔all toggle only appear once a second profile exists.
 export function ProfileRail() {
   const { t } = useI18n()
   const p = t.profiles
@@ -268,9 +269,11 @@ export function ProfileRail() {
         </Tip>
       </div>
 
-      {multiProfile && (
-        <ProfilePill active={false} glyph="ellipsis" label={p.manageProfiles} onSelect={() => navigate(PROFILES_ROUTE)} />
-      )}
+      {/* Always reachable, even with only the default profile: the manage
+          overlay is the only place to edit a profile's SOUL.md, and a
+          single-profile user must be able to edit the default's persona
+          without first creating a throwaway second profile. */}
+      <ProfilePill active={false} glyph="ellipsis" label={p.manageProfiles} onSelect={() => navigate(PROFILES_ROUTE)} />
 
       {/* Land in the new profile on a fresh chat (selectProfile triggers the
           new-session reset), not stuck on the session you were just in. */}

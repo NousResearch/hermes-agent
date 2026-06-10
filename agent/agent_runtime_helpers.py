@@ -605,6 +605,26 @@ def recover_with_credential_pool(
     """
     pool = agent._credential_pool
     if pool is None:
+        provider_source = getattr(agent, "_provider_source", None)
+        if provider_source == "hermes-auth-store":
+            from agent.credential_pool import load_pool
+            try:
+                loaded_pool = load_pool(agent.provider)
+            except Exception:
+                loaded_pool = None
+            if loaded_pool and loaded_pool.has_credentials():
+                current_api_key = getattr(agent, "api_key", None)
+                matching_entry = None
+                if current_api_key:
+                    for entry in loaded_pool.entries():
+                        if entry.runtime_api_key == current_api_key:
+                            matching_entry = entry
+                            break
+                if matching_entry:
+                    agent._credential_pool = loaded_pool
+                    pool = loaded_pool
+
+    if pool is None:
         return False, has_retried_429
 
     # Defensive guard: if a fallback provider is active and its provider name
@@ -657,7 +677,11 @@ def recover_with_credential_pool(
 
     if effective_reason == FailoverReason.billing:
         rotate_status = status_code if status_code is not None else 402
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            api_key_hint=getattr(agent, "api_key", None),
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (billing) — rotated to pool entry %s",
@@ -681,7 +705,11 @@ def recover_with_credential_pool(
                 current_last_status,
             )
             rotate_status = status_code if status_code is not None else 429
-            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            next_entry = pool.mark_exhausted_and_rotate(
+                status_code=rotate_status,
+                error_context=error_context,
+                api_key_hint=getattr(agent, "api_key", None),
+            )
             if next_entry is not None:
                 _ra().logger.info(
                     "Credential %s (rate limit, pre-exhausted) — rotated to pool entry %s",
@@ -705,7 +733,11 @@ def recover_with_credential_pool(
         if not has_retried_429 and not usage_limit_reached:
             return False, True
         rotate_status = status_code if status_code is not None else 429
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            api_key_hint=getattr(agent, "api_key", None),
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (rate limit) — rotated to pool entry %s",
@@ -781,7 +813,11 @@ def recover_with_credential_pool(
         # Refresh failed — rotate to next credential instead of giving up.
         # The failed entry is already marked exhausted by try_refresh_current().
         rotate_status = status_code if status_code is not None else 401
-        next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+        next_entry = pool.mark_exhausted_and_rotate(
+            status_code=rotate_status,
+            error_context=error_context,
+            api_key_hint=getattr(agent, "api_key", None),
+        )
         if next_entry is not None:
             _ra().logger.info(
                 "Credential %s (auth refresh failed) — rotated to pool entry %s",

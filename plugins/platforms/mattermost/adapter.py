@@ -90,7 +90,7 @@ class MattermostAdapter(BasePlatformAdapter):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._closing = False
 
-        # Reply mode: "thread" to nest replies, "off" for flat messages.
+        # Reply mode: "thread" to nest replies, "off" for flat messages, "auto" for smart (flat DMs, thread channels).
         self._reply_mode: str = (
             config.extra.get("reply_mode", "")
             or os.getenv("MATTERMOST_REPLY_MODE", "off")
@@ -98,6 +98,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+        self._channel_type_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -250,6 +251,19 @@ class MattermostAdapter(BasePlatformAdapter):
         logger.info("Mattermost: disconnected")
 
 
+    async def _should_thread(self, chat_id: str, reply_to: Optional[str]) -> bool:
+        if not reply_to:
+            return False
+        if self._reply_mode == "thread":
+            return True
+        if self._reply_mode == "auto":
+            ch_type = self._channel_type_cache.get(chat_id)
+            if not ch_type:
+                info = await self.get_chat_info(chat_id)
+                ch_type = info["type"]
+            return ch_type != "dm"
+        return False
+
     async def _resolve_root_id(self, post_id: str) -> str:
         """Resolve a post_id to the thread root_id for Mattermost.
 
@@ -287,7 +301,7 @@ class MattermostAdapter(BasePlatformAdapter):
                 "message": chunk,
             }
             # Thread support: reply_to is the root post ID.
-            if reply_to and self._reply_mode == "thread":
+            if await self._should_thread(chat_id, reply_to):
                 # Ensure root_id points to the thread root, not a reply.
                 # Mattermost rejects non-root post IDs as root_id.
                 resolved_root = await self._resolve_root_id(reply_to)
@@ -308,6 +322,8 @@ class MattermostAdapter(BasePlatformAdapter):
 
         ch_type = _CHANNEL_TYPE_MAP.get(data.get("type", "O"), "channel")
         display_name = data.get("display_name") or data.get("name") or chat_id
+        
+        self._channel_type_cache[chat_id] = ch_type
         return {"name": display_name, "type": ch_type}
 
     # ------------------------------------------------------------------
@@ -470,7 +486,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
+        if await self._should_thread(chat_id, reply_to):
             payload["root_id"] = await self._resolve_root_id(reply_to)
 
         data = await self._api_post("posts", payload)
@@ -509,7 +525,7 @@ class MattermostAdapter(BasePlatformAdapter):
             "message": caption or "",
             "file_ids": [file_id],
         }
-        if reply_to and self._reply_mode == "thread":
+        if await self._should_thread(chat_id, reply_to):
             payload["root_id"] = await self._resolve_root_id(reply_to)
 
         data = await self._api_post("posts", payload)

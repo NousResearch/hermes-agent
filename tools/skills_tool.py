@@ -1049,9 +1049,21 @@ def skill_view(
                     _record(found_skill_md.parent, found_skill_md)
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
+            # Skip files nested inside another skill's folder (any ancestor
+            # dir below search_dir that has its own SKILL.md) -- those are
+            # reference/template sub-documents, not standalone skills, and
+            # must not collide with a real same-named skill.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
-                    _record(None, found_md)
+                if found_md.name == "SKILL.md":
+                    continue
+                rel_parents = found_md.relative_to(search_dir).parents
+                if any(
+                    (search_dir / a / "SKILL.md").exists()
+                    for a in rel_parents
+                    if str(a) != "."
+                ):
+                    continue
+                _record(None, found_md)
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]

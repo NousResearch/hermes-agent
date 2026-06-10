@@ -1287,3 +1287,35 @@ class TestSkillViewCollisionDetection:
         result = json.loads(raw)
         assert result["success"] is True
         assert "LOCAL BODY" in result["content"]
+
+    def test_reference_subdoc_does_not_collide_with_skill(self, tmp_path):
+        """A flat <name>.md inside another skill's references/ (or
+        templates/) folder is a sub-document, not a standalone skill, and
+        must not collide with a real same-named skill. Regression for the
+        autonomous-pipeline / figma / notion collisions seen live, where a
+        knowledge-base skill shipped references/<skill-name>.md docs."""
+        local_dir = tmp_path / "local"
+        external_dir = tmp_path / "external"
+        local_dir.mkdir()
+        external_dir.mkdir()
+
+        # The real, standalone skill.
+        _make_skill(
+            local_dir, "pipeline", category="devops", body="REAL PIPELINE"
+        )
+
+        # A different skill that ships a references/pipeline.md sub-doc.
+        host = _make_skill(
+            local_dir, "audit", category="ops", body="AUDIT SKILL"
+        )
+        refs = host / "references"
+        refs.mkdir()
+        (refs / "pipeline.md").write_text("# just a reference note\n")
+
+        p1, p2 = self._patch_dirs(local_dir, [external_dir])
+        with p1, p2:
+            raw = skill_view("pipeline")
+
+        result = json.loads(raw)
+        assert result["success"] is True, result
+        assert "REAL PIPELINE" in result["content"]

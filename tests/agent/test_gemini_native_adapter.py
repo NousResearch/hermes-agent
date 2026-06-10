@@ -304,6 +304,42 @@ def test_stream_event_translation_emits_tool_call_delta_with_stable_index():
     assert first[-1].choices[0].finish_reason == "tool_calls"
 
 
+def test_stream_event_translation_preserves_terminal_finish_reasons_after_tool_call():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices = {}
+    tool_event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}}
+                    ]
+                },
+            }
+        ]
+    }
+
+    tool_chunks = translate_stream_event(tool_event, model="gemini-2.5-flash", tool_call_indices=tool_call_indices)
+
+    assert tool_chunks[0].choices[0].delta.tool_calls[0].function.name == "search"
+    assert tool_call_indices
+
+    max_tokens_chunks = translate_stream_event(
+        {"candidates": [{"finishReason": "MAX_TOKENS"}]},
+        model="gemini-2.5-flash",
+        tool_call_indices=tool_call_indices,
+    )
+    safety_chunks = translate_stream_event(
+        {"candidates": [{"finishReason": "SAFETY"}]},
+        model="gemini-2.5-flash",
+        tool_call_indices=tool_call_indices,
+    )
+
+    assert max_tokens_chunks[-1].choices[0].finish_reason == "length"
+    assert safety_chunks[-1].choices[0].finish_reason == "content_filter"
+
+
 def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     from agent.gemini_native_adapter import translate_stream_event
 

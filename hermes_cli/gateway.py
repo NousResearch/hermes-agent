@@ -79,12 +79,6 @@ class ProfileGatewayProcess:
 
 
 
-def _openrc_available() -> bool:
-    """Check if OpenRC's rc-service is available."""
-    try:
-        return shutil.which("rc-service") is not None
-    except Exception:
-        return False
 
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.

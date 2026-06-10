@@ -106,7 +106,7 @@ def detect_service_manager() -> ServiceManagerKind:
     is_macos,
     is_windows,
     supports_systemd_services,
-    _openrc_available,
+    supports_openrc_services,
     )
 
     if is_container() and _s6_running():
@@ -117,7 +117,7 @@ def detect_service_manager() -> ServiceManagerKind:
         return "launchd"
     if supports_systemd_services():
         return "systemd"
-    if _openrc_available():
+    if supports_openrc_services():
         return "openrc"
     return "none"
 

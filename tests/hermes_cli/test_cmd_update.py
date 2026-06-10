@@ -330,6 +330,40 @@ class TestCmdUpdateBranchFallback:
             assert "applying safe config migrations" in captured.out
             assert "API keys require manual entry" in captured.out
 
+    def test_gateway_update_starts_installed_but_unloaded_launchd_job(
+        self, mock_args, tmp_path, capsys
+    ):
+        """macOS gateway updates must recover when the LaunchAgent is installed but unloaded."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        started = []
+
+        def fake_run(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if joined == "launchctl list ai.hermes.gateway":
+                return subprocess.CompletedProcess(cmd, 3, stdout="", stderr="not loaded")
+            return _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )(cmd, **kwargs)
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
+            patch("hermes_cli.gateway.is_macos", return_value=True),
+            patch("hermes_cli.gateway.get_launchd_label", return_value="ai.hermes.gateway"),
+            patch("hermes_cli.gateway.get_launchd_plist_path", return_value=plist_path),
+            patch("hermes_cli.gateway.launchd_start", side_effect=lambda: started.append(True)),
+            patch("hermes_cli.gateway.launchd_restart") as restart_mock,
+        ):
+            cmd_update(mock_args)
+
+        assert started == [True]
+        restart_mock.assert_not_called()
+        out = capsys.readouterr().out
+        assert "Gateway launchd job is unloaded" in out
+        assert "Restarted ai.hermes.gateway" in out
+
 
 class TestCmdUpdateMigrationPrompt:
     """The config-migration prompt names what changed and skips the prompt

@@ -9086,25 +9086,36 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 try:
                     from hermes_cli.gateway import (
                         launchd_restart,
+                        launchd_start,
                         get_launchd_label,
                         get_launchd_plist_path,
                     )
 
                     plist_path = get_launchd_plist_path()
                     if plist_path.exists():
+                        label = get_launchd_label()
                         check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
+                            ["launchctl", "list", label],
                             capture_output=True,
                             text=True,
                             timeout=5,
                         )
-                        if check.returncode == 0:
-                            try:
+                        try:
+                            if check.returncode == 0:
                                 launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
+                            else:
+                                # macOS edge case: a previous stop/update can leave
+                                # the LaunchAgent plist installed but the job
+                                # unloaded. `RunAtLoad` only helps at login; during
+                                # `hermes update --gateway` we must bootstrap it
+                                # explicitly or Telegram/cron stay offline until a
+                                # manual `hermes gateway start`.
+                                print("  ↻ Gateway launchd job is unloaded — starting it")
+                                launchd_start()
+                            restarted_services.append(label)
+                        except subprocess.CalledProcessError as e:
+                            stderr = (getattr(e, "stderr", "") or "").strip()
+                            print(f"  ⚠ Gateway restart failed: {stderr}")
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 

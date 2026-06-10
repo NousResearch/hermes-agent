@@ -15738,7 +15738,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 )
             except Exception as _e:
                 logger.debug("spawn_async_diagnostic failed: %s", _e)
-        asyncio.create_task(runner.stop())
+        # A planned --replace takeover is operationally a restart from the
+        # user's perspective: another gateway process is already waiting to
+        # come online. Drive the restart stop path so shutdown/startup
+        # lifecycle notifications keep their historical "restarting" / "back
+        # online" semantics and the successor sees .restart_pending.json.
+        asyncio.create_task(runner.stop(restart=planned_takeover))
 
     def restart_signal_handler():
         runner.request_restart(detached=False, via_service=True)

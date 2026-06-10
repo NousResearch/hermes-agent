@@ -279,6 +279,58 @@ class TestClassicInjection:
         )
 
 
+class TestStrictSecretPatterns:
+    """Credential-format coverage for strict-scope scanners."""
+
+    @pytest.mark.parametrize(
+        ("text", "pattern_id"),
+        [
+            ("fake provider key sk-aaaaaaaaaaaaaaaa", "secret_openai_key"),
+            ("fake github token ghp_aaaaaaaaaaaaaaaa", "secret_github_pat"),
+            ("fake github fine grained github_pat_aaaaaaaaaaaaaaaa", "secret_github_pat"),
+            ("fake gitlab token glpat-aaaaaaaaaaaaaaaa", "secret_gitlab_pat"),
+            ("fake slack token xoxb-aaaaaaaaaaaaaaaa", "secret_slack_token"),
+            ("fake aws id AKIAAAAAAAAAAAAA", "secret_aws_access_key"),
+            ("fake google api AIzaaaaaaaaaaaaaaaaaaaaaaaaa", "secret_google_api_key"),
+            ("fake stripe token sk_live_aaaaaaaaaaaaaaaa", "secret_stripe_key"),
+            ("fake npm token npm_aaaaaaaaaaaaaaaa", "secret_npm_token"),
+            ("Authorization: Bearer aaaaaaaaaaaaaaaaaaaaaaaa", "secret_bearer_token"),
+            ("jwt eyJaaaaaaaa.eyJbbbbbbbb.cccccccc", "secret_jwt"),
+            ("-----BEGIN PRIVATE KEY-----", "secret_private_key"),
+            ("postgres://user:secret@example.test/db", "secret_database_url"),
+            ("postgresql://user:secret@example.test/db", "secret_database_url"),
+            ("api_key=aaaaaaaaaaaaaaaaaaaaaaaa", "hardcoded_secret"),
+        ],
+    )
+    def test_secret_formats_strict_only(self, text, pattern_id):
+        assert pattern_id in scan_for_threats(text, scope="strict")
+        assert pattern_id not in scan_for_threats(text, scope="context")
+        assert pattern_id not in scan_for_threats(text, scope="all")
+
+    def test_labeled_secret_reports_hardcoded_secret_first(self):
+        """findings[0] drives user-facing messages — the generic label
+        pattern must win over the format patterns for labeled secrets."""
+        findings = scan_for_threats('api_key="sk-aaaaaaaaaaaaaaaaaaaaaaaa"', scope="strict")
+        assert findings[0] == "hardcoded_secret"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Set OPENAI_API_KEY before running the tests",
+            "the function takes an api_key argument",
+            "my db_password is in the vault",
+            "akiawhatever1234",  # AKIA prefix is uppercase-only
+            "postgres://localhost:5432/mydb",  # no userinfo -> not a secret
+            "pk_live_abcdefgh12345678",  # Stripe publishable keys are public
+            "token: YOUR_TOKEN_HERE",
+        ],
+    )
+    def test_benign_text_not_flagged(self, text):
+        findings = scan_for_threats(text, scope="strict")
+        assert not [f for f in findings if f.startswith("secret_")], findings
+        assert "hardcoded_secret" not in findings
+
+
 # =========================================================================
 # Invisible unicode
 # =========================================================================

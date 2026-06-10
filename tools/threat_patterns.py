@@ -111,7 +111,25 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     (r'(update|modify|edit|write|change|append|add\s+to)\s+.*\.hermes/(config\.yaml|SOUL\.md)', "hermes_config_mod", "strict"),
 
     # ── Hardcoded secrets ────────────────────────────────────────────
-    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\'][A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
+    # Strict scope also blocks well-known credential *formats* without a
+    # key=value label: strict-scope consumers (memory writes, skill scans)
+    # persist accepted text into future prompts, so a raw token is already
+    # a leak. Patterns are anchored to vendor prefixes, case-sensitively
+    # where the format is case-sensitive (patterns compile with IGNORECASE,
+    # hence the scoped (?-i:...) groups), to keep false positives low.
+    (r'(?:api[_-]?key|token|secret|password)\s*[=:]\s*["\']?[A-Za-z0-9+/=_-]{20,}', "hardcoded_secret", "strict"),
+    (r'\bsk-[A-Za-z0-9_\-]{8,}', "secret_openai_key", "strict"),
+    (r'\b(?:ghp|github_pat)_[A-Za-z0-9_]{8,}', "secret_github_pat", "strict"),
+    (r'\bglpat-[A-Za-z0-9_\-]{8,}', "secret_gitlab_pat", "strict"),
+    (r'\bxox[baprs]-[A-Za-z0-9_\-]{8,}', "secret_slack_token", "strict"),
+    (r'(?-i:\bAKIA[A-Z0-9]{8,})', "secret_aws_access_key", "strict"),
+    (r'(?-i:\bAIza[0-9A-Za-z_\-]{20,})', "secret_google_api_key", "strict"),
+    (r'\bsk_(?:live|test)_[0-9A-Za-z]{8,}', "secret_stripe_key", "strict"),
+    (r'\bnpm_[A-Za-z0-9_\-]{8,}', "secret_npm_token", "strict"),
+    (r'\bBearer\s+[A-Za-z0-9_\-.=]{16,}', "secret_bearer_token", "strict"),
+    (r'(?-i:\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,})', "secret_jwt", "strict"),
+    (r'BEGIN [A-Z ]*PRIVATE KEY', "secret_private_key", "strict"),
+    (r'\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis)://[^\s:@/]+:[^\s@]+@[^\s]+', "secret_database_url", "strict"),
 ]
 
 # Invisible / bidirectional unicode characters used in injection attacks.

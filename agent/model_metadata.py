@@ -1612,13 +1612,16 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
-            # Invalidate stale ≤204,800 cache entries for MiniMax-M3.  Pre-catalog
+            # Invalidate stale cache entries for MiniMax-M3.  Pre-catalog
             # builds resolved M3 via the generic ``minimax`` catch-all (204,800)
-            # and persisted it before the ``minimax-m3`` (1M) entry existed; that
-            # stale value would otherwise stick forever here at step 1.  M3 is 1M,
-            # so any sub-256K cached value for an M3 slug is a leftover — drop it
-            # and fall through to the hardcoded default.
-            elif cached <= 204_800 and _model_name_suggests_minimax_m3(model):
+            # and persisted it before the ``minimax-m3`` (1M) entry existed;
+            # models.dev also underreports M3 as 512K.  Any cached value below
+            # the catalog entry (1M) is a leftover — drop it and fall through
+            # to the hardcoded default.
+            elif (
+                cached < DEFAULT_CONTEXT_LENGTHS.get("minimax-m3", 1_000_000)
+                and _model_name_suggests_minimax_m3(model)
+            ):
                 logger.info(
                     "Dropping stale MiniMax-M3 cache entry %s@%s -> %s (pre-catalog value); "
                     "re-resolving via hardcoded defaults",

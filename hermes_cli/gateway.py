@@ -2302,8 +2302,19 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
 
     candidates = []
 
-    venv_bin = project_root / "venv" / "bin"
-    if _is_dir(venv_bin):
+    # Probe ``.venv`` before ``venv`` — same order/preference as
+    # _detect_venv_dir() and get_python_path(). Hardcoding only ``venv`` left
+    # the service PATH without the venv's bin for the modern ``.venv`` layout
+    # (e.g. ``uv venv .venv``), so venv-installed console scripts went missing.
+    venv_bin = next(
+        (
+            project_root / name / "bin"
+            for name in (".venv", "venv")
+            if _is_dir(project_root / name / "bin")
+        ),
+        None,
+    )
+    if venv_bin is not None:
         candidates.append(str(venv_bin))
     elif sys.prefix != sys.base_prefix:
         candidates.append(str(Path(sys.prefix) / "bin"))

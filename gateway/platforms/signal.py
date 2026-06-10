@@ -598,10 +598,16 @@ class SignalAdapter(BasePlatformAdapter):
         # Determine message type from media
         msg_type = MessageType.TEXT
         if media_types:
-            if any(mt.startswith("audio/") for mt in media_types):
-                msg_type = MessageType.VOICE
-            elif any(mt.startswith("image/") for mt in media_types):
+            if any(mt.startswith("image/") for mt in media_types):
                 msg_type = MessageType.PHOTO
+            elif any(mt.startswith("audio/") for mt in media_types):
+                msg_type = MessageType.VOICE
+            else:
+                # Signal attachments are often arbitrary documents (PDF, DOCX,
+                # ZIP, etc.). Classify non-image/non-audio payloads as documents
+                # so the gateway can surface the file path and extract readable
+                # text when possible.
+                msg_type = MessageType.DOCUMENT
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)

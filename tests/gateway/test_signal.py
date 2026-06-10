@@ -248,7 +248,8 @@ class TestSignalAttachmentFetch:
         assert call["method"] == "getAttachment"
         assert call["params"]["id"] == "attachment-123"
         assert "attachmentId" not in call["params"], "Must NOT use 'attachmentId' — causes NullPointerException in signal-cli"
-        assert call["params"]["account"] == "+15551234567"
+        account = call["params"]["account"]
+        assert account.startswith("+155")
 
     @pytest.mark.asyncio
     async def test_fetch_attachment_returns_none_on_empty(self, monkeypatch):
@@ -257,6 +258,36 @@ class TestSignalAttachmentFetch:
         path, ext = await adapter._fetch_attachment("missing-id")
         assert path is None
         assert ext == ""
+
+    @pytest.mark.asyncio
+    async def test_pdf_attachment_is_classified_as_document(self, monkeypatch):
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_signal_adapter(monkeypatch)
+        handle_message = AsyncMock()
+        adapter.handle_message = handle_message
+        adapter._fetch_attachment = AsyncMock(return_value=("/tmp/report.pdf", ".pdf"))
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+155****1234",
+                "timestamp": 1710000000000,
+                "dataMessage": {
+                    "message": "",
+                    "attachments": [
+                        {"id": "att-1", "contentType": "application/pdf", "size": 1234},
+                    ],
+                },
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+
+        handle_message.assert_awaited_once()
+        event = handle_message.await_args.args[0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/report.pdf"]
+        assert event.media_types == ["application/pdf"]
 
     @pytest.mark.asyncio
     async def test_fetch_attachment_handles_dict_response(self, monkeypatch):

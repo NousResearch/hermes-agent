@@ -162,6 +162,34 @@ class TestSlashCommandSessionIsolation:
         assert event.source.chat_id == "D123"
         assert event.source.user_id == "U123"
 
+    @pytest.mark.asyncio
+    async def test_slash_command_preserves_thread_id_when_payload_includes_it(self, adapter):
+        """Thread-scoped commands such as /model must key to the Slack thread.
+
+        If the slash payload carries thread_ts but the adapter drops it, a
+        session-only /model switch is stored under the channel/user key while
+        the next normal threaded message is stored under channel/thread_ts, so
+        the override is missed and users are forced to use --global.
+        """
+        command = {
+            "command": "/model",
+            "text": "qwen --provider openrouter",
+            "user_id": "U123",
+            "channel_id": "C123",
+            "team_id": "T123",
+            "thread_ts": "1700000000.123456",
+        }
+
+        await adapter._handle_slash_command(command)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.text == "/model qwen --provider openrouter"
+        assert event.source.chat_type == "group"
+        assert event.source.chat_id == "C123"
+        assert event.source.user_id == "U123"
+        assert event.source.thread_id == "1700000000.123456"
+
 
 # ---------------------------------------------------------------------------
 # TestAppMentionHandler
@@ -1152,6 +1180,29 @@ class TestBangPrefixCommands:
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.text.startswith("/model gpt-5.4")
+        assert msg_event.message_type == MessageType.COMMAND
+
+    @pytest.mark.asyncio
+    async def test_bang_command_with_rich_text_block_is_not_duplicated(self, adapter):
+        """Slack rich_text blocks mirror message text; bang rewrite must not duplicate args."""
+        text = "!model qwen3.7-plus --provider opencode-go"
+        evt = self._make_event(text)
+        evt["blocks"] = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_section",
+                        "elements": [{"type": "text", "text": text}],
+                    }
+                ],
+            }
+        ]
+
+        await adapter._handle_slack_message(evt)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/model qwen3.7-plus --provider opencode-go"
         assert msg_event.message_type == MessageType.COMMAND
 
     @pytest.mark.asyncio

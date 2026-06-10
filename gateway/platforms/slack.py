@@ -2142,6 +2142,14 @@ class SlackAdapter(BasePlatformAdapter):
             return
 
         original_text = event.get("text", "")
+        # Keep the unmodified Slack text for later de-duplication against
+        # Block Kit rich_text extraction.  A bang-command rewrite below turns
+        # ``!model ...`` into ``/model ...``; without this original copy the
+        # blocks extractor can append the same visible message again because
+        # ``!model ...`` is no longer a substring of the rewritten text.  That
+        # duplicate line then becomes part of the command args and makes
+        # ``/model qwen --provider ...`` look like a model name with spaces.
+        original_slack_text = original_text
 
         # Slack blocks native slash commands inside threads ("/queue is not
         # supported in threads. Sorry!").  As a workaround, recognise a
@@ -2175,13 +2183,35 @@ class SlackAdapter(BasePlatformAdapter):
         # the plain ``text`` field.  Merge block text so the agent sees the
         # full message content.
         blocks = event.get("blocks")
-        if blocks:
+        # Skip blocks extraction for command messages (slash/bang commands).
+        # Blocks payload contains formatted text with spaces that pollutes
+        # command args parsing (e.g. "/model qwen --provider X" gets blocks
+        # appended, making the model name appear to contain spaces).
+        is_command = (original_text or "").startswith("/")
+        if not is_command and original_text.startswith("!") and len(original_text) > 1:
+            try:
+                from hermes_cli.commands import is_gateway_known_command
+                _first = original_text[1:].split(maxsplit=1)[0].split("@", 1)[0].lower()
+                is_command = _first and "/" not in _first and is_gateway_known_command(_first)
+            except Exception:
+                pass
+        if blocks and not is_command:
             blocks_text = _extract_text_from_slack_blocks(blocks)
             if blocks_text:
                 # Only append if the blocks contain text not already present
-                # in the plain text field (avoids duplication).
+                # in either the current text or the original Slack text.  The
+                # original check matters for bang commands rewritten from
+                # ``!cmd`` to ``/cmd`` above.
                 stripped_blocks = blocks_text.strip()
-                if stripped_blocks and stripped_blocks not in text.strip():
+                current_text_stripped = text.strip()
+                original_text_stripped = original_slack_text.strip()
+                if (
+                    stripped_blocks
+                    and stripped_blocks not in current_text_stripped
+                    and stripped_blocks not in original_text_stripped
+                    and (not current_text_stripped or current_text_stripped not in stripped_blocks)
+                    and (not original_text_stripped or original_text_stripped not in stripped_blocks)
+                ):
                     logger.debug(
                         "Slack: extracted additional text from blocks "
                         "(likely quoted/forwarded content): %s",
@@ -3366,11 +3396,28 @@ class SlackAdapter(BasePlatformAdapter):
         # Preserve DM semantics only for DM channel IDs; shared channels must
         # keep group semantics so different users do not collide into one
         # session key.
+        #
+        # If Slack includes thread context in the slash payload, preserve it so
+        # session-scoped commands like `/model <name>` affect exactly the same
+        # Slack thread/session that normal messages in that thread use. Without
+        # this, `/model` from a thread is keyed only by channel+user, so the next
+        # threaded message misses the override and appears to require --global.
+        # Slack's native slash-command payloads vary by surface, so accept a few
+        # known shapes and otherwise leave thread_id unset; users can always use
+        # the message-based `!model ...` thread command path, which carries
+        # event.thread_ts.
+        thread_id = (
+            command.get("thread_ts")
+            or command.get("message_ts")
+            or (command.get("message") or {}).get("thread_ts")
+            or (command.get("container") or {}).get("thread_ts")
+        )
         is_dm = str(channel_id).startswith("D")
         source = self.build_source(
             chat_id=channel_id,
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
+            thread_id=thread_id or None,
         )
 
         event = MessageEvent(

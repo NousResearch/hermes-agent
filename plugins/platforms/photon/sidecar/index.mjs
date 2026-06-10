@@ -40,6 +40,7 @@
 //   PHOTON_SIDECAR_BIND    (default 127.0.0.1)
 
 import http from "node:http";
+import crypto from "node:crypto";
 import { once } from "node:events";
 
 const projectId = process.env.PHOTON_PROJECT_ID;
@@ -254,32 +255,57 @@ async function normalizeEvent(space, message) {
   }
 }
 
+// spectrum-ts handles in-session gRPC reconnects internally, but if the async
+// iterator itself throws or ends, this consumer would stop forever. Wrap it in
+// a re-subscribe loop with capped exponential backoff + jitter so inbound
+// always recovers (the adapter dedupes any catch-up replay).
 (async () => {
-  try {
-    for await (const [space, message] of app.messages) {
-      // Only forward inbound messages (ignore our own outbound echoes).
-      if (message && message.direction && message.direction !== "inbound") {
-        continue;
+  let backoff = 1000;
+  for (;;) {
+    try {
+      for await (const [space, message] of app.messages) {
+        backoff = 1000; // healthy traffic — reset
+        // Only forward inbound messages (ignore our own outbound echoes).
+        if (message && message.direction && message.direction !== "inbound") {
+          continue;
+        }
+        rememberInboundSpace(space, message);
+        const event = await normalizeEvent(space, message);
+        if (!event) continue;
+        await deliver(JSON.stringify(event));
       }
-      rememberInboundSpace(space, message);
-      const event = await normalizeEvent(space, message);
-      if (!event) continue;
-      await deliver(JSON.stringify(event));
+      console.error("photon-sidecar: inbound stream ended — re-subscribing");
+    } catch (e) {
+      console.error(
+        "photon-sidecar: inbound stream errored — restarting: " +
+          (e && e.message ? e.message : String(e))
+      );
     }
-  } catch (e) {
-    console.error(
-      "photon-sidecar: inbound stream errored: " +
-        (e && e.stack ? e.stack : String(e))
+    await new Promise((r) =>
+      setTimeout(r, backoff + Math.random() * backoff * 0.2)
     );
+    backoff = Math.min(backoff * 2, 30000);
   }
 })();
 
 // ---------------------------------------------------------------------------
 // HTTP control + inbound server (loopback only).
 
+// Control-message bodies are tiny; cap the body so a compromised local peer
+// can't OOM the sidecar by streaming an unbounded request (defence-in-depth on
+// the loopback channel).
+const MAX_BODY_BYTES = 2 * 1024 * 1024; // 2 MiB
 async function readBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) {
+      req.destroy();
+      throw new Error("request body too large");
+    }
+    chunks.push(chunk);
+  }
   const raw = Buffer.concat(chunks).toString("utf-8");
   if (!raw) return {};
   try {
@@ -386,8 +412,16 @@ async function resolveSpace(spaceId) {
   throw new Error(`unable to resolve space id ${spaceId}`);
 }
 
+// Constant-time token comparison — don't leak the token via `!==` timing.
+const _tokenBuf = Buffer.from(sharedToken);
+function tokenOk(header) {
+  if (typeof header !== "string") return false;
+  const h = Buffer.from(header);
+  return h.length === _tokenBuf.length && crypto.timingSafeEqual(h, _tokenBuf);
+}
+
 const server = http.createServer(async (req, res) => {
-  if (req.headers["x-hermes-sidecar-token"] !== sharedToken) {
+  if (!tokenOk(req.headers["x-hermes-sidecar-token"])) {
     return unauthorized(res);
   }
   // Long-lived inbound NDJSON stream.
@@ -496,3 +530,13 @@ async function shutdown(signal) {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+// Don't let a stray promise rejection take the process down silently — handlers
+// catch their own errors, so log and keep serving (Python supervises restart on
+// a real fatal exit).
+process.on("unhandledRejection", (reason) => {
+  console.error(
+    "photon-sidecar: unhandledRejection: " +
+      (reason && reason.stack ? reason.stack : String(reason))
+  );
+});

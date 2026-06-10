@@ -5226,12 +5226,31 @@ def cmd_gui(args: argparse.Namespace):
                     # is still locked by a running instance; stop it before retry.
                     _stop_desktop_processes_locking_build(desktop_dir)
                     build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=env, check=False)
+            if build_result.returncode != 0 and not source_mode and not env.get("ELECTRON_MIRROR"):
+                # Still failing and the user hasn't pinned a mirror: GitHub's
+                # Electron release host is likely blocked/throttled (the repeating
+                # "retrying" download log). Retry once via npmmirror.com — the
+                # de-facto Electron community mirror (Alibaba). @electron/get
+                # SHASUM-checks the download, but the SHASUMS come from the same
+                # mirror, so that guards against a corrupt/partial download, NOT
+                # a compromised mirror: reaching for it is an explicit trust
+                # trade-off we only make AFTER the canonical GitHub download has
+                # failed, and we never override a user-pinned ELECTRON_MIRROR.
+                print("  ⚠ Desktop build still failing; the Electron download from "
+                      "GitHub looks blocked. Retrying once via a public mirror "
+                      "(npmmirror.com)... (set ELECTRON_MIRROR to use another mirror)")
+                mirror_env = dict(env)
+                mirror_env["ELECTRON_MIRROR"] = "https://npmmirror.com/mirrors/electron/"
+                _stop_desktop_processes_locking_build(desktop_dir)
+                build_result = subprocess.run([npm, "run", build_script], cwd=desktop_dir, env=mirror_env, check=False)
             if build_result.returncode != 0:
                 print("✗ Desktop GUI build failed")
                 print(f"  Run manually:  cd apps/desktop && npm run {build_script}")
                 if sys.platform == "win32":
                     print("  If this says \"Access is denied\" on Hermes.exe, close any")
                     print("  running Hermes desktop window and retry.")
+                print("  If the log shows Electron download retries, rebuild via a mirror:")
+                print("    ELECTRON_MIRROR=<mirror-base-url> hermes desktop --force-build")
                 sys.exit(build_result.returncode or 1)
             packaged_executable = _desktop_packaged_executable(desktop_dir)
             if not source_mode:
@@ -11166,6 +11185,27 @@ def main():
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
     )
 
+    sessions_repair = sessions_subparsers.add_parser(
+        "repair",
+        help="Repair a malformed state.db schema so hidden sessions reappear",
+        description=(
+            "Recover a state.db whose schema is malformed (e.g. 'table "
+            "messages_fts already exists'), which makes Desktop/Dashboard show "
+            "no sessions. A backup is made first; sessions and messages are "
+            "preserved and the FTS search index is rebuilt if needed."
+        ),
+    )
+    sessions_repair.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Only report whether the database opens cleanly; do not modify it",
+    )
+    sessions_repair.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the timestamped backup copy (not recommended)",
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -11195,6 +11235,53 @@ def main():
     def cmd_sessions(args):
         import json as _json
 
+        action = args.sessions_action
+
+        # 'repair' must run BEFORE opening SessionDB(): a malformed schema is
+        # exactly the case where SessionDB() can't open, so it operates on the
+        # raw file path instead.
+        if action == "repair":
+            from hermes_state import (
+                DEFAULT_DB_PATH,
+                _db_opens_cleanly,
+                repair_state_db_schema,
+            )
+
+            db_path = DEFAULT_DB_PATH
+            if not db_path.exists():
+                print(f"No session database at {db_path} (nothing to repair).")
+                return
+            reason = _db_opens_cleanly(db_path)
+            if reason is None:
+                print(f"✓ {db_path} opens cleanly — no repair needed.")
+                return
+            print(f"✗ {db_path} does not open cleanly: {reason}")
+            if getattr(args, "check_only", False):
+                return
+            print("Repairing (a backup copy is made first)…")
+            report = repair_state_db_schema(
+                db_path, backup=not getattr(args, "no_backup", False)
+            )
+            if report.get("repaired"):
+                if report.get("backup_path"):
+                    print(f"  backup: {report['backup_path']}")
+                print(f"  strategy: {report.get('strategy')}")
+                try:
+                    from hermes_state import SessionDB
+
+                    n = SessionDB()._conn.execute(
+                        "SELECT COUNT(*) FROM sessions"
+                    ).fetchone()[0]
+                    print(f"✓ Repaired — {n} sessions recovered.")
+                except Exception:
+                    print("✓ Repaired.")
+            else:
+                print(f"✗ Repair failed: {report.get('error')}")
+                if report.get("backup_path"):
+                    print(f"  A backup is preserved at: {report['backup_path']}")
+                print("  Keep state.db and the backup; do not delete them.")
+            return
+
         try:
             from hermes_state import SessionDB
 
@@ -11202,8 +11289,6 @@ def main():
         except Exception as e:
             print(f"Error: Could not open session database: {e}")
             return
-
-        action = args.sessions_action
 
         # Hide third-party tool sessions by default, but honour explicit --source
         _source = getattr(args, "source", None)

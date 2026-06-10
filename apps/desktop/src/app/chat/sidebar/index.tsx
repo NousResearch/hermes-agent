@@ -73,6 +73,9 @@ import {
 } from '@/store/profile'
 import {
   $cronSessions,
+  $messagingPlatformTotals,
+  $messagingSessions,
+  $messagingTruncated,
   $selectedStoredSessionId,
   $sessionProfileTotals,
   $sessions,
@@ -122,7 +125,6 @@ const WORKSPACE_PAGE = 5
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
 const PROFILE_INITIAL_PAGE = 5
 const GROUP_DND_ID_PREFIX = 'group:'
-const LOCAL_SESSION_SOURCES = new Set(['cli', 'desktop', 'local', 'tui'])
 
 const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
 
@@ -139,24 +141,25 @@ function orderByIds<T>(items: T[], getId: (item: T) => string, orderIds: string[
 
   const byId = new Map(items.map(item => [getId(item), item]))
   const seen = new Set<string>()
-  const out: T[] = []
+  const ordered: T[] = []
 
   for (const id of orderIds) {
     const item = byId.get(id)
 
     if (item) {
-      out.push(item)
+      ordered.push(item)
       seen.add(id)
     }
   }
 
-  for (const item of items) {
-    if (!seen.has(getId(item))) {
-      out.push(item)
-    }
-  }
+  // Items missing from the persisted order are new since it was last
+  // reconciled. Callers pass recency-sorted lists (newest first), so surface
+  // these at the TOP instead of burying them beneath the saved order —
+  // otherwise a brand-new session sinks to the bottom of the sidebar and reads
+  // as "my latest session never showed up".
+  const fresh = items.filter(item => !seen.has(getId(item)))
 
-  return out
+  return fresh.length ? [...fresh, ...ordered] : ordered
 }
 
 function reconcileOrderIds(currentIds: string[], orderIds: string[]): string[] {
@@ -169,17 +172,15 @@ function reconcileOrderIds(currentIds: string[], orderIds: string[]): string[] {
   }
 
   const current = new Set(currentIds)
-  const next = orderIds.filter(id => current.has(id))
-  const known = new Set(next)
+  const retained = orderIds.filter(id => current.has(id))
+  const retainedSet = new Set(retained)
 
-  for (const id of currentIds) {
-    if (!known.has(id)) {
-      next.push(id)
-      known.add(id)
-    }
-  }
+  // New ids (absent from the saved order) are the newest sessions/groups; keep
+  // them ahead of the persisted order so fresh activity surfaces at the top of
+  // the sidebar rather than being appended to the bottom.
+  const fresh = currentIds.filter(id => !retainedSet.has(id))
 
-  return next
+  return [...fresh, ...retained]
 }
 
 function sameIds(left: string[], right: string[]) {
@@ -249,43 +250,6 @@ function workspaceGroupsFor(
   return [...groups.values()]
 }
 
-function sourceSessionGroupsFor(sessions: SessionInfo[]): {
-  localSessions: SessionInfo[]
-  sourceGroups: SidebarSessionGroup[]
-} {
-  const groups = new Map<string, SidebarSessionGroup>()
-  const localSessions: SessionInfo[] = []
-
-  for (const session of sessions) {
-    const sourceId = normalizeSessionSource(session.source)
-
-    if (!sourceId || LOCAL_SESSION_SOURCES.has(sourceId)) {
-      localSessions.push(session)
-
-      continue
-    }
-
-    const label = sessionSourceLabel(sourceId) ?? sourceId
-
-    const group = groups.get(sourceId) ?? {
-      id: `source:${sourceId}`,
-      label,
-      mode: 'source',
-      path: null,
-      sessions: [],
-      sourceId
-    }
-
-    group.sessions.push(session)
-    groups.set(sourceId, group)
-  }
-
-  return {
-    localSessions,
-    sourceGroups: [...groups.values()].sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }
-}
-
 function useSortableBindings(id: string) {
   const { attributes, isDragging, listeners, setNodeRef, transform, transition } = useSortable({ id })
 
@@ -307,6 +271,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onNavigate: (item: SidebarNavItem) => void
   onLoadMoreSessions: () => void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
+  onLoadMoreMessaging?: (platform: string) => Promise<void> | void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
@@ -320,6 +285,7 @@ export function ChatSidebar({
   onNavigate,
   onLoadMoreSessions,
   onLoadMoreProfileSessions,
+  onLoadMoreMessaging,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
@@ -338,6 +304,9 @@ export function ChatSidebar({
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
+  const messagingSessions = useStore($messagingSessions)
+  const messagingPlatformTotals = useStore($messagingPlatformTotals)
+  const messagingTruncated = useStore($messagingTruncated)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
@@ -488,24 +457,12 @@ export function ChatSidebar({
     [unpinnedAgentSessions, agentOrderIds]
   )
 
-  const { localSessions: localAgentSessions, sourceGroups } = useMemo(
-    () => sourceSessionGroupsFor(agentSessions),
-    [agentSessions]
-  )
-
-  const orderedSourceGroups = useMemo(
-    () => orderByIds(sourceGroups, g => g.id, workspaceOrderIds),
-    [sourceGroups, workspaceOrderIds]
-  )
-
+  // Recents are local-only: messaging-platform sessions are fetched as their
+  // own slice ($messagingSessions) and rendered in self-managed per-platform
+  // sections below, so there is no source-grouping magic to untangle here.
   const agentGroups = useMemo(
-    () =>
-      orderByIds(
-        workspaceGroupsFor(localAgentSessions, s.noWorkspace, { preserveSessionOrder: sourceGroups.length > 0 }),
-        g => g.id,
-        workspaceOrderIds
-      ),
-    [localAgentSessions, s.noWorkspace, sourceGroups.length, workspaceOrderIds]
+    () => orderByIds(workspaceGroupsFor(agentSessions, s.noWorkspace), g => g.id, workspaceOrderIds),
+    [agentSessions, s.noWorkspace, workspaceOrderIds]
   )
 
   const loadMoreForProfileGroup = useCallback(
@@ -522,6 +479,64 @@ export function ChatSidebar({
     },
     [onLoadMoreProfileSessions]
   )
+
+  const loadMoreForMessaging = useCallback(
+    (platform: string) => {
+      if (!onLoadMoreMessaging) {
+        return
+      }
+
+      setMessagingLoadMorePending(prev => ({ ...prev, [platform]: true }))
+
+      void Promise.resolve(onLoadMoreMessaging(platform))
+        .catch(() => undefined)
+        .finally(() => setMessagingLoadMorePending(({ [platform]: _done, ...rest }) => rest))
+    },
+    [onLoadMoreMessaging]
+  )
+
+  // Each messaging platform is its own self-managed section: split the
+  // separately-fetched messaging slice by source, newest platform first, rows
+  // within a platform by recency. Per-platform totals (when a "load more" has
+  // resolved them) drive the count + whether more remain on disk.
+  const messagingGroups = useMemo<MessagingSection[]>(() => {
+    if (!messagingSessions.length) {
+      return []
+    }
+
+    const bySource = new Map<string, SessionInfo[]>()
+
+    for (const session of messagingSessions) {
+      const sourceId = normalizeSessionSource(session.source)
+
+      if (!sourceId) {
+        continue
+      }
+
+      const list = bySource.get(sourceId) ?? []
+      list.push(session)
+      bySource.set(sourceId, list)
+    }
+
+    return [...bySource.entries()]
+      .map(([sourceId, list]) => {
+        const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
+        const known = messagingPlatformTotals[sourceId]
+        const total = Math.max(ordered.length, known ?? 0)
+
+        return {
+          // Known exact total → more exist iff total exceeds loaded; otherwise
+          // the seed fetch was capped, so assume more until a per-platform load
+          // resolves the count.
+          hasMore: known != null ? known > ordered.length : messagingTruncated,
+          label: sessionSourceLabel(sourceId) ?? sourceId,
+          sessions: ordered,
+          sourceId,
+          total
+        }
+      })
+      .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.
@@ -569,56 +584,7 @@ export function ChatSidebar({
     sessionProfileTotals
   ])
 
-  const displayAgentSessions = sourceGroups.length ? localAgentSessions : agentSessions
-
-  const displayAgentGroups = useMemo(() => {
-    if (orderedSourceGroups.length) {
-      const localGroups = agentsGrouped
-        ? agentGroups
-        : localAgentSessions.length
-          ? [
-              {
-                id: 'local-sessions',
-                label: 'Local',
-                mode: 'workspace' as const,
-                path: null,
-                sessions: localAgentSessions
-              }
-            ]
-          : []
-
-      return orderByIds([...orderedSourceGroups, ...localGroups], g => g.id, workspaceOrderIds)
-    }
-
-    return showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
-  }, [
-    agentGroups,
-    agentsGrouped,
-    localAgentSessions,
-    orderedSourceGroups,
-    profileGroups,
-    showAllProfiles,
-    workspaceOrderIds
-  ])
-
-  useEffect(() => {
-    if (!displayAgentGroups?.length || showAllProfiles) {
-      return
-    }
-
-    const next = reconcileOrderIds(
-      displayAgentGroups.map(g => g.id),
-      workspaceOrderIds
-    )
-
-    if (!sameIds(next, workspaceOrderIds)) {
-      setSidebarWorkspaceOrderIds(next)
-    }
-  }, [displayAgentGroups, showAllProfiles, workspaceOrderIds])
-
-  const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
-
-  const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
+  const displayAgentSessions = agentSessions
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
   // unified set. When scoped to one profile it must compare that profile's own
@@ -638,6 +604,27 @@ export function ChatSidebar({
   const remainingSessionCount = Math.max(0, knownSessionTotal - loadedSessionCount)
 
   const recentsMeta = countLabel(agentSessions.length, knownSessionTotal)
+
+  const displayAgentGroups = showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
+
+  useEffect(() => {
+    if (!displayAgentGroups?.length || showAllProfiles) {
+      return
+    }
+
+    const next = reconcileOrderIds(
+      displayAgentGroups.map(g => g.id),
+      workspaceOrderIds
+    )
+
+    if (!sameIds(next, workspaceOrderIds)) {
+      setSidebarWorkspaceOrderIds(next)
+    }
+  }, [displayAgentGroups, showAllProfiles, workspaceOrderIds])
+
+  const showSessionSkeletons = sessionsLoading && sortedSessions.length === 0
+
+  const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
 
   const handlePinnedDragEnd = ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) {
@@ -911,9 +898,10 @@ interface SidebarSectionHeaderProps {
   onToggle: () => void
   action?: React.ReactNode
   meta?: React.ReactNode
+  icon?: React.ReactNode
 }
 
-function SidebarSectionHeader({ label, open, onToggle, action, meta }: SidebarSectionHeaderProps) {
+function SidebarSectionHeader({ label, open, onToggle, action, meta, icon }: SidebarSectionHeaderProps) {
   return (
     <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
       <button
@@ -921,6 +909,7 @@ function SidebarSectionHeader({ label, open, onToggle, action, meta }: SidebarSe
         onClick={onToggle}
         type="button"
       >
+        {icon}
         <SidebarPanelLabel>{label}</SidebarPanelLabel>
         {meta && <SidebarCount>{meta}</SidebarCount>}
         <DisclosureCaret
@@ -981,6 +970,14 @@ interface SidebarSessionGroup {
   totalCount?: number
 }
 
+interface MessagingSection {
+  sourceId: string
+  label: string
+  sessions: SessionInfo[]
+  total: number
+  hasMore: boolean
+}
+
 interface SidebarSessionsSectionProps {
   label: string
   open: boolean
@@ -1002,6 +999,7 @@ interface SidebarSessionsSectionProps {
   footer?: React.ReactNode
   groups?: SidebarSessionGroup[]
   labelMeta?: React.ReactNode
+  labelIcon?: React.ReactNode
   sortable?: boolean
   onReorder?: (event: DragEndEvent) => void
   dndSensors?: ReturnType<typeof useSensors>
@@ -1028,6 +1026,7 @@ function SidebarSessionsSection({
   footer,
   groups,
   labelMeta,
+  labelIcon,
   sortable = false,
   onReorder,
   dndSensors
@@ -1146,7 +1145,14 @@ function SidebarSessionsSection({
 
   return (
     <SidebarGroup className={rootClassName}>
-      <SidebarSectionHeader action={headerAction} label={label} meta={labelMeta} onToggle={onToggle} open={open} />
+      <SidebarSectionHeader
+        action={headerAction}
+        icon={labelIcon}
+        label={label}
+        meta={labelMeta}
+        onToggle={onToggle}
+        open={open}
+      />
       {open && (
         <SidebarGroupContent className={resolvedContentClassName}>
           {body}

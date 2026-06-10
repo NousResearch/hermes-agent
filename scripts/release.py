@@ -1460,6 +1460,7 @@ AUTHOR_MAP = {
     # v0.15.0 additions
     "glen@workmanfirearms.com": "sgtworkman",
     "jorge.fuenmayort@gmail.com": "jfuenmayor",
+    "josh.dow@prepad.io": "joshuadow",  # PR #43004 salvage (desktop WS session rebind)
     "mordred@inaugust.com": "emonty",
     "rodrigoeq@hotmail.com": "rodrigoeqnit",
     "soliva.johnpaul@icloud.com": "jonpol01",

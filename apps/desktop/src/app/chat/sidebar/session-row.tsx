@@ -2,12 +2,15 @@ import { useTranslation } from '@/hooks/use-translation'
 import type * as React from 'react'
 
 import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
+import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
+import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -163,6 +166,15 @@ export function SidebarSessionRow({
               <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
             </span>
           )}
+          {handoffSource && handoffLabel ? (
+            <Tip label={r.handoffOrigin(handoffLabel)}>
+              <PlatformAvatar
+                className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
+                platformId={handoffSource}
+                platformName={handoffLabel}
+              />
+            </Tip>
+          ) : null}
           <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </span>

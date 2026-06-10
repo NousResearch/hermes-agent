@@ -248,6 +248,25 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _estimate_msg_budget_tokens(msg: dict) -> int:
+    """Token estimate for one message in the tail-protection budget walks.
+
+    Counts the message content plus the **full** ``tool_call`` envelope —
+    ``id``, ``type``, ``function.name`` and JSON structure — not just
+    ``function.arguments``.  Counting only the arguments string undercounted
+    assistant turns that fan out into parallel tool calls by 2-15x (a
+    4-tool-call turn measures ~73 vs ~1,090 real tokens), so the protected
+    tail overshot ``tail_token_budget`` and compression became ineffective.
+    See issue #28053.
+    """
+    content_len = _content_length_for_budget(msg.get("content") or "")
+    tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/key overhead
+    for tc in msg.get("tool_calls") or []:
+        if isinstance(tc, dict):
+            tokens += len(str(tc)) // _CHARS_PER_TOKEN
+    return tokens
+
+
 def _content_text_for_contains(content: Any) -> str:
     """Return a best-effort text view of message content.
 
@@ -955,13 +974,7 @@ class ContextCompressor(ContextEngine):
             min_protect = min(protect_tail_count, len(result))
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                raw_content = msg.get("content") or ""
-                content_len = _content_length_for_budget(raw_content)
-                msg_tokens = content_len // _CHARS_PER_TOKEN + 10
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        msg_tokens += len(args) // _CHARS_PER_TOKEN
+                msg_tokens = _estimate_msg_budget_tokens(msg)
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -2200,14 +2213,7 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            raw_content = msg.get("content") or ""
-            content_len = _content_length_for_budget(raw_content)
-            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
-            # Include tool call arguments in estimate
-            for tc in msg.get("tool_calls") or []:
-                if isinstance(tc, dict):
-                    args = tc.get("function", {}).get("arguments", "")
-                    msg_tokens += len(args) // _CHARS_PER_TOKEN
+            msg_tokens = _estimate_msg_budget_tokens(msg)
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -2233,13 +2239,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             raw_accumulated = 0
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
-                raw_content = raw_msg.get("content") or ""
-                raw_len = _content_length_for_budget(raw_content)
-                raw_tok = raw_len // _CHARS_PER_TOKEN + 10
-                for tc in raw_msg.get("tool_calls") or []:
-                    if isinstance(tc, dict):
-                        args = tc.get("function", {}).get("arguments", "")
-                        raw_tok += len(args) // _CHARS_PER_TOKEN
+                raw_tok = _estimate_msg_budget_tokens(raw_msg)
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
                     break

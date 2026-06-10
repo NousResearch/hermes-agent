@@ -52,6 +52,8 @@ dependencies = [
   "pyyaml==6.0.3",
   "ruamel.yaml==0.18.17",
   "requests==2.33.0",  # CVE-2026-25645
+  "python-multipart==0.0.27",  # CVE-2024-47874 (ReDoS; fix: >=0.0.18)
+  "idna==3.15",  # CVE-2024-3651 (resource exhaustion; fix: >=3.7)
   "jinja2==3.1.6",
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
   # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's

@@ -2022,6 +2022,8 @@ class MCPServerTask:
 # ---------------------------------------------------------------------------
 
 _servers: Dict[str, MCPServerTask] = {}
+_server_connecting: set[str] = set()
+_server_connect_errors: Dict[str, str] = {}
 
 # Circuit breaker: consecutive error counts per server.  After
 # _CIRCUIT_BREAKER_THRESHOLD consecutive failures, the handler returns
@@ -2408,8 +2410,8 @@ _mcp_tool_server_names: Dict[str, str] = {}
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
 
-# Protects _mcp_loop, _mcp_thread, _servers, _parallel_safe_servers,
-# _mcp_tool_server_names, and _stdio_pids.
+# Protects _mcp_loop, _mcp_thread, _servers, MCP connection status maps,
+# _parallel_safe_servers, _mcp_tool_server_names, and _stdio_pids.
 _lock = threading.Lock()
 
 # PIDs of stdio MCP server subprocesses.  Tracked so we can force-kill
@@ -3553,6 +3555,8 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         timeout=connect_timeout,
     )
     with _lock:
+        _server_connecting.discard(name)
+        _server_connect_errors.pop(name, None)
         _servers[name] = server
 
     registered_names = _register_server_tools(name, server, config)
@@ -3599,6 +3603,9 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             for k, v in servers.items()
             if k not in _servers and _parse_boolish(v.get("enabled", True), default=True)
         }
+        _server_connecting.update(new_servers)
+        for srv_name in new_servers:
+            _server_connect_errors.pop(srv_name, None)
         # Track which servers opt-in to parallel tool calls (idempotent).
         for srv_name, srv_cfg in servers.items():
             if _parse_boolish(srv_cfg.get("supports_parallel_tool_calls", False), default=False):
@@ -3626,12 +3633,20 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
         for name, result in zip(server_names, results):
             if isinstance(result, BaseException):
                 command = new_servers.get(name, {}).get("command")
+                message = _format_connect_error(result)
+                with _lock:
+                    _server_connecting.discard(name)
+                    _server_connect_errors[name] = message
                 logger.warning(
                     "Failed to connect to MCP server '%s'%s: %s",
                     name,
                     f" (command={command})" if command else "",
-                    _format_connect_error(result),
+                    message,
                 )
+            else:
+                with _lock:
+                    _server_connecting.discard(name)
+                    _server_connect_errors.pop(name, None)
 
     # Per-server timeouts are handled inside _discover_and_register_server.
     # The outer timeout is generous: 120s total for parallel discovery.
@@ -3736,8 +3751,10 @@ def is_mcp_tool_parallel_safe(tool_name: str) -> bool:
 def get_mcp_status() -> List[dict]:
     """Return status of all configured MCP servers for banner display.
 
-    Returns a list of dicts with keys: name, transport, tools, connected.
-    Includes both successfully connected servers and configured-but-failed ones.
+    Returns a list of dicts with keys: name, transport, tools, connected,
+    disabled, and status. Includes connected servers, disabled servers,
+    in-flight connection attempts, recorded failures, and servers that are
+    configured but have not been started in this process yet.
     """
     result: List[dict] = []
 
@@ -3748,6 +3765,8 @@ def get_mcp_status() -> List[dict]:
 
     with _lock:
         active_servers = dict(_servers)
+        connecting = set(_server_connecting)
+        connect_errors = dict(_server_connect_errors)
 
     for name, cfg in configured.items():
         transport = cfg.get("transport", "http") if "url" in cfg else "stdio"
@@ -3760,11 +3779,12 @@ def get_mcp_status() -> List[dict]:
                 "tools": len(server._registered_tool_names) if hasattr(server, "_registered_tool_names") else len(server._tools),
                 "connected": True,
                 "disabled": False,
+                "status": "connected",
             }
             if server._sampling:
                 entry["sampling"] = dict(server._sampling.metrics)
             result.append(entry)
-        else:
+        elif not enabled:
             # A server with enabled: false is intentionally not connected — it is
             # disabled, not failed. Surface that distinction so consumers (banner,
             # TUI) can render "disabled" rather than an alarming "failed".
@@ -3773,7 +3793,36 @@ def get_mcp_status() -> List[dict]:
                 "transport": transport,
                 "tools": 0,
                 "connected": False,
-                "disabled": not enabled,
+                "disabled": True,
+                "status": "disabled",
+            })
+        elif name in connecting:
+            result.append({
+                "name": name,
+                "transport": transport,
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "connecting",
+            })
+        elif name in connect_errors:
+            result.append({
+                "name": name,
+                "transport": transport,
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "failed",
+                "error": connect_errors[name],
+            })
+        else:
+            result.append({
+                "name": name,
+                "transport": transport,
+                "tools": 0,
+                "connected": False,
+                "disabled": False,
+                "status": "configured",
             })
 
     return result

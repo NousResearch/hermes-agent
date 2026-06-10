@@ -3962,6 +3962,15 @@ function writeActiveDesktopProfile(name) {
   return value || null
 }
 
+// Apply --profile from CLI at module load so startHermes() sees it.
+const { parseCliProfile } = require('./cli-profile-override.cjs')
+{
+  const cliProfile = parseCliProfile()
+  if (cliProfile) {
+    try { writeActiveDesktopProfile(cliProfile) } catch { /* ignore */ }
+  }
+}
+
 // Sanitize a connection config into the renderer-facing shape. With no
 // `profile` this describes the global/default connection (the existing
 // behavior); with a `profile` it describes that profile's per-profile remote

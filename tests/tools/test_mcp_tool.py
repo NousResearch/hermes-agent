@@ -82,6 +82,56 @@ class TestLoadMCPConfig:
             assert result == {}
 
 
+class TestMCPStatus:
+    def test_status_distinguishes_configured_connecting_failed_and_disabled(
+        self, monkeypatch
+    ):
+        import tools.mcp_tool as mcp_tool
+
+        monkeypatch.setattr(
+            mcp_tool,
+            "_load_mcp_config",
+            lambda: {
+                "configured": {"command": "docker", "args": ["mcp", "gateway", "run"]},
+                "connecting": {"command": "slow-mcp"},
+                "failed": {"command": "bad-mcp"},
+                "disabled": {"command": "off-mcp", "enabled": False},
+            },
+        )
+        with mcp_tool._lock:
+            saved_servers = dict(mcp_tool._servers)
+            saved_connecting = set(mcp_tool._server_connecting)
+            saved_errors = dict(mcp_tool._server_connect_errors)
+            mcp_tool._servers.clear()
+            mcp_tool._server_connecting.clear()
+            mcp_tool._server_connect_errors.clear()
+            mcp_tool._server_connecting.add("connecting")
+            mcp_tool._server_connect_errors["failed"] = "Connection closed"
+
+        try:
+            statuses = {
+                entry["name"]: entry
+                for entry in mcp_tool.get_mcp_status()
+            }
+        finally:
+            with mcp_tool._lock:
+                mcp_tool._servers.clear()
+                mcp_tool._servers.update(saved_servers)
+                mcp_tool._server_connecting.clear()
+                mcp_tool._server_connecting.update(saved_connecting)
+                mcp_tool._server_connect_errors.clear()
+                mcp_tool._server_connect_errors.update(saved_errors)
+
+        assert statuses["configured"]["status"] == "configured"
+        assert statuses["configured"]["connected"] is False
+        assert statuses["configured"]["disabled"] is False
+        assert statuses["connecting"]["status"] == "connecting"
+        assert statuses["failed"]["status"] == "failed"
+        assert statuses["failed"]["error"] == "Connection closed"
+        assert statuses["disabled"]["status"] == "disabled"
+        assert statuses["disabled"]["disabled"] is True
+
+
 # ---------------------------------------------------------------------------
 # Schema conversion
 # ---------------------------------------------------------------------------

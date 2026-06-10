@@ -890,6 +890,10 @@ def _cleanup_all_browsers(*args, **kwargs):
 
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
+# One-shot CLI finalization runs before process cleanup so plugins can observe
+# the session boundary while the agent is still attached. If a signal lands in
+# that narrow window, atexit cleanup must not emit that session finalize again.
+_single_query_finalize_attempted_session_ids: set[str | None] = set()
 # Weak reference to the active AIAgent for memory provider shutdown at exit
 _active_agent_ref = None
 _deferred_agent_startup_done = False
@@ -952,7 +956,7 @@ def _prepare_deferred_agent_startup() -> None:
             exc_info=True,
         )
 
-def _run_cleanup():
+def _run_cleanup(*, notify_session_finalize: bool = True):
     """Run resource cleanup exactly once."""
     global _cleanup_done
     if _cleanup_done:
@@ -988,16 +992,14 @@ def _run_cleanup():
         pass
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
-    try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
-        _invoke_hook(
-            "on_session_finalize",
-            session_id=_active_agent_ref.session_id if _active_agent_ref else None,
-            platform="cli",
-            reason="shutdown",
-        )
-    except Exception:
-        pass
+    if notify_session_finalize:
+        cleanup_session_id = _active_agent_ref.session_id if _active_agent_ref else None
+        if _should_emit_cleanup_session_finalize(cleanup_session_id):
+            _notify_session_finalize(
+                session_id=cleanup_session_id,
+                platform="cli",
+                reason="shutdown",
+            )
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             # Forward the agent's own transcript so memory providers'
@@ -1011,6 +1013,32 @@ def _run_cleanup():
                 _active_agent_ref.shutdown_memory_provider(_session_msgs)
             else:
                 _active_agent_ref.shutdown_memory_provider()
+    except Exception:
+        pass
+
+
+def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
+    if not _single_query_finalize_attempted_session_ids:
+        return True
+    if session_id is None:
+        return False
+    return session_id not in _single_query_finalize_attempted_session_ids
+
+
+def _notify_session_finalize(
+    *,
+    session_id: str | None,
+    platform: str = "cli",
+    reason: str = "shutdown",
+) -> None:
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "on_session_finalize",
+            session_id=session_id,
+            platform=platform,
+            reason=reason,
+        )
     except Exception:
         pass
 
@@ -1049,6 +1077,31 @@ def _emit_interrupted_session_end(cli, *, reason: str = "keyboard_interrupt") ->
         )
     except Exception:
         pass
+
+
+def _notify_single_query_session_finalize(cli, *, reason: str = "shutdown") -> None:
+    agent = getattr(cli, "agent", None)
+    session_id = getattr(agent, "session_id", None) or getattr(cli, "session_id", None)
+    if session_id in _single_query_finalize_attempted_session_ids:
+        return
+
+    try:
+        _notify_session_finalize(
+            session_id=session_id,
+            platform=getattr(agent, "platform", None) or "cli",
+            reason=reason,
+        )
+    finally:
+        _single_query_finalize_attempted_session_ids.add(session_id)
+
+
+def _finalize_single_query(cli) -> None:
+    """Close one-shot CLI resources before releasing the active session lease."""
+    try:
+        _notify_single_query_session_finalize(cli)
+        _run_cleanup(notify_session_finalize=False)
+    finally:
+        cli._release_active_session()
 
 
 def _reset_terminal_input_modes_on_exit() -> None:
@@ -6932,7 +6985,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
 
 
-
     def _show_gateway_status(self):
         """Show status of the gateway and connected messaging platforms."""
         from gateway.config import load_gateway_config, Platform
@@ -7245,6 +7297,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
+        elif canonical == "memory":
+            self._handle_memory_command(cmd_original)
         elif canonical == "platforms":
             self._show_gateway_status()
         elif canonical == "status":
@@ -13582,7 +13636,7 @@ def main(
                 cli.chat(query, images=single_query_images or None)
                 cli._print_exit_summary()
         finally:
-            cli._release_active_session()
+            _finalize_single_query(cli)
         return
     
     # Run interactive mode

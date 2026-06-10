@@ -42,6 +42,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
+  sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),
   settings: {
     getDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:get'),
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
@@ -133,5 +134,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:updates:progress', listener)
       return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
     }
+  },
+  themes: {
+    fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
+    searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)
   }
 })

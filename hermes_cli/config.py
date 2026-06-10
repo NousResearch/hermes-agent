@@ -1229,6 +1229,13 @@ DEFAULT_CONFIG = {
     # Each aux task is independent — main-agent provider_routing and
     # openrouter.min_coding_score do NOT propagate to aux calls by design.
     "auxiliary": {
+        # When False, a failed auxiliary call (vision/compression/title/etc.)
+        # is NOT retried on the main agent model — the optional enhancement is
+        # skipped instead. Useful for local-main + cloud-auxiliary setups where
+        # the main-model fallback would evict the conversation's prompt cache on
+        # a single-slot local server. Override per task via
+        # auxiliary.<task>.allow_main_fallback. See #40565.
+        "allow_main_fallback": True,
         "vision": {
             "provider": "auto",    # auto | openrouter | nous | codex | custom
             "model": "",           # e.g. "google/gemini-2.5-flash", "gpt-4o"

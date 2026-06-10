@@ -26,6 +26,7 @@ from agent.auxiliary_client import (
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
+    _allow_main_fallback,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
@@ -3791,3 +3792,48 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+class TestAllowMainFallback:
+    """auxiliary.allow_main_fallback gating for the main-model fallback (#40565)."""
+
+    def _patch(self, monkeypatch, *, global_val=None, task_val=None):
+        aux = {}
+        if global_val is not None:
+            aux["allow_main_fallback"] = global_val
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"auxiliary": aux}
+        )
+        task_cfg = {}
+        if task_val is not None:
+            task_cfg["allow_main_fallback"] = task_val
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config",
+            lambda task: dict(task_cfg),
+        )
+
+    def test_defaults_true_when_unset(self, monkeypatch):
+        self._patch(monkeypatch)
+        assert _allow_main_fallback("compression") is True
+
+    def test_global_false_disables(self, monkeypatch):
+        self._patch(monkeypatch, global_val=False)
+        assert _allow_main_fallback("compression") is False
+        # no task → still honours the global default
+        assert _allow_main_fallback(None) is False
+
+    def test_per_task_overrides_global(self, monkeypatch):
+        self._patch(monkeypatch, global_val=True, task_val=False)
+        assert _allow_main_fallback("compression") is False
+        self._patch(monkeypatch, global_val=False, task_val=True)
+        assert _allow_main_fallback("compression") is True
+
+    def test_config_read_failure_is_non_fatal(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("config unavailable")
+        monkeypatch.setattr("hermes_cli.config.load_config", _boom)
+        monkeypatch.setattr(
+            "agent.auxiliary_client._get_auxiliary_task_config", lambda task: {}
+        )
+        # falls back to the historical default rather than raising
+        assert _allow_main_fallback("compression") is True

@@ -4790,6 +4790,42 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config
 
 
+def _allow_main_fallback(task: Optional[str] = None) -> bool:
+    """Whether a failed auxiliary call may fall back to the main agent model.
+
+    Resolution order (first hit wins), all defaulting to ``True`` so existing
+    setups are unaffected:
+
+      1. Per-task ``auxiliary.<task>.allow_main_fallback``
+      2. Global ``auxiliary.allow_main_fallback``
+      3. ``True`` (historical behavior — side tasks may borrow the main model)
+
+    Set to ``False`` on a *local main model + cloud auxiliary* topology to make
+    auxiliary tasks **fail closed**: when the configured (cloud) provider and any
+    ``fallback_chain`` are exhausted, skip the optional enhancement instead of
+    routing the side task onto the main model. On a single-slot local server
+    (e.g. ``llama-server --parallel 1``) the main-model fallback evicts the
+    conversation's prompt cache and forces a full context re-prefill — exactly
+    what offloading auxiliary work was meant to avoid.
+    """
+    # 1. Per-task override.
+    if task:
+        task_config = _get_auxiliary_task_config(task)
+        if isinstance(task_config, dict) and "allow_main_fallback" in task_config:
+            return bool(task_config["allow_main_fallback"])
+    # 2. Global default.
+    try:
+        from hermes_cli.config import load_config
+        aux = load_config().get("auxiliary", {})
+        if isinstance(aux, dict) and "allow_main_fallback" in aux:
+            return bool(aux["allow_main_fallback"])
+    except Exception:
+        # A config read must never break auxiliary execution.
+        pass
+    # 3. Historical default.
+    return True
+
+
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
     if not task:
@@ -5471,7 +5507,11 @@ def call_llm(
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
-                if fb_client is None:
+                # Skip the main (local) model fallback when the operator has
+                # opted out via auxiliary.allow_main_fallback=false. Lets a
+                # local-main + cloud-auxiliary setup fail closed instead of
+                # evicting the conversation's prompt cache. See #40565.
+                if fb_client is None and _allow_main_fallback(task):
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 
@@ -5908,7 +5948,11 @@ async def async_call_llm(
             else:
                 fb_client, fb_model, fb_label = _try_configured_fallback_chain(
                     task, resolved_provider or "auto", reason=reason)
-                if fb_client is None:
+                # Skip the main (local) model fallback when the operator has
+                # opted out via auxiliary.allow_main_fallback=false. Lets a
+                # local-main + cloud-auxiliary setup fail closed instead of
+                # evicting the conversation's prompt cache. See #40565.
+                if fb_client is None and _allow_main_fallback(task):
                     fb_client, fb_model, fb_label = _try_main_agent_model_fallback(
                         resolved_provider, task, reason=reason)
 

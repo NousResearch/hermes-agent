@@ -38,6 +38,9 @@ def test_buckets_sum_exactly_to_total():
     )
     assert comp["total_tokens"] == comp["fixed_tokens"] + comp["nonfixed_tokens"]
     assert comp["tool_result_count"] == 1
+    # History message count = user + assistant (the tool message is excluded;
+    # it's counted under tool_result_count, not conversation history).
+    assert comp["history_message_count"] == 2
 
 
 def test_system_message_in_list_is_not_double_counted():
@@ -149,6 +152,7 @@ def test_empty_inputs_are_all_zero():
     assert comp["fixed_tokens"] == 0
     assert comp["nonfixed_tokens"] == 0
     assert comp["tool_result_count"] == 0
+    assert comp["history_message_count"] == 0
 
 
 def test_non_dict_messages_do_not_crash():
@@ -232,6 +236,7 @@ def _record(**over):
         cache_write_tokens=0, context_used=5000, context_length=200000,
         comp_sys_tokens=1200, comp_tool_schema_tokens=1800,
         comp_history_tokens=300, comp_tool_result_tokens=1400,
+        comp_history_message_count=12,
         comp_tool_arg_tokens=200, comp_tool_result_count=4,
         comp_skills_tokens=600, comp_framing_tokens=720,
         comp_calls_json=json.dumps([{"fixed_tokens": 3000}]),
@@ -247,6 +252,7 @@ def test_comp_columns_round_trip(bb_store):
     assert got["comp_sys_tokens"] == 1200
     assert got["comp_tool_schema_tokens"] == 1800
     assert got["comp_history_tokens"] == 300
+    assert got["comp_history_message_count"] == 12
     assert got["comp_tool_result_tokens"] == 1400
     assert got["comp_tool_arg_tokens"] == 200
     assert got["comp_tool_result_count"] == 4
@@ -284,6 +290,7 @@ def test_migration_adds_comp_columns_to_legacy_db(bb_store, tmp_path):
     with bb_store._connect() as conn:
         cols = {r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()}
     for c in ("comp_sys_tokens", "comp_tool_schema_tokens", "comp_history_tokens",
+              "comp_history_message_count",
               "comp_tool_result_tokens", "comp_tool_arg_tokens",
               "comp_tool_result_count", "comp_skills_tokens",
               "comp_framing_tokens", "comp_calls_json"):

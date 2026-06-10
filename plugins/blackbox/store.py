@@ -70,6 +70,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             comp_sys_tokens INT,
             comp_tool_schema_tokens INT,
             comp_history_tokens INT,
+            comp_history_message_count INT,
             comp_tool_result_tokens INT,
             comp_tool_arg_tokens INT,
             comp_tool_result_count INT,
@@ -128,6 +129,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     # the per-call composition JSON blob.
     for _col in (
         "comp_sys_tokens", "comp_tool_schema_tokens", "comp_history_tokens",
+        "comp_history_message_count",
         "comp_tool_result_tokens", "comp_tool_arg_tokens", "comp_tool_result_count",
         "comp_skills_tokens", "comp_framing_tokens",
     ):
@@ -212,12 +214,13 @@ def insert_turn(record: TurnRecord) -> None:
                     cache_write, reasoning, context_used, context_length,
                     last_cache_read, last_cache_write, last_uncached,
                     comp_sys_tokens, comp_tool_schema_tokens, comp_history_tokens,
+                    comp_history_message_count,
                     comp_tool_result_tokens, comp_tool_arg_tokens, comp_tool_result_count,
                     comp_skills_tokens, comp_framing_tokens,
                     comp_calls_json,
                     cost_usd, cost_status, interrupted, alerted, user_text,
                     final_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.turn_id,
@@ -246,6 +249,7 @@ def insert_turn(record: TurnRecord) -> None:
                     _int_or_none(record.comp_sys_tokens),
                     _int_or_none(record.comp_tool_schema_tokens),
                     _int_or_none(record.comp_history_tokens),
+                    _int_or_none(record.comp_history_message_count),
                     _int_or_none(record.comp_tool_result_tokens),
                     _int_or_none(record.comp_tool_arg_tokens),
                     _int_or_none(record.comp_tool_result_count),

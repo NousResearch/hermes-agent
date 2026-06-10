@@ -269,6 +269,7 @@ def _build_record(
         comp_sys_tokens=_comp_get(usage, "sys_tokens"),
         comp_tool_schema_tokens=_comp_get(usage, "tool_schema_tokens"),
         comp_history_tokens=_comp_get(usage, "history_tokens"),
+        comp_history_message_count=_comp_get(usage, "history_message_count"),
         comp_tool_result_tokens=_comp_get(usage, "tool_result_tokens"),
         comp_tool_arg_tokens=_comp_get(usage, "tool_arg_tokens"),
         comp_tool_result_count=_comp_get(usage, "tool_result_count"),

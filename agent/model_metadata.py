@@ -2027,9 +2027,11 @@ def compose_request_breakdown(
     tool_arg_chars = 0
     image_tokens = 0
     tool_result_count = 0
+    history_message_count = 0
     for msg in messages or []:
         if not isinstance(msg, dict):
             history_chars += len(str(msg))
+            history_message_count += 1
             continue
         role = msg.get("role")
         if role == "system":
@@ -2039,6 +2041,7 @@ def compose_request_breakdown(
             tool_result_count += 1
             tool_result_chars += _estimate_message_chars(msg)
         else:
+            history_message_count += 1
             # History = visible text content only. tool_calls JSON is counted
             # separately in tool_arg_chars below; counting the whole message
             # dict here would double-count the args (it serializes tool_calls).
@@ -2087,6 +2090,7 @@ def compose_request_breakdown(
         "skills_tokens": skills_tokens,
         "tool_schema_tokens": tool_schema_tokens,
         "history_tokens": history_tokens,
+        "history_message_count": history_message_count,
         "tool_result_tokens": tool_result_tokens,
         "tool_arg_tokens": tool_arg_tokens,
         "tool_result_count": tool_result_count,

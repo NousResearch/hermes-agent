@@ -48,6 +48,7 @@ class TurnRecord:
     comp_sys_tokens: Optional[int] = None
     comp_tool_schema_tokens: Optional[int] = None
     comp_history_tokens: Optional[int] = None
+    comp_history_message_count: Optional[int] = None
     comp_tool_result_tokens: Optional[int] = None
     comp_tool_arg_tokens: Optional[int] = None
     comp_tool_result_count: Optional[int] = None

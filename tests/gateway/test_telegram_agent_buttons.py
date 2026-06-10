@@ -106,6 +106,54 @@ async def test_button_tap_dispatched_to_agent_as_user_message(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_streamed_finalize_attaches_buttons(monkeypatch):
+    """Streamed responses bypass the non-streamed final-send button extraction,
+    so the final edit must strip the HERMES_INLINE_BUTTONS marker and attach the
+    inline keyboard itself."""
+    import gateway.platforms.telegram as tg
+
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(
+        edit_message_text=AsyncMock(),
+        edit_message_reply_markup=AsyncMock(),
+    )
+    adapter.format_message = lambda t: t
+    monkeypatch.setattr(tg, "InlineKeyboardButton", lambda text="", callback_data="": SimpleNamespace(text=text, callback_data=callback_data))
+    monkeypatch.setattr(tg, "InlineKeyboardMarkup", lambda kb: SimpleNamespace(inline_keyboard=kb))
+
+    content = 'Качаю?\nHERMES_INLINE_BUTTONS:[[{"text": "✅ Качай", "callback_data": "fam_s03_download"}]]'
+    result = await adapter.edit_message("555", "99", content, finalize=True)
+
+    assert result.success
+    call = adapter._bot.edit_message_text.await_args
+    # Marker stripped from visible text; keyboard attached.
+    assert "HERMES_INLINE_BUTTONS" not in call.kwargs["text"]
+    markup = call.kwargs.get("reply_markup")
+    assert markup is not None
+    assert markup.inline_keyboard[0][0].callback_data == "fam_s03_download"
+
+
+@pytest.mark.asyncio
+async def test_intermediate_edit_strips_marker_without_buttons(monkeypatch):
+    """A non-final streamed edit strips the marker (so it never flashes raw) but
+    does not attach the keyboard yet."""
+    import gateway.platforms.telegram as tg
+
+    adapter = _make_adapter()
+    adapter._bot = SimpleNamespace(edit_message_text=AsyncMock())
+    adapter.format_message = lambda t: t
+    monkeypatch.setattr(tg, "InlineKeyboardButton", lambda **k: SimpleNamespace(**k))
+    monkeypatch.setattr(tg, "InlineKeyboardMarkup", lambda kb: SimpleNamespace(inline_keyboard=kb))
+
+    content = 'Качаю?\nHERMES_INLINE_BUTTONS:[[{"text": "x", "callback_data": "y"}]]'
+    await adapter.edit_message("555", "99", content, finalize=False)
+
+    call = adapter._bot.edit_message_text.await_args
+    assert "HERMES_INLINE_BUTTONS" not in call.kwargs["text"]
+    assert "reply_markup" not in call.kwargs
+
+
+@pytest.mark.asyncio
 async def test_button_tap_denied_for_unauthorized_user(monkeypatch):
     monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "999")  # not the caller
     adapter = _make_adapter()

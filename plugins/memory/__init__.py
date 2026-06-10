@@ -268,8 +268,21 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
 
         # Register submodules so relative imports work
         # e.g., "from .store import MemoryStore" in holographic plugin
+        #
+        # Skip files that are packaging/test artifacts rather than real
+        # submodules. Blindly executing every *.py in a user-installed
+        # provider dir is unsafe: a `setup.py` next to the plugin will
+        # call setuptools and may invoke sys.exit() (SystemExit, which
+        # is BaseException — not Exception — so the bare `except Exception`
+        # below used to let it crash the whole Hermes process).
+        # See: https://github.com/NousResearch/hermes-agent/issues/38674
+        _NON_SUBMODULE_FILES = {
+            "__init__.py", "setup.py", "conftest.py", "pyproject.py",
+        }
         for sub_file in provider_dir.glob("*.py"):
-            if sub_file.name == "__init__.py":
+            if sub_file.name in _NON_SUBMODULE_FILES:
+                continue
+            if sub_file.stem.startswith("test_") or sub_file.stem.endswith("_test"):
                 continue
             sub_name = sub_file.stem
             full_sub_name = f"{module_name}.{sub_name}"
@@ -282,11 +295,16 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
                     sys.modules[full_sub_name] = sub_mod
                     try:
                         sub_spec.loader.exec_module(sub_mod)
+                    except (KeyboardInterrupt, SystemExit):
+                        # These are BaseException, not Exception — never swallow.
+                        raise
                     except Exception as e:
                         logger.debug("Failed to load submodule %s: %s", full_sub_name, e)
 
         try:
             spec.loader.exec_module(mod)
+        except (KeyboardInterrupt, SystemExit):
+            raise
         except Exception as e:
             logger.debug("Failed to exec_module %s: %s", module_name, e)
             sys.modules.pop(module_name, None)

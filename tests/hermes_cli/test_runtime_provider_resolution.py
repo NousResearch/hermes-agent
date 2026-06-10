@@ -588,6 +588,29 @@ def test_custom_endpoint_uses_config_api_field_when_no_api_key(monkeypatch):
     assert resolved["api_key"] == "config-api-field"
 
 
+def test_custom_endpoint_uses_model_key_env(monkeypatch):
+    """Bare provider: custom should honor model.key_env before no-auth fallback."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "https://custom.example.com/v1",
+            "key_env": "MY_CUSTOM_API_KEY",
+        },
+    )
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("MY_CUSTOM_API_KEY", "env-custom-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["base_url"] == "https://custom.example.com/v1"
+    assert resolved["api_key"] == "env-custom-key"
+
+
 def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
     """Explicit 'custom' provider with config base_url+api_key should use them.
 

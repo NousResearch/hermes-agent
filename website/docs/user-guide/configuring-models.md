@@ -12,7 +12,7 @@ Hermes uses two kinds of model slots:
 This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom.
 
 :::tip Fastest path: Nous Portal
-[Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal status`.
+[Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal info`.
 
 - Portal subscribers also get **10% off token-billed providers**.
 :::
@@ -49,7 +49,7 @@ Pick a model, hit **Switch**, and Hermes writes it to `~/.hermes/config.yaml` un
 
 ## Setting auxiliary models
 
-Click **Show auxiliary** to reveal the eight task slots:
+Click **Show auxiliary** to reveal the 11 task slots:
 
 ![Auxiliary panel expanded](/img/docs/dashboard-models/auxiliary-expanded.png)
 
@@ -66,6 +66,10 @@ Every auxiliary task defaults to `auto` — meaning Hermes uses your main model 
 | **Web Extract** | When you use `web_extract` heavily. Same logic as compression — summarization doesn't need reasoning. |
 | **Skills Hub** | `hermes skills search` uses this. Usually fine at `auto`. |
 | **MCP** | MCP tool routing. Usually fine at `auto`. |
+| **Triage Specifier** | Routes the Kanban triage specifier (`hermes kanban specify`) that expands a rough one-liner into a concrete spec. A cheap, capable model works well. |
+| **Kanban Decomposer** | Routes Kanban task decomposition — splits a triage task into a graph of child tasks for specialist profiles. |
+| **Profile Describer** | Routes profile-description generation (`hermes profile describe --auto` / the dashboard auto-generate button). Short, cheap call. |
+| **Curator** | Routes the curator skill-usage review pass. Can run for minutes on reasoning models, so a cheaper aux model is often worthwhile. |
 
 ### Per-task override
 
@@ -84,7 +88,7 @@ Every model card on the page has a **Use as** dropdown. This is the fast path �
 The dropdown has:
 
 - **Main model** — same as clicking Change on the main row.
-- **All auxiliary tasks** — assigns this model to all 8 aux slots at once. Useful when you just want every side-job on a cheap flash model.
+- **All auxiliary tasks** — assigns this model to all 11 aux slots at once. Useful when you just want every side-job on a cheap flash model.
 - **Individual task options** — Vision, Web Extract, Compression, etc. The currently-assigned model for each task is marked `current`.
 
 Cards are badged with `main` or `aux · <task>` when they're currently assigned to something — so you can see at a glance which of your historical models are wired in where.

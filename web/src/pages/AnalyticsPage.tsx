@@ -21,7 +21,6 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
-import { Badge } from "@nous-research/ui/ui/components/badge";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
@@ -148,11 +147,17 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
         </div>
         <div className="flex items-center gap-4 font-mondwest normal-case text-xs text-muted-foreground">
           <div className="flex items-center gap-1.5">
-            <div className="h-2.5 w-2.5 bg-[#ffe6cb]" />
+            <div
+              className="h-2.5 w-2.5"
+              style={{ backgroundColor: "var(--series-input-token)" }}
+            />
             {t.analytics.input}
           </div>
           <div className="flex items-center gap-1.5">
-            <div className="h-2.5 w-2.5 bg-emerald-500" />
+            <div
+              className="h-2.5 w-2.5"
+              style={{ backgroundColor: "var(--series-output-token)" }}
+            />
             {t.analytics.output}
           </div>
         </div>
@@ -192,13 +197,19 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 </div>
 
                 <div
-                  className="w-full bg-[#ffe6cb]/70"
-                  style={{ height: Math.max(inputH, total > 0 ? 1 : 0) }}
+                  className="w-full"
+                  style={{
+                    backgroundColor:
+                      "color-mix(in srgb, var(--series-input-token) 70%, transparent)",
+                    height: Math.max(inputH, total > 0 ? 1 : 0),
+                  }}
                 />
 
                 <div
-                  className="w-full bg-emerald-500/70"
+                  className="w-full"
                   style={{
+                    backgroundColor:
+                      "color-mix(in srgb, var(--series-output-token) 70%, transparent)",
                     height: Math.max(outputH, d.output_tokens > 0 ? 1 : 0),
                   }}
                 />
@@ -261,12 +272,12 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                       {d.sessions}
                     </td>
                   <td className="text-right py-2 px-4">
-                    <span className="text-[#ffe6cb]">
+                    <span style={{ color: "var(--series-input-token)" }}>
                         {formatTokens(d.input_tokens)}
                       </span>
                   </td>
                   <td className="text-right py-2 pl-4">
-                    <span className="text-emerald-400">
+                    <span style={{ color: "var(--series-output-token)" }}>
                         {formatTokens(d.output_tokens)}
                       </span>
                   </td>
@@ -319,11 +330,11 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                     {m.sessions}
                   </td>
                   <td className="text-right py-2 pl-4">
-                    <span className="text-[#ffe6cb]">
+                    <span style={{ color: "var(--series-input-token)" }}>
                       {formatTokens(m.input_tokens)}
                     </span>
                     {" / "}
-                    <span className="text-emerald-400">
+                    <span style={{ color: "var(--series-output-token)" }}>
                       {formatTokens(m.output_tokens)}
                     </span>
                   </td>
@@ -427,14 +438,24 @@ export default function AnalyticsPage() {
   }, [days, showTokens]);
 
   useLayoutEffect(() => {
-    const periodLabel =
-      PERIODS.find((p) => p.days === days)?.label ?? `${days}d`;
+    // Period selector + refresh both live in afterTitle so the controls
+    // sit immediately next to the page title instead of being pinned to
+    // the far-right `end` slot. The active period is conveyed by the
+    // filled (non-outlined) button — no redundant period badge.
     setAfterTitle(
-      <span className="flex items-center gap-1.5">
-        <Badge tone="secondary" className="text-xs">
-          {periodLabel}
-        </Badge>
-        {showTokens !== false && (
+      showTokens === false ? null : (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {PERIODS.map((p) => (
+            <Button
+              key={p.label}
+              type="button"
+              size="sm"
+              outlined={days !== p.days}
+              onClick={() => setDays(p.days)}
+            >
+              {p.label}
+            </Button>
+          ))}
           <Button
             type="button"
             ghost
@@ -446,28 +467,10 @@ export default function AnalyticsPage() {
           >
             {loading ? <Spinner /> : <RefreshCw />}
           </Button>
-        )}
-      </span>,
-    );
-    setEnd(
-      showTokens === false ? null : (
-        <div className="flex w-full min-w-0 flex-wrap items-center justify-start gap-2 sm:justify-end sm:gap-2">
-          <div className="flex flex-wrap items-center gap-1.5">
-            {PERIODS.map((p) => (
-              <Button
-                key={p.label}
-                type="button"
-                size="sm"
-                outlined={days !== p.days}
-                onClick={() => setDays(p.days)}
-              >
-                {p.label}
-              </Button>
-            ))}
-          </div>
         </div>
       ),
     );
+    setEnd(null);
     return () => {
       setAfterTitle(null);
       setEnd(null);

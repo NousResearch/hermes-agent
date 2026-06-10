@@ -14,6 +14,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -128,6 +129,29 @@ def cmd_setup(args: argparse.Namespace) -> int:
             "https://github.com/bitwarden/sdk-sm/releases"
         )
         return 1
+
+    # -- non-interactive guard --
+    if not sys.stdin.isatty():
+        missing = []
+        if not (args.access_token and args.access_token.strip()):
+            missing.append("--access-token")
+        if not (args.server_url and args.server_url.strip()):
+            # Also accept BWS_SERVER_URL env var as non-interactive substitute
+            if not os.environ.get("BWS_SERVER_URL", "").strip():
+                missing.append("--server-url")
+        if not (args.project_id and args.project_id.strip()):
+            missing.append("--project-id")
+        if missing:
+            console.print(
+                f"  [red]Non-interactive mode (no TTY) requires all setup flags.[/red]\n"
+                f"  Missing: {', '.join(missing)}\n\n"
+                "  Usage:\n"
+                "    hermes secrets bitwarden setup \\\n"
+                "      --access-token '0.xxx' \\\n"
+                "      --server-url 'https://vault.bitwarden.com' \\\n"
+                "      --project-id 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'"
+            )
+            return 1
 
     # ------------------------------------------------------------------- token
     console.print()

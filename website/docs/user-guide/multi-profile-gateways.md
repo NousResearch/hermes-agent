@@ -170,8 +170,8 @@ tail -f ~/.hermes/logs/gateway.log ~/.hermes/profiles/*/logs/gateway.log
 The CLI also has a structured log viewer:
 
 ```bash
-hermes logs --tail              # follow default profile
-hermes -p coder logs --tail     # follow one profile
+hermes logs -f                  # follow default profile
+hermes -p coder logs -f         # follow one profile
 hermes logs --help              # filters, levels, JSON output
 ```
 

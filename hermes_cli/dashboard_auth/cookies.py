@@ -2,13 +2,18 @@
 
 Three cookies in play:
   - hermes_session_at:   the OAuth access token
-                         (HttpOnly, lifetime = token TTL)
+                         (HttpOnly, lifetime = token TTL, ~15 min)
   - hermes_session_rt:   the OAuth refresh token
-                         (HttpOnly, lifetime = 30 days)
-                         **DEPRECATED in OAuth contract v1** — Nous Portal
-                         does not issue refresh tokens; we keep the cookie
-                         name and clear semantics for forward compatibility
-                         and to flush stale cookies from old browsers.
+                         (HttpOnly, lifetime = 24h, ROTATING + reuse-detected)
+                         Nous Portal issues a rotating refresh token for the
+                         dashboard auth-code grant (Portal NAS #293 / hermes
+                         #37247). ``set_session_cookies`` writes this cookie
+                         whenever the provider returns a non-empty
+                         ``refresh_token``; the middleware uses it to rotate a
+                         fresh access token transparently on AT expiry. A
+                         provider that omits the refresh token (empty string)
+                         degrades gracefully to access-token-only sessions —
+                         the RT cookie is simply not written.
   - hermes_session_pkce: short-lived PKCE state + CSRF nonce + provider
                          hint (HttpOnly, lifetime = 10 minutes)
 
@@ -39,13 +44,15 @@ The setters and readers BOTH consult the active prefix because the
 cookie *name* changes — a reader that looked up the bare name when the
 setter wrote ``__Secure-hermes_session_at`` would never find the value.
 
-.. deprecated:: contract v1
-   ``set_session_cookies`` accepts ``refresh_token=""`` (the contract-v1
-   default) and silently skips writing the RT cookie in that case.
-   ``clear_session_cookies`` still emits a Max-Age=0 deletion for the RT
-   cookie so users carrying a stale cookie from an earlier deployment get
-   it cleared on logout / session expiry. The full refresh-flow machinery
-   was rewritten as "401 → redirect to /login" in Phase 6.
+Refresh-token handling:
+   ``set_session_cookies`` accepts ``refresh_token=""`` (provider omitted
+   it) and silently skips writing the RT cookie in that case, so a
+   refresh-token-less provider degrades to access-token-only sessions.
+   ``clear_session_cookies`` always emits a Max-Age=0 deletion for the RT
+   cookie on logout / session expiry so a stale cookie from an earlier
+   deployment gets cleared. The transparent rotation flow ("expired AT +
+   live RT → rotate server-side, else 401 → /login") lives in
+   ``middleware._attempt_refresh``.
 """
 from __future__ import annotations
 
@@ -66,7 +73,13 @@ PKCE_COOKIE = "hermes_session_pkce"
 # practice — a single request emits exactly one variant).
 _NAME_VARIANTS = ("__Host-", "__Secure-", "")
 
-# 30 days — matches Portal's REFRESH_TOKEN_TTL_SECONDS
+# RT cookie Max-Age. Kept at 30 days as a generous upper bound on the cookie's
+# browser lifetime; Portal's actual refresh-token TTL (24h, rotating) is the
+# real authority — once the RT itself expires/rotates out, a refresh attempt
+# returns 400 → RefreshExpiredError → clean re-login, regardless of how long
+# the cookie lingers. (Not tightened to 24h here to avoid coupling the cookie
+# lifetime to a server-side TTL that can change independently; revisit if the
+# stale-cookie refresh churn ever matters.)
 _RT_MAX_AGE = 30 * 24 * 60 * 60
 _PKCE_MAX_AGE = 10 * 60
 
@@ -126,11 +139,11 @@ def set_session_cookies(
     ``access_token_expires_in`` is in seconds. Use the provider's reported
     TTL for the access token.
 
-    ``refresh_token`` is accepted for backward / forward compatibility but
-    SKIPPED when empty — Nous Portal contract v1 issues no refresh tokens
-    so a ``Session.refresh_token == ""`` from the provider means we don't
-    persist anything. If a future contract revision starts emitting refresh
-    tokens, this helper will write the RT cookie again with no other change.
+    ``refresh_token`` is written as the RT cookie when non-empty. Nous Portal
+    issues a 24h rotating refresh token (hermes #37247); a provider that
+    omits it returns ``Session.refresh_token == ""`` and we simply don't
+    persist the RT cookie — the session then behaves as access-token-only
+    until the AT expires. No other branch changes between the two cases.
 
     ``prefix`` is the normalised X-Forwarded-Prefix value (e.g. ``/hermes``)
     or ``""`` for a direct deploy. It influences both the cookie name

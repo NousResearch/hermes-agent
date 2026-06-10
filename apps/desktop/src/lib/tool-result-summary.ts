@@ -20,7 +20,11 @@ const PRIORITY_KEYS = [
 ] as const
 
 const ERROR_KEYS = ['error', 'errors', 'failure', 'exception'] as const
-const ERROR_MSG_KEYS = ['message', 'reason', 'detail', 'stderr'] as const
+// 'stderr' deliberately excluded: many CLIs emit informational lines on
+// stderr (npm progress, git's hint:, gcc's `In file included from`) that
+// aren't errors. Treating those as error signal flipped tool cards into
+// destructive styling for healthy commands.
+const ERROR_MSG_KEYS = ['message', 'reason', 'detail'] as const
 const NON_ERROR_TEXT = new Set(['', '0', 'false', 'none', 'null', 'nil', 'ok', 'success', 'n/a', 'na'])
 
 type Json = Record<string, unknown>

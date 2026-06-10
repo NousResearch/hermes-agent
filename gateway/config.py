@@ -56,6 +56,42 @@ def _coerce_int(value: Any, default: int) -> int:
         return default
 
 
+def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
+    """Coerce an optional positive integer config value.
+
+    ``None``/0/negative disable the setting. Malformed values are ignored with
+    a warning so a typo never prevents the gateway from starting.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        logger.warning(
+            "Ignoring invalid %s=%r (expected a positive integer; 0/null disables)",
+            key,
+            value,
+        )
+        return None
+    try:
+        if isinstance(value, float):
+            if not value.is_integer():
+                raise ValueError(value)
+            parsed = int(value)
+        elif isinstance(value, str):
+            parsed = int(value.strip(), 10)
+        else:
+            parsed = int(value)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid %s=%r (expected a positive integer; 0/null disables)",
+            key,
+            value,
+        )
+        return None
+    if parsed <= 0:
+        return None
+    return parsed
+
+
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
     """Normalize unauthorized DM behavior to a supported value."""
     if isinstance(value, str):
@@ -361,10 +397,17 @@ class StreamingConfig:
     #             fall back to edit-based when not.
     #   "draft" — explicitly request native drafts; falls back to edit when
     #             the platform/chat doesn't support them.
-    #   "edit"  — progressive editMessageText only (legacy/default
-    #             behaviour).
+    #   "edit"  — progressive editMessageText only (legacy behaviour).
     #   "off"   — disable streaming entirely.
-    transport: str = "edit"
+    #
+    # Default is "auto": prefer native draft streaming on platforms that
+    # support it (Telegram DMs via sendMessageDraft, Bot API 9.5+) and fall
+    # back to edit-based streaming everywhere else.  This is safe as a global
+    # default because adapters without draft support (Discord, Slack, Matrix,
+    # …) report supports_draft_streaming() == False and transparently use the
+    # edit path — so "auto" never regresses non-Telegram platforms, it only
+    # upgrades the chats that can render the smoother native preview.
+    transport: str = "auto"
     edit_interval: float = DEFAULT_STREAMING_EDIT_INTERVAL
     buffer_threshold: int = DEFAULT_STREAMING_BUFFER_THRESHOLD
     cursor: str = DEFAULT_STREAMING_CURSOR
@@ -393,7 +436,7 @@ class StreamingConfig:
             return cls()
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
-            transport=data.get("transport", "edit"),
+            transport=data.get("transport", "auto"),
             edit_interval=_coerce_float(
                 data.get("edit_interval"), DEFAULT_STREAMING_EDIT_INTERVAL,
             ),
@@ -488,6 +531,7 @@ class GatewayConfig:
     # Session isolation in shared chats
     group_sessions_per_user: bool = True  # Isolate group/channel sessions per participant when user IDs are available
     thread_sessions_per_user: bool = False  # When False (default), threads are shared across all participants
+    max_concurrent_sessions: Optional[int] = None  # Positive int caps simultaneous active chat sessions
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -593,6 +637,7 @@ class GatewayConfig:
             "stt_enabled": self.stt_enabled,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
+            "max_concurrent_sessions": self.max_concurrent_sessions,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -638,6 +683,17 @@ class GatewayConfig:
 
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
+        nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        if "max_concurrent_sessions" in data:
+            max_concurrent_raw = data.get("max_concurrent_sessions")
+            max_concurrent_key = "max_concurrent_sessions"
+        else:
+            max_concurrent_raw = nested_gateway.get("max_concurrent_sessions")
+            max_concurrent_key = "gateway.max_concurrent_sessions"
+        max_concurrent_sessions = _coerce_optional_positive_int(
+            max_concurrent_raw,
+            max_concurrent_key,
+        )
         unauthorized_dm_behavior = _normalize_unauthorized_dm_behavior(
             data.get("unauthorized_dm_behavior"),
             "pair",
@@ -664,6 +720,7 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
+            max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
@@ -754,6 +811,13 @@ def load_gateway_config() -> GatewayConfig:
             if "thread_sessions_per_user" in yaml_cfg:
                 gw_data["thread_sessions_per_user"] = yaml_cfg["thread_sessions_per_user"]
 
+            gateway_section = yaml_cfg.get("gateway")
+            if isinstance(gateway_section, dict) and "max_concurrent_sessions" in gateway_section:
+                gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+
+            if "max_concurrent_sessions" in yaml_cfg:
+                gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
+
             streaming_cfg = yaml_cfg.get("streaming")
             if not isinstance(streaming_cfg, dict):
                 # Fall back to nested gateway.streaming written by
@@ -836,6 +900,25 @@ def load_gateway_config() -> GatewayConfig:
                 if plat == Platform.LOCAL:
                     continue
                 platform_cfg = yaml_cfg.get(plat.value)
+                _cfg_toplevel = isinstance(platform_cfg, dict)
+                # Fall back to the platform's block under ``platforms`` /
+                # ``gateway.platforms`` so shared-key bridging (allow_from,
+                # require_mention, free_response_channels, …) still runs when
+                # the user configured the platform only under those nested paths
+                # and not via a top-level block.  Mirrors the identical fallback
+                # already applied to the apply_yaml_config_fn dispatch below
+                # (#44f3e51).
+                # Note: ``enabled`` is only written to plat_data from a
+                # top-level block (``_cfg_toplevel``); for nested-only configs
+                # ``_merge_platform_map`` already merged it with the correct
+                # precedence, so re-applying it here would overwrite that.
+                if not _cfg_toplevel:
+                    for _src in (gateway_platforms, yaml_cfg.get("platforms")):
+                        if isinstance(_src, dict):
+                            _candidate = _src.get(plat.value)
+                            if isinstance(_candidate, dict):
+                                platform_cfg = _candidate
+                                break
                 if not isinstance(platform_cfg, dict):
                     continue
                 # Collect bridgeable keys from this platform section
@@ -896,7 +979,7 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
-                enabled_was_explicit = "enabled" in platform_cfg
+                enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue
                 plat_data, extra = _ensure_platform_extra_dict(platforms_data, plat.value)

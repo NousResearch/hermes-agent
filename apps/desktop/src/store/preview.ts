@@ -6,6 +6,11 @@ import { $activeSessionId, $selectedStoredSessionId } from './session'
 export interface PreviewTarget {
   binary?: boolean
   byteSize?: number
+  /** Inline image bytes (a `data:` URL) when the renderer already holds them —
+   * e.g. a pasted/dropped screenshot whose only on-disk copy is a transient
+   * path the preview can't reliably re-read. Rendered directly and NOT
+   * persisted to the session-preview registry (it would bloat localStorage). */
+  dataUrl?: string
   kind: 'file' | 'url'
   label: string
   large?: boolean
@@ -214,7 +219,11 @@ function persistSessionPreviewRegistry(registry: SessionPreviewRegistry) {
   }
 
   try {
-    window.localStorage.setItem(REGISTRY_STORAGE_KEY, JSON.stringify(pruneRegistry(registry)))
+    // Drop the inline image bytes before persisting — a screenshot data URL is
+    // megabytes and would blow the localStorage quota. On reload the record
+    // falls back to reading its `path`/`url`.
+    const lean = JSON.stringify(pruneRegistry(registry), (key, value) => (key === 'dataUrl' ? undefined : value))
+    window.localStorage.setItem(REGISTRY_STORAGE_KEY, lean)
   } catch {
     // Session previews are a desktop convenience; storage failures are nonfatal.
   }

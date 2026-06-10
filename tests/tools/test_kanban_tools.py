@@ -768,6 +768,83 @@ def test_create_happy_path(worker_env):
         conn.close()
 
 
+def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
+    """A worker scoped to a dir: task that spawns a child without a
+    workspace arg inherits the dir, not scratch (so follow-up code-gen
+    lands in the same project)."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    proj = "/home/teknium/myproject"
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn, title="dir worker", assignee="test-worker",
+            workspace_kind="dir", workspace_path=proj,
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({"title": "follow-up", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "dir"
+        assert child.workspace_path == proj
+    finally:
+        conn.close()
+
+
+def test_create_explicit_workspace_beats_inheritance(monkeypatch, worker_env):
+    """An explicit workspace arg overrides worker-task inheritance."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        self_tid = kb.create_task(
+            conn, title="dir worker", assignee="test-worker",
+            workspace_kind="dir", workspace_path="/home/teknium/proj",
+        )
+        kb.claim_task(conn, self_tid)
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", self_tid)
+
+    d = json.loads(kt._handle_create({
+        "title": "scratch child", "assignee": "peer",
+        "workspace_kind": "scratch",
+    }))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "scratch"
+    finally:
+        conn.close()
+
+
+def test_create_no_worker_task_stays_scratch(monkeypatch, worker_env):
+    """Orchestrator/CLI callers (no HERMES_KANBAN_TASK) still default to
+    scratch — inheritance only applies to task-scoped workers."""
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    d = json.loads(kt._handle_create({"title": "orch child", "assignee": "peer"}))
+    assert d["ok"] is True
+    conn = kb.connect()
+    try:
+        child = kb.get_task(conn, d["task_id"])
+        assert child.workspace_kind == "scratch"
+        assert child.workspace_path is None
+    finally:
+        conn.close()
+
+
 def test_create_stamps_session_id_from_env(monkeypatch, worker_env):
     """When the agent loop runs under ACP, the server propagates the
     originating chat session id via HERMES_SESSION_ID. ``kanban_create``

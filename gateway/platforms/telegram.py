@@ -2675,11 +2675,13 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            from tools.approval import get_gateway_approval_strings
+            strings = get_gateway_approval_strings()
             cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
             text = (
-                f"⚠️ <b>Command Approval Required</b>\n\n"
+                f"{strings['header_html']}\n\n"
                 f"<pre>{_html.escape(cmd_preview)}</pre>\n\n"
-                f"Reason: {_html.escape(description)}"
+                f"{strings['reason_label']}：{_html.escape(description)}"
             )
 
             # Resolve thread context for thread replies
@@ -2695,12 +2697,16 @@ class TelegramAdapter(BasePlatformAdapter):
 
             keyboard = InlineKeyboardMarkup([
                 [
-                    InlineKeyboardButton("✅ Allow Once", callback_data=f"ea:once:{approval_id}"),
-                    InlineKeyboardButton("✅ Session", callback_data=f"ea:session:{approval_id}"),
+                    InlineKeyboardButton(
+                        strings["btn_allow_once"], callback_data=f"ea:once:{approval_id}"),
+                    InlineKeyboardButton(
+                        strings["btn_allow_session"], callback_data=f"ea:session:{approval_id}"),
                 ],
                 [
-                    InlineKeyboardButton("✅ Always", callback_data=f"ea:always:{approval_id}"),
-                    InlineKeyboardButton("❌ Deny", callback_data=f"ea:deny:{approval_id}"),
+                    InlineKeyboardButton(
+                        strings["btn_allow_always"], callback_data=f"ea:always:{approval_id}"),
+                    InlineKeyboardButton(
+                        strings["btn_deny"], callback_data=f"ea:deny:{approval_id}"),
                 ],
             ])
 

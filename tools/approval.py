@@ -338,11 +338,12 @@ def detect_hardline_command(command: str) -> tuple:
 
 def _hardline_block_result(description: str) -> dict:
     """Build the standard block result for a hardline match."""
+    display_desc = _translate_reason(description)
     return {
         "approved": False,
         "hardline": True,
         "message": (
-            f"BLOCKED (hardline): {description}. "
+            f"BLOCKED (hardline): {display_desc}. "
             "This command is on the unconditional blocklist and cannot "
             "be executed via the agent — not even with --yolo, /yolo, "
             "approvals.mode=off, or cron approve mode. If you genuinely "
@@ -819,6 +820,77 @@ def save_permanent_allowlist(patterns: set):
 # Approval prompting + orchestration
 # =========================================================================
 
+def _translate_reason(description: str) -> str:
+    """Translate a dangerous-command reason description via i18n.
+    
+    Loads the reason mapping from ``locales/approval_reasons/<lang>.yaml``,
+    bypassing the main i18n catalog (which enforces key parity across all
+    locale files).  Falls back to the original English description when no
+    translation is available.
+    """
+    try:
+        from agent.i18n import get_language, _locales_dir
+        import yaml
+        lang = get_language()
+        if lang == "en":
+            return description
+        path = _locales_dir() / "approval_reasons" / f"{lang}.yaml"
+        if path.is_file():
+            with path.open("r", encoding="utf-8") as f:
+                raw = yaml.safe_load(f) or {}
+            translated = raw.get(description)
+            if translated and translated != description:
+                return translated
+    except Exception:
+        pass
+    return description
+
+def get_gateway_approval_strings() -> dict:
+    """Return localized strings for gateway approval prompts.
+
+    Each platform adapter calls this to get the correct header, reason label,
+    and button labels for the current language.  Falls back to English.
+    """
+    try:
+        from agent.i18n import get_language
+        lang = get_language()
+    except Exception:
+        lang = "en"
+
+    if lang == "zh":
+        return {
+            "header": "⚠️ 需要批准命令",
+            "header_html": "⚠️ <b>需要批准命令</b>",
+            "reason_label": "原因",
+            "btn_allow_once": "允许一次",
+            "btn_allow_session": "本次会话",
+            "btn_allow_always": "永久允许",
+            "btn_deny": "拒绝",
+            "fallback_text": (
+                "⚠️ **危险命令需要批准：**\n```\n{command}\n```\n"
+                "原因：{reason}\n\n"
+                "回复 `/approve` 执行，`/approve session` 本次会话允许，"
+                "`/approve always` 永久允许，或 `/deny` 取消。"
+            ),
+        }
+    return {
+        "header": "⚠️ Command Approval Required",
+        "header_html": "⚠️ <b>Command Approval Required</b>",
+        "reason_label": "Reason",
+        "btn_allow_once": "Allow Once",
+        "btn_allow_session": "Session",
+        "btn_allow_always": "Always",
+        "btn_deny": "Deny",
+        "fallback_text": (
+            "⚠️ **Dangerous command requires approval:**\n```\n{command}\n```\n"
+            "Reason: {reason}\n\n"
+            "Reply `/approve` to execute, `/approve session` to approve "
+            "this pattern for the session, `/approve always` to approve "
+            "permanently, or `/deny` to cancel."
+        ),
+    }
+
+
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
@@ -878,9 +950,10 @@ def prompt_dangerous_approval(command: str, description: str,
         # Resolve the active UI language once per prompt so we don't re-read
         # config/YAML inside the retry loop below.
         from agent.i18n import t
+        display_desc = _translate_reason(description)
         while True:
             print()
-            print(f"  {t('approval.dangerous_header', description=description)}")
+            print(f"  {t('approval.dangerous_header', description=display_desc)}")
             print(f"      {command}")
             print()
             if allow_permanent:
@@ -1322,10 +1395,11 @@ def check_all_command_guards(command: str, env_type: str,
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
                 if is_dangerous:
+                    display_desc = _translate_reason(description)
                     return {
                         "approved": False,
                         "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            f"BLOCKED: Command flagged as dangerous ({display_desc}) "
                             "but cron jobs run without a user present to approve it. "
                             "Find an alternative approach that avoids this command. "
                             "To allow dangerous commands in cron jobs, set "
@@ -1404,7 +1478,7 @@ def check_all_command_guards(command: str, env_type: str,
     # --- Phase 3: Approval ---
 
     # Combine descriptions for a single approval prompt
-    combined_desc = "; ".join(desc for _, desc, _ in warnings)
+    combined_desc = "; ".join(_translate_reason(desc) for _, desc, _ in warnings)
     primary_key = warnings[0][0]
     all_keys = [key for key, _, _ in warnings]
     has_tirith = any(is_t for _, _, is_t in warnings)

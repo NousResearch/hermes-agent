@@ -1878,6 +1878,8 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         try:
+            from tools.approval import get_gateway_approval_strings
+            strings = get_gateway_approval_strings()
             approval_id = next(self._approval_counter)
             cmd_preview = command[:3000] + "..." if len(command) > 3000 else command
 
@@ -1892,21 +1894,21 @@ class FeishuAdapter(BasePlatformAdapter):
             card = {
                 "config": {"wide_screen_mode": True},
                 "header": {
-                    "title": {"content": "⚠️ Command Approval Required", "tag": "plain_text"},
+                    "title": {"content": strings["header"], "tag": "plain_text"},
                     "template": "orange",
                 },
                 "elements": [
                     {
                         "tag": "markdown",
-                        "content": f"```\n{cmd_preview}\n```\n**Reason:** {description}",
+                        "content": f"```\n{cmd_preview}\n```\n**{strings['reason_label']}：**{description}",
                     },
                     {
                         "tag": "action",
                         "actions": [
-                            _btn("✅ Allow Once", "approve_once", "primary"),
-                            _btn("✅ Session", "approve_session"),
-                            _btn("✅ Always", "approve_always"),
-                            _btn("❌ Deny", "deny", "danger"),
+                            _btn(strings["btn_allow_once"], "approve_once", "primary"),
+                            _btn(strings["btn_allow_session"], "approve_session"),
+                            _btn(strings["btn_allow_always"], "approve_always"),
+                            _btn(strings["btn_deny"], "deny", "danger"),
                         ],
                     },
                 ],

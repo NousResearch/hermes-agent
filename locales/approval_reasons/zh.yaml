@@ -1,0 +1,80 @@
+# Hermes 审批原因描述中文翻译
+# 由 tools/approval.py 的 _translate_reason() 直接读取
+# 添加新语言：复制此文件为 <lang>.yaml 并翻译即可
+
+# File deletion
+"delete in root path": "在根路径下删除"
+"recursive delete": "递归删除"
+"recursive delete (long flag)": "递归删除（长标志）"
+"recursive delete of root filesystem": "递归删除根文件系统"
+"recursive delete of system directory": "递归删除系统目录"
+"recursive delete of home directory": "递归删除用户主目录"
+# Permissions
+"world/other-writable permissions": "全局/其他用户可写权限"
+"recursive world/other-writable (long flag)": "递归全局可写（长标志）"
+"recursive chown to root": "递归更改所有者为 root"
+"recursive chown to root (long flag)": "递归更改所有者为 root（长标志）"
+# Filesystem
+"format filesystem": "格式化文件系统"
+"format filesystem (mkfs)": "格式化文件系统 (mkfs)"
+"disk copy": "磁盘复制"
+"write to block device": "写入块设备"
+"dd to raw block device": "dd 写入裸块设备"
+"redirect to raw block device": "重定向到裸块设备"
+# SQL
+"SQL DROP": "SQL DROP"
+"SQL DELETE without WHERE": "SQL DELETE 不含 WHERE"
+"SQL TRUNCATE": "SQL TRUNCATE"
+# System config
+"overwrite system config": "覆盖系统配置"
+"stop/restart system service": "停止/重启系统服务"
+"overwrite system file via tee": "通过 tee 覆盖系统文件"
+"overwrite system file via redirection": "通过重定向覆盖系统文件"
+"overwrite project env/config via tee": "通过 tee 覆盖项目环境/配置文件"
+"overwrite project env/config via redirection": "通过重定向覆盖项目环境/配置文件"
+"overwrite project env/config file": "覆盖项目环境/配置文件"
+"in-place edit of system config": "就地编辑系统配置"
+"in-place edit of system config (long flag)": "就地编辑系统配置（长标志）"
+"copy/move file into system config path": "复制/移动文件到系统配置路径"
+# Process management
+"kill all processes": "终止所有进程"
+"force kill processes": "强制终止进程"
+"force kill processes (killall -KILL)": "强制终止进程 (killall -KILL)"
+"force kill processes (killall -s KILL)": "强制终止进程 (killall -s KILL)"
+"kill processes by regex (killall -r)": "按正则终止进程 (killall -r)"
+"kill hermes/gateway process (self-termination)": "终止 hermes/gateway 进程（自我终止）"
+"kill process via pgrep expansion (self-termination)": "通过 pgrep 终止进程（自我终止）"
+"kill process via backtick pgrep expansion (self-termination)": "通过反引号 pgrep 终止进程（自我终止）"
+# Fork bomb
+"fork bomb": "fork 炸弹"
+# Shell/script execution
+"shell command via -c/-lc flag": "通过 -c/-lc 标志执行 shell"
+"script execution via -e/-c flag": "通过 -e/-c 标志执行脚本"
+"script execution via heredoc": "通过 heredoc 执行脚本"
+"pipe remote content to shell": "将远程内容管道传输给 shell"
+"execute remote script via process substitution": "通过进程替换执行远程脚本"
+# File operations
+"xargs with rm": "xargs 配合 rm"
+"find -exec/-execdir rm": "find -exec/-execdir rm"
+"find -delete": "find -delete"
+"chmod +x followed by immediate execution": "chmod +x 后立即执行"
+# Git
+"git reset --hard (destroys uncommitted changes)": "git reset --hard（销毁未提交的更改）"
+"git force push (rewrites remote history)": "git force push（重写远程历史）"
+"git force push short flag (rewrites remote history)": "git force push 短标志（重写远程历史）"
+"git clean with force (deletes untracked files)": "git clean 强制删除（删除未跟踪文件）"
+"git branch force delete": "git branch 强制删除"
+# Gateway / Docker
+"stop/restart hermes gateway (kills running agents)": "停止/重启 hermes gateway（终止正在运行的代理）"
+"hermes update (restarts gateway, kills running agents)": "hermes 更新（重启 gateway，终止正在运行的代理）"
+"docker compose restart/stop/kill/down (container lifecycle)": "docker compose restart/stop/kill/down（容器生命周期）"
+"docker restart/stop/kill (container lifecycle)": "docker restart/stop/kill（容器生命周期）"
+"start gateway outside systemd (use 'systemctl --user restart hermes-gateway')": "在 systemd 外启动 gateway（请使用 systemctl）"
+# System
+"system shutdown/reboot": "系统关机/重启"
+"init 0/6 (shutdown/reboot)": "init 0/6（关机/重启）"
+"systemctl poweroff/reboot": "systemctl 关机/重启"
+"telinit 0/6 (shutdown/reboot)": "telinit 0/6（关机/重启）"
+# Sudo
+"sudo with privilege flag (stdin/askpass/shell/list)": "sudo 提权标志（stdin/askpass/shell/list）"
+"sudo with combined-flag privilege escalation": "sudo 组合标志提权"

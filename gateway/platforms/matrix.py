@@ -1345,14 +1345,13 @@ class MatrixAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        from tools.approval import get_gateway_approval_strings
+        strings = get_gateway_approval_strings()
+
         cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
-        text = (
-            "⚠️ **Dangerous command requires approval**\n"
-            f"```\n{cmd_preview}\n```\n"
-            f"Reason: {description}\n\n"
-            "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, "
-            "`/approve always` to approve permanently, or `/deny` to cancel.\n\n"
-            "You can also click the reaction to approve:\n"
+        text = strings["fallback_text"].format(command=cmd_preview, reason=description)
+        text += (
+            "\n\nYou can also click the reaction to approve:\n"
             "✅ = /approve\n"
             "❎ = /deny"
         )

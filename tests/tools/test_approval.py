@@ -1608,3 +1608,103 @@ class TestApprovalTimeoutIsNotConsent:
         assert last_post.get("choice") == "timeout", (
             f"hook choice should be 'timeout' on no-response, got {last_post.get('choice')!r}"
         )
+
+
+class TestTranslateReason:
+    """Tests for _translate_reason — i18n of dangerous-command descriptions."""
+
+    @staticmethod
+    def _write_zh_reasons(tmp_path):
+        """Write a minimal approval_reasons/zh.yaml into a temp locales dir."""
+        import yaml
+        reasons_dir = tmp_path / "approval_reasons"
+        reasons_dir.mkdir(parents=True, exist_ok=True)
+        zh_file = reasons_dir / "zh.yaml"
+        data = {
+            "recursive delete": "递归删除",
+            "script execution via -e/-c flag": "通过 -e/-c 标志执行脚本",
+            "SQL DROP": "SQL DROP",
+            "fork bomb": "fork 炸弹",
+        }
+        zh_file.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
+        return tmp_path
+
+    def test_translates_known_reason_in_zh(self, tmp_path, monkeypatch):
+        """Known reason descriptions are translated to Chinese."""
+        locales_dir = self._write_zh_reasons(tmp_path)
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "zh")
+        monkeypatch.setattr("agent.i18n._locales_dir", lambda: locales_dir)
+
+        from tools.approval import _translate_reason
+        assert _translate_reason("recursive delete") == "递归删除"
+        assert _translate_reason("script execution via -e/-c flag") == "通过 -e/-c 标志执行脚本"
+
+    def test_returns_original_for_unknown_reason(self, tmp_path, monkeypatch):
+        locales_dir = self._write_zh_reasons(tmp_path)
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "zh")
+        monkeypatch.setattr("agent.i18n._locales_dir", lambda: locales_dir)
+
+        from tools.approval import _translate_reason
+        assert _translate_reason("some new pattern") == "some new pattern"
+
+    def test_returns_original_when_lang_is_en(self, tmp_path, monkeypatch):
+        locales_dir = self._write_zh_reasons(tmp_path)
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "en")
+        monkeypatch.setattr("agent.i18n._locales_dir", lambda: locales_dir)
+
+        from tools.approval import _translate_reason
+        assert _translate_reason("recursive delete") == "recursive delete"
+
+    def test_returns_original_when_no_zh_file(self, tmp_path, monkeypatch):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "zh")
+        monkeypatch.setattr("agent.i18n._locales_dir", lambda: empty_dir)
+
+        from tools.approval import _translate_reason
+        assert _translate_reason("recursive delete") == "recursive delete"
+
+    def test_returns_original_on_any_exception(self, monkeypatch):
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "zh")
+        monkeypatch.setattr("agent.i18n._locales_dir", lambda: Path("/nonexistent/path/definitely"))
+
+        from tools.approval import _translate_reason
+        assert _translate_reason("recursive delete") == "recursive delete"
+
+
+class TestGatewayApprovalStrings:
+    """Tests for get_gateway_approval_strings."""
+
+    def test_returns_english_by_default(self, monkeypatch):
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "en")
+        from tools.approval import get_gateway_approval_strings
+        s = get_gateway_approval_strings()
+        assert s["header"] == "⚠️ Command Approval Required"
+        assert s["reason_label"] == "Reason"
+        assert s["btn_allow_once"] == "Allow Once"
+        assert s["btn_deny"] == "Deny"
+
+    def test_returns_chinese_when_lang_is_zh(self, monkeypatch):
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "zh")
+        from tools.approval import get_gateway_approval_strings
+        s = get_gateway_approval_strings()
+        assert s["header"] == "⚠️ 需要批准命令"
+        assert s["reason_label"] == "原因"
+        assert s["btn_allow_once"] == "允许一次"
+        assert s["btn_deny"] == "拒绝"
+
+    def test_fallback_text_formats_correctly(self, monkeypatch):
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "zh")
+        from tools.approval import get_gateway_approval_strings
+        s = get_gateway_approval_strings()
+        result = s["fallback_text"].format(command="rm -rf /tmp/x", reason="递归删除")
+        assert "rm -rf /tmp/x" in result
+        assert "/approve" in result
+
+    def test_all_keys_present(self, monkeypatch):
+        from tools.approval import get_gateway_approval_strings
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "en")
+        en_keys = set(get_gateway_approval_strings().keys())
+        monkeypatch.setattr("agent.i18n.get_language", lambda: "zh")
+        zh_keys = set(get_gateway_approval_strings().keys())
+        assert en_keys == zh_keys, f"Key mismatch: {en_keys ^ zh_keys}"

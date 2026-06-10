@@ -220,6 +220,7 @@ def build_turn_context(
     agent._last_content_with_tools = None
     agent._last_content_tools_all_housekeeping = False
     agent._mute_post_response = False
+    agent._turn_stale_stream_state = {"runtime_key": None, "count": 0}
     agent._unicode_sanitization_passes = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None

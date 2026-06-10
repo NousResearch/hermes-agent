@@ -25,7 +25,11 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Dict, Optional
 
-from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
+from hermes_cli.timeouts import (
+    get_provider_request_timeout,
+    get_provider_stale_fallback_threshold,
+    get_provider_stale_timeout,
+)
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import FailoverReason
 from agent.model_metadata import is_local_endpoint
@@ -1844,6 +1848,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # resolved, so the builder degrades to its plain default if it ever runs
     # first.
     _stream_stale_timeout = None
+    stale_forced_close = {"pending": False}
+    stale_fallback_pending = {"pending": False}
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
@@ -1852,6 +1858,70 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 on_first_delta()
             except Exception:
                 pass
+
+    def _current_stream_runtime_key() -> tuple[str, str, str]:
+        """Identify the active backend for turn-scoped stale tracking."""
+        return (
+            (getattr(agent, "provider", "") or "").strip().lower(),
+            (getattr(agent, "model", "") or "").strip(),
+            str(getattr(agent, "base_url", "") or "").rstrip("/").lower(),
+        )
+
+    def _get_turn_stale_stream_state() -> dict:
+        """Return the current turn's stale-stream state for this runtime."""
+        state = getattr(agent, "_turn_stale_stream_state", None)
+        if not isinstance(state, dict):
+            state = {}
+            agent._turn_stale_stream_state = state
+        runtime_key = _current_stream_runtime_key()
+        if state.get("runtime_key") != runtime_key:
+            state["runtime_key"] = runtime_key
+            state["count"] = 0
+        elif not isinstance(state.get("count"), int):
+            state["count"] = 0
+        return state
+
+    def _reset_stream_retry_state() -> None:
+        """Clear per-attempt delivery state before retrying a stream."""
+        try:
+            agent._reset_stream_delivery_tracking()
+        except Exception:
+            pass
+        result["partial_tool_names"] = []
+        deltas_were_sent["yes"] = False
+        first_delta_fired["done"] = False
+
+    def _try_stream_fallback_after_repeated_stale(
+        error: Exception, *, mid_tool_call: bool,
+    ) -> bool:
+        """Switch to the configured fallback provider after repeated stale kills."""
+        if not stale_fallback_pending["pending"] or not agent._has_pending_fallback():
+            return False
+
+        stale_fallback_pending["pending"] = False
+        stale_forced_close["pending"] = False
+
+        if mid_tool_call:
+            try:
+                agent._fire_stream_delta(
+                    "\n\n⚠ Repeated stale stream errors; switching to fallback provider…\n\n"
+                )
+            except Exception:
+                pass
+
+        agent._buffer_status(
+            "⚠️ Repeated stale stream errors — switching to fallback provider..."
+        )
+        _reset_stream_retry_state()
+
+        from agent.error_classifier import FailoverReason
+
+        if agent._try_activate_fallback(reason=FailoverReason.timeout):
+            _get_turn_stale_stream_state()["count"] = 0
+            return True
+
+        result["error"] = error
+        return False
 
     def _call_chat_completions():
         """Stream a chat completions response."""
@@ -2355,9 +2425,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             type(e).__name__,
                         )
                         return
+                    _forced_stale_error = stale_forced_close["pending"]
+                    if _forced_stale_error:
+                        stale_forced_close["pending"] = False
                     _is_timeout = isinstance(
                         e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
-                    )
+                    ) or _forced_stale_error
                     _is_conn_err = isinstance(
                         e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
                     )
@@ -2406,6 +2479,17 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             or _is_sse_conn_err_preview
                             or _is_stream_parse_err
                         )
+                        if (
+                            _forced_stale_error
+                            and stale_fallback_pending["pending"]
+                            and _partial_tool_in_flight
+                        ):
+                            if _try_stream_fallback_after_repeated_stale(
+                                e, mid_tool_call=True,
+                            ):
+                                continue
+                            if result["error"] is not None:
+                                return
                         _can_silent_retry = (
                             _partial_tool_in_flight
                             and _is_transient
@@ -2441,16 +2525,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         # fresh preamble doesn't get double-recorded in
                         # _current_streamed_assistant_text (which would
                         # pollute the interim-visible-text comparison).
-                        try:
-                            agent._reset_stream_delivery_tracking()
-                        except Exception:
-                            pass
-                        # Reset in-memory accumulators so the next
-                        # attempt's chunks don't concat onto the dead
-                        # stream's partial JSON.
-                        result["partial_tool_names"] = []
-                        deltas_were_sent["yes"] = False
-                        first_delta_fired["done"] = False
+                        _reset_stream_retry_state()
                         agent._emit_stream_drop(
                             error=e,
                             attempt=_stream_attempt + 2,
@@ -2498,6 +2573,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             )
 
                     if _is_timeout or _is_conn_err or _is_sse_conn_err or _is_stream_parse_err:
+                        if _forced_stale_error and stale_fallback_pending["pending"]:
+                            if _try_stream_fallback_after_repeated_stale(
+                                e, mid_tool_call=False,
+                            ):
+                                continue
+                            if result["error"] is not None:
+                                return
                         # Transient network / timeout error. Retry the
                         # streaming request with a fresh connection first.
                         if _stream_attempt < _max_stream_retries:
@@ -2610,6 +2692,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         _stream_stale_timeout_base = _cfg_stale
     else:
         _stream_stale_timeout_base = env_float("HERMES_STREAM_STALE_TIMEOUT", 180.0)
+    # Number of consecutive stale-stream kills (within one turn, per runtime)
+    # before escalating to the configured fallback chain.  Config-driven:
+    # model.stale_fallback_threshold (or per-provider/per-model override),
+    # resolved in hermes_cli/timeouts.py.  0 disables fallback escalation.
+    _stale_fallback_threshold = get_provider_stale_fallback_threshold(
+        agent.provider, agent.model
+    )
     # Local providers (Ollama, oMLX, llama-cpp) can take 300+ seconds
     # for prefill on large contexts.  Disable the stale detector unless
     # the user explicitly set HERMES_STREAM_STALE_TIMEOUT.
@@ -2682,16 +2771,26 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 f"context: ~{_est_ctx:,} tokens). "
                 f"Reconnecting..."
             )
+            _turn_stale_state = _get_turn_stale_stream_state()
+            _turn_stale_state["count"] += 1
+            stale_forced_close["pending"] = True
+            if (
+                _stale_fallback_threshold > 0
+                and _turn_stale_state["count"] >= _stale_fallback_threshold
+                and agent._has_pending_fallback()
+            ):
+                stale_fallback_pending["pending"] = True
             try:
                 _close_request_client_once("stale_stream_kill")
             except Exception:
                 pass
             # Rebuild the primary client too — its connection pool
             # may hold dead sockets from the same provider outage.
-            try:
-                agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
-            except Exception:
-                pass
+            if not stale_fallback_pending["pending"]:
+                try:
+                    agent._replace_primary_openai_client(reason="stale_stream_pool_cleanup")
+                except Exception:
+                    pass
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
             last_chunk_time["t"] = time.time()

@@ -3,6 +3,7 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
+import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -1422,6 +1423,124 @@ class TestSilentRetryMidToolCall:
         )
         assert "Stream stalled" not in content, (
             f"Text-only stall should not emit tool-call warning: {content!r}"
+        )
+
+
+class TestRepeatedStaleStreamFallback:
+    """Repeated stale kills within one turn should escalate to runtime fallback."""
+
+    @patch("run_agent.AIAgent._abort_request_openai_client")
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_second_stale_in_same_turn_switches_to_fallback_provider(
+        self, mock_close, mock_create, mock_replace, mock_abort, monkeypatch,
+    ):
+        from run_agent import AIAgent
+
+        try:
+            import httpx as _httpx
+        except Exception:  # pragma: no cover - dependency is present in test env
+            pytest.skip("httpx unavailable")
+
+        current_close_event = {"event": None}
+        switched_to_fallback = {"yes": False}
+        stream_attempts = {"n": 0}
+        status_lines = []
+        stream_plan = iter([
+            "stale",
+            "primary_recovered",
+            "stale",
+            "fallback_recovered",
+        ])
+
+        def _stalled_stream(close_event):
+            if False:
+                yield None
+            while not close_event.wait(0.01):
+                pass
+            raise _httpx.ReadError("[Errno 9] Bad file descriptor")
+
+        def _healthy_stream(text):
+            yield _make_stream_chunk(content=text)
+            yield _make_stream_chunk(finish_reason="stop")
+
+        def _make_client():
+            client = MagicMock()
+
+            def _create_stream(*_args, **_kwargs):
+                stream_attempts["n"] += 1
+                behavior = next(stream_plan)
+                if behavior == "primary_recovered":
+                    return _healthy_stream("Primary recovered once")
+                if behavior == "fallback_recovered":
+                    assert switched_to_fallback["yes"] is True
+                    return _healthy_stream("Fallback recovered")
+                close_event = threading.Event()
+                current_close_event["event"] = close_event
+                return _stalled_stream(close_event)
+
+            client.chat.completions.create.side_effect = _create_stream
+            return client
+
+        mock_create.side_effect = lambda *_args, **_kwargs: _make_client()
+
+        def _close_client(_client, *_args, **_kwargs):
+            close_event = current_close_event.get("event")
+            if close_event is not None:
+                close_event.set()
+
+        mock_close.side_effect = _close_client
+        mock_abort.side_effect = _close_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+        agent._fallback_chain = [{"provider": "openrouter", "model": "kimi-k2"}]
+        agent._fallback_index = 0
+        agent._buffer_status = lambda text: status_lines.append(text)
+
+        def _activate_fallback(reason=None):
+            switched_to_fallback["yes"] = True
+            agent.provider = "openrouter"
+            agent.model = "kimi-k2"
+            agent._fallback_index = 1
+            return True
+
+        agent._try_activate_fallback = MagicMock(side_effect=_activate_fallback)
+
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "3")
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.05")
+        monkeypatch.setenv("HERMES_STREAM_STALE_FALLBACK_THRESHOLD", "2")
+
+        first_response = agent._interruptible_streaming_api_call(
+            {"model": "deepseek-v4-flash", "messages": []}
+        )
+        assert first_response.choices[0].message.content == "Primary recovered once"
+        assert agent._try_activate_fallback.call_count == 0
+
+        second_response = agent._interruptible_streaming_api_call(
+            {"model": "deepseek-v4-flash", "messages": []}
+        )
+
+        assert second_response.choices[0].message.content == "Fallback recovered"
+        assert stream_attempts["n"] == 4, (
+            "Expected 1 stale + recovery on primary, then 1 stale + fallback recovery; "
+            f"got {stream_attempts['n']} attempts"
+        )
+        assert agent._try_activate_fallback.call_count == 1
+        assert switched_to_fallback["yes"] is True
+        assert agent._turn_stale_stream_state["count"] == 0
+        assert any("fallback" in line.lower() for line in status_lines), (
+            f"Expected a fallback status message, got {status_lines!r}"
         )
 
 

@@ -2831,11 +2831,18 @@ class AIAgent:
         if state is None:
             return
         try:
-            from agent.credits_tracker import evaluate_credits_notices
+            from agent.credits_tracker import evaluate_credits_notices, is_free_tier_model
             latch = getattr(self, "_credits_latch", None)
             if latch is None:
                 latch = self._credits_latch = {"active": set(), "seen_below_90": False, "usage_band": None}
-            to_show, to_clear = evaluate_credits_notices(state, latch)
+            # Free-model gate: a depleted account on a free model can still
+            # inference, so the depleted error banner is suppressed. Local-data
+            # only (":free" suffix + pricing-cache peek) — never a network call.
+            model_is_free = is_free_tier_model(
+                getattr(self, "model", "") or "",
+                getattr(self, "base_url", "") or "",
+            )
+            to_show, to_clear = evaluate_credits_notices(state, latch, model_is_free=model_is_free)
             for key in to_clear:        # clears FIRST …
                 self._emit_notice_clear(key)
             for notice in to_show:      # … then shows (depleted lands last in a latest-wins slot)

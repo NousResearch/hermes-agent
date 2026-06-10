@@ -265,6 +265,143 @@ class TestDepleted:
         assert "credits.depleted" in keys
 
 
+# ── Scenario 5b: free-model suppression of the depleted notice ───────────────
+
+
+class TestDepletedFreeModelSuppression:
+    def test_depleted_suppressed_when_model_is_free(self):
+        latch = fresh_latch()
+        s = CreditsState(paid_access=False)
+        to_show, to_clear = evaluate_credits_notices(s, latch, model_is_free=True)
+        assert all(n.key != "credits.depleted" for n in to_show)
+        assert "credits.depleted" not in latch["active"]
+        assert to_clear == []
+
+    def test_switch_to_free_model_clears_without_restored(self):
+        latch = fresh_latch()
+        # Depleted on a paid model → notice fires
+        evaluate_credits_notices(CreditsState(paid_access=False), latch)
+        assert "credits.depleted" in latch["active"]
+        # Same depleted account, but now on a free model → clear, NO "restored"
+        to_show, to_clear = evaluate_credits_notices(
+            CreditsState(paid_access=False), latch, model_is_free=True
+        )
+        assert "credits.depleted" in to_clear
+        assert "credits.depleted" not in latch["active"]
+        assert all(n.key != "credits.restored" for n in to_show)
+
+    def test_switch_back_to_paid_model_while_depleted_reshows(self):
+        latch = fresh_latch()
+        evaluate_credits_notices(CreditsState(paid_access=False), latch)
+        evaluate_credits_notices(CreditsState(paid_access=False), latch, model_is_free=True)
+        # Back on a paid model, still depleted → notice re-fires
+        to_show, to_clear = evaluate_credits_notices(CreditsState(paid_access=False), latch)
+        keys = [n.key for n in to_show]
+        assert "credits.depleted" in keys
+        assert "credits.depleted" in latch["active"]
+
+    def test_genuine_recovery_on_free_model_no_spurious_restored(self):
+        """Recovery observed while suppressed (notice never shown) → nothing to
+        clear, no 'restored' (there was no visible depleted state to restore)."""
+        latch = fresh_latch()
+        evaluate_credits_notices(CreditsState(paid_access=False), latch, model_is_free=True)
+        to_show, to_clear = evaluate_credits_notices(
+            CreditsState(paid_access=True), latch, model_is_free=True
+        )
+        assert to_clear == []
+        assert all(n.key != "credits.restored" for n in to_show)
+
+    def test_genuine_recovery_still_emits_restored_when_notice_active(self):
+        """paid_access flip back to True with the notice showing → clear + restored
+        (unchanged behaviour, regardless of the model-free flag)."""
+        latch = fresh_latch()
+        evaluate_credits_notices(CreditsState(paid_access=False), latch)
+        to_show, to_clear = evaluate_credits_notices(
+            CreditsState(paid_access=True), latch, model_is_free=True
+        )
+        assert "credits.depleted" in to_clear
+        restored = [n for n in to_show if n.key == "credits.restored"]
+        assert len(restored) == 1
+
+    def test_free_flag_does_not_affect_other_notices(self):
+        """Usage-band and grant notices are independent of the model-free gate."""
+        latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.10), latch, model_is_free=True)
+        to_show, _ = evaluate_credits_notices(
+            state_with_fraction(0.95, paid_access=False), latch, model_is_free=True
+        )
+        keys = [n.key for n in to_show]
+        assert "credits.usage" in keys
+        assert "credits.depleted" not in keys
+
+
+# ── Scenario 5c: is_free_tier_model (local-data-only check) ──────────────────
+
+
+class TestIsFreeTierModel:
+    def test_free_suffix_is_free(self):
+        from agent.credits_tracker import is_free_tier_model
+
+        assert is_free_tier_model("nvidia/nemotron-3-ultra:free") is True
+        assert is_free_tier_model("Hermes-4-70B:free", "https://inference-api.nousresearch.com") is True
+
+    def test_empty_or_paid_model_is_not_free(self):
+        from agent.credits_tracker import is_free_tier_model
+
+        assert is_free_tier_model("") is False
+        assert is_free_tier_model("Hermes-4-405B") is False
+
+    def test_pricing_cache_peek_zero_priced_model(self, monkeypatch):
+        from agent.credits_tracker import is_free_tier_model
+        import hermes_cli.models as models_mod
+
+        # The picker keys the cache on the pre-/v1 root (get_pricing_for_provider
+        # strips a trailing /v1 before fetch_models_with_pricing).
+        monkeypatch.setattr(
+            models_mod,
+            "_pricing_cache",
+            {
+                "https://inference-api.nousresearch.com": {
+                    "some/zero-priced": {"prompt": "0", "completion": "0"},
+                    "some/paid": {"prompt": "0.000001", "completion": "0.000002"},
+                }
+            },
+        )
+        # The agent holds the /v1-suffixed URL (DEFAULT_NOUS_INFERENCE_URL) —
+        # the helper must normalize it down to the picker's cache key.
+        base = "https://inference-api.nousresearch.com/v1"
+        assert is_free_tier_model("some/zero-priced", base) is True
+        assert is_free_tier_model("some/paid", base) is False
+        # Pre-stripped and trailing-slash variants resolve to the same key.
+        assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/") is True
+        assert is_free_tier_model("some/zero-priced", "https://inference-api.nousresearch.com/v1/") is True
+
+    def test_cache_miss_is_not_free_and_no_fetch(self, monkeypatch):
+        from agent.credits_tracker import is_free_tier_model
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(models_mod, "_pricing_cache", {})
+
+        def _boom(*args, **kwargs):  # any network attempt fails the test
+            raise AssertionError("is_free_tier_model must never hit the network")
+
+        import urllib.request
+
+        monkeypatch.setattr(urllib.request, "urlopen", _boom)
+        assert is_free_tier_model("some/model", "https://inference-api.nousresearch.com/v1") is False
+
+    def test_exception_fails_open_to_false(self, monkeypatch):
+        from agent.credits_tracker import is_free_tier_model
+        import hermes_cli.models as models_mod
+
+        class _Exploding:
+            def get(self, *_a, **_kw):
+                raise RuntimeError("boom")
+
+        monkeypatch.setattr(models_mod, "_pricing_cache", _Exploding())
+        assert is_free_tier_model("some/model", "https://inference-api.nousresearch.com") is False
+
+
 # ── Scenario 6: denominator none (uf is None) ────────────────────────────────
 
 

@@ -55,10 +55,16 @@ class VoiceCallRuntime:
         self._started = False
 
     async def start(self) -> None:
-        """Boot the runtime. Idempotent; raises on unrecoverable setup errors."""
+        """Boot the runtime. Idempotent; raises on unrecoverable setup errors.
+
+        Order mirrors OpenClaw: provider → store/manager (+restore) →
+        webhook server → tunnel. A failure after the server binds stops the
+        server again so the port is never leaked.
+        """
         if self._started:
             return
         from .providers import create_provider
+        from .webhook import VoiceCallWebhookServer
 
         self.provider = create_provider(self.config)
         if self.public_url:
@@ -78,6 +84,20 @@ class VoiceCallRuntime:
         )
         await self.manager.initialize()
 
+        self.webhook_server = VoiceCallWebhookServer(
+            self.config,
+            self.provider,
+            process_event=self.manager.process_event,
+            admin_handler=self._handle_admin_command,
+            admin_token=self._load_or_create_admin_token(),
+        )
+        await self.webhook_server.start()
+        try:
+            await self._resolve_public_url()
+        except Exception:
+            await self.webhook_server.stop()
+            raise
+
         self._started = True
         logger.info(
             "voice_call runtime started (provider=%s, serve=%s:%s%s)",
@@ -90,6 +110,18 @@ class VoiceCallRuntime:
     async def stop(self) -> None:
         """Tear everything down. Idempotent; tolerates partial initialization."""
         self._started = False
+        if self.webhook_server is not None:
+            try:
+                await self.webhook_server.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("voice_call: webhook server stop failed")
+            self.webhook_server = None
+        if self.tunnel is not None:
+            try:
+                await self.tunnel.stop()
+            except Exception:  # noqa: BLE001
+                logger.exception("voice_call: tunnel stop failed")
+            self.tunnel = None
         if self.manager is not None:
             try:
                 await self.manager.shutdown()
@@ -98,6 +130,77 @@ class VoiceCallRuntime:
             self.manager = None
         self.provider = None
         logger.info("voice_call runtime stopped")
+
+    async def _resolve_public_url(self) -> None:
+        """Resolve the externally reachable URL (explicit > tunnel)."""
+        if self.public_url or self.config.tunnel.provider == "none":
+            return
+        # Tunnel providers (ngrok / tailscale) are wired in the Telnyx phase.
+        from .tunnel import start_tunnel  # noqa: PLC0415
+
+        self.tunnel = await start_tunnel(self.config)
+        self.public_url = self.tunnel.public_url
+        self.provider.set_public_url(self.public_url)
+
+    def _load_or_create_admin_token(self) -> str:
+        """Pre-shared token the CLI uses against the local admin endpoint."""
+        import secrets
+
+        token_path = self.store.base_dir / "admin.token"
+        try:
+            existing = token_path.read_text(encoding="utf-8").strip()
+            if existing:
+                return existing
+        except OSError:
+            pass
+        token = secrets.token_urlsafe(32)
+        try:
+            self.store.base_dir.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(token, encoding="utf-8")
+            token_path.chmod(0o600)
+        except OSError:
+            logger.warning("voice_call: could not persist admin token", exc_info=True)
+        return token
+
+    async def _handle_admin_command(self, payload: dict) -> dict:
+        """CLI → runtime command dispatch (served on the admin endpoint)."""
+        command = str(payload.get("command", ""))
+        if self.manager is None:
+            return {"success": False, "error": "runtime not started"}
+        if command == "status":
+            calls = [r.to_dict() for r in self.manager.get_active_calls()]
+            return {
+                "success": True,
+                "provider": self.config.provider,
+                "public_url": self.public_url,
+                "active_calls": calls,
+            }
+        if command == "call":
+            record = await self.manager.initiate_call(
+                str(payload.get("to", "")),
+                message=payload.get("message"),
+                mode=payload.get("mode"),
+            )
+            return {"success": True, "call_id": record.call_id}
+        if command == "speak":
+            await self.manager.speak(
+                str(payload.get("call_id", "")), str(payload.get("message", ""))
+            )
+            return {"success": True}
+        if command == "continue":
+            reply = await self.manager.continue_call(
+                str(payload.get("call_id", "")), str(payload.get("message", ""))
+            )
+            return {"success": True, "reply": reply}
+        if command == "dtmf":
+            await self.manager.send_dtmf(
+                str(payload.get("call_id", "")), str(payload.get("digits", ""))
+            )
+            return {"success": True}
+        if command == "end":
+            await self.manager.end_call(str(payload.get("call_id", "")))
+            return {"success": True}
+        return {"success": False, "error": f"unknown command {command!r}"}
 
     # -- event plumbing -----------------------------------------------------
 

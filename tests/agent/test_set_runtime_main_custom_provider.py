@@ -224,3 +224,44 @@ class TestResolveAutoCustomEndToEnd:
             assert base and base.rstrip("/") == "https://withcfg.example/v1"
         finally:
             mod.clear_runtime_main()
+
+
+class TestResolveVisionUsesRuntimeGlobals:
+    """Vision auto-detect must bridge the same runtime globals as _resolve_auto.
+
+    Regression for the sibling gap of #35259: set_runtime_main() records a
+    custom:<name> main provider as bare "custom" plus base_url/api_key, but
+    resolve_vision_provider_client()'s auto branch did not forward those
+    credentials, so vision_analyze failed with
+    "No LLM provider configured for task=vision provider=auto".
+    """
+
+    def test_vision_auto_forwards_runtime_credentials(self):
+        """The vision auto branch passes explicit_base_url/api_key/api_mode
+        from the runtime globals to resolve_provider_client."""
+        import agent.auxiliary_client as mod
+
+        mod.clear_runtime_main()
+        try:
+            mod.set_runtime_main(
+                "custom",
+                "claude-opus-4-7",
+                base_url="https://gateway.example.com/v1",
+                api_key="sk-vision-123",
+                api_mode="anthropic_messages",
+            )
+
+            with patch.object(mod, "resolve_provider_client") as mock_resolve, \
+                    patch.object(mod, "_main_model_supports_vision", return_value=True):
+                mock_resolve.return_value = (MagicMock(), "claude-opus-4-7")
+                provider, client, _model = mod.resolve_vision_provider_client(provider="auto")
+
+                assert client is not None
+                mock_resolve.assert_called_once()
+                kwargs = mock_resolve.call_args[1]
+                assert kwargs["explicit_base_url"] == "https://gateway.example.com/v1"
+                assert kwargs["explicit_api_key"] == "sk-vision-123"
+                assert kwargs["api_mode"] == "anthropic_messages"
+                assert kwargs["is_vision"] is True
+        finally:
+            mod.clear_runtime_main()

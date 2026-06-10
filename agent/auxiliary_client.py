@@ -4226,9 +4226,17 @@ def resolve_vision_provider_client(
                     main_provider,
                 )
             else:
+                # Bridge the runtime credentials recorded by set_runtime_main()
+                # into the resolver, mirroring _resolve_auto() (#35259). A
+                # custom:<name> main provider is flattened to bare "custom" with
+                # its base_url/api_key carried on the live runtime; without this
+                # bridge resolve_provider_client("custom", ...) finds no endpoint
+                # credentials and the whole vision chain returns None.
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
-                    api_mode=resolved_api_mode,
+                    explicit_base_url=_RUNTIME_MAIN_BASE_URL or None,
+                    explicit_api_key=_RUNTIME_MAIN_API_KEY or None,
+                    api_mode=resolved_api_mode or (_RUNTIME_MAIN_API_MODE or None),
                     is_vision=True)
                 if rpc_client is not None:
                     logger.info(

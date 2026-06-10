@@ -1775,6 +1775,7 @@ async def get_sessions(
     order: str = "created",
     source: str = None,
     exclude_sources: str = None,
+    include_ids: str = None,
 ):
     """List sessions.
 
@@ -1810,6 +1811,7 @@ async def get_sessions(
             # uses these to split recents (exclude=cron) from the cron-jobs
             # section (source=cron) into two independent lists.
             exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
+            include_list = [s for s in (include_ids or "").split(",") if s.strip()] or None
             sessions = db.list_sessions_rich(
                 source=source or None,
                 exclude_sources=exclude_list or None,
@@ -1819,6 +1821,7 @@ async def get_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                include_ids=include_list,
             )
             total = db.session_count(
                 source=source or None,
@@ -1854,6 +1857,7 @@ async def get_profiles_sessions(
     profile: str = "all",
     source: str = None,
     exclude_sources: str = None,
+    include_ids: str = None,
 ):
     """Unified, read-only session list aggregated across ALL profiles.
 
@@ -1894,6 +1898,9 @@ async def get_profiles_sessions(
     # newest cron sessions can't starve the recents page.
     source_filter = source or None
     exclude_list = [s for s in (exclude_sources or "").split(",") if s.strip()]
+    # Parse include_ids: comma-separated session / lineage-root IDs that must
+    # appear in the result regardless of recency (Desktop pinned sessions).
+    include_list = [s for s in (include_ids or "").split(",") if s.strip()] or None
     # Over-fetch per profile so the merged+sorted window is correct for the
     # requested page. Capped so a huge profile can't blow up the response.
     per_profile = min(max(limit + offset, limit), 500)
@@ -1925,6 +1932,7 @@ async def get_profiles_sessions(
                 include_archived=include_archived,
                 archived_only=archived_only,
                 order_by_last_active=order == "recent",
+                include_ids=include_list,
             )
             profile_total = db.session_count(
                 source=source_filter,

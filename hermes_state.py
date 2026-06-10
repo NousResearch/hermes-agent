@@ -25,7 +25,7 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
-from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -1849,6 +1849,7 @@ class SessionDB:
         include_archived: bool = False,
         archived_only: bool = False,
         id_query: str = None,
+        include_ids: List[str] = None,
     ) -> List[Dict[str, Any]]:
         """List sessions with preview (first user message) and last active timestamp.
 
@@ -1876,6 +1877,13 @@ class SessionDB:
         surfaces in the correct slot. Ordering is computed at SQL level via
         a recursive CTE that walks compression-continuation edges, so LIMIT
         and OFFSET still apply efficiently.
+
+        Pass ``include_ids`` with a list of session IDs (or lineage root IDs)
+        to force-include those conversations in the result, even if they fall
+        outside the pagination window.  Each ID is resolved to its live
+        compression tip when ``project_compression_tips`` is True.  Pinned
+        sessions in the Desktop sidebar rely on this so a pin never silently
+        vanishes when its conversation ages off the recency page.
         """
         where_clauses = []
         params = []
@@ -2077,6 +2085,54 @@ class SessionDB:
                 merged["_lineage_root_id"] = s["id"]
                 projected.append(merged)
             sessions = projected
+
+        # ── include_ids: force-include pinned / bookmarked conversations ──
+        # After the main query + compression-tip projection, resolve each
+        # requested id to its live session row and prepend it to the list if
+        # it is not already present (matched by either live id or lineage root).
+        if include_ids:
+            existing_ids: Set[str] = set()
+            for s in sessions:
+                existing_ids.add(s["id"])
+                root = s.get("_lineage_root_id")
+                if root:
+                    existing_ids.add(root)
+            extra: List[Dict[str, Any]] = []
+            for raw_id in include_ids:
+                sid = str(raw_id).strip()
+                if not sid or sid in existing_ids:
+                    continue
+                # Try as a compression tip first (most common for pinned ids
+                # stored as lineage roots).
+                tip_id = self.get_compression_tip(sid)
+                row = self._get_session_rich_row(tip_id) if tip_id else None
+                if not row:
+                    # Fall back to direct lookup.
+                    row = self._get_session_rich_row(sid)
+                if not row:
+                    continue
+                # Project the tip fields onto the root identity, matching
+                # the projection logic above.
+                if project_compression_tips and tip_id and tip_id != sid:
+                    root_row = self._get_session_rich_row(sid)
+                    if root_row:
+                        merged = dict(root_row)
+                        for key in (
+                            "id", "ended_at", "end_reason", "message_count",
+                            "tool_call_count", "title", "last_active", "preview",
+                            "model", "system_prompt", "cwd",
+                        ):
+                            if key in row:
+                                merged[key] = row[key]
+                        merged["_lineage_root_id"] = sid
+                        row = merged
+                extra.append(row)
+                existing_ids.add(row["id"])
+                root = row.get("_lineage_root_id")
+                if root:
+                    existing_ids.add(root)
+            if extra:
+                sessions = extra + sessions
 
         return sessions
 

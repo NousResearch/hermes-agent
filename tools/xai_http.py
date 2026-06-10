@@ -87,6 +87,8 @@ def resolve_xai_http_credentials(*, force_refresh: bool = False) -> Dict[str, st
     reactive remediation after a server 401 (mid-window revocation, opaque
     tokens where the proactive JWT check is a no-op, etc.), not as a default —
     the auth-store lock is held for the duration of the refresh.
+
+    Fallback: credential pool — read directly from the profile auth.json(s).
     """
     if not force_refresh:
         try:

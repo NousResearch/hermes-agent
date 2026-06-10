@@ -3136,11 +3136,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="Picker expired.")
                 return
 
+            switch_failed = False
             try:
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
                 result_text = f"Error switching model: {exc}"
+                switch_failed = True
 
             try:
                 await query.edit_message_text(
@@ -3157,7 +3159,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
-            await query.answer(text="Model switched!")
+            await query.answer(
+                text="Switch failed." if switch_failed else "Model switched!"
+            )
             self._model_picker_state.pop(chat_id, None)
 
         elif data.startswith("mm:"):
@@ -3184,7 +3188,10 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 from hermes_cli.model_cost_guard import expensive_model_warning
 
-                warning = expensive_model_warning(
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                warning = await asyncio.to_thread(
+                    expensive_model_warning,
                     model_id,
                     provider=provider_slug,
                 )
@@ -3208,11 +3215,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 await query.answer(text="Confirm expensive model")
                 return
 
+            switch_failed = False
             try:
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
                 result_text = f"Error switching model: {exc}"
+                switch_failed = True
 
             # Edit message to show confirmation, remove buttons
             try:
@@ -3231,7 +3240,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
-            await query.answer(text="Model switched!")
+            await query.answer(
+                text="Switch failed." if switch_failed else "Model switched!"
+            )
 
             # Clean up state
             self._model_picker_state.pop(chat_id, None)

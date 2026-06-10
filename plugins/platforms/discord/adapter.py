@@ -5742,11 +5742,14 @@ def _define_discord_view_classes() -> None:
             cancel_btn.callback = self._on_cancel
             self.add_item(cancel_btn)
 
-        def _expensive_warning_for(self, model_id: str):
+        async def _expensive_warning_for(self, model_id: str):
             try:
                 from hermes_cli.model_cost_guard import expensive_model_warning
 
-                return expensive_model_warning(
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                return await asyncio.to_thread(
+                    expensive_model_warning,
                     model_id,
                     provider=self._selected_provider,
                 )
@@ -5840,7 +5843,7 @@ def _define_discord_view_classes() -> None:
                 return
 
             model_id = interaction.data["values"][0]
-            warning = self._expensive_warning_for(model_id)
+            warning = await self._expensive_warning_for(model_id)
             if warning is not None:
                 self._build_expensive_confirm(model_id)
                 await interaction.response.edit_message(

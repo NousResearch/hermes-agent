@@ -2460,7 +2460,10 @@ async def set_model_assignment(body: ModelAssignment):
             try:
                 from hermes_cli.model_cost_guard import expensive_model_warning
 
-                warning = expensive_model_warning(
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                warning = await asyncio.to_thread(
+                    expensive_model_warning,
                     model,
                     provider=provider,
                     base_url=base_url,

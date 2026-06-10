@@ -623,7 +623,7 @@ def _should_use_native_vision_fast_path() -> bool:
             return False
         return (
             _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True
+            and _lookup_supports_vision(provider, model, cfg) is True
         )
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)

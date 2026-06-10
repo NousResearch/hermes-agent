@@ -530,6 +530,8 @@ class MatrixAdapter(BasePlatformAdapter):
         self._reactions_enabled: bool = os.getenv(
             "MATRIX_REACTIONS", "true"
         ).lower() not in {"false", "0", "no"}
+        # Forward non-approval reactions to the agent session.
+        self._forward_reactions: bool = config.extra.get("forward_reactions", True)
         self._pending_reactions: dict[tuple[str, str], str] = {}
         # Delay before redacting reactions so Matrix homeservers have time to
         # deliver the final message event without tripping "missing event"
@@ -2346,6 +2348,51 @@ class MatrixAdapter(BasePlatformAdapter):
                         await self._redact_bot_approval_reactions(room_id, prompt)
                 except Exception as exc:
                     logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
+            else:
+                # Non-approval reaction — forward to the agent session so the
+                # model can perceive user reactions (👍, ❤️, etc.).
+                if self._forward_reactions:
+                    await self._forward_reaction_to_agent(
+                        room_id, sender, event_id, reacts_to, key,
+                    )
+
+    async def _forward_reaction_to_agent(
+        self,
+        room_id: str,
+        sender: str,
+        event_id: str,
+        reacts_to: str,
+        key: str,
+    ) -> None:
+        """Forward a non-approval reaction into the agent session."""
+        try:
+            # Resolve context (DM detection, thread, display name, source).
+            # Reactions bypass mention gating — they are intentional user
+            # interactions, not ambient room chatter.
+            is_dm = await self._is_dm_room(room_id)
+            chat_type = "dm" if is_dm else "group"
+            display_name = await self._get_display_name(room_id, sender)
+            source = self.build_source(
+                chat_id=room_id,
+                chat_type=chat_type,
+                user_id=sender,
+                user_name=display_name,
+            )
+            # Check room allowlist for group chats.
+            if not is_dm and self._allowed_rooms and room_id not in self._allowed_rooms:
+                return
+            body = f"[reaction] reacted with {key} to the message above."
+            msg_event = MessageEvent(
+                text=body,
+                message_type=MessageType.TEXT,
+                source=source,
+                raw_message={"reaction": key, "reacts_to": reacts_to},
+                message_id=event_id,
+                reply_to_message_id=reacts_to,
+            )
+            await self.handle_message(msg_event)
+        except Exception as exc:
+            logger.error("Failed to forward Matrix reaction to agent: %s", exc)
 
     async def _redact_bot_approval_reactions(
         self,

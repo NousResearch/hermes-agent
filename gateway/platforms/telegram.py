@@ -2348,10 +2348,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        logger.warning(
+                            "[%s] Overflow split: MarkdownV2 first-chunk edit "
+                            "failed, falling back to plain text: %s",
+                            self.name, fmt_err,
+                        )
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
-                            text=first_chunk,
+                            text=_strip_mdv2(first_chunk),
                         )
             else:
                 await self._bot.edit_message_text(
@@ -2393,7 +2398,14 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             for use_markdown in (True, False) if finalize else (False,):
                 try:
-                    text = self.format_message(chunk) if use_markdown else chunk
+                    if use_markdown:
+                        text = self.format_message(chunk)
+                    else:
+                        # Plain attempt: on finalize the MarkdownV2 attempt
+                        # failed, so degrade to clean stripped text, never
+                        # the raw chunk (raw ** / ``` markers would render
+                        # literally); streaming previews stay raw.
+                        text = _strip_mdv2(chunk) if finalize else chunk
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=text,
@@ -2419,7 +2431,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         try:
                             sent_msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
-                                text=chunk,
+                                text=_strip_mdv2(chunk) if finalize else chunk,
                                 **retry_thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),

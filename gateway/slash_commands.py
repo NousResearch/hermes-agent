@@ -2058,6 +2058,64 @@ class GatewaySlashCommandsMixin:
                    "reject <id>, approval <on|off>.")
         return out
 
+    async def _handle_skills_command(self, event: MessageEvent) -> str:
+        """Handle /skills on the gateway — pending skill-write review only.
+
+        The full skills hub (search/browse/install) stays CLI-only; this
+        handler covers the write-approval review surface (pending / approve /
+        reject / diff / approval) so a skill staged from a gateway session can
+        be reviewed from that same session. Gated by ``skills.write_approval``
+        via the CommandDef's ``gateway_config_gate``; also answers when staged
+        writes still exist after the gate was turned off (so they are never
+        stranded).
+
+        ``diff`` output is truncated for chat bubbles — the full diff lives in
+        the CLI (``/skills diff <id>``) and the pending JSON file.
+        """
+        from gateway.run import _hermes_home
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+
+        raw_args = event.get_command_args().strip()
+        args = raw_args.split() if raw_args else []
+        session_key = self._session_key_for_source(event.source)
+        config_path = _hermes_home / "config.yaml"
+
+        gate_on = wa.write_approval_enabled(wa.SKILLS)
+        wants_toggle = bool(args) and args[0].lower() in {"approval", "mode"}
+        if not gate_on and not wants_toggle and wa.pending_count(wa.SKILLS) == 0:
+            return ("Skill write approval is off (skills.write_approval). "
+                    "Enable it with /skills approval on, then review staged "
+                    "writes here with /skills pending.")
+
+        def _set_approval(enabled: bool):
+            import yaml
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
+            atomic_yaml_write(config_path, user_config)
+            # New setting must take effect next message → drop cached agent.
+            self._evict_cached_agent(session_key)
+
+        out = handle_pending_subcommand(
+            wa.SKILLS, args, set_mode_fn=_set_approval,
+        )
+        if out is None:
+            return ("Unknown /skills subcommand on this platform. Use: pending, "
+                    "approve <id>, reject <id>, diff <id>, approval <on|off>. "
+                    "(Search/install are CLI-only.)")
+
+        # Chat bubbles can't hold a full skill diff — truncate and point at
+        # the real review surfaces.
+        if args and args[0].lower() == "diff" and len(out) > 3000:
+            pending_id = args[1] if len(args) > 1 else "<id>"
+            out = (out[:3000]
+                   + f"\n… (truncated — full diff: `/skills diff {pending_id}` "
+                     f"on the CLI, or ~/.hermes/pending/skills/{pending_id}.json)")
+        return out
+
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
         from gateway.run import _hermes_home, _load_gateway_config, _resolve_gateway_model

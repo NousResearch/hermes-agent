@@ -7065,6 +7065,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "memory":
             return await self._handle_memory_command(event)
 
+        if canonical == "skills":
+            return await self._handle_skills_command(event)
+
         if canonical == "fast":
             return await self._handle_fast_command(event)
 

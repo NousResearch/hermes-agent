@@ -39,10 +39,22 @@ def test_memory_schema_has_no_forbidden_top_level_combinators():
 def test_memory_schema_is_well_formed():
     params = MEMORY_SCHEMA["parameters"]
     assert params["type"] == "object"
-    assert params["required"] == ["action", "target"]
+    assert params["required"] == ["action", "target", "old_text"]
     # Nested ``enum`` on property values is fine — only top-level is forbidden.
     assert params["properties"]["action"]["enum"] == ["add", "replace", "remove"]
     assert params["properties"]["target"]["enum"] == ["memory", "user"]
+
+
+def test_memory_schema_old_text_in_required():
+    """old_text MUST be in the required list so schema-aware LLM tool-calling
+    layers do not strip it before invoking the handler. Without it, remove and
+    replace actions fail with 'old_text is required' even when the caller
+    provides it. See #43412."""
+    params = MEMORY_SCHEMA["parameters"]
+    assert "old_text" in params["required"], (
+        "old_text must be in the schema required list. Without it, tool-calling "
+        "layers drop the parameter, breaking remove and replace actions (#43412)."
+    )
 
 
 def test_memory_schema_is_json_serializable():

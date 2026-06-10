@@ -872,6 +872,7 @@ export const ja = defineLocale({
       postSetupCompleteMessage: step => `${step} をインストールしました。`,
       postSetupErrorTitle: 'セットアップはエラーで終了しました',
       postSetupErrorMessage: step => `${step} のログを確認してください。`,
+
       postSetupFailed: step => `${step} のセットアップの実行に失敗しました`,
       terminalBackend: {
         sectionTitle: '実行バックエンド',
@@ -885,6 +886,43 @@ export const ja = defineLocale({
         selectedMessage: backend => `ターミナルコマンドは ${backend} で実行されます。新しいセッションに適用されます。`,
         failedSelect: backend => `${backend} の選択に失敗しました`,
         needsSetupHint: 'このバックエンドは今すぐ選択できますが、セットアップが完了するまでコマンドは失敗します。'
+
+      postSetupFailed: step => `${step} のセットアップの実行に失敗しました`
+    },
+    uninstall: {
+      heading: '危険区域',
+      title: 'Hermes をアンインストール',
+      description:
+        '削除する内容を選択してください。アンインストールを完了するためにアプリを閉じます；いつでもインストーラーを再度開いて復元できます。',
+      checking: 'インストール済みの内容を確認中…',
+      confirmTitle: 'アンインストールを確認',
+      confirmDescription: consequence =>
+        `${consequence} を削除します。この操作は元に戻せません。`,
+      confirmApp: 'アプリ',
+      yesUninstall: 'アンインストールする',
+      uninstalling: 'アンインストール中…',
+      errorFallback: 'アンインストールを開始できませんでした。',
+      modes: {
+        gui: {
+          title: 'チャット GUI のみアンインストール',
+          description:
+            'このデスクトップアプリのみを削除します。Hermes エージェント、設定、チャットはすべて保持されます。',
+          consequence: 'デスクトップ チャット GUI（このアプリとそのデータ）'
+        },
+        lite: {
+          title: 'GUI とエージェントをアンインストール、データは保持',
+          description:
+            'アプリと Hermes エージェントを削除しますが、設定、チャット、シークレットは将来の再インストールのために保持します。',
+          consequence: 'チャット GUI と Hermes エージェント（設定、チャット、シークレットは保持）'
+        },
+        full: {
+          title: 'すべてアンインストール',
+          description:
+            'アプリ、エージェント、およびすべてのユーザーデータ——設定、チャット、スケジュールされたジョブ、シークレット、ログを削除します。',
+          consequence:
+            'すべて——チャット GUI、Hermes エージェント、およびすべての設定、チャット、シークレット、ログ'
+        }
+
       }
     }
   },

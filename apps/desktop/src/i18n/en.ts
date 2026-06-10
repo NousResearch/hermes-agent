@@ -842,6 +842,7 @@ export const en: Translations = {
       modelInactiveHint: 'Select this backend first to change its model.',
       modelSelectedTitle: 'Model selected',
       modelSelectedMessage: model => `${model} applies to new sessions.`,
+
       failedSelectModel: model => `Failed to select ${model}`,
       terminalBackend: {
         sectionTitle: 'Execution backend',
@@ -856,6 +857,45 @@ export const en: Translations = {
         failedSelect: backend => `Failed to select ${backend}`,
         needsSetupHint: 'You can select this backend now — commands will fail until setup is complete.'
       }
+
+      failedSelectModel: model => `Failed to select ${model}`
+    },
+    uninstall: {
+      heading: 'Danger zone',
+      title: 'Uninstall Hermes',
+      description:
+        'Choose how much to remove. The app closes to finish the job; reopen the installer any time to come back.',
+      checking: "Checking what's installed…",
+      confirmTitle: 'Confirm uninstall',
+      confirmDescription: consequence =>
+        `This removes ${consequence}. This can't be undone.`,
+      confirmApp: 'App',
+      yesUninstall: 'Yes, uninstall',
+      uninstalling: 'Uninstalling…',
+      errorFallback: 'Uninstall could not start.',
+      modes: {
+        gui: {
+          title: 'Uninstall Chat GUI only',
+          description:
+            'Remove this desktop app. The Hermes agent, your config, and chats all stay.',
+          consequence: 'the desktop Chat GUI (this app and its data)'
+        },
+        lite: {
+          title: 'Uninstall GUI + agent, keep my data',
+          description:
+            'Remove the app and the Hermes agent, but keep config, chats, and secrets for a future reinstall.',
+          consequence: 'the Chat GUI and the Hermes agent (config, chats, and secrets are kept)'
+        },
+        full: {
+          title: 'Uninstall everything',
+          description:
+            'Remove the app, the agent, and all user data — config, chats, scheduled jobs, secrets, logs.',
+          consequence:
+            'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
+        }
+      }
+    }
+
     }
   },
 

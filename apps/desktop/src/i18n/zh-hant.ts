@@ -844,6 +844,7 @@ export const zhHant = defineLocale({
       postSetupCompleteMessage: step => `已安裝 ${step}。`,
       postSetupErrorTitle: '設定完成但有錯誤',
       postSetupErrorMessage: step => `請檢查 ${step} 日誌。`,
+
       postSetupFailed: step => `執行 ${step} 設定失敗`,
       terminalBackend: {
         sectionTitle: '執行後端',
@@ -857,6 +858,38 @@ export const zhHant = defineLocale({
         selectedMessage: backend => `終端命令現在透過 ${backend} 執行。將套用於新工作階段。`,
         failedSelect: backend => `選擇 ${backend} 失敗`,
         needsSetupHint: '現在即可選擇此後端——但在完成設定前命令將會失敗。'
+
+      postSetupFailed: step => `執行 ${step} 設定失敗`
+    },
+    uninstall: {
+      heading: '危險區域',
+      title: '解除安裝 Hermes',
+      description:
+        '選擇要移除的內容。應用程式將關閉以完成解除安裝；隨時可重新執行安裝程式恢復。',
+      checking: '正在檢查已安裝內容…',
+      confirmTitle: '確認解除安裝',
+      confirmDescription: consequence => `這將移除 ${consequence}。此操作無法復原。`,
+      confirmApp: '應用程式',
+      yesUninstall: '確認解除安裝',
+      uninstalling: '正在解除安裝…',
+      errorFallback: '解除安裝無法啟動。',
+      modes: {
+        gui: {
+          title: '僅解除安裝聊天介面',
+          description: '僅移除此桌面應用程式。Hermes 代理、設定和對話記錄均保留。',
+          consequence: '桌面聊天介面（此應用程式及其資料）'
+        },
+        lite: {
+          title: '解除安裝介面與代理，保留資料',
+          description: '移除應用程式和 Hermes 代理，但保留設定、對話和金鑰以便將來重新安裝。',
+          consequence: '聊天介面和 Hermes 代理（設定、對話和金鑰均保留）'
+        },
+        full: {
+          title: '全部解除安裝',
+          description: '移除應用程式、代理和所有使用者資料——設定、對話、排程工作、金鑰、紀錄。',
+          consequence: '所有內容——聊天介面、Hermes 代理、所有設定、對話、金鑰和紀錄'
+        }
+
       }
     }
   },

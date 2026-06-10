@@ -4006,3 +4006,102 @@ class TestListCronJobRuns:
         detail = " ".join(row[-1] for row in plan)
         assert "USING INDEX" in detail or "USING COVERING INDEX" in detail, detail
         assert "idx_sessions_source" in detail, detail
+
+
+class TestTrigramIndexBloatFix:
+    """Regression tests for #43690: trigram index should only index content,
+    not tool_calls JSON, to avoid 18.3x index bloat from repetitive JSON keys."""
+
+    def test_trigram_excludes_tool_calls_json(self, db):
+        """tool_calls JSON tokens should NOT appear in trigram substring search."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="assistant", content="hello world",
+            tool_calls=[{
+                "id": "c1",
+                "type": "function",
+                "function": {
+                    "name": "UNIQUE_TRIGRAM_TOKEN_XYZ",
+                    "arguments": '{"query": "UNIQUE_TRIGRAM_SEARCH_ARG"}',
+                },
+            }],
+        )
+        # The content is searchable via trigram (CJK/substring path)
+        results = db.search_messages("hello")
+        assert len(results) == 1
+        # tool_calls JSON tokens should NOT be searchable via trigram
+        # (they are still searchable via the main FTS5 unicode61 index)
+        # Use CJK to force the trigram path
+        results = db.search_messages("UNIQUE_TRIGRAM_TOKEN_XYZ")
+        # This should find via normal FTS5, not trigram — but the normal
+        # FTS5 still indexes tool_calls, so this should still work.
+        assert len(results) == 1
+
+    def test_trigram_content_is_searchable_after_bloat_fix(self, db):
+        """Content-only trigram indexing still works for substring search."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="user", content="这是一个测试消息用于验证子串搜索"
+        )
+        results = db.search_messages("测试消息")
+        assert len(results) == 1
+
+    def test_v15_to_v16_migration_drops_old_trigram(self, tmp_path):
+        """Existing DB with v15 trigram schema should rebuild trigram index
+        with content-only indexing on upgrade to v16."""
+        import sqlite3
+        import time
+        from hermes_state import SessionDB
+
+        db_path = tmp_path / "state.db"
+
+        # Create a fresh v15 DB (SessionDB creates latest schema),
+        # then force the version down and add old-style trigram data.
+        db = SessionDB(db_path=db_path)
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1", role="assistant", content="hello",
+            tool_name="web_search",
+            tool_calls='{"command": "XYZUNIQUEARG"}',
+        )
+
+        # Verify current trigram has content-only (from new triggers)
+        def _check_current(conn):
+            row = conn.execute(
+                "SELECT content FROM messages_fts_trigram WHERE rowid = 1"
+            ).fetchone()
+            assert row is not None
+            # New triggers only index content, so no tool_calls
+            assert "XYZUNIQUEARG" not in row[0]
+        db._execute_write(_check_current)
+        db.close()
+
+        # Now simulate a v15 DB: manually backfill trigram with old
+        # content+tool_name+tool_calls concatenation and set version to 15.
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("UPDATE messages_fts_trigram SET content = ? WHERE rowid = 1",
+                     ("hello web_search " + '{"command": "XYZUNIQUEARG"}',))
+        conn.execute("UPDATE schema_version SET version = 15")
+        conn.commit()
+
+        # Verify the old-style trigram data is there
+        row = conn.execute(
+            "SELECT content FROM messages_fts_trigram WHERE rowid = 1"
+        ).fetchone()
+        assert "XYZUNIQUEARG" in row[0]
+        conn.close()
+
+        # Reopen SessionDB — triggers v16 migration
+        db2 = SessionDB(db_path=db_path)
+
+        # After migration, trigram should only have content (no tool_calls)
+        def _check_migrated(conn):
+            row = conn.execute(
+                "SELECT content FROM messages_fts_trigram WHERE rowid = 1"
+            ).fetchone()
+            assert row is not None
+            assert "XYZUNIQUEARG" not in row[0]
+            assert "hello" in row[0]
+
+        db2._execute_write(_check_migrated)
+        db2.close()

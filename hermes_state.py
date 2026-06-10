@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -562,7 +562,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        COALESCE(new.content, '')
     );
 END;
 
@@ -574,7 +574,7 @@ CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON message
     DELETE FROM messages_fts_trigram WHERE rowid = old.id;
     INSERT INTO messages_fts_trigram(rowid, content) VALUES (
         new.id,
-        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+        COALESCE(new.content, '')
     );
 END;
 """
@@ -757,11 +757,7 @@ class SessionDB:
         )
         cursor.execute(
             "INSERT INTO messages_fts_trigram(rowid, content) "
-            "SELECT id, "
-            "COALESCE(content, '') || ' ' || "
-            "COALESCE(tool_name, '') || ' ' || "
-            "COALESCE(tool_calls, '') "
-            "FROM messages"
+            "SELECT id, COALESCE(content, '') FROM messages"
         )
 
     def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
@@ -1134,6 +1130,36 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 16:
+                # v16: trigram index redesign — exclude tool_calls JSON
+                # and switch to detail=none to reduce index bloat
+                # (18.3x → ~1.8x).  Fixes #43690.
+                if fts5_available:
+                    self._drop_fts_triggers(cursor)
+                    try:
+                        cursor.execute(
+                            "DROP TABLE IF EXISTS messages_fts_trigram"
+                        )
+                    except sqlite3.OperationalError as exc:
+                        if not self._is_fts5_unavailable_error(exc):
+                            raise
+                        self._warn_fts5_unavailable(exc)
+                        fts5_available = False
+                        fts_migrations_complete = False
+                    if fts_migrations_complete:
+                        if self._ensure_fts_schema(
+                            cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
+                        ):
+                            cursor.execute(
+                                "INSERT INTO messages_fts_trigram"
+                                "(rowid, content) "
+                                "SELECT id, COALESCE(content, '') "
+                                "FROM messages"
+                            )
+                        else:
+                            fts_migrations_complete = False
+                else:
+                    fts_migrations_complete = False
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",

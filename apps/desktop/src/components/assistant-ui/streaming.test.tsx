@@ -164,6 +164,27 @@ function assistantMultiReasoningMessage(texts: string[]): ThreadMessage {
   } as ThreadMessage
 }
 
+function assistantSeparatedReasoningMessage(): ThreadMessage {
+  return {
+    id: 'assistant-reasoning-separated-1',
+    role: 'assistant',
+    content: [
+      { type: 'reasoning', text: ' Complete first thought.', status: { type: 'complete' } },
+      { type: 'text', text: 'Interim answer.' },
+      { type: 'reasoning', text: ' Streaming second thought.', status: { type: 'running' } }
+    ],
+    status: { type: 'running' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function assistantTodoMessage(
   todos: Array<{ content: string; id: string; status: 'cancelled' | 'completed' | 'in_progress' | 'pending' }>,
   running = true
@@ -683,6 +704,18 @@ describe('assistant-ui streaming renderer', () => {
     expect(reasoningParts.length).toBe(2)
     expect(reasoningParts[0]?.textContent).toBe('First thought.')
     expect(reasoningParts[1]?.textContent).toBe('Second thought.')
+  })
+
+  it('does not reopen an earlier completed thinking group when a later group is running', () => {
+    const { container } = render(<RunningMessageHarness message={assistantSeparatedReasoningMessage()} />)
+
+    const disclosures = container.querySelectorAll('[data-slot="aui_thinking-disclosure"]')
+    expect(disclosures.length).toBe(2)
+
+    expect(disclosures[0].querySelector('button')?.getAttribute('aria-expanded')).toBe('false')
+    expect(disclosures[1].querySelector('button')?.getAttribute('aria-expanded')).toBe('true')
+    expect(container.textContent).not.toContain('Complete first thought.')
+    expect(container.textContent).toContain('Interim answer.')
   })
 
   it('renders live todo rows during a running turn', () => {

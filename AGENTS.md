@@ -2,6 +2,23 @@
 
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
+## Agentic Engineering OS
+
+Hermes uses a layered operating model for agent work:
+
+- **`AGENTS.md` is always-on repo memory.** Keep only permanent rules here: architecture map, testing commands, security constraints, branch/review discipline, and Hermes-specific pitfalls.
+- **Skills are on-demand procedures.** Put reusable workflows in `skills/<category>/<name>/SKILL.md`; do not bloat this file with optional step-by-step playbooks.
+- **Local source/docs snapshots live in `.references/`.** Use it for fast-moving upstream APIs or source trees that agents may need to search. `.references/*` is ignored except `README.md` and `.gitkeep`; never store credentials there.
+- **Review loops are mandatory for non-trivial changes.** Implement, run targeted validation, request/perform review, fix feedback, re-run validation, then ship.
+
+Built-in workflow skills for this model:
+
+- `code-structure` — restructure messy AI-generated code into clean boundaries without changing behavior.
+- `gpt-loop` — run implement/test/review/fix/re-review cycles until blockers are resolved.
+- `code-simplifier` — reduce accidental complexity while preserving behavior and safety checks.
+
+---
+
 ## Development Environment
 
 ```bash

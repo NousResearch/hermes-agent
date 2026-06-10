@@ -1028,6 +1028,80 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         c.print()
 
 
+def do_lint(targets: Optional[List[str]] = None, all_skills: bool = False,
+            as_json: bool = False, fail_on: str = "error",
+            console: Optional[Console] = None) -> int:
+    """Validate skill structure. Returns an exit code (0/1/2) for CI use."""
+    from tools.skills_lint import (
+        collect_installed_skill_names,
+        find_installed_skill_paths,
+        format_lint_report,
+        lint_skill,
+    )
+
+    c = console or _console
+    targets = targets or []
+
+    if all_skills and targets:
+        c.print("[bold red]Error:[/] --all cannot be combined with explicit targets.\n")
+        return 2
+
+    # Resolve targets to skill directories
+    skill_dirs: List[Path] = []
+    if all_skills:
+        skill_dirs = sorted(set(find_installed_skill_paths().values()),
+                            key=lambda p: str(p))
+        if not skill_dirs:
+            c.print("[dim]No installed skills found.[/]\n")
+            return 0
+    elif targets:
+        installed = None
+        for target in targets:
+            candidate = Path(target)
+            if candidate.is_dir() or ("/" in target or "\\" in target):
+                if not (candidate / "SKILL.md").exists() and candidate.name != "SKILL.md":
+                    c.print(f"[bold red]Error:[/] no SKILL.md found at '{target}'.\n")
+                    return 2
+                skill_dirs.append(candidate)
+                continue
+            if installed is None:
+                installed = find_installed_skill_paths()
+            if target in installed:
+                skill_dirs.append(installed[target])
+            else:
+                c.print(f"[bold red]Error:[/] '{target}' is not a path or an installed skill.\n")
+                return 2
+    else:
+        if Path("SKILL.md").exists():
+            skill_dirs.append(Path("."))
+        else:
+            c.print("Usage: hermes skills lint [targets ...] | --all  "
+                    "(or run from a directory containing SKILL.md)\n")
+            return 2
+
+    known_names = collect_installed_skill_names()
+    results = [lint_skill(d, known_skill_names=known_names) for d in skill_dirs]
+
+    if as_json:
+        print(json.dumps([r.to_dict() for r in results], indent=2))
+    else:
+        for result in results:
+            c.print(format_lint_report(result))
+            c.print()
+        total_errors = sum(len(r.errors) for r in results)
+        total_warnings = sum(len(r.warnings) for r in results)
+        summary = (f"{len(results)} skill(s) linted: "
+                   f"{total_errors} error(s), {total_warnings} warning(s)")
+        if total_errors:
+            c.print(f"[bold red]{summary}[/]\n")
+        elif total_warnings:
+            c.print(f"[yellow]{summary}[/]\n")
+        else:
+            c.print(f"[bold green]{summary}[/]\n")
+
+    return 1 if any(r.exit_relevant(fail_on) for r in results) else 0
+
+
 def do_uninstall(name: str, console: Optional[Console] = None,
                  skip_confirm: bool = False,
                  invalidate_cache: bool = True) -> None:
@@ -1310,24 +1384,18 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         c.print(f"[bold red]Error:[/] No SKILL.md found at {path}\n")
         return
 
-    # Validate the skill
-    import yaml
-    skill_md = (path / "SKILL.md").read_text(encoding="utf-8")
-    fm = {}
-    if skill_md.startswith("---"):
-        import re
-        match = re.search(r'\n---\s*\n', skill_md[3:])
-        if match:
-            try:
-                fm = yaml.safe_load(skill_md[3:match.start() + 3]) or {}
-            except yaml.YAMLError:
-                pass
+    # Lint the skill structure before the security scan — lint errors block,
+    # warnings are informational.
+    from tools.skills_lint import format_lint_report, lint_skill
 
-    name = fm.get("name", path.name)
-    description = fm.get("description", "")
-    if not description:
-        c.print("[bold red]Error:[/] SKILL.md must have a 'description' in frontmatter.\n")
+    lint_result = lint_skill(path)
+    if lint_result.findings:
+        c.print(format_lint_report(lint_result))
+    if lint_result.errors:
+        c.print("[bold red]Cannot publish: fix the lint error(s) above first.[/]\n")
         return
+
+    name = lint_result.skill_name
 
     # Self-scan before publishing
     c.print(f"[bold]Scanning '{name}' before publish...[/]")
@@ -1578,6 +1646,15 @@ def skills_command(args) -> None:
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
+    elif action == "lint":
+        # do_lint returns an exit code for CI; skills_command's caller does not
+        # propagate return values, so raise SystemExit here (cf. cmd_security).
+        raise SystemExit(do_lint(
+            targets=getattr(args, "targets", None),
+            all_skills=getattr(args, "all_skills", False),
+            as_json=getattr(args, "json", False),
+            fail_on=getattr(args, "fail_on", "error"),
+        ))
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1613,7 +1690,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|lint|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 

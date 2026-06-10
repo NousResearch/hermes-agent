@@ -424,6 +424,8 @@ hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
 hermes skills audit                               # Re-scan all hub skills for security
+hermes skills lint my-skill                       # Validate skill structure (frontmatter, fields, requirements)
+hermes skills lint --all --fail-on warning        # Lint every installed skill; exit 1 on any finding (CI-friendly)
 hermes skills uninstall k8s                       # Remove a hub skill
 hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
 hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits
@@ -641,6 +643,81 @@ hermes skills update react   # Update one specific installed hub skill
 ```
 
 This uses the stored source identifier plus the current upstream bundle content hash to detect drift.
+
+### Linting skills
+
+`hermes skills lint` validates a skill's **structure** — the shape of its `SKILL.md` ID-card. It complements `hermes skills audit`, which scans for *security* threats: `audit` asks "is this skill dangerous?", `lint` asks "is this skill well-formed?".
+
+The need is concrete. Hermes is deliberately forgiving at runtime — when a skill's frontmatter is malformed, it degrades quietly rather than crashing: broken YAML silently falls back to naive `key:value` parsing (dropping nested fields), malformed `required_environment_variables` entries are silently discarded, and over-length `name`/`description` values are silently truncated. That resilience is good for end users but bad for skill *authors*, who never learn their skill is subtly broken. `lint` surfaces exactly those hidden problems.
+
+#### Usage
+
+```bash
+hermes skills lint                          # Lint the skill in the current directory (./SKILL.md)
+hermes skills lint skills/my-skill          # Lint by path — works on uninstalled skills too
+hermes skills lint my-skill other-skill     # Lint one or more installed skills by name
+hermes skills lint --all                    # Lint every installed skill
+hermes skills lint --all --json             # Machine-readable output (for scripts/CI)
+hermes skills lint --all --fail-on warning  # Treat warnings as failures
+```
+
+A target is resolved as a **path** if it exists as a directory or contains a path separator; otherwise it's looked up as an **installed skill name**. With no target, the current directory is linted when it contains a `SKILL.md`.
+
+#### Severity and exit codes
+
+Every finding has a stable rule ID (e.g. `HSL015`) and one of two severities:
+
+- **error** — the skill will silently misbehave or lose data at runtime or install time. Fix these.
+- **warning** — style, migration, or heuristic issues. Worth addressing, but not breaking.
+
+Exit codes make `lint` safe to drop into CI:
+
+| Exit code | Meaning |
+|-----------|---------|
+| `0` | No findings at or above the `--fail-on` threshold |
+| `1` | Findings at or above the threshold (default threshold: `error`) |
+| `2` | Usage error (unknown target, `--all` combined with explicit targets, etc.) |
+
+`--fail-on warning` lowers the bar so that *any* finding fails the run — useful for a strict gate on skills you author.
+
+#### Rule reference
+
+| Rule | Severity | What it catches |
+|------|----------|-----------------|
+| `HSL001` | error | Missing or unterminated frontmatter fence (`---`) |
+| `HSL002` | error | YAML parse failure — the runtime would silently fall back to naive parsing |
+| `HSL003` | error | Frontmatter is valid YAML but not a mapping (e.g. a list) |
+| `HSL010` | error | `name` is missing or empty |
+| `HSL011` | error | `name` exceeds 64 chars (runtime truncates it silently) |
+| `HSL012` | error | `name` would be rejected at install time (path separators, `..`, drive letters) |
+| `HSL013` | warning | `name` differs from the skill's directory name |
+| `HSL014` | warning | `version` is present but not a valid version string |
+| `HSL015` | error | `description` is missing or empty |
+| `HSL016` | error | `description` exceeds 1024 chars (runtime truncates it silently) |
+| `HSL020` | error | `platforms` contains a value outside `linux`/`macos`/`windows`, or has the wrong type |
+| `HSL021` | warning | Unknown top-level frontmatter key (ignored by the runtime — often a typo) |
+| `HSL030` | error | A `required_environment_variables` entry is malformed (no `name`/`env_var`) — silently dropped at runtime |
+| `HSL031` | error | An env-var name is invalid (must match `^[A-Za-z_][A-Za-z0-9_]*$`) — silently dropped at runtime |
+| `HSL032` | warning | Legacy `prerequisites` block in use — migrate to `required_environment_variables` |
+| `HSL040` | warning | A `dependencies` entry is not a valid pip requirement spec |
+| `HSL050` | warning | `metadata.hermes.related_skills` references a skill that isn't installed |
+| `HSL060` | warning | A skill-relative file referenced in the body (e.g. `scripts/run.py`) doesn't exist |
+
+#### Use in publishing and CI
+
+`hermes skills publish` runs `lint` automatically **before** its security scan — lint **errors block publishing**, warnings are shown but don't. This guarantees a published skill is well-formed and that `publish` and `lint` can never disagree.
+
+For continuous integration, lint your skills and let the exit code gate the build:
+
+```bash
+# Fail the build on any structural error in any skill under this repo
+hermes skills lint --all || exit 1
+
+# Strict mode: fail on warnings too
+hermes skills lint --all --fail-on warning
+```
+
+For programmatic use, `--json` emits one object per linted skill with `skill_name`, `errors`, `warnings`, and the full `findings` array (each with `rule_id`, `severity`, `field`, `message`).
 
 :::tip GitHub rate limits
 Skills hub operations use the GitHub API, which has a rate limit of 60 requests/hour for unauthenticated users. If you see rate-limit errors during install or search, set `GITHUB_TOKEN` in your `.env` file to increase the limit to 5,000 requests/hour. The error message includes an actionable hint when this happens.

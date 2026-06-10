@@ -781,3 +781,162 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
 
+
+
+# ---------------------------------------------------------------------------
+# do_lint
+# ---------------------------------------------------------------------------
+
+_CLEAN_SKILL_MD = """---
+name: {name}
+description: A perfectly fine skill for testing.
+version: 1.0.0
+---
+# Usage
+"""
+
+_NO_DESCRIPTION_SKILL_MD = """---
+name: {name}
+---
+# Usage
+"""
+
+_LEGACY_PREREQ_SKILL_MD = """---
+name: {name}
+description: fine
+prerequisites:
+  env_vars: [MY_TOKEN]
+---
+# Usage
+"""
+
+
+def _write_skill(tmp_path, dirname, template=_CLEAN_SKILL_MD):
+    skill_dir = tmp_path / dirname
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        template.format(name=dirname), encoding="utf-8"
+    )
+    return skill_dir
+
+
+@pytest.fixture()
+def lint_env(monkeypatch):
+    """Isolate do_lint from the real installed-skills enumeration."""
+    import tools.skills_lint as skills_lint
+
+    monkeypatch.setattr(
+        skills_lint, "collect_installed_skill_names", lambda: frozenset()
+    )
+    installed = {}
+    monkeypatch.setattr(
+        skills_lint, "find_installed_skill_paths", lambda: dict(installed)
+    )
+    return installed
+
+
+def _run_lint(**kwargs):
+    from hermes_cli.skills_hub import do_lint
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+    code = do_lint(console=console, **kwargs)
+    return sink.getvalue(), code
+
+
+def test_do_lint_clean_path_target_exits_zero(tmp_path, lint_env):
+    skill = _write_skill(tmp_path, "clean-skill")
+    out, code = _run_lint(targets=[str(skill)])
+    assert code == 0
+    assert "OK" in out
+    assert "0 error(s), 0 warning(s)" in out
+
+
+def test_do_lint_error_exits_one(tmp_path, lint_env):
+    skill = _write_skill(tmp_path, "broken-skill", _NO_DESCRIPTION_SKILL_MD)
+    out, code = _run_lint(targets=[str(skill)])
+    assert code == 1
+    assert "HSL015" in out
+
+
+def test_do_lint_fail_on_warning_flips_exit_code(tmp_path, lint_env):
+    skill = _write_skill(tmp_path, "legacy-skill", _LEGACY_PREREQ_SKILL_MD)
+    out, code = _run_lint(targets=[str(skill)])
+    assert code == 0
+    assert "HSL032" in out
+    _, code = _run_lint(targets=[str(skill)], fail_on="warning")
+    assert code == 1
+
+
+def test_do_lint_all_with_targets_is_usage_error(tmp_path, lint_env):
+    out, code = _run_lint(targets=["x"], all_skills=True)
+    assert code == 2
+    assert "--all" in out
+
+
+def test_do_lint_unknown_name_is_usage_error(lint_env):
+    out, code = _run_lint(targets=["no-such-skill"])
+    assert code == 2
+    assert "no-such-skill" in out
+
+
+def test_do_lint_resolves_installed_name(tmp_path, lint_env):
+    skill = _write_skill(tmp_path, "my-skill")
+    lint_env["my-skill"] = skill
+    out, code = _run_lint(targets=["my-skill"])
+    assert code == 0
+    assert "my-skill" in out
+
+
+def test_do_lint_all_lints_every_installed_skill(tmp_path, lint_env):
+    lint_env["a-skill"] = _write_skill(tmp_path, "a-skill")
+    lint_env["b-skill"] = _write_skill(tmp_path, "b-skill", _NO_DESCRIPTION_SKILL_MD)
+    out, code = _run_lint(all_skills=True)
+    assert code == 1
+    assert "2 skill(s) linted" in out
+    assert "a-skill" in out and "b-skill" in out
+
+
+def test_do_lint_no_target_no_skill_md_is_usage_error(tmp_path, monkeypatch, lint_env):
+    monkeypatch.chdir(tmp_path)
+    out, code = _run_lint()
+    assert code == 2
+    assert "Usage" in out
+
+
+def test_do_lint_no_target_lints_cwd(tmp_path, monkeypatch, lint_env):
+    skill = _write_skill(tmp_path, "cwd-skill")
+    monkeypatch.chdir(skill)
+    out, code = _run_lint()
+    assert code == 0
+    assert "cwd-skill" in out
+
+
+def test_do_lint_json_output(tmp_path, lint_env, capsys):
+    skill = _write_skill(tmp_path, "legacy-skill", _LEGACY_PREREQ_SKILL_MD)
+    sink_out, code = _run_lint(targets=[str(skill)], as_json=True)
+    import json as _json
+    payload = _json.loads(capsys.readouterr().out)
+    assert code == 0
+    assert isinstance(payload, list) and len(payload) == 1
+    assert payload[0]["skill_name"] == "legacy-skill"
+    assert payload[0]["findings"][0]["rule_id"] == "HSL032"
+    # Human report must be suppressed in JSON mode.
+    assert "HSL032" not in sink_out
+
+
+def test_do_publish_blocks_on_lint_error(tmp_path, lint_env):
+    """Publish must abort on lint errors before the security scan runs."""
+    from hermes_cli.skills_hub import do_publish
+
+    skill = _write_skill(tmp_path, "broken-skill", _NO_DESCRIPTION_SKILL_MD)
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+
+    with patch("tools.skills_guard.scan_skill",
+               side_effect=AssertionError("scan_skill must not run")):
+        do_publish(str(skill), target="github", repo="o/r", console=console)
+
+    out = sink.getvalue()
+    assert "HSL015" in out
+    assert "Cannot publish" in out

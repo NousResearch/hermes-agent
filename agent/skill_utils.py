@@ -122,6 +122,42 @@ def parse_frontmatter(content: str) -> Tuple[Dict[str, Any], str]:
     return frontmatter, body
 
 
+def parse_frontmatter_strict(content: str) -> Tuple[Dict[str, Any], str, Optional[str]]:
+    """Parse YAML frontmatter without the lenient key:value fallback.
+
+    Unlike parse_frontmatter(), a YAML failure is surfaced instead of being
+    papered over — callers that validate skills (e.g. the linter) need to know
+    when the runtime would silently degrade to naive parsing.
+
+    Returns:
+        (frontmatter_dict, remaining_body, yaml_error_or_None)
+    """
+    frontmatter: Dict[str, Any] = {}
+    body = content
+
+    if not content.startswith("---"):
+        return frontmatter, body, None
+
+    end_match = re.search(r"\n---\s*\n", content[3:])
+    if not end_match:
+        return frontmatter, body, None
+
+    yaml_content = content[3 : end_match.start() + 3]
+    body = content[end_match.end() + 3 :]
+
+    try:
+        parsed = yaml_load(yaml_content)
+    except Exception as exc:
+        return frontmatter, body, str(exc)
+
+    if isinstance(parsed, dict):
+        frontmatter = parsed
+    elif parsed is not None:
+        return frontmatter, body, f"frontmatter is {type(parsed).__name__}, expected a mapping"
+
+    return frontmatter, body, None
+
+
 # ── Platform matching ─────────────────────────────────────────────────────
 
 

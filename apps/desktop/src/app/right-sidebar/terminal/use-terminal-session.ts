@@ -221,8 +221,9 @@ function quotePathForShell(path: string, shellName: string): string {
 export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSessionOptions) {
   // Key off renderedMode (the painted surface type), not resolvedMode (the
   // clicked switch) — a skin can keep a light surface in "dark" mode, and we
-  // must match the surface or the ANSI palette inverts against it.
-  const { renderedMode } = useTheme()
+  // must match the surface or the ANSI palette inverts against it. themeName
+  // re-resolves the canvas surface on skin switches (same mode, new tint).
+  const { renderedMode, themeName } = useTheme()
   const activeTheme = useMemo(() => terminalTheme(renderedMode), [renderedMode])
   const initialThemeRef = useRef(activeTheme)
   const hostRef = useRef<HTMLDivElement | null>(null)
@@ -640,7 +641,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     })
 
     return () => cancelAnimationFrame(raf)
-  }, [activeTheme])
+  }, [activeTheme, themeName])
 
   return {
     addSelectionToChat,

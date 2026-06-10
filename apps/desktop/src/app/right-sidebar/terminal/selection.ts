@@ -1,11 +1,9 @@
 import type { ITheme, Terminal } from '@xterm/xterm'
 import type { CSSProperties } from 'react'
 
-// VS Code / Cursor's default integrated-terminal palette (the `ansiColorMap`
-// defaults in terminalColorRegistry.ts), one set per theme type. Not derived
-// from luminance — a fixed, tuned table. Light vs dark differ deliberately so
-// each stays legible on its surface (e.g. dark mustard yellow on white). We use
-// these verbatim; `background` is overridden to transparent by terminalTheme.
+// VS Code's default integrated-terminal palette (terminalColorRegistry.ts) — a
+// fixed table per theme type, not luminance-derived. Light/dark diverge on
+// purpose so each stays legible (e.g. mustard yellow on white).
 const DARK_THEME: ITheme = {
   background: '#1e1e1e',
   foreground: '#cccccc',
@@ -54,18 +52,14 @@ const LIGHT_THEME: ITheme = {
   brightWhite: '#a5a5a5'
 }
 
-// VS Code Light+/Dark+ palette (foreground + 16 ANSI), keyed by the painted
-// mode. The `background` here is only a fallback — at runtime we swap in the
-// live skin surface (resolveSurfaceColor) so the terminal blends with the app
-// and follows light/dark. Crispness comes from the Terminal's
-// minimumContrastRatio, which clamps these foregrounds against that surface.
+// Palette by painted mode. `background` is only a fallback — withSurface swaps
+// in the live skin surface at runtime; minimumContrastRatio keeps colors crisp.
 export const terminalTheme = (mode: 'light' | 'dark'): ITheme => (mode === 'dark' ? DARK_THEME : LIGHT_THEME)
 
-// Resolve --ui-editor-surface-background (a color-mix on the skin's seed) to a
-// concrete rgb the WebGL renderer + contrast clamp can use. Custom properties
-// aren't resolved by getComputedStyle, so probe through a real background-color.
-// Read this AFTER ThemeProvider's applyTheme repaints the vars (i.e. on mount or
-// in a rAF following a theme change) or it lags a mode behind.
+// Resolve --ui-editor-surface-background (a color-mix on the skin seed) to a
+// concrete rgb for the WebGL renderer + contrast clamp. Custom props don't
+// resolve via getComputedStyle, so probe a real background-color. Read AFTER
+// applyTheme repaints (mount / rAF post-change) or it lags a frame behind.
 export function resolveSurfaceColor(fallback: string): string {
   if (typeof document === 'undefined' || !document.body) {
     return fallback

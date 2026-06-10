@@ -103,9 +103,10 @@ def detect_service_manager() -> ServiceManagerKind:
     # Protocol type or validate_profile_name().
     from hermes_constants import is_container
     from hermes_cli.gateway import (
-        is_macos,
-        is_windows,
-        supports_systemd_services,
+    is_macos,
+    is_windows,
+    supports_systemd_services,
+    _openrc_available,
     )
 
     if is_container() and _s6_running():
@@ -154,12 +155,6 @@ def _s6_running() -> bool:
     return Path("/run/s6/basedir").is_dir()
 
 
-def _openrc_available() -> bool:
-    """Check if OpenRC’s rc-service is available."""
-    try:
-        return shutil.which("rc-service") is not None
-    except Exception:
-        return False
 
 
 # Compatibility note

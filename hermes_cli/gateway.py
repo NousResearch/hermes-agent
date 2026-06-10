@@ -77,6 +77,15 @@ class ProfileGatewayProcess:
     pid: int
 
 
+
+
+def _openrc_available() -> bool:
+    """Check if OpenRC's rc-service is available."""
+    try:
+        return shutil.which("rc-service") is not None
+    except Exception:
+        return False
+
 def _get_service_pids() -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
@@ -6840,8 +6849,8 @@ def openrc_install(
         sys.exit(1)
 
     # Default paths - these will be read from conf.d if present
-    default_venv = "$HOME/.hermes/venv"
     default_home = "$HOME/.hermes"
+    default_venv = f"{default_home}/venv"
 
     init_script = f"""supervisor=supervise-daemon
 #!/sbin/openrc-run

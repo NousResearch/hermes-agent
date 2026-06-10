@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -48,6 +49,12 @@ _CHANNEL_TYPE_MAP = {
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
+
+# Thread-context / in-thread auto-response parameters (Slack parity).
+_THREAD_CONTEXT_MAX_MESSAGES = 30
+_THREAD_CONTEXT_MAX_CHARS = 1000
+_THREAD_CONTEXT_TTL = 60.0
+_MENTIONED_THREADS_MAX = 5000
 
 
 def check_mattermost_requirements() -> bool:
@@ -98,6 +105,11 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # In-thread auto-response (Slack parity): threads where the bot was
+        # @mentioned, and a TTL cache of fetched thread context.
+        self._mentioned_threads: set[str] = set()
+        self._thread_context_cache: Dict[str, Tuple[str, float]] = {}
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -688,6 +700,139 @@ class MattermostAdapter(BasePlatformAdapter):
                 logger.info("Mattermost: WebSocket closed (%s)", raw_msg.type)
                 break
 
+    def _strict_mention(self) -> bool:
+        """Return True when every turn requires a fresh @mention (in-thread auto-response opt-out)."""
+        configured = (self.config.extra or {}).get("strict_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("MATTERMOST_STRICT_MENTION", "false").lower() in {
+            "true", "1", "yes", "on",
+        }
+
+    def _thread_context_author_allowed(self, user_id: str) -> bool:
+        """Return True when a thread author may contribute to injected context.
+
+        Mirrors the gateway allowlist (MATTERMOST_ALLOWED_USERS /
+        MATTERMOST_ALLOW_ALL_USERS / GATEWAY_ALLOW_ALL_USERS). The authz layer
+        only checks the *triggering* message's author; injected thread context
+        bypasses it, so a non-allowlisted author's posts must be filtered here
+        to avoid leaking unauthorized content into the model.
+        """
+        def _truthy(value: str) -> bool:
+            return str(value).lower() in {"true", "1", "yes", "on"}
+
+        if _truthy(os.getenv("MATTERMOST_ALLOW_ALL_USERS", "")) or _truthy(
+            os.getenv("GATEWAY_ALLOW_ALL_USERS", "")
+        ):
+            return True
+        allowed = {
+            u.strip()
+            for u in os.getenv("MATTERMOST_ALLOWED_USERS", "").split(",")
+            if u.strip()
+        }
+        return bool(user_id) and user_id in allowed
+
+    def _has_active_session_for_thread(
+        self, channel_id: str, thread_id: str, chat_type: str, user_id: str
+    ) -> bool:
+        """Return True when a gateway session already exists for this thread."""
+        session_store = getattr(self, "_session_store", None)
+        if not session_store:
+            return False
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            source = SessionSource(
+                platform=Platform.MATTERMOST,
+                chat_id=channel_id,
+                chat_type=chat_type,
+                user_id=user_id,
+                thread_id=thread_id,
+            )
+            store_cfg = getattr(session_store, "config", None)
+            gspu = (
+                getattr(store_cfg, "group_sessions_per_user", True)
+                if store_cfg
+                else True
+            )
+            tspu = (
+                getattr(store_cfg, "thread_sessions_per_user", False)
+                if store_cfg
+                else False
+            )
+            session_key = build_session_key(
+                source,
+                group_sessions_per_user=gspu,
+                thread_sessions_per_user=tspu,
+            )
+            session_store._ensure_loaded()
+            return session_key in session_store._entries
+        except Exception:
+            return False
+
+    async def _fetch_thread_context(
+        self, thread_root_id: str, current_post_id: str
+    ) -> str:
+        """Fetch prior thread messages to seed context on the first turn.
+
+        Returns a formatted block of allowlisted, non-bot, non-system messages,
+        or an empty string on failure or when nothing qualifies. Fails open: a
+        failed fetch leaves the agent with just the triggering message.
+        """
+        now = time.monotonic()
+        cached = self._thread_context_cache.get(thread_root_id)
+        if cached and (now - cached[1]) < _THREAD_CONTEXT_TTL:
+            return cached[0]
+
+        data = await self._api_get(f"posts/{thread_root_id}/thread")
+        if not data:
+            return ""
+        order = data.get("order") or []
+        posts = data.get("posts") or {}
+        if not order or not posts:
+            return ""
+
+        post_objs = [posts[pid] for pid in order if pid in posts]
+        post_objs.sort(key=lambda p: p.get("create_at", 0))
+
+        parts: List[str] = []
+        for post in post_objs:
+            if post.get("id", "") == current_post_id:
+                continue
+            author = post.get("user_id", "")
+            if author == self._bot_user_id:
+                continue
+            if post.get("type"):
+                continue
+            if not self._thread_context_author_allowed(author):
+                continue
+            text = (post.get("message") or "").strip()
+            for pattern in (f"@{self._bot_username}", f"@{self._bot_user_id}"):
+                text = re.sub(re.escape(pattern), "", text, flags=re.IGNORECASE).strip()
+            if not text:
+                continue
+            if len(text) > _THREAD_CONTEXT_MAX_CHARS:
+                text = text[:_THREAD_CONTEXT_MAX_CHARS] + "..."
+            parts.append(f"[{author or 'unknown'}]: {text}")
+
+        if len(parts) > _THREAD_CONTEXT_MAX_MESSAGES:
+            parts = parts[-_THREAD_CONTEXT_MAX_MESSAGES:]
+
+        content = ""
+        if parts:
+            content = (
+                "[Thread context - prior messages in this thread:]\n"
+                + "\n".join(parts)
+                + "\n[End of thread context]"
+            )
+
+        if len(self._thread_context_cache) > _MENTIONED_THREADS_MAX:
+            self._thread_context_cache.clear()
+        self._thread_context_cache[thread_root_id] = (content, now)
+        return content
+
     async def _handle_ws_event(self, event: Dict[str, Any]) -> None:
         """Process a single WebSocket event."""
         event_type = event.get("event")
@@ -725,12 +870,16 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # For DMs, user_id is sufficient.  For channels, check for @mention.
         message_text = post.get("message", "")
+        sender_id = post.get("user_id", "")
+        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
+        thread_id = post.get("root_id") or None
 
         # Mention-gating for non-DM channels.
         # Config (config.yaml `mattermost.*` with env-var fallback):
         #   require_mention / MATTERMOST_REQUIRE_MENTION: Require @mention in channels (default: true)
         #   free_response_channels / MATTERMOST_FREE_RESPONSE_CHANNELS: Channel IDs where bot responds without mention
         #   allowed_channels / MATTERMOST_ALLOWED_CHANNELS: If set, bot ONLY responds in these channels (whitelist)
+        #   strict_mention / MATTERMOST_STRICT_MENTION: Require a fresh @mention every turn (disables in-thread auto-response)
         if channel_type_raw != "D":
             # allowed_channels check (whitelist — must pass before other gating).
             # When set, messages from channels NOT in this list are silently
@@ -759,6 +908,8 @@ class MattermostAdapter(BasePlatformAdapter):
             free_channels = {ch.strip() for ch in free_channels_raw.split(",") if ch.strip()}
             is_free_channel = channel_id in free_channels
 
+            strict_mention = self._strict_mention()
+
             mention_patterns = [
                 f"@{self._bot_username}",
                 f"@{self._bot_user_id}",
@@ -768,12 +919,38 @@ class MattermostAdapter(BasePlatformAdapter):
                 for pattern in mention_patterns
             )
 
-            if require_mention and not is_free_channel and not has_mention:
+            in_mentioned_thread = False
+            has_session = False
+            if thread_id and not strict_mention:
+                in_mentioned_thread = thread_id in self._mentioned_threads
+                if not in_mentioned_thread:
+                    has_session = self._has_active_session_for_thread(
+                        channel_id=channel_id,
+                        thread_id=thread_id,
+                        chat_type=chat_type,
+                        user_id=sender_id,
+                    )
+
+            if is_free_channel or not require_mention:
+                pass
+            elif has_mention:
+                pass
+            elif in_mentioned_thread or has_session:
+                pass
+            else:
                 logger.debug(
-                    "Mattermost: skipping non-DM message without @mention (channel=%s)",
+                    "Mattermost: skipping non-DM message (no mention / not in "
+                    "mentioned thread / no session) channel=%s thread=%s",
                     channel_id,
+                    thread_id,
                 )
                 return
+
+            if has_mention and thread_id and not strict_mention:
+                self._mentioned_threads.add(thread_id)
+                if len(self._mentioned_threads) > _MENTIONED_THREADS_MAX:
+                    for stale in list(self._mentioned_threads)[: _MENTIONED_THREADS_MAX // 2]:
+                        self._mentioned_threads.discard(stale)
 
             # Strip @mention from the message text so the agent sees clean input.
             if has_mention:
@@ -781,13 +958,6 @@ class MattermostAdapter(BasePlatformAdapter):
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
-
-        # Resolve sender info.
-        sender_id = post.get("user_id", "")
-        sender_name = data.get("sender_name", "").lstrip("@") or sender_id
-
-        # Thread support: if the post is in a thread, use root_id.
-        thread_id = post.get("root_id") or None
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
@@ -857,6 +1027,27 @@ class MattermostAdapter(BasePlatformAdapter):
             self.config.extra, channel_id, None,
         )
 
+        # On the first turn of a thread (no session yet), seed prior thread
+        # history so the agent sees the whole conversation, not just the
+        # triggering message. Later turns already carry it in the transcript.
+        channel_context: Optional[str] = None
+        if thread_id and channel_type_raw != "D":
+            already_active = self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_id=thread_id,
+                chat_type=chat_type,
+                user_id=sender_id,
+            )
+            if not already_active:
+                try:
+                    channel_context = await self._fetch_thread_context(
+                        thread_root_id=thread_id,
+                        current_post_id=post_id,
+                    ) or None
+                except Exception as exc:
+                    logger.debug("Mattermost: thread context fetch failed: %s", exc)
+                    channel_context = None
+
         msg_event = MessageEvent(
             text=message_text,
             message_type=msg_type,
@@ -866,6 +1057,7 @@ class MattermostAdapter(BasePlatformAdapter):
             media_urls=media_urls if media_urls else None,
             media_types=media_types if media_types else None,
             channel_prompt=_channel_prompt,
+            channel_context=channel_context,
         )
 
         await self.handle_message(msg_event)

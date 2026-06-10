@@ -750,3 +750,183 @@ class TestMattermostMediaTypes:
         assert msg.media_types == ["application/pdf"]
         assert not msg.media_types[0].startswith("image/")
         assert not msg.media_types[0].startswith("audio/")
+
+
+class TestMattermostThreadBehavior:
+    """Thread-context loading + in-thread auto-response (Slack parity)."""
+
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._bot_user_id = "bot_user_id"
+        self.adapter._bot_username = "hermes-bot"
+        self.adapter.handle_message = AsyncMock()
+
+    def _thread_event(self, message, root_id="root_1", post_id="p2",
+                      user_id="user_123", channel_type="O"):
+        post = {
+            "id": post_id,
+            "user_id": user_id,
+            "channel_id": "chan_456",
+            "message": message,
+            "root_id": root_id,
+        }
+        return {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post),
+                "channel_type": channel_type,
+                "sender_name": "@alice",
+            },
+        }
+
+    def _thread_payload(self):
+        """Thread with a prior allowlisted post, a non-allowlisted post, a bot
+        post, and the triggering post."""
+        return {
+            "order": ["root_1", "r_other", "r_bot", "p_trigger"],
+            "posts": {
+                "root_1": {"id": "root_1", "user_id": "user_123",
+                           "message": "Original question about X", "create_at": 1},
+                "r_other": {"id": "r_other", "user_id": "user_999",
+                            "message": "unrelated chatter", "create_at": 2},
+                "r_bot": {"id": "r_bot", "user_id": "bot_user_id",
+                          "message": "earlier bot reply", "create_at": 3},
+                "p_trigger": {"id": "p_trigger", "user_id": "user_123",
+                              "message": "@hermes-bot follow up", "create_at": 4},
+            },
+        }
+
+    def test_strict_mention_default_false(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MATTERMOST_STRICT_MENTION", None)
+            assert self.adapter._strict_mention() is False
+
+    def test_strict_mention_env_true(self):
+        with patch.dict(os.environ, {"MATTERMOST_STRICT_MENTION": "true"}):
+            assert self.adapter._strict_mention() is True
+
+    def test_strict_mention_config_override_wins(self):
+        self.adapter.config.extra["strict_mention"] = True
+        try:
+            with patch.dict(os.environ, {"MATTERMOST_STRICT_MENTION": "false"}):
+                assert self.adapter._strict_mention() is True
+        finally:
+            del self.adapter.config.extra["strict_mention"]
+
+    @pytest.mark.asyncio
+    async def test_first_mention_in_thread_fetches_context(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(
+                self._thread_event("@hermes-bot follow up", post_id="p_trigger")
+            )
+        assert self.adapter.handle_message.called
+        ctx = self.adapter.handle_message.call_args[0][0].channel_context
+        assert ctx is not None
+        assert "Original question about X" in ctx
+
+    @pytest.mark.asyncio
+    async def test_thread_context_filters_non_allowlisted_authors(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(
+                self._thread_event("@hermes-bot follow up", post_id="p_trigger")
+            )
+        ctx = self.adapter.handle_message.call_args[0][0].channel_context
+        assert "Original question about X" in ctx
+        assert "unrelated chatter" not in ctx
+        assert "earlier bot reply" not in ctx
+        assert "follow up" not in ctx
+
+    @pytest.mark.asyncio
+    async def test_thread_context_allow_all_includes_non_listed(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        with patch.dict(os.environ, {"MATTERMOST_ALLOW_ALL_USERS": "true"}):
+            os.environ.pop("MATTERMOST_ALLOWED_USERS", None)
+            await self.adapter._handle_ws_event(
+                self._thread_event("@hermes-bot follow up", post_id="p_trigger")
+            )
+        ctx = self.adapter.handle_message.call_args[0][0].channel_context
+        assert "Original question about X" in ctx
+        assert "unrelated chatter" in ctx
+        assert "earlier bot reply" not in ctx
+
+    @pytest.mark.asyncio
+    async def test_thread_context_fetch_failure_fails_open(self):
+        self.adapter._api_get = AsyncMock(return_value={})
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(
+                self._thread_event("@hermes-bot hi", post_id="p_trigger")
+            )
+        assert self.adapter.handle_message.called
+        assert self.adapter.handle_message.call_args[0][0].channel_context is None
+
+    @pytest.mark.asyncio
+    async def test_auto_response_in_mentioned_thread_without_mention(self):
+        self.adapter._api_get = AsyncMock(return_value={})
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(
+                self._thread_event("@hermes-bot start", root_id="root_1", post_id="p1")
+            )
+            assert "root_1" in self.adapter._mentioned_threads
+            await self.adapter._handle_ws_event(
+                self._thread_event("a follow-up with no mention", root_id="root_1", post_id="p2")
+            )
+        assert self.adapter.handle_message.call_count == 2
+
+    @pytest.mark.asyncio
+    async def test_strict_mention_requires_mention_every_turn(self):
+        self.adapter._api_get = AsyncMock(return_value={})
+        with patch.dict(os.environ, {"MATTERMOST_STRICT_MENTION": "true",
+                                     "MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(
+                self._thread_event("@hermes-bot start", root_id="root_1", post_id="p1")
+            )
+            assert self.adapter._mentioned_threads == set()
+            await self.adapter._handle_ws_event(
+                self._thread_event("no mention follow-up", root_id="root_1", post_id="p2")
+            )
+        assert self.adapter.handle_message.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_non_thread_message_without_mention_still_skipped(self):
+        post = {"id": "p_flat", "user_id": "user_123", "channel_id": "chan_456",
+                "message": "just chatting, no mention"}
+        event = {"event": "posted", "data": {
+            "post": json.dumps(post), "channel_type": "O", "sender_name": "@alice"}}
+        await self.adapter._handle_ws_event(event)
+        assert not self.adapter.handle_message.called
+
+    @pytest.mark.asyncio
+    async def test_dm_thread_does_not_fetch_context(self):
+        self.adapter._api_get = AsyncMock(return_value=self._thread_payload())
+        await self.adapter._handle_ws_event(
+            self._thread_event("hi in a dm", channel_type="D", post_id="p_dm")
+        )
+        assert self.adapter.handle_message.called
+        assert self.adapter.handle_message.call_args[0][0].channel_context is None
+        self.adapter._api_get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_has_active_session_uses_correct_chat_type(self):
+        from gateway.session import SessionSource, build_session_key
+        source = SessionSource(
+            platform=Platform.MATTERMOST, chat_id="chan_456",
+            chat_type="channel", user_id="user_123", thread_id="root_1",
+        )
+        key = build_session_key(source, group_sessions_per_user=True,
+                                thread_sessions_per_user=False)
+        store = MagicMock()
+        store.config = MagicMock(group_sessions_per_user=True,
+                                 thread_sessions_per_user=False)
+        store._entries = {key: object()}
+        store._ensure_loaded = MagicMock()
+        self.adapter._session_store = store
+        self.adapter._api_get = AsyncMock(return_value={})
+
+        with patch.dict(os.environ, {"MATTERMOST_ALLOWED_USERS": "user_123"}):
+            await self.adapter._handle_ws_event(
+                self._thread_event("no mention but session exists",
+                                    root_id="root_1", post_id="p9")
+            )
+        assert self.adapter.handle_message.called

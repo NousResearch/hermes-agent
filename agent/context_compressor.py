@@ -577,6 +577,7 @@ class ContextCompressor(ContextEngine):
         api_key: Any = "",
         provider: str = "",
         api_mode: str = "",
+        max_tokens: int | None = None,
     ) -> None:
         """Update model info after a model switch or fallback activation."""
         self.model = model
@@ -585,8 +586,11 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
+        if max_tokens is not None:
+            self.max_tokens = max_tokens
+        _effective_input_budget = context_length - (self.max_tokens or 0)
         self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
+            int(_effective_input_budget * self.threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
         # Recalculate token budgets for the new context length so the
@@ -612,6 +616,7 @@ class ContextCompressor(ContextEngine):
         provider: str = "",
         api_mode: str = "",
         abort_on_summary_failure: bool = False,
+        max_tokens: int | None = None,
     ):
         self.model = model
         self.base_url = base_url
@@ -623,6 +628,7 @@ class ContextCompressor(ContextEngine):
         self.protect_last_n = protect_last_n
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
+        self.max_tokens = max_tokens  # output token reservation
         # When True, summary-generation failure aborts compression entirely
         # (returns messages unchanged, sets _last_compress_aborted=True).
         # When False (default = historical behavior), insert a
@@ -634,12 +640,18 @@ class ContextCompressor(ContextEngine):
             config_context_length=config_context_length,
             provider=provider,
         )
+        # Effective input budget: the provider reserves max_tokens out of the
+        # context window, so the usable input space is context_length - max_tokens.
+        # When max_tokens is not set, the provider picks its own default, so we
+        # conservatively assume 0 reservation (threshold based on full context).
+        # (issue #43547)
+        _effective_input_budget = self.context_length - (max_tokens or 0)
         # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
         # for models right at the minimum.
         self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
+            int(_effective_input_budget * threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
         self.compression_count = 0

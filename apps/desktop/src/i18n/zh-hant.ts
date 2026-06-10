@@ -1184,6 +1184,7 @@ export const zhHant = defineLocale({
       export: '匯出',
       rename: '重新命名',
       archive: '封存',
+      newWindow: '新視窗',
       copyIdFailed: '無法複製工作階段 ID',
       actionsFor: title => `${title} 的動作`,
       sessionActions: '工作階段動作',

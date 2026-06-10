@@ -14,7 +14,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-PROJECT_ROOT = Path(__file__).parent.parent.resolve()
+# tests/gateway/ → tests/ → repo root
+PROJECT_ROOT = Path(__file__).parent.parent.parent.resolve()
 PLATFORMS_DIR = PROJECT_ROOT / "plugins" / "platforms"
 
 
@@ -48,12 +49,20 @@ def clean_registry():
 class _MockPluginContext:
     """Minimal mock of hermes_cli.plugins.PluginContext.
 
-    Only implements register_platform so we can exercise the plugin's
-    register() entrypoint without importing the real plugin system.
+    Implements register_platform for real so we can exercise the plugin's
+    register() entrypoint without importing the real plugin system; every
+    other PluginContext registration surface (register_cli_command,
+    register_tool, register_command, ...) is accepted as a no-op so plugins
+    that register extra surfaces (e.g. photon's CLI) still load.
     """
 
     def __init__(self):
         self.registered_names: list[str] = []
+
+    def __getattr__(self, attr: str):
+        if attr.startswith("register_") or attr in ("inject_message", "dispatch_tool"):
+            return lambda *args, **kwargs: None
+        raise AttributeError(attr)
 
     def register_platform(
         self,

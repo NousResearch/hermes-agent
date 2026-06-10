@@ -1,0 +1,65 @@
+name: voice_call
+label: Voice Calls
+kind: platform
+version: 0.1.0
+description: >
+  Phone voice-call gateway platform for Hermes Agent. Makes and receives
+  real PSTN calls through carrier APIs — Telnyx (default), Twilio, Plivo,
+  or a credential-free mock provider for development. Runs an always-on
+  webhook server for the gateway's lifetime so inbound calls can arrive
+  any time, with per-provider webhook signature verification, an inbound
+  caller allowlist, and optional ngrok/Tailscale exposure. Ported from
+  OpenClaw's voice-call extension.
+author: rudra-telnyx
+platforms: [linux, macos]
+provides_tools:
+  - voice_call
+# ``requires_env`` / ``optional_env`` are surfaced in the ``hermes config``
+# UI. Credentials are provider-dependent, so nothing is globally required;
+# validate_config enforces the right set for the selected provider.
+requires_env: []
+optional_env:
+  - name: TELNYX_API_KEY
+    description: "Telnyx API key (default provider)"
+    prompt: "Telnyx API key"
+    password: true
+  - name: TELNYX_CONNECTION_ID
+    description: "Telnyx Call Control connection ID"
+    prompt: "Telnyx connection ID"
+    password: false
+  - name: TELNYX_PUBLIC_KEY
+    description: "Telnyx Ed25519 public key for webhook signature verification"
+    prompt: "Telnyx public key"
+    password: false
+  - name: TWILIO_ACCOUNT_SID
+    description: "Twilio account SID"
+    prompt: "Twilio account SID"
+    password: false
+  - name: TWILIO_AUTH_TOKEN
+    description: "Twilio auth token"
+    prompt: "Twilio auth token"
+    password: true
+  - name: PLIVO_AUTH_ID
+    description: "Plivo auth ID"
+    prompt: "Plivo auth ID"
+    password: false
+  - name: PLIVO_AUTH_TOKEN
+    description: "Plivo auth token"
+    prompt: "Plivo auth token"
+    password: true
+  - name: VOICE_CALL_FROM_NUMBER
+    description: "E.164 caller ID for outbound calls (e.g. +15555550000)"
+    prompt: "Outbound from number"
+    password: false
+  - name: VOICE_CALL_ALLOWED_NUMBERS
+    description: "Comma-separated E.164 numbers allowed to call in (allowlist)"
+    prompt: "Allowed inbound numbers (comma-separated)"
+    password: false
+  - name: VOICE_CALL_HOME_NUMBER
+    description: "Default number for cron / notification call delivery"
+    prompt: "Home number (or empty)"
+    password: false
+  - name: NGROK_AUTHTOKEN
+    description: "ngrok auth token (only with tunnel.provider: ngrok)"
+    prompt: "ngrok auth token (or empty)"
+    password: true

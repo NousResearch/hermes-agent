@@ -96,7 +96,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK — needed when provider=anthropic (not via
     # OpenRouter / aggregators which use the openai SDK).
-    "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
+    # CVE-2026-34450, CVE-2026-34452
+    "provider.anthropic": ("anthropic==0.87.0",),
     # AWS Bedrock provider
     "provider.bedrock": ("boto3==1.42.89",),
     # Microsoft Foundry — Entra ID auth (managed identity, workload identity,
@@ -184,6 +185,9 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # installed on demand like every other messaging platform; also exposed
     # as the `teams` extra in pyproject for packagers / explicit installs.
     "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"),
+    # Voice-call platform — aiohttp serves the carrier webhook endpoint and
+    # the media-stream WebSocket upgrades. Same pin as the `voice-call` extra.
+    "platform.voice_call": ("aiohttp==3.13.4",),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -204,8 +208,10 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.dashboard": (
         "fastapi==0.133.1",
         "uvicorn[standard]==0.41.0",
-        "starlette==1.0.1",  # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
-        "python-multipart==0.0.27",  # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        # CVE-2026-48710 (BadHost) — keep lazy-install in sync with pyproject [web]
+        "starlette==1.0.1",
+        # FastAPI UploadFile/Form for streaming uploads (NS-501)
+        "python-multipart==0.0.27",
     ),
     # Vision image-resize recovery (Pillow). Pillow is now a CORE dependency
     # (pyproject `dependencies`), so this entry is a belt-and-suspenders fallback
@@ -220,7 +226,8 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # installs so computer_use never dead-ends on `No module named 'mcp'`.
     "tool.computer_use": (
         "mcp==1.26.0",
-        "starlette==1.0.1",  # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+        # CVE-2026-48710 — keep in sync with pyproject [computer-use]
+        "starlette==1.0.1",
     ),
 }
 
@@ -396,7 +403,8 @@ def activate_durable_lazy_target() -> None:
         if target.exists():
             _activate_target_on_syspath(target)
     except Exception as e:  # pragma: no cover - defensive
-        logger.debug("Failed to activate durable lazy target %s: %s", target, e)
+        logger.debug(
+            "Failed to activate durable lazy target %s: %s", target, e)
 
 
 def _allow_lazy_installs() -> bool:
@@ -466,7 +474,8 @@ def _specifier_from_spec(spec: str) -> str:
     ``"package"`` → ``""`` (no version constraint)
     """
     # Strip the package name + optional [extras] block.
-    m = re.match(r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:\[[A-Za-z0-9_,\-]+\])?", spec)
+    m = re.match(
+        r"^[A-Za-z0-9_][A-Za-z0-9_.\-]*(?:\[[A-Za-z0-9_,\-]+\])?", spec)
     if not m:
         return ""
     return spec[m.end():]
@@ -575,7 +584,8 @@ def _core_constraints_file() -> Optional[Path]:
             lines.append(f"{name}=={ver}")
         if not lines:
             return None
-        fd, path = tempfile.mkstemp(prefix="hermes-core-constraints-", suffix=".txt")
+        fd, path = tempfile.mkstemp(
+            prefix="hermes-core-constraints-", suffix=".txt")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write("\n".join(sorted(lines)) + "\n")
         return Path(path)
@@ -631,7 +641,8 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         if uv_bin:
             try:
                 r = subprocess.run(
-                    [uv_bin, "pip", "install", *target_args, *constraint_args, *specs],
+                    [uv_bin, "pip", "install", *target_args,
+                        *constraint_args, *specs],
                     capture_output=True, text=True, timeout=timeout, env=uv_env,
                     stdin=subprocess.DEVNULL,
                 )
@@ -656,7 +667,8 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         except (subprocess.TimeoutExpired, FileNotFoundError):
             try:
                 subprocess.run(
-                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                    [sys.executable, "-m", "ensurepip",
+                        "--upgrade", "--default-pip"],
                     capture_output=True, text=True, timeout=120, check=True,
                     stdin=subprocess.DEVNULL,
                 )
@@ -750,7 +762,8 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
         try:
             from prompt_toolkit.application.current import get_app_or_none
             _app = get_app_or_none()
-            _pt_active = _app is not None and getattr(_app, "is_running", False)
+            _pt_active = _app is not None and getattr(
+                _app, "is_running", False)
         except Exception:
             _pt_active = False
 
@@ -768,7 +781,8 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
                 feature, missing, "user declined install at prompt"
             )
 
-    logger.info("Lazy-installing %s for feature %r", " ".join(missing), feature)
+    logger.info("Lazy-installing %s for feature %r",
+                " ".join(missing), feature)
     result = _venv_pip_install(missing)
     if not result.success:
         # Surface the actual pip error so the user can debug PyPI-side

@@ -51,7 +51,7 @@ dependencies = [
   "tenacity==9.1.4",
   "pyyaml==6.0.3",
   "ruamel.yaml==0.18.17",
-  "requests==2.33.0",  # CVE-2026-25645
+  "requests==2.33.0",     # CVE-2026-25645
   "jinja2==3.1.6",
   # Bumped from 2.12.5 to 2.13.4 to pull in pydantic-core 2.46.4.
   # pydantic-core 2.41.5 (pulled by 2.12.5) segfaults when the OpenAI SDK's
@@ -83,7 +83,7 @@ dependencies = [
   # it out of the lazy-install path that exists only for the heavy matrix deps.
   "Markdown==3.10.2",
   # Skills Hub (GitHub App JWT auth — optional, only needed for bot identity)
-  "PyJWT[crypto]==2.13.0",  # PYSEC-2026-175/177/178/179
+  "PyJWT[crypto]==2.13.0", # PYSEC-2026-175/177/178/179
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
@@ -140,7 +140,7 @@ dependencies = [
 [project.optional-dependencies]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).
-anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
+anthropic = ["anthropic==0.87.0"] # CVE-2026-34450, CVE-2026-34452
 # Web search backends — each only loaded when the user picks it as their
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
@@ -154,11 +154,33 @@ edge-tts = ["edge-tts==7.2.7"]
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 hindsight = ["hindsight-client==0.6.1"]
-dev = ["debugpy==1.8.20", "pytest==9.0.2", "pytest-asyncio==1.3.0", "mcp==1.26.0", "starlette==1.0.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==81.0.0"]  # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
-messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.13.4", "brotlicffi==1.2.0.1", "slack-bolt==1.27.0", "slack-sdk==3.40.1", "qrcode==7.4.2"]  # aiohttp: CVE-2026-34513/34518/34519/34520/34525
-cron = []  # croniter is now a core dependency; this extra kept for back-compat
+dev = [
+  "debugpy==1.8.20",
+  "pytest==9.0.2",
+  "pytest-asyncio==1.3.0",
+  "mcp==1.26.0",
+  "starlette==1.0.1",
+  "ty==0.0.21",
+  "ruff==0.15.10",
+  "setuptools==81.0.0",
+] # starlette: CVE-2026-48710; setuptools: latest <82 (torch >=2.11 caps setuptools<82)
+messaging = [
+  "python-telegram-bot[webhooks]==22.6",
+  "discord.py[voice]==2.7.1",
+  "aiohttp==3.13.4",
+  "brotlicffi==1.2.0.1",
+  "slack-bolt==1.27.0",
+  "slack-sdk==3.40.1",
+  "qrcode==7.4.2",
+] # aiohttp: CVE-2026-34513/34518/34519/34520/34525
+cron = [] # croniter is now a core dependency; this extra kept for back-compat
 slack = ["slack-bolt==1.27.0", "slack-sdk==3.40.1", "aiohttp==3.13.4"]
-matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0"]
+matrix = [
+  "mautrix[encryption]==0.21.0",
+  "aiosqlite==0.22.1",
+  "asyncpg==0.31.0",
+  "aiohttp-socks==0.11.0",
+]
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
@@ -201,16 +223,19 @@ vision = []
 # `request.url` can be bypassed. We pin a patched Starlette directly in every
 # extra that exposes a Starlette-backed server surface so pip/uv can't resolve
 # a vulnerable pre-1.0.1 transitive. Bump in lockstep with uv.lock.
-mcp = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+mcp = ["mcp==1.26.0", "starlette==1.0.1"] # starlette: CVE-2026-48710
 nemo-relay = ["nemo-relay==0.3"]
 homeassistant = ["aiohttp==3.13.4"]
 sms = ["aiohttp==3.13.4"]
 teams = ["microsoft-teams-apps==2.0.13.4", "aiohttp==3.13.4"]
+voice-call = [
+  "aiohttp==3.13.4",
+] # webhook + media-stream server for the voice_call platform
 # Computer use — macOS background desktop control via cua-driver (MCP stdio).
 # The cua-driver binary itself is installed via `hermes tools` post-setup
 # (curl install script); this extra just pins the MCP client used to talk
 # to it, which is already provided by the `mcp` extra.
-computer-use = ["mcp==1.26.0", "starlette==1.0.1"]  # starlette: CVE-2026-48710
+computer-use = ["mcp==1.26.0", "starlette==1.0.1"] # starlette: CVE-2026-48710
 acp = ["agent-client-protocol==0.9.0"]
 # mistral: Voxtral STT + TTS. Pinned to an exact verified-clean version.
 # The `mistralai` PyPI project was quarantined 2026-05-12 after the malicious
@@ -244,7 +269,11 @@ termux-all = [
   "hermes-agent[sms]",
   "hermes-agent[web]",
 ]
-dingtalk = ["dingtalk-stream==0.24.3", "alibabacloud-dingtalk==2.2.42", "qrcode==7.4.2"]
+dingtalk = [
+  "dingtalk-stream==0.24.3",
+  "alibabacloud-dingtalk==2.2.42",
+  "qrcode==7.4.2",
+]
 feishu = ["lark-oapi==1.5.3", "qrcode==7.4.2"]
 google = [
   # Required by the google-workspace skill (Gmail, Calendar, Drive, Contacts,
@@ -265,7 +294,12 @@ youtube = [
 # `hermes dashboard` (localhost SPA + API).  Not in core to keep the default install lean.
 # starlette==1.0.1 pinned for CVE-2026-48710 (BadHost) — fastapi pulls Starlette
 # transitively and pre-1.0.1 is the vulnerable range. See the mcp extra above.
-web = ["fastapi==0.133.1", "uvicorn[standard]==0.41.0", "starlette==1.0.1", "python-multipart==0.0.27"]
+web = [
+  "fastapi==0.133.1",
+  "uvicorn[standard]==0.41.0",
+  "starlette==1.0.1",
+  "python-multipart==0.0.27",
+]
 all = [
   # Policy (2026-05-12): `[all]` includes only extras that genuinely
   # CAN'T be lazy-installed via `tools/lazy_deps.py` — i.e. things every
@@ -306,7 +340,22 @@ hermes-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]
-py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_bootstrap", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "utils", "mcp_serve"]
+py-modules = [
+  "run_agent",
+  "model_tools",
+  "toolsets",
+  "batch_runner",
+  "trajectory_compressor",
+  "toolset_distributions",
+  "cli",
+  "hermes_bootstrap",
+  "hermes_constants",
+  "hermes_state",
+  "hermes_time",
+  "hermes_logging",
+  "utils",
+  "mcp_serve",
+]
 
 [tool.setuptools.data-files]
 # i18n catalogs. locales/ is a bare data directory (no __init__.py), so it is
@@ -332,7 +381,12 @@ locales = ["locales/*.yaml"]
 "optional-mcps/n8n" = ["optional-mcps/n8n/manifest.yaml"]
 
 [tool.setuptools.package-data]
-hermes_cli = ["web_dist/**/*", "tui_dist/**/*", "scripts/install.sh", "scripts/install.ps1"]
+hermes_cli = [
+  "web_dist/**/*",
+  "tui_dist/**/*",
+  "scripts/install.sh",
+  "scripts/install.ps1",
+]
 gateway = ["assets/**/*"]
 plugins = [
   "*/dashboard/manifest.json",
@@ -350,13 +404,31 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = [
+  "agent",
+  "agent.*",
+  "tools",
+  "tools.*",
+  "hermes_cli",
+  "hermes_cli.*",
+  "gateway",
+  "gateway.*",
+  "tui_gateway",
+  "tui_gateway.*",
+  "cron",
+  "cron.*",
+  "acp_adapter",
+  "plugins",
+  "plugins.*",
+  "providers",
+  "providers.*",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 markers = [
-    "integration: marks tests requiring external services (API keys, Modal, etc.)",
-    "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
+  "integration: marks tests requiring external services (API keys, Modal, etc.)",
+  "real_concurrent_gate: opt out of the autouse stub that disables _detect_concurrent_hermes_instances",
 ]
 # integration tests take way too long to run in the normal CI environments
 addopts = "-m 'not integration'"
@@ -369,7 +441,7 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ruff]
-preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
+preview = true # required for PLW1514 (unspecified-encoding) — preview rule
 
 [tool.ruff.lint]
 # All other lints are intentionally disabled (see comment history on this

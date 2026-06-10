@@ -514,6 +514,43 @@ async def _send_via_adapter(
     except Exception:
         runner = None
 
+    entry = None
+    try:
+        from gateway.platform_registry import platform_registry
+        entry = platform_registry.get(platform_name)
+    except Exception:
+        entry = None
+
+    # Plugin media delivery may need a platform-specific standalone sender
+    # even when a live gateway adapter exists. The generic adapter.send(...)
+    # interface only carries text/metadata, so routing MEDIA through it can
+    # either omit attachments or trip adapter event-loop ownership bugs when
+    # the tool is invoked from a different loop than the live gateway adapter.
+    if media_files and entry is not None and entry.standalone_sender_fn is not None:
+        try:
+            result = await entry.standalone_sender_fn(
+                pconfig,
+                chat_id,
+                chunk,
+                thread_id=thread_id,
+                media_files=media_files,
+                force_document=force_document,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("Plugin standalone media send for %s raised", platform_name, exc_info=True)
+            return {"error": f"Plugin standalone send failed: {e}"}
+        if isinstance(result, dict) and (result.get("success") or result.get("error")):
+            return result
+        return {
+            "error": (
+                f"Plugin standalone send for '{platform_name}' returned an "
+                f"invalid result: expected a dict with 'success' or 'error' "
+                f"keys, got {type(result).__name__}"
+            )
+        }
+
     if runner is not None:
         try:
             adapter = runner.adapters.get(platform)
@@ -536,13 +573,6 @@ async def _send_via_adapter(
             if result.success:
                 return {"success": True, "message_id": result.message_id}
             return {"error": f"Adapter send failed: {result.error}"}
-
-    entry = None
-    try:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get(platform_name)
-    except Exception:
-        entry = None
 
     if entry is not None and entry.standalone_sender_fn is not None:
         try:
@@ -767,7 +797,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and plugin platforms with media senders; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -775,7 +805,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao and feishu"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, yuanbao, feishu and plugin platforms with media senders"
         )
 
     last_result = None

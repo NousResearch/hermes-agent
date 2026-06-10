@@ -966,6 +966,34 @@ def _classify_400(
             should_fallback=False,
         )
 
+    # Request-validation errors (unsupported / unknown parameter) MUST be
+    # checked BEFORE context_overflow.  A GPT-5 model rejecting max_tokens
+    # returns:
+    #   "Unsupported parameter: 'max_tokens' is not supported with this model.
+    #    Use 'max_completion_tokens' instead."
+    # That string contains the literal substring "max_tokens", which is one of
+    # the _CONTEXT_OVERFLOW_PATTERNS — so without this guard the 400 is
+    # misclassified as context_overflow, routed into the compression loop,
+    # re-sent with the same bad parameter, and ends in "Cannot compress
+    # further".  These errors are deterministic (every retry gets the identical
+    # rejection), so classify as a non-retryable format_error and fall back.
+    #
+    # NOTE: we deliberately do NOT key off the generic ``invalid_request_error``
+    # code here — OpenAI stamps that same code on genuine context-overflow 400s,
+    # so matching it would mis-route real overflows away from compression. The
+    # unambiguous signals are the explicit "unsupported/unknown parameter"
+    # message text and the specific parameter-level error codes.
+    if (
+        any(p in error_msg for p in _REQUEST_VALIDATION_PATTERNS
+            if p != "invalid_request_error")
+        or error_code_lower in {"unknown_parameter", "unsupported_parameter"}
+    ):
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
+
     # Context overflow from 400
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(

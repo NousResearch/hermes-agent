@@ -964,6 +964,57 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
 
+    def test_400_unsupported_max_tokens_param_not_context_overflow(self):
+        """A GPT-5 model rejecting max_tokens must NOT be misclassified as
+        context overflow. The OpenAI error string contains the literal
+        'max_tokens' (a _CONTEXT_OVERFLOW_PATTERNS entry), so without the
+        request-validation guard it was routed into the compression loop,
+        re-sent with the same bad param, and ended in "Cannot compress
+        further". Regression for gpt-5-context-overflow-misclassification."""
+        msg = ("Unsupported parameter: 'max_tokens' is not supported with this "
+               "model. Use 'max_completion_tokens' instead.")
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"message": msg, "type": "invalid_request_error",
+                            "code": "unsupported_parameter"}},
+        )
+        # Tiny context against a huge window — definitely not a real overflow.
+        result = classify_api_error(e, model="gpt-5.4",
+                                    approx_tokens=6962, context_length=1050000)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+
+    def test_400_unknown_parameter_not_context_overflow(self):
+        """'Unknown parameter' 400s are deterministic request-validation
+        failures, not overflows."""
+        e = MockAPIError(
+            "Unknown parameter: 'foo'.",
+            status_code=400,
+            body={"error": {"message": "Unknown parameter: 'foo'.",
+                            "code": "unknown_parameter"}},
+        )
+        result = classify_api_error(e, approx_tokens=1000)
+        assert result.reason == FailoverReason.format_error
+        assert result.should_compress is False
+
+    def test_400_real_overflow_with_invalid_request_error_code_still_compresses(self):
+        """Guard the guard: OpenAI stamps genuine context-overflow 400s with
+        the generic 'invalid_request_error' code. The request-validation guard
+        must NOT key off that code, or real overflows stop compressing."""
+        msg = ("This model's maximum context length is 128000 tokens, however "
+               "you requested 150000 tokens.")
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"message": msg, "type": "invalid_request_error"}},
+        )
+        result = classify_api_error(e, model="gpt-5.4",
+                                    approx_tokens=150000, context_length=128000)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
+
     def test_422_format_error(self):
         e = MockAPIError("Unprocessable Entity", status_code=422)
         result = classify_api_error(e)

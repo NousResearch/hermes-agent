@@ -750,3 +750,73 @@ class TestMattermostMediaTypes:
         assert msg.media_types == ["application/pdf"]
         assert not msg.media_types[0].startswith("image/")
         assert not msg.media_types[0].startswith("audio/")
+
+
+# ---------------------------------------------------------------------------
+# _apply_yaml_config — YAML → env translation
+# ---------------------------------------------------------------------------
+
+class TestApplyYamlConfig:
+    """_apply_yaml_config() must translate all mattermost config keys to env
+    vars so that YAML-configured deployments behave the same as env-var ones.
+
+    Regression for missing allow_from → MATTERMOST_ALLOWED_USERS bridge.
+    Discord received the same allow_from bridge in PR #35329; Mattermost
+    was missed.
+    """
+
+    def _call(self, mattermost_cfg: dict, yaml_cfg: dict | None = None, env: dict | None = None):
+        from plugins.platforms.mattermost.adapter import _apply_yaml_config
+
+        saved = {}
+        keys = [
+            "MATTERMOST_REQUIRE_MENTION",
+            "MATTERMOST_FREE_RESPONSE_CHANNELS",
+            "MATTERMOST_ALLOWED_CHANNELS",
+            "MATTERMOST_ALLOWED_USERS",
+        ]
+        # snapshot, clear, run, capture, restore
+        for k in keys:
+            saved[k] = os.environ.pop(k, None)
+        if env:
+            os.environ.update(env)
+        try:
+            result = _apply_yaml_config(yaml_cfg or {}, mattermost_cfg)
+            return result, {k: os.environ.get(k) for k in keys}
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def test_allow_from_list_sets_allowed_users(self):
+        _, env = self._call({"allow_from": ["user1", "user2"]})
+        assert env["MATTERMOST_ALLOWED_USERS"] == "user1,user2"
+
+    def test_allow_from_single_string_sets_allowed_users(self):
+        _, env = self._call({"allow_from": "user1"})
+        assert env["MATTERMOST_ALLOWED_USERS"] == "user1"
+
+    def test_env_var_takes_precedence_over_yaml(self):
+        _, env = self._call(
+            {"allow_from": ["from_yaml"]},
+            env={"MATTERMOST_ALLOWED_USERS": "from_env"},
+        )
+        assert env["MATTERMOST_ALLOWED_USERS"] == "from_env"
+
+    def test_missing_allow_from_leaves_env_unset(self):
+        _, env = self._call({})
+        assert env["MATTERMOST_ALLOWED_USERS"] is None
+
+    def test_require_mention_still_works(self):
+        _, env = self._call({"require_mention": True})
+        assert env["MATTERMOST_REQUIRE_MENTION"] == "true"
+
+    def test_allowed_channels_still_works(self):
+        _, env = self._call({"allowed_channels": ["chan-A", "chan-B"]})
+        assert env["MATTERMOST_ALLOWED_CHANNELS"] == "chan-A,chan-B"
+
+    def test_returns_none(self):
+        result, _ = self._call({"allow_from": ["u"]})
+        assert result is None

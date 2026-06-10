@@ -1118,6 +1118,12 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+    # allow_from / allowed_users: if set, bot ONLY responds to these users
+    au = mattermost_cfg.get("allow_from")
+    if au is not None and not os.getenv("MATTERMOST_ALLOWED_USERS"):
+        if isinstance(au, list):
+            au = ",".join(str(v) for v in au)
+        os.environ["MATTERMOST_ALLOWED_USERS"] = str(au)
     return None  # all settings flow through env; nothing to merge into extras
 
 

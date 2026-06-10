@@ -13991,6 +13991,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             # Store agent reference for interrupt support
             agent_holder[0] = agent
+            # Capture the main model BEFORE any auxiliary tasks (vision,
+            # compression, title-gen, etc.) can temporarily overwrite
+            # agent.model.  The footer should show the model that generated
+            # the main response, not an auxiliary model.  See #43228.
+            _initial_model = getattr(agent, "model", None)
+            _initial_provider = getattr(agent, "provider", None)
             # Capture the full tool definitions for transcript logging
             tools_holder[0] = agent.tools if hasattr(agent, 'tools') else None
             
@@ -14286,7 +14292,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
                 _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
-            _resolved_model = getattr(_agent, "model", None) if _agent else None
+            # Use the initial model (captured before auxiliary tasks) unless
+            # a fallback was activated — in which case agent.model reflects
+            # the fallback model that actually generated the response.  #43228
+            _resolved_model = _initial_model
+            if _agent and getattr(_agent, "_fallback_activated", False):
+                _resolved_model = getattr(_agent, "model", None)
+            elif not _resolved_model:
+                _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
                 error_msg = f"⚠️ {result['error']}" if result.get("error") else ""

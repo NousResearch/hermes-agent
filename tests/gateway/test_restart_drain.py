@@ -199,7 +199,17 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
 
     monkeypatch.setattr(gateway_run, "_resolve_hermes_bin", lambda: ["/usr/bin/hermes"])
     monkeypatch.setattr(gateway_run.os, "getpid", lambda: 321)
-    monkeypatch.setattr(shutil, "which", lambda cmd: "/usr/bin/setsid" if cmd == "setsid" else None)
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        # bash is the preferred shell; sh is the fallback for tiny distros
+        lambda cmd: (
+            "/usr/bin/setsid" if cmd == "setsid"
+            else "/bin/bash" if cmd == "bash"
+            else "/bin/sh" if cmd == "sh"
+            else None
+        ),
+    )
 
     def fake_popen(cmd, **kwargs):
         popen_calls.append((cmd, kwargs))
@@ -211,10 +221,14 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
 
     assert len(popen_calls) == 1
     cmd, kwargs = popen_calls[0]
-    assert cmd[:2] == ["/usr/bin/setsid", "bash"]
+    assert cmd[:2] == ["/usr/bin/setsid", "/bin/bash"]
+    # Bounded deadline: PID + deadline timestamp + bounded loop guard
+    assert "PID=321" in cmd[-1]
+    assert "kill -0 $PID" in cmd[-1]
+    assert "deadline" in cmd[-1]
     assert "gateway restart" in cmd[-1]
-    assert "kill -0 321" in cmd[-1]
     assert kwargs["start_new_session"] is True
+    assert kwargs["stdin"] is subprocess.DEVNULL
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
 

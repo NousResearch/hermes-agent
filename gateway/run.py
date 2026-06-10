@@ -4209,39 +4209,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             watcher = textwrap.dedent(
                 """
                 import os, subprocess, sys, time
+                from gateway.status import _pid_exists
                 pid = int(sys.argv[1])
                 cmd = sys.argv[2:]
                 deadline = time.monotonic() + 120
 
-                def _alive(p):
-                    # On Windows, os.kill(pid, 0) is NOT a no-op — it maps to
-                    # GenerateConsoleCtrlEvent(0, pid) (bpo-14484). Use the
-                    # Win32 handle-based existence check instead.
-                    if os.name == 'nt':
-                        import ctypes
-                        k32 = ctypes.windll.kernel32
-                        k32.OpenProcess.restype = ctypes.c_void_p
-                        k32.WaitForSingleObject.restype = ctypes.c_uint
-                        k32.GetLastError.restype = ctypes.c_uint
-                        h = k32.OpenProcess(0x1000 | 0x100000, False, int(p))
-                        if not h:
-                            return k32.GetLastError() != 87
-                        try:
-                            return k32.WaitForSingleObject(h, 0) == 0x102
-                        finally:
-                            k32.CloseHandle(h)
-                    try:
-                        os.kill(int(p), 0)
-                        return True
-                    except ProcessLookupError:
-                        return False
-                    except PermissionError:
-                        return True
-                    except OSError:
-                        return False
-
+                # Use the canonical _pid_exists from gateway.status — the previous
+                # inline copy had an inverted WaitForSingleObject comparison that
+                # made /restart silently no-op on Windows. _pid_exists is the
+                # battle-tested, already-imported-elsewhere version.
                 while time.monotonic() < deadline:
-                    if not _alive(pid):
+                    if not _pid_exists(pid):
                         break
                     time.sleep(0.2)
                 _CREATE_NEW_PROCESS_GROUP = 0x00000200
@@ -4264,21 +4242,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return
 
         cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
+        # Bounded deadline mirrors the Windows watcher (line 4121) so a stuck
+        # `kill -0` cannot wedge the restart indefinitely.
+        deadline_secs = 120
         shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
+            f"PID={current_pid}; "
+            f"deadline=$(( $(date +%s) + {deadline_secs} )); "
+            f"while kill -0 $PID 2>/dev/null && [ $(date +%s) -lt $deadline ]; do sleep 0.2; done; "
             f"{cmd} gateway restart"
         )
+        # Prefer bash, fall back to POSIX sh — works on Alpine/musl/tiny distros.
+        shell_bin = shutil.which("bash") or shutil.which("sh")
+        if not shell_bin:
+            logger.error("Neither bash nor sh found on PATH — cannot spawn restart watcher")
+            return
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
             subprocess.Popen(
-                [setsid_bin, "bash", "-lc", shell_cmd],
+                [setsid_bin, shell_bin, "-c", shell_cmd],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,
             )
         else:
             subprocess.Popen(
-                ["bash", "-lc", shell_cmd],
+                [shell_bin, "-c", shell_cmd],
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 start_new_session=True,

@@ -448,17 +448,33 @@ jobs:
             VOL_FLEET="$VOL_SRC/fleet"
             install -d -m 0700 "$VOL_FLEET"
             cp "$KEYDIR/id_ed25519" "$VOL_FLEET/id_ed25519"; chmod 0600 "$VOL_FLEET/id_ed25519"
-            ssh-keyscan -t ed25519 127.0.0.1 > "$VOL_FLEET/known_hosts" 2>/dev/null
+            # Pin the host's REAL public host keys (all types) for 127.0.0.1,
+            # read straight from /etc/ssh/*.pub — deterministic, no keyscan race
+            # and no single-type mismatch under StrictHostKeyChecking=yes.
+            : > "$VOL_FLEET/known_hosts"
+            for hk in /etc/ssh/ssh_host_*_key.pub; do
+              [ -f "$hk" ] || continue
+              printf '127.0.0.1 %s\n' "$(cut -d' ' -f1-2 "$hk")" >> "$VOL_FLEET/known_hosts"
+            done
+            if [ ! -s "$VOL_FLEET/known_hosts" ]; then
+              ssh-keyscan -H 127.0.0.1 >> "$VOL_FLEET/known_hosts" 2>/dev/null
+            fi
+            if [ ! -s "$VOL_FLEET/known_hosts" ]; then
+              echo "fleet: WARN no host key found for 127.0.0.1 -- is sshd on :22?"
+            fi
             chmod 0644 "$VOL_FLEET/known_hosts"
             chown -R "$CUID:$CGID" "$VOL_FLEET"
 
             # 6a. End-to-end proof: the EXACT path Hermes uses (in-container
             #     client → volume key → loopback ssh → broker → docker ps).
-            if docker exec -u hermes -e HOME=/opt/data hermes \
-                 /opt/hermes/.venv/bin/python -m hermes_cli.fleet ps >/dev/null 2>&1; then
+            #     Capture stderr so a failure is diagnosable from the deploy log.
+            FLEET_OUT=$(docker exec -u hermes -e HOME=/opt/data hermes \
+                 /opt/hermes/.venv/bin/python -m hermes_cli.fleet ps 2>&1)
+            if [ $? -eq 0 ]; then
               echo "fleet: ENABLED -- in-container client reached the host broker (ps OK)"
             else
               echo "fleet: WARN in-container client could not reach the broker (fleet ops unavailable; bots unaffected)"
+              echo "fleet: probe error >>> $(printf '%s' "$FLEET_OUT" | tr '\n' '|' | cut -c1-600)"
             fi
             # 6b. Negative proof: an arbitrary command must be refused.
             DENY=$(ssh -i "$KEYDIR/id_ed25519" -o StrictHostKeyChecking=accept-new \

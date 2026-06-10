@@ -602,8 +602,20 @@ def run_conversation(
                 repaired_seq,
                 agent.session_id or "-",
             )
+            # Recalculate current_turn_user_idx: repair may have shortened
+            # messages, making the cached index stale or out-of-bounds.  Scan
+            # backwards for the last user message to restore correct injection
+            # targeting.
+            for i in reversed(range(len(messages))):
+                try:
+                    if messages[i].get("role") == "user":
+                        current_turn_user_idx = i
+                        break
+                except Exception:
+                    continue
 
         api_messages = []
+        _prefetch_block_entered = False
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
 
@@ -613,11 +625,20 @@ def run_conversation(
             # API-call-time only — the original message in `messages` is
             # never mutated, so nothing leaks into session persistence.
             if idx == current_turn_user_idx and msg.get("role") == "user":
+                _prefetch_block_entered = True
                 _injections = []
                 if _ext_prefetch_cache:
                     _fenced = build_memory_context_block(_ext_prefetch_cache)
                     if _fenced:
                         _injections.append(_fenced)
+                        logger.info("[PREFETCH_INJECT] injecting %d chars; base_len=%d, fenced_len=%d",
+                                     len(_ext_prefetch_cache),
+                                     len(api_msg.get("content", "")) if isinstance(api_msg.get("content", ""), str) else -1,
+                                     len(_fenced))
+                    else:
+                        logger.info("[PREFETCH_INJECT] fenced block was empty despite cache having %d chars", len(_ext_prefetch_cache))
+                else:
+                    logger.info("[PREFETCH_INJECT] _ext_prefetch_cache is falsy (value=%r)", _ext_prefetch_cache[:100] if _ext_prefetch_cache else "(empty)")
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
                 if _injections:
@@ -647,6 +668,17 @@ def run_conversation(
             # Keep 'reasoning_details' - OpenRouter uses this for multi-turn reasoning context
             # The signature field helps maintain reasoning continuity
             api_messages.append(api_msg)
+
+        # Self-check: if memory prefetch had content but injection block
+        # was never entered, the index is stale (repair_message_sequence
+        # changed message count without updating current_turn_user_idx).
+        if _ext_prefetch_cache and not _prefetch_block_entered:
+            logger.warning(
+                "[PREFETCH_INJECT] STALE INDEX: cache has %d chars but injection "
+                "block never entered (idx=%d, len=%d). session=%s",
+                len(_ext_prefetch_cache), current_turn_user_idx, len(messages),
+                agent.session_id or "-",
+            )
 
         # Build the final system message: cached prompt + ephemeral system prompt.
         # Ephemeral additions are API-call-time only (not persisted to session DB).

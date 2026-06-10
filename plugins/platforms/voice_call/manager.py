@@ -544,12 +544,17 @@ class CallManager:
 
     async def initiate_call(
         self,
-        to_number: str,
+        to_number: Optional[str] = None,
         message: Optional[str] = None,
         mode: Optional[str] = None,
         from_number: Optional[str] = None,
     ) -> CallRecord:
-        to_number = normalize_e164(to_number)
+        to_number = normalize_e164(to_number or self.config.to_number or "")
+        if not to_number:
+            raise ValueError(
+                "no destination number (pass to_number or set to_number / "
+                "VOICE_CALL_TO_NUMBER in config)"
+            )
         if not is_e164(to_number):
             raise ValueError(f"to_number must be E.164, got {to_number!r}")
         from_number = normalize_e164(from_number or self.config.from_number or "")

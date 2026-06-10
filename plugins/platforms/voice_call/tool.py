@@ -40,7 +40,8 @@ VOICE_CALL_SCHEMA: Dict[str, Any] = {
             "to_number": {
                 "type": "string",
                 "description": (
-                    "E.164 destination for initiate_call (e.g. +15555550123)."
+                    "E.164 destination for initiate_call (e.g. +15555550123). "
+                    "Omit to call the configured default number, if one is set."
                 ),
             },
             "message": {
@@ -122,11 +123,10 @@ async def _dispatch(action: str, args: Dict[str, Any]) -> str:
     call_id = str(args.get("call_id") or "")
     try:
         if action == "initiate_call":
-            to_number = str(args.get("to_number") or "").strip()
-            if not to_number:
-                return _err("to_number is required for initiate_call")
+            # to_number falls back to the configured default (to_number /
+            # VOICE_CALL_TO_NUMBER) inside the manager, like OpenClaw.
             record = await manager.initiate_call(
-                to_number,
+                str(args.get("to_number") or "").strip() or None,
                 message=args.get("message"),
                 mode=args.get("mode"),
             )
@@ -223,7 +223,9 @@ async def slash_handler(raw_args: str = "", **_kwargs) -> Optional[str]:
             {
                 "to_number": flags.get("to", ""),
                 "message": flags.get("message"),
-                "mode": flags.get("mode"),
+                # Operator surfaces default to conversation (like the CLI);
+                # the model tool keeps the configured outbound default.
+                "mode": flags.get("mode", "conversation"),
             },
         ),
         "speak": (

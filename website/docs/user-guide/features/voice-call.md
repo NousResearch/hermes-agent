@@ -113,7 +113,10 @@ fresh session on every call.
 - **Model tool** `voice_call`: `initiate_call`, `continue_call`,
   `speak_to_user`, `send_dtmf`, `end_call`, `get_status`.
 - **CLI**: `hermes voicecall status [--json] | call | speak | continue |
-  dtmf | end | doctor | tail`.
+  dtmf | end | doctor | tail [-f]`. `call` defaults to **conversation**
+  mode (pass `--mode notify` for speak-and-hang-up), and `-t/--to` is
+  optional when `to_number` is configured — `hermes voicecall call -m
+  "call me when you see this"` just works.
 - **Slash command**: `/voicecall status`, `/voicecall call --to +1555...
   --message "..."`, `/voicecall end --call-id ID`.
 
@@ -127,6 +130,7 @@ gateway:
       extra:
         provider: telnyx              # mock | telnyx | twilio | plivo
         from_number: "+15551234567"
+        to_number: "+15557654321"     # optional default destination for outbound calls
         session_scope: per-phone      # per-phone | per-call
         inbound_policy: allowlist     # disabled | allowlist | open
         allow_from: ["+15557654321"]
@@ -160,6 +164,7 @@ gateway:
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | Twilio |
 | `PLIVO_AUTH_ID`, `PLIVO_AUTH_TOKEN` | Plivo |
 | `VOICE_CALL_FROM_NUMBER` | caller ID if not in config |
+| `VOICE_CALL_TO_NUMBER` | default outbound destination if not in config |
 | `VOICE_CALL_ALLOWED_NUMBERS` | inbound allowlist (comma-separated) |
 | `VOICE_CALL_HOME_NUMBER` | cron/notification call target |
 | `NGROK_AUTHTOKEN`, `NGROK_DOMAIN` | ngrok tunnel |

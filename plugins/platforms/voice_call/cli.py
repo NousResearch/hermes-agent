@@ -25,9 +25,17 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     status_p.add_argument("--json", action="store_true", dest="as_json")
 
     call_p = subs.add_parser("call", help="Place an outbound call")
-    call_p.add_argument("--to", required=True, help="E.164 destination (+1555...)")
-    call_p.add_argument("--message", help="What to say when answered")
-    call_p.add_argument("--mode", choices=("notify", "conversation"))
+    call_p.add_argument(
+        "-t", "--to",
+        help="E.164 destination (+1555...); falls back to config to_number",
+    )
+    call_p.add_argument("-m", "--message", help="What to say when answered")
+    # CLI default is conversation (matches OpenClaw's voicecall CLI); the
+    # model tool and cron delivery still follow outbound.default_mode.
+    call_p.add_argument(
+        "--mode", choices=("notify", "conversation"), default="conversation",
+        help="notify: speak and hang up; conversation: stay open (default)",
+    )
 
     speak_p = subs.add_parser("speak", help="Say something on a live call")
     speak_p.add_argument("--call-id", required=True)
@@ -48,6 +56,14 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 
     tail_p = subs.add_parser("tail", help="Show recent call log entries")
     tail_p.add_argument("--lines", type=int, default=20)
+    tail_p.add_argument(
+        "-f", "--follow", action="store_true",
+        help="Keep printing new entries as they are written",
+    )
+    tail_p.add_argument(
+        "--poll", type=float, default=0.25,
+        help="Follow-mode poll interval in seconds (default 0.25)",
+    )
 
 
 def dispatch(args: argparse.Namespace) -> int:
@@ -179,7 +195,10 @@ def _cmd_call(args: argparse.Namespace) -> int:
         {"command": "call", "to": args.to, "message": args.message, "mode": args.mode}
     )
     if result.get("success"):
-        print(f"dialing {args.to} — call_id {result.get('call_id')}")
+        print(
+            f"dialing {args.to or 'configured to_number'} "
+            f"({args.mode}) — call_id {result.get('call_id')}"
+        )
     return _print_result(result)
 
 
@@ -252,21 +271,50 @@ def _cmd_doctor(args: argparse.Namespace) -> int:
     return 1 if errors else 0
 
 
+def _print_call_line(line: str) -> None:
+    try:
+        data = json.loads(line)
+    except json.JSONDecodeError:
+        return
+    print(
+        f"{data.get('call_id')}  {data.get('state'):<12} "
+        f"{data.get('direction'):<8} from={data.get('from_number')} "
+        f"to={data.get('to_number')} reason={data.get('end_reason')}"
+    )
+
+
 def _cmd_tail(args: argparse.Namespace) -> int:
+    import time
+
     calls_path = _voice_dir() / "calls.jsonl"
-    if not calls_path.exists():
+    if not calls_path.exists() and not args.follow:
         print("no call log yet")
         return 0
-    with open(calls_path, encoding="utf-8") as f:
-        lines = [line.strip() for line in f if line.strip()]
-    for line in lines[-max(1, args.lines):]:
-        try:
-            data = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        print(
-            f"{data.get('call_id')}  {data.get('state'):<12} "
-            f"{data.get('direction'):<8} from={data.get('from_number')} "
-            f"to={data.get('to_number')} reason={data.get('end_reason')}"
-        )
-    return 0
+    position = 0
+    if calls_path.exists():
+        with open(calls_path, encoding="utf-8") as f:
+            lines = [line.strip() for line in f if line.strip()]
+        for line in lines[-max(1, args.lines):]:
+            _print_call_line(line)
+        position = calls_path.stat().st_size
+    if not args.follow:
+        return 0
+    try:
+        while True:
+            time.sleep(max(0.05, args.poll))
+            if not calls_path.exists():
+                continue
+            size = calls_path.stat().st_size
+            if size < position:
+                position = 0  # log was compacted/rotated — start over
+            if size == position:
+                continue
+            with open(calls_path, encoding="utf-8") as f:
+                f.seek(position)
+                chunk = f.read()
+                position = f.tell()
+            for line in chunk.splitlines():
+                if line.strip():
+                    _print_call_line(line.strip())
+    except KeyboardInterrupt:
+        return 0

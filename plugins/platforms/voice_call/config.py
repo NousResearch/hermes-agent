@@ -131,6 +131,9 @@ class RealtimeConfig:
 class VoiceCallConfig:
     provider: str = DEFAULT_PROVIDER
     from_number: Optional[str] = None
+    # Default destination for outbound calls when no --to/to_number is given
+    # (OpenClaw's `toNumber`). Useful for "call me" setups.
+    to_number: Optional[str] = None
     session_scope: str = "per-phone"
     inbound_policy: str = "allowlist"
     allow_from: List[str] = field(default_factory=list)
@@ -179,6 +182,11 @@ class VoiceCallConfig:
             from_number=(
                 extra.get("from_number")
                 or os.getenv("VOICE_CALL_FROM_NUMBER")
+                or None
+            ),
+            to_number=(
+                extra.get("to_number")
+                or os.getenv("VOICE_CALL_TO_NUMBER")
                 or None
             ),
             session_scope=str(extra.get("session_scope", "per-phone")).strip().lower(),
@@ -284,6 +292,8 @@ class VoiceCallConfig:
 
         if self.from_number and not is_e164(self.from_number):
             errors.append("from_number must be E.164 (+15555550000 style)")
+        if self.to_number and not is_e164(self.to_number):
+            errors.append("to_number must be E.164 (+15555550000 style)")
         for number in self.allow_from:
             if not is_e164(number):
                 errors.append(f"allow_from entry {number!r} is not E.164")

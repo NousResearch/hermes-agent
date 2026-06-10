@@ -652,11 +652,21 @@ class GatewayStreamConsumer:
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
         except asyncio.CancelledError:
-            # Best-effort final edit on cancellation
+            # Best-effort final edit on cancellation.  finalize=True so
+            # REQUIRES_EDIT_FINALIZE platforms (Telegram) apply final
+            # formatting — a plain edit here would leave the entire reply
+            # rendered as a raw streaming preview while the success flags
+            # below suppress the gateway's formatted re-send.
+            # is_turn_final=False keeps _try_fresh_final from setting
+            # _final_response_sent itself; this handler owns the flags.
             _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
-                    _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
+                    _best_effort_ok = bool(
+                        await self._send_or_edit(
+                            self._accumulated, finalize=True, is_turn_final=False,
+                        )
+                    )
                 except Exception:
                     pass
             # Only confirm final delivery if the best-effort send above

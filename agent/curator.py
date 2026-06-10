@@ -740,6 +740,9 @@ def _write_run_report(
     _write_file(run_dir / "REPORT.md", "REPORT.md", lambda: _render_report_markdown(payload))
     if jobs_updated > 0:  # only when a job was touched, to keep no-op run dirs uncluttered
         _write_file(run_dir / "cron_rewrites.json", "cron_rewrites.json", cron_rewrites)
+    from hermes_cli.lifecycle import invoke_hook  # observers + plugins; each callback isolated there
+    invoke_hook("post_curator_run", run_dir=str(run_dir), run_json_path=str(run_dir / "run.json"),
+                report_md_path=str(run_dir / "REPORT.md"))
     return run_dir
 
 

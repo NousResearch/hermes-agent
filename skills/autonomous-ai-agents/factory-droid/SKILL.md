@@ -1,6 +1,6 @@
 ---
 name: factory-droid
-description: "Delegate coding tasks to Factory AI's droid CLI (features, PRs, missions)."
+description: "Delegate coding to Factory's droid CLI for PRs and features."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

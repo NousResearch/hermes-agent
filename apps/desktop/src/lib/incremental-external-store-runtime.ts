@@ -172,7 +172,7 @@ export function useIncrementalExternalStoreRuntime<T extends ThreadMessage>(
 
   useEffect(() => {
     runtime.setAdapter(store as ExternalStoreAdapter)
-  })
+  }, [runtime, store])
 
   const { modelContext } = useRuntimeAdapters() ?? {}
 

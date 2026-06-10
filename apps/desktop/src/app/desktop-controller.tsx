@@ -638,6 +638,18 @@ export function DesktopController() {
     currentCwd,
     requestGateway
   })
+  const {
+    addContextRefAttachment,
+    addTerminalSelectionAttachment,
+    attachContextFilePath,
+    attachContextFolderPath,
+    attachDroppedItems,
+    attachImageBlob,
+    pasteClipboardImage,
+    pickContextPaths,
+    pickImages,
+    removeAttachment
+  } = composer
 
   const branchInNewChat = useCallback(
     async (messageId?: string) => {
@@ -699,6 +711,40 @@ export function DesktopController() {
     sttEnabled,
     updateSessionState
   })
+
+  const addUrlAttachment = useCallback(
+    (url: string) => addContextRefAttachment(`@url:${formatRefValue(url)}`, url),
+    [addContextRefAttachment]
+  )
+
+  const deleteSelectedSession = useCallback(() => {
+    if (selectedStoredSessionId) {
+      void removeSession(selectedStoredSessionId)
+    }
+  }, [removeSession, selectedStoredSessionId])
+
+  const pasteClipboardImageIntoChat = useCallback(() => {
+    void pasteClipboardImage()
+  }, [pasteClipboardImage])
+
+  const pickFileContext = useCallback(() => {
+    void pickContextPaths('file')
+  }, [pickContextPaths])
+
+  const pickFolderContext = useCallback(() => {
+    void pickContextPaths('folder')
+  }, [pickContextPaths])
+
+  const pickImageAttachments = useCallback(() => {
+    void pickImages()
+  }, [pickImages])
+
+  const removeChatAttachment = useCallback(
+    (id: string) => {
+      void removeAttachment(id)
+    },
+    [removeAttachment]
+  )
 
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
@@ -804,7 +850,7 @@ export function DesktopController() {
   // where it shows. Lives in main's stacking context (not the root overlay layer)
   // so pane resize handles still paint above it. Toggling never rebuilds the shell.
   const mainOverlays = (
-    <PersistentTerminal cwd={currentCwd} onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+    <PersistentTerminal cwd={currentCwd} onAddSelectionToChat={addTerminalSelectionAttachment} />
   )
 
   const overlays = (
@@ -889,24 +935,20 @@ export function DesktopController() {
     <ChatView
       gateway={gatewayRef.current}
       maxVoiceRecordingSeconds={voiceMaxRecordingSeconds}
-      onAddContextRef={composer.addContextRefAttachment}
-      onAddUrl={url => composer.addContextRefAttachment(`@url:${formatRefValue(url)}`, url)}
-      onAttachDroppedItems={composer.attachDroppedItems}
-      onAttachImageBlob={composer.attachImageBlob}
+      onAddContextRef={addContextRefAttachment}
+      onAddUrl={addUrlAttachment}
+      onAttachDroppedItems={attachDroppedItems}
+      onAttachImageBlob={attachImageBlob}
       onBranchInNewChat={branchInNewChat}
       onCancel={cancelRun}
-      onDeleteSelectedSession={() => {
-        if (selectedStoredSessionId) {
-          void removeSession(selectedStoredSessionId)
-        }
-      }}
+      onDeleteSelectedSession={deleteSelectedSession}
       onEdit={editMessage}
-      onPasteClipboardImage={() => void composer.pasteClipboardImage()}
-      onPickFiles={() => void composer.pickContextPaths('file')}
-      onPickFolders={() => void composer.pickContextPaths('folder')}
-      onPickImages={() => void composer.pickImages()}
+      onPasteClipboardImage={pasteClipboardImageIntoChat}
+      onPickFiles={pickFileContext}
+      onPickFolders={pickFolderContext}
+      onPickImages={pickImageAttachments}
       onReload={reloadFromMessage}
-      onRemoveAttachment={id => void composer.removeAttachment(id)}
+      onRemoveAttachment={removeChatAttachment}
       onSteer={steerPrompt}
       onSubmit={submitText}
       onThreadMessagesChange={handleThreadMessagesChange}

@@ -7,7 +7,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
-import { Suspense, useCallback, useMemo, useRef } from 'react'
+import { Suspense, memo, useCallback, useMemo, useRef } from 'react'
 import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
@@ -154,7 +154,7 @@ function ChatHeader({
   )
 }
 
-export function ChatView({
+export const ChatView = memo(function ChatView({
   className,
   gateway,
   onToggleSelectedPin,
@@ -288,18 +288,29 @@ export function ChatView({
     return ExportedMessageRepository.fromBranchableArray(items, { headId })
   }, [messages])
 
-  const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
-    messageRepository: runtimeMessageRepository,
-    isRunning: busy,
-    setMessages: onThreadMessagesChange,
-    onNew: async () => {
-      // Submission is handled explicitly by ChatBar.
-      // Keeping this no-op avoids duplicate prompt.submit calls.
-    },
-    onEdit,
-    onCancel: async () => onCancel(),
-    onReload
-  })
+  const handleRuntimeNew = useCallback(async () => {
+    // Submission is handled explicitly by ChatBar.
+    // Keeping this no-op avoids duplicate prompt.submit calls.
+  }, [])
+
+  const handleRuntimeCancel = useCallback(async () => {
+    await onCancel()
+  }, [onCancel])
+
+  const runtimeAdapter = useMemo(
+    () => ({
+      isRunning: busy,
+      messageRepository: runtimeMessageRepository,
+      onCancel: handleRuntimeCancel,
+      onEdit,
+      onNew: handleRuntimeNew,
+      onReload,
+      setMessages: onThreadMessagesChange
+    }),
+    [busy, handleRuntimeCancel, handleRuntimeNew, onEdit, onReload, onThreadMessagesChange, runtimeMessageRepository]
+  )
+
+  const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>(runtimeAdapter)
 
   // Drop files anywhere in the conversation area, not just on the composer
   // input. In-app drags (project tree / gutter) carry workspace-relative paths
@@ -399,4 +410,4 @@ export function ChatView({
       </div>
     </div>
   )
-}
+})

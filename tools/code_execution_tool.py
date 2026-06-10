@@ -1006,7 +1006,9 @@ def _execute_remote(
     # --- Post-process output (same as local path) ---
 
     # Truncate stdout to cap
-    if len(stdout_text) > MAX_STDOUT_BYTES:
+    output_truncated = False
+    original_output_size = len(stdout_text)
+    if original_output_size > MAX_STDOUT_BYTES:
         head_bytes = int(MAX_STDOUT_BYTES * 0.4)
         tail_bytes = MAX_STDOUT_BYTES - head_bytes
         head = stdout_text[:head_bytes]
@@ -1018,6 +1020,7 @@ def _execute_remote(
             f"out of {len(stdout_text):,} total] ...\n\n"
             + tail
         )
+        output_truncated = True
 
     # Strip ANSI escape sequences
     from tools.ansi_strip import strip_ansi
@@ -1034,6 +1037,9 @@ def _execute_remote(
         "tool_calls_made": tool_call_counter[0],
         "duration_seconds": duration,
     }
+    if output_truncated:
+        result["output_truncated"] = True
+        result["original_output_size"] = original_output_size
 
     if status == "timeout":
         timeout_msg = f"Script timed out after {timeout}s and was killed."
@@ -1055,6 +1061,11 @@ def _execute_remote(
     elif exit_code != 0:
         result["status"] = "error"
         result["error"] = f"Script exited with code {exit_code}"
+
+    # When output is empty on success, add an explicit note so the agent
+    # doesn't interpret this as "nothing happened" and retry (#35696).
+    if result["status"] == "success" and not stdout_text:
+        result["output"] = "(Script completed successfully — no output produced)"
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -1397,6 +1408,7 @@ def execute_code(
 
         # Assemble stdout with head+tail truncation
         total_stdout = stdout_total_bytes[0]
+        output_truncated = False
         if total_stdout > MAX_STDOUT_BYTES and stdout_tail:
             omitted = total_stdout - len(stdout_head) - len(stdout_tail)
             truncated_notice = (
@@ -1404,6 +1416,7 @@ def execute_code(
                 f"out of {total_stdout:,} total] ...\n\n"
             )
             stdout_text = stdout_head + truncated_notice + stdout_tail
+            output_truncated = True
         else:
             stdout_text = stdout_head + stdout_tail
 
@@ -1436,6 +1449,9 @@ def execute_code(
             "tool_calls_made": tool_call_counter[0],
             "duration_seconds": duration,
         }
+        if output_truncated:
+            result["output_truncated"] = True
+            result["original_output_size"] = total_stdout
 
         if status == "timeout":
             timeout_msg = f"Script timed out after {timeout}s and was killed."
@@ -1460,6 +1476,11 @@ def execute_code(
             # Include stderr in output so the LLM sees the traceback
             if stderr_text:
                 result["output"] = stdout_text + "\n--- stderr ---\n" + stderr_text
+
+        # When output is empty on success, add an explicit note so the agent
+        # doesn't interpret this as "nothing happened" and retry (#35696).
+        if result["status"] == "success" and not stdout_text:
+            result["output"] = "(Script completed successfully — no output produced)"
 
         return json.dumps(result, ensure_ascii=False)
 

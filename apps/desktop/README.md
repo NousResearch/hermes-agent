@@ -36,6 +36,21 @@ It builds and launches the GUI against your existing install — same config, ke
 
 Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/desktop).
 
+### Nix (macOS / Linux)
+
+The flake exposes a `#desktop` package that builds a native `.app` bundle on macOS:
+
+```bash
+nix build github:NousResearch/hermes-agent#desktop
+open result/Applications/Hermes.app
+```
+
+The bundle includes the Electron framework, helper apps (GPU, renderer, plugins), the Hermes icon, and a wrapper pointing to the Nix-built `hermes` binary.
+
+On Linux it produces a flat layout suitable for desktop file integration.
+
+See the [Nix setup guide](https://hermes-agent.nousresearch.com/docs/getting-started/nix-setup) for full details.
+
 ---
 
 ## Updating

@@ -63,9 +63,58 @@ let
       runHook postInstall
     '';
   });
+
+  # Generate Info.plist for the macOS .app bundle (XML plist format).
+  infoPlist = pkgs.writeText "Info.plist" ''
+    <?xml version="1.0" encoding="UTF-8"?>
+    <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+    <plist version="1.0">
+    <dict>
+      <key>CFBundleDevelopmentRegion</key>
+      <string>en</string>
+      <key>CFBundleDisplayName</key>
+      <string>Hermes</string>
+      <key>CFBundleExecutable</key>
+      <string>Hermes</string>
+      <key>CFBundleIconFile</key>
+      <string>icon.icns</string>
+      <key>CFBundleIdentifier</key>
+      <string>com.nousresearch.hermes</string>
+      <key>CFBundleInfoDictionaryVersion</key>
+      <string>6.0</string>
+      <key>CFBundleName</key>
+      <string>Hermes</string>
+      <key>CFBundlePackageType</key>
+      <string>APPL</string>
+      <key>CFBundleShortVersionString</key>
+      <string>${version}</string>
+      <key>CFBundleVersion</key>
+      <string>${version}</string>
+      <key>LSApplicationCategoryType</key>
+      <string>public.app-category.developer-tools</string>
+      <key>LSArchitecturePriority</key>
+      <array>
+        <string>arm64</string>
+      </array>
+      <key>LSMinimumSystemVersion</key>
+      <string>12.0</string>
+      <key>NSHighResolutionCapable</key>
+      <true/>
+      <key>NSHumanReadableCopyright</key>
+      <string>Copyright Nous Research</string>
+      <key>NSPrincipalClass</key>
+      <string>AtomApplication</string>
+      <key>NSSupportsAutomaticGraphicsSwitching</key>
+      <true/>
+    </dict>
+    </plist>
+  '';
 in
 
 # Electron wrapper: nixpkgs' electron binary pointed at the renderer dir.
+# On Darwin: creates a proper .app bundle under $out/Applications/Hermes.app/
+# with Contents/MacOS/Hermes wrapped binary and symlink at $out/bin/hermes-desktop.
+# On Linux: flat $out/share/hermes-desktop/ layout (unchanged).
 stdenv.mkDerivation {
   pname = "hermes-desktop";
   inherit version;
@@ -75,7 +124,65 @@ stdenv.mkDerivation {
 
   nativeBuildInputs = [ makeWrapper ];
 
-  installPhase = ''
+  installPhase = if stdenv.hostPlatform.isDarwin then ''
+    runHook preInstall
+
+    # Create the Applications directory first
+    mkdir -p $out/Applications
+
+    # Copy the entire nixpkgs Electron.app structure to get Frameworks and helper apps
+    cp -r ${electron}/Applications/Electron.app $out/Applications/Hermes.app
+    chmod -R u+w $out/Applications/Hermes.app
+
+    # Rename the main binary from Electron to Hermes
+    mv $out/Applications/Hermes.app/Contents/MacOS/Electron \
+       $out/Applications/Hermes.app/Contents/MacOS/Hermes
+
+    # Rename helper apps in Frameworks
+    for helper in $out/Applications/Hermes.app/Contents/Frameworks/Electron\ Helper*.app; do
+      if [ -d "$helper" ]; then
+        newname=$(basename "$helper" | sed 's/Electron/Hermes/g')
+        mv "$helper" "$(dirname "$helper")/$newname"
+        # Rename the binary inside the helper
+        for bin in "$(dirname "$helper")/$newname/Contents/MacOS/"*; do
+          if [ -f "$bin" ]; then
+            newbin=$(basename "$bin" | sed 's/Electron/Hermes/g')
+            mv "$bin" "$(dirname "$bin")/$newbin"
+          fi
+        done
+      fi
+    done
+
+    # Update Info.plist with our custom values
+    cp ${infoPlist} $out/Applications/Hermes.app/Contents/Info.plist
+
+    # Copy the app icon to Resources
+    cp ${npm.src}/apps/desktop/assets/icon.icns $out/Applications/Hermes.app/Contents/Resources/
+
+    # Put our renderer files in Resources/app/ (Electron expects app here)
+    mkdir -p $out/Applications/Hermes.app/Contents/Resources/app
+    cp -r ${renderer}/* $out/Applications/Hermes.app/Contents/Resources/app/
+
+    # Wrap the renamed binary with environment variables
+    # First rename the original binary so the wrapper can call it
+    mv $out/Applications/Hermes.app/Contents/MacOS/Hermes \
+       $out/Applications/Hermes.app/Contents/MacOS/Hermes.real
+
+    # HERMES_DESKTOP_HERMES tells the desktop's resolver step 4 to use our
+    # fully-wrapped nix hermes — venv with all deps, skills, plugins, and
+    # runtime PATH (ripgrep/git/ffmpeg/etc).
+    makeWrapper $out/Applications/Hermes.app/Contents/MacOS/Hermes.real \
+      $out/Applications/Hermes.app/Contents/MacOS/Hermes \
+      --add-flags "$out/Applications/Hermes.app/Contents/Resources/app" \
+      --set HERMES_DESKTOP_HERMES "${lib.getExe hermesAgent}" \
+      --set ELECTRON_IS_DEV 0
+
+    # Symlink bin/hermes-desktop to the wrapped binary inside the bundle
+    mkdir -p $out/bin
+    ln -s ../Applications/Hermes.app/Contents/MacOS/Hermes $out/bin/hermes-desktop
+
+    runHook postInstall
+  '' else ''
     runHook preInstall
 
     mkdir -p $out/share/hermes-desktop $out/bin

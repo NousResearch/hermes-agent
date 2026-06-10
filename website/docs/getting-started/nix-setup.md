@@ -62,6 +62,22 @@ nix profile install github:NousResearch/hermes-agent#full
 The `full` variant adds ~700 MB to the closure. If you only need messaging platforms, `#messaging` adds just ~33 MB.
 :::
 
+:::info Desktop app (macOS)
+The `#desktop` package builds a native macOS `.app` bundle with the Electron shell:
+
+```bash
+# Build the desktop app
+nix build github:NousResearch/hermes-agent#desktop
+
+# Open it (or copy to /Applications)
+open result/Applications/Hermes.app
+```
+
+The bundle includes the full Electron framework (helper apps for GPU, renderer, plugins), the Hermes icon, and a wrapper that points to the Nix-built `hermes` binary.
+
+On Linux, the same package produces a flat `share/hermes-desktop/` layout suitable for AppImage or desktop file integration.
+:::
+
 <details>
 <summary><strong>Building from a local clone</strong></summary>
 

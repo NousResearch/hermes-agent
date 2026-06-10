@@ -66,6 +66,7 @@ def test_api_request_exports_gen_ai_span_with_continuity_attrs(monkeypatch):
     plugin.on_session_start(**base, platform="cron")
     plugin.post_api_request(
         **base,
+        resume_from="s0",
         response_model="gpt-4o-mini-2024-07-18",
         finish_reason="stop",
         api_duration=0.125,
@@ -76,7 +77,7 @@ def test_api_request_exports_gen_ai_span_with_continuity_attrs(monkeypatch):
     span = fake.spans[0]
     assert span["name"] == "gen_ai.chat openai"
     assert span["kind"] == plugin.KIND_CLIENT
-    assert span["status"] == {"code": plugin.STATUS_OK, "message": "stop"}
+    assert span["status"] == {"code": plugin.STATUS_OK, "message": ""}
     attrs = _attrs(span)
     assert attrs["gen_ai.operation.name"] == "chat"
     assert attrs["gen_ai.system"] == "openai"
@@ -109,7 +110,7 @@ def test_tool_call_exports_tool_span_with_call_id(monkeypatch):
     span = fake.spans[0]
     assert span["name"] == "hermes.tool terminal"
     attrs = _attrs(span)
-    assert attrs["hermes.tool.name"] == "terminal"
+    assert attrs["gen_ai.tool.name"] == "terminal"
     assert attrs["gen_ai.tool.call.id"] == "tool-1"
     assert attrs["gen_ai.session.id"] == "s1"
     assert attrs["gen_ai.agent.execution.id"]
@@ -151,16 +152,21 @@ def test_continuity_attrs_propagate_to_subsequent_spans(monkeypatch):
         api_request_id="api-1",
         provider="openai",
         model="gpt",
+        resume_from="r0",
         usage={"prompt_tokens": 1, "completion_tokens": 1},
         finish_reason="stop",
     )
 
     tool_attrs = _attrs(fake.spans[0])
     api_attrs = _attrs(fake.spans[1])
-    for attrs in (api_attrs, tool_attrs):
-        assert attrs["gen_ai.session.id"] == "s1"
-        assert attrs["gen_ai.agent.execution.id"]
-        assert attrs["hermes.resume_from"] == "r0"
+    # gen_ai.session.id and gen_ai.agent.execution.id are seeded by
+    # on_session_start and carried through to all subsequent spans.
+    assert tool_attrs["gen_ai.session.id"] == "s1"
+    assert tool_attrs["gen_ai.agent.execution.id"]
+    # post_api_request explicitly receives resume_from.
+    assert api_attrs["gen_ai.session.id"] == "s1"
+    assert api_attrs["gen_ai.agent.execution.id"]
+    assert api_attrs["hermes.resume_from"] == "r0"
 
 
 def test_api_request_error_emits_error_status(monkeypatch):

@@ -2644,6 +2644,83 @@ class GatewaySlashCommandsMixin:
             else:
                 return t("gateway.title.current_no_title", session_id=session_id)
 
+    async def _handle_sessions_command(self, event: MessageEvent) -> Optional[str]:
+        """Handle /sessions — browse recent sessions, with buttons when supported."""
+        if not self._session_db:
+            from hermes_state import format_session_db_unavailable
+            return format_session_db_unavailable(prefix=t("gateway.shared.session_db_unavailable_prefix"))
+
+        source = event.source
+        current_entry = self.session_store.get_or_create_session(source)
+        current_session_id = current_entry.session_id
+        user_source = source.platform.value if source.platform else None
+
+        try:
+            sessions = self._session_db.list_sessions_rich(
+                source=user_source,
+                limit=10,
+                order_by_last_active=True,
+            )
+        except Exception as e:
+            logger.debug("Failed to list sessions: %s", e)
+            return t("gateway.resume.list_failed", error=e)
+
+        sessions = [s for s in sessions if s.get("id") != current_session_id][:10]
+        if not sessions:
+            return "No previous sessions found yet. Use `/new <name>` or `/title <name>` once you have a session to come back to."
+
+        adapter = self.adapters.get(source.platform) if source and source.platform else None
+        has_picker = adapter is not None and callable(getattr(adapter, "send_sessions_picker", None))
+        if has_picker and source.chat_id:
+            async def _on_session_selected(target_id: str) -> str:
+                old_text = event.text
+                try:
+                    event.text = f"/resume {target_id}"
+                    return await self._handle_resume_command(event)
+                finally:
+                    event.text = old_text
+
+            async def _on_new_session() -> str:
+                old_text = event.text
+                try:
+                    event.text = "/new"
+                    result = await self._handle_reset_command(event)
+                    return str(result)
+                finally:
+                    event.text = old_text
+
+            metadata = None
+            try:
+                metadata = self._thread_metadata_for_source(
+                    source, self._reply_anchor_for_event(event)
+                )
+            except Exception:
+                metadata = None
+
+            try:
+                result = await adapter.send_sessions_picker(
+                    chat_id=source.chat_id,
+                    sessions=sessions,
+                    current_session_id=current_session_id,
+                    on_session_selected=_on_session_selected,
+                    on_new_session=_on_new_session,
+                    metadata=metadata,
+                )
+                if result.success:
+                    return None
+            except Exception as e:
+                logger.debug("Session picker send failed; falling back to text: %s", e)
+
+        lines = ["🗂 Sessions"]
+        for idx, s in enumerate(sessions, start=1):
+            title = s.get("title") or s.get("preview") or s.get("id")
+            preview = (s.get("preview") or "")[:40]
+            suffix = f" — {preview}" if preview and preview != title else ""
+            lines.append(f"{idx}. {title}{suffix}")
+        lines.append("")
+        lines.append("Use `/resume <number>`, `/resume <session id>`, or `/resume <title>`.")
+        return "\n".join(lines)
+
     async def _handle_resume_command(self, event: MessageEvent) -> str:
         """Handle /resume command — list or switch to a previous session."""
         if not self._session_db:
@@ -2666,7 +2743,11 @@ class GatewaySlashCommandsMixin:
 
         def _list_titled_sessions() -> list[dict]:
             user_source = source.platform.value if source.platform else None
-            sessions = self._session_db.list_sessions_rich(source=user_source, limit=10)
+            sessions = self._session_db.list_sessions_rich(
+                source=user_source,
+                limit=10,
+                order_by_last_active=True,
+            )
             return [s for s in sessions if s.get("title")][:10]
 
         if not name:

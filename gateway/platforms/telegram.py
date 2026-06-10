@@ -473,6 +473,8 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
+        # Interactive session picker state per chat (/sessions)
+        self._sessions_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
         # Slash-confirm button state: confirm_id → session_key (for /reload-mcp
@@ -2863,6 +2865,165 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    def _session_picker_label(self, session: Dict[str, Any]) -> str:
+        """Return a compact Telegram button label for a session row."""
+        title = (session.get("title") or "").strip()
+        preview = (session.get("preview") or "").strip()
+        label = title or preview or session.get("id", "Untitled session")
+        label = re.sub(r"\s+", " ", str(label)).strip() or "Untitled session"
+        if len(label) > 52:
+            label = label[:49].rstrip() + "..."
+        return label
+
+    def _build_sessions_keyboard(self, sessions: list):
+        """Build the /sessions inline keyboard."""
+        rows = []
+        for idx, session in enumerate(sessions[:10]):
+            rows.append([
+                InlineKeyboardButton(
+                    self._session_picker_label(session),
+                    callback_data=f"sr:{idx}",
+                )
+            ])
+        rows.append([InlineKeyboardButton("➕ New session", callback_data="sn")])
+        rows.append([InlineKeyboardButton("✗ Cancel", callback_data="sx")])
+        return InlineKeyboardMarkup(rows)
+
+    async def send_sessions_picker(
+        self,
+        chat_id: str,
+        sessions: list,
+        current_session_id: str,
+        on_session_selected,
+        on_new_session=None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send an inline-keyboard picker for recent sessions.
+
+        The callback data stores only indexes (``sr:<n>``), keeping Telegram's
+        64-byte callback limit safe while the full session IDs live in adapter
+        memory for the short-lived picker.
+        """
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        if not sessions:
+            return SendResult(success=False, error="No sessions")
+
+        try:
+            keyboard = self._build_sessions_keyboard(sessions)
+            text = self.format_message(
+                "🗂 *Sessions*\n\nTap a session to resume it, or start a new one."
+            )
+            thread_id = metadata.get("thread_id") if metadata else None
+            reply_to_id = self._reply_to_message_id_for_send(
+                None, metadata, reply_to_mode=self._reply_to_mode
+            )
+            msg = await self._send_message_with_thread_fallback(
+                chat_id=int(chat_id),
+                text=text,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=keyboard,
+                reply_to_message_id=reply_to_id,
+                **self._thread_kwargs_for_send(
+                    chat_id,
+                    thread_id,
+                    metadata,
+                    reply_to_message_id=reply_to_id,
+                    reply_to_mode=self._reply_to_mode,
+                ),
+                **self._link_preview_kwargs(),
+            )
+            self._sessions_picker_state[str(chat_id)] = {
+                "msg_id": msg.message_id,
+                "sessions": sessions[:10],
+                "current_session_id": current_session_id,
+                "on_session_selected": on_session_selected,
+                "on_new_session": on_new_session,
+            }
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_sessions_picker failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def _handle_sessions_picker_callback(self, query, data: str, chat_id: str) -> None:
+        """Handle /sessions inline keyboard callbacks (sr:/sn/sx)."""
+        state = self._sessions_picker_state.get(chat_id)
+        if not state:
+            await query.answer(text="Session picker expired — use /sessions again.")
+            return
+
+        if data == "sx":
+            self._sessions_picker_state.pop(chat_id, None)
+            try:
+                await query.edit_message_text(text="Session picker cancelled.", reply_markup=None)
+            except Exception:
+                pass
+            await query.answer()
+            return
+
+        if data == "sn":
+            callback = state.get("on_new_session")
+            if not callback:
+                await query.answer(text="New-session action unavailable.")
+                return
+            try:
+                result_text = await callback()
+            except Exception as exc:
+                logger.error("Session picker new-session callback failed: %s", exc)
+                result_text = f"Error starting new session: {exc}"
+            self._sessions_picker_state.pop(chat_id, None)
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(str(result_text)),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(text=str(result_text), reply_markup=None)
+                except Exception:
+                    pass
+            await query.answer(text="New session started")
+            return
+
+        if not data.startswith("sr:"):
+            await query.answer()
+            return
+
+        try:
+            idx = int(data[3:])
+        except ValueError:
+            await query.answer(text="Invalid session selection.")
+            return
+        sessions = state.get("sessions", [])
+        if idx < 0 or idx >= len(sessions):
+            await query.answer(text="Invalid session selection.")
+            return
+        target = sessions[idx]
+        target_id = target.get("id")
+        callback = state.get("on_session_selected")
+        if not target_id or not callback:
+            await query.answer(text="Session selection unavailable.")
+            return
+        try:
+            result_text = await callback(target_id)
+        except Exception as exc:
+            logger.error("Session picker resume callback failed: %s", exc)
+            result_text = f"Error resuming session: {exc}"
+        self._sessions_picker_state.pop(chat_id, None)
+        try:
+            await query.edit_message_text(
+                text=self.format_message(str(result_text)),
+                parse_mode=ParseMode.MARKDOWN_V2,
+                reply_markup=None,
+            )
+        except Exception:
+            try:
+                await query.edit_message_text(text=str(result_text), reply_markup=None)
+            except Exception:
+                pass
+        await query.answer(text="Session resumed")
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -3341,6 +3502,23 @@ class TelegramAdapter(BasePlatformAdapter):
         query_chat_type = getattr(query_chat, "type", None)
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
+
+        # --- Session picker callbacks (/sessions) ---
+        if data.startswith("sr:") or data in {"sn", "sx"}:
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to switch sessions.")
+                return
+            chat_id = str(query.message.chat_id) if query.message else None
+            if chat_id:
+                await self._handle_sessions_picker_callback(query, data, chat_id)
+            return
 
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):

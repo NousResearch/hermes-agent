@@ -55,7 +55,7 @@ class TestPlaceholderDetection:
             "example.com",
         ]
         for value in cases:
-            ok, err = validate_tool_arguments("write_file", {"path": value}, registry)
+            ok, err = validate_tool_arguments("read_file", {"path": value}, registry)
             assert ok is False, f"expected block for {value}"
             assert "placeholder" in err.lower()
 

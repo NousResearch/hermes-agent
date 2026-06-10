@@ -28,6 +28,7 @@ _PATH_LIKE_KEYS = {"path", "file", "target", "location", "output", "dest", "dest
 
 _PATH_READ_CHECK_TOOLS = {"read_file"}
 _PATH_EXISTENCE_TOOLS = {"read_file", "write_file", "patch", "search_files"}  # write_file/patch: path logged but not blocked
+_PATH_WRITE_TOOLS = {"write_file", "patch"}  # skip placeholder check for write operations
 
 _BASIC_TYPES = {"string", "integer", "number", "boolean", "array", "object"}
 
@@ -121,6 +122,8 @@ def validate_tool_arguments(
 
     for key, value in args.items():
         if isinstance(value, str) and _is_path_like(key):
+            if tool_name in _PATH_WRITE_TOOLS:
+                continue  # write operations create files — skip placeholder check
             expanded = os.path.expanduser(value.strip())
             if os.path.exists(expanded):
                 continue  # real path — skip both placeholder and type checks

@@ -9364,6 +9364,51 @@ class GatewayRunner:
                 "session_id": session_entry.session_id,
                 "message": message_text[:500],
             }
+            # Decision-style pre-agent hook. Handlers registered for
+            # message:received may return:
+            #   {"decision": "deny", "reply": "..."}    swallow the message
+            #       (optional reply is delivered as a platform notice);
+            #   {"decision": "rewrite", "message": "...",
+            #    "context_prompt_append": "..."}        mutate the message
+            #       and/or append to the context prompt before the agent runs.
+            # Handlers that return None behave exactly like telemetry hooks,
+            # mirroring the command:* decision hooks' back-compat contract.
+            # The decision context carries the full message text (the
+            # agent:start context keeps its 500-char preview).
+            _decision_ctx = dict(hook_ctx)
+            _decision_ctx["message"] = message_text
+            try:
+                _message_decisions = await self.hooks.emit_collect(
+                    "message:received", _decision_ctx
+                )
+            except Exception as _decision_err:
+                logger.debug(
+                    "message:received hook dispatch failed (non-fatal): %s",
+                    _decision_err,
+                )
+                _message_decisions = []
+            for _decision_result in _message_decisions:
+                if not isinstance(_decision_result, dict):
+                    continue
+                _decision = str(_decision_result.get("decision", "")).strip().lower()
+                if _decision == "deny":
+                    _deny_reply = str(_decision_result.get("reply") or "")
+                    if _deny_reply:
+                        await self._deliver_platform_notice(source, _deny_reply)
+                    return None
+                if _decision == "rewrite":
+                    _new_message = str(_decision_result.get("message") or "")
+                    if _new_message:
+                        message_text = _new_message
+                    _context_append = str(
+                        _decision_result.get("context_prompt_append") or ""
+                    )
+                    if _context_append:
+                        context_prompt = (
+                            f"{context_prompt}\n\n{_context_append}"
+                            if context_prompt
+                            else _context_append
+                        )
             await self.hooks.emit("agent:start", hook_ctx)
 
             # Run the agent

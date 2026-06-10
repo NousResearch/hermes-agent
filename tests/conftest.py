@@ -657,6 +657,12 @@ def _live_system_guard(request, monkeypatch):
         "daemon-reload", "try-restart", "reload-or-restart",
     )
     _PROCESS_KILLERS = ("pkill", "killall", "taskkill", "skill", "fuser")
+    # Shell/launcher executables whose arguments are themselves commands —
+    # argv[0]-only scanning must not exempt what they wrap.
+    _WRAPPER_COMMANDS = (
+        "sh", "bash", "zsh", "dash", "env", "nohup", "setsid",
+        "timeout", "sudo", "xargs", "nice", "ionice", "stdbuf", "flock",
+    )
 
     def _cmd_to_string(cmd) -> str:
         if cmd is None:
@@ -699,7 +705,17 @@ def _live_system_guard(request, monkeypatch):
             tokens = cmd_str.split()
         if not tokens:
             return False
-        for tok in tokens:
+
+        # For argv-style calls only argv[0] is the executable; scanning every
+        # argument blocked innocent commands like ``cat /tmp/.../skill``
+        # ("skill" is in _PROCESS_KILLERS).  Wrapper executables still get
+        # full-token scanning so ``["bash", "-c", "pkill ..."]`` stays caught.
+        if isinstance(cmd, (list, tuple)):
+            head0 = tokens[0].rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+            killer_tokens = tokens if head0 in _WRAPPER_COMMANDS else tokens[:1]
+        else:
+            killer_tokens = tokens
+        for tok in killer_tokens:
             head = tok.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
             if head in _PROCESS_KILLERS:
                 low = cmd_str.lower()

@@ -7,7 +7,9 @@ import {
   type DroppedFile,
   extractDroppedFiles,
   HERMES_PATHS_MIME,
-  partitionDroppedFiles
+  imageBlobDedupeKey,
+  partitionDroppedFiles,
+  rememberRecentImageBlobPaste
 } from './use-composer-actions'
 
 // A Finder/Explorer drop carries a native File handle; an in-app drag (project
@@ -242,5 +244,38 @@ describe('attachmentPreviewDataUrl', () => {
     $connection.set({ mode: 'remote' } as never)
 
     await expect(attachmentPreviewDataUrl('/home/gateway/shot.png')).resolves.toBe(REMOTE_PREVIEW)
+  })
+})
+
+describe('recent image paste dedupe', () => {
+  it('drops a near-simultaneous byte-identical pasted image', () => {
+    const seen = new Map<string, number>()
+    const key = 'shot'
+
+    expect(rememberRecentImageBlobPaste(seen, key, 1000)).toBe(true)
+    expect(rememberRecentImageBlobPaste(seen, key, 1200)).toBe(false)
+  })
+
+  it('allows the same image again after the short dedupe window', () => {
+    const seen = new Map<string, number>()
+    const key = 'shot'
+
+    expect(rememberRecentImageBlobPaste(seen, key, 1000)).toBe(true)
+    expect(rememberRecentImageBlobPaste(seen, key, 2601)).toBe(true)
+  })
+
+  it('keys pasted images by bytes as well as metadata', () => {
+    const a = new File([new Uint8Array([1, 2, 3])], 'paste.png', { type: 'image/png', lastModified: 1 })
+    const b = new File([new Uint8Array([1, 2, 4])], 'paste.png', { type: 'image/png', lastModified: 1 })
+
+    expect(imageBlobDedupeKey(a, new Uint8Array([1, 2, 3]))).not.toBe(imageBlobDedupeKey(b, new Uint8Array([1, 2, 4])))
+  })
+
+  it('collapses byte-identical pasted images even when File metadata differs', () => {
+    const data = new Uint8Array([1, 2, 3, 4])
+    const file = new File([data], 'Screenshot 1.png', { type: 'image/png', lastModified: 1 })
+    const mirroredBlob = new File([data], 'Screenshot 2.png', { type: 'image/png', lastModified: 2 })
+
+    expect(imageBlobDedupeKey(file, data)).toBe(imageBlobDedupeKey(mirroredBlob, data))
   })
 })

@@ -1,4 +1,4 @@
-import { useCallback } from 'react'
+import { useCallback, useRef } from 'react'
 
 import { requestComposerFocus, requestComposerInsert, requestComposerInsertRefs } from '@/app/chat/composer/focus'
 import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
@@ -34,6 +34,40 @@ function blobExtension(blob: Blob): string {
   const mime = normalize(blob.type.split(';')[0])
 
   return BLOB_MIME_EXTENSION[mime] || '.png'
+}
+
+const RECENT_IMAGE_PASTE_DEDUPE_MS = 1500
+
+export function imageBlobDedupeKey(blob: Blob, data: Uint8Array): string {
+  // A macOS screenshot can arrive twice as different File/Blob objects, with
+  // different names or lastModified values. Dedupe by content only so the same
+  // clipboard image collapses across those representations.
+  let hash = 2166136261
+
+  for (const byte of data) {
+    hash ^= byte
+    hash = Math.imul(hash, 16777619) >>> 0
+  }
+
+  return [blob.size, hash.toString(16)].join('|')
+}
+
+export function rememberRecentImageBlobPaste(seen: Map<string, number>, key: string, now = Date.now()): boolean {
+  for (const [seenKey, seenAt] of seen) {
+    if (now - seenAt > RECENT_IMAGE_PASTE_DEDUPE_MS) {
+      seen.delete(seenKey)
+    }
+  }
+
+  if (seen.has(key)) {
+    seen.set(key, now)
+
+    return false
+  }
+
+  seen.set(key, now)
+
+  return true
 }
 
 export function isImagePath(filePath: string): boolean {
@@ -295,6 +329,7 @@ export function useComposerActions({
     [scope]
   )
 
+  const recentImageBlobPastesRef = useRef<Map<string, number>>(new Map())
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
   }, [])
@@ -447,6 +482,15 @@ export function useComposerActions({
       try {
         const buffer = await blob.arrayBuffer()
         const data = new Uint8Array(buffer)
+        const dedupeKey = imageBlobDedupeKey(blob, data)
+
+        // macOS/Electron can fire the same Cmd+V screenshot through multiple
+        // clipboard paths/events. Drop only near-simultaneous byte-identical
+        // image blobs so a pasted screenshot attaches once.
+        if (!rememberRecentImageBlobPaste(recentImageBlobPastesRef.current, dedupeKey)) {
+          return true
+        }
+
         const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
 
         if (!savedPath) {

@@ -3526,6 +3526,14 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
+    # Normalize base_url: strip trailing /v1 for anthropic_messages mode
+    # so the Anthropic SDK's own /v1/messages suffix doesn't produce a
+    # double /v1 path (e.g. /v1/v1/messages → 404 on custom providers
+    # like vLLM / Ollama).
+    import re as _re
+    if api_mode == "anthropic_messages" and base_url:
+        base_url = _re.sub(r"/v1/?$", "", base_url.rstrip("/"))
+
     # Check if this URL is already saved — update model/context_length if so
     for entry in providers:
         if isinstance(entry, dict) and entry.get("base_url", "").rstrip(

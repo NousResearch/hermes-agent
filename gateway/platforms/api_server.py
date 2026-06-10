@@ -40,7 +40,12 @@ Requires:
 """
 
 import asyncio
+
 import errno
+
+import base64
+import binascii
+
 import hashlib
 import hmac
 import json
@@ -51,7 +56,11 @@ import logging
 import os
 import re
 import sqlite3
+
 import sys
+
+import tempfile
+
 import time
 import uuid
 from pathlib import Path
@@ -125,6 +134,7 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -2156,6 +2166,125 @@ class APIServerAdapter(BasePlatformAdapter):
             "platform": "api_server",
             "data": data,
         })
+
+    # ------------------------------------------------------
+    # POST /api/audio/transcribe — voice dictation
+    # ------------------------------------------------------
+
+    _MAX_TRANSCRIPTION_BYTES = 10 * 1024 * 1024  # 10 MB
+
+    async def _handle_audio_transcribe(self, request: web.Request) -> web.Response:
+        """Transcribe an audio recording sent as a base64 data-URL.
+
+        Accepts JSON with ``data_url`` (required) and optional ``mime_type``.
+        Returns ``{ok: bool, transcript: str, provider?: str}``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Invalid JSON body"},
+                status=400,
+            )
+
+        data_url = (body.get("data_url") or "").strip()
+        if not data_url.startswith("data:") or "," not in data_url:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Missing or invalid data_url"},
+                status=400,
+            )
+
+        header, encoded = data_url.split(",", 1)
+        if ";base64" not in header:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "data_url must be base64-encoded"},
+                status=400,
+            )
+
+        mime_type = (body.get("mime_type") or header[5:].split(";", 1)[0] or "audio/webm").strip()
+        normalized_mime = mime_type.split(";", 1)[0].lower()
+        if not (normalized_mime.startswith("audio/") or normalized_mime == "video/webm"):
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Payload must be an audio recording"},
+                status=400,
+            )
+
+        try:
+            audio_bytes = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Invalid base64 audio data"},
+                status=400,
+            )
+
+        if not audio_bytes:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Audio recording is empty"},
+                status=400,
+            )
+        if len(audio_bytes) > self._MAX_TRANSCRIPTION_BYTES:
+            return web.json_response(
+                {"ok": False, "transcript": "", "error": "Audio recording is too large"},
+                status=413,
+            )
+
+        # Determine file extension from mime type
+        ext_map = {
+            "audio/webm": ".webm",
+            "audio/wav": ".wav",
+            "audio/mp4": ".m4a",
+            "audio/mpeg": ".mp3",
+            "audio/ogg": ".ogg",
+            "audio/flac": ".flac",
+            "video/webm": ".webm",
+        }
+        suffix = ext_map.get(normalized_mime, ".webm")
+
+        tmp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+                tmp.write(audio_bytes)
+                tmp_path = tmp.name
+
+            from tools.transcription_tools import transcribe_audio
+
+            result = await asyncio.to_thread(transcribe_audio, tmp_path)
+            success = bool(result.get("success"))
+            transcript = str(result.get("transcript") or "").strip()
+            provider = result.get("provider")
+            error = result.get("error")
+
+            if success and transcript:
+                return web.json_response({
+                    "ok": True,
+                    "transcript": transcript,
+                    "provider": provider,
+                })
+            else:
+                return web.json_response({
+                    "ok": False,
+                    "transcript": "",
+                    "error": error or "Transcription returned no text",
+                })
+        except ImportError:
+            return web.json_response({
+                "ok": False,
+                "transcript": "",
+                "error": "STT is not available — install transcription dependencies",
+            })
+        except Exception as exc:
+            logger.exception("Audio transcription failed")
+            return web.json_response({
+                "ok": False,
+                "transcript": "",
+                "error": f"Transcription error: {exc}",
+            })
+        finally:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
 
     # ------------------------------------------------------------------
     # /api/sessions — thin client/session resource API
@@ -5400,12 +5529,58 @@ class APIServerAdapter(BasePlatformAdapter):
             ]
             self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
             assert self._app is not None
+
             # Native routes + multiplex /p/<profile>/… mirrors. Same handlers;
             # the profile-prefix middleware validates the prefix and scopes
             # config/credentials to that profile when multiplexing is on.
             for method, path, handler in self._http_route_table():
                 self._app.router.add_route(method, path, handler)
                 self._app.router.add_route(method, f"/p/{{profile}}{path}", handler)
+
+            self._app.router.add_get("/health", self._handle_health)
+            self._app.router.add_get("/health/detailed", self._handle_health_detailed)
+            self._app.router.add_get("/v1/health", self._handle_health)
+            self._app.router.add_get("/v1/models", self._handle_models)
+            self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/v1/skills", self._handle_skills)
+            self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+            # Voice dictation
+            self._app.router.add_post("/api/audio/transcribe", self._handle_audio_transcribe)
+            # Session/client control surface (thin wrappers over SessionDB + _run_agent)
+            self._app.router.add_get("/api/sessions", self._handle_list_sessions)
+            self._app.router.add_post("/api/sessions", self._handle_create_session)
+            self._app.router.add_get("/api/sessions/{session_id}", self._handle_get_session)
+            self._app.router.add_patch("/api/sessions/{session_id}", self._handle_patch_session)
+            self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
+            self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
+            self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
+            self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
+            self._app.router.add_post("/v1/responses", self._handle_responses)
+            self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
+            self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+            # Cron jobs management API
+            self._app.router.add_get("/api/jobs", self._handle_list_jobs)
+            self._app.router.add_post("/api/jobs", self._handle_create_job)
+            self._app.router.add_get("/api/jobs/{job_id}", self._handle_get_job)
+            self._app.router.add_patch("/api/jobs/{job_id}", self._handle_update_job)
+            self._app.router.add_delete("/api/jobs/{job_id}", self._handle_delete_job)
+            self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
+            self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
+            self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+
+            # Chronos managed-cron fire webhook (NAS → agent). Authenticated by a
+            # NAS-minted JWT (NOT API_SERVER_KEY), so it has its own auth path.
+            if _CRON_AVAILABLE:
+                self._app.router.add_post("/api/cron/fire", self._handle_cron_fire)
+            # Structured event streaming
+            self._app.router.add_post("/v1/runs", self._handle_runs)
+            self._app.router.add_get("/v1/runs/{run_id}", self._handle_get_run)
+            self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+            self._app.router.add_post("/v1/runs/{run_id}/approval", self._handle_run_approval)
+            self._app.router.add_post("/v1/runs/{run_id}/stop", self._handle_stop_run)
+
             # Store the adapter after native routes are registered. Local Hermes-Relay
             # bootstrap shims use this key as a feature-detection hook; registering
             # native routes first lets those shims no-op instead of shadowing the

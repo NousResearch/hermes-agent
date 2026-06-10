@@ -3661,6 +3661,118 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
     _guard_official_docker_root_gateway()
     sys.path.insert(0, str(PROJECT_ROOT))
 
+    # ── Windows: aggressively kill stale gateway processes before starting ──
+    # On Windows, SIGTERM/SIGKILL via os.kill() maps to TerminateProcess which
+    # may not cleanly tear down async I/O. Scheduled Task restarts can overlap
+    # with a draining old instance, producing duplicate PIDs that fight over
+    # the same WeChat/Telegram tokens.  This pre-start sweep uses taskkill /F
+    # to ensure no phantom gateways survive.
+    if replace and sys.platform == "win32":
+        import subprocess as _sp
+        from pathlib import Path as _Path
+
+        pids_to_kill: set = set()
+        hermes_home = str(get_hermes_home())
+
+        # 1. Read PID from gateway_state.json
+        try:
+            state_path = _Path(hermes_home) / "gateway_state.json"
+            if state_path.exists():
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state_pid = state.get("pid")
+                if isinstance(state_pid, int) and state_pid > 0 and state_pid != os.getpid():
+                    pids_to_kill.add(state_pid)
+        except Exception:
+            pass
+
+        # 2. Read PIDs from all profile gateway.pid files
+        try:
+            profiles_dir = _Path(hermes_home) / "profiles"
+            if profiles_dir.is_dir():
+                for profile_dir in profiles_dir.iterdir():
+                    pid_file = profile_dir / "gateway.pid"
+                    if pid_file.exists():
+                        try:
+                            pid_text = pid_file.read_text(encoding="utf-8").strip()
+                            pid = int(pid_text)
+                            if pid > 0 and pid != os.getpid():
+                                pids_to_kill.add(pid)
+                        except (ValueError, OSError):
+                            pass
+        except Exception:
+            pass
+
+        # 3. Forcibly terminate all found PIDs
+        for pid in sorted(pids_to_kill):
+            try:
+                print(f"[gateway] Killing stale gateway PID {pid}...", file=sys.stderr)
+                _sp.run(
+                    ["taskkill", "/F", "/PID", str(pid)],
+                    timeout=10,
+                    capture_output=True,
+                )
+            except Exception as exc:
+                print(f"[gateway] Failed to kill PID {pid}: {exc}", file=sys.stderr)
+
+        # 4. Brief wait for processes to actually die
+        if pids_to_kill:
+            import time as _time
+            _time.sleep(1.0)
+
+    elif replace and sys.platform != "win32":
+        # ── Linux / macOS: kill stale gateway processes before starting ──
+        # On Linux systemd restarts or manual restarts can overlap with a
+        # draining old instance, producing duplicate PIDs that fight over
+        # messaging platform tokens (WeChat, Telegram, etc.).
+        import signal as _signal
+        from pathlib import Path as _Path
+
+        pids_to_kill: set = set()
+        hermes_home = str(get_hermes_home())
+
+        # 1. Read PID from gateway_state.json
+        try:
+            state_path = _Path(hermes_home) / "gateway_state.json"
+            if state_path.exists():
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                state_pid = state.get("pid")
+                if isinstance(state_pid, int) and state_pid > 0 and state_pid != os.getpid():
+                    pids_to_kill.add(state_pid)
+        except Exception:
+            pass
+
+        # 2. Read PIDs from all profile gateway.pid files
+        try:
+            profiles_dir = _Path(hermes_home) / "profiles"
+            if profiles_dir.is_dir():
+                for profile_dir in profiles_dir.iterdir():
+                    pid_file = profile_dir / "gateway.pid"
+                    if pid_file.exists():
+                        try:
+                            pid_text = pid_file.read_text(encoding="utf-8").strip()
+                            pid = int(pid_text)
+                            if pid > 0 and pid != os.getpid():
+                                pids_to_kill.add(pid)
+                        except (ValueError, OSError):
+                            pass
+        except Exception:
+            pass
+
+        # 3. Send SIGKILL to all found PIDs
+        for pid in sorted(pids_to_kill):
+            try:
+                print(f"[gateway] Killing stale gateway PID {pid}...", file=sys.stderr)
+                os.kill(pid, _signal.SIGKILL)
+            except ProcessLookupError:
+                pass  # Already dead
+            except Exception as exc:
+                print(f"[gateway] Failed to kill PID {pid}: {exc}", file=sys.stderr)
+
+        # 4. Brief wait for processes to actually die
+        if pids_to_kill:
+            import time as _time
+            _time.sleep(1.0)
+
     # Detached Windows gateway runs must ignore console-control broadcasts
     # from sibling CLI processes, but foreground `hermes gateway run` still
     # needs to obey the banner's "Press Ctrl+C to stop" contract.

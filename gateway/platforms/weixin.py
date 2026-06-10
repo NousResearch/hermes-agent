@@ -89,6 +89,7 @@ CONFIG_TIMEOUT_MS = 10_000
 QR_TIMEOUT_MS = 35_000
 
 MAX_CONSECUTIVE_FAILURES = 3
+MAX_SESSION_EXPIRATIONS = 3  # Hard cap on total session expirations before giving up permanently
 RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
@@ -1225,6 +1226,9 @@ class WeixinAdapter(BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
 
+        # Session expiry hard cap — after MAX_SESSION_EXPIRATIONS, give up permanently.
+        self._session_expiry_count = 0
+
         if self._account_id and not self._token:
             persisted = load_weixin_account(hermes_home, self._account_id)
             if persisted:
@@ -1357,7 +1361,22 @@ class WeixinAdapter(BasePlatformAdapter):
                 if ret not in {0, None} or errcode not in {0, None}:
                     if (ret == SESSION_EXPIRED_ERRCODE or errcode == SESSION_EXPIRED_ERRCODE
                             or _is_stale_session_ret(ret, errcode, response.get("errmsg"))):
-                        logger.error("[%s] Session expired; pausing for 10 minutes", self.name)
+                        self._session_expiry_count += 1
+                        if self._session_expiry_count >= MAX_SESSION_EXPIRATIONS:
+                            logger.error(
+                                "[%s] Session expired %d times (%d max); giving up permanently",
+                                self.name, self._session_expiry_count, MAX_SESSION_EXPIRATIONS,
+                            )
+                            self._set_fatal_error(
+                                "weixin_max_session_expirations",
+                                f"Session expired {self._session_expiry_count} times",
+                                retryable=False,
+                            )
+                            break
+                        logger.error(
+                            "[%s] Session expired (%d/%d); pausing for 10 minutes",
+                            self.name, self._session_expiry_count, MAX_SESSION_EXPIRATIONS,
+                        )
                         await asyncio.sleep(600)
                         consecutive_failures = 0
                         continue

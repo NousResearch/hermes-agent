@@ -162,3 +162,41 @@ async def test_only_whitespace_content_after_strip_skipped(tmp_path):
     # Image delivered, no empty text chunk sent
     mock_img.assert_awaited_once()
     assert len(sent_payloads) == 0
+
+
+@pytest.mark.asyncio
+async def test_protected_span_media_directive_stripped_from_visible_text():
+    """MEDIA: inside fenced code blocks must not be uploaded but must not leak
+    as visible text either (reviewer feedback on #43679)."""
+    adapter = _make_adapter()
+    sent_payloads = []
+
+    def _fake_post(url, json=None, **kw):
+        sent_payloads.append(json)
+        return _FakeResponse(200)
+
+    adapter._http_session.post = _fake_post
+
+    # MEDIA: inside a fenced code block — extract_media skips it (protected span)
+    # but _strip_media_directives should still clean it from visible text.
+    content = (
+        "Here is an example:\n"
+        "```json\n"
+        '  "path": "MEDIA:/home/agent/private/report.docx"\n'
+        "```\n"
+        "Done."
+    )
+
+    with patch.object(adapter, "send_document", new_callable=AsyncMock) as mock_doc:
+        result = await adapter.send("chat1", content)
+
+    assert result.success is True
+    # No attachment should be sent (protected span)
+    mock_doc.assert_not_awaited()
+    # Visible text must not contain MEDIA: or the internal path
+    assert sent_payloads, "Bridge should have received a text message"
+    text = sent_payloads[0]["message"]
+    assert "MEDIA:" not in text
+    assert "/home/agent/private/report.docx" not in text
+    # Normal trailing text should survive
+    assert "Done." in text

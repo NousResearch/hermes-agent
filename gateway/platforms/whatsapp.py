@@ -188,6 +188,7 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_url,
     cache_audio_from_url,
+    _strip_media_directives,
 )
 
 
@@ -941,6 +942,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
             media_files, cleaned = self.extract_media(content)
             media_files = self.filter_media_delivery_paths(media_files)
             _, cleaned = self.extract_images(cleaned)
+            # Strip any remaining MEDIA: tags from visible text (protected-span
+            # directives inside code blocks / inline code are not extracted but
+            # must not leak as visible path text — #43656).
+            cleaned = _strip_media_directives(cleaned).strip()
 
             _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a", ".flac"}
             _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp"}

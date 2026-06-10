@@ -802,6 +802,17 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 updates["profile"] = _normalize_profile(_profile)
 
         updated = _apply_skill_fields({**job, **updates})
+
+        # Normalize repeat field if present in updates
+        if "repeat" in updates:
+            raw_repeat = updated["repeat"]
+            if isinstance(raw_repeat, (int, float)):
+                val = int(raw_repeat) if raw_repeat > 0 else None
+                updated["repeat"] = {"times": val, "completed": 0}
+            elif isinstance(raw_repeat, dict):
+                raw_repeat.setdefault("times", None)
+                raw_repeat.setdefault("completed", 0)
+
         schedule_changed = "schedule" in updates
 
         if "skills" in updates or "skill" in updates:

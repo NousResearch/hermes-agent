@@ -194,6 +194,46 @@ def test_resolve_codex_runtime_credentials_pool_fallback_skips_exhausted(tmp_pat
     assert resolved["source"] == "credential_pool"
 
 
+def test_resolve_codex_runtime_credentials_pool_fallback_skips_exhausted_null_reset_at(tmp_path, monkeypatch):
+    """The pool fallback skips entries marked exhausted with null reset_at during active cooldown, and dead entries."""
+    import time as _time
+
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_store = {
+        "version": 1,
+        "providers": {},
+        "credential_pool": {
+            "openai-codex": [
+                {
+                    "source": "device_code",
+                    "access_token": "exhausted-token",
+                    "last_status": "exhausted",
+                    "last_error_reset_at": None,
+                    "last_status_at": _time.time(),  # active default cooldown
+                    "last_error_code": 429,
+                },
+                {
+                    "source": "device_code",
+                    "access_token": "dead-token",
+                    "last_status": "dead",
+                },
+                {
+                    "source": "device_code",
+                    "access_token": "usable-token",
+                    "last_status": "ok",
+                },
+            ],
+        },
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    resolved = resolve_codex_runtime_credentials()
+    assert resolved["api_key"] == "usable-token"
+    assert resolved["source"] == "credential_pool"
+
+
 def test_resolve_codex_runtime_credentials_pool_fallback_no_usable_entry(tmp_path, monkeypatch):
     """When both singleton and pool are empty/unusable, the original AuthError propagates."""
     hermes_home = tmp_path / "hermes"

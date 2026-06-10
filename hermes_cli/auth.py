@@ -3900,16 +3900,56 @@ def _pool_codex_access_token() -> str:
         if not isinstance(entries, list):
             return ""
 
+        def _parse_timestamp(value: Any) -> Optional[float]:
+            if value is None or value == "":
+                return None
+            if isinstance(value, (int, float)):
+                numeric = float(value)
+                if numeric <= 0:
+                    return None
+                return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+            if isinstance(value, str):
+                raw = value.strip()
+                if not raw:
+                    return None
+                try:
+                    numeric = float(raw)
+                    return numeric / 1000.0 if numeric > 1_000_000_000_000 else numeric
+                except ValueError:
+                    pass
+                try:
+                    return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+                except ValueError:
+                    return None
+            return None
+
         def _entry_usable(entry: Dict[str, Any]) -> bool:
             if not isinstance(entry, dict):
                 return False
             token = entry.get("access_token")
             if not isinstance(token, str) or not token.strip():
                 return False
-            # Skip entries currently in an exhaustion cooldown window.
-            reset_at = entry.get("last_error_reset_at")
-            if isinstance(reset_at, (int, float)) and reset_at > time.time():
+            # Skip entries marked dead
+            if entry.get("last_status") == "dead":
                 return False
+            # Check explicit reset time first
+            reset_at = _parse_timestamp(entry.get("last_error_reset_at"))
+            if reset_at is not None:
+                if reset_at > time.time():
+                    return False
+            # Check exhaustion cooldown
+            if entry.get("last_status") == "exhausted":
+                if reset_at is None:
+                    # Fallback to default cooldown based on status code
+                    status_at = _parse_timestamp(entry.get("last_status_at"))
+                    if status_at is not None:
+                        err_code = entry.get("last_error_code")
+                        cooldown = 300 if err_code == 401 else 3600
+                        if status_at + cooldown > time.time():
+                            return False
+                    else:
+                        # If status is exhausted but we have no timestamps, assume it is exhausted
+                        return False
             return True
 
         for entry in entries:

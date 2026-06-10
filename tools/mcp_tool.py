@@ -1451,29 +1451,24 @@ class MCPServerTask:
                         _stdio_pids.pop(_pid, None)
                     for pid in new_pids:
                         if _terminate_stdio_subprocess(pid):
-                            _stdio_pgids.pop(pid, None)
+                            # Direct child exited — descendants may still be in
+                            # its pgroup (e.g. wrapper exited before ``claude
+                            # mcp serve``). Probe with signal 0.
+                            pgroup_alive = False
+                            pgid = _stdio_pgids.get(pid)
+                            if pgid is not None and _killpg is not None:
+                                try:
+                                    _killpg(pgid, 0)
+                                    pgroup_alive = True
+                                except (ProcessLookupError, PermissionError, OSError):
+                                    pgroup_alive = False
+                            if pgroup_alive:
+                                _orphan_stdio_pids.add(pid)
+                            else:
+                                _stdio_pgids.pop(pid, None)
                             continue
-                        # ``os.kill(pid, 0)`` is NOT a no-op on Windows
-                        # (bpo-14484). Use the cross-platform check.
-                        pid_alive = _pid_exists(pid)
-                        pgroup_alive = False
-                        pgid = _stdio_pgids.get(pid)
-                        if not pid_alive and pgid is not None and _killpg is not None:
-                            # Direct child exited but descendants may still be
-                            # in its pgroup (e.g. ``claude mcp serve`` spawned
-                            # by an MCP wrapper that exited first).  Probe with
-                            # signal 0 — succeeds iff any pgroup member is alive.
-                            try:
-                                _killpg(pgid, 0)
-                                pgroup_alive = True
-                            except (ProcessLookupError, PermissionError, OSError):
-                                pgroup_alive = False
-                        if pid_alive or pgroup_alive:
-                            _orphan_stdio_pids.add(pid)
-                        else:
-                            # Nothing left to reap — drop the pgid entry so
-                            # PID-reuse can't surface stale pgroup state later.
-                            _stdio_pgids.pop(pid, None)
+                        # Immediate teardown failed — track for the orphan sweep.
+                        _orphan_stdio_pids.add(pid)
 
     # Content types a real MCP Streamable-HTTP endpoint may return on the
     # initial POST/GET. Anything else on a 2xx response means the URL is not

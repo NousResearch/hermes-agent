@@ -1116,6 +1116,9 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    manifest_hash = hash(frozenset(
+        _build_skills_manifest(skills_dir).items()
+    ))
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -1123,6 +1126,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        manifest_hash,
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)

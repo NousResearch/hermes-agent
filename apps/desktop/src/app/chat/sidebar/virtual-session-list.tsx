@@ -35,7 +35,7 @@ interface VirtualSessionListProps {
   presenceBySession?: Map<string, SessionPresenceRecord>
 }
 
-const ROW_ESTIMATE_PX = 40
+const ROW_ESTIMATE_PX = 28
 const OVERSCAN_ROWS = 12
 
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({

@@ -818,6 +818,7 @@ export interface Translations {
     pinned: string
     sessions: string
     cronJobs: string
+    liveElsewhere: string
     groupAriaGrouped: string
     groupAriaUngrouped: string
     groupTitleGrouped: string

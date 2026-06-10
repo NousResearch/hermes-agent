@@ -66,6 +66,8 @@ export type GatewayEventPayload = {
   // status.update (gateway lifecycle statuses: compression progress,
   // background-process notices)
   kind?: string
+  // gateway.ready (the emitting gateway's resolved device name)
+  device_name?: string
 }
 
 export function textPart(text: string): ChatMessagePart {

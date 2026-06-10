@@ -1150,6 +1150,7 @@ export const ja = defineLocale({
     pinned: 'ピン留め',
     sessions: 'セッション',
     cronJobs: 'cronジョブ',
+    liveElsewhere: '他のデバイスのセッション',
     groupAriaGrouped: 'セッションを単一リストとして表示',
     groupAriaUngrouped: 'ワークスペースごとにセッションをグループ化',
     groupTitleGrouped: 'セッションのグループ化を解除',

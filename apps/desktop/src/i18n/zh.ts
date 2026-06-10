@@ -1212,6 +1212,7 @@ export const zh: Translations = {
     pinned: '已置顶',
     sessions: '会话',
     cronJobs: '定时任务',
+    liveElsewhere: '其他设备上的会话',
     groupAriaGrouped: '以单一列表显示会话',
     groupAriaUngrouped: '按工作区分组会话',
     groupTitleGrouped: '取消分组',

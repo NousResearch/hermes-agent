@@ -1065,6 +1065,7 @@ export const en: Translations = {
     pinned: 'Pinned',
     sessions: 'Sessions',
     cronJobs: 'Cron jobs',
+    liveElsewhere: 'Live on other devices',
     groupAriaGrouped: 'Show sessions as a single list',
     groupAriaUngrouped: 'Group sessions by workspace',
     groupTitleGrouped: 'Ungroup sessions',

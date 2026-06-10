@@ -152,6 +152,11 @@ export interface SessionActivityStatus {
   text: string
 }
 export const $sessionActivityStatus = atom<SessionActivityStatus | null>(null)
+// THIS device's resolved name (config → MeshBoard → Tailscale → hostname),
+// captured from the FIRST gateway.ready frame — the primary local gateway
+// connects at boot before any remote backend can exist. Used as the
+// sender_device on prompts sent to REMOTE gateways (channels Phase 2b).
+export const $localDeviceName = atom('')
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
@@ -200,6 +205,7 @@ export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => upd
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
 export const setSessionActivityStatus = (next: Updater<SessionActivityStatus | null>) =>
   updateAtom($sessionActivityStatus, next)
+export const setLocalDeviceName = (next: Updater<string>) => updateAtom($localDeviceName, next)
 
 // Watchdog tracking — when does a "working" session count as stuck?
 // Long-running tool calls (LLM inference, long shell commands, web fetches)

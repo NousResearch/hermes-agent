@@ -23,6 +23,7 @@ import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
+  $localDeviceName,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -32,6 +33,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setLocalDeviceName,
   setSessionActivityStatus,
   setTurnStartedAt,
   setYoloActive
@@ -620,6 +622,16 @@ export function useMessageStream({
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
       if (event.type === 'gateway.ready') {
+        // First-wins device identity: the primary (local) gateway connects at
+        // boot before any remote backend can exist, so the first ready frame
+        // names THIS device. Later ready frames from remote backends carry the
+        // peer's name and must not overwrite it (channels Phase 2b).
+        const deviceName = typeof payload?.device_name === 'string' ? payload.device_name.trim() : ''
+
+        if (deviceName && !$localDeviceName.get()) {
+          setLocalDeviceName(deviceName)
+        }
+
         return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active

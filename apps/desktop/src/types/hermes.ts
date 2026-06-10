@@ -161,6 +161,8 @@ export interface MessagingPlatformTestResponse {
 
 export interface GatewayReadyPayload {
   skin?: unknown
+  /** The emitting gateway's resolved device name (channels Phase 2b). */
+  device_name?: string
 }
 
 export interface HermesConfig {

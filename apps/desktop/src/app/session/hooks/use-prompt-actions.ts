@@ -29,11 +29,13 @@ import {
   type ComposerAttachment,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
+import { activeBackendIsRemote } from '@/store/gateway'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import {
   $busy,
+  $localDeviceName,
   $messages,
   $yoloActive,
   setAwaitingResponse,
@@ -42,6 +44,16 @@ import {
   setModelPickerOpen,
   setSessions
 } from '@/store/session'
+
+// Cross-device attribution (channels Phase 2b): a prompt sent to a REMOTE
+// gateway must carry this device's name — the remote gateway's auto-stamp
+// would otherwise attribute the message to the remote host. Local prompts
+// omit it; the local auto-stamp is already correct.
+function remoteSenderParams(): { sender_device?: string } {
+  const deviceName = $localDeviceName.get()
+
+  return activeBackendIsRemote() && deviceName ? { sender_device: deviceName } : {}
+}
 
 import type {
   ClientSessionState,
@@ -351,7 +363,7 @@ export function usePromptActions({
         await syncImageAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
         })
-        await requestGateway('prompt.submit', { session_id: sessionId, text })
+        await requestGateway('prompt.submit', { session_id: sessionId, text, ...remoteSenderParams() })
 
         if (usingComposerAttachments) {
           clearComposerAttachments()
@@ -894,7 +906,8 @@ export function usePromptActions({
         await requestGateway('prompt.submit', {
           session_id: activeSessionId,
           text: userText,
-          truncate_before_user_ordinal: truncateBeforeUserOrdinal
+          truncate_before_user_ordinal: truncateBeforeUserOrdinal,
+          ...remoteSenderParams()
         })
       } catch (err) {
         updateSessionState(activeSessionId, state => ({

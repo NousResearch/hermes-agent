@@ -11,10 +11,12 @@ import { sessionArchivePreserveIds } from '@/lib/session-eligibility'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearComposerAttachments, clearComposerDraft } from '@/store/composer'
 import { clearQueuedPrompts } from '@/store/composer-queue'
+import { ensureGatewayForEndpoint } from '@/store/gateway'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { remoteSessionEndpoint } from '@/store/remote-sessions'
 import {
   $currentCwd,
   $desktopYoloDefault,
@@ -467,9 +469,23 @@ export function useSessionActions({
 
       // Swap the single live gateway to this session's profile before any
       // gateway call (no-op when it's already on that profile / single-profile).
-      const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
-      const sessionProfile = storedForProfile?.profile
-      await ensureGatewayProfile(sessionProfile)
+      // A remote session (live on another device, discovered via presence) is
+      // reached by dialing its advertised gateway endpoint instead of swapping
+      // the local backend to a profile. Every later gateway call in this resume
+      // flows through activeGateway(), which ensureGatewayForEndpoint points at
+      // the remote socket — so session.resume hydrates from the remote side.
+      // `sessionProfile` stays undefined for remote: a local profile is
+      // meaningless to the remote gateway, and the local getSessionMessages
+      // REST miss below is explicitly non-fatal.
+      const remoteEndpoint = remoteSessionEndpoint(storedSessionId)
+      let sessionProfile: string | null | undefined
+      if (remoteEndpoint) {
+        await ensureGatewayForEndpoint(remoteEndpoint)
+      } else {
+        const storedForProfile = $sessions.get().find(session => session.id === storedSessionId)
+        sessionProfile = storedForProfile?.profile
+        await ensureGatewayProfile(sessionProfile)
+      }
 
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)

@@ -93,6 +93,14 @@ export function isActivePrimary(): boolean {
   return activeKey === primaryProfile
 }
 
+// True when outbound requests currently route to a REMOTE gateway (another
+// device's dashboard, attached via ensureGatewayForEndpoint). Prompt flows use
+// this to attach this device's identity — the remote gateway's auto-stamp
+// would otherwise attribute the message to the remote host.
+export function activeBackendIsRemote(): boolean {
+  return isRemoteBackendKey(activeKey)
+}
+
 export function activeGateway(): HermesGateway | null {
   if (activeKey === primaryProfile) {
     return primaryGateway

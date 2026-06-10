@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $currentUsage, $sessionActivityStatus } from '@/store/session'
+import { $currentUsage, $localDeviceName, $sessionActivityStatus } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './use-message-stream'
@@ -168,5 +168,44 @@ describe('useMessageStream status.update events', () => {
       } as RpcEvent)
     )
     expect($sessionActivityStatus.get()).toBeNull()
+  })
+})
+
+describe('useMessageStream gateway.ready device identity', () => {
+  beforeEach(() => {
+    handleEvent = () => undefined
+    $localDeviceName.set('')
+  })
+
+  afterEach(() => {
+    cleanup()
+    $localDeviceName.set('')
+    vi.restoreAllMocks()
+  })
+
+  const ready = (deviceName?: string) =>
+    ({ payload: deviceName === undefined ? {} : { device_name: deviceName }, type: 'gateway.ready' }) as RpcEvent
+
+  it('captures the first ready frame as this device (first-wins)', () => {
+    render(<MessageStreamHarness />)
+
+    act(() => handleEvent(ready('ko-mac')))
+    expect($localDeviceName.get()).toBe('ko-mac')
+
+    // A later ready frame — e.g. a REMOTE backend connecting — must not
+    // overwrite this device's identity with the peer's name.
+    act(() => handleEvent(ready('ko-win11')))
+    expect($localDeviceName.get()).toBe('ko-mac')
+  })
+
+  it('ignores ready frames without a usable device name', () => {
+    render(<MessageStreamHarness />)
+
+    act(() => handleEvent(ready()))
+    act(() => handleEvent(ready('   ')))
+    expect($localDeviceName.get()).toBe('')
+
+    act(() => handleEvent(ready('ko-mac')))
+    expect($localDeviceName.get()).toBe('ko-mac')
   })
 })

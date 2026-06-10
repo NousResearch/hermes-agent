@@ -93,6 +93,7 @@ import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
+import { SidebarRemoteSessionsSection } from './remote-sessions-section'
 import { ProfileRail } from './profile-switcher'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
@@ -311,6 +312,7 @@ export function ChatSidebar({
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
+  const [remoteOpen, setRemoteOpen] = useState(true)
   const messagingSessions = useStore($messagingSessions)
   const messagingPlatformTotals = useStore($messagingPlatformTotals)
   const messagingTruncated = useStore($messagingTruncated)
@@ -980,6 +982,15 @@ export function ChatSidebar({
             onToggle={() => setSidebarCronOpen(!cronOpen)}
             onTriggerJob={onTriggerCronJob}
             open={cronOpen}
+          />
+        )}
+
+        {contentVisible && !trimmedQuery && (
+          <SidebarRemoteSessionsSection
+            label={s.liveElsewhere}
+            onResumeSession={onResumeSession}
+            onToggle={() => setRemoteOpen(prev => !prev)}
+            open={remoteOpen}
           />
         )}
 

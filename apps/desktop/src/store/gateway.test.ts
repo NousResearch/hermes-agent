@@ -165,3 +165,28 @@ describe('ensureGatewayForEndpoint', () => {
     expect(remote.closed).toBe(true)
   })
 })
+
+describe('activeBackendIsRemote', () => {
+  beforeEach(() => {
+    FakeGateway.instances = []
+    configureGatewayRegistry({ onEvent: () => undefined })
+    setPrimaryGateway(new FakeGateway() as never, 'default')
+  })
+
+  afterEach(() => {
+    closeSecondaryGateways()
+  })
+
+  it('flips with the active backend', async () => {
+    const { activeBackendIsRemote, ensureGatewayForProfile } = await import('./gateway')
+
+    await ensureGatewayForProfile('default')
+    expect(activeBackendIsRemote()).toBe(false)
+
+    await ensureGatewayForEndpoint(ENDPOINT, 'tok')
+    expect(activeBackendIsRemote()).toBe(true)
+
+    await ensureGatewayForProfile('default')
+    expect(activeBackendIsRemote()).toBe(false)
+  })
+})

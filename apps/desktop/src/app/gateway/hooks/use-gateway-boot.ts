@@ -24,6 +24,7 @@ import {
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
+import { $remoteSessions } from '@/store/remote-sessions'
 import {
   $attentionSessionIds,
   $connection,
@@ -260,6 +261,17 @@ export function useGatewayBoot({
       for (const session of $sessions.get()) {
         if (live.has(session.id)) {
           keep.add(normalizeProfileKey(session.profile))
+        }
+      }
+
+      // A REMOTE session that's still running (or waiting on input) keeps its
+      // endpoint backend alive so the stream keeps painting after the user
+      // switches away; idle remotes are pruned like idle profiles (channels
+      // Phase 2b). Endpoint keys contain '://' so they can't collide with
+      // profile keys.
+      for (const remote of $remoteSessions.get()) {
+        if (live.has(remote.sessionId)) {
+          keep.add(remote.endpoint)
         }
       }
 

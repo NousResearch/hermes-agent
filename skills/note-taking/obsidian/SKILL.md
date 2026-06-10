@@ -1,7 +1,11 @@
 ---
 name: obsidian
-description: Read, search, create, and edit notes in the Obsidian vault.
+description: Read, search, create, and edit notes in the Obsidian vault. Hermes-level filesystem-first knowledge management with wikilinks, frontmatter, and structured notes.
 platforms: [linux, macos, windows]
+version: "1.1.0"
+author: hermes
+license: MIT
+tags: [note-taking, knowledge-management, obsidian, vault, wikilinks, markdown]
 ---
 
 # Obsidian Vault
@@ -10,13 +14,30 @@ Use this skill for filesystem-first Obsidian vault work: reading notes, listing 
 
 ## Vault path
 
-Use a known or resolved vault path before calling file tools.
+Resolve the vault path once at the start of vault operations. Priority order:
 
-The documented vault-path convention is the `OBSIDIAN_VAULT_PATH` environment variable, for example from `~/.hermes/.env`. If it is unset, use `~/Documents/Obsidian Vault`.
+1. **`OBSIDIAN_VAULT_PATH`** environment variable (set in `~/.hermes/.env` or `/opt/data/.env`)
+2. **Default**: `~/Documents/Obsidian Vault`
+3. **Fallback**: `/opt/data/vault` (Linux server default)
 
-File tools do not expand shell variables. Do not pass paths containing `$OBSIDIAN_VAULT_PATH` to `read_file`, `write_file`, `patch`, or `search_files`; resolve the vault path first and pass a concrete absolute path. Vault paths may contain spaces, which is another reason to prefer file tools over shell commands.
+Run this once to resolve:
 
-If the vault path is unknown, `terminal` is acceptable for resolving `OBSIDIAN_VAULT_PATH` or checking whether the fallback path exists. Once the path is known, switch back to file tools.
+```bash
+echo "${OBSIDIAN_VAULT_PATH:-${HOME}/Documents/Obsidian Vault}"
+```
+
+File tools do not expand shell variables. Do not pass paths containing `$OBSIDIAN_VAULT_PATH` to `read_file`, `write_file`, `patch`, or `search_files`; resolve the vault path first and pass a concrete absolute path.
+
+If the vault path is unknown, use `terminal` to resolve it. Once known, switch to file tools.
+
+## Vault structure conventions
+
+- `project-name/` — project folder with its own `README.md` index
+- `project-name/dashboards/` — summary/dashboard notes
+- `project-name/verticals/` or `project-name/sub-topic/` — categorized detail notes
+- `project-name/templates/` — reusable templates
+- Notes use YAML frontmatter for metadata: `tags`, `created`, `vertical`, `status`
+- Inter-note linking via `[[Note Name]]` wikilinks
 
 ## Read a note
 
@@ -38,24 +59,35 @@ Use `search_files` for both filename and content searches. Prefer this over `gre
 
 ## Create a note
 
-Use `write_file` with the resolved absolute path and the full markdown content. Prefer this over shell heredocs or `echo` because it avoids shell quoting issues and returns structured results.
+Use `write_file` with the resolved absolute path. Always include YAML frontmatter with at least `tags` and `created` fields. Always add wikilinks to related notes.
 
 ## Append to a note
 
-Prefer a native file-tool workflow when it is not awkward:
+Prefer a native file-tool workflow:
 
 - Read the target note with `read_file`.
-- Use `patch` for an anchored append when there is stable context, such as adding a section after an existing heading or appending before a known trailing block.
-- Use `write_file` when rewriting the whole note is clearer than constructing a fragile patch.
-
-For an anchored append with `patch`, replace the anchor with the anchor plus the new content.
-
-For a simple append with no stable context, `terminal` is acceptable if it is the clearest safe option.
+- Use `patch` for an anchored append when there is stable context (e.g., after a heading).
+- Use `write_file` when rewriting the whole note is clearer.
 
 ## Targeted edits
 
-Use `patch` for focused note changes when the current content gives you stable context. Prefer this over shell text rewriting.
+Use `patch` for focused note changes. Prefer this over shell text rewriting.
 
 ## Wikilinks
 
-Obsidian links notes with `[[Note Name]]` syntax. When creating notes, use these to link related content.
+Obsidian links notes with `[[Note Name]]` syntax. Notes in subfolders: `[[folder/Note Name]]`. Aliases: `[[Note Name|Display Text]]`. When creating notes, link related content.
+
+## Project setup pattern
+
+To bootstrap a new project in the vault:
+
+1. Create `project-name/README.md` with YAML frontmatter and wikilinks
+2. Create subdirectories as needed (dashboards, verticals, templates)
+3. Populate with structured notes from research/source data
+4. Link back to vault root README.md
+
+## Diagnostics
+
+- Check vault health: count notes, verify wikilinks resolve, check frontmatter validity
+- Use `search_files` with `target: "files"`, `pattern: "*.md"` under vault root
+- Verify `.obsidian/app.json` exists for vault config

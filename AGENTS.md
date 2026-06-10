@@ -16,6 +16,7 @@ Built-in workflow skills for this model:
 - `code-structure` — restructure messy AI-generated code into clean boundaries without changing behavior.
 - `gpt-loop` — run implement/test/review/fix/re-review cycles until blockers are resolved.
 - `code-simplifier` — reduce accidental complexity while preserving behavior and safety checks.
+- `obsidian` — filesystem-first knowledge management vault (note-taking/obsidian). Resolve vault path via `OBSIDIAN_VAULT_PATH` (set in `~/.hermes/.env`). Use for structured research, project wikis, prospect dashboards, and cross-session knowledge bases with wikilinks and YAML frontmatter.
 
 ---
 

@@ -10,7 +10,70 @@ type Updater<T> = T | ((current: T) => T)
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
+// Cached copy of Settings → Sessions → Default project directory. The main
+// process persists this in project-dir.json, but the renderer must also honor it
+// when seeding $currentCwd — otherwise PR #37586's sticky localStorage home dir
+// wins and new sessions ignore the user's explicit picker choice.
+let configuredDefaultProjectDir = ''
+
 export const getRememberedWorkspaceCwd = (): string => storedString(WORKSPACE_CWD_KEY)?.trim() || ''
+
+export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
+
+export async function syncConfiguredDefaultProjectDir(): Promise<string> {
+  const settings = window.hermesDesktop?.settings?.getDefaultProjectDir
+
+  if (!settings) {
+    configuredDefaultProjectDir = ''
+
+    return ''
+  }
+
+  const { dir } = await settings()
+  configuredDefaultProjectDir = dir?.trim() || ''
+
+  return configuredDefaultProjectDir
+}
+
+/** Align the renderer workspace with the main-process default (home dir when
+ *  packaged, optional Settings override). Clears stale install-dir paths that
+ *  PR #37586's localStorage stickiness can preserve across the #37536 fix. */
+export async function ensureDefaultWorkspaceCwd(): Promise<void> {
+  const sanitize = window.hermesDesktop?.sanitizeWorkspaceCwd
+
+  if (!sanitize) {
+    return
+  }
+
+  await syncConfiguredDefaultProjectDir()
+  const configured = getConfiguredDefaultProjectDir()
+
+  const seedLiveCwd = (cwd: string) => {
+    if (cwd && !$activeSessionId.get()) {
+      setCurrentCwd(cwd)
+    }
+  }
+
+  if (configured) {
+    const { cwd } = await sanitize(configured)
+    seedLiveCwd(cwd)
+
+    return
+  }
+
+  const { cwd } = await sanitize(getRememberedWorkspaceCwd())
+  seedLiveCwd(cwd)
+}
+
+export function applyConfiguredDefaultProjectDir(dir: null | string | undefined): void {
+  configuredDefaultProjectDir = dir?.trim() || ''
+
+  // Cache only — new chats read this via workspaceCwdForNewSession(). Do not
+  // rewrite the live workspace (or localStorage) while a session is active.
+  if (configuredDefaultProjectDir && !$activeSessionId.get()) {
+    setCurrentCwd(configuredDefaultProjectDir)
+  }
+}
 
 interface AppAtom<T> {
   get: () => T
@@ -170,6 +233,11 @@ export const setCurrentCwd = (next: Updater<string>) => {
   // empty cwd clears the key (|| null → removeItem).
   persistString(WORKSPACE_CWD_KEY, $currentCwd.get().trim() || null)
 }
+
+/** Workspace for a brand-new chat. Explicit Settings override wins; otherwise
+ *  fall back to the sticky last-used folder, then whatever is already live. */
+export const workspaceCwdForNewSession = (): string =>
+  getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
 
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)

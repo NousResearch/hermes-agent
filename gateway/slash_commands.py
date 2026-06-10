@@ -1244,6 +1244,14 @@ class GatewaySlashCommandsMixin:
                 "chat_id": event.source.chat_id,
                 "chat_type": event.source.chat_type,
             }
+            # Persist the requester identity as well as the delivery target.
+            # The restart-complete notification is sent by the *next* gateway
+            # process; re-checking auth there prevents stale/corrupt marker
+            # files from trying to message arbitrary platform targets.
+            if event.source.user_id:
+                notify_data["user_id"] = event.source.user_id
+            if event.source.chat_type:
+                notify_data["chat_type"] = event.source.chat_type
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
             if event.message_id:

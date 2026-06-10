@@ -210,7 +210,16 @@ export const zhHant = defineLocale({
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
-      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`
+      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
+      installTitle: '從 VS Code 安裝',
+      installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
+      installPlaceholder: 'publisher.extension',
+      installButton: '安裝',
+      installing: '安裝中…',
+      installError: '無法安裝該主題。',
+      installed: name => `已安裝「${name}」。`,
+      removeTheme: '移除主題',
+      importedBadge: '已匯入'
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -745,6 +754,17 @@ export const zhHant = defineLocale({
     settings: '設定',
     changeTheme: '變更主題...',
     changeColorMode: '變更色彩模式...',
+    installTheme: {
+      title: '安裝主題...',
+      placeholder: '搜尋 VS Code Marketplace...',
+      loading: '正在搜尋 Marketplace...',
+      error: '無法連接到 Marketplace。',
+      empty: '沒有符合的主題。',
+      install: '安裝',
+      installing: '安裝中...',
+      installed: '已安裝',
+      installs: count => `${count} 次安裝`
+    },
     settingsFields: '設定欄位',
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',

@@ -1,6 +1,8 @@
 import type { ITheme, Terminal } from '@xterm/xterm'
 import type { CSSProperties } from 'react'
 
+import type { DesktopTerminalPalette } from '@/themes/types'
+
 // VS Code's default integrated-terminal palette (terminalColorRegistry.ts) — a
 // fixed table per theme type, not luminance-derived. Light/dark diverge on
 // purpose so each stays legible (e.g. mustard yellow on white).
@@ -52,9 +54,29 @@ const LIGHT_THEME: ITheme = {
   brightWhite: '#a5a5a5'
 }
 
-// Palette by painted mode. `background` is only a fallback — withSurface swaps
-// in the live skin surface at runtime; minimumContrastRatio keeps colors crisp.
-export const terminalTheme = (mode: 'light' | 'dark'): ITheme => (mode === 'dark' ? DARK_THEME : LIGHT_THEME)
+// Palette by painted mode, optionally overlaid with an imported theme's ANSI
+// palette (Solarized terminal for the Solarized skin, etc.). `palette` only
+// fills the slots it defines, so a partial import keeps the mode defaults for
+// the rest. `background` is a fallback only — withSurface swaps in the live skin
+// surface at runtime (keeping transparency); minimumContrastRatio keeps colors
+// crisp against it.
+export function terminalTheme(mode: 'light' | 'dark', palette?: DesktopTerminalPalette): ITheme {
+  const base = mode === 'dark' ? DARK_THEME : LIGHT_THEME
+
+  if (!palette) {
+    return base
+  }
+
+  const overlay = { ...base } as Record<string, string>
+
+  for (const [slot, value] of Object.entries(palette)) {
+    if (value) {
+      overlay[slot] = value
+    }
+  }
+
+  return overlay as ITheme
+}
 
 // Resolve --ui-editor-surface-background (a color-mix on the skin seed) to a
 // concrete rgb for the WebGL renderer + contrast clamp. Custom props don't

@@ -97,8 +97,38 @@ declare global {
         summary: () => Promise<DesktopUninstallSummary>
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
       }
+      themes: {
+        // Download a VS Code Marketplace extension and return the raw color
+        // theme files it contributes. The renderer converts + persists them.
+        fetchMarketplace: (id: string) => Promise<DesktopMarketplaceThemeResult>
+        // Search the Marketplace for color-theme extensions. An empty query
+        // returns the most-installed themes.
+        searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
+      }
     }
   }
+}
+
+export interface DesktopMarketplaceSearchItem {
+  extensionId: string
+  displayName: string
+  publisher: string
+  description: string
+  installs: number
+}
+
+export interface DesktopMarketplaceThemeFile {
+  label: string
+  /** VS Code's `uiTheme` for this entry (vs-dark / vs / hc-black). */
+  uiTheme?: string
+  /** Raw theme JSON (JSONC) text, parsed + converted by the renderer. */
+  contents: string
+}
+
+export interface DesktopMarketplaceThemeResult {
+  extensionId: string
+  displayName: string
+  themes: DesktopMarketplaceThemeFile[]
 }
 
 export interface HermesTerminalSession {

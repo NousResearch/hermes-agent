@@ -220,6 +220,15 @@ export interface Translations {
       themeTitle: string
       themeDesc: string
       themeProfileNote: (profile: string) => string
+      installTitle: string
+      installDesc: string
+      installPlaceholder: string
+      installButton: string
+      installing: string
+      installError: string
+      installed: (name: string) => string
+      removeTheme: string
+      importedBadge: string
     }
     fieldLabels: Record<string, string>
     fieldDescriptions: Record<string, string>
@@ -534,6 +543,17 @@ export interface Translations {
     settings: string
     changeTheme: string
     changeColorMode: string
+    installTheme: {
+      title: string
+      placeholder: string
+      loading: string
+      error: string
+      empty: string
+      install: string
+      installing: string
+      installed: string
+      installs: (count: string) => string
+    }
     settingsFields: string
     mcpServers: string
     archivedChats: string

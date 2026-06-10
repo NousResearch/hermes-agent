@@ -223,8 +223,13 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   // clicked switch) — a skin can keep a light surface in "dark" mode, and we
   // must match the surface or the ANSI palette inverts against it. themeName
   // re-resolves the canvas surface on skin switches (same mode, new tint).
-  const { renderedMode, themeName } = useTheme()
-  const activeTheme = useMemo(() => terminalTheme(renderedMode), [renderedMode])
+  const { renderedMode, theme, themeName } = useTheme()
+  // Adopt the skin's ANSI palette when it ships one (imported VS Code themes do),
+  // matched to the painted variant; built-in skins carry none, so the terminal
+  // keeps its VS Code defaults. withSurface still owns the background, so this
+  // never touches transparency.
+  const ansiPalette = renderedMode === 'dark' ? (theme.darkTerminal ?? theme.terminal) : theme.terminal
+  const activeTheme = useMemo(() => terminalTheme(renderedMode, ansiPalette), [renderedMode, ansiPalette])
   const initialThemeRef = useRef(activeTheme)
   const hostRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)

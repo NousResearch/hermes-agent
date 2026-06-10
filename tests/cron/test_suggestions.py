@@ -127,7 +127,12 @@ class TestCatalog:
         from cron.suggestion_catalog import CATALOG, classify_items_script_path
 
         monitor = next(e for e in CATALOG if e.key == "catalog:important-mail-monitor")
-        assert classify_items_script_path() in monitor.job_spec["prompt"]
+        # The prompt must reference the classifier by module path (resolvable
+        # at run time on any backend), never by a baked-in absolute path —
+        # absolute paths go stale after relocation and don't exist on remote
+        # terminal backends (Docker/Modal).
+        assert "cron.scripts.classify_items" in monitor.job_spec["prompt"]
+        assert classify_items_script_path() not in monitor.job_spec["prompt"]
         assert Path(classify_items_script_path()).name == "classify_items.py"
 
 

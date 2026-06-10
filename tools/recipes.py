@@ -307,11 +307,19 @@ def _schedule_to_string(schedule: Any) -> str:
         kind = schedule.get("kind")
         if kind == "cron" and schedule.get("expr"):
             return str(schedule["expr"])
-        if kind == "interval" and schedule.get("seconds"):
-            secs = int(schedule["seconds"])
-            if secs % 3600 == 0:
-                return f"every {secs // 3600}h"
-            if secs % 60 == 0:
-                return f"every {secs // 60}m"
-            return f"every {secs}s"
+        if kind == "interval":
+            # parse_schedule stores interval periods as "minutes"; tolerate a
+            # legacy/foreign "seconds" form too.
+            if schedule.get("minutes"):
+                mins = int(schedule["minutes"])
+                if mins % 60 == 0:
+                    return f"every {mins // 60}h"
+                return f"every {mins}m"
+            if schedule.get("seconds"):
+                secs = int(schedule["seconds"])
+                if secs % 3600 == 0:
+                    return f"every {secs // 3600}h"
+                if secs % 60 == 0:
+                    return f"every {secs // 60}m"
+                return f"every {secs}s"
     return "0 9 * * *"  # safe daily fallback

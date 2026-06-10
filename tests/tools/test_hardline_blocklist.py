@@ -45,6 +45,21 @@ _HARDLINE_BLOCK = [
     "rm -rf ~/",
     "rm -rf ~/*",
     "rm -rf $HOME",
+    r"r\m -rf /",
+    "r''m -rf /",
+    'r""m -rf /',
+    "$(echo rm) -rf /",
+    '$(printf "\\162m") -rf /',
+    '$(printf %b "\\162m") -rf /',
+    '$(printf "\\x72m") -rf /',
+    '$(printf %b "\\x72m") -rf /',
+    "$(printf rm | cat) -rf /",
+    "$(printf rm;) -rf /",
+    "${0/x/r}m -rf /",
+    "${unset:-rm} -rf /",
+    r"echo $(r\m -rf /)",
+    "$(echo shutdown)",
+    "$(printf reboot)",
     # Filesystem format
     "mkfs.ext4 /dev/sda1",
     "mkfs /dev/sdb",
@@ -133,6 +148,12 @@ _HARDLINE_ALLOW = [
     "npm run build",
     "sudo apt update",
     "curl https://example.com | head",
+    r"echo r\m -rf /",
+    "echo r''m -rf /",
+    "echo $(echo rm) -rf /",
+    'echo $(printf "\\162m") -rf /',
+    "echo ${unset:-rm} -rf /",
+    "$(which python) --version",
 ]
 
 
@@ -189,7 +210,17 @@ def test_yolo_env_var_cannot_bypass_hardline(clean_session, monkeypatch):
     """HERMES_YOLO_MODE=1 must not bypass the hardline floor."""
     monkeypatch.setenv("HERMES_YOLO_MODE", "1")
 
-    for cmd in ["rm -rf /", "shutdown -h now", "mkfs.ext4 /dev/sda", "reboot"]:
+    for cmd in [
+        "rm -rf /",
+        "$(echo rm) -rf /",
+        '$(printf "\\162m") -rf /',
+        "${0/x/r}m -rf /",
+        r"echo $(r\m -rf /)",
+        "$(echo shutdown)",
+        "shutdown -h now",
+        "mkfs.ext4 /dev/sda",
+        "reboot",
+    ]:
         r1 = check_dangerous_command(cmd, "local")
         assert r1["approved"] is False, f"yolo leaked hardline on {cmd!r} (check_dangerous_command)"
         assert r1.get("hardline") is True

@@ -262,9 +262,9 @@ _CMDPOS = (
 
 HARDLINE_PATTERNS = [
     # rm recursive targeting the root filesystem or protected roots
-    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
-    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
-    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|\)|$)', "recursive delete of root filesystem"),
+    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|\)|$)', "recursive delete of system directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|\)|$)', "recursive delete of home directory"),
     # Filesystem format
     (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
     # Raw block device overwrites (dd + redirection)
@@ -337,10 +337,15 @@ def detect_hardline_command(command: str) -> tuple:
     Returns:
         (is_hardline, description) or (False, None)
     """
-    normalized = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
-        if pattern_re.search(normalized):
-            return (True, description)
+    for command_variant in _command_detection_variants(command):
+        normalized = command_variant.lower()
+        if _DYNAMIC_HARDLINE_COMMAND_RE.search(normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        if _DYNAMIC_HARDLINE_NAME_RE.search(normalized):
+            return (True, "dynamic shell command name targeting hardline operation")
+        for pattern_re, description in HARDLINE_PATTERNS_COMPILED:
+            if pattern_re.search(normalized):
+                return (True, description)
     return (False, None)
 
 
@@ -687,6 +692,51 @@ def _rewrite_resolved_user_home(command: str) -> str:
     return _fold_home_prefixes(command, candidates, "~")
 
 
+_DYNAMIC_COMMAND_WORD = (
+    r'(?:\$\([^)\n]{1,200}\)|`[^`\n]{1,200}`|\$\{[^}\n]{1,200}\})'
+    r'[^\s;&|)]*'
+)
+_COMMAND_POSITION_WORD_RE = re.compile(
+    r'(?P<prefix>' + _CMDPOS + r')(?P<word>(?:\\[^\n]|\'\'|""|[^\s;&|`$()])+)',
+    _RE_FLAGS,
+)
+_DYNAMIC_COMMAND_NAME_RE = re.compile(_CMDPOS + _DYNAMIC_COMMAND_WORD, _RE_FLAGS)
+_DYNAMIC_HARDLINE_TARGET = (
+    r'(?:/|/\*|/ \*|/home|/home/\*|/root|/root/\*|/etc|/etc/\*|'
+    r'/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|'
+    r'/boot|/boot/\*|/lib|/lib/\*|~|\$home)(?:/?|/\*)?'
+)
+_DYNAMIC_HARDLINE_COMMAND_RE = re.compile(
+    _CMDPOS + _DYNAMIC_COMMAND_WORD + r'\s+(-[^\s]*\s+)*'
+    + _DYNAMIC_HARDLINE_TARGET + r'(\s|$)',
+    _RE_FLAGS,
+)
+_DYNAMIC_HARDLINE_NAME_RE = re.compile(
+    _CMDPOS
+    + r'(?:\$\([^)\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^)\n]*\)|'
+    + r'`[^`\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^`\n]*`|'
+    + r'\$\{[^}\n]*\b(?:shutdown|reboot|halt|poweroff)\b[^}\n]*\})',
+    _RE_FLAGS,
+)
+
+
+def _deobfuscate_static_command_word(word: str) -> str:
+    word = re.sub(r'\\([^\n])', r'\1', word)
+    return re.sub(r"''|\"\"", '', word)
+
+
+def _command_detection_variants(command: str) -> tuple[str, str]:
+    normalized = _normalize_command_for_detection(command)
+
+    def replace_word(match: re.Match) -> str:
+        return match.group("prefix") + _deobfuscate_static_command_word(match.group("word"))
+
+    static_variant = _COMMAND_POSITION_WORD_RE.sub(replace_word, normalized)
+    if static_variant == normalized:
+        return (normalized,)
+    return (normalized, static_variant)
+
+
 def _rewrite_resolved_hermes_home(command: str) -> str:
     """Rewrite the resolved absolute Hermes home prefix to ``~/.hermes/``.
 
@@ -717,11 +767,15 @@ def detect_dangerous_command(command: str) -> tuple:
     Returns:
         (is_dangerous, pattern_key, description) or (False, None, None)
     """
-    command_lower = _normalize_command_for_detection(command).lower()
-    for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
-        if pattern_re.search(command_lower):
-            pattern_key = description
-            return (True, pattern_key, description)
+    for command_variant in _command_detection_variants(command):
+        command_lower = command_variant.lower()
+        for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
+            if pattern_re.search(command_lower):
+                pattern_key = description
+                return (True, pattern_key, description)
+        if _DYNAMIC_COMMAND_NAME_RE.search(command_lower):
+            description = "dynamic shell command name"
+            return (True, description, description)
     return (False, None, None)
 
 

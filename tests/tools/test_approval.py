@@ -1013,6 +1013,44 @@ class TestNormalizationBypass:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True, f"Null-byte 'rm' was not detected: {cmd!r}"
 
+    def test_shell_escaped_command_word_rm(self):
+        """Shell spelling tricks in argv[0] must not bypass rm detection."""
+        for cmd in (
+            r"r\m -rf /home/victim",
+            "r''m -rf /home/victim",
+            'r""m -rf /home/victim',
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, f"shell-escaped rm bypass was not caught: {cmd!r}"
+
+    def test_dynamic_command_word_is_dangerous(self):
+        """Opaque shell expansion in argv[0] must require approval."""
+        for cmd in (
+            "$(echo rm) -rf /home/victim",
+            '$(printf "\\162m") -rf /home/victim',
+            '$(printf %b "\\162m") -rf /home/victim',
+            '$(printf "\\x72m") -rf /home/victim',
+            '$(printf %b "\\x72m") -rf /home/victim',
+            "$(printf rm | cat) -rf /home/victim",
+            "$(printf rm;) -rf /home/victim",
+            "${0/x/r}m -rf /home/victim",
+            "${unset:-rm} -rf /home/victim",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is True, f"dynamic argv[0] bypass was not caught: {cmd!r}"
+
+    def test_argument_text_is_not_promoted_to_command_word(self):
+        """Command-word normalization must not rewrite ordinary arguments."""
+        for cmd in (
+            r"echo r\m -rf /",
+            "echo r''m -rf /",
+            "echo $(echo rm) -rf /",
+            'echo $(printf "\\162m") -rf /',
+            "echo ${unset:-rm} -rf /",
+        ):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is False, f"ordinary argument was promoted: {cmd!r}"
+
     def test_null_byte_in_dd(self):
         """Null bytes in 'dd' must be stripped."""
         cmd = "d\x00d if=/dev/sda"

@@ -832,6 +832,7 @@ export interface Translations {
       export: string
       rename: string
       archive: string
+      newWindow: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string

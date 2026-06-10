@@ -1084,6 +1084,7 @@ export const en: Translations = {
       export: 'Export',
       rename: 'Rename',
       archive: 'Archive',
+      newWindow: 'New window',
       copyIdFailed: 'Could not copy session ID',
       actionsFor: title => `Actions for ${title}`,
       sessionActions: 'Session actions',

@@ -48,6 +48,16 @@ def test_accessors_mirror_the_underlying_items():
             "cwd": "/tmp",
             "cols": 100,
             "last_active": 1.0,
+            "explicit_cwd": True,
+            "attached_images": ["/tmp/a.png"],
+            "image_counter": 2,
+            "edit_snapshots": {"f.py": "snap"},
+            "pending_title": "my title",
+            "show_reasoning": True,
+            "tool_progress_mode": "verbose",
+            "tool_started_at": {"tu_1": 1.0},
+            "personality": "pirate",
+            "model_override": {"model": "m1"},
         }
     )
     assert s.history == s["history"]
@@ -58,6 +68,16 @@ def test_accessors_mirror_the_underlying_items():
     assert s.session_key == "k1"
     assert s.cwd == "/tmp"
     assert s.cols == 100
+    assert s.explicit_cwd is True
+    assert s.attached_images == ["/tmp/a.png"]
+    assert s.image_counter == 2
+    assert s.edit_snapshots == {"f.py": "snap"}
+    assert s.pending_title == "my title"
+    assert s.show_reasoning is True
+    assert s.tool_progress_mode == "verbose"
+    assert s.tool_started_at == {"tu_1": 1.0}
+    assert s.personality == "pirate"
+    assert s.model_override == {"model": "m1"}
 
 
 def test_setters_write_through_to_items():
@@ -68,6 +88,26 @@ def test_setters_write_through_to_items():
     assert s["running"] is True
     assert s["history"] == [1, 2]
     assert s["history_version"] == 5
+    s.explicit_cwd = True
+    s.attached_images = ["/tmp/b.png"]
+    s.image_counter = 7
+    s.edit_snapshots = {"g.py": "snap2"}
+    s.pending_title = None
+    s.show_reasoning = False
+    s.tool_progress_mode = "concise"
+    s.tool_started_at = {}
+    s.personality = "butler"
+    s.model_override = {"model": "m2", "provider": "p2"}
+    assert s["explicit_cwd"] is True
+    assert s["attached_images"] == ["/tmp/b.png"]
+    assert s["image_counter"] == 7
+    assert s["edit_snapshots"] == {"g.py": "snap2"}
+    assert s["pending_title"] is None
+    assert s["show_reasoning"] is False
+    assert s["tool_progress_mode"] == "concise"
+    assert s["tool_started_at"] == {}
+    assert s["personality"] == "butler"
+    assert s["model_override"] == {"model": "m2", "provider": "p2"}
 
 
 # ── lock dances (Phase 3 Step 2) ────────────────────────────────────────

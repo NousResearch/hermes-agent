@@ -1177,7 +1177,7 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     session.cwd = resolved
     # An explicit user choice — persist it as the workspace (and let a later
     # lazy row creation persist it too, not the launch-dir fallback).
-    session["explicit_cwd"] = True
+    session.explicit_cwd = True
     _register_session_cwd(session)
     db = _get_db()
     if db is not None:
@@ -1936,7 +1936,7 @@ def _sync_session_key_after_compress(
         session.session_key = new_session_id
 
     if clear_pending_title:
-        session["pending_title"] = None
+        session.pending_title = None
     if restart_slash_worker:
         try:
             _restart_slash_worker(sid, session)
@@ -2610,7 +2610,7 @@ def _apply_personality_to_session(
     """
     if not session:
         return False, None
-    session["personality"] = personality
+    session.personality = personality
 
     agent = session.get("agent")
     if agent:
@@ -2864,13 +2864,13 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
     finally:
         _clear_session_context(tokens)
     session.agent = new_agent
-    session["attached_images"] = []
-    session["edit_snapshots"] = {}
-    session["image_counter"] = 0
+    session.attached_images = []
+    session.edit_snapshots = {}
+    session.image_counter = 0
     session.running = False
-    session["show_reasoning"] = _load_show_reasoning()
-    session["tool_progress_mode"] = _load_tool_progress_mode()
-    session["tool_started_at"] = {}
+    session.show_reasoning = _load_show_reasoning()
+    session.tool_progress_mode = _load_tool_progress_mode()
+    session.tool_started_at = {}
     with session.history_lock:
         session.history = []
         session.history_version = int(session.get("history_version", 0)) + 1
@@ -3988,18 +3988,18 @@ def _(rid, params: dict) -> dict:
             resolved_title = db.get_session_title(key) or ""
             if fallback:
                 if db.set_session_title(key, fallback):
-                    session["pending_title"] = None
+                    session.pending_title = None
                     resolved_title = fallback
                 else:
                     existing_row = db.get_session(key)
                     existing_title = ((existing_row or {}).get("title") or "").strip()
                     if existing_title == fallback:
-                        session["pending_title"] = None
+                        session.pending_title = None
                         resolved_title = fallback
                     elif not resolved_title:
                         resolved_title = fallback
             elif resolved_title:
-                session["pending_title"] = None
+                session.pending_title = None
         except Exception:
             resolved_title = fallback
         return _ok(
@@ -4014,13 +4014,13 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4021, "title required")
     try:
         if db.set_session_title(key, title):
-            session["pending_title"] = None
+            session.pending_title = None
             return _ok(rid, {"pending": False, "title": title})
         # rowcount == 0 can mean "same value" as well as "missing row".
         # Queue only when the session row truly does not exist yet.
         existing_row = db.get_session(key)
         if existing_row:
-            session["pending_title"] = None
+            session.pending_title = None
             return _ok(
                 rid,
                 {
@@ -4028,7 +4028,7 @@ def _(rid, params: dict) -> dict:
                     "title": (existing_row.get("title") or title),
                 },
             )
-        session["pending_title"] = title
+        session.pending_title = title
         return _ok(rid, {"pending": True, "title": title})
     except ValueError as e:
         return _err(rid, 4022, str(e))
@@ -4943,7 +4943,7 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
         history = list(session.history)
         history_version = int(session.get("history_version", 0))
         images = list(session.get("attached_images", []))
-        session["attached_images"] = []
+        session.attached_images = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
     agent = session.agent
@@ -5165,7 +5165,7 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
             # After every TUI turn, if a /goal is active, ask the judge
             # whether the goal is done and — if not and we're still under
             # budget — queue a continuation prompt to run after this
-            # thread releases session["running"]. The verdict message
+            # thread releases session.running. The verdict message
             # ("✓ Goal achieved" / "⏸ budget exhausted") is surfaced as
             # a system line so the user sees progress regardless of
             # outcome. Mirrors gateway/run._post_turn_goal_continuation.
@@ -5215,11 +5215,11 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
                     _session_key = session.get("session_key") or sid
                     try:
                         if _pdb.set_session_title(_session_key, _pending):
-                            session["pending_title"] = None
+                            session.pending_title = None
                     except ValueError as exc:
                         # Invalid/duplicate title — non-retryable, drop it.
                         # Auto-title will take over. Fix for #19029.
-                        session["pending_title"] = None
+                        session.pending_title = None
                         logger.info(
                             "Dropping pending title for session %s: %s",
                             _session_key, exc,
@@ -5300,7 +5300,7 @@ def _run_prompt_submit(rid, sid: str, session: SessionState, text: Any) -> None:
             _emit("session.info", sid, _session_info(agent, session))
 
         # Chain a goal-continuation turn if the judge said so. We do
-        # this AFTER the finally releases session["running"], so the
+        # this AFTER the finally releases session.running, so the
         # nested _run_prompt_submit doesn't deadlock on the busy
         # guard. A real user prompt that races us wins because
         # prompt.submit sets running=True under the history_lock and
@@ -5367,17 +5367,17 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5027, f"clipboard unavailable: {e}")
 
-    session["image_counter"] = session.get("image_counter", 0) + 1
+    session.image_counter = session.get("image_counter", 0) + 1
     img_dir = _hermes_home / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
     img_path = (
         img_dir
-        / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session['image_counter']}.png"
+        / f"clip_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{session.image_counter}.png"
     )
 
     # Save-first: mirrors CLI keybinding path; more robust than has_image() precheck
     if not save_clipboard_image(img_path):
-        session["image_counter"] = max(0, session["image_counter"] - 1)
+        session.image_counter = max(0, session.image_counter - 1)
         msg = (
             "Clipboard has image but extraction failed"
             if has_clipboard_image()
@@ -5391,7 +5391,7 @@ def _(rid, params: dict) -> dict:
         {
             "attached": True,
             "path": str(img_path),
-            "count": len(session["attached_images"]),
+            "count": len(session.attached_images),
             **_image_meta(img_path),
         },
     )
@@ -5430,7 +5430,7 @@ def _(rid, params: dict) -> dict:
             {
                 "attached": True,
                 "path": str(image_path),
-                "count": len(session["attached_images"]),
+                "count": len(session.attached_images),
                 "remainder": remainder,
                 "text": remainder or f"[User attached image: {image_path.name}]",
                 **_image_meta(image_path),
@@ -5512,18 +5512,18 @@ def _queue_attached_image(session: dict, img_bytes: bytes, ext: str, *, prefix: 
     """Write image bytes into the gateway's images dir and queue them.
 
     Mirrors what ``image.attach`` does for a local path: appends to
-    ``session["attached_images"]`` so the next ``prompt.submit`` picks it up via
+    ``session.attached_images`` so the next ``prompt.submit`` picks it up via
     the existing native-image-attach pipeline. Returns the written path.
     """
-    session["image_counter"] = session.get("image_counter", 0) + 1
+    session.image_counter = session.get("image_counter", 0) + 1
     img_dir = _hermes_home / "images"
     img_dir.mkdir(parents=True, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    img_path = img_dir / f"{prefix}_{ts}_{session['image_counter']}{ext}"
+    img_path = img_dir / f"{prefix}_{ts}_{session.image_counter}{ext}"
     try:
         img_path.write_bytes(img_bytes)
     except Exception:
-        session["image_counter"] = max(0, session["image_counter"] - 1)
+        session.image_counter = max(0, session.image_counter - 1)
         raise
     session.setdefault("attached_images", []).append(str(img_path))
     return img_path
@@ -5581,7 +5581,7 @@ def _(rid, params: dict) -> dict:
         {
             "attached": True,
             "path": str(img_path),
-            "count": len(session["attached_images"]),
+            "count": len(session.attached_images),
             "remainder": "",
             "text": f"[User attached image: {img_path.name}]",
             "bytes": len(img_bytes),
@@ -5702,7 +5702,7 @@ def _(rid, params: dict) -> dict:
                 "filename": display_name,
                 "pages_attached": len(attached_pages),
                 "pages": attached_pages,
-                "count": len(session["attached_images"]),
+                "count": len(session.attached_images),
                 "text": f"[User attached PDF: {display_name} ({len(attached_pages)} page(s))]",
             },
         )
@@ -5909,12 +5909,12 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4015, "path required")
     images = session.setdefault("attached_images", [])
     before = len(images)
-    session["attached_images"] = [path for path in images if path != raw]
+    session.attached_images = [path for path in images if path != raw]
     return _ok(
         rid,
         {
-            "detached": len(session["attached_images"]) != before,
-            "count": len(session["attached_images"]),
+            "detached": len(session.attached_images) != before,
+            "count": len(session.attached_images),
         },
     )
 
@@ -5943,7 +5943,7 @@ def _(rid, params: dict) -> dict:
                     "matched": True,
                     "is_image": True,
                     "path": str(drop_path),
-                    "count": len(session["attached_images"]),
+                    "count": len(session.attached_images),
                     "text": text,
                     **_image_meta(drop_path),
                 },
@@ -6338,7 +6338,7 @@ def _(rid, params: dict) -> dict:
             nv = cycle[(idx + 1) % len(cycle)]
         _write_config_key("display.tool_progress", nv)
         if session:
-            session["tool_progress_mode"] = nv
+            session.tool_progress_mode = nv
             agent = session.get("agent")
             if agent is not None:
                 agent.verbose_logging = nv == "verbose"
@@ -6442,7 +6442,7 @@ def _(rid, params: dict) -> dict:
                 cfg["display"] = display
                 _save_cfg(cfg)
                 if session:
-                    session["show_reasoning"] = True
+                    session.show_reasoning = True
                 return _ok(rid, {"key": key, "value": "show"})
             if arg in {"hide", "off"}:
                 cfg = _load_cfg()
@@ -6460,7 +6460,7 @@ def _(rid, params: dict) -> dict:
                 cfg["display"] = display
                 _save_cfg(cfg)
                 if session:
-                    session["show_reasoning"] = False
+                    session.show_reasoning = False
                 return _ok(rid, {"key": key, "value": "hide"})
 
             parsed = parse_reasoning_effort(arg)

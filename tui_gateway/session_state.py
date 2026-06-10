@@ -131,6 +131,88 @@ class SessionState(dict):
     def cols(self, value: int) -> None:
         self["cols"] = value
 
+    @property
+    def explicit_cwd(self) -> bool:
+        return self["explicit_cwd"]
+
+    @explicit_cwd.setter
+    def explicit_cwd(self, value: bool) -> None:
+        self["explicit_cwd"] = value
+
+    # ── attachments / images (Phase 3 Step 4) ───────────────────────
+    @property
+    def attached_images(self) -> list:
+        return self["attached_images"]
+
+    @attached_images.setter
+    def attached_images(self, value: list) -> None:
+        self["attached_images"] = value
+
+    @property
+    def image_counter(self) -> int:
+        return self["image_counter"]
+
+    @image_counter.setter
+    def image_counter(self, value: int) -> None:
+        self["image_counter"] = value
+
+    @property
+    def edit_snapshots(self) -> dict:
+        return self["edit_snapshots"]
+
+    @edit_snapshots.setter
+    def edit_snapshots(self, value: dict) -> None:
+        self["edit_snapshots"] = value
+
+    # ── display / per-session preferences (Phase 3 Step 4) ──────────
+    @property
+    def pending_title(self) -> Optional[str]:
+        return self["pending_title"]
+
+    @pending_title.setter
+    def pending_title(self, value: Optional[str]) -> None:
+        self["pending_title"] = value
+
+    @property
+    def show_reasoning(self) -> bool:
+        return self["show_reasoning"]
+
+    @show_reasoning.setter
+    def show_reasoning(self, value: bool) -> None:
+        self["show_reasoning"] = value
+
+    @property
+    def tool_progress_mode(self) -> str:
+        return self["tool_progress_mode"]
+
+    @tool_progress_mode.setter
+    def tool_progress_mode(self, value: str) -> None:
+        self["tool_progress_mode"] = value
+
+    @property
+    def tool_started_at(self) -> dict:
+        return self["tool_started_at"]
+
+    @tool_started_at.setter
+    def tool_started_at(self, value: dict) -> None:
+        self["tool_started_at"] = value
+
+    @property
+    def personality(self) -> str:
+        return self["personality"]
+
+    @personality.setter
+    def personality(self, value: str) -> None:
+        self["personality"] = value
+
+    @property
+    def model_override(self) -> dict:
+        return self["model_override"]
+
+    @model_override.setter
+    def model_override(self, value: dict) -> None:
+        self["model_override"] = value
+
     # ── lock dances (Phase 3 Step 2) ────────────────────────────────
     # Each method is a verbatim lift of an inline ``with history_lock:``
     # (or ``agent_build_lock``) block from tui_gateway.server — same lock,

@@ -24,7 +24,24 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+# psutil is the cross-platform way to get process info (works on Windows,
+# Linux, macOS).  We try it first; on platforms where psutil is missing or
+# throws (very old Pythons, restricted containers) we fall back to /proc on
+# Linux and return a minimal ``(unknown)`` stub on Windows.
+try:
+    import psutil  # type: ignore
+
+    _HAS_PSUTIL = True
+except ImportError:
+    if TYPE_CHECKING:
+        # Type checker only — give pyright the real psutil module type
+        # so it can resolve ``psutil.NoSuchProcess`` etc.
+        import psutil  # type: ignore  # noqa: F811
+    else:
+        psutil = None  # type: ignore
+    _HAS_PSUTIL = False
 
 
 _SIGNAL_NAME_BY_NUM: Dict[int, str] = {}
@@ -71,33 +88,107 @@ def _read_proc_cmdline(pid: int) -> Optional[str]:
 
 
 def _proc_summary(pid: int) -> Dict[str, Any]:
-    """Compact /proc/<pid> snapshot: pid, ppid, state, uid, cmdline.
+    """Compact process snapshot: pid, ppid, state, uid, cmdline.
 
     Best-effort.  Missing fields are simply omitted rather than raising.
+
+    Strategy:
+      1. Try ``psutil.Process(pid)`` — works on Windows, Linux, macOS.
+      2. Fall back to ``/proc/<pid>/status`` on Linux only.
+      3. Return a minimal ``{"pid": pid}`` if both fail (Windows w/o psutil,
+         or the PID is gone / inaccessible).
     """
     summary: Dict[str, Any] = {"pid": pid}
     if pid <= 0:
         return summary
-    name = _read_proc_field(pid, "Name")
-    if name is not None:
-        summary["name"] = name
-    state = _read_proc_field(pid, "State")
-    if state is not None:
-        summary["state"] = state
-    ppid = _read_proc_field(pid, "PPid")
-    if ppid is not None:
+
+    # ---- Path 1: psutil (cross-platform) ----
+    if _HAS_PSUTIL:
         try:
-            summary["ppid"] = int(ppid)
-        except ValueError:
+            proc = psutil.Process(pid)
+            # ``name`` returns the short process name (e.g. "python", "bash")
+            try:
+                summary["name"] = proc.name()
+            except (psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+            except psutil.NoSuchProcess:
+                return summary
+            # ``status`` returns a psutil constant; map to a short token
+            try:
+                status_obj = proc.status()
+                if status_obj is not None:
+                    summary["state"] = str(status_obj)
+            except (psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+            except psutil.NoSuchProcess:
+                return summary
+            # ``ppid`` (parent pid) — useful when we summarize our own process
+            # and want to know "who spawned me"
+            try:
+                ppid_val = proc.ppid()
+                if ppid_val:
+                    summary["ppid"] = int(ppid_val)
+            except (psutil.AccessDenied, psutil.ZombieProcess, AttributeError):
+                # ``ppid()`` was added in psutil 2.0; on ancient installs
+                # fall back to /proc.
+                pass
+            except psutil.NoSuchProcess:
+                return summary
+            # ``username`` — helpful for distinguishing "killed by sparky"
+            # from "killed by root" / "killed by SYSTEM"
+            try:
+                summary["username"] = proc.username()
+            except (psutil.AccessDenied, psutil.ZombieProcess, KeyError):
+                pass
+            except psutil.NoSuchProcess:
+                return summary
+            # ``cmdline`` — list of args.  Join with spaces, truncate.
+            try:
+                cmdline_list = proc.cmdline()
+                if cmdline_list:
+                    cmdline = " ".join(cmdline_list)
+                    summary["cmdline"] = cmdline[:300]
+            except (psutil.AccessDenied, psutil.ZombieProcess):
+                pass
+            except psutil.NoSuchProcess:
+                return summary
+            return summary
+        except psutil.NoSuchProcess:
+            # PID is gone — return what we have
+            return summary
+        except (psutil.AccessDenied, OSError):
+            # Permission denied reading this process — fall through to /proc
+            # (on Linux).  On Windows, /proc doesn't exist; we'll return the
+            # minimal stub below.
             pass
-    uid = _read_proc_field(pid, "Uid")
-    if uid is not None:
-        # "real effective saved fs"
-        summary["uid"] = uid.split()[0] if uid else uid
-    cmdline = _read_proc_cmdline(pid)
-    if cmdline:
-        # Truncate aggressively — these can be 4KB
-        summary["cmdline"] = cmdline[:300]
+
+    # ---- Path 2: /proc (Linux only) ----
+    if sys.platform != "win32":
+        name = _read_proc_field(pid, "Name")
+        if name is not None:
+            summary["name"] = name
+        state = _read_proc_field(pid, "State")
+        if state is not None:
+            summary["state"] = state
+        ppid = _read_proc_field(pid, "PPid")
+        if ppid is not None:
+            try:
+                summary["ppid"] = int(ppid)
+            except ValueError:
+                pass
+        uid = _read_proc_field(pid, "Uid")
+        if uid is not None:
+            # "real effective saved fs"
+            summary["uid"] = uid.split()[0] if uid else uid
+        cmdline = _read_proc_cmdline(pid)
+        if cmdline:
+            # Truncate aggressively — these can be 4KB
+            summary["cmdline"] = cmdline[:300]
+    # On Windows without psutil, we genuinely have no way to introspect
+    # the process.  Returning {"pid": pid} is the best we can do — the
+    # format_context_for_log renderer will substitute "(unknown)" for
+    # the missing cmdline.
+
     return summary
 
 

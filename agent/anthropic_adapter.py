@@ -532,18 +532,18 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
-    require Authorization: Bearer instead of Anthropic's native x-api-key header.
-    MiniMax's global and China Anthropic-compatible endpoints, and Azure AI
-    Foundry's Anthropic-style endpoint follow this pattern.
+    require Authorization: Bearer *** instead of Anthropic's native x-api-key header.
+    Azure AI Foundry's Anthropic-style endpoint follows this pattern.
+
+    (2026-06-08) MiniMax was removed from this list: as of June 2026 their
+    /anthropic endpoint returns 401 with Bearer auth and asks for x-api-key.
+    Coding Plan keys (sk-cp-*) in particular require the standard x-api-key header.
     """
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False
     normalized = normalized.rstrip("/").lower()
-    return (
-        normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
-        or "azure.com" in normalized
-    )
+    return "azure.com" in normalized
 
 
 def _base_url_needs_context_1m_beta(base_url: str | None) -> bool:

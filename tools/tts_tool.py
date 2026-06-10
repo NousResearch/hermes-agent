@@ -231,6 +231,12 @@ ELEVENLABS_MODEL_MAX_TEXT_LENGTH: Dict[str, int] = {
     "eleven_english_sts_v1": 10000,
     "eleven_flash_v2": 30000,
     "eleven_flash_v2_5": 40000,
+    # vibevoice (0.5B local model) has a runaway-generation bug on inputs
+    # >~500 chars — the 86.fb5c9aeb.0 ucode doesn't emit a stop token reliably
+    # for long prompts, so inference runs until gateway kills at 120s.
+    # Verified empirically on 2026-06-08: 100-char input = 10s, 5640-char
+    # input = 5+ minutes and counting. 500 is the practical sweet spot.
+    "vibevoice": 500,
 }
 
 # Final fallback when provider isn't recognised at all.

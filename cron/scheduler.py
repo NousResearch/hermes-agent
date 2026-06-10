@@ -954,7 +954,7 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
-def _run_job_script(script_path: str) -> tuple[bool, str]:
+def _run_job_script(script_path: str, acceptable_exit_codes: set[int] | None = None) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
     Scripts must reside within HERMES_HOME/scripts/.  Both relative and
@@ -976,6 +976,11 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         script_path: Path to the script.  Relative paths are resolved
             against HERMES_HOME/scripts/.  Absolute and ~-prefixed paths
             are also validated to ensure they stay within the scripts dir.
+        acceptable_exit_codes: Optional set of exit codes that should be
+            treated as success even though they are non-zero. Use this for
+            scripts that intentionally use non-zero exits to signal
+            "changes happened" (e.g. ACE curation returns 1 when fragments
+            were promoted). Default: None → only exit 0 is success.
 
     Returns:
         (success, output) — on failure *output* contains the error message so the
@@ -1065,7 +1070,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         except Exception:
             pass
 
-        if result.returncode != 0:
+        if result.returncode != 0 and (acceptable_exit_codes is None or result.returncode not in acceptable_exit_codes):
             parts = [f"Script exited with code {result.returncode}"]
             if stderr:
                 parts.append(f"stderr:\n{stderr}")
@@ -1073,6 +1078,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 parts.append(f"stdout:\n{stdout}")
             return False, "\n".join(parts)
 
+        # Either exit 0, or a code explicitly listed in acceptable_exit_codes.
         return True, stdout
 
     except subprocess.TimeoutExpired:
@@ -1395,8 +1401,22 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
             except OSError:
                 _prior_cwd = None
 
+        # Parse optional acceptable_exit_codes from job config — lets scripts
+        # use non-zero exits to signal "changes happened" (e.g. ACE curation
+        # returns 1 when fragments were promoted) without being flagged as
+        # errors. See ace_run_cycle.py history note from 2026-06-07.
+        _acceptable = job.get("acceptable_exit_codes")
+        if _acceptable is not None and not isinstance(_acceptable, (list, tuple, set)):
+            logger.warning(
+                "Job '%s': acceptable_exit_codes must be a list/tuple/set, got %r — ignoring",
+                job_id, type(_acceptable).__name__,
+            )
+            _acceptable = None
+        else:
+            _acceptable = set(_acceptable) if _acceptable is not None else None
+
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script(script_path, acceptable_exit_codes=_acceptable)
         finally:
             if _prior_cwd is not None:
                 try:

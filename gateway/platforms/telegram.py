@@ -20,6 +20,65 @@ from typing import Dict, List, Optional, Set, Any
 
 logger = logging.getLogger(__name__)
 
+
+def _clarify_choice_to_text(choice: Any) -> str:
+    """Coerce a clarify ``choices[i]`` entry into a human-readable string.
+
+    The ``clarify`` tool's ``choices`` parameter is documented as a list of
+    plain strings, but the model sometimes hallucinates structured shapes
+    (dicts / lists / other objects) and we end up rendering raw repr like
+    ``"{'item': ['Yes']}"`` to the user.  This helper normalises the common
+    shapes we've seen in the wild so the user always sees readable text.
+
+    Supported shapes (in priority order):
+      * ``str``  — returned as-is (no quoting).
+      * ``dict`` with an ``"item"`` / ``"label"`` / ``"text"`` key — the
+        value of that key is extracted.  If the value is a list, its first
+        element is used; if it's a string, it's returned as-is.
+      * ``list`` / ``tuple`` — first element is recursed; if it's a dict
+        the same extraction is applied.
+      * anything else — ``str(choice)`` is used as a safe fallback.
+
+    The returned string is **not** HTML-escaped; callers feed it into
+    ``_html.escape()`` themselves so we don't double-escape.
+
+    Examples (verified by ``tests/gateway/test_telegram_clarify.py``):
+      >>> _clarify_choice_to_text("Yes")
+      'Yes'
+      >>> _clarify_choice_to_text({"item": ["Yes"]})
+      'Yes'
+      >>> _clarify_choice_to_text({"label": "Maybe", "id": 2})
+      'Maybe'
+      >>> _clarify_choice_to_text(["First"])
+      'First'
+    """
+    if isinstance(choice, str):
+        return choice
+    if isinstance(choice, dict):
+        # Common keys the model has been observed to use
+        for key in ("item", "label", "text", "name", "title"):
+            if key in choice:
+                value = choice[key]
+                if isinstance(value, str):
+                    return value
+                if isinstance(value, (list, tuple)) and value:
+                    first = value[0]
+                    if isinstance(first, str):
+                        return first
+                if isinstance(value, dict):
+                    # Nested case: ``{"item": {"label": "Deep"}}`` — recurse
+                    return _clarify_choice_to_text(value)
+                if value is not None and not isinstance(value, (dict, list)):
+                    return str(value)
+        # Fall back to the dict's first string-typed value
+        for value in choice.values():
+            if isinstance(value, str):
+                return value
+        return str(choice)
+    if isinstance(choice, (list, tuple)) and choice:
+        return _clarify_choice_to_text(choice[0])
+    return str(choice)
+
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
     try:
@@ -2813,8 +2872,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # users can read long choices that would be truncated in
                 # inline button labels.  Buttons keep short numeric labels
                 # (1, 2, …, Other) to avoid Telegram truncation.
+                # NOTE: choices entries are coerced through
+                # ``_clarify_choice_to_text`` so that structured dicts
+                # (e.g. ``{"item": ["Yes"]}``) render as readable text
+                # instead of raw ``repr()``.  See the helper's docstring
+                # for the full list of supported shapes.
                 option_lines = "\n".join(
-                    f"{i + 1}. {_html.escape(str(c))}"
+                    f"{i + 1}. {_html.escape(_clarify_choice_to_text(c))}"
                     for i, c in enumerate(choices)
                 )
                 text += f"\n\n{option_lines}"

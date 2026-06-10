@@ -484,6 +484,102 @@ class TestEnvVarInterpolation:
 
 
 # ---------------------------------------------------------------------------
+# Tests: probe-path env resolution (#37792)
+# ---------------------------------------------------------------------------
+
+class TestProbeEnvResolution:
+    """The probe path must resolve ``${ENV}`` before connecting, so the
+    discovery probe behaves like runtime tool loading. Regression for #37792
+    where `hermes mcp add --auth header` sent a literal
+    ``Authorization: Bearer ${MCP_X_API_KEY}`` and got 401."""
+
+    def test_resolve_interpolates_header(self, monkeypatch):
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        monkeypatch.setenv("MCP_N8N_API_KEY", "jwt-token-xyz")
+        resolved = _resolve_mcp_server_config({
+            "url": "http://localhost:5678/mcp-server/http",
+            "headers": {"Authorization": "Bearer ${MCP_N8N_API_KEY}"},
+        })
+        assert resolved["headers"]["Authorization"] == "Bearer jwt-token-xyz"
+
+    def test_resolve_leaves_unset_var_literal(self, monkeypatch):
+        from hermes_cli.mcp_config import _resolve_mcp_server_config
+
+        monkeypatch.delenv("MCP_UNSET_API_KEY", raising=False)
+        resolved = _resolve_mcp_server_config({
+            "headers": {"Authorization": "Bearer ${MCP_UNSET_API_KEY}"},
+        })
+        # Unresolved placeholder stays literal (no crash) — matches
+        # _interpolate_env_vars semantics.
+        assert resolved["headers"]["Authorization"] == "Bearer ${MCP_UNSET_API_KEY}"
+
+    def test_probe_resolves_before_connect(self, monkeypatch):
+        """_probe_single_server must pass the RESOLVED config to _connect_server."""
+        import hermes_cli.mcp_config as mc
+
+        monkeypatch.setenv("MCP_N8N_API_KEY", "jwt-token-xyz")
+
+        seen = {}
+
+        class _FakeTool:
+            name = "do_thing"
+            description = "a tool"
+
+        class _FakeServer:
+            _tools = [_FakeTool()]
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            seen["config"] = config
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool._connect_server", _fake_connect)
+
+        tools = mc._probe_single_server("n8n", {
+            "url": "http://localhost:5678/mcp-server/http",
+            "headers": {"Authorization": "Bearer ${MCP_N8N_API_KEY}"},
+        })
+
+        assert tools == [("do_thing", "a tool")]
+        assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
+
+
+class TestStripBearerPrefix:
+    """Pasted tokens that already include ``Bearer `` would otherwise produce
+    ``Bearer Bearer <jwt>`` once the header template adds its own prefix."""
+
+    def test_bare_token_unchanged(self):
+        from hermes_cli.mcp_config import _strip_bearer_prefix
+
+        assert _strip_bearer_prefix("eyJabc123") == "eyJabc123"
+
+    def test_strips_bearer_prefix(self):
+        from hermes_cli.mcp_config import _strip_bearer_prefix
+
+        assert _strip_bearer_prefix("Bearer eyJabc123") == "eyJabc123"
+
+    def test_strips_case_insensitive_and_whitespace(self):
+        from hermes_cli.mcp_config import _strip_bearer_prefix
+
+        assert _strip_bearer_prefix("bearer eyJabc123") == "eyJabc123"
+        assert _strip_bearer_prefix("  Bearer   eyJabc123  ") == "eyJabc123"
+
+    def test_does_not_strip_without_space(self):
+        from hermes_cli.mcp_config import _strip_bearer_prefix
+
+        # "BearerToken" is a token that happens to start with "Bearer", not a prefix.
+        assert _strip_bearer_prefix("BearerToken") == "BearerToken"
+
+    def test_non_string_passthrough(self):
+        from hermes_cli.mcp_config import _strip_bearer_prefix
+
+        assert _strip_bearer_prefix(None) is None  # type: ignore[arg-type]
+
+
+# ---------------------------------------------------------------------------
 # Tests: config helpers
 # ---------------------------------------------------------------------------
 

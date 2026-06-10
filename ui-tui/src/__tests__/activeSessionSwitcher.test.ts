@@ -1,29 +1,34 @@
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_THEME } from '../theme.js'
-import type { SessionActiveItem } from '../gatewayTypes.js'
 import {
   activeSessionCountLabel,
   canTypeOrchestratorPrompt,
+  clampOrchestratorSelection,
+  closeFallbackAfterClose,
   currentSessionSelectionIndex,
+  draftModelArgFromPickerValue,
+  draftModelDisplayLabel,
+  draftTitleFromPrompt,
+  fixedSessionColumnStyle,
+  isNewSessionRow,
+  newSessionMarkerColor,
+  newSessionRowIndex,
   orchestratorContextHint,
   orchestratorContextHintSegments,
   orchestratorGlobalHotkeyHint,
   orchestratorGlobalHotkeyHintSegments,
   orchestratorHintSegmentColor,
-  clampOrchestratorSelection,
-  closeFallbackAfterClose,
-  draftModelArgFromPickerValue,
-  draftModelDisplayLabel,
-  fixedSessionColumnStyle,
-  draftTitleFromPrompt,
-  isNewSessionRow,
-  newSessionMarkerColor,
-  newSessionRowIndex,
   orchestratorRowClickAction,
   orchestratorVisibleRowIndexes,
-  selectedSessionRowStyle
+  relativeSessionAge,
+  resumableHistory,
+  selectedSessionRowStyle,
+  sessionRowKindAt,
+  sessionsCountLabel
 } from '../components/activeSessionSwitcher.js'
+import type { SessionActiveItem } from '../gatewayTypes.js'
+import type { SessionListItem } from '../gatewayTypes.js'
+import { DEFAULT_THEME } from '../theme.js'
 
 describe('session orchestrator helpers', () => {
   it('labels live sessions compactly for tight overlays', () => {
@@ -153,5 +158,47 @@ describe('session orchestrator helpers', () => {
     expect(draftTitleFromPrompt('  Build the websocket orchestrator panel and make it robust.  ', 24)).toBe(
       'Build the websocket orc…'
     )
+  })
+})
+
+describe('unified Sessions overlay helpers', () => {
+  it('orders rows as [new][live…][history…]', () => {
+    // 2 live sessions, any number of history rows after them.
+    expect(sessionRowKindAt(0, 2)).toBe('new')
+    expect(sessionRowKindAt(1, 2)).toBe('live')
+    expect(sessionRowKindAt(2, 2)).toBe('live')
+    expect(sessionRowKindAt(3, 2)).toBe('history')
+    expect(sessionRowKindAt(9, 2)).toBe('history')
+    // No live sessions: row 0 is new, everything after is history.
+    expect(sessionRowKindAt(0, 0)).toBe('new')
+    expect(sessionRowKindAt(1, 0)).toBe('history')
+  })
+
+  it('drops already-live sessions from the resumable history (dedupe by id)', () => {
+    const history = [
+      { id: 'a', message_count: 1, preview: '', started_at: 0, title: 'A' },
+      { id: 'b', message_count: 2, preview: '', started_at: 0, title: 'B' },
+      { id: 'c', message_count: 3, preview: '', started_at: 0, title: 'C' }
+    ] satisfies SessionListItem[]
+
+    const live = [{ id: 'b', status: 'idle' }] satisfies SessionActiveItem[]
+
+    expect(resumableHistory(history, live).map(h => h.id)).toEqual(['a', 'c'])
+    expect(resumableHistory(history, []).map(h => h.id)).toEqual(['a', 'b', 'c'])
+  })
+
+  it('labels live + resumable counts compactly', () => {
+    expect(sessionsCountLabel(0, 0)).toBe('0 live · 0 resumable')
+    expect(sessionsCountLabel(2, 7)).toBe('2 live · 7 resumable')
+  })
+
+  it('renders relative session age, blank when unknown', () => {
+    const nowSec = Math.floor(Date.now() / 1000)
+
+    expect(relativeSessionAge(nowSec)).toBe('today')
+    expect(relativeSessionAge(nowSec - 36 * 3600)).toBe('yesterday')
+    expect(relativeSessionAge(nowSec - 3 * 86400)).toBe('3d ago')
+    expect(relativeSessionAge(undefined)).toBe('')
+    expect(relativeSessionAge(0)).toBe('')
   })
 })

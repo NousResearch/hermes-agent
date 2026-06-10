@@ -33,6 +33,7 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Anthropic
+    ("anthropic/claude-fable-5",               ""),
     ("anthropic/claude-opus-4.8",              ""),
     ("anthropic/claude-opus-4.8-fast",         "2x price, higher output speed"),
     ("anthropic/claude-sonnet-4.6",            ""),
@@ -52,6 +53,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("deepseek/deepseek-v4-flash",             ""),
     # Qwen
     ("qwen/qwen3.7-max",                       ""),
+    ("qwen/qwen3.7-plus",                      ""),
     ("qwen/qwen3.6-35b-a3b",                   ""),
     # MoonshotAI
     ("moonshotai/kimi-k2.6",                   "recommended"),
@@ -72,8 +74,10 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # Free tier
     ("openrouter/elephant-alpha",              "free"),
     ("openrouter/owl-alpha",                   "free"),
+    ("poolside/laguna-m.1:free",               "free"),
     ("tencent/hy3-preview:free",               "free"),
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
     ("inclusionai/ring-2.6-1t:free",           "free"),
 ]
 
@@ -151,6 +155,7 @@ def _xai_curated_models() -> list[str]:
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         # Anthropic
+        "anthropic/claude-fable-5",
         "anthropic/claude-opus-4.8",
         "anthropic/claude-sonnet-4.6",
         "anthropic/claude-haiku-4.5",
@@ -169,6 +174,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-v4-flash",
         # Qwen
         "qwen/qwen3.7-max",
+        "qwen/qwen3.7-plus",
         "qwen/qwen3.6-35b-a3b",
         # MoonshotAI
         "moonshotai/kimi-k2.6",
@@ -235,13 +241,19 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "gemini": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
-        "gemini-3-flash-preview",
+        "gemini-3.5-flash",
         "gemini-3.1-flash-lite-preview",
     ],
     "google-gemini-cli": [
         "gemini-3.1-pro-preview",
         "gemini-3-pro-preview",
+        # Code Assist serves two flash slugs with different access gates
+        # (gemini-cli models.ts): gemini-3-flash-preview is the preview flash
+        # that subscription/free-tier OAuth users actually reach, while
+        # gemini-3.5-flash is GA-channel-gated. Offer both so non-GA users
+        # aren't stuck with a slug cloudcode-pa 404s for them.
         "gemini-3-flash-preview",
+        "gemini-3.5-flash",
     ],
     "zai": [
         "glm-5.1",
@@ -314,6 +326,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-fable-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -582,7 +595,8 @@ def union_with_portal_free_recommendations(
     pair where:
 
     * Portal free recommendations missing from ``curated_ids`` are
-      appended at the front (so the picker shows them first).
+      appended after the curated list (so the in-repo curated models
+      show first and Portal-only picks follow).
     * ``pricing`` gets a synthetic ``{"prompt": "0", "completion": "0"}``
       entry for any free recommendation missing from the live pricing
       map, so :func:`partition_nous_models_by_tier` keeps it.
@@ -617,11 +631,11 @@ def union_with_portal_free_recommendations(
 
     augmented_ids = list(curated_ids)
     seen = set(augmented_ids)
-    # Prepend Portal free recommendations that aren't already curated, so
-    # they appear first in the picker.
+    # Append Portal free recommendations that aren't already curated, so the
+    # in-repo curated ("HA") models show first and Portal-only picks follow.
     new_ones = [mid for mid in portal_free_ids if mid not in seen]
     if new_ones:
-        augmented_ids = new_ones + augmented_ids
+        augmented_ids = augmented_ids + new_ones
 
     return (augmented_ids, augmented_pricing)
 
@@ -647,7 +661,8 @@ def union_with_portal_paid_recommendations(
     ``(model_ids, pricing)`` pair where:
 
     * Portal paid recommendations missing from ``curated_ids`` are
-      appended at the front (so the picker shows them first).
+      appended after the curated list (so the in-repo curated models
+      show first and Portal-only picks follow).
     * ``pricing`` is left untouched — we deliberately do NOT synthesize
       pricing entries for paid models. Live pricing is fetched separately
       via :func:`get_pricing_for_provider`; if the live endpoint hasn't
@@ -682,11 +697,11 @@ def union_with_portal_paid_recommendations(
 
     augmented_ids = list(curated_ids)
     seen = set(augmented_ids)
-    # Prepend Portal paid recommendations that aren't already curated, so
-    # the Portal-blessed picks surface first in the picker.
+    # Append Portal paid recommendations that aren't already curated, so the
+    # in-repo curated ("HA") models show first and Portal-only picks follow.
     new_ones = [mid for mid in portal_paid_ids if mid not in seen]
     if new_ones:
-        augmented_ids = new_ones + augmented_ids
+        augmented_ids = augmented_ids + new_ones
 
     return (augmented_ids, dict(pricing))
 
@@ -754,6 +769,64 @@ _NOUS_RECOMMENDED_CACHE_TTL: int = 600  # seconds (10 minutes)
 _nous_recommended_cache: dict[str, tuple[dict[str, Any], float]] = {}
 
 
+def _nous_recommended_disk_path() -> "Path":
+    """Disk path for the persisted recommended-models cache."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "nous_recommended_cache.json"
+
+
+def _read_nous_recommended_disk(base: str) -> dict[str, Any] | None:
+    """Return the last-known-good payload for ``base`` from disk, or None.
+
+    The disk file is a JSON object keyed by portal base URL so staging and
+    prod don't collide:
+    ``{"<base>": {"data": {...}, "ts": <epoch_seconds>}}``.
+    """
+    try:
+        with open(_nous_recommended_disk_path(), encoding="utf-8") as fh:
+            blob = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(blob, dict):
+        return None
+    entry = blob.get(base)
+    if not isinstance(entry, dict):
+        return None
+    data = entry.get("data")
+    return data if isinstance(data, dict) and data else None
+
+
+def _write_nous_recommended_disk(base: str, data: dict[str, Any]) -> None:
+    """Persist ``data`` as the last-known-good payload for ``base``.
+
+    Merges into any existing per-base map, then writes atomically. Failures
+    are non-fatal (logged at debug) — the in-process cache still works.
+    """
+    if not data:
+        return
+    path = _nous_recommended_disk_path()
+    try:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                blob = json.load(fh)
+            if not isinstance(blob, dict):
+                blob = {}
+        except (OSError, json.JSONDecodeError):
+            blob = {}
+        blob[base] = {"data": data, "ts": time.time()}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(blob, fh, indent=2)
+            fh.write("\n")
+        os.replace(tmp, path)
+    except OSError as exc:
+        import logging
+        logging.getLogger(__name__).debug(
+            "nous recommended-models disk cache write failed: %s", exc
+        )
+
+
 def fetch_nous_recommended_models(
     portal_base_url: str = "",
     timeout: float = 5.0,
@@ -764,12 +837,19 @@ def fetch_nous_recommended_models(
 
     Hits ``<portal>/api/nous/recommended-models``. The endpoint is public —
     no auth is required. Results are cached per portal URL for
-    ``_NOUS_RECOMMENDED_CACHE_TTL`` seconds; pass ``force_refresh=True`` to
-    bypass the cache.
+    ``_NOUS_RECOMMENDED_CACHE_TTL`` seconds in process; pass
+    ``force_refresh=True`` to bypass the in-process cache.
 
-    Returns the parsed JSON dict on success, or ``{}`` on any failure
-    (network, parse, non-2xx). Callers must treat missing/null fields as
-    "no recommendation" and fall back to their own default.
+    A successful live fetch is also persisted to a per-base disk cache
+    (``$HERMES_HOME/cache/nous_recommended_cache.json``) as last-known-good.
+    When the live fetch fails (network, parse, non-2xx) and the in-process
+    cache is empty, the disk copy is returned instead of ``{}`` — so a
+    transient Portal hiccup no longer silently drops the free/paid model
+    recommendations from the picker. Self-heals on the next successful fetch.
+
+    Returns the parsed JSON dict, or ``{}`` only when neither the network nor
+    any cache layer can supply data. Callers must treat missing/null fields
+    as "no recommendation" and fall back to their own default.
     """
     base = (portal_base_url or "https://portal.nousresearch.com").rstrip("/")
     now = time.monotonic()
@@ -791,6 +871,19 @@ def fetch_nous_recommended_models(
             data = {}
     except Exception:
         data = {}
+
+    if data:
+        # Live fetch succeeded — refresh both cache layers.
+        _nous_recommended_cache[base] = (data, now)
+        _write_nous_recommended_disk(base, data)
+        return data
+
+    # Live fetch failed. Fall back to the last-known-good disk copy so a
+    # transient Portal hiccup doesn't drop the recommendations entirely.
+    disk = _read_nous_recommended_disk(base)
+    if disk:
+        _nous_recommended_cache[base] = (disk, now)
+        return disk
 
     _nous_recommended_cache[base] = (data, now)
     return data
@@ -1140,17 +1233,46 @@ _PROVIDER_ALIASES = {
 }
 
 
+# Cost-safe overrides for the *silent* auto-default
+# (``get_default_model_for_provider``). Most providers' curated lists lead with a
+# sensible default, but Nous Portal is a per-token *metered aggregator* whose
+# list is ordered best-/most-capable-first — entry [0] is the priciest flagship
+# (``anthropic/claude-opus-4.8``, $5/$25 per Mtok). Using that as the
+# non-interactive fallback when a profile sets ``provider: nous`` with no model
+# silently bills the most expensive model for traffic the user never opted into
+# (a missing default escalated to Opus and billed 863 requests before the user
+# noticed). Pin the silent default to a low-cost curated model instead so a
+# missing model can never escalate to the flagship.
+#
+# This is deliberately a fixed, side-effect-free default for the hot resolution
+# path. The *interactive* default (GUI onboarding / ``hermes model``) uses the
+# richer free/paid-tier-aware resolver — see ``get_recommended_default_model``
+# in hermes_cli/web_server.py and ``partition_nous_models_by_tier`` — which can
+# hit the Portal; this fallback must stay cheap and network-free.
+_PROVIDER_SILENT_DEFAULT_OVERRIDES: dict[str, str] = {
+    "nous": "deepseek/deepseek-v4-flash",
+}
+
+
 def get_default_model_for_provider(provider: str) -> str:
-    """Return the default model for a provider, or empty string if unknown.
+    """Return a cost-safe default model for a provider, or "" if unknown.
 
-    Uses the first entry in _PROVIDER_MODELS as the default.  This is the
-    model a user would be offered first in the ``hermes model`` picker.
+    Used as a NON-INTERACTIVE fallback when a provider is configured but no
+    model was ever selected (e.g. ``hermes auth add openai-codex`` without
+    ``hermes model``, or a profile that sets ``provider`` with no ``model``).
 
-    Used as a fallback when the user has configured a provider but never
-    selected a model (e.g. ``hermes auth add openai-codex`` without
-    ``hermes model``).
+    For most providers this is the first entry in ``_PROVIDER_MODELS`` — the
+    same model the ``hermes model`` picker offers first. For metered aggregators
+    whose curated list is ordered most-capable-first, that entry is also the
+    most EXPENSIVE one, so silently defaulting to it is a billing footgun. Such
+    providers carry an explicit low-cost override in
+    ``_PROVIDER_SILENT_DEFAULT_OVERRIDES``; a missing model must never
+    auto-escalate to the flagship.
     """
     models = _PROVIDER_MODELS.get(provider, [])
+    override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
+    if override and override in models:
+        return override
     return models[0] if models else ""
 
 
@@ -1862,19 +1984,21 @@ def model_supports_fast_mode(model_id: Optional[str]) -> bool:
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """Return True if the model is a Claude model eligible for Anthropic Fast Mode.
+    """Return True if the model accepts the Anthropic Fast Mode ``speed`` param.
 
-    Fast mode is currently supported on Claude Opus 4.6 only. Per Anthropic's
-    docs (https://platform.claude.com/docs/en/build-with-claude/fast-mode):
-    "Fast mode is currently supported on Opus 4.6 only. Sending speed: fast
-    with an unsupported model returns an error." Opus 4.7 explicitly rejects
-    the ``speed`` parameter with HTTP 400.
+    This gates the *speed=fast request parameter*, which Anthropic supports on
+    Opus 4.6 only (Opus 4.7 explicitly 400s). It is deliberately NOT a general
+    "is this a fast model" check: for Opus 4.8 the fast offering is a SEPARATE
+    model id (``…-opus-4.8-fast``) selected via the model field, not the speed
+    parameter — see ``agent.anthropic_adapter._supports_fast_mode`` and its
+    test. Keep this in lock-step with that adapter gate so the UI never shows a
+    Fast toggle that the runtime would silently drop.
     """
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
     if not base.startswith("claude-"):
         return False
-    # Only Opus 4.6 supports fast mode at present.
+    # Only Opus 4.6 supports the speed=fast parameter at present.
     return "opus-4-6" in base or "opus-4.6" in base
 
 
@@ -2096,7 +2220,20 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "anthropic":
         live = _fetch_anthropic_models()
         if live:
-            return live
+            # The live /v1/models dump lags newly-routed curated aliases
+            # (e.g. claude-fable-5, which is reachable on Anthropic before it
+            # is enumerated by the models endpoint). Surface curated entries
+            # first, then append any live-only models, so a fresh curated
+            # model never disappears just because the API hasn't listed it yet.
+            curated = list(_PROVIDER_MODELS.get("anthropic", []))
+            merged = list(curated)
+            merged_lower = {m.lower() for m in curated}
+            for m in live:
+                if m.lower() not in merged_lower:
+                    merged.append(m)
+                    merged_lower.add(m.lower())
+            return merged
+        return list(_PROVIDER_MODELS.get("anthropic", []))
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:
@@ -2106,9 +2243,32 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         if api_key:
             base_raw = os.getenv("OPENAI_BASE_URL", "").strip().rstrip("/")
             base = base_raw or "https://api.openai.com/v1"
+            # Custom OpenAI-compatible endpoints (proxies, gateways, self-hosted)
+            # may serve a small curated catalog — use the live list verbatim so
+            # discovery works. But the canonical api.openai.com /v1/models dump
+            # is 120+ entries of embeddings, whisper, tts, dall-e, moderation and
+            # legacy chat models — none of which belong in the agent model picker.
+            # For the default endpoint, intersect the live list with our curated
+            # agentic catalog so ``/model`` matches what ``hermes model`` shows.
+            is_default_openai = base.rstrip("/") in (
+                "https://api.openai.com/v1",
+                "https://api.openai.com",
+            )
             try:
                 live = fetch_api_models(api_key, base)
                 if live:
+                    if is_default_openai:
+                        live_lower = {m.lower() for m in live}
+                        curated = list(_PROVIDER_MODELS.get(normalized, []))
+                        # Keep curated order; only surface curated models the
+                        # account actually has access to.
+                        filtered = [m for m in curated if m.lower() in live_lower]
+                        if filtered:
+                            return filtered
+                        # Account serves none of the curated models (rare —
+                        # e.g. org without GPT-5 access). Fall back to curated
+                        # so the picker still offers sane defaults.
+                        return curated or live
                     return live
             except Exception:
                 pass

@@ -47,16 +47,20 @@ function placeholderChild(parentId: string): TreeNode {
 }
 
 export interface UseProjectTreeResult {
+  /** Bumped by collapseAll so callers can remount the tree fully collapsed. */
+  collapseNonce: number
   data: TreeNode[]
   openState: Record<string, boolean>
   rootError: string | null
   rootLoading: boolean
+  collapseAll: () => void
   loadChildren: (id: string) => Promise<void>
   refreshRoot: () => Promise<void>
   setNodeOpen: (id: string, open: boolean) => void
 }
 
 interface ProjectTreeState {
+  collapseNonce: number
   cwd: string
   data: TreeNode[]
   loaded: boolean
@@ -67,6 +71,7 @@ interface ProjectTreeState {
 }
 
 const initialState: ProjectTreeState = {
+  collapseNonce: 0,
   cwd: '',
   data: [],
   loaded: false,
@@ -112,6 +117,7 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
   }
 
   $projectTree.set({
+    collapseNonce: current.collapseNonce,
     cwd,
     data: [],
     loaded: false,
@@ -174,6 +180,19 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     [cwd]
   )
 
+  // Clears the recorded open state and bumps the nonce; the tree is keyed on
+  // the nonce so it remounts with everything collapsed (loaded children stay
+  // cached in `data`, just hidden).
+  const collapseAll = useCallback(() => {
+    setProjectTree(current => {
+      if (current.cwd !== cwd) {
+        return current
+      }
+
+      return { ...current, collapseNonce: current.collapseNonce + 1, openState: {} }
+    })
+  }, [cwd])
+
   const loadChildren = useCallback(
     async (id: string) => {
       if (!cwd || inflight.has(id)) {
@@ -222,6 +241,8 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
 
   return useMemo(
     () => ({
+      collapseAll,
+      collapseNonce: state.cwd === cwd ? state.collapseNonce : 0,
       data: state.cwd === cwd ? state.data : [],
       loadChildren,
       openState: state.cwd === cwd ? state.openState : {},
@@ -231,10 +252,12 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       setNodeOpen
     }),
     [
+      collapseAll,
       cwd,
       loadChildren,
       refreshRoot,
       setNodeOpen,
+      state.collapseNonce,
       state.cwd,
       state.data,
       state.openState,

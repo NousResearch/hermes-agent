@@ -326,3 +326,27 @@ def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
     assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
     assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
     assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+def test_max_tokens_none_defaults_to_gemini_output_ceiling():
+    """max_tokens=None must send the model's full output ceiling, not omit it.
+
+    Gemini's native generateContent applies a low internal default when
+    maxOutputTokens is absent, truncating tool calls mid-stream. Hermes passes
+    None to mean "unlimited", so the adapter must translate that to the
+    published 65,535 ceiling rather than leaving the field unset.
+    """
+    from agent.gemini_native_adapter import (
+        build_gemini_request,
+        GEMINI_DEFAULT_MAX_OUTPUT_TOKENS,
+    )
+
+    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=None)
+    assert req["generationConfig"]["maxOutputTokens"] == GEMINI_DEFAULT_MAX_OUTPUT_TOKENS == 65535
+
+
+def test_explicit_max_tokens_is_respected():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    req = build_gemini_request(messages=[{"role": "user", "content": "hi"}], max_tokens=4096)
+    assert req["generationConfig"]["maxOutputTokens"] == 4096

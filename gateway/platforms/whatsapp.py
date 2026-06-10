@@ -242,6 +242,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
+    supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
     DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
     
     # Default bridge location relative to the hermes-agent install
@@ -378,6 +379,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if cid.endswith("@broadcast") or cid.endswith("@newsletter"):
             return True
         return False
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
+        return True
 
     def _is_dm_allowed(self, sender_id: str) -> bool:
         """Check whether a DM from the given sender should be processed."""

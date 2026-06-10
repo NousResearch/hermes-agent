@@ -322,3 +322,126 @@ class TestHermesConstantsFallback:
         import hermes_constants
         assert module.get_hermes_home is hermes_constants.get_hermes_home
         assert module.display_hermes_home is hermes_constants.display_hermes_home
+
+
+def _load_setup_module(monkeypatch):
+    """Load setup.py without stubbing _ensure_deps (for install_deps tests)."""
+    spec = importlib.util.spec_from_file_location(
+        "google_workspace_setup_installdeps_test", SCRIPT_PATH
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _force_deps_missing(monkeypatch):
+    """Make `import googleapiclient` / `import google_auth_oauthlib` fail so
+    install_deps() proceeds past its early-return short-circuit."""
+    for name in ("googleapiclient", "google_auth_oauthlib"):
+        monkeypatch.setitem(sys.modules, name, None)
+
+
+class TestInstallDeps:
+    """Tests for install_deps() interpreter/installer selection.
+
+    Regression coverage for the Hermes Docker image, whose venv is built with
+    `uv sync` and ships without pip — `sys.executable -m pip install` fails
+    with `No module named pip`, so install_deps() must fall back to uv.
+    """
+
+    def test_returns_early_when_already_installed(self, monkeypatch):
+        """If both libs import, no installer subprocess runs at all."""
+        module = _load_setup_module(monkeypatch)
+        # Don't force-missing: real test env has the libs importable. Guard
+        # against any subprocess being spawned.
+        calls = []
+        monkeypatch.setattr(
+            module.subprocess, "check_call", lambda *a, **k: calls.append(a)
+        )
+        # google_auth_oauthlib may not be installed in the test env; only run
+        # this assertion when the early-return path is actually reachable.
+        try:
+            import googleapiclient  # noqa: F401
+            import google_auth_oauthlib  # noqa: F401
+        except ImportError:
+            pytest.skip("Google libs not installed in test env")
+        assert module.install_deps() is True
+        assert calls == []
+
+    def test_uses_pip_when_available(self, monkeypatch):
+        """When pip works, install_deps succeeds via pip and never calls uv."""
+        module = _load_setup_module(monkeypatch)
+        _force_deps_missing(monkeypatch)
+
+        recorded = []
+
+        def fake_check_call(cmd, **kwargs):
+            recorded.append(cmd)
+            # pip path is the first attempt — succeed.
+            return 0
+
+        which_calls = []
+        monkeypatch.setattr(module.subprocess, "check_call", fake_check_call)
+        monkeypatch.setattr(
+            module.shutil, "which", lambda name: which_calls.append(name)
+        )
+
+        assert module.install_deps() is True
+        assert recorded[0][:3] == [module.sys.executable, "-m", "pip"]
+        # Control: uv must NOT be consulted when pip succeeds.
+        assert which_calls == []
+
+    def test_falls_back_to_uv_when_pip_missing(self, monkeypatch):
+        """No pip → uv pip install --python <interpreter> is used."""
+        module = _load_setup_module(monkeypatch)
+        _force_deps_missing(monkeypatch)
+
+        recorded = []
+
+        def fake_check_call(cmd, **kwargs):
+            recorded.append(cmd)
+            if cmd[:3] == [module.sys.executable, "-m", "pip"]:
+                raise module.subprocess.CalledProcessError(1, cmd)
+            return 0  # uv invocation succeeds
+
+        monkeypatch.setattr(module.subprocess, "check_call", fake_check_call)
+        monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/local/bin/uv")
+
+        assert module.install_deps() is True
+        assert len(recorded) == 2
+        uv_cmd = recorded[1]
+        assert uv_cmd[0] == "/usr/local/bin/uv"
+        assert uv_cmd[1:5] == ["pip", "install", "--python", module.sys.executable]
+        for pkg in module.REQUIRED_PACKAGES:
+            assert pkg in uv_cmd
+
+    def test_returns_false_when_no_pip_and_no_uv(self, monkeypatch, capsys):
+        """No pip AND no uv → failure, with the [google] extra hint printed."""
+        module = _load_setup_module(monkeypatch)
+        _force_deps_missing(monkeypatch)
+
+        def fake_check_call(cmd, **kwargs):
+            raise module.subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(module.subprocess, "check_call", fake_check_call)
+        monkeypatch.setattr(module.shutil, "which", lambda name: None)
+
+        assert module.install_deps() is False
+        out = capsys.readouterr().out
+        assert "hermes-agent[google]" in out
+
+    def test_returns_false_when_uv_fallback_also_fails(self, monkeypatch, capsys):
+        """uv present but its install fails → failure surfaced (not swallowed)."""
+        module = _load_setup_module(monkeypatch)
+        _force_deps_missing(monkeypatch)
+
+        def fake_check_call(cmd, **kwargs):
+            raise module.subprocess.CalledProcessError(1, cmd)
+
+        monkeypatch.setattr(module.subprocess, "check_call", fake_check_call)
+        monkeypatch.setattr(module.shutil, "which", lambda name: "/usr/local/bin/uv")
+
+        assert module.install_deps() is False
+        out = capsys.readouterr().out
+        assert "via uv" in out

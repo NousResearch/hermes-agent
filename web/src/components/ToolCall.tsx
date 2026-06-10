@@ -220,7 +220,7 @@ function colorizeDiff(diff: string): React.ReactNode {
 
 function diffLineClass(line: string): string {
   if (line.startsWith("+") && !line.startsWith("+++"))
-    return "text-emerald-500 dark:text-emerald-400";
+    return "text-success";
   if (line.startsWith("-") && !line.startsWith("---"))
     return "text-destructive";
   if (line.startsWith("@@")) return "text-primary";

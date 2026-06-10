@@ -4,18 +4,14 @@ import type { HermesGateway } from '@/hermes'
 import type { IconComponent } from '@/lib/icons'
 import type { EnvVarInfo } from '@/types/hermes'
 
-export type SettingsView = 'about' | 'gateway' | 'keys' | 'mcp' | 'tools' | `config:${string}`
-export type SettingsQueryKey = 'about' | 'config' | 'gateway' | 'keys' | 'mcp' | 'tools'
+export type SettingsView = 'about' | 'gateway' | 'keys' | 'mcp' | 'providers' | 'sessions' | `config:${string}`
 export type EnvPatch = Partial<Pick<EnvVarInfo, 'is_set' | 'redacted_value'>>
 
 export interface SettingsPageProps {
   gateway?: HermesGateway | null
   onClose: () => void
   onConfigSaved?: () => void
-}
-
-export interface SearchProps {
-  query: string
+  onMainModelChanged?: (provider: string, model: string) => void
 }
 
 export interface ProviderGroup {

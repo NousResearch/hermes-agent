@@ -210,6 +210,14 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Fired by agent/curator.py once per curator pass, after the per-run
+    # report directory (run.json + REPORT.md) is fully written. Lets
+    # governance layers (profile routing, archival overrides, audit
+    # logging) react to curator output without polling logs/curator/.
+    # Observers only: return values are ignored.
+    #
+    # Kwargs: run_dir: str, run_json_path: str, report_md_path: str
+    "post_curator_run",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

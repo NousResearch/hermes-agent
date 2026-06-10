@@ -1265,6 +1265,21 @@ def _write_run_report(
     except Exception as e:
         logger.debug("Curator cron_rewrites.json write failed: %s", e)
 
+    # Notify plugins/shell hooks that a curator pass completed. Lazy import
+    # keeps bare curator usage working in contexts where the plugin system
+    # isn't available; dispatch failures must never break the curator.
+    try:
+        from hermes_cli.plugins import invoke_hook
+
+        invoke_hook(
+            "post_curator_run",
+            run_dir=str(run_dir),
+            run_json_path=str(run_dir / "run.json"),
+            report_md_path=str(run_dir / "REPORT.md"),
+        )
+    except Exception as e:
+        logger.debug("post_curator_run hook dispatch failed: %s", e)
+
     return run_dir
 
 

@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
+import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { useI18n } from '@/i18n'
 import {
@@ -14,6 +15,7 @@ import {
   Hash,
   Loader2,
   Sparkles,
+  Terminal,
   Zap,
   ZapFilled
 } from '@/lib/icons'
@@ -47,6 +49,7 @@ import type { StatusbarItem, StatusbarSelectModifiers } from '../statusbar-contr
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
+  chatOpen: boolean
   commandCenterOpen: boolean
   extraLeftItems: readonly StatusbarItem[]
   extraRightItems: readonly StatusbarItem[]
@@ -62,6 +65,7 @@ interface StatusbarItemsOptions {
 
 export function useStatusbarItems({
   agentsOpen,
+  chatOpen,
   commandCenterOpen,
   extraLeftItems,
   extraRightItems,
@@ -374,11 +378,21 @@ export function useStatusbarItems({
               variant: 'action' as const
             })
       },
+      {
+        className: `w-7 justify-center px-0${terminalTakeover ? ' bg-accent/55 text-foreground' : ''}`,
+        hidden: !chatOpen,
+        icon: <Terminal className="size-3.5" />,
+        id: 'terminal',
+        onSelect: () => setTerminalTakeover(!$terminalTakeover.get()),
+        title: terminalTakeover ? copy.hideTerminal : copy.showTerminal,
+        variant: 'action'
+      },
       clientVersionItem,
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
       busy,
+      chatOpen,
       contextBar,
       contextUsage,
       copy,

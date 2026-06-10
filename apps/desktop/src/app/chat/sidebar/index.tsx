@@ -45,6 +45,7 @@ import {
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
   $sidebarCronOpen,
+  $sidebarMessagingOpenIds,
   $sidebarOpen,
   $sidebarOverlayMounted,
   $sidebarPinsOpen,
@@ -61,6 +62,7 @@ import {
   setSidebarSessionOrderIds,
   setSidebarWorkspaceOrderIds,
   SIDEBAR_SESSIONS_PAGE_SIZE,
+  toggleSidebarMessagingOpen,
   unpinSession
 } from '@/store/layout'
 import {
@@ -95,6 +97,12 @@ import { VirtualSessionList } from './virtual-session-list'
 
 const VIRTUALIZE_THRESHOLD = 25
 
+// Non-session groups (messaging platforms) stay compact: show a few rows up
+// front, reveal more in larger steps on demand. Keeps a busy platform from
+// dominating the sidebar before the user asks to see it.
+const NON_SESSION_INITIAL_ROWS = 3
+const NON_SESSION_LOAD_STEP = 10
+
 // Render the modifier key the user actually presses on this platform. The
 // global accelerator is bound to both Cmd+N (macOS) and Ctrl+N (everywhere
 // else) in desktop-controller.tsx, but the hint should match muscle memory.
@@ -125,6 +133,16 @@ const WORKSPACE_PAGE = 5
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
 const PROFILE_INITIAL_PAGE = 5
 const GROUP_DND_ID_PREFIX = 'group:'
+
+// Two modes via the `compact` height variant (styles.css):
+//   tall    → each section is shrink-0, capped, its own scroller; Sessions is flex-1.
+//   compact → COMPACT_FLAT drops the caps so the whole stack scrolls as one.
+// Sections stay shrink-0 so none can be squeezed below its content and bleed onto
+// the next — the flexbox `min-height: auto` overlap trap that caused the bug.
+const COMPACT_FLAT = 'compact:max-h-none compact:overflow-visible'
+
+// A non-session group's scroll body: own scroller when tall, flattened when compact.
+const GROUP_BODY = cn('overflow-y-auto overscroll-contain', COMPACT_FLAT)
 
 const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
 
@@ -495,6 +513,18 @@ export function ChatSidebar({
     [onLoadMoreMessaging]
   )
 
+  // Reveal another batch of a platform's rows; fetch from the backend too if we
+  // run past what's loaded and more remain on disk.
+  const revealMoreMessaging = (platform: string, loaded: number, hasMore: boolean) => {
+    const next = (messagingVisible[platform] ?? NON_SESSION_INITIAL_ROWS) + NON_SESSION_LOAD_STEP
+
+    setMessagingVisible(prev => ({ ...prev, [platform]: next }))
+
+    if (next > loaded && hasMore) {
+      loadMoreForMessaging(platform)
+    }
+  }
+
   // Each messaging platform is its own self-managed section: split the
   // separately-fetched messaging slice by source, newest platform first, rows
   // within a platform by recency. Per-platform totals (when a "load more" has
@@ -606,6 +636,12 @@ export function ChatSidebar({
   const recentsMeta = countLabel(agentSessions.length, knownSessionTotal)
 
   const displayAgentGroups = showAllProfiles ? profileGroups : agentsGrouped ? agentGroups : undefined
+
+  // The recents list owns its own (virtualized) scroll container only when it's a
+  // long flat list. In that case it must keep its scroller even in short mode, so
+  // we don't flatten it (flattening would defeat virtualization). Short flat lists
+  // and grouped views flatten into the single outer scroll instead.
+  const recentsVirtualizes = !displayAgentGroups?.length && displayAgentSessions.length >= VIRTUALIZE_THRESHOLD
 
   useEffect(() => {
     if (!displayAgentGroups?.length || showAllProfiles) {
@@ -1117,6 +1153,7 @@ function SidebarSessionsSection({
     inner = (
       <VirtualSessionList
         activeSessionId={activeSessionId}
+        className={contentClassName}
         onArchiveSession={onArchiveSession}
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}

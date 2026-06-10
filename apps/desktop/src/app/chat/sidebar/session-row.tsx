@@ -123,11 +123,15 @@ export function SidebarSessionRow({
               return
             }
 
-            if (event.metaKey || event.ctrlKey) {
+            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
+            // window — the universal "open in a new window" gesture. Archive
+            // lives in the row's ⋯ and right-click menus. Falls through to a
+            // normal resume when standalone windows aren't available (web embed).
+            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
               event.preventDefault()
               event.stopPropagation()
               triggerHaptic('selection')
-              onArchive()
+              void openSessionInNewWindow(session.id)
 
               return
             }

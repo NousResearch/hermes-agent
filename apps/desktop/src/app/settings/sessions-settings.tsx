@@ -9,7 +9,7 @@ import { useTranslation } from '@/hooks/use-translation'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
-import { setSessions } from '@/store/session'
+import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
@@ -200,6 +200,7 @@ function DefaultProjectDirSetting() {
       if (!alive) return
       setDir(result.dir)
       setFallback(result.defaultLabel)
+      applyConfiguredDefaultProjectDir(result.dir)
     })
 
     return () => {
@@ -241,6 +242,8 @@ function DefaultProjectDirSetting() {
     try {
       await settings.setDefaultProjectDir(null)
       setDir(null)
+      applyConfiguredDefaultProjectDir(null)
+      await ensureDefaultWorkspaceCwd()
     } catch (err) {
       notifyError(err, t('sessions.clearDirFailed'))
     } finally {
@@ -268,7 +271,7 @@ function DefaultProjectDirSetting() {
             )}
           </div>
         }
-        description={dir || s.defaultsTo(fallback || '~/hermes-projects')}
+        description={dir || s.defaultsTo(fallback || '~')}
         title={dir ? dir : s.notSet}
       />
     </div>

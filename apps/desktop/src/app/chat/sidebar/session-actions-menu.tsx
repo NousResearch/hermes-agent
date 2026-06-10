@@ -69,6 +69,19 @@ function useSessionActions({ sessionId, title, pinned = false, onPin, onArchive,
         void writeClipboardText(sessionId).catch(err => notifyError(err, r.copyIdFailed))
       }
     },
+    ...(canOpenSessionWindow()
+      ? [
+          {
+            disabled: !sessionId,
+            icon: 'link-external',
+            label: r.newWindow,
+            onSelect: () => {
+              triggerHaptic('selection')
+              void openSessionInNewWindow(sessionId)
+            }
+          }
+        ]
+      : []),
     {
       disabled: !sessionId,
       icon: 'cloud-download',

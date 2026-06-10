@@ -3791,3 +3791,82 @@ class TestAuxUnhealthyCache:
             )
             # After the 402, OpenRouter is in the unhealthy cache.
             assert _is_provider_unhealthy("openrouter") is True
+
+
+# ── auxiliary_max_tokens_param ──────────────────────────────────────────────
+
+
+class TestAuxiliaryMaxTokensParam:
+    """Verify the kwarg emitted by ``auxiliary_max_tokens_param`` across
+    URL / provider / model-name combinations. Regression cover: a custom
+    OpenAI-compatible endpoint serving ``gpt-5.x`` was silently getting
+    ``max_tokens`` and 400-ing on ``unsupported_parameter``."""
+
+    def test_direct_openai_returns_max_completion_tokens(self):
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://api.openai.com/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096) == {"max_completion_tokens": 4096}
+
+    def test_local_endpoint_without_model_uses_max_tokens(self):
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="http://localhost:11434/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096) == {"max_tokens": 4096}
+
+    def test_openrouter_api_key_present_keeps_max_tokens_without_model_hint(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://openrouter.ai/api/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096) == {"max_tokens": 4096}
+
+    # Model-name fallback — this is the regression guard.
+
+    def test_custom_endpoint_serving_gpt5_uses_max_completion_tokens(self):
+        """Third-party gateway + gpt-5.x: name-based detection must kick in."""
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://my-gateway.example.com/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096, model="gpt-5.4") == {
+                "max_completion_tokens": 4096
+            }
+
+    def test_openrouter_serving_gpt4o_uses_max_completion_tokens(self, monkeypatch):
+        monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-v1-test")
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://openrouter.ai/api/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096, model="openai/gpt-4o-mini") == {
+                "max_completion_tokens": 4096
+            }
+
+    def test_custom_endpoint_serving_classic_llama_keeps_max_tokens(self):
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://my-gateway.example.com/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096, model="llama3-70b") == {
+                "max_tokens": 4096
+            }
+
+    def test_empty_model_falls_back_to_url_only(self):
+        """No model hint → only the URL-based rule applies."""
+        with (
+            patch("agent.auxiliary_client._current_custom_base_url",
+                  return_value="https://my-gateway.example.com/v1"),
+            patch("agent.auxiliary_client._read_nous_auth", return_value=None),
+        ):
+            assert auxiliary_max_tokens_param(4096, model="") == {"max_tokens": 4096}
+            assert auxiliary_max_tokens_param(4096, model=None) == {"max_tokens": 4096}

@@ -499,6 +499,7 @@ from hermes_cli import __version__, __release_date__
 # (god-file decomposition Phase 2). Re-imported here so select_provider_and_model and
 # existing test monkeypatches (hermes_cli.main._model_flow_*) keep resolving unchanged.
 from hermes_cli.model_setup_flows import (
+    _prompt_auth_credentials_choice,
     _model_flow_openrouter,
     _model_flow_nous,
     _model_flow_openai_codex,
@@ -2830,7 +2831,12 @@ def select_provider_and_model(args=None):
         member_labels = [
             provider_labels.get(m, m) for m in selected_members
         ]
-        member_idx = _prompt_provider_choice(member_labels, default=member_default)
+        group_label = ordered[provider_idx][1].split(" ▸", 1)[0]
+        member_idx = _prompt_provider_choice(
+            member_labels,
+            default=member_default,
+            title=f"Select {group_label} provider:",
+        )
         if member_idx is None:
             print("No change.")
             return
@@ -2974,6 +2980,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
+    ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
@@ -3263,6 +3270,7 @@ def _aux_flow_provider_model(
             model_list,
             current_model=current_model,
             pricing=pricing,
+            confirm_provider=provider_slug,
         )
         if selected is None:
             print("No change.")
@@ -3331,7 +3339,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     print(f"{display_name}: custom ({short_url})" + (f" · {model}" if model else ""))
 
 
-def _prompt_provider_choice(choices, *, default=0):
+def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
     """Show provider selection menu with curses arrow-key navigation.
 
     Falls back to a numbered list when curses is unavailable (e.g. piped
@@ -3341,7 +3349,7 @@ def _prompt_provider_choice(choices, *, default=0):
     try:
         from hermes_cli.setup import _curses_prompt_choice
 
-        idx = _curses_prompt_choice("Select provider:", choices, default)
+        idx = _curses_prompt_choice(title, choices, default)
         if idx >= 0:
             print()
             return idx
@@ -3349,7 +3357,7 @@ def _prompt_provider_choice(choices, *, default=0):
         pass
 
     # Fallback: numbered list
-    print("Select provider:")
+    print(title)
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
         print(f"  {marker} {i}. {c}")
@@ -6385,6 +6393,167 @@ def _load_installable_optional_extras(group: str = "all") -> list[str]:
     return referenced
 
 
+# Install-scoped breadcrumb dropped right before ``hermes update`` mutates the
+# venv and cleared only after the dependency install verifies clean.  If a user
+# kills the update mid-install (Ctrl-C, terminal close, WSL OOM), the marker
+# survives and the next ``hermes`` launch finishes the install instead of
+# limping along on a half-built venv (e.g. pip wiped, a core dep like Pillow
+# never landed).  Lives next to the venv (not under $HERMES_HOME) because the
+# venv is shared across all profiles, so a single marker covers every profile.
+def _update_marker_path() -> Path:
+    return PROJECT_ROOT / ".update-incomplete"
+
+
+def _write_update_incomplete_marker() -> None:
+    """Drop the interrupted-install breadcrumb. Never raises."""
+    try:
+        _update_marker_path().write_text(
+            f"started={_time.time()}\npid={os.getpid()}\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        logger.debug("Could not write update-incomplete marker: %s", exc)
+
+
+def _clear_update_incomplete_marker() -> None:
+    """Remove the interrupted-install breadcrumb. Never raises."""
+    try:
+        _update_marker_path().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("Could not clear update-incomplete marker: %s", exc)
+
+
+def _recover_from_interrupted_install() -> None:
+    """Finish a dependency install that a prior ``hermes update`` left half-done.
+
+    Triggered on launch when ``.update-incomplete`` is present — meaning the
+    code was pulled but the dep install was killed before it verified clean.
+    Unconditionally bootstraps pip via ``ensurepip`` (a killed ``pip install``
+    can wipe pip from the venv entirely, which blocks the venv from recovering
+    on its own), then re-runs the editable ``.[all]`` install + core-dependency
+    verification, then clears the marker.
+
+    Never raises: a recovery failure must not block launch.  If it can't
+    self-heal it prints the one-line manual command and leaves the marker so
+    the next launch tries again.
+
+    Concurrency: the marker lives next to the shared venv, so a gateway start
+    plus a CLI launch (or two profiles starting at once) can both see it.  An
+    ``O_EXCL`` lockfile ensures only one process runs the reinstall; the
+    others skip and let the winner clear the marker.
+
+    Output: everything — our status lines AND the streamed pip/uv install
+    (which inherits fd 1) — is routed to stderr.  Launches whose stdout is a
+    protocol stream (``hermes acp`` speaks JSON-RPC on stdout) must never get
+    install noise on stdout.
+    """
+    if not _update_marker_path().exists():
+        return
+
+    # Skip in managed/Docker installs and on PyPI installs with no git checkout:
+    # those don't run the source-tree update path, so a stray marker is not ours
+    # to act on. Just clear it.
+    if not (PROJECT_ROOT / "pyproject.toml").is_file():
+        _clear_update_incomplete_marker()
+        return
+
+    # Single-flight guard: atomically claim the recovery lock. If another
+    # process holds it, skip — it is running the same reinstall into the same
+    # shared venv right now. A crashed holder leaves a stale lock; break it
+    # after an hour (well past any realistic install) so recovery can't be
+    # wedged forever.
+    lock_path = PROJECT_ROOT / ".update-incomplete.lock"
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        os.close(fd)
+    except FileExistsError:
+        try:
+            if _time.time() - lock_path.stat().st_mtime > 3600:
+                lock_path.unlink()
+        except OSError:
+            pass
+        return
+    except OSError as exc:
+        # Couldn't create the lock (read-only fs, perms). Proceed unlocked —
+        # the install itself will surface the real problem.
+        logger.debug("Could not create install-recovery lock: %s", exc)
+
+    saved_stdout_fd = None
+    saved_sys_stdout = sys.stdout
+    try:
+        # Route Python-level prints AND subprocess-inherited fd 1 to stderr
+        # for the duration of recovery (see docstring: ACP stdout safety).
+        try:
+            saved_stdout_fd = os.dup(1)
+            os.dup2(2, 1)
+        except OSError:
+            saved_stdout_fd = None
+        sys.stdout = sys.stderr
+
+        print(
+            "⚠ A previous `hermes update` was interrupted mid-install — "
+            "finishing dependency installation now..."
+        )
+
+        try:
+            from hermes_cli.managed_uv import ensure_uv
+
+            # Always bootstrap pip first: a killed install can leave the venv with
+            # no pip module at all, and uv may also be gone. ensurepip restores a
+            # known-good pip so at least the plain-pip path below can proceed.
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                )
+            except Exception as exc:
+                logger.debug("ensurepip during install recovery failed: %s", exc)
+
+            uv_bin = ensure_uv()
+            if uv_bin:
+                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                if _is_termux_env(uv_env):
+                    uv_env.pop("PYTHONPATH", None)
+                    uv_env.pop("PYTHONHOME", None)
+                _install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"],
+                    env=uv_env,
+                    group="termux-all" if _is_termux_env(uv_env) else "all",
+                )
+            else:
+                _install_python_dependencies_with_optional_fallback(
+                    [sys.executable, "-m", "pip"],
+                    group="termux-all" if _is_termux_env() else "all",
+                )
+
+            _clear_update_incomplete_marker()
+            print("✓ Dependency installation recovered — your install is healthy again.")
+        except Exception as exc:
+            # Leave the marker in place so the next launch retries. Give the user
+            # the exact manual recovery command in the meantime.
+            logger.debug("Interrupted-install recovery failed: %s", exc)
+            print("✗ Could not auto-recover the interrupted install.")
+            print("  Recover manually with:")
+            print(f"    cd {PROJECT_ROOT}")
+            print(f"    {sys.executable} -m ensurepip --upgrade")
+            print(f"    {sys.executable} -m pip install -e '.[all]'")
+    finally:
+        sys.stdout = saved_sys_stdout
+        if saved_stdout_fd is not None:
+            try:
+                os.dup2(saved_stdout_fd, 1)
+                os.close(saved_stdout_fd)
+            except OSError:
+                pass
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+
 def _run_install_with_heartbeat(
     cmd: list[str],
     *,
@@ -8316,6 +8485,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
+        #
+        # Drop the interrupted-install breadcrumb BEFORE touching the venv. If
+        # the install is killed mid-flight (Ctrl-C, terminal close, WSL OOM),
+        # the marker survives and the next ``hermes`` launch finishes the
+        # install via ``_recover_from_interrupted_install``. Cleared only after
+        # the install + core-dependency verification completes below.
+        _write_update_incomplete_marker()
         print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
@@ -8368,6 +8544,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat(pip_cmd)
             _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+
+        # Core Python deps installed AND verified (the fallback helper runs
+        # _verify_core_dependencies_installed). Clear the interrupted-install
+        # breadcrumb now — the remaining steps (lazy refresh, node deps, web
+        # UI, desktop rebuild) are non-core and can't brick the venv.
+        _clear_update_incomplete_marker()
 
         _refresh_active_lazy_features()
 
@@ -10680,6 +10862,22 @@ def main():
     # there's nothing to clean. See ``_quarantine_running_hermes_exe``.
     try:
         _cleanup_quarantined_exes()
+    except Exception:
+        pass
+
+    # Self-heal a venv left half-built by an interrupted ``hermes update``
+    # (Ctrl-C, terminal close, WSL OOM mid-install). Skip when the user is
+    # *running* update — that flow writes and clears its own marker, and we
+    # don't want a recovery install racing the real one. Never raises.
+    #
+    # The substring match is deliberately loose: argv isn't parsed yet at this
+    # point, and the failure modes are asymmetric. Over-matching (e.g.
+    # ``hermes skills install update``) merely defers recovery one launch;
+    # under-matching (missing ``hermes -p work update``) would race a recovery
+    # install against the real one. Loose wins.
+    try:
+        if "update" not in sys.argv[1:]:
+            _recover_from_interrupted_install()
     except Exception:
         pass
 

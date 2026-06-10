@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
+import { useState } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
-import { Check, Palette } from '@/lib/icons'
+import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { notifyError } from '@/store/notifications'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
@@ -13,7 +14,7 @@ import { MODE_OPTIONS } from './constants'
 import { Pill, SectionHeading, SettingsContent } from './primitives'
 
 function ThemePreview({ name }: { name: string }) {
-  const t = BUILTIN_THEMES[name]
+  const t = resolveTheme(name)
 
   if (!t) {
     return null
@@ -48,6 +49,81 @@ function ThemePreview({ name }: { name: string }) {
           </div>
         </div>
       </div>
+    </div>
+  )
+}
+
+function VscodeThemeInstaller() {
+  const { t } = useI18n()
+  const { setTheme } = useTheme()
+  const a = t.settings.appearance
+  const [id, setId] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [status, setStatus] = useState<{ kind: 'error' | 'success'; text: string } | null>(null)
+
+  const install = async () => {
+    const trimmed = id.trim()
+
+    if (!trimmed || busy) {
+      return
+    }
+
+    setBusy(true)
+    setStatus(null)
+
+    try {
+      const theme = await installVscodeThemeFromMarketplace(trimmed)
+
+      triggerHaptic('crisp')
+      setTheme(theme.name)
+      setStatus({ kind: 'success', text: a.installed(theme.label) })
+      setId('')
+    } catch (error) {
+      setStatus({ kind: 'error', text: error instanceof Error ? error.message : a.installError })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mt-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          className="min-w-0 flex-1 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 font-mono text-[length:var(--conversation-caption-font-size)] outline-none placeholder:text-(--ui-text-tertiary) focus:border-(--ui-stroke-secondary)"
+          disabled={busy}
+          onChange={event => {
+            setId(event.target.value)
+            setStatus(null)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              void install()
+            }
+          }}
+          placeholder={a.installPlaceholder}
+          spellCheck={false}
+          value={id}
+        />
+        <button
+          className="inline-flex items-center gap-1.5 rounded-lg border border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) px-3 py-1.5 text-[length:var(--conversation-caption-font-size)] font-medium transition hover:bg-(--chrome-action-hover) disabled:opacity-50"
+          disabled={busy || !id.trim()}
+          onClick={() => void install()}
+          type="button"
+        >
+          {busy ? <Loader2 className="size-3.5 animate-spin" /> : <Download className="size-3.5" />}
+          {busy ? a.installing : a.installButton}
+        </button>
+      </div>
+      {status && (
+        <p
+          className={cn(
+            'mt-2 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height)',
+            status.kind === 'error' ? 'text-(--ui-red)' : 'text-(--ui-text-tertiary)'
+          )}
+        >
+          {status.text}
+        </p>
+      )}
     </div>
   )
 }

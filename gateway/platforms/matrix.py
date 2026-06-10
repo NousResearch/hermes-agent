@@ -1159,6 +1159,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
                 if name_evt and hasattr(name_evt, "name") and name_evt.name:
                     name = name_evt.name
+                    chat_type = "group"  # Named rooms are workspaces, not DMs
             except Exception:
                 pass
 
@@ -1859,9 +1860,11 @@ class MatrixAdapter(BasePlatformAdapter):
             self._threads.mark(thread_id)
 
         display_name = await self._get_display_name(room_id, sender)
+        chat_info = await self.get_chat_info(room_id)
         source = self.build_source(
             chat_id=room_id,
-            chat_type=chat_type,
+            chat_name=chat_info.get("name"),
+            chat_type=chat_info.get("type", chat_type),
             user_id=sender,
             user_name=display_name,
             thread_id=thread_id,

@@ -14,6 +14,7 @@ Usage:
   python3 hyperliquid_client.py l2 <coin> [--levels 10]
   python3 hyperliquid_client.py state [address] [--dex DEX]
   python3 hyperliquid_client.py spot-balances [address]
+  python3 hyperliquid_client.py delegations [address]
   python3 hyperliquid_client.py fills [address] [--hours N] [--limit N]
   python3 hyperliquid_client.py orders [address] [--limit N]
   python3 hyperliquid_client.py review [address] [--coin COIN] [--hours N]
@@ -525,6 +526,22 @@ def _normalize_spot_balances(payload: Any) -> List[Dict[str, Any]]:
     return rows
 
 
+def _normalize_delegator_summary(payload: Any) -> Dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {
+            "delegated": "0",
+            "undelegated": "0",
+            "total_pending_withdrawal": "0",
+            "n_pending_withdrawals": 0,
+        }
+    return {
+        "delegated": payload.get("delegated", "0"),
+        "undelegated": payload.get("undelegated", "0"),
+        "total_pending_withdrawal": payload.get("totalPendingWithdrawal", "0"),
+        "n_pending_withdrawals": payload.get("nPendingWithdrawals", 0),
+    }
+
+
 def _normalize_fills(payload: Any) -> List[Dict[str, Any]]:
     rows: List[Dict[str, Any]] = []
     if not isinstance(payload, list):
@@ -952,6 +969,13 @@ def run_spot_balances(args: argparse.Namespace) -> Dict[str, Any]:
     return {"user": user, "count": len(rows), "balances": _limit_items(rows, args.limit)}
 
 
+def run_delegations(args: argparse.Namespace) -> Dict[str, Any]:
+    user = _resolve_user(args.user)
+    payload = {"type": "delegatorSummary", "user": user}
+    data = _normalize_delegator_summary(_post_info(payload))
+    return {"user": user, **data}
+
+
 def run_fills(args: argparse.Namespace) -> Dict[str, Any]:
     user = _resolve_user(args.user)
     payload: Dict[str, Any] = {"user": user}
@@ -1356,6 +1380,19 @@ def render_spot_balances(data: Dict[str, Any]) -> str:
     )
 
 
+def render_delegations(data: Dict[str, Any]) -> str:
+    return "\n".join(
+        [
+            f"User: {data['user']}",
+            "",
+            f"Delegated (staked):           {_compact_number(data['delegated'])} HYPE",
+            f"Undelegated (available):      {_compact_number(data['undelegated'])} HYPE",
+            f"Pending withdrawal:           {_compact_number(data['total_pending_withdrawal'])} HYPE",
+            f"Pending withdrawals count:    {data['n_pending_withdrawals']}",
+        ]
+    )
+
+
 def render_fills(data: Dict[str, Any]) -> str:
     rows = [
         {
@@ -1598,6 +1635,11 @@ def build_parser() -> argparse.ArgumentParser:
     spot_balances.add_argument("--limit", type=int, default=20, help="Rows to display; 0 means all")
     _add_json_flag(spot_balances)
     spot_balances.set_defaults(func=run_spot_balances, renderer=render_spot_balances)
+
+    delegations = subparsers.add_parser("delegations", help="Inspect staked/delegated HYPE positions")
+    delegations.add_argument("user", nargs="?", default="", help=f"Optional address; falls back to ${DEFAULT_USER_ENV}")
+    _add_json_flag(delegations)
+    delegations.set_defaults(func=run_delegations, renderer=render_delegations)
 
     fills = subparsers.add_parser("fills", help="Inspect a user's recent fills")
     fills.add_argument("user", nargs="?", default="", help=f"Optional address; falls back to ${DEFAULT_USER_ENV}")

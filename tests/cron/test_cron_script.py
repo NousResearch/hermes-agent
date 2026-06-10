@@ -11,7 +11,7 @@ import json
 import os
 import sys
 import textwrap
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -88,6 +88,17 @@ class TestJobScriptField:
 
 class TestRunJobScript:
     """Test the _run_job_script() function."""
+
+    def test_bash_script_arg_uses_forward_slashes_for_windows_paths(self):
+        from cron.scheduler import _bash_script_arg
+
+        path = PureWindowsPath(
+            r"C:\Users\graem\AppData\Local\hermes\scripts\cron-watchdog.sh"
+        )
+
+        assert _bash_script_arg(path) == (
+            "C:/Users/graem/AppData/Local/hermes/scripts/cron-watchdog.sh"
+        )
 
     def test_successful_script(self, cron_env):
         from cron.scheduler import _run_job_script

@@ -30,7 +30,7 @@ except ImportError:
         import msvcrt
     except ImportError:
         msvcrt = None
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
@@ -913,6 +913,11 @@ def _get_script_timeout() -> int:
     return _DEFAULT_SCRIPT_TIMEOUT
 
 
+def _bash_script_arg(path: PurePath) -> str:
+    """Return a script path in the form bash expects on every platform."""
+    return path.as_posix()
+
+
 def _run_job_script(script_path: str) -> tuple[bool, str]:
     """Execute a cron job's data-collection script and capture its output.
 
@@ -987,7 +992,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
                 "On Windows, install Git for Windows (which ships Git Bash) "
                 "or rewrite the script as Python (.py)."
             )
-        argv = [_bash, str(path)]
+        argv = [_bash, _bash_script_arg(path)]
     else:
         argv = [sys.executable, str(path)]
 

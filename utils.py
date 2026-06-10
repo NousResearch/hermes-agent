@@ -365,7 +365,8 @@ def model_forces_max_completion_tokens(model: str) -> bool:
     HTTP 400 ``unsupported_parameter`` — the caller must send
     ``max_completion_tokens`` instead. This covers:
 
-    - ``gpt-4o`` / ``gpt-4o-mini`` / ``gpt-4o-*``
+    - ``gpt-4o`` / ``gpt-4o-mini`` / ``gpt-4o-*`` (incl. ``chatgpt-4o-latest``,
+      OpenAI's ChatGPT-4o snapshot, whose name starts with ``chatgpt-`` not ``gpt-``)
     - ``gpt-4.1`` / ``gpt-4.1-*``
     - ``gpt-5`` / ``gpt-5.x`` / ``gpt-5-*``
     - ``o1`` / ``o1-*``
@@ -385,6 +386,7 @@ def model_forces_max_completion_tokens(model: str) -> bool:
         m = m.rsplit("/", 1)[-1]
     return (
         m.startswith("gpt-4o")
+        or m.startswith("chatgpt-4o")  # chatgpt-4o-latest is a gpt-4o snapshot
         or m.startswith("gpt-4.1")
         or m.startswith("gpt-5")
         or m.startswith("o1")

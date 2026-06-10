@@ -288,8 +288,8 @@ class VoiceCallConfig:
             if not is_e164(number):
                 errors.append(f"allow_from entry {number!r} is not E.164")
 
-        if not (1 <= self.serve.port <= 65535):
-            errors.append("serve.port must be 1-65535")
+        if not (0 <= self.serve.port <= 65535):  # 0 = ephemeral (bind any free port)
+            errors.append("serve.port must be 0-65535")
         if not self.serve.path.startswith("/"):
             errors.append("serve.path must start with /")
         # Note: inbound_policy "allowlist" with an empty allow_from is valid

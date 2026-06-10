@@ -209,10 +209,13 @@ class VoiceCallRuntime:
             await self.manager.process_event(event)
 
     async def _on_final_transcript(self, record: CallRecord, text: str) -> None:
-        """Final caller utterance → gateway agent turn (wired in P4)."""
+        """Final caller utterance → gateway agent turn."""
+        from .responder import dispatch_transcript
+
         logger.debug(
             "voice_call: final transcript on %s: %r", record.call_id, text[:80]
         )
+        await dispatch_transcript(self, record, text)
 
     async def _on_call_ended(self, record: CallRecord) -> None:
         logger.info(
@@ -239,8 +242,13 @@ class VoiceCallRuntime:
             record = self.manager.call_for_chat(normalize_e164(chat_id))
         if record is None or record.is_terminal:
             return False, f"no active voice call for {chat_id}"
+        from .responder import strip_for_speech
+
+        spoken = strip_for_speech(content)
+        if not spoken:
+            return False, "nothing speakable in message"
         try:
-            await self.manager.speak(record.call_id, content)
+            await self.manager.speak(record.call_id, spoken)
         except Exception as e:  # noqa: BLE001 — surface as failed SendResult
             return False, f"speak failed: {e}"
         return True, record.call_id

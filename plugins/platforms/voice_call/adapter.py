@@ -232,7 +232,48 @@ class VoiceCallAdapter(BasePlatformAdapter):
 
 
 def register(ctx) -> None:
-    """Plugin entry point — called by the Hermes plugin system at startup."""
+    """Plugin entry point — called by the Hermes plugin system at startup.
+
+    Non-platform registrations are hasattr-guarded: minimal plugin contexts
+    (e.g. the platform interface test suite) only implement
+    ``register_platform``.
+    """
+    _register_platform(ctx)
+    if hasattr(ctx, "register_tool"):
+        from .tool import VOICE_CALL_SCHEMA, tool_check, voice_call_handler
+
+        ctx.register_tool(
+            name="voice_call",
+            toolset="voice_call",
+            schema=VOICE_CALL_SCHEMA,
+            handler=voice_call_handler,
+            check_fn=tool_check,
+            is_async=True,
+            emoji="📞",
+            description="Make and manage real phone calls",
+        )
+    if hasattr(ctx, "register_cli_command"):
+        from . import cli
+
+        ctx.register_cli_command(
+            name="voicecall",
+            help="Voice calls (status, call, speak, end, doctor)",
+            setup_fn=cli.register_cli,
+            handler_fn=cli.dispatch,
+            description="Manage Hermes voice calls via the running gateway",
+        )
+    if hasattr(ctx, "register_command"):
+        from .tool import slash_handler
+
+        ctx.register_command(
+            name="voicecall",
+            handler=slash_handler,
+            description="Voice call status/control",
+            args_hint="status | call --to +1555... --message \"...\" | end --call-id ID",
+        )
+
+
+def _register_platform(ctx) -> None:
     ctx.register_platform(
         name="voice_call",
         label="Voice Calls",

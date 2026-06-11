@@ -170,6 +170,11 @@ export default function SystemPage() {
   const [addingCred, setAddingCred] = useState(false);
 
   const [importPath, setImportPath] = useState("");
+  // Restore-from-backup is destructive (overwrites the live config) and the
+  // spawned `hermes import` runs non-interactively (stdin is /dev/null), so
+  // its CLI "Continue? [y/N]" prompt would auto-abort. The dashboard owns the
+  // consent: confirm here, then call the endpoint with force=true.
+  const [importConfirmOpen, setImportConfirmOpen] = useState(false);
 
   // Create-hook modal.
   const [hookModalOpen, setHookModalOpen] = useState(false);
@@ -1181,11 +1186,24 @@ export default function SystemPage() {
               disabled={!importPath.trim()}
               onClick={() => {
                 if (!importPath.trim()) return;
-                runOp(() => api.runImport(importPath.trim()), "Import");
+                setImportConfirmOpen(true);
               }}
             >
               Import
             </Button>
+            <ConfirmDialog
+              open={importConfirmOpen}
+              title="Restore from backup?"
+              description={`This will overwrite your current Hermes configuration, skills, sessions, and data with the contents of ${importPath.trim() || "the archive"}. This cannot be undone.`}
+              destructive
+              confirmLabel="Restore"
+              cancelLabel="Cancel"
+              onCancel={() => setImportConfirmOpen(false)}
+              onConfirm={() => {
+                setImportConfirmOpen(false);
+                runOp(() => api.runImport(importPath.trim(), true), "Import");
+              }}
+            />
           </CardContent>
         </Card>
       </section>

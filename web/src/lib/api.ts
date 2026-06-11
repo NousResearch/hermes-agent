@@ -985,11 +985,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output }),
     }),
-  runImport: (archive: string) =>
+  runImport: (archive: string, force = false) =>
     fetchJSON<ActionResponse>("/api/ops/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ archive }),
+      body: JSON.stringify({ archive, force }),
     }),
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>

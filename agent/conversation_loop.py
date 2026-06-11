@@ -441,6 +441,7 @@ def run_conversation(
     length_continue_retries = 0
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
+    partial_stream_checkpoint_len: Optional[int] = None
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
@@ -1416,13 +1417,19 @@ def run_conversation(
                             if assistant_message.content:
                                 truncated_response_parts.append(assistant_message.content)
 
+                            _is_partial_stream_stub = (
+                                getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
+                            )
+                            _dropped_tools = getattr(
+                                response, "_dropped_tool_names", None
+                            )
+                            if (
+                                _is_partial_stream_stub
+                                and partial_stream_checkpoint_len is None
+                            ):
+                                partial_stream_checkpoint_len = len(messages) - 1
+
                             if length_continue_retries < 3:
-                                _is_partial_stream_stub = (
-                                    getattr(response, "id", "") == PARTIAL_STREAM_STUB_ID
-                                )
-                                _dropped_tools = getattr(
-                                    response, "_dropped_tool_names", None
-                                )
 
                                 if _is_partial_stream_stub and _dropped_tools:
                                     _tool_list = ", ".join(_dropped_tools[:3])
@@ -1455,6 +1462,42 @@ def run_conversation(
                                 agent._session_messages = messages
                                 _retry.restart_with_length_continuation = True
                                 break
+
+                            # Continuation retries exhausted. A partial-stream
+                            # stub with dropped tool names means the stream
+                            # repeatedly died mid tool-call. MiniMax content
+                            # filters can produce this signature deterministically,
+                            # so retrying chunk prompts on the same primary keeps
+                            # hitting the same filter. Escalate to the configured
+                            # fallback chain before returning the truncation error.
+                            if (
+                                _is_partial_stream_stub
+                                and _dropped_tools
+                                and agent._fallback_index < len(agent._fallback_chain)
+                            ):
+                                _tool_list = ", ".join(_dropped_tools[:3])
+                                agent._vprint(
+                                    f"{agent.log_prefix}Stream repeatedly stalled mid "
+                                    f"tool-call ({_tool_list}); switching to fallback...",
+                                    force=True,
+                                )
+                                agent._emit_status(
+                                    "Stream stalled mid tool-call; switching to fallback..."
+                                )
+                                if agent._try_activate_fallback():
+                                    if partial_stream_checkpoint_len is not None:
+                                        messages = messages[:partial_stream_checkpoint_len]
+                                    else:
+                                        messages = agent._get_messages_up_to_last_assistant(messages)
+                                    agent._session_messages = messages
+                                    length_continue_retries = 0
+                                    truncated_response_parts = []
+                                    partial_stream_checkpoint_len = None
+                                    retry_count = 0
+                                    compression_attempts = 0
+                                    _retry.primary_recovery_attempted = False
+                                    _retry.restart_with_rebuilt_messages = True
+                                    break
 
                             partial_response = agent._strip_think_blocks("".join(truncated_response_parts)).strip()
                             agent._cleanup_task_resources(effective_task_id)
@@ -3277,6 +3320,9 @@ def run_conversation(
             _retry.restart_with_compressed_messages = False
             continue
 
+        if _retry.restart_with_rebuilt_messages:
+            continue
+
         if _retry.restart_with_length_continuation:
             # Progressively boost the output token budget on each retry.
             # Retry 1 → 2× base, retry 2 → 3× base, capped at 32 768.
@@ -4136,6 +4182,7 @@ def run_conversation(
                     final_response = "".join(truncated_response_parts) + final_response
                     truncated_response_parts = []
                     length_continue_retries = 0
+                    partial_stream_checkpoint_len = None
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
                 

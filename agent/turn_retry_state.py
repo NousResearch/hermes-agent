@@ -61,6 +61,7 @@ class TurnRetryState:
     # ── Restart signals (read by the outer loop after the attempt) ───────
     restart_with_compressed_messages: bool = False
     restart_with_length_continuation: bool = False
+    restart_with_rebuilt_messages: bool = False
 
     def __iter__(self):
         # Convenience for debugging / tests: iterate (name, value) pairs.

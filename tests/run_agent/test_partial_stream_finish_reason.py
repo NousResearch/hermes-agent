@@ -362,3 +362,101 @@ class TestConversationLoopPartialStreamContinuation:
         # And the final response stitches both halves together.
         assert "first half of" in result["final_response"]
         assert "forty-two" in result["final_response"]
+
+
+class TestContentFilterStallActivatesFallback:
+    """Regression for issue #32421: when a provider's output-layer content
+    safety filter (e.g. MiniMax ``output new_sensitive (1027)``) terminates
+    a streaming response mid-delivery, the partial-stream stub keeps coming
+    back with the same ``_dropped_tool_names`` because the filter is
+    content-deterministic.  The continuation prompt cannot recover from
+    this on the same primary, so once the bounded continuation budget is
+    exhausted the loop must activate ``fallback_providers`` rather than
+    giving up with ``"Response remained truncated after 3 continuation
+    attempts"``."""
+
+    def test_repeated_dropped_tool_stub_triggers_fallback(self, loop_agent):
+        from tests.run_agent.test_run_agent import _mock_assistant_msg, _mock_response
+
+        # Three consecutive partial-stream stubs with the same dropped
+        # tool, the MiniMax `output new_sensitive` fingerprint.  Each
+        # carries `_dropped_tool_names=["write_file"]` so the loop's
+        # continuation prompt fires, then re-fires, then exhausts.
+        def _make_filter_stub():
+            return SimpleNamespace(
+                id=PARTIAL_STREAM_STUB_ID,
+                model="minimax/MiniMax-M2.7",
+                choices=[SimpleNamespace(
+                    index=0,
+                    message=_mock_assistant_msg(content="Writing the file..."),
+                    finish_reason=FINISH_REASON_LENGTH,
+                )],
+                usage=None,
+                _dropped_tool_names=["write_file"],
+            )
+
+        # After fallback fires, the next call returns a clean stop response.
+        recovery = _mock_response(
+            content="Done with the smaller chunk.", finish_reason="stop",
+        )
+
+        loop_agent.client.chat.completions.create.side_effect = [
+            _make_filter_stub(),  # initial stall, bumps retries to 1
+            _make_filter_stub(),  # retries=2
+            _make_filter_stub(),  # retries=3, exhausted, must escalate
+            recovery,             # served by the fallback provider
+        ]
+
+        # Configure a (mocked) fallback chain so the escalation path has
+        # somewhere to go.  We mock _try_activate_fallback itself so we
+        # don't have to stand up a second provider client; the contract
+        # we're pinning is that the loop *calls* it on this signature.
+        loop_agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"}]
+        loop_agent._fallback_index = 0
+        fb_calls = {"n": 0}
+
+        def _fake_activate_fallback(reason=None):
+            fb_calls["n"] += 1
+            loop_agent._fallback_index = len(loop_agent._fallback_chain)
+            return True
+
+        with (
+            patch.object(loop_agent, "_persist_session"),
+            patch.object(loop_agent, "_save_trajectory"),
+            patch.object(loop_agent, "_cleanup_task_resources"),
+            patch.object(loop_agent, "_try_activate_fallback",
+                         side_effect=_fake_activate_fallback),
+        ):
+            result = loop_agent.run_conversation("write me a long file")
+
+        assert fb_calls["n"] >= 1, (
+            "Content-filter stream stall (partial-stream-stub + "
+            "_dropped_tool_names) must escalate to the fallback chain once "
+            "continuation retries are exhausted instead of returning "
+            "`Response remained truncated after 3 continuation attempts` "
+            "(issue #32421)."
+        )
+        # The fallback's clean response must surface, not the 3-retry
+        # exhaustion error that the buggy path returned.
+        assert "smaller chunk" in (result.get("final_response") or ""), (
+            "After fallback activation, the recovery response from the "
+            "fallback provider should reach the user."
+        )
+        assert "remained truncated after 3 continuation attempts" not in (
+            result.get("error") or ""
+        )
+
+        fourth_call_kwargs = loop_agent.client.chat.completions.create.call_args_list[3]
+        fourth_messages = (
+            fourth_call_kwargs.kwargs.get("messages")
+            or fourth_call_kwargs.args[0].get("messages")
+        )
+        fourth_text = "\n".join(
+            str(message.get("content") or "") for message in fourth_messages
+        )
+        assert "Writing the file..." not in fourth_text, (
+            "Fallback must start from the clean pre-stall checkpoint, not "
+            "see partial-stream assistant stubs left by the failed primary."
+        )
+        assert "was too large" not in fourth_text
+        assert "network error mid-stream" not in fourth_text

@@ -161,7 +161,21 @@ class WhatsAppBehaviorMixin:
         if self._group_policy == "disabled":
             return False
         if self._group_policy == "allowlist":
-            return chat_id in self._group_allow_from
+            allowed_groups = getattr(self, "_group_allow_from", set())
+            normalized = str(chat_id or "").strip()
+            if "*" in allowed_groups:
+                return True
+            if normalized in allowed_groups:
+                return True
+            if normalized.endswith("@g.us") and normalized[:-5] in allowed_groups:
+                return True
+            if (
+                normalized
+                and not normalized.endswith("@g.us")
+                and f"{normalized}@g.us" in allowed_groups
+            ):
+                return True
+            return False
         # "open" — all groups allowed
         return True
 

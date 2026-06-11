@@ -18,6 +18,19 @@ export function parseAllowedUsers(rawValue) {
   );
 }
 
+export function matchesAllowedIdentifier(identifier, allowedIdentifiers) {
+  if (!allowedIdentifiers || allowedIdentifiers.size === 0) {
+    return false;
+  }
+
+  if (allowedIdentifiers.has('*')) {
+    return true;
+  }
+
+  const normalized = normalizeWhatsAppIdentifier(identifier);
+  return Boolean(normalized && allowedIdentifiers.has(normalized));
+}
+
 function readMappingFile(sessionDir, identifier, suffix = '') {
   const filePath = path.join(sessionDir, `lid-mapping-${identifier}${suffix}.json`);
   if (!existsSync(filePath)) {

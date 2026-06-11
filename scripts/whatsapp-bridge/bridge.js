@@ -29,7 +29,7 @@ import { randomBytes, createHash } from 'crypto';
 import { execSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
-import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { matchesAllowedIdentifier, matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -71,6 +71,8 @@ try {
 const PAIR_ONLY = args.includes('--pair-only');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
+const GROUP_POLICY = String(process.env.WHATSAPP_GROUP_POLICY || '').trim().toLowerCase();
+const ALLOWED_GROUPS = parseAllowedUsers(process.env.WHATSAPP_GROUP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   ? DEFAULT_REPLY_PREFIX
@@ -321,7 +323,31 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        if (isGroup && GROUP_POLICY === 'disabled') {
+          try {
+            console.log(JSON.stringify({
+              event: 'ignored',
+              reason: 'group_policy_disabled',
+              chatId,
+              senderId,
+            }));
+          } catch {}
+          continue;
+        }
+
+        if (isGroup && GROUP_POLICY === 'allowlist') {
+          if (!matchesAllowedIdentifier(chatId, ALLOWED_GROUPS)) {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'group_allowlist_mismatch',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
+        } else if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',

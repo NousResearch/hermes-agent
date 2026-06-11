@@ -14,11 +14,14 @@ export interface TreeNode {
   children?: TreeNode[]
   /** True while a readDir for this folder is in flight. */
   loading?: boolean
+  /** Synthetic loading/error rows are not real filesystem entries. */
+  placeholder?: 'error' | 'loading'
   /** Last error code from readDir (e.g. EACCES). Cleared on next successful load. */
   error?: string
 }
 
 const PLACEHOLDER_ID = '__loading__'
+const ERROR_PLACEHOLDER_ID = '__error__'
 
 function makeNode(path: string, name: string, isDirectory: boolean): TreeNode {
   return { id: path, isDirectory, name }
@@ -43,7 +46,16 @@ function patchNode(nodes: TreeNode[] | undefined | null, id: string, patch: (n: 
 }
 
 function placeholderChild(parentId: string): TreeNode {
-  return { id: `${parentId}::${PLACEHOLDER_ID}`, isDirectory: false, name: 'Loading…' }
+  return { id: `${parentId}::${PLACEHOLDER_ID}`, isDirectory: false, name: 'Loading…', placeholder: 'loading' }
+}
+
+function errorChild(parentId: string, error: string | undefined): TreeNode {
+  return {
+    id: `${parentId}::${ERROR_PLACEHOLDER_ID}`,
+    isDirectory: false,
+    name: `Unable to read (${error || 'read-error'})`,
+    placeholder: 'error'
+  }
 }
 
 export interface UseProjectTreeResult {
@@ -227,7 +239,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
             ...n,
             loading: false,
             error: error || undefined,
-            children: error ? [] : entries.map(e => makeNode(e.path, e.name, e.isDirectory))
+            children: error ? [errorChild(n.id, error)] : entries.map(e => makeNode(e.path, e.name, e.isDirectory))
           }))
         }
       })

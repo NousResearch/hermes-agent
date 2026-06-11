@@ -27,7 +27,7 @@ function decodeDataUrl(dataUrl: string) {
 }
 
 function clean(path: string) {
-  return path.replace(/\/+$/, '') || '/'
+  return path.replace(/\\/g, '/').replace(/\/+$/, '') || '/'
 }
 
 /** Strict POSIX-style relative path; null if `child` is not inside `root`. */

@@ -43,6 +43,20 @@ test('stageManagerBinary clears stale destination when manager source is absent'
   })
 })
 
+test('stageManagerBinary fails release staging when required manager source is absent', () => {
+  withTempLayout(({ appRoot, repoRoot }) => {
+    const destDir = path.join(appRoot, 'build', 'hermes-manager')
+    fs.mkdirSync(destDir, { recursive: true })
+    fs.writeFileSync(path.join(destDir, 'hermes-manager.exe'), 'stale')
+
+    assert.throws(
+      () => stageManagerBinary({ appRoot, platform: 'win32', repoRoot, requireManager: true }),
+      /required for desktop release packaging/
+    )
+    assert.equal(fs.existsSync(destDir), false)
+  })
+})
+
 test('stageManagerBinary replaces stale destination with the prebuilt manager', () => {
   withTempLayout(({ appRoot, repoRoot }) => {
     const sourceDir = path.join(repoRoot, 'apps', 'hermes-manager', 'target', 'release')

@@ -6,6 +6,8 @@
 
 const test = require('node:test')
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const path = require('node:path')
 
 const {
   buildCargoArgs,
@@ -39,3 +41,12 @@ test('shouldAllowHostBuild rejects cross-target release builds', () => {
   assert.equal(shouldAllowHostBuild({ hostPlatform: 'win32', targetPlatform: 'darwin' }), false)
 })
 
+test('desktop release build requires the staged Rust manager', () => {
+  const packageJsonPath = path.resolve(__dirname, '..', 'package.json')
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'))
+
+  assert.match(packageJson.scripts['build:release'], /npm run build:manager/)
+  assert.match(packageJson.scripts['build:release'], /HERMES_DESKTOP_REQUIRE_MANAGER=1/)
+  assert.match(packageJson.scripts.pack, /npm run build:release/)
+  assert.match(packageJson.scripts.dist, /npm run build:release/)
+})

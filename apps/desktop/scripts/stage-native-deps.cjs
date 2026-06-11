@@ -231,6 +231,7 @@ function stageManagerBinary({
   hermesVersion,
   log = console.log,
   platform = TARGET_PLATFORM,
+  requireManager = process.env.HERMES_DESKTOP_REQUIRE_MANAGER === '1',
   repoRoot = REPO_ROOT,
   sourceCommit
 } = {}) {
@@ -254,6 +255,11 @@ function stageManagerBinary({
       sourceCommit: sourceCommit || resolveSourceCommit(repoRoot)
     })
     log(`[stage-native-deps] hermes-manager: copied ${path.relative(appRoot, managerDest)}`)
+  } else if (requireManager) {
+    throw new Error(
+      `hermes-manager is required for desktop release packaging but was not found at ` +
+        `${managerSource}. Run \`npm run build:manager\` before packaging.`
+    )
   } else {
     log(
       `[stage-native-deps] hermes-manager: ${path.relative(repoRoot, managerSource)} not found; ` +

@@ -57,6 +57,8 @@ while preserving every existing user-facing feature and keeping a safe fallback 
 
 ## Phase 2: Release Build Closure
 
+**Status:** Implemented on this branch.
+
 **Purpose:** Ensure published desktop packages always include the Rust manager.
 
 **Work:**
@@ -69,6 +71,12 @@ while preserving every existing user-facing feature and keeping a safe fallback 
 - Release build scripts produce and stage `hermes-manager(.exe)` deterministically.
 - CI checks manager build logic.
 - Staging never ships stale manager binaries.
+
+**Implemented:**
+- `build:release`, `pack`, and every platform `dist:*` target build `apps/hermes-manager` before packaging.
+- Release builds set `HERMES_DESKTOP_REQUIRE_MANAGER=1`, so staging fails clearly if the target manager binary is
+  missing instead of silently shipping the Python-only fallback.
+- Plain `npm run build` remains fallback-friendly for desktop development when Rust is not installed.
 
 ## Phase 3: Install Metadata Integration
 

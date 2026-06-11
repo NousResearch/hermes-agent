@@ -578,14 +578,7 @@ def _validate_cron_script_path(script: Optional[str]) -> tuple[Optional[str], Op
             f"Script path escapes the scripts directory via traversal: {raw!r}"
         )
 
-    resolved = candidate.resolve()
-    if not resolved.is_file():
-        return None, (
-            f"Script path not found under ~/.hermes/scripts/: {raw!r}. "
-            f"Place the script in ~/.hermes/scripts/ and use its relative path."
-        )
-
-    normalized_relative = resolved.relative_to(scripts_dir.resolve()).as_posix()
+    normalized_relative = candidate.relative_to(scripts_dir).as_posix()
     return normalized_relative, None
 
 

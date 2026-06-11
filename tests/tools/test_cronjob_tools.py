@@ -573,7 +573,7 @@ class TestUnifiedCronjobTool:
         assert created["job"]["script"] == "check.py"
         assert get_job(created["job_id"])["script"] == "check.py"
 
-    def test_create_rejects_missing_script(self):
+    def test_create_allows_missing_script_and_stores_normalized_path(self):
         created = json.loads(
             cronjob(
                 action="create",
@@ -583,10 +583,10 @@ class TestUnifiedCronjobTool:
             )
         )
 
-        assert created["success"] is False
-        assert "not found" in created["error"].lower()
+        assert created["success"] is True
+        assert created["job"]["script"] == "missing.py"
 
-    def test_update_rejects_missing_script(self):
+    def test_update_allows_missing_script_and_stores_normalized_path(self):
         created = json.loads(cronjob(action="create", prompt="Check", schedule="every 1h"))
 
         updated = json.loads(
@@ -597,8 +597,8 @@ class TestUnifiedCronjobTool:
             )
         )
 
-        assert updated["success"] is False
-        assert "not found" in updated["error"].lower()
+        assert updated["success"] is True
+        assert updated["job"]["script"] == "missing.py"
 
     def test_update_strips_scripts_prefix_before_storing(self):
         from cron.jobs import get_job

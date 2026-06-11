@@ -2531,22 +2531,26 @@ def _memory_oauth_flow(provider: str):
 
 
 @app.post("/api/memory/providers/{provider}/oauth/start")
-async def start_memory_oauth(provider: str):
+async def start_memory_oauth(provider: str, profile: Optional[str] = None):
     """Begin a memory provider's zero-CLI OAuth flow — opens the browser and
     captures the grant via the loopback listener. Returns immediately; poll status."""
     flow = _memory_oauth_flow(provider)
     try:
-        return flow.start_loopback_flow_background()
+        # The flow resolves its config path eagerly inside this scope; the
+        # worker thread it spawns outlives the request and the override.
+        with _profile_scope(profile):
+            return flow.start_loopback_flow_background()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to start {provider} OAuth: {exc}")
 
 
 @app.get("/api/memory/providers/{provider}/oauth/status")
-async def memory_oauth_status(provider: str):
+async def memory_oauth_status(provider: str, profile: Optional[str] = None):
     """Poll a memory provider's OAuth flow: idle | pending | connected | error."""
     flow = _memory_oauth_flow(provider)
     try:
-        return flow.get_flow_status()
+        with _profile_scope(profile):
+            return flow.get_flow_status()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Failed to read {provider} OAuth status: {exc}")
 

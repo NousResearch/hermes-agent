@@ -2193,8 +2193,9 @@ class FeishuAdapter(BasePlatformAdapter):
                 )
                 return SendResult(success=False, error="card content update failed")
 
-            # Update tracked sequence
+            # Update tracked sequence and last content
             card_state["sequence"] = sequence
+            card_state["last_content"] = truncated
 
             if finalize:
                 await self._close_streaming_card(chat_id, card_id, card_state=card_state)
@@ -2213,6 +2214,7 @@ class FeishuAdapter(BasePlatformAdapter):
         bot_name: str = "Hermes",
         status: str = "completed",
         error_summary: str = "",
+        last_content: str = "",
     ) -> str:
         """Build a card JSON with status-appropriate header for post-stream update."""
         _display_name = bot_name or "Hermes"
@@ -2245,7 +2247,15 @@ class FeishuAdapter(BasePlatformAdapter):
             "schema": "2.0",
             "header": header,
             "config": {"streaming_mode": True},
-            "body": {"elements": []},
+            "body": {
+                "elements": [
+                    {
+                        "tag": "markdown",
+                        "content": last_content,
+                        "element_id": "markdown_1",
+                    }
+                ]
+            },
         }
         return json.dumps(card, ensure_ascii=False)
 
@@ -2265,6 +2275,7 @@ class FeishuAdapter(BasePlatformAdapter):
             seq = card_state.get("sequence", 0) + 1
             card_json = self._build_finalized_header_json(
                 bot_name=bot_name, status=status, error_summary=error_summary,
+                last_content=card_state.get("last_content", ""),
             )
             from lark_oapi.api.cardkit.v1.model import Card as CardKitCard
             card_obj = CardKitCard.builder() \

@@ -9697,103 +9697,121 @@ async def pty_ws(ws: WebSocket) -> None:
     await ws.accept()
     _log.info("pty accepted peer=%s mode=%s cred=%s", peer, mode, cred)
 
-    # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
-    # client and close cleanly rather than pretending the feature works.
-    if not _PTY_BRIDGE_AVAILABLE:
-        await ws.send_text(
-            "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
-            "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
-            "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
-            "tab — the rest of the dashboard works here.\x1b[0m\r\n"
-        )
-        await ws.close(code=1011)
-        return
+    # Yield to the event loop so uvicorn flushes the HTTP 101 Switching
+    # Protocols response before we block it with the synchronous
+    # _resolve_chat_argv() call (which runs subprocess / npm install).
+    await asyncio.sleep(0)
 
-    # --- spawn PTY ------------------------------------------------------
-    resume = ws.query_params.get("resume") or None
-    profile = ws.query_params.get("profile") or None
-    channel = _channel_or_close_code(ws)
-    sidecar_url = _build_sidecar_url(channel) if channel else None
-
+    # Wrap the rest in a top-level try so any unhandled exception (e.g. in
+    # query-param access, URL building, or PTY spawn) is logged and closes
+    # the WebSocket cleanly instead of dropping the connection abnormally,
+    # which the browser would report as a cryptic code-1006 error.
     try:
-        argv, cwd, env = _resolve_chat_argv(
-            resume=resume, sidecar_url=sidecar_url, profile=profile
-        )
-    except HTTPException as exc:
-        # Unknown/invalid profile from _resolve_profile_dir.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-    except SystemExit as exc:
-        # _make_tui_argv calls sys.exit(1) when node/npm is missing.
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-
-
-    try:
-        bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
-    except PtyUnavailableError as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-    except (FileNotFoundError, OSError) as exc:
-        await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
-        await ws.close(code=1011)
-        return
-
-    loop = asyncio.get_running_loop()
-
-    # --- reader task: PTY master → WebSocket ----------------------------
-    async def pump_pty_to_ws() -> None:
-        while True:
-            chunk = await loop.run_in_executor(
-                None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
+        # On native Windows, the POSIX PTY bridge can't be imported.  Tell the
+        # client and close cleanly rather than pretending the feature works.
+        if not _PTY_BRIDGE_AVAILABLE:
+            await ws.send_text(
+                "\r\n\x1b[31mChat unavailable: the embedded terminal requires a "
+                "POSIX PTY, which native Windows Python doesn't provide.\x1b[0m\r\n"
+                "\x1b[33mInstall Hermes inside WSL2 to use the dashboard's /chat "
+                "tab — the rest of the dashboard works here.\x1b[0m\r\n"
             )
-            if chunk is None:  # EOF
-                return
-            if not chunk:  # no data this tick; yield control and retry
-                await asyncio.sleep(0)
-                continue
-            try:
-                await ws.send_bytes(chunk)
-            except Exception:
-                return
+            await ws.close(code=1011)
+            return
 
-    reader_task = asyncio.create_task(pump_pty_to_ws())
+        # --- spawn PTY ------------------------------------------------------
+        resume = ws.query_params.get("resume") or None
+        profile = ws.query_params.get("profile") or None
+        channel = _channel_or_close_code(ws)
+        sidecar_url = _build_sidecar_url(channel) if channel else None
 
-    # --- writer loop: WebSocket → PTY master ----------------------------
-    try:
-        while True:
-            msg = await ws.receive()
-            msg_type = msg.get("type")
-            if msg_type == "websocket.disconnect":
-                break
-            raw = msg.get("bytes")
-            if raw is None:
-                text = msg.get("text")
-                raw = text.encode("utf-8") if isinstance(text, str) else b""
-            if not raw:
-                continue
+        _log.info("pty: resolving chat argv resume=%s profile=%s channel=%s",
+                   resume, profile, channel)
 
-            # Resize escape is consumed locally, never written to the PTY.
-            match = _RESIZE_RE.match(raw)
-            if match and match.end() == len(raw):
-                cols = int(match.group(1))
-                rows = int(match.group(2))
-                bridge.resize(cols=cols, rows=rows)
-                continue
-
-            bridge.write(raw)
-    except WebSocketDisconnect:
-        pass
-    finally:
-        reader_task.cancel()
         try:
-            await reader_task
-        except (asyncio.CancelledError, Exception):
+            argv, cwd, env = _resolve_chat_argv(
+                resume=resume, sidecar_url=sidecar_url, profile=profile
+            )
+        except HTTPException as exc:
+            # Unknown/invalid profile from _resolve_profile_dir.
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        except SystemExit as exc:
+            # _make_tui_argv calls sys.exit(1) when node/npm is missing.
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+
+        try:
+            bridge = PtyBridge.spawn(argv, cwd=cwd, env=env)
+        except PtyUnavailableError as exc:
+            await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+        except (FileNotFoundError, OSError) as exc:
+            await ws.send_text(f"\r\n\x1b[31mChat failed to start: {exc}\x1b[0m\r\n")
+            await ws.close(code=1011)
+            return
+
+        loop = asyncio.get_running_loop()
+
+        # --- reader task: PTY master → WebSocket ----------------------------
+        async def pump_pty_to_ws() -> None:
+            while True:
+                chunk = await loop.run_in_executor(
+                    None, bridge.read, _PTY_READ_CHUNK_TIMEOUT
+                )
+                if chunk is None:  # EOF
+                    return
+                if not chunk:  # no data this tick; yield control and retry
+                    await asyncio.sleep(0)
+                    continue
+                try:
+                    await ws.send_bytes(chunk)
+                except Exception:
+                    return
+
+        reader_task = asyncio.create_task(pump_pty_to_ws())
+
+        # --- writer loop: WebSocket → PTY master ----------------------------
+        try:
+            while True:
+                msg = await ws.receive()
+                msg_type = msg.get("type")
+                if msg_type == "websocket.disconnect":
+                    break
+                raw = msg.get("bytes")
+                if raw is None:
+                    text = msg.get("text")
+                    raw = text.encode("utf-8") if isinstance(text, str) else b""
+                if not raw:
+                    continue
+
+                # Resize escape is consumed locally, never written to the PTY.
+                match = _RESIZE_RE.match(raw)
+                if match and match.end() == len(raw):
+                    cols = int(match.group(1))
+                    rows = int(match.group(2))
+                    bridge.resize(cols=cols, rows=rows)
+                    continue
+
+                bridge.write(raw)
+        except WebSocketDisconnect:
             pass
-        bridge.close()
+        finally:
+            reader_task.cancel()
+            try:
+                await reader_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            bridge.close()
+    except Exception:
+        _log.exception("pty ws handler crashed: unhandled exception")
+        try:
+            await ws.close(code=1011)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

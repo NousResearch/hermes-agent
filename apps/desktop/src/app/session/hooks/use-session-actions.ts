@@ -55,6 +55,7 @@ import type {
   SessionCreateResponse,
   SessionInfo,
   SessionPresenceRecord,
+  SessionRuntimeInfo,
   SessionResumeResponse,
   UsageStats
 } from '@/types/hermes'
@@ -257,14 +258,27 @@ function presenceRouteProfile(record: SessionPresenceRecord): string | null {
   return routed ? normalizeProfileKey(routed) : null
 }
 
-function applyRuntimeInfo(
-  info: SessionCreateResponse['info'] | undefined
-): Partial<Pick<ClientSessionState, 'branch' | 'cwd'>> | null {
+type SessionRuntimeStatePatch = Partial<
+  Pick<
+    ClientSessionState,
+    | 'branch'
+    | 'cwd'
+    | 'fastMode'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'serviceTier'
+    | 'yoloActive'
+  >
+>
+
+function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeStatePatch | null {
   if (!info) {
     return null
   }
 
-  const sessionState: Partial<Pick<ClientSessionState, 'branch' | 'cwd'>> = {}
+  const sessionState: SessionRuntimeStatePatch = {}
 
   reportBackendContract(info.desktop_contract)
 
@@ -272,12 +286,14 @@ function applyRuntimeInfo(
     requestDesktopOnboarding(info.credential_warning)
   }
 
-  if (info.model) {
+  if (typeof info.model === 'string') {
     setCurrentModel(info.model)
+    sessionState.model = info.model
   }
 
-  if (info.provider) {
+  if (typeof info.provider === 'string') {
     setCurrentProvider(info.provider)
+    sessionState.provider = info.provider
   }
 
   if (info.cwd) {
@@ -291,23 +307,29 @@ function applyRuntimeInfo(
   }
 
   if (typeof info.personality === 'string') {
-    setCurrentPersonality(normalizePersonalityValue(info.personality))
+    const personality = normalizePersonalityValue(info.personality)
+    setCurrentPersonality(personality)
+    sessionState.personality = personality
   }
 
   if (typeof info.reasoning_effort === 'string') {
     setCurrentReasoningEffort(info.reasoning_effort)
+    sessionState.reasoningEffort = info.reasoning_effort
   }
 
   if (typeof info.service_tier === 'string') {
     setCurrentServiceTier(info.service_tier)
+    sessionState.serviceTier = info.service_tier
   }
 
   if (typeof info.fast === 'boolean') {
     setCurrentFastMode(info.fast)
+    sessionState.fastMode = info.fast
   }
 
   if (typeof info.yolo === 'boolean') {
     setYoloActive(info.yolo)
+    sessionState.yoloActive = info.yolo
   }
 
   if (info.usage) {
@@ -315,6 +337,16 @@ function applyRuntimeInfo(
   }
 
   return sessionState
+}
+
+function applyStoredSessionPreviewRuntimeInfo(stored: { model?: null | string } | undefined) {
+  setCurrentModel(stored?.model || '')
+  setCurrentProvider('')
+  setCurrentReasoningEffort('')
+  setCurrentServiceTier('')
+  setCurrentFastMode(false)
+  setYoloActive(false)
+  setCurrentPersonality('')
 }
 
 export function useSessionActions({
@@ -591,15 +623,28 @@ export function useSessionActions({
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
       if (cachedRuntimeId && cachedState) {
+        const stored = $sessions.get().find(session => session.id === storedSessionId)
+        const cachedViewState =
+          !cachedState.model && stored?.model != null
+            ? {
+                ...cachedState,
+                model: stored.model || ''
+              }
+            : cachedState
+
+        if (cachedViewState !== cachedState) {
+          sessionStateByRuntimeIdRef.current.set(cachedRuntimeId, cachedViewState)
+        }
+
         setFreshDraftReady(false)
         clearNotifications()
         setSelectedStoredSessionId(storedSessionId)
         selectedStoredSessionIdRef.current = storedSessionId
         setActiveSessionId(cachedRuntimeId)
         activeSessionIdRef.current = cachedRuntimeId
-        syncSessionStateToView(cachedRuntimeId, cachedState)
-        setCurrentCwd(cachedState.cwd)
-        setCurrentBranch(cachedState.branch)
+        syncSessionStateToView(cachedRuntimeId, cachedViewState)
+        setCurrentCwd(cachedViewState.cwd)
+        setCurrentBranch(cachedViewState.branch)
         setSessionStartedAt(Date.now())
         clearComposerDraft()
         clearComposerAttachments()
@@ -642,6 +687,7 @@ export function useSessionActions({
       selectedStoredSessionIdRef.current = storedSessionId
       setSessionStartedAt(Date.now())
       const stored = $sessions.get().find(session => session.id === storedSessionId)
+      applyStoredSessionPreviewRuntimeInfo(stored)
 
       if (stored) {
         setCurrentUsage(current => ({
@@ -798,6 +844,7 @@ export function useSessionActions({
         setSelectedStoredSessionId(storedTarget)
         selectedStoredSessionIdRef.current = storedTarget
         setSessionStartedAt(Date.now())
+        applyStoredSessionPreviewRuntimeInfo(record)
         setMessages([])
         clearComposerDraft()
         clearComposerAttachments()

@@ -38,6 +38,13 @@ export function createClientSessionState(
   return {
     storedSessionId,
     messages,
+    model: '',
+    provider: '',
+    reasoningEffort: '',
+    serviceTier: '',
+    fastMode: false,
+    yoloActive: false,
+    personality: '',
     branch: '',
     cwd: '',
     busy: false,

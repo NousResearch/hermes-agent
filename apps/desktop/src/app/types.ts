@@ -101,6 +101,13 @@ export interface SidebarNavItem {
 export interface ClientSessionState {
   storedSessionId: string | null
   messages: ChatMessage[]
+  model?: string
+  provider?: string
+  reasoningEffort?: string
+  serviceTier?: string
+  fastMode?: boolean
+  yoloActive?: boolean
+  personality?: string
   branch: string
   cwd: string
   busy: boolean

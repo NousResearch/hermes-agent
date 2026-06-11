@@ -208,6 +208,38 @@ history.
 Conversation-mode calls use the realtime bridge; `notify` calls keep
 plain carrier TTS (cheaper and sufficient for one-shot messages).
 
+## Keeping calls fast
+
+A phone call is the most latency-sensitive surface Hermes has. Three
+settings make the difference between a 10-second answer and a 90-second
+one:
+
+1. **Restrict the voice session's toolset** (top-level config, not under
+   the platform). The agent answers fastest when it can't wander into
+   slow tools — this mirrors OpenClaw's `safe-read-only` consult policy:
+
+   ```yaml
+   platform_toolsets:
+     voice_call:
+     - search          # web_search only — not web_extract/browsing
+     - memory
+     - session_search
+     - messaging       # "text me the details" works mid-call
+   ```
+
+2. **Keep `responder.thinking_phrase` set** — it's spoken while consults
+   run so callers don't wonder if the line dropped.
+
+3. **Point slow auxiliary work at a fast model.** Deep research
+   (`web_extract` content processing) uses your main provider by
+   default; configuring `auxiliary.web_extract` with a fast model helps
+   any platform, voice most of all.
+
+Consult questions are automatically framed with a speed contract (answer
+in 1–3 spoken sentences, at most one quick search), and you can lower
+reasoning effort for just the voice session by texting it
+`/reasoning low` once.
+
 ## Security notes
 
 - **Webhook signatures are verified by default** (Telnyx Ed25519, Twilio

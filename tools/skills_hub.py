@@ -43,17 +43,79 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Paths
+# Paths — resolved dynamically so that profile / HERMES_HOME changes
+# within a process lifetime are reflected without a module reload.
+#
+# Each path constant is available as a module attribute for backward
+# compatibility (resolved via __getattr__).  Internal code should prefer
+# the private getter functions below.
 # ---------------------------------------------------------------------------
 
-HERMES_HOME = get_hermes_home()
-SKILLS_DIR = HERMES_HOME / "skills"
-HUB_DIR = SKILLS_DIR / ".hub"
-LOCK_FILE = HUB_DIR / "lock.json"
-QUARANTINE_DIR = HUB_DIR / "quarantine"
-AUDIT_LOG = HUB_DIR / "audit.log"
-TAPS_FILE = HUB_DIR / "taps.json"
-INDEX_CACHE_DIR = HUB_DIR / "index-cache"
+
+def _get_skills_dir() -> Path:
+    """Return the current skills directory (lazy — follows HERMES_HOME).
+
+    Checks ``globals()`` first so that tests can monkeypatch the module-level
+    ``SKILLS_DIR`` name and have internal callers pick it up."""
+    if "SKILLS_DIR" in globals():
+        return globals()["SKILLS_DIR"]
+    return get_hermes_home() / "skills"
+
+
+def _get_hub_dir() -> Path:
+    if "HUB_DIR" in globals():
+        return globals()["HUB_DIR"]
+    return _get_skills_dir() / ".hub"
+
+
+def _get_lock_file() -> Path:
+    if "LOCK_FILE" in globals():
+        return globals()["LOCK_FILE"]
+    return _get_hub_dir() / "lock.json"
+
+
+def _get_quarantine_dir() -> Path:
+    if "QUARANTINE_DIR" in globals():
+        return globals()["QUARANTINE_DIR"]
+    return _get_hub_dir() / "quarantine"
+
+
+def _get_audit_log() -> Path:
+    if "AUDIT_LOG" in globals():
+        return globals()["AUDIT_LOG"]
+    return _get_hub_dir() / "audit.log"
+
+
+def _get_taps_file() -> Path:
+    if "TAPS_FILE" in globals():
+        return globals()["TAPS_FILE"]
+    return _get_hub_dir() / "taps.json"
+
+
+def _get_index_cache_dir() -> Path:
+    if "INDEX_CACHE_DIR" in globals():
+        return globals()["INDEX_CACHE_DIR"]
+    return _get_hub_dir() / "index-cache"
+
+
+def __getattr__(name: str):
+    """Backward-compatible lazy resolution of path constants.
+    Module-level __getattr__ (PEP 562) fires when ``module.NAME``
+    is accessed and *name* is not in the module's __dict__."""
+    _map = {
+        "HERMES_HOME": lambda: get_hermes_home(),
+        "SKILLS_DIR": _get_skills_dir,
+        "HUB_DIR": _get_hub_dir,
+        "LOCK_FILE": _get_lock_file,
+        "QUARANTINE_DIR": _get_quarantine_dir,
+        "AUDIT_LOG": _get_audit_log,
+        "TAPS_FILE": _get_taps_file,
+        "INDEX_CACHE_DIR": _get_index_cache_dir,
+        "HERMES_INDEX_CACHE_FILE": lambda: _get_index_cache_dir() / "hermes-index.json",
+    }
+    if name in _map:
+        return _map[name]()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 # Cache duration for remote index fetches
 INDEX_CACHE_TTL = 3600  # 1 hour
@@ -170,14 +232,14 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     1. Walk the path component-by-component and refuse if any intermediate
        component is a symlink/junction (a path resolution that follows a
        symlink to outside skills/ would otherwise be hidden by Path.resolve).
-    2. After resolve(), reject not just escape-out but also ``resolved == SKILLS_DIR``
+    2. After resolve(), reject not just escape-out but also ``resolved == _get_skills_dir()``
        — an empty/``"."``/``""`` install_path resolves to the skills root itself,
-       and ``rmtree(SKILLS_DIR)`` would wipe every installed skill.
+       and ``rmtree(_get_skills_dir())`` would wipe every installed skill.
     """
     normalized = _normalize_lock_install_path(install_path, skill_name)
-    skills_root = SKILLS_DIR.resolve()
+    skills_root = _get_skills_dir().resolve()
 
-    target = SKILLS_DIR
+    target = _get_skills_dir()
     for part in normalized.split("/"):
         target = target / part
         if _is_path_redirect(target):
@@ -914,7 +976,7 @@ class GitHubSource(SkillSource):
 
     def _read_cache(self, key: str) -> Optional[list]:
         """Read cached index if not expired."""
-        cache_file = INDEX_CACHE_DIR / f"{key}.json"
+        cache_file = _get_index_cache_dir() / f"{key}.json"
         if not cache_file.exists():
             return None
         try:
@@ -927,8 +989,8 @@ class GitHubSource(SkillSource):
 
     def _write_cache(self, key: str, data: list) -> None:
         """Write index data to cache."""
-        INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_file = INDEX_CACHE_DIR / f"{key}.json"
+        _get_index_cache_dir().mkdir(parents=True, exist_ok=True)
+        cache_file = _get_index_cache_dir() / f"{key}.json"
         try:
             cache_file.write_text(json.dumps(data, ensure_ascii=False))
         except OSError as e:
@@ -3089,7 +3151,7 @@ class OptionalSkillSource(SkillSource):
 
 def _read_index_cache(key: str) -> Optional[Any]:
     """Read cached data if not expired."""
-    cache_file = INDEX_CACHE_DIR / f"{key}.json"
+    cache_file = _get_index_cache_dir() / f"{key}.json"
     if not cache_file.exists():
         return None
     try:
@@ -3103,17 +3165,17 @@ def _read_index_cache(key: str) -> Optional[Any]:
 
 def _write_index_cache(key: str, data: Any) -> None:
     """Write data to cache."""
-    INDEX_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _get_index_cache_dir().mkdir(parents=True, exist_ok=True)
     # Ensure .ignore exists so ripgrep (and tools respecting .ignore) skip
     # this directory.  Cache files contain unvetted community content that
     # could include adversarial text (prompt injection via catalog entries).
-    ignore_file = HUB_DIR / ".ignore"
+    ignore_file = _get_hub_dir() / ".ignore"
     if not ignore_file.exists():
         try:
             ignore_file.write_text("# Exclude hub internals from search tools\n*\n")
         except OSError:
             pass
-    cache_file = INDEX_CACHE_DIR / f"{key}.json"
+    cache_file = _get_index_cache_dir() / f"{key}.json"
     try:
         cache_file.write_text(json.dumps(data, ensure_ascii=False, default=str))
     except OSError as e:
@@ -3142,8 +3204,13 @@ def _skill_meta_to_dict(meta: SkillMeta) -> dict:
 class HubLockFile:
     """Manages skills/.hub/lock.json — tracks provenance of installed hub skills."""
 
-    def __init__(self, path: Path = LOCK_FILE):
-        self.path = path
+    def __init__(self, path: Path | None = None):
+        if path is None:
+            # Resolve lazily via module __getattr__ so that a
+            # HERMES_HOME change between module import and first
+            # instantiation is picked up.
+            path = _get_lock_file()
+        self.path: Path = path  # type: ignore[assignment]
 
     def load(self) -> dict:
         if not self.path.exists():
@@ -3214,8 +3281,11 @@ class HubLockFile:
 class TapsManager:
     """Manages the taps.json file — custom GitHub repo sources."""
 
-    def __init__(self, path: Path = TAPS_FILE):
-        self.path = path
+    def __init__(self, path: Path | None = None):
+        if path is None:
+            # Resolve lazily via module __getattr__
+            path = _get_taps_file()
+        self.path: Path = path  # type: ignore[assignment]
 
     def load(self) -> List[dict]:
         if not self.path.exists():
@@ -3259,14 +3329,14 @@ class TapsManager:
 def append_audit_log(action: str, skill_name: str, source: str,
                      trust_level: str, verdict: str, extra: str = "") -> None:
     """Append a line to the audit log."""
-    AUDIT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    _get_audit_log().parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     parts = [timestamp, action, skill_name, f"{source}:{trust_level}", verdict]
     if extra:
         parts.append(extra)
     line = " ".join(parts) + "\n"
     try:
-        with open(AUDIT_LOG, "a", encoding="utf-8") as f:
+        with open(_get_audit_log(), "a", encoding="utf-8") as f:
             f.write(line)
     except OSError as e:
         logger.debug("Could not write audit log: %s", e)
@@ -3278,15 +3348,15 @@ def append_audit_log(action: str, skill_name: str, source: str,
 
 def ensure_hub_dirs() -> None:
     """Create the .hub directory structure if it doesn't exist."""
-    HUB_DIR.mkdir(parents=True, exist_ok=True)
-    QUARANTINE_DIR.mkdir(exist_ok=True)
-    INDEX_CACHE_DIR.mkdir(exist_ok=True)
-    if not LOCK_FILE.exists():
-        LOCK_FILE.write_text('{"version": 1, "installed": {}}\n')
-    if not AUDIT_LOG.exists():
-        AUDIT_LOG.touch()
-    if not TAPS_FILE.exists():
-        TAPS_FILE.write_text('{"taps": []}\n')
+    _get_hub_dir().mkdir(parents=True, exist_ok=True)
+    _get_quarantine_dir().mkdir(exist_ok=True)
+    _get_index_cache_dir().mkdir(exist_ok=True)
+    if not _get_lock_file().exists():
+        _get_lock_file().write_text('{"version": 1, "installed": {}}\n')
+    if not _get_audit_log().exists():
+        _get_audit_log().touch()
+    if not _get_taps_file().exists():
+        _get_taps_file().write_text('{"taps": []}\n')
 
 
 def quarantine_bundle(bundle: SkillBundle) -> Path:
@@ -3298,7 +3368,7 @@ def quarantine_bundle(bundle: SkillBundle) -> Path:
         safe_rel_path = _validate_bundle_rel_path(rel_path)
         validated_files.append((safe_rel_path, file_content))
 
-    dest = QUARANTINE_DIR / skill_name
+    dest = _get_quarantine_dir() / skill_name
     if dest.exists():
         shutil.rmtree(dest)
     dest.mkdir(parents=True)
@@ -3325,7 +3395,7 @@ def install_from_quarantine(
     safe_skill_name = _validate_skill_name(skill_name)
     safe_category = _validate_install_parent_path(category) if category else ""
     quarantine_resolved = quarantine_path.resolve()
-    quarantine_root = QUARANTINE_DIR.resolve()
+    quarantine_root = _get_quarantine_dir().resolve()
     if not quarantine_resolved.is_relative_to(quarantine_root):
         raise ValueError(f"Unsafe quarantine path: {quarantine_path}")
 
@@ -3385,7 +3455,7 @@ def install_from_quarantine(
         trust_level=bundle.trust_level,
         scan_verdict=scan_result.verdict,
         skill_hash=content_hash(install_dir),
-        install_path=str(install_dir.relative_to(SKILLS_DIR)),
+        install_path=str(install_dir.relative_to(_get_skills_dir())),
         files=list(bundle.files.keys()),
         metadata=bundle.metadata,
     )
@@ -3514,7 +3584,7 @@ def check_for_skill_updates(
 # ---------------------------------------------------------------------------
 
 HERMES_INDEX_URL = "https://hermes-agent.nousresearch.com/docs/api/skills-index.json"
-HERMES_INDEX_CACHE_FILE = INDEX_CACHE_DIR / "hermes-index.json"
+# HERMES_INDEX_CACHE_FILE is resolved lazily via module __getattr__
 HERMES_INDEX_TTL = 6 * 3600  # 6 hours
 
 
@@ -3526,11 +3596,11 @@ def _load_hermes_index() -> Optional[dict]:
     downloads within a session.
     """
     # Check local cache
-    if HERMES_INDEX_CACHE_FILE.exists():
+    if (_get_index_cache_dir() / 'hermes-index.json').exists():
         try:
-            age = time.time() - HERMES_INDEX_CACHE_FILE.stat().st_mtime
+            age = time.time() - (_get_index_cache_dir() / 'hermes-index.json').stat().st_mtime
             if age < HERMES_INDEX_TTL:
-                return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+                return json.loads((_get_index_cache_dir() / 'hermes-index.json').read_text())
         except (OSError, json.JSONDecodeError):
             pass
 
@@ -3551,8 +3621,8 @@ def _load_hermes_index() -> Optional[dict]:
 
     # Cache locally
     try:
-        HERMES_INDEX_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        HERMES_INDEX_CACHE_FILE.write_text(json.dumps(data))
+        (_get_index_cache_dir() / 'hermes-index.json').parent.mkdir(parents=True, exist_ok=True)
+        (_get_index_cache_dir() / 'hermes-index.json').write_text(json.dumps(data))
     except OSError:
         pass
 
@@ -3561,9 +3631,9 @@ def _load_hermes_index() -> Optional[dict]:
 
 def _load_stale_index_cache() -> Optional[dict]:
     """Fall back to stale cache when the network fetch fails."""
-    if HERMES_INDEX_CACHE_FILE.exists():
+    if (_get_index_cache_dir() / 'hermes-index.json').exists():
         try:
-            return json.loads(HERMES_INDEX_CACHE_FILE.read_text())
+            return json.loads((_get_index_cache_dir() / 'hermes-index.json').read_text())
         except (OSError, json.JSONDecodeError):
             pass
     return None

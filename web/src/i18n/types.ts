@@ -1,5 +1,6 @@
 export type Locale =
   | "en"
+  | "ar"
   | "zh"
   | "zh-hant"
   | "ja"
@@ -78,6 +79,10 @@ export interface Translations {
       org: string;
     };
     activeSessionsLabel: string;
+    authStatusUnavailable?: string;
+    loggedInAs?: string;
+    logout?: string;
+    via?: string;
     gatewayStatusLabel: string;
     gatewayStrip: {
       failed: string;
@@ -92,13 +97,19 @@ export interface Translations {
       config: string;
       cron: string;
       documentation: string;
+      files?: string;
       keys: string;
       logs: string;
+      mcp?: string;
       models: string;
+      channels?: string;
+      pairing?: string;
       profiles: string;
       plugins: string;
       sessions: string;
       skills: string;
+      system?: string;
+      webhooks?: string;
     };
     modelToolsSheetSubtitle: string;
     modelToolsSheetTitle: string;

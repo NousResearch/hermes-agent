@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
+import { ar } from "./ar";
 import { en } from "./en";
 import { zh } from "./zh";
 import { zhHant } from "./zh-hant";
@@ -19,6 +20,7 @@ import { hu } from "./hu";
 
 const TRANSLATIONS: Record<Locale, Translations> = {
   en,
+  ar,
   zh,
   "zh-hant": zhHant,
   ja,
@@ -47,6 +49,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
 // mismapping that flag pairings inevitably create.
 export const LOCALE_META: Record<Locale, { name: string }> = {
   en: { name: "English" },
+  ar: { name: "العربية" },
   zh: { name: "简体中文" },
   "zh-hant": { name: "繁體中文" },
   ja: { name: "日本語" },
@@ -95,6 +98,11 @@ const I18nContext = createContext<I18nContextValue>({
 
 export function I18nProvider({ children }: { children: ReactNode }) {
   const [locale, setLocaleState] = useState<Locale>(getInitialLocale);
+
+  useEffect(() => {
+    document.documentElement.lang = locale;
+    document.documentElement.dir = locale === "ar" ? "rtl" : "ltr";
+  }, [locale]);
 
   const setLocale = useCallback((l: Locale) => {
     setLocaleState(l);

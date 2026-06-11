@@ -435,6 +435,22 @@
   }
 }
 
+html[dir='rtl'] {
+  font-family: Tahoma, 'Geeza Pro', 'Noto Sans Arabic', Arial, sans-serif;
+  letter-spacing: 0;
+}
+
+html[dir='rtl'] code,
+html[dir='rtl'] kbd,
+html[dir='rtl'] pre,
+html[dir='rtl'] samp,
+html[dir='rtl'] .font-mono,
+html[dir='rtl'] .xterm {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: embed;
+}
+
 .dither {
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }

@@ -106,6 +106,11 @@ html {
   overflow: hidden;
 }
 
+html[dir="rtl"] {
+  --theme-font-sans: Tahoma, "Geeza Pro", "Noto Sans Arabic", Arial, sans-serif;
+  letter-spacing: 0;
+}
+
 body {
   font-family: var(--theme-font-sans);
   min-height: 0;
@@ -116,6 +121,18 @@ body {
 
 code, kbd, pre, samp, .font-mono, .font-mono-ui {
   font-family: var(--theme-font-mono);
+}
+
+html[dir="rtl"] code,
+html[dir="rtl"] kbd,
+html[dir="rtl"] pre,
+html[dir="rtl"] samp,
+html[dir="rtl"] .font-mono,
+html[dir="rtl"] .font-mono-ui,
+html[dir="rtl"] .xterm {
+  direction: ltr;
+  text-align: left;
+  unicode-bidi: embed;
 }
 
 /* Density: scale the shadcn spacing utilities via a multiplier. The DS
@@ -266,4 +283,3 @@ code { font-size: 0.875rem; }
 :root[style*="--theme-asset-bg:"] .theme-default-filler {
   display: none;
 }
-

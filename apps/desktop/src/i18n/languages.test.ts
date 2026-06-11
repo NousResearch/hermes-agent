@@ -1,11 +1,23 @@
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_LOCALE, isLocale, isSupportedLocaleValue, localeConfigValue, normalizeLocale } from './languages'
+import {
+  DEFAULT_LOCALE,
+  isLocale,
+  isSupportedLocaleValue,
+  localeConfigValue,
+  localeDirection,
+  normalizeLocale
+} from './languages'
 
 describe('desktop i18n languages', () => {
   it('normalizes supported locale aliases', () => {
     expect(normalizeLocale('en')).toBe('en')
     expect(normalizeLocale('EN-US')).toBe('en')
+    expect(normalizeLocale('ar')).toBe('ar')
+    expect(normalizeLocale('Arabic')).toBe('ar')
+    expect(normalizeLocale('العربية')).toBe('ar')
+    expect(normalizeLocale('ar-EG')).toBe('ar')
+    expect(normalizeLocale('ar_SA')).toBe('ar')
     expect(normalizeLocale('zh')).toBe('zh')
     expect(normalizeLocale('zh-CN')).toBe('zh')
     expect(normalizeLocale('zh-Hans')).toBe('zh')
@@ -25,10 +37,12 @@ describe('desktop i18n languages', () => {
 
   it('distinguishes exact locale ids from supported config aliases', () => {
     expect(isSupportedLocaleValue('zh-CN')).toBe(true)
+    expect(isSupportedLocaleValue('ar-AE')).toBe(true)
     expect(isSupportedLocaleValue('zh-TW')).toBe(true)
     expect(isSupportedLocaleValue('ja-JP')).toBe(true)
     expect(isSupportedLocaleValue('de')).toBe(false)
     expect(isLocale('zh-CN')).toBe(false)
+    expect(isLocale('ar')).toBe(true)
     expect(isLocale('zh')).toBe(true)
     expect(isLocale('zh-hant')).toBe(true)
     expect(isLocale('ja')).toBe(true)
@@ -36,8 +50,15 @@ describe('desktop i18n languages', () => {
 
   it('returns the persisted config value for supported locales', () => {
     expect(localeConfigValue('en')).toBe('en')
+    expect(localeConfigValue('ar')).toBe('ar')
     expect(localeConfigValue('zh')).toBe('zh')
     expect(localeConfigValue('zh-hant')).toBe('zh-hant')
     expect(localeConfigValue('ja')).toBe('ja')
+  })
+
+  it('returns the writing direction for each locale', () => {
+    expect(localeDirection('ar')).toBe('rtl')
+    expect(localeDirection('en')).toBe('ltr')
+    expect(localeDirection('zh')).toBe('ltr')
   })
 })

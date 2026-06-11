@@ -14,6 +14,7 @@ export {
   isSupportedLocaleValue,
   LOCALE_OPTIONS,
   localeConfigValue,
+  localeDirection,
   normalizeLocale
 } from './languages'
 export { setRuntimeI18nLocale, translateNow } from './runtime'

@@ -1407,6 +1407,8 @@ def check_feishu_requirements() -> bool:
 
 
 class FeishuAdapter(BasePlatformAdapter):
+    CONNECT_IN_BACKGROUND = True
+
     """Feishu/Lark bot adapter."""
 
     MAX_MESSAGE_LENGTH = 8000
@@ -1640,6 +1642,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def connect(self) -> bool:
         """Connect to Feishu/Lark."""
+        started_at = time.monotonic()
+        logger.info(
+            "[Feishu] Connect start mode=%s domain=%s",
+            self._connection_mode,
+            self._domain_name,
+        )
         if not FEISHU_AVAILABLE:
             logger.error("[Feishu] lark-oapi not installed")
             return False
@@ -1660,10 +1668,16 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             self._app_lock_identity = self._app_id
+            lock_started_at = time.monotonic()
+            logger.info("[Feishu] Acquiring app lock for app_id=%s", self._app_id[:8] + "...")
             acquired, existing = acquire_scoped_lock(
                 _FEISHU_APP_LOCK_SCOPE,
                 self._app_lock_identity,
                 metadata={"platform": self.platform.value},
+            )
+            logger.info(
+                "[Feishu] App lock check finished in %.2fs",
+                time.monotonic() - lock_started_at,
             )
             if not acquired:
                 owner_pid = existing.get("pid") if isinstance(existing, dict) else None
@@ -1679,7 +1693,12 @@ class FeishuAdapter(BasePlatformAdapter):
             self._loop = asyncio.get_running_loop()
             await self._connect_with_retry()
             self._mark_connected()
-            logger.info("[Feishu] Connected in %s mode (%s)", self._connection_mode, self._domain_name)
+            logger.info(
+                "[Feishu] Connected in %s mode (%s) after %.2fs",
+                self._connection_mode,
+                self._domain_name,
+                time.monotonic() - started_at,
+            )
             return True
         except Exception as exc:
             await self._release_app_lock()
@@ -4244,6 +4263,8 @@ class FeishuAdapter(BasePlatformAdapter):
         # Primary probe: /open-apis/bot/v3/info — returns bot_name + open_id, no
         # extra scopes required. This is the same endpoint the onboarding wizard
         # uses via probe_bot().
+        started_at = time.monotonic()
+        logger.info("[Feishu] Hydrating bot identity via /bot/v3/info")
         try:
             req = (
                 BaseRequest.builder()
@@ -4271,6 +4292,12 @@ class FeishuAdapter(BasePlatformAdapter):
                             "[Feishu] FEISHU_BOT_NAME differs from /bot/v3/info; using hydrated bot name for group @mention gating."
                         )
                     self._bot_name = bot_name
+                logger.info(
+                    "[Feishu] /bot/v3/info hydration finished in %.2fs (open_id=%s, name=%s)",
+                    time.monotonic() - started_at,
+                    "yes" if open_id else "no",
+                    "yes" if bot_name else "no",
+                )
         except Exception:
             logger.debug(
                 "[Feishu] /bot/v3/info probe failed during hydration",
@@ -4283,6 +4310,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if self._bot_name:
             return
         try:
+            fallback_started_at = time.monotonic()
+            logger.info("[Feishu] Hydrating bot name via application info fallback")
             request = self._build_get_application_request(app_id=self._app_id, lang="en_us")
             response = await asyncio.to_thread(self._client.application.v6.application.get, request)
             if not response or not response.success():
@@ -4298,6 +4327,11 @@ class FeishuAdapter(BasePlatformAdapter):
             app_name = (getattr(app, "app_name", None) or "").strip()
             if app_name and not self._bot_name:
                 self._bot_name = app_name
+            logger.info(
+                "[Feishu] Application info fallback finished in %.2fs (name=%s)",
+                time.monotonic() - fallback_started_at,
+                "yes" if app_name else "no",
+            )
         except Exception:
             logger.debug("[Feishu] Failed to hydrate bot name from application info", exc_info=True)
 
@@ -4540,10 +4574,22 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _connect_with_retry(self) -> None:
         for attempt in range(_FEISHU_CONNECT_ATTEMPTS):
             try:
+                attempt_started_at = time.monotonic()
+                logger.info(
+                    "[Feishu] Connect attempt %d/%d starting",
+                    attempt + 1,
+                    _FEISHU_CONNECT_ATTEMPTS,
+                )
                 if self._connection_mode == "websocket":
                     await self._connect_websocket()
                 else:
                     await self._connect_webhook()
+                logger.info(
+                    "[Feishu] Connect attempt %d/%d completed in %.2fs",
+                    attempt + 1,
+                    _FEISHU_CONNECT_ATTEMPTS,
+                    time.monotonic() - attempt_started_at,
+                )
                 return
             except Exception as exc:
                 self._running = False
@@ -4565,8 +4611,11 @@ class FeishuAdapter(BasePlatformAdapter):
     async def _connect_websocket(self) -> None:
         if not FEISHU_WEBSOCKET_AVAILABLE:
             raise RuntimeError("websockets not installed; websocket mode unavailable")
+        started_at = time.monotonic()
         domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        logger.info("[Feishu] Building Lark client for websocket")
         self._client = self._build_lark_client(domain)
+        logger.info("[Feishu] Building event handler")
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
             raise RuntimeError("failed to build Feishu event handler")
@@ -4574,6 +4623,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if loop is None or loop.is_closed():
             raise RuntimeError("adapter loop is not ready")
         await self._hydrate_bot_identity()
+        ws_started_at = time.monotonic()
+        logger.info("[Feishu] Starting official websocket client thread")
         self._ws_client = FeishuWSClient(
             app_id=self._app_id,
             app_secret=self._app_secret,
@@ -4587,22 +4638,42 @@ class FeishuAdapter(BasePlatformAdapter):
             self._ws_client,
             self,
         )
+        logger.info(
+            "[Feishu] Websocket client scheduled in %.2fs (phase %.2fs)",
+            time.monotonic() - ws_started_at,
+            time.monotonic() - started_at,
+        )
 
     async def _connect_webhook(self) -> None:
         if not FEISHU_WEBHOOK_AVAILABLE:
             raise RuntimeError("aiohttp not installed; webhook mode unavailable")
+        started_at = time.monotonic()
         domain = FEISHU_DOMAIN if self._domain_name != "lark" else LARK_DOMAIN
+        logger.info("[Feishu] Building Lark client for webhook")
         self._client = self._build_lark_client(domain)
+        logger.info("[Feishu] Building event handler")
         self._event_handler = self._build_event_handler()
         if self._event_handler is None:
             raise RuntimeError("failed to build Feishu event handler")
         await self._hydrate_bot_identity()
+        http_started_at = time.monotonic()
+        logger.info(
+            "[Feishu] Starting webhook listener on %s:%d%s",
+            self._webhook_host,
+            self._webhook_port,
+            self._webhook_path,
+        )
         app = web.Application()
         app.router.add_post(self._webhook_path, self._handle_webhook_request)
         self._webhook_runner = web.AppRunner(app)
         await self._webhook_runner.setup()
         self._webhook_site = web.TCPSite(self._webhook_runner, self._webhook_host, self._webhook_port)
         await self._webhook_site.start()
+        logger.info(
+            "[Feishu] Webhook listener started in %.2fs (phase %.2fs)",
+            time.monotonic() - http_started_at,
+            time.monotonic() - started_at,
+        )
 
     def _build_lark_client(self, domain: Any) -> Any:
         return (

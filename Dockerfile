@@ -9,6 +9,8 @@ FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df228
 FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
 FROM debian:13.4
 
+LABEL hermes.plugin-tools-gateway="true"
+
 # Disable Python stdout buffering to ensure logs are printed immediately
 ENV PYTHONUNBUFFERED=1
 
@@ -144,7 +146,7 @@ RUN npm install --prefer-offline --no-audit && \
 # frontend stats the readme path during dep resolution, so we `touch` an
 # empty placeholder — the real README is restored by `COPY . .` below.
 #
-# `uv sync --frozen --no-install-project --extra all --extra messaging`
+# `uv sync --frozen --no-install-project --extra all --extra messaging ...`
 # installs the deps reachable through the composite `[all]` extra
 # (handpicked set intended for the production image), plus gateway
 # messaging adapters that should work in the published image without a
@@ -164,14 +166,42 @@ RUN npm install --prefer-offline --no-audit && \
 # image update and recall/retain then fails with
 # `ModuleNotFoundError: No module named 'hindsight_client'` (#38128).
 #
+# hc-180: bake Feishu and Edge TTS deps into the production layer as well.
+# They remain optional for source installs, but runtime images should not pay
+# first-boot lazy-install latency for the configured Feishu gateway or default
+# TTS provider.
+#
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra anthropic --extra bedrock --extra azure-identity --extra hindsight
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra feishu --extra edge-tts --extra anthropic --extra bedrock --extra azure-identity --extra hindsight
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
 COPY --chown=hermes:hermes . .
+
+# hc-180: bake the tirith binary into the immutable image so startup does not
+# kick off a GitHub release download in the cold-start window. Use the existing
+# installer so checksum verification stays centralized.
+RUN mkdir -p /opt/hermes/bin && \
+    printf '%s\n' \
+        'import time' \
+        'import tools.tirith_security as tirith' \
+        '' \
+        'path = tirith.ensure_installed(log_failures=True)' \
+        'deadline = time.monotonic() + 180' \
+        'while path is None and tirith._install_thread is not None and tirith._install_thread.is_alive():' \
+        '    remaining = deadline - time.monotonic()' \
+        '    if remaining <= 0:' \
+        '        break' \
+        '    tirith._install_thread.join(timeout=min(1.0, remaining))' \
+        '    path = tirith.ensure_installed(log_failures=True)' \
+        'if not path:' \
+        '    raise SystemExit("tirith binary was not installed during image build")' \
+        'print(f"tirith baked into image: {path}")' \
+        > /tmp/bake_tirith.py && \
+    HERMES_HOME=/opt/hermes /opt/hermes/.venv/bin/python /tmp/bake_tirith.py && \
+    rm /tmp/bake_tirith.py
 
 # Build browser dashboard and terminal UI assets.
 RUN cd web && npm run build && \

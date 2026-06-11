@@ -18,6 +18,7 @@ import ast
 import importlib
 import json
 import logging
+import random
 import threading
 import time
 from pathlib import Path
@@ -113,31 +114,53 @@ class ToolEntry:
 # probe external state (Docker daemon, Modal SDK install, playwright binary
 # availability). For a long-lived CLI or gateway process, calling them on
 # every get_definitions() is pure waste — external state changes on human
-# timescales. Cache results for ~30 s so env-var flips via ``hermes tools``
+# timescales. Cache successes for ~30 s so env-var flips via ``hermes tools``
 # or live credential file changes propagate within a turn or two without
-# requiring any explicit invalidation.
+# requiring any explicit invalidation. Cache failures for a shorter jittered
+# window so tools that were briefly unavailable during startup reappear quickly
+# and failures leave an operator-visible WARNING trail.
 # ---------------------------------------------------------------------------
 
-_CHECK_FN_TTL_SECONDS = 30.0
+_CHECK_FN_SUCCESS_TTL_SECONDS = 30.0
+_CHECK_FN_FAILURE_TTL_SECONDS = 8.0
+_CHECK_FN_FAILURE_JITTER_SECONDS = 4.0
 _check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
 _check_fn_cache_lock = threading.Lock()
 
 
-def _check_fn_cached(fn: Callable) -> bool:
+def _check_fn_ttl(value: bool) -> float:
+    if value:
+        return _CHECK_FN_SUCCESS_TTL_SECONDS
+    return _CHECK_FN_FAILURE_TTL_SECONDS + random.uniform(
+        0.0,
+        _CHECK_FN_FAILURE_JITTER_SECONDS,
+    )
+
+
+def _check_fn_cached(fn: Callable, *, tool_name: str = "<unknown>") -> bool:
     """Return bool(fn()), TTL-cached across calls. Swallows exceptions as False."""
     now = time.monotonic()
     with _check_fn_cache_lock:
         cached = _check_fn_cache.get(fn)
         if cached is not None:
-            ts, value = cached
-            if now - ts < _CHECK_FN_TTL_SECONDS:
+            expires_at, value = cached
+            if now < expires_at:
                 return value
     try:
         value = bool(fn())
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "Tool %s check_fn failed: %s: %s",
+            tool_name,
+            type(exc).__name__,
+            exc,
+        )
         value = False
+    else:
+        if not value:
+            logger.warning("Tool %s check_fn failed: returned false", tool_name)
     with _check_fn_cache_lock:
-        _check_fn_cache[fn] = (now, value)
+        _check_fn_cache[fn] = (now + _check_fn_ttl(value), value)
     return value
 
 
@@ -357,7 +380,10 @@ class ToolRegistry:
                 continue
             if entry.check_fn:
                 if entry.check_fn not in check_results:
-                    check_results[entry.check_fn] = _check_fn_cached(entry.check_fn)
+                    check_results[entry.check_fn] = _check_fn_cached(
+                        entry.check_fn,
+                        tool_name=entry.name,
+                    )
                 if not check_results[entry.check_fn]:
                     if not quiet:
                         logger.debug("Tool %s unavailable (check failed)", name)

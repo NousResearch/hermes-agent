@@ -58,6 +58,7 @@ def _make_runner():
     runner._exit_with_failure = False
     runner._exit_cleanly = False
     runner._failed_platforms = {}
+    runner._background_tasks = set()
     runner.adapters = {}
     runner.delivery_router = MagicMock()
     runner._running_agents = {}
@@ -110,9 +111,12 @@ class TestStartupPlatformIsolation:
             ]
         )
 
-        def fake_create_task(coro):
-            coro.close()
-            return MagicMock()
+        created_tasks = []
+
+        def fake_create_task(coro, *args, **kwargs):
+            task = asyncio.get_running_loop().create_task(coro, **kwargs)
+            created_tasks.append(task)
+            return task
 
         with patch("gateway.status.write_runtime_status"):
             with patch("hermes_cli.plugins.discover_plugins"):
@@ -128,6 +132,10 @@ class TestStartupPlatformIsolation:
                             ):
                                 with patch("gateway.run.asyncio.create_task", side_effect=fake_create_task):
                                     assert await runner.start() is True
+                                    for _ in range(50):
+                                        if Platform.FEISHU in runner.adapters:
+                                            break
+                                        await asyncio.sleep(0.01)
 
         assert Platform.TELEGRAM in runner._failed_platforms
         assert Platform.FEISHU in runner.adapters
@@ -765,4 +773,3 @@ class TestPlatformSlashCommand:
         runner = _make_runner()
         out = await runner._handle_platform_command(self._make_event("/platform"))
         assert "Gateway platforms" in out
-

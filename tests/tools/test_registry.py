@@ -5,7 +5,12 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.registry import ToolRegistry, _module_registers_tools, discover_builtin_tools
+from tools.registry import (
+    ToolRegistry,
+    _module_registers_tools,
+    discover_builtin_tools,
+    invalidate_check_fn_cache,
+)
 
 
 def _dummy_handler(args, **kwargs):
@@ -247,6 +252,7 @@ class TestCheckFnExceptionHandling:
         assert reqs["bad"] is False
 
     def test_get_definitions_skips_raising_check(self):
+        invalidate_check_fn_cache()
         reg = ToolRegistry()
         reg.register(
             name="ok_tool",
@@ -265,6 +271,55 @@ class TestCheckFnExceptionHandling:
         defs = reg.get_definitions({"ok_tool", "bad_tool"})
         assert len(defs) == 1
         assert defs[0]["function"]["name"] == "ok_tool"
+
+    def test_get_definitions_logs_check_fn_false_warning(self, caplog):
+        invalidate_check_fn_cache()
+        reg = ToolRegistry()
+        reg.register(
+            name="hidden_tool",
+            toolset="hidden",
+            schema=_make_schema("hidden_tool"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+
+        with caplog.at_level("WARNING", logger="tools.registry"):
+            defs = reg.get_definitions({"hidden_tool"})
+
+        assert defs == []
+        assert any(
+            "Tool hidden_tool check_fn failed: returned false" in record.message
+            for record in caplog.records
+        )
+
+    def test_failed_check_fn_cache_uses_short_jittered_ttl(self, monkeypatch):
+        invalidate_check_fn_cache()
+        now = {"value": 100.0}
+        calls = {"count": 0}
+        reg = ToolRegistry()
+
+        def unavailable():
+            calls["count"] += 1
+            return False
+
+        reg.register(
+            name="flaky_tool",
+            toolset="flaky",
+            schema=_make_schema("flaky_tool"),
+            handler=_dummy_handler,
+            check_fn=unavailable,
+        )
+        monkeypatch.setattr("tools.registry.time.monotonic", lambda: now["value"])
+        monkeypatch.setattr("tools.registry.random.uniform", lambda _low, _high: 1.5)
+
+        reg.get_definitions({"flaky_tool"})
+        now["value"] += 9.4
+        reg.get_definitions({"flaky_tool"})
+        now["value"] += 0.2
+        reg.get_definitions({"flaky_tool"})
+
+        assert calls["count"] == 2
+        invalidate_check_fn_cache()
 
     def test_check_tool_availability_survives_raising_check(self):
         reg = ToolRegistry()

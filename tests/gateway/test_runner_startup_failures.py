@@ -1,3 +1,6 @@
+import asyncio
+import threading
+
 import pytest
 from unittest.mock import AsyncMock
 
@@ -51,6 +54,46 @@ class _SuccessfulAdapter(BasePlatformAdapter):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
 
     async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        self._mark_disconnected()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        raise NotImplementedError
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
+class _ConversationReadyAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.API_SERVER)
+
+    async def connect(self) -> bool:
+        return True
+
+    async def disconnect(self) -> None:
+        self._mark_disconnected()
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        raise NotImplementedError
+
+    async def get_chat_info(self, chat_id):
+        return {"id": chat_id}
+
+
+class _BackgroundFeishuAdapter(BasePlatformAdapter):
+    CONNECT_IN_BACKGROUND = True
+
+    def __init__(self, started, release):
+        super().__init__(PlatformConfig(enabled=True, token="***"), Platform.FEISHU)
+        self.started = started
+        self.release = release
+
+    async def connect(self) -> bool:
+        self.started.set()
+        await self.release.wait()
         return True
 
     async def disconnect(self) -> None:
@@ -139,6 +182,110 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
     assert state["platforms"]["discord"]["state"] == "connected"
     assert state["platforms"]["discord"]["error_code"] is None
     assert state["platforms"]["discord"]["error_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_background_platform_connect_does_not_block_api_ready(monkeypatch, tmp_path):
+    """Feishu can attach after the API server is already ready to answer turns."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    started = asyncio.Event()
+    release = asyncio.Event()
+    feishu_adapter = _BackgroundFeishuAdapter(started, release)
+    api_adapter = _ConversationReadyAdapter()
+    config = GatewayConfig(
+        platforms={
+            Platform.API_SERVER: PlatformConfig(enabled=True, token="***"),
+            Platform.FEISHU: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    def _create_adapter(platform, platform_config):
+        return {
+            Platform.API_SERVER: api_adapter,
+            Platform.FEISHU: feishu_adapter,
+        }[platform]
+
+    monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert Platform.API_SERVER in runner.adapters
+    assert Platform.FEISHU not in runner.adapters
+    await asyncio.wait_for(started.wait(), timeout=1)
+
+    release.set()
+    await asyncio.wait_for(
+        _wait_until(lambda: Platform.FEISHU in runner.adapters),
+        timeout=1,
+    )
+    state = read_runtime_status()
+    assert state["platforms"]["api_server"]["state"] == "connected"
+    assert state["platforms"]["feishu"]["state"] == "connected"
+    await runner.stop()
+
+
+@pytest.mark.asyncio
+async def test_background_platform_adapter_creation_does_not_block_api_ready(monkeypatch, tmp_path):
+    """Feishu SDK import/adapter construction can happen after API readiness."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    create_started = threading.Event()
+    create_release = threading.Event()
+    connect_started = asyncio.Event()
+    connect_release = asyncio.Event()
+    api_adapter = _ConversationReadyAdapter()
+    config = GatewayConfig(
+        platforms={
+            Platform.API_SERVER: PlatformConfig(enabled=True, token="***"),
+            Platform.FEISHU: PlatformConfig(enabled=True, token="***"),
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+
+    class _DeferredFeishuAdapter(_BackgroundFeishuAdapter):
+        async def connect(self) -> bool:
+            connect_started.set()
+            await connect_release.wait()
+            return True
+
+    def _create_adapter(platform, platform_config):
+        if platform == Platform.API_SERVER:
+            return api_adapter
+        if platform == Platform.FEISHU:
+            create_started.set()
+            assert create_release.wait(timeout=2)
+            return _DeferredFeishuAdapter(asyncio.Event(), asyncio.Event())
+        raise AssertionError(f"unexpected platform {platform}")
+
+    monkeypatch.setattr(runner, "_create_adapter", _create_adapter)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+
+    ok = await runner.start()
+
+    assert ok is True
+    assert Platform.API_SERVER in runner.adapters
+    assert Platform.FEISHU not in runner.adapters
+    assert create_started.wait(timeout=1)
+
+    create_release.set()
+    await asyncio.wait_for(connect_started.wait(), timeout=1)
+    connect_release.set()
+    await asyncio.wait_for(
+        _wait_until(lambda: Platform.FEISHU in runner.adapters),
+        timeout=1,
+    )
+    await runner.stop()
+
+
+async def _wait_until(predicate):
+    while not predicate():
+        await asyncio.sleep(0.01)
 
 
 @pytest.mark.asyncio

@@ -2396,6 +2396,202 @@ class GatewayRunner:
                 f"{platform.value} connect timed out after {timeout:g}s"
             ) from exc
 
+    def _adapter_connects_in_background(self, adapter: Any) -> bool:
+        """Return True when an adapter should not block gateway ready.
+
+        Runtime containers expose the API server as the conversation-ready
+        surface. Platform websocket attachment can continue in the background
+        as long as the API server path is already accepting turns.
+        """
+        return bool(getattr(adapter, "CONNECT_IN_BACKGROUND", False))
+
+    def _platform_creation_connects_in_background(self, platform: Any) -> bool:
+        """Return True when adapter import/construction should also be deferred.
+
+        Feishu's adapter module imports the official lark_oapi SDK at module
+        import time. Even when baked into the image, that first import can take
+        long enough to delay the API conversation-ready signal. Defer the whole
+        create+connect path for known background-connect platforms so the API
+        server can declare ready first.
+        """
+        return platform == Platform.FEISHU
+
+    def _prepare_adapter(self, adapter: Any) -> None:
+        """Wire gateway callbacks into an adapter before connect."""
+        adapter.set_message_handler(self._handle_message)
+        adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
+        adapter.set_session_store(self.session_store)
+        adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
+        adapter._busy_text_mode = self._busy_text_mode
+
+    def _register_connected_adapter(self, platform, adapter) -> None:
+        """Record a connected adapter and refresh dependent routers/state."""
+        self.adapters[platform] = adapter
+        self._sync_voice_mode_state_to_adapter(adapter)
+        self.delivery_router.adapters = self.adapters
+        self._wire_teams_pipeline_runtime()
+        self._update_platform_runtime_status(
+            platform.value,
+            platform_state="connected",
+            error_code=None,
+            error_message=None,
+        )
+
+    def _queue_platform_retry(
+        self,
+        platform,
+        platform_config,
+        *,
+        attempts: int,
+        error_message: str,
+        error_code: Optional[str] = None,
+        retryable: bool = True,
+    ) -> None:
+        """Update runtime status and queue a failed platform for reconnect."""
+        self._update_platform_runtime_status(
+            platform.value,
+            platform_state="retrying" if retryable else "fatal",
+            error_code=error_code,
+            error_message=error_message,
+        )
+        if retryable:
+            self._failed_platforms[platform] = {
+                "config": platform_config,
+                "attempts": attempts,
+                "next_retry": time.monotonic() + 30,
+            }
+
+    def _track_background_task(self, task: asyncio.Task) -> None:
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _connect_adapter_in_background(
+        self,
+        adapter,
+        platform,
+        platform_config,
+    ) -> None:
+        """Connect a platform after the gateway's conversation path is ready."""
+        try:
+            connect_started = time.monotonic()
+            success = await self._connect_adapter_with_timeout(adapter, platform)
+            connect_elapsed_ms = int((time.monotonic() - connect_started) * 1000)
+            if success:
+                self._register_connected_adapter(platform, adapter)
+                logger.info(
+                    "✓ %s connected in background in %dms",
+                    platform.value,
+                    connect_elapsed_ms,
+                )
+                try:
+                    from gateway.channel_directory import build_channel_directory
+                    directory_started = time.monotonic()
+                    await build_channel_directory(self.adapters)
+                    logger.info(
+                        "%s background channel directory refresh finished in %dms",
+                        platform.value,
+                        int((time.monotonic() - directory_started) * 1000),
+                    )
+                except Exception:
+                    logger.debug(
+                        "%s background channel directory refresh failed",
+                        platform.value,
+                        exc_info=True,
+                    )
+                try:
+                    self._schedule_resume_pending_sessions(platform=platform)
+                except Exception:
+                    logger.debug(
+                        "resume-pending reschedule after %s background connect failed",
+                        platform.value,
+                        exc_info=True,
+                    )
+                return
+
+            logger.warning(
+                "✗ %s failed to connect in background after %dms",
+                platform.value,
+                connect_elapsed_ms,
+            )
+            await self._safe_adapter_disconnect(adapter, platform)
+            if adapter.has_fatal_error:
+                self._queue_platform_retry(
+                    platform,
+                    platform_config,
+                    attempts=1,
+                    error_code=adapter.fatal_error_code,
+                    error_message=adapter.fatal_error_message or "failed to connect",
+                    retryable=adapter.fatal_error_retryable,
+                )
+            else:
+                self._queue_platform_retry(
+                    platform,
+                    platform_config,
+                    attempts=1,
+                    error_message="failed to connect",
+                )
+        except asyncio.CancelledError:
+            await self._safe_adapter_disconnect(adapter, platform)
+            raise
+        except Exception as e:
+            logger.error("✗ %s background connect error: %s", platform.value, e)
+            await self._safe_adapter_disconnect(adapter, platform)
+            self._queue_platform_retry(
+                platform,
+                platform_config,
+                attempts=1,
+                error_message=str(e),
+            )
+
+    async def _create_and_connect_adapter_in_background(
+        self,
+        platform,
+        platform_config,
+    ) -> None:
+        """Create and connect a platform after the API conversation path is ready."""
+        create_started = time.monotonic()
+        logger.info("Creating %s adapter in background...", platform.value)
+        try:
+            adapter = await asyncio.to_thread(self._create_adapter, platform, platform_config)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            elapsed_ms = int((time.monotonic() - create_started) * 1000)
+            logger.error(
+                "✗ %s background adapter creation failed after %dms: %s",
+                platform.value,
+                elapsed_ms,
+                exc,
+            )
+            self._update_platform_runtime_status(
+                platform.value,
+                platform_state="fatal",
+                error_code="adapter_create_failed",
+                error_message=str(exc),
+            )
+            return
+
+        elapsed_ms = int((time.monotonic() - create_started) * 1000)
+        if not adapter:
+            logger.warning(
+                "No adapter available for %s after %dms background creation",
+                platform.value,
+                elapsed_ms,
+            )
+            self._update_platform_runtime_status(
+                platform.value,
+                platform_state="fatal",
+                error_code="adapter_unavailable",
+                error_message="adapter unavailable",
+            )
+            return
+
+        logger.info("%s adapter created in background in %dms", platform.value, elapsed_ms)
+        self._prepare_adapter(adapter)
+        logger.info("Connecting to %s in background...", platform.value)
+        await self._connect_adapter_in_background(adapter, platform, platform_config)
+
     @property
     def should_exit_cleanly(self) -> bool:
         return self._exit_cleanly
@@ -4556,6 +4752,7 @@ class GatewayRunner:
             logger.debug("Stuck-loop detection failed: %s", e)
 
         connected_count = 0
+        background_connect_count = 0
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
@@ -4565,8 +4762,32 @@ class GatewayRunner:
             if not platform_config.enabled:
                 continue
             enabled_platform_count += 1
-            
+
+            if self._platform_creation_connects_in_background(platform):
+                logger.info(
+                    "Scheduling %s adapter creation/connect in background...",
+                    platform.value,
+                )
+                self._update_platform_runtime_status(
+                    platform.value,
+                    platform_state="connecting",
+                    error_code=None,
+                    error_message=None,
+                )
+                task = asyncio.create_task(
+                    self._create_and_connect_adapter_in_background(
+                        platform,
+                        platform_config,
+                    ),
+                    name=f"gateway-{platform.value}-background-create-connect",
+                )
+                self._track_background_task(task)
+                background_connect_count += 1
+                continue
+
+            create_started = time.monotonic()
             adapter = self._create_adapter(platform, platform_config)
+            create_elapsed_ms = int((time.monotonic() - create_started) * 1000)
             if not adapter:
                 # Distinguish between missing builtin deps and missing plugin
                 _pval = platform.value
@@ -4580,35 +4801,42 @@ class GatewayRunner:
                 else:
                     logger.warning("No adapter available for %s", _pval)
                 continue
+            logger.info("%s adapter created in %dms", platform.value, create_elapsed_ms)
             
             # Set up message + fatal error handlers
-            adapter.set_message_handler(self._handle_message)
-            adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
-            adapter.set_session_store(self.session_store)
-            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
-            adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
-            adapter._busy_text_mode = self._busy_text_mode
+            self._prepare_adapter(adapter)
             
-            # Try to connect
-            logger.info("Connecting to %s...", platform.value)
+            # Try to connect. Adapters such as Feishu can attach in the
+            # background so the API conversation path becomes ready first.
+            background_connect = self._adapter_connects_in_background(adapter)
+            logger.info(
+                "Connecting to %s%s...",
+                platform.value,
+                " in background" if background_connect else "",
+            )
             self._update_platform_runtime_status(
                 platform.value,
                 platform_state="connecting",
                 error_code=None,
                 error_message=None,
             )
+            if background_connect:
+                task = asyncio.create_task(
+                    self._connect_adapter_in_background(
+                        adapter,
+                        platform,
+                        platform_config,
+                    ),
+                    name=f"gateway-{platform.value}-background-connect",
+                )
+                self._track_background_task(task)
+                background_connect_count += 1
+                continue
             try:
                 success = await self._connect_adapter_with_timeout(adapter, platform)
                 if success:
-                    self.adapters[platform] = adapter
-                    self._sync_voice_mode_state_to_adapter(adapter)
+                    self._register_connected_adapter(platform, adapter)
                     connected_count += 1
-                    self._update_platform_runtime_status(
-                        platform.value,
-                        platform_state="connected",
-                        error_code=None,
-                        error_message=None,
-                    )
                     logger.info("✓ %s connected", platform.value)
                 else:
                     logger.warning("✗ %s failed to connect", platform.value)
@@ -4622,11 +4850,13 @@ class GatewayRunner:
                     # partial-init state.
                     await self._safe_adapter_disconnect(adapter, platform)
                     if adapter.has_fatal_error:
-                        self._update_platform_runtime_status(
-                            platform.value,
-                            platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
+                        self._queue_platform_retry(
+                            platform,
+                            platform_config,
+                            attempts=1,
                             error_code=adapter.fatal_error_code,
-                            error_message=adapter.fatal_error_message,
+                            error_message=adapter.fatal_error_message or "failed to connect",
+                            retryable=adapter.fatal_error_retryable,
                         )
                         target = (
                             startup_retryable_errors
@@ -4636,48 +4866,29 @@ class GatewayRunner:
                         target.append(
                             f"{platform.value}: {adapter.fatal_error_message}"
                         )
-                        # Queue for reconnection if the error is retryable
-                        if adapter.fatal_error_retryable:
-                            self._failed_platforms[platform] = {
-                                "config": platform_config,
-                                "attempts": 1,
-                                "next_retry": time.monotonic() + 30,
-                            }
                     else:
-                        self._update_platform_runtime_status(
-                            platform.value,
-                            platform_state="retrying",
-                            error_code=None,
+                        self._queue_platform_retry(
+                            platform,
+                            platform_config,
+                            attempts=1,
                             error_message="failed to connect",
                         )
                         startup_retryable_errors.append(
                             f"{platform.value}: failed to connect"
                         )
-                        # No fatal error info means likely a transient issue — queue for retry
-                        self._failed_platforms[platform] = {
-                            "config": platform_config,
-                            "attempts": 1,
-                            "next_retry": time.monotonic() + 30,
-                        }
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
                 # Same defensive cleanup path for exceptions — an adapter
                 # that raised mid-connect may still have a live
                 # aiohttp.ClientSession or child subprocess.
                 await self._safe_adapter_disconnect(adapter, platform)
-                self._update_platform_runtime_status(
-                    platform.value,
-                    platform_state="retrying",
-                    error_code=None,
+                self._queue_platform_retry(
+                    platform,
+                    platform_config,
+                    attempts=1,
                     error_message=str(e),
                 )
                 startup_retryable_errors.append(f"{platform.value}: {e}")
-                # Unexpected exceptions are typically transient — queue for retry
-                self._failed_platforms[platform] = {
-                    "config": platform_config,
-                    "attempts": 1,
-                    "next_retry": time.monotonic() + 30,
-                }
         
         if connected_count == 0:
             if startup_nonretryable_errors:
@@ -4690,7 +4901,12 @@ class GatewayRunner:
                     pass
                 self._request_clean_exit(reason)
                 return True
-            if enabled_platform_count > 0:
+            if background_connect_count > 0:
+                logger.info(
+                    "Gateway conversation path is ready while %d platform(s) continue connecting in background",
+                    background_connect_count,
+                )
+            elif enabled_platform_count > 0:
                 if startup_retryable_errors:
                     # All enabled platforms hit retryable failures (network
                     # blip, bridge not paired, npm install timeout, etc.).
@@ -4718,16 +4934,17 @@ class GatewayRunner:
                         pass
                     # Fall through to the normal "running" state — reconnect
                     # watcher takes it from here.
-                # All enabled platforms had no adapter (missing library or credentials).
-                # In fleet deployments the same config.yaml is shared across nodes that
-                # may only have credentials for a subset of platforms.  Rather than
-                # failing hard, degrade gracefully and allow cron jobs to run (#5196).
-                logger.warning(
-                    "No adapter could be created for any of the %d configured platform(s). "
-                    "Check that required dependencies are installed and credentials are set. "
-                    "Gateway will continue for cron job execution.",
-                    enabled_platform_count,
-                )
+                else:
+                    # All enabled platforms had no adapter (missing library or credentials).
+                    # In fleet deployments the same config.yaml is shared across nodes that
+                    # may only have credentials for a subset of platforms.  Rather than
+                    # failing hard, degrade gracefully and allow cron jobs to run (#5196).
+                    logger.warning(
+                        "No adapter could be created for any of the %d configured platform(s). "
+                        "Check that required dependencies are installed and credentials are set. "
+                        "Gateway will continue for cron job execution.",
+                        enabled_platform_count,
+                    )
             else:
                 logger.warning("No messaging platforms enabled.")
                 logger.info("Gateway will continue running for cron job execution.")

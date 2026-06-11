@@ -89,10 +89,11 @@ class GatewayKanbanWatchersMixin:
         # task is genuinely done lets the cursor (advanced atomically by
         # claim_unseen_events_for_sub) handle dedup, and any retry-loop
         # event reaches the user.
-        # Per-subscription send-failure counter. Adapter.send raising
-        # means the chat is dead (deleted, bot kicked, etc.) — after N
-        # consecutive send failures the sub is dropped so we don't spin
-        # against a dead chat every 5 seconds forever.
+        # Per-subscription send-failure counter. Adapter.send can fail by
+        # raising or by returning SendResult(success=False). Keep the
+        # subscription and rewind claimed cursors on failures so terminal
+        # blocked/completed notifications are retryable instead of silently
+        # consumed.
         MAX_SEND_FAILURES = 3
         sub_fail_counts: dict[tuple, int] = getattr(
             self, "_kanban_sub_fail_counts", {}
@@ -300,10 +301,13 @@ class GatewayKanbanWatchersMixin:
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
                         try:
-                            await adapter.send(
+                            send_result = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
-                            logger.debug(
+                            if getattr(send_result, "success", True) is False:
+                                error = getattr(send_result, "error", None) or "adapter returned success=False"
+                                raise RuntimeError(str(error))
+                            logger.info(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
                             )
@@ -343,23 +347,24 @@ class GatewayKanbanWatchersMixin:
                             )
                             if fails >= MAX_SEND_FAILURES:
                                 logger.warning(
-                                    "kanban notifier: dropping subscription "
-                                    "%s on %s after %d consecutive send failures",
+                                    "kanban notifier: keeping subscription "
+                                    "%s on %s after %d consecutive send failures; "
+                                    "cursor will be rewound for retry",
                                     sub["task_id"], platform_str, fails,
                                 )
-                                await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
-                                sub_fail_counts.pop(sub_key, None)
-                            else:
-                                await asyncio.to_thread(
-                                    self._kanban_rewind,
-                                    sub,
-                                    d["cursor"],
-                                    d.get("old_cursor", 0),
-                                    board_slug,
-                                )
-                            # Rewind the pre-send claim on transient failure so
-                            # a later tick can retry. After too many failures,
-                            # dropping the subscription is the terminal action.
+                            await asyncio.to_thread(
+                                self._kanban_rewind,
+                                sub,
+                                d["cursor"],
+                                d.get("old_cursor", 0),
+                                board_slug,
+                            )
+                            # Rewind the pre-send claim on delivery failure so
+                            # a later tick can retry. Even after repeated
+                            # failures, keep the subscription instead of
+                            # silently consuming the user's blocked/completed
+                            # notification; the warning above makes the
+                            # recoverable failure visible in gateway.log.
                             break
                     else:
                         # All events delivered; advance cursor. The cursor

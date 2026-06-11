@@ -148,6 +148,19 @@ class FailingAdapter:
         raise RuntimeError("simulated send failure")
 
 
+class FalseResultAdapter:
+    """Adapter whose send() reports failure without raising."""
+
+    def __init__(self):
+        self.attempts = 0
+
+    async def send(self, chat_id, text, metadata=None):
+        from gateway.platforms.base import SendResult
+
+        self.attempts += 1
+        return SendResult(success=False, error="simulated false result")
+
+
 def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     """A raising adapter rewinds the claim so the next tick can retry.
 
@@ -170,6 +183,58 @@ def test_kanban_notifier_rewinds_claim_on_send_exception(tmp_path, monkeypatch):
     # disconnect path) and the claim was rewound — the unseen-events query
     # still returns the event for retry on the next tick.
     assert adapter.attempts >= 1, "send should have been attempted at least once"
+    assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+
+
+def test_kanban_notifier_rewinds_claim_on_send_false_result(tmp_path, monkeypatch):
+    """A SendResult(success=False) is a failed delivery, not a delivered ping.
+
+    Some platform adapters surface API-level delivery failures as a
+    SendResult instead of raising. The notifier must treat that exactly like
+    an exception: keep the subscription and rewind the pre-send claim so the
+    blocked/completed event is retryable instead of silently consumed.
+    """
+    db_path = tmp_path / "send-false-result.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_completed_subscription()
+
+    adapter = FalseResultAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert adapter.attempts >= 1, "send should have been attempted at least once"
+    assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
+
+
+def test_kanban_notifier_keeps_subscription_after_repeated_send_failures(tmp_path, monkeypatch):
+    """Repeated failures must not silently unsubscribe a terminal notification.
+
+    Dropping the subscription after retries leaves the human with no visible
+    blocked/completed notification and no future retry path. Keep it and leave
+    the event unseen so delivery recovers when the adapter/chat recovers.
+    """
+    db_path = tmp_path / "send-repeated-failure.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+    tid = _create_completed_subscription()
+
+    adapter = FailingAdapter()
+    runner = _make_runner(adapter)
+
+    for _ in range(3):
+        runner._running = True
+        asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert adapter.attempts >= 3
+    assert len(subs) == 1
     assert [ev.kind for ev in _unseen_terminal_events(tid)] == ["completed"]
 
 

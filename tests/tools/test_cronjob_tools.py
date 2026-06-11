@@ -260,7 +260,6 @@ class TestCronjobFormattingHelpers:
                 "no_agent": True,
                 "enabled_toolsets": ["terminal", "file"],
                 "workdir": "C:\\Apps\\hermes",
-                "profile": "ops",
             }
         )
 
@@ -268,7 +267,6 @@ class TestCronjobFormattingHelpers:
         assert formatted["no_agent"] is True
         assert formatted["enabled_toolsets"] == ["terminal", "file"]
         assert formatted["workdir"] == "C:\\Apps\\hermes"
-        assert formatted["profile"] == "ops"
 
 
 class TestCronjobRequirements:

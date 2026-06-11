@@ -1,0 +1,13 @@
+name: linear_tools
+version: 0.1.0
+description: "Native Linear project-record tools for issue reads, comments, status updates, issue creation, and guarded project evidence markers."
+author: NousResearch
+kind: standalone
+provides_tools:
+  - linear_get_issue
+  - linear_search_issues
+  - linear_add_comment
+  - linear_ensure_comment
+  - linear_update_status
+  - linear_create_issue
+  - linear_link_issues

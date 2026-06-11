@@ -46,6 +46,7 @@ _VALID_POLICIES = frozenset(
 
 DEFAULT_DIALOG_POLICY = DIALOG_POLICY_MUST_RESPOND
 DEFAULT_DIALOG_TIMEOUT_S = 300.0
+DEFAULT_MAX_RECONNECT_ATTEMPTS = 10
 
 # Snapshot caps for frame_tree — keep payloads bounded on ad-heavy pages.
 FRAME_TREE_MAX_ENTRIES = 30
@@ -280,6 +281,7 @@ class CDPSupervisor:
         *,
         dialog_policy: str = DEFAULT_DIALOG_POLICY,
         dialog_timeout_s: float = DEFAULT_DIALOG_TIMEOUT_S,
+        max_reconnect_attempts: int = DEFAULT_MAX_RECONNECT_ATTEMPTS,
     ) -> None:
         if dialog_policy not in _VALID_POLICIES:
             raise ValueError(
@@ -290,6 +292,7 @@ class CDPSupervisor:
         self.cdp_url = cdp_url
         self.dialog_policy = dialog_policy
         self.dialog_timeout_s = float(dialog_timeout_s)
+        self.max_reconnect_attempts = max_reconnect_attempts
 
         # State protected by ``_state_lock`` for cross-thread reads.
         self._state_lock = threading.Lock()
@@ -607,8 +610,14 @@ class CDPSupervisor:
         every time a short-lived client (e.g. agent-browser's per-command
         CDP client) disconnects.  We drop our state snapshot keys that
         depend on specific CDP session ids, re-attach, and keep going.
+
+        Reconnection is bounded: after ``max_reconnect_attempts`` consecutive
+        failures (default 10) the supervisor gives up.  HTTP 502/503 errors
+        (infrastructure failures) are treated as immediately fatal — retrying
+        won't help when the upstream service is down.
         """
         attempt = 0
+        consecutive_failures = 0
         last_success_at = 0.0
         backoff = 0.5
         while not self._stop_requested:
@@ -619,14 +628,38 @@ class CDPSupervisor:
                 )
             except Exception as e:
                 attempt += 1
+                consecutive_failures += 1
                 if not self._ready_event.is_set():
                     # Never connected once — fatal for start().
                     self._start_error = e
                     self._ready_event.set()
                     return
+
+                # Treat infrastructure failures (HTTP 502/503) as fatal —
+                # retrying won't bring the upstream service back.
+                err_str = str(e)
+                is_infra_failure = any(
+                    code in err_str
+                    for code in ("502", "503", "Service Unavailable", "Bad Gateway")
+                )
+                if is_infra_failure:
+                    logger.error(
+                        "CDP supervisor %s: infrastructure failure after %d attempts: %s — giving up",
+                        self.task_id, consecutive_failures, e,
+                    )
+                    return
+
+                # Check if we've exceeded reconnect attempts
+                if consecutive_failures >= self.max_reconnect_attempts:
+                    logger.error(
+                        "CDP supervisor %s: max reconnect attempts (%d) reached after %d failures — giving up",
+                        self.task_id, self.max_reconnect_attempts, consecutive_failures,
+                    )
+                    return
+
                 logger.warning(
-                    "CDP supervisor %s: connect failed (attempt %s): %s",
-                    self.task_id, attempt, e,
+                    "CDP supervisor %s: connect failed (attempt %d/%d): %s",
+                    self.task_id, consecutive_failures, self.max_reconnect_attempts, e,
                 )
                 await asyncio.sleep(min(backoff, 10.0))
                 backoff = min(backoff * 2, 10.0)
@@ -649,6 +682,8 @@ class CDPSupervisor:
                     self._active = True
                 last_success_at = time.time()
                 backoff = 0.5  # reset after a successful attach
+                consecutive_failures = 0  # reset failure counter on success
+                attempt = 0
                 if not self._ready_event.is_set():
                     self._ready_event.set()
                 # Run until the reader returns.

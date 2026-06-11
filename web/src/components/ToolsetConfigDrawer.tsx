@@ -198,7 +198,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
     setPostSetupLog([]);
     setPostSetupKey(provider.post_setup);
     try {
-      await api.runToolsetPostSetup(toolset.name, provider.post_setup);
+      await api.runToolsetPostSetup(toolset.name, provider.post_setup, profile);
       // Bump the trigger so the poll effect (re)starts tailing the log.
       setPostSetupTrigger((n) => n + 1);
     } catch (e) {

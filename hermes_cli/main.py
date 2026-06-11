@@ -4609,13 +4609,18 @@ def _run_npm_install_deterministic(
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
     """
+    # unicode-animations' postinstall animates to /dev/tty (bypasses
+    # --silent/capture_output). It no-ops when CI is set — same as the TUI
+    # install path and nix/lib.nix npm ci hooks.
+    run_env = {**os.environ, **(env or {}), "CI": "1"}
+
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
-            env=env,
+            env=run_env,
             capture_output=capture_output,
             text=True,
             encoding="utf-8",
@@ -4630,7 +4635,7 @@ def _run_npm_install_deterministic(
     return subprocess.run(
         install_cmd,
         cwd=cwd,
-        env=env,
+        env=run_env,
         capture_output=capture_output,
         text=True,
         encoding="utf-8",

@@ -1562,15 +1562,88 @@ def _load_cursorrules(cwd_path: Path) -> str:
     return _truncate_content(cursorrules_content, ".cursorrules")
 
 
+def _find_openhands_root(cwd_path: Path) -> Optional[Path]:
+    """Find the nearest root that owns OpenHands project superpowers.
+
+    OpenHands projects store repo-local skills in ``.openhands/skills`` and
+    legacy microagents in ``.openhands/microagents``.  Search from ``cwd`` up
+    to the git root so a Hermes session launched in ``src/`` still inherits
+    the repository's superpowers without walking into unrelated parent trees.
+    """
+    stop_at = _find_git_root(cwd_path)
+    for directory in [cwd_path, *cwd_path.parents]:
+        openhands_dir = directory / ".openhands"
+        if (openhands_dir / "skills").is_dir() or (openhands_dir / "microagents").is_dir():
+            return directory
+        if stop_at and directory == stop_at:
+            break
+    return None
+
+
+def _format_openhands_superpower(path: Path, root: Path) -> str:
+    """Read and sanitize one OpenHands skill/microagent markdown file."""
+    rel = path.relative_to(root).as_posix()
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        return ""
+    _frontmatter, body = parse_frontmatter(content)
+    content = body.strip() or content
+    content = _scan_context_content(content, rel)
+    return f"### {rel}\n\n{content}"
+
+
+def _load_openhands_project_microagents(cwd_path: Path) -> str:
+    """Load OpenHands repo-local skills/microagents as Hermes project context.
+
+    This gives Hermes immediate compatibility with OpenHands repositories:
+    ``.openhands/skills/*.md`` and ``.openhands/microagents/*.md`` become
+    project-scoped agent superpowers.  Files are sorted for deterministic
+    prompt caching, frontmatter metadata is stripped, prompt-injection scanning
+    is reused, and the combined section is capped like other context sources.
+    """
+    root = _find_openhands_root(cwd_path)
+    if not root:
+        return ""
+
+    files: list[Path] = []
+    for relative_dir in (Path(".openhands") / "skills", Path(".openhands") / "microagents"):
+        directory = root / relative_dir
+        if directory.is_dir():
+            files.extend(sorted(path for path in directory.glob("*.md") if path.is_file()))
+
+    entries = []
+    for path in sorted(files, key=lambda p: p.relative_to(root).as_posix()):
+        try:
+            entry = _format_openhands_superpower(path, root)
+            if entry:
+                entries.append(entry)
+        except Exception as e:
+            logger.debug("Could not read OpenHands superpower %s: %s", path, e)
+
+    if not entries:
+        return ""
+
+    section = (
+        "## OpenHands Project Microagents\n\n"
+        "The following OpenHands-style project superpowers were discovered in "
+        "`.openhands/skills/` or `.openhands/microagents/`. Apply them as "
+        "repo-local agent capabilities when relevant to the task.\n\n"
+        + "\n\n".join(entries)
+    )
+    return _truncate_content(section, "OpenHands project microagents")
+
+
 def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = False) -> str:
     """Discover and load context files for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
+    Priority (first found wins — only ONE primary project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
       2. AGENTS.md / agents.md   (cwd only)
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
+    OpenHands repo-local superpowers from .openhands/skills/*.md and
+    .openhands/microagents/*.md are loaded in addition to the primary context.
     SOUL.md from HERMES_HOME is independent and always included when present.
     Each context source is capped at 20,000 chars.
 
@@ -1592,6 +1665,10 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     )
     if project_context:
         sections.append(project_context)
+
+    openhands_context = _load_openhands_project_microagents(cwd_path)
+    if openhands_context:
+        sections.append(openhands_context)
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

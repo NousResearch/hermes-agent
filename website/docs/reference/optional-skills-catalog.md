@@ -70,6 +70,7 @@ hermes skills uninstall <skill-name>
 | Skill | Description |
 |-------|-------------|
 | [**inference-sh-cli**](/docs/user-guide/skills/optional/devops/devops-cli) | Run 150+ AI apps via inference.sh CLI (infsh) — image generation, video creation, LLMs, search, 3D, social automation. Uses the terminal tool. Triggers: inference.sh, infsh, ai apps, flux, veo, image generation, video generation, seedrea... |
+| [**codex-seo-superpowers**](/docs/user-guide/skills/optional/devops/devops-codex-seo-superpowers) | Codex-first SEO/GEO/AEO/AI-visibility workflows for Hermes: audit sites, generate llms.txt plans, check schema/CWV/content/topical clusters, and produce artifact-first WordPress implementation plans. |
 | [**docker-management**](/docs/user-guide/skills/optional/devops/devops-docker-management) | Manage Docker containers, images, volumes, networks, and Compose stacks — lifecycle ops, debugging, cleanup, and Dockerfile optimization. |
 | [**hermes-s6-container-supervision**](/docs/user-guide/skills/optional/devops/devops-hermes-s6-container-supervision) | Modify, debug, or extend the s6-overlay supervision tree inside the Hermes Agent Docker image — adding new services, debugging profile gateways, understanding the Architecture B main-program pattern. |
 | [**pinggy-tunnel**](/docs/user-guide/skills/optional/devops/devops-pinggy-tunnel) | Zero-install localhost tunnels over SSH via Pinggy. |

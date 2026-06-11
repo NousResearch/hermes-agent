@@ -870,6 +870,94 @@ class TestCmdUpdateFinalizeOnly:
 
         assert calls == ["write", "install", "clear"]
 
+    def test_finalize_helper_refreshes_lazy_features_after_core_deps(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        fake_root = tmp_path / "install_dir"
+        fake_root.mkdir()
+        calls = []
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", fake_root)
+        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda root: 0)
+        monkeypatch.setattr(hm, "_write_update_incomplete_marker", lambda: calls.append("write"))
+        monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: calls.append("clear"))
+        monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", lambda: None)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
+        monkeypatch.setattr(hm, "_ensure_uv_for_termux", lambda pip_cmd: None)
+        monkeypatch.setattr(hm, "_is_termux_env", lambda *args, **kwargs: False)
+        monkeypatch.setattr(
+            hm,
+            "_install_python_dependencies_with_optional_fallback",
+            lambda *args, **kwargs: calls.append("install"),
+        )
+        monkeypatch.setattr(hm, "_refresh_active_lazy_features", lambda: calls.append("lazy"))
+        monkeypatch.setattr(hm, "_update_node_dependencies", lambda: calls.append("node"))
+        monkeypatch.setattr(hm, "_build_web_ui", lambda *args, **kwargs: None)
+        monkeypatch.setattr(hm, "_kill_stale_dashboard_processes", lambda: None)
+        monkeypatch.setattr(hm, "_print_curator_first_run_notice", lambda: None)
+        monkeypatch.setattr(hm, "_print_curator_recent_run_notice", lambda: None)
+        monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: {"copied": []})
+        monkeypatch.setattr(
+            "hermes_cli.model_catalog.seed_cache_from_checkout",
+            lambda root: False,
+        )
+        monkeypatch.setattr(
+            hm.subprocess,
+            "run",
+            lambda *args, **kwargs: type("R", (), {"returncode": 0})(),
+        )
+
+        hm._finalize_updated_checkout(SimpleNamespace())
+
+        assert calls == ["write", "install", "clear", "lazy", "node"]
+
+    def test_finalize_helper_preserves_termux_android_dependency_strategy(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli import main as hm
+
+        fake_root = tmp_path / "install_dir"
+        fake_root.mkdir()
+        calls = []
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", fake_root)
+        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda root: 0)
+        monkeypatch.setattr(hm, "_write_update_incomplete_marker", lambda: None)
+        monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: None)
+        monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", lambda: None)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: "/usr/bin/uv")
+        monkeypatch.setattr(hm, "_is_termux_env", lambda *args, **kwargs: True)
+        monkeypatch.setattr(hm, "_is_android_python", lambda: True)
+        monkeypatch.setattr(
+            hm,
+            "_install_psutil_android_compat",
+            lambda cmd, env=None: calls.append(("psutil", cmd, env)),
+        )
+        monkeypatch.setattr(
+            hm,
+            "_install_python_dependencies_with_optional_fallback",
+            lambda cmd, env=None, group="all": calls.append(("install", cmd, env, group)),
+        )
+        monkeypatch.setattr(hm, "_refresh_active_lazy_features", lambda: None)
+        monkeypatch.setattr(hm, "_update_node_dependencies", lambda: None)
+        monkeypatch.setattr(hm, "_build_web_ui", lambda *args, **kwargs: None)
+        monkeypatch.setattr(hm, "_kill_stale_dashboard_processes", lambda: None)
+        monkeypatch.setattr(hm, "_print_curator_first_run_notice", lambda: None)
+        monkeypatch.setattr(hm, "_print_curator_recent_run_notice", lambda: None)
+        monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: {"copied": []})
+        monkeypatch.setattr(
+            "hermes_cli.model_catalog.seed_cache_from_checkout",
+            lambda root: False,
+        )
+
+        hm._finalize_updated_checkout(SimpleNamespace())
+
+        assert calls[0][0] == "psutil"
+        assert calls[0][1] == ["/usr/bin/uv", "pip"]
+        assert calls[1][0] == "install"
+        assert calls[1][1] == ["/usr/bin/uv", "pip"]
+        assert calls[1][3] == "termux-all"
+
 
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm

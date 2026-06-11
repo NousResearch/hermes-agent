@@ -5691,12 +5691,20 @@ def _finalize_updated_checkout(args):
     pip_cmd = [sys.executable, "-m", "pip"]
     if not uv_bin:
         uv_bin = _ensure_uv_for_termux(pip_cmd)
+    install_group = "all"
     if uv_bin:
         uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
         if _is_termux_env(uv_env):
             uv_env.pop("PYTHONPATH", None)
             uv_env.pop("PYTHONHOME", None)
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+            install_group = "termux-all"
+            print("  → Termux detected: using uv + curated termux-all optional profile...")
+        if _is_termux_env(uv_env) and _is_android_python():
+            print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+            _install_psutil_android_compat([uv_bin, "pip"], env=uv_env)
+        _install_python_dependencies_with_optional_fallback(
+            [uv_bin, "pip"], env=uv_env, group=install_group
+        )
     else:
         # Use sys.executable to explicitly call the venv's pip module,
         # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
@@ -5715,9 +5723,16 @@ def _finalize_updated_checkout(args):
                 cwd=PROJECT_ROOT,
                 check=True,
             )
-        _install_python_dependencies_with_optional_fallback(pip_cmd)
+        if _is_termux_env():
+            install_group = "termux-all"
+            print("  → Termux detected: using curated termux-all optional profile...")
+        if _is_termux_env() and _is_android_python():
+            print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
+            _install_psutil_android_compat(pip_cmd)
+        _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
 
     _clear_update_incomplete_marker()
+    _refresh_active_lazy_features()
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 

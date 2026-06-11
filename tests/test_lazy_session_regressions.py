@@ -11,10 +11,8 @@ Tests cover:
 import threading
 import time
 import types
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ===========================================================================

@@ -2,6 +2,7 @@ export interface ActiveTool {
   context?: string
   id: string
   name: string
+  verboseArgs?: string
   startedAt?: number
 }
 
@@ -169,6 +170,7 @@ export interface Usage {
   context_used?: number
   cost_status?: string
   cost_usd?: number
+  dev_credits_spent_micros?: number
   input: number
   output: number
   reasoning?: number

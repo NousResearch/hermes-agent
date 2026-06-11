@@ -222,9 +222,12 @@ gateway:
     no_named_sessions:     "Nem található elnevezett munkamenet.\nHasználd a `/title Saját munkamenet` parancsot a jelenlegi munkamenet elnevezéséhez, majd a `/resume Saját munkamenet` paranccsal térhetsz vissza hozzá."
     list_header:           "📋 **Elnevezett munkamenetek**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nHasználat: `/resume <munkamenet neve>`"
+    list_footer_numbered:  "\nHasználat: `/resume <munkamenet neve>` vagy `/resume <szám>` (pl. `/resume 1` a legutóbbihoz)"
     list_failed:           "Nem sikerült listázni a munkameneteket: {error}"
+    out_of_range:          "A folytatási index ({index}) tartományon kívül esik.\nA `/resume` argumentumok nélküli használata megjeleníti az elérhető munkameneteket."
     not_found:             "Nem található '**{name}**' nevű munkamenet.\nArgumentumok nélkül használd a `/resume` parancsot az elérhető munkamenetek megtekintéséhez."
     already_on:            "📌 Már a **{name}** munkamenetben vagy."
     switch_failed:         "Nem sikerült munkamenetet váltani."
@@ -287,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "Nincs mit visszavonni."
-    removed:               "↩️ {count} üzenet visszavonva.\nEltávolítva: \"{preview}\""
+    removed:               "↩️ {turns} fordulat visszavonva ({count} üzenet).\nBiztonsági mentés ide: \"{preview}\"\nMásold/szerkeszd a fenti szöveget, és küldd el, hogy innen újra kérdezz."
+    invalid_count:         "Érvénytelen szám \"{arg}\" — használd a /undo vagy /undo N parancsot."
 
   update:
     platform_not_messaging:  "✗ A /update csak üzenetküldő platformokról érhető el. Futtasd a `hermes update` parancsot a terminálból."
@@ -339,6 +343,8 @@ gateway:
     label_off:             "Ki (csak szöveg)"
     label_voice_only:      "Be (hangválasz hangüzenetekre)"
     label_all:             "TTS (hangválasz minden üzenetre)"
+    help:                  "{toggle}\n\n**Hogyan működik a /voice**\n• `/voice on` — hangválasz, amikor hangüzenetet küldesz\n• `/voice tts` — hangválasz *minden* üzenetre\n• `/voice off` — vissza a csak szöveges válaszokhoz\n• `/voice status` — az aktuális mód megjelenítése\n• `/voice` (argumentum nélkül) — gyors váltás be és ki között{channels}"
+    help_channels:         "\n\n**Élő hangcsatornák (Discord)**\n• Először lépj be egy hangcsatornába, majd `/voice channel` — csatlakozom, hallgatok és hangosan válaszolok\n• `/voice leave` — lecsatlakozás a hangcsatornáról"
 
   yolo:
     disabled:                   "⚠️ YOLO mód **KI** ebben a munkamenetben — a veszélyes parancsok jóváhagyást igényelnek."

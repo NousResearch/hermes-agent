@@ -40,9 +40,11 @@ from typing import Optional
 
 from hermes_cli import kanban_db as kb
 
+from utils import env_int
+
 HERMES_KANBAN_SPECIFY_MAX_TOKENS = max(
     1500,
-    int(os.getenv("HERMES_KANBAN_SPECIFY_MAX_TOKENS", "6000")),
+    env_int("HERMES_KANBAN_SPECIFY_MAX_TOKENS", 6000),
 )
 
 logger = logging.getLogger(__name__)
@@ -150,7 +152,7 @@ def specify_task(
     error, malformed response) — those surface via ``ok=False`` so the
     ``--all`` sweep can continue past individual failures.
     """
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         task = kb.get_task(conn, task_id)
     if task is None:
         return SpecifyOutcome(task_id, False, "unknown task id")
@@ -239,7 +241,7 @@ def specify_task(
                 task_id, False, "LLM response missing title and body"
             )
 
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         ok = kb.specify_triage_task(
             conn,
             task_id,
@@ -261,7 +263,7 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
 
     ``tenant`` narrows the sweep; ``None`` returns every triage task.
     """
-    with kb.connect() as conn:
+    with kb.connect_closing() as conn:
         tasks = kb.list_tasks(
             conn,
             status="triage",

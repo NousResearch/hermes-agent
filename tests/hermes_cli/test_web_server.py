@@ -2,19 +2,109 @@
 
 import os
 import json
-import tempfile
+import shutil
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
 
 from hermes_cli.config import (
-    DEFAULT_CONFIG,
     reload_env,
     redact_key,
-    _EXTRA_ENV_KEYS,
     OPTIONAL_ENV_VARS,
 )
+
+
+# ---------------------------------------------------------------------------
+# Shared fixtures
+# ---------------------------------------------------------------------------
+
+
+# Path to the test-only example-dashboard plugin. Lives under
+# tests/fixtures/ so the bundled-plugins directory stays clean — stock
+# installs no longer ship a dummy "Example" sidebar tab. Tests that
+# depend on its routes opt in via the `_install_example_plugin` fixture
+# below.
+_EXAMPLE_PLUGIN_FIXTURE = (
+    Path(__file__).resolve().parent.parent / "fixtures" / "plugins" / "example-dashboard"
+)
+
+
+@pytest.fixture
+def _install_example_plugin(_isolate_hermes_home):
+    """Drop the example-dashboard fixture into the per-test HERMES_HOME
+    user-plugins directory and force the web_server's dashboard plugin
+    cache + API mount to rediscover it.
+
+    The plugin used to live under ``<repo>/plugins/example-dashboard/``
+    and was loaded for every install, putting an "Example" tab in every
+    user's sidebar. It is now a tests-only fixture: any test that needs
+    ``/api/plugins/example/hello`` or ``/dashboard-plugins/example/...``
+    requests this fixture so the plugin appears only for that test's
+    isolated ``HERMES_HOME``.
+
+    The user-plugin source is preferred over a transient
+    ``HERMES_BUNDLED_PLUGINS`` override because the bundled dir is
+    resolved per-call (other tests in the suite implicitly rely on the
+    real bundled plugins — kanban, hermes-achievements, model providers
+    — being available, and globally swapping that root would yank them
+    all). User plugins are first in the discovery search order, so
+    laying down the fixture here is enough.
+    """
+    from hermes_constants import get_hermes_home
+    from hermes_cli import web_server
+
+    user_plugins_dir = get_hermes_home() / "plugins"
+    user_plugins_dir.mkdir(parents=True, exist_ok=True)
+    dst = user_plugins_dir / "example-dashboard"
+    if dst.exists():
+        shutil.rmtree(dst)
+    shutil.copytree(_EXAMPLE_PLUGIN_FIXTURE, dst)
+
+    # Snapshot the existing routes BEFORE mounting so we can:
+    #   1. Identify the routes the mount call appends.
+    #   2. Restore the original list on teardown — otherwise leftover
+    #      ``/api/plugins/example/*`` routes leak into subsequent tests
+    #      and start serving requests against a torn-down HERMES_HOME.
+    app = web_server.app
+    original_routes = list(app.router.routes)
+
+    # Bust the module-level cache and re-discover so the example plugin
+    # shows up in `_get_dashboard_plugins()`. `_mount_plugin_api_routes`
+    # imports the plugin's `plugin_api.py` and ``include_router``s its
+    # FastAPI router under ``/api/plugins/example/*``. The static-asset
+    # route at ``/dashboard-plugins/<name>/<path>`` reads the plugins
+    # list dynamically per request, so the rescan alone is enough for
+    # the static-asset tests; the API auth tests additionally need the
+    # route reorder below.
+    web_server._dashboard_plugins_cache = None
+    web_server._get_dashboard_plugins(force_rescan=True)
+    web_server._mount_plugin_api_routes()
+
+    # ``include_router`` appends the new routes to the END of
+    # ``app.router.routes``. That works fine at import time — the SPA
+    # catch-all ``mount_spa(app)`` registers AFTER the initial mount
+    # call — but when we mount mid-flight the catch-all is already in
+    # place, so the new ``/api/plugins/example/*`` route loses the
+    # match-order race and we get a 404. Move the newly-appended routes
+    # to the front of the list so FastAPI matches them first. They're
+    # path-prefixed to ``/api/plugins/example/`` and can't shadow
+    # anything else.
+    new_routes = [r for r in app.router.routes if r not in original_routes]
+    for route in new_routes:
+        app.router.routes.remove(route)
+    for offset, route in enumerate(new_routes):
+        app.router.routes.insert(offset, route)
+
+    try:
+        yield
+    finally:
+        # Restore the original route list — drops the example plugin's
+        # routes so the next test sees a clean app — and clear the
+        # cache for the same reason.
+        app.router.routes[:] = original_routes
+        web_server._dashboard_plugins_cache = None
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +182,35 @@ class TestRedactKey:
         assert "not set" in result.lower() or result == "***" or "\x1b" in result
 
 
+class TestSessionTokenInjection:
+    """The desktop shell mints HERMES_DASHBOARD_SESSION_TOKEN and signs its
+    /api + /api/ws calls with it. The backend must adopt that token, else every
+    desktop request 401s ("gateway is offline"). A main-merge once silently
+    dropped this read — this guards the contract, not a literal value.
+    """
+
+    def test_honors_injected_token(self, monkeypatch):
+        import importlib
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-seeded-token")
+        try:
+            importlib.reload(ws)
+            assert ws._SESSION_TOKEN == "desktop-seeded-token"
+        finally:
+            monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+            importlib.reload(ws)
+
+    def test_falls_back_to_random_token(self, monkeypatch):
+        import importlib
+        import hermes_cli.web_server as ws
+
+        monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+        importlib.reload(ws)
+
+        assert ws._SESSION_TOKEN and len(ws._SESSION_TOKEN) >= 32
+
+
 # ---------------------------------------------------------------------------
 # web_server tests (FastAPI endpoints)
 # ---------------------------------------------------------------------------
@@ -124,6 +243,680 @@ class TestWebServerEndpoints:
         assert "version" in data
         assert "hermes_home" in data
         assert "active_sessions" in data
+
+    # ── GET /api/media (remote image display) ───────────────────────────
+
+    def test_get_media_serves_image_in_root(self):
+        """An image under the gateway's images dir is returned as a data URL."""
+        from hermes_constants import get_hermes_home
+
+        img_dir = get_hermes_home() / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        img = img_dir / "shot.png"
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 16)
+
+        resp = self.client.get("/api/media", params={"path": str(img)})
+        assert resp.status_code == 200
+        assert resp.json()["data_url"].startswith("data:image/png;base64,")
+
+    def test_get_media_rejects_path_outside_roots(self, tmp_path):
+        """An image-extension file outside the media roots is forbidden."""
+        outside = tmp_path / "secret.png"
+        outside.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+        resp = self.client.get("/api/media", params={"path": str(outside)})
+        assert resp.status_code == 403
+
+    def test_get_media_rejects_non_image_extension(self):
+        from hermes_constants import get_hermes_home
+
+        img_dir = get_hermes_home() / "images"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        env = img_dir / "leak.env"
+        env.write_text("SECRET=1")
+
+        resp = self.client.get("/api/media", params={"path": str(env)})
+        assert resp.status_code == 415
+
+    def test_get_media_404_for_missing_file(self):
+        from hermes_constants import get_hermes_home
+
+        missing = get_hermes_home() / "images" / "nope.png"
+        resp = self.client.get("/api/media", params={"path": str(missing)})
+        assert resp.status_code == 404
+
+    def test_get_media_requires_auth(self):
+        from hermes_cli.web_server import _SESSION_HEADER_NAME
+
+        resp = self.client.get(
+            "/api/media",
+            params={"path": "/tmp/x.png"},
+            headers={_SESSION_HEADER_NAME: "wrong-token"},
+        )
+        assert resp.status_code == 401
+
+    # ── Dashboard font override ─────────────────────────────────────────
+
+    def test_get_dashboard_font_defaults_to_theme(self):
+        """With no override persisted, the active font is the theme sentinel."""
+        resp = self.client.get("/api/dashboard/font")
+        assert resp.status_code == 200
+        assert resp.json() == {"font": "theme"}
+
+    def test_set_dashboard_font_persists_valid_choice(self):
+        """A valid catalog id is accepted, persisted, and read back."""
+        from hermes_cli.config import load_config
+
+        resp = self.client.put("/api/dashboard/font", json={"font": "inter"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "font": "inter"}
+
+        # Persisted to config.yaml under dashboard.font.
+        config = load_config()
+        assert config["dashboard"]["font"] == "inter"
+
+        # And reflected by the GET endpoint.
+        assert self.client.get("/api/dashboard/font").json() == {"font": "inter"}
+
+    def test_set_dashboard_font_clears_with_theme_sentinel(self):
+        """Setting 'theme' clears any prior override."""
+        self.client.put("/api/dashboard/font", json={"font": "fraunces"})
+        resp = self.client.put("/api/dashboard/font", json={"font": "theme"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "font": "theme"}
+        assert self.client.get("/api/dashboard/font").json() == {"font": "theme"}
+
+    def test_set_dashboard_font_rejects_unknown_id(self):
+        """An id not in the curated catalog coerces to the theme sentinel,
+        so a stale/hostile client can't inject an arbitrary font id."""
+        resp = self.client.put(
+            "/api/dashboard/font", json={"font": "../../etc/passwd"}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "font": "theme"}
+
+    def test_get_dashboard_font_coerces_stale_persisted_value(self):
+        """A config value no longer in the catalog reads back as 'theme'."""
+        from hermes_cli.config import load_config, save_config
+
+        config = load_config()
+        config.setdefault("dashboard", {})["font"] = "retired-font-id"
+        save_config(config)
+
+        assert self.client.get("/api/dashboard/font").json() == {"font": "theme"}
+
+    def test_dashboard_font_override_independent_of_theme(self):
+        """The font override and the theme are stored separately — setting
+        one must not disturb the other."""
+        from hermes_cli.config import load_config
+
+        self.client.put("/api/dashboard/theme", json={"name": "ember"})
+        self.client.put("/api/dashboard/font", json={"font": "jetbrains-mono"})
+
+        config = load_config()
+        assert config["dashboard"]["theme"] == "ember"
+        assert config["dashboard"]["font"] == "jetbrains-mono"
+
+
+    def test_get_sessions_uses_only_persisted_cwd(self, monkeypatch):
+        """Session rows without persisted cwd must not inherit TERMINAL_CWD.
+
+        /api/sessions should reflect per-session DB state, not process/global
+        cwd settings, so workspace grouping stays stable and deterministic.
+        """
+        from hermes_state import SessionDB
+
+        monkeypatch.setenv("TERMINAL_CWD", "/tmp/global-default")
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="session-no-cwd", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions?limit=20&offset=0")
+        assert resp.status_code == 200
+
+        rows = resp.json()["sessions"]
+        row = next(s for s in rows if s["id"] == "session-no-cwd")
+        assert row["cwd"] is None
+
+    def test_get_sessions_forwards_min_messages(self, monkeypatch):
+        """The ?min_messages= filter must reach SessionDB.
+
+        The desktop session picker calls /api/sessions?...&min_messages=N to
+        hide empty sessions. The param was silently dropped from the handler
+        in a merge once (SessionDB still supported it); guard the wiring.
+        """
+        captured = {}
+
+        class _FakeDB:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def list_sessions_rich(self, limit, offset, min_message_count=0, **kwargs):
+                captured["list"] = min_message_count
+                return []
+
+            def session_count(self, min_message_count=0, **kwargs):
+                captured["count"] = min_message_count
+                return 0
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr("hermes_state.SessionDB", _FakeDB)
+
+        resp = self.client.get("/api/sessions?limit=5&offset=0&min_messages=3")
+        assert resp.status_code == 200
+        assert captured["list"] == 3
+        assert captured["count"] == 3
+
+    def test_rename_session_updates_title(self):
+        """PATCH /api/sessions/{id} renames a session (regression: the route
+        was missing entirely, so the desktop rename dialog got a 405)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="rename-me", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/rename-me", json={"title": "My Chat"})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": "My Chat"}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("rename-me") == "My Chat"
+        finally:
+            db.close()
+
+    def test_rename_session_clears_title_when_empty(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="clear-me", source="cli")
+            db.set_session_title("clear-me", "Has A Title")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/clear-me", json={"title": ""})
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "title": ""}
+
+        db = SessionDB()
+        try:
+            assert db.get_session_title("clear-me") is None
+        finally:
+            db.close()
+
+    def test_rename_session_not_found(self):
+        resp = self.client.patch("/api/sessions/does-not-exist", json={"title": "x"})
+        assert resp.status_code == 404
+
+    def test_archive_session_via_patch(self):
+        """PATCH archived=true soft-hides a session; archived=false restores it."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="arch-me", source="cli")
+            db.append_message(session_id="arch-me", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/arch-me", json={"archived": True})
+        assert resp.status_code == 200
+        assert resp.json()["archived"] is True
+
+        # Hidden from the default list, surfaced by archived=only.
+        listed = self.client.get("/api/sessions").json()
+        assert all(s["id"] != "arch-me" for s in listed["sessions"])
+        only = self.client.get("/api/sessions?archived=only").json()
+        assert any(s["id"] == "arch-me" for s in only["sessions"])
+
+        resp = self.client.patch("/api/sessions/arch-me", json={"archived": False})
+        assert resp.status_code == 200
+        restored = self.client.get("/api/sessions").json()
+        assert any(s["id"] == "arch-me" for s in restored["sessions"])
+
+    def test_patch_session_without_fields_is_400(self):
+        """An existing session + empty body is a bad request, not a 404."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="no-fields", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/no-fields", json={})
+        assert resp.status_code == 400
+
+    def test_profiles_sessions_tags_default_profile(self):
+        """The cross-profile aggregator returns the default profile's rows
+        tagged profile="default" (single-profile parity with /api/sessions)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="agg-me", source="cli")
+            db.append_message(session_id="agg-me", role="user", content="hi")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/profiles/sessions?limit=20&min_messages=0")
+        assert resp.status_code == 200
+        data = resp.json()
+        row = next(s for s in data["sessions"] if s["id"] == "agg-me")
+        assert row["profile"] == "default"
+        assert row["is_default_profile"] is True
+        assert isinstance(data.get("errors"), list)
+
+    def test_profiles_sessions_rejects_unknown_archived_value(self):
+        resp = self.client.get("/api/profiles/sessions?archived=bogus")
+        assert resp.status_code == 400
+
+    def test_get_sessions_rejects_unknown_archived_value(self):
+        resp = self.client.get("/api/sessions?archived=bogus")
+        assert resp.status_code == 400
+
+    def test_get_sessions_rejects_unknown_order_value(self):
+        resp = self.client.get("/api/sessions?order=sideways")
+        assert resp.status_code == 400
+
+    def test_get_sessions_order_recent_surfaces_compression_tip(self):
+        """A long-running conversation that auto-compresses must stay on the
+        first page by recency, listed under its live continuation id."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            old = _time.time() - 86_400
+            # Old conversation that later compresses into a fresh continuation.
+            # The continuation must start at/after the parent's ended_at to be
+            # recognised as a compression tip (not a sub-agent/branch).
+            db.create_session(session_id="root-old", source="cli")
+            db.append_message(session_id="root-old", role="user", content="kickoff")
+            db.end_session("root-old", "compression")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (old, old + 10, "root-old"),
+            )
+            db.create_session(session_id="tip-new", source="cli", parent_session_id="root-old")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (old + 10, "tip-new"))
+            db.append_message(session_id="tip-new", role="user", content="continued just now")
+            # A brand-new unrelated session started after the root but before now.
+            db.create_session(session_id="mid", source="cli")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (_time.time() - 3600, "mid"))
+            db.append_message(session_id="mid", role="user", content="hello")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        rows = self.client.get("/api/sessions?order=recent&limit=5").json()["sessions"]
+        ids = [r["id"] for r in rows]
+        # The compressed conversation surfaces under its live tip id...
+        assert "tip-new" in ids
+        # ...carrying the durable lineage root so the desktop can match pins.
+        tip = next(r for r in rows if r["id"] == "tip-new")
+        assert tip.get("_lineage_root_id") == "root-old"
+
+    def test_search_dedupes_compression_lineage_to_tip(self):
+        """A conversation that auto-compresses leaves the matched term in both
+        the root segment and the continuation. Search must collapse them to a
+        single result keyed by the lineage root and pointing at the live tip,
+        so the sidebar stops showing the same chat several times."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="search-root", source="cli")
+            db.append_message(session_id="search-root", role="user", content="distinctneedle in the root")
+            db.end_session("search-root", "compression")
+            now = _time.time()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "search-root"),
+            )
+            db.create_session(session_id="search-tip", source="cli", parent_session_id="search-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 90, "search-tip"))
+            db.append_message(session_id="search-tip", role="user", content="distinctneedle again in the tip")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=distinctneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        lineage_hits = [r for r in results if r.get("lineage_root") == "search-root"]
+        # One conversation -> exactly one result despite two FTS hits.
+        assert len(lineage_hits) == 1
+        hit = lineage_hits[0]
+        # Surfaced under the live tip so clicking resumes the current session.
+        assert hit["session_id"] == "search-tip"
+        assert hit["lineage_root"] == "search-root"
+
+    def test_search_keeps_branch_specific_hits_on_branch(self):
+        """Branch sessions share parent_session_id, but they are not compression
+        continuations. A query that only exists in the branch must open the
+        branch instead of being collapsed back to the parent/root."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            now = _time.time()
+            db.create_session(session_id="branch-parent", source="cli")
+            db.append_message(session_id="branch-parent", role="user", content="ancestor context")
+            db.end_session("branch-parent", "branched")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 100, now - 90, "branch-parent"),
+            )
+            db.create_session(session_id="branch-child", source="cli", parent_session_id="branch-parent")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 80, "branch-child"))
+            db.append_message(session_id="branch-child", role="user", content="branchspecificneedle only here")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/search?q=branchspecificneedle")
+        assert resp.status_code == 200
+        results = resp.json()["results"]
+
+        assert any(
+            r["session_id"] == "branch-child" and r.get("lineage_root") == "branch-child"
+            for r in results
+        )
+
+    def test_get_session_messages_follows_compression_tip(self):
+        """Reading a compressed session by its old id should hydrate from the
+        live continuation, matching /resume behavior."""
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="desktop-root", source="cli")
+            db.append_message(session_id="desktop-root", role="user", content="before compression")
+            db.end_session("desktop-root", "compression")
+            now = _time.time()
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 10, now - 5, "desktop-root"),
+            )
+            db.create_session(session_id="desktop-tip", source="cli", parent_session_id="desktop-root")
+            db._conn.execute("UPDATE sessions SET started_at = ? WHERE id = ?", (now - 4, "desktop-tip"))
+            db.replace_messages("desktop-root", [])
+            db.append_message(session_id="desktop-tip", role="user", content="after compression")
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/desktop-root/messages")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["session_id"] == "desktop-tip"
+        assert [m["content"] for m in payload["messages"]] == ["after compression"]
+
+    def test_get_sessions_archived_is_boolean(self):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="bool-arch", source="cli")
+            db.append_message(session_id="bool-arch", role="user", content="hi")
+        finally:
+            db.close()
+
+        row = next(s for s in self.client.get("/api/sessions").json()["sessions"] if s["id"] == "bool-arch")
+        assert row["archived"] is False
+
+    def test_rename_response_omits_archived_when_not_set(self):
+        """Title-only PATCH keeps its legacy {ok, title} response shape."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="title-only", source="cli")
+        finally:
+            db.close()
+
+        resp = self.client.patch("/api/sessions/title-only", json={"title": "Hi"})
+        assert resp.status_code == 200
+        assert "archived" not in resp.json()
+
+    def test_audio_transcription_endpoint(self, monkeypatch):
+        import tools.transcription_tools as transcription_tools
+
+        captured = {}
+
+        def fake_transcribe_audio(path):
+            captured["path"] = path
+            return {
+                "success": True,
+                "transcript": "hello from voice mode",
+                "provider": "test",
+            }
+
+        monkeypatch.setattr(transcription_tools, "transcribe_audio", fake_transcribe_audio)
+
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,aGVsbG8=",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {
+            "ok": True,
+            "transcript": "hello from voice mode",
+            "provider": "test",
+        }
+        assert captured["path"].endswith(".webm")
+        assert not Path(captured["path"]).exists()
+
+    def test_audio_transcription_rejects_invalid_base64(self):
+        resp = self.client.post(
+            "/api/audio/transcribe",
+            json={
+                "data_url": "data:audio/webm;base64,not base64",
+                "mime_type": "audio/webm",
+            },
+        )
+
+        assert resp.status_code == 400
+        assert "base64" in resp.json()["detail"]
+
+    def test_desktop_audio_routes_registered(self):
+        """All three desktop voice endpoints must exist.
+
+        The renderer (apps/desktop) calls /api/audio/transcribe, /speak, and
+        /elevenlabs/voices. /speak + /voices were silently dropped in a merge
+        once; this guards the contract so a future merge can't lose them
+        without failing CI.
+        """
+        from hermes_cli.web_server import app
+
+        paths = {getattr(r, "path", None) for r in app.routes}
+        assert "/api/audio/transcribe" in paths
+        assert "/api/audio/speak" in paths
+        assert "/api/audio/elevenlabs/voices" in paths
+
+    def test_elevenlabs_voices_unavailable_without_key(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(web_server, "load_env", lambda: {})
+        monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+
+        resp = self.client.get("/api/audio/elevenlabs/voices")
+        assert resp.status_code == 200
+        assert resp.json() == {"available": False, "voices": []}
+
+    def test_speak_text_returns_base64_data_url(self, monkeypatch, tmp_path):
+        import tools.tts_tool as tts_tool
+
+        audio_file = tmp_path / "speech.mp3"
+        audio_file.write_bytes(b"ID3fake-audio-bytes")
+
+        def fake_tts(text):
+            return json.dumps({
+                "success": True,
+                "file_path": str(audio_file),
+                "provider": "test",
+            })
+
+        monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
+
+        resp = self.client.post("/api/audio/speak", json={"text": "hello there"})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["mime_type"] == "audio/mpeg"
+        assert body["data_url"].startswith("data:audio/mpeg;base64,")
+        assert body["provider"] == "test"
+        # The handler streams the bytes back and removes the temp file.
+        assert not audio_file.exists()
+
+    def test_speak_text_requires_nonempty_text(self):
+        resp = self.client.post("/api/audio/speak", json={"text": "   "})
+        assert resp.status_code == 400
+
+    def test_update_hermes_returns_docker_guidance_without_spawning(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        spawned = False
+
+        def fail_spawn(*_args, **_kwargs):
+            nonlocal spawned
+            spawned = True
+            raise AssertionError("docker update guard should not spawn hermes update")
+
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "docker")
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fail_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["name"] == "hermes-update"
+        assert data["pid"] is None
+        assert data["error"] == "docker_update_unsupported"
+        assert "docker pull nousresearch/hermes-agent:latest" in data["message"]
+        assert spawned is False
+
+        status = self.client.get("/api/actions/hermes-update/status")
+        assert status.status_code == 200
+        status_data = status.json()
+        assert status_data["running"] is False
+        assert status_data["exit_code"] == 1
+        assert status_data["pid"] is None
+        assert any("docker pull nousresearch/hermes-agent:latest" in line for line in status_data["lines"])
+
+    def test_update_hermes_spawns_on_non_docker_install(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class Proc:
+            pid = 12345
+
+            def poll(self):
+                return None
+
+        calls = []
+
+        def fake_spawn(subcommand, name):
+            calls.append((subcommand, name))
+            return Proc()
+
+        monkeypatch.setattr(web_server, "detect_install_method", lambda _root: "git")
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+
+        resp = self.client.post("/api/hermes/update")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "pid": 12345, "name": "hermes-update"}
+        assert calls == [(["update"], "hermes-update")]
+
+    def test_action_status_reaps_completed_process(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        waited = {"done": False}
+
+        class _Proc:
+            pid = 42424
+
+            def poll(self):
+                return 0
+
+            def wait(self, timeout=None):
+                waited["done"] = True
+
+        proc = _Proc()
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+        web_server._ACTION_PROCS["hermes-update"] = proc
+
+        resp = self.client.get("/api/actions/hermes-update/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["running"] is False
+        assert data["exit_code"] == 0
+        assert data["pid"] == 42424
+
+        # Process should have been reaped and moved to results.
+        assert waited["done"] is True
+        assert "hermes-update" not in web_server._ACTION_PROCS
+        assert web_server._ACTION_RESULTS["hermes-update"] == {
+            "exit_code": 0,
+            "pid": 42424,
+        }
+
+    def test_action_status_ignores_wait_failure(self, monkeypatch):
+        import hermes_cli.web_server as web_server
+
+        class _Proc:
+            pid = 99
+
+            def poll(self):
+                return 1
+
+            def wait(self, timeout=None):
+                raise OSError("already reaped")
+
+        proc = _Proc()
+        web_server._ACTION_PROCS.pop("hermes-update", None)
+        web_server._ACTION_RESULTS.pop("hermes-update", None)
+        web_server._ACTION_PROCS["hermes-update"] = proc
+
+        resp = self.client.get("/api/actions/hermes-update/status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["exit_code"] == 1
+        # Still reaped despite wait() raising.
+        assert "hermes-update" not in web_server._ACTION_PROCS
+        assert web_server._ACTION_RESULTS["hermes-update"] == {
+            "exit_code": 1,
+            "pid": 99,
+        }
+
 
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
@@ -191,6 +984,34 @@ class TestWebServerEndpoints:
         assert resp.json()["gateway_state"] == "startup_failed"
         assert resp.json()["gateway_platforms"] == {}
 
+    def test_cron_delivery_targets_lists_configured_platforms(self, monkeypatch):
+        """The cron dropdown endpoint returns Local + configured platforms dynamically."""
+        import gateway.config as gateway_config
+
+        class _Platform:
+            def __init__(self, value):
+                self.value = value
+
+        class _GatewayConfig:
+            def get_connected_platforms(self):
+                return [_Platform("matrix")]
+
+        monkeypatch.setattr(
+            gateway_config, "load_gateway_config", lambda: _GatewayConfig()
+        )
+        monkeypatch.setenv("MATRIX_HOME_ROOM", "!room:matrix.org")
+
+        resp = self.client.get("/api/cron/delivery-targets")
+
+        assert resp.status_code == 200
+        targets = {t["id"]: t for t in resp.json()["targets"]}
+        # Local is always offered; matrix appears because its gateway is configured.
+        assert "local" in targets
+        assert "matrix" in targets
+        assert targets["matrix"]["home_target_set"] is True
+        # No hardcoded telegram/discord/slack/email when they aren't configured.
+        assert "telegram" not in targets
+
     def test_get_config_schema(self):
         resp = self.client.get("/api/config/schema")
         assert resp.status_code == 200
@@ -217,6 +1038,72 @@ class TestWebServerEndpoints:
         data = resp.json()
         # Should contain known env var names
         assert any(k.endswith("_API_KEY") or k.endswith("_TOKEN") for k in data.keys())
+
+    def test_get_env_vars_marks_channel_managed_keys(self):
+        from hermes_cli.web_server import _channel_managed_env_keys
+
+        data = self.client.get("/api/env").json()
+        # Every entry carries the classification the Keys page relies on.
+        assert all("channel_managed" in info for info in data.values())
+
+        channel_keys = _channel_managed_env_keys()
+        # Messaging-platform credentials owned by the Channels page are flagged;
+        # everything else stays visible on the Keys page.
+        for key, info in data.items():
+            assert info["channel_managed"] is (key in channel_keys)
+
+    def test_platform_scoped_messaging_env_vars_are_channel_managed(self):
+        from hermes_cli.web_server import (
+            _MESSAGING_KEYS_PAGE_KEYS,
+            _build_catalog_entry,
+            _channel_managed_env_keys,
+        )
+
+        discord = _build_catalog_entry("discord")
+        assert "DISCORD_HOME_CHANNEL" in discord["env_vars"]
+        assert "DISCORD_ALLOW_ALL_USERS" in discord["env_vars"]
+
+        managed = _channel_managed_env_keys()
+        assert "DISCORD_HOME_CHANNEL" in managed
+        assert "BLUEBUBBLES_ALLOW_ALL_USERS" in managed
+        assert "MATTERMOST_ALLOW_ALL_USERS" in managed
+        assert "GATEWAY_PROXY_URL" not in managed
+        assert "GATEWAY_PROXY_URL" in _MESSAGING_KEYS_PAGE_KEYS
+
+    def test_model_set_requires_confirmation_for_expensive_model(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: SimpleNamespace(message="EXPENSIVE MODEL WARNING"),
+        )
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "nous",
+                "model": "openai/gpt-5.5-pro",
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["confirm_required"] is True
+        assert data["confirm_message"] == "EXPENSIVE MODEL WARNING"
+
+        confirmed = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "nous",
+                "model": "openai/gpt-5.5-pro",
+                "confirm_expensive_model": True,
+            },
+        )
+
+        assert confirmed.status_code == 200
+        assert confirmed.json()["ok"] is True
+
 
     def test_reveal_env_var(self, tmp_path):
         """POST /api/env/reveal should return the real unredacted value."""
@@ -301,6 +1188,437 @@ class TestWebServerEndpoints:
 
         assert resp.status_code == 200
 
+    def test_get_messaging_platforms(self):
+        resp = self.client.get("/api/messaging/platforms")
+
+        assert resp.status_code == 200
+        platforms = resp.json()["platforms"]
+        telegram = next(platform for platform in platforms if platform["id"] == "telegram")
+        assert telegram["name"] == "Telegram"
+        assert telegram["enabled"] is False
+        assert any(field["key"] == "TELEGRAM_BOT_TOKEN" and field["required"] for field in telegram["env_vars"])
+
+    def test_messaging_catalog_covers_gateway_platforms(self):
+        """Catalog is derived from the Platform enum, so every built-in shows up."""
+        from gateway.config import Platform
+
+        resp = self.client.get("/api/messaging/platforms")
+        platforms = {entry["id"] for entry in resp.json()["platforms"]}
+
+        for member in Platform.__members__.values():
+            if member.value == "local":
+                continue
+            assert member.value in platforms, f"Missing gateway platform {member.value} from /api/messaging/platforms"
+
+    def test_messaging_catalog_includes_plugin_platforms(self, monkeypatch):
+        """Plugin-registered adapters appear in the catalog without per-platform code."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        entry = PlatformEntry(
+            name="ircfake",
+            label="IRC (test)",
+            adapter_factory=lambda cfg: None,
+            check_fn=lambda: True,
+            required_env=["IRC_SERVER"],
+            install_hint="Connect to IRC.",
+            source="plugin",
+        )
+        platform_registry.register(entry)
+        try:
+            resp = self.client.get("/api/messaging/platforms")
+            ids = {row["id"]: row for row in resp.json()["platforms"]}
+            assert "ircfake" in ids
+            assert ids["ircfake"]["name"] == "IRC (test)"
+            assert any(field["key"] == "IRC_SERVER" and field["required"] for field in ids["ircfake"]["env_vars"])
+        finally:
+            platform_registry.unregister("ircfake")
+
+    def test_update_messaging_platform_saves_env_and_enablement(self):
+        from hermes_cli.config import load_config, load_env
+
+        resp = self.client.put(
+            "/api/messaging/platforms/telegram",
+            json={
+                "enabled": False,
+                "env": {"TELEGRAM_BOT_TOKEN": "1234567890abcdef"},
+            },
+        )
+
+        assert resp.status_code == 200
+        assert load_env()["TELEGRAM_BOT_TOKEN"] == "1234567890abcdef"
+        assert load_config()["platforms"]["telegram"]["enabled"] is False
+
+        status = self.client.get("/api/messaging/platforms").json()["platforms"]
+        telegram = next(platform for platform in status if platform["id"] == "telegram")
+        assert telegram["enabled"] is False
+
+    def test_messaging_platform_test_reports_missing_required_setup(self):
+        resp = self.client.put("/api/messaging/platforms/discord", json={"enabled": True})
+        assert resp.status_code == 200
+
+        resp = self.client.post("/api/messaging/platforms/discord/test")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is False
+        assert data["state"] == "not_configured"
+        assert "DISCORD_BOT_TOKEN" in data["message"]
+
+    def test_telegram_onboarding_worker_request_uses_httpx(self, monkeypatch):
+        import httpx
+        import hermes_cli.web_server as ws
+
+        calls = {}
+
+        def fail_urlopen(*_args, **_kwargs):
+            raise AssertionError("Telegram onboarding should not use urllib")
+
+        class FakeHttpxClient:
+            def __init__(self, *args, **kwargs):
+                calls["client_kwargs"] = kwargs
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_exc_info):
+                return False
+
+            def request(self, method, url, **kwargs):
+                calls["request"] = (method, url, kwargs)
+                return httpx.Response(
+                    201,
+                    json={"ok": True},
+                    request=httpx.Request(method, url),
+                )
+
+        monkeypatch.setenv("TELEGRAM_ONBOARDING_URL", "https://worker.example")
+        monkeypatch.setattr(ws.urllib.request, "urlopen", fail_urlopen)
+        monkeypatch.setattr(httpx, "Client", FakeHttpxClient)
+
+        payload = ws._telegram_onboarding_request_sync(
+            "POST",
+            "/v1/telegram/pairings",
+            body={"bot_name": "Hermes Agent"},
+            bearer_token="poll-secret",
+        )
+
+        assert payload == {"ok": True}
+        method, url, kwargs = calls["request"]
+        assert method == "POST"
+        assert url == "https://worker.example/v1/telegram/pairings"
+        assert kwargs["json"] == {"bot_name": "Hermes Agent"}
+        assert kwargs["headers"]["Accept"] == "application/json"
+        assert kwargs["headers"]["Authorization"] == "Bearer poll-secret"
+        assert kwargs["headers"]["Content-Type"] == "application/json"
+        assert kwargs["headers"]["User-Agent"].startswith("HermesDashboard/")
+
+    def test_telegram_onboarding_worker_request_maps_unexpected_errors(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as ws
+
+        monkeypatch.setenv("TELEGRAM_ONBOARDING_URL", "not a valid url")
+
+        with pytest.raises(ws.HTTPException) as exc:
+            ws._telegram_onboarding_request_sync(
+                "POST",
+                "/v1/telegram/pairings",
+                body={"bot_name": "Hermes Agent"},
+            )
+
+        assert exc.value.status_code == 502
+        assert (
+            exc.value.detail
+            == "Telegram setup service is unavailable. Try again shortly."
+        )
+
+    def test_telegram_onboarding_start_strips_poll_token(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        calls = []
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            calls.append((method, path, body, bearer_token))
+            return {
+                "pairing_id": "pair123",
+                "poll_token": "poll-secret",
+                "suggested_username": "hermes_pair123_bot",
+                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair123_bot",
+                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair123_bot",
+                "expires_at": "2027-05-18T00:00:00.000Z",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        resp = self.client.post(
+            "/api/messaging/telegram/onboarding/start",
+            json={"bot_name": "Hosted Hermes"},
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["pairing_id"] == "pair123"
+        assert "poll_token" not in data
+        assert calls == [
+            (
+                "POST",
+                "/v1/telegram/pairings",
+                {"bot_name": "Hosted Hermes"},
+                None,
+            )
+        ]
+
+    def test_telegram_onboarding_ready_and_apply_never_returns_bot_token(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config, load_env
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            if method == "POST":
+                return {
+                    "pairing_id": "pair-ready",
+                    "poll_token": "poll-secret",
+                    "suggested_username": "hermes_pair_ready_bot",
+                    "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_ready_bot",
+                    "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_ready_bot",
+                    "expires_at": "2027-05-18T00:00:00.000Z",
+                }
+            assert method == "GET"
+            assert path == "/v1/telegram/pairings/pair-ready"
+            assert bearer_token == "poll-secret"
+            return {
+                "status": "ready",
+                "bot_username": "hermes_pair_ready_bot",
+                "owner_user_id": 123456789,
+                "token": "123456:SECRET",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+        restart_calls = []
+
+        class FakeRestartProc:
+            pid = 4242
+
+        def fake_spawn_action(subcommand, name):
+            restart_calls.append((subcommand, name))
+            return FakeRestartProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+
+        ready = self.client.get("/api/messaging/telegram/onboarding/pair-ready")
+        assert ready.status_code == 200
+        ready_data = ready.json()
+        assert ready_data["status"] == "ready"
+        assert ready_data["owner_user_id"] == "123456789"
+        assert "token" not in ready_data
+
+        applied = self.client.post(
+            "/api/messaging/telegram/onboarding/pair-ready/apply",
+            json={"allowed_user_ids": ["123456789", "123456789"]},
+        )
+        assert applied.status_code == 200
+        applied_data = applied.json()
+        assert applied_data == {
+            "ok": True,
+            "platform": "telegram",
+            "bot_username": "hermes_pair_ready_bot",
+            "needs_restart": False,
+            "restart_started": True,
+            "restart_action": "gateway-restart",
+            "restart_pid": 4242,
+        }
+        assert restart_calls == [(["gateway", "restart"], "gateway-restart")]
+        env = load_env()
+        assert env["TELEGRAM_BOT_TOKEN"] == "123456:SECRET"
+        assert env["TELEGRAM_ALLOWED_USERS"] == "123456789"
+        assert load_config()["platforms"]["telegram"]["enabled"] is True
+
+    def test_telegram_onboarding_apply_reports_restart_failure_after_save(
+        self, monkeypatch
+    ):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config, load_env
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            if method == "POST":
+                return {
+                    "pairing_id": "pair-restart-fails",
+                    "poll_token": "poll-secret",
+                    "suggested_username": "hermes_pair_restart_fails_bot",
+                    "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_restart_fails_bot",
+                    "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_restart_fails_bot",
+                    "expires_at": "2027-05-18T00:00:00.000Z",
+                }
+            assert method == "GET"
+            assert path == "/v1/telegram/pairings/pair-restart-fails"
+            assert bearer_token == "poll-secret"
+            return {
+                "status": "ready",
+                "bot_username": "hermes_pair_restart_fails_bot",
+                "owner_user_id": 123456789,
+                "token": "123456:SECRET",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+
+        def fail_spawn_action(subcommand, name):
+            assert subcommand == ["gateway", "restart"]
+            assert name == "gateway-restart"
+            raise RuntimeError("supervisor unavailable")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+        ready = self.client.get("/api/messaging/telegram/onboarding/pair-restart-fails")
+        assert ready.status_code == 200
+        assert ready.json()["status"] == "ready"
+
+        applied = self.client.post(
+            "/api/messaging/telegram/onboarding/pair-restart-fails/apply",
+            json={"allowed_user_ids": ["123456789"]},
+        )
+
+        assert applied.status_code == 200
+        applied_data = applied.json()
+        assert applied_data["ok"] is True
+        assert applied_data["needs_restart"] is True
+        assert applied_data["restart_started"] is False
+        assert "supervisor unavailable" in applied_data["restart_error"]
+        assert "token" not in applied_data
+        env = load_env()
+        assert env["TELEGRAM_BOT_TOKEN"] == "123456:SECRET"
+        assert env["TELEGRAM_ALLOWED_USERS"] == "123456789"
+        assert load_config()["platforms"]["telegram"]["enabled"] is True
+
+    def test_telegram_onboarding_apply_reuses_inflight_gateway_restart(
+        self, monkeypatch
+    ):
+        """A live in-flight gateway restart is reused instead of spawning a
+        second racing ``hermes gateway restart`` child (e.g. when a stale
+        cached frontend also fires its own restart call)."""
+        import hermes_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            if method == "POST":
+                return {
+                    "pairing_id": "pair-reuse",
+                    "poll_token": "poll-secret",
+                    "suggested_username": "hermes_pair_reuse_bot",
+                    "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_reuse_bot",
+                    "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_reuse_bot",
+                    "expires_at": "2027-05-18T00:00:00.000Z",
+                }
+            return {
+                "status": "ready",
+                "bot_username": "hermes_pair_reuse_bot",
+                "owner_user_id": 123456789,
+                "token": "123456:SECRET",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        class FakeRunningProc:
+            pid = 5151
+
+            def poll(self):
+                return None  # still running
+
+        monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", FakeRunningProc())
+
+        def fail_spawn_action(subcommand, name):
+            raise AssertionError("must not spawn a second concurrent restart")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+        ready = self.client.get("/api/messaging/telegram/onboarding/pair-reuse")
+        assert ready.status_code == 200
+
+        applied = self.client.post(
+            "/api/messaging/telegram/onboarding/pair-reuse/apply",
+            json={"allowed_user_ids": ["123456789"]},
+        )
+
+        assert applied.status_code == 200
+        applied_data = applied.json()
+        assert applied_data["needs_restart"] is False
+        assert applied_data["restart_started"] is True
+        assert applied_data["restart_pid"] == 5151
+
+    def test_telegram_onboarding_apply_requires_ready_pairing(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            return {
+                "pairing_id": "pair-waiting",
+                "poll_token": "poll-secret",
+                "suggested_username": "hermes_pair_waiting_bot",
+                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_waiting_bot",
+                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_waiting_bot",
+                "expires_at": "2027-05-18T00:00:00.000Z",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+
+        resp = self.client.post(
+            "/api/messaging/telegram/onboarding/pair-waiting/apply",
+            json={"allowed_user_ids": ["123456789"]},
+        )
+
+        assert resp.status_code == 409
+        assert "not ready" in resp.json()["detail"]
+
+    def test_telegram_onboarding_cancel_clears_local_session(self, monkeypatch):
+        import hermes_cli.web_server as ws
+
+        with ws._telegram_onboarding_lock:
+            ws._telegram_onboarding_pairings.clear()
+
+        def fake_request(method, path, *, body=None, bearer_token=None):
+            return {
+                "pairing_id": "pair-cancel",
+                "poll_token": "poll-secret",
+                "suggested_username": "hermes_pair_cancel_bot",
+                "deep_link": "https://t.me/newbot/HermesSetupBot/hermes_pair_cancel_bot",
+                "qr_payload": "https://t.me/newbot/HermesSetupBot/hermes_pair_cancel_bot",
+                "expires_at": "2027-05-18T00:00:00.000Z",
+            }
+
+        monkeypatch.setattr(ws, "_telegram_onboarding_request_sync", fake_request)
+
+        start = self.client.post("/api/messaging/telegram/onboarding/start", json={})
+        assert start.status_code == 200
+
+        cancel = self.client.delete("/api/messaging/telegram/onboarding/pair-cancel")
+        assert cancel.status_code == 200
+
+        status = self.client.get("/api/messaging/telegram/onboarding/pair-cancel")
+        assert status.status_code == 404
+
     def test_session_token_endpoint_removed(self):
         """GET /api/auth/session-token should no longer exist (token injected via HTML)."""
         resp = self.client.get("/api/auth/session-token")
@@ -327,6 +1645,12 @@ class TestWebServerEndpoints:
         # Public endpoints should still work
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
+        resp = unauth_client.get("/api/dashboard/plugins")
+        assert resp.status_code == 200
+        resp = unauth_client.get("/api/dashboard/plugins/rescan")
+        assert resp.status_code == 401
+        resp = self.client.get("/api/dashboard/plugins/rescan")
+        assert resp.status_code == 200
 
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
@@ -344,6 +1668,350 @@ class TestWebServerEndpoints:
         assert resp.status_code in {200, 404}
         if resp.status_code == 200:
             assert "FastAPI" not in resp.text  # Should not serve the actual source
+
+    def test_set_model_main_nous_applies_gateway_defaults(self, monkeypatch):
+        """Switching the main provider to Nous calls apply_nous_managed_defaults
+        (mirroring the CLI's post-model-selection Tool Gateway routing) and
+        surfaces the routed tools in the response."""
+        import hermes_cli.nous_subscription as ns
+
+        called = {}
+
+        def fake_apply(config, *, enabled_toolsets=None, force_fresh=False):
+            called["enabled"] = set(enabled_toolsets or ())
+            called["force_fresh"] = force_fresh
+            # Simulate routing the unconfigured web tool through the gateway.
+            web = config.setdefault("web", {})
+            web["backend"] = "firecrawl"
+            return {"web"}
+
+        monkeypatch.setattr(ns, "apply_nous_managed_defaults", fake_apply)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "nous", "model": "hermes-4"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == "nous"
+        assert data["gateway_tools"] == ["web"]
+        assert called["force_fresh"] is True
+
+    def test_set_model_main_non_nous_skips_gateway_defaults(self, monkeypatch):
+        """Non-Nous providers must NOT trigger Tool Gateway auto-routing."""
+        import hermes_cli.nous_subscription as ns
+
+        def boom(*args, **kwargs):  # pragma: no cover - must not be called
+            raise AssertionError("apply_nous_managed_defaults called for non-nous provider")
+
+        monkeypatch.setattr(ns, "apply_nous_managed_defaults", boom)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data.get("gateway_tools", []) == []
+
+    def test_apply_main_model_assignment_base_url_and_context_reconcile(self):
+        """The shared main-slot assignment helper must persist a supplied
+        base_url, clear a stale base_url only when switching providers, preserve
+        it on same-provider re-assignment, and always drop a hardcoded
+        context_length override. Both POST /api/model/set and profile-model
+        writes route through this, so the contract is pinned here."""
+        from hermes_cli.web_server import _apply_main_model_assignment
+
+        # Custom + base_url → persisted; stale context_length dropped.
+        out = _apply_main_model_assignment(
+            {"context_length": 8192}, "custom", "llama-3.1-8b", "http://127.0.0.1:8000/v1"
+        )
+        assert out["provider"] == "custom"
+        assert out["default"] == "llama-3.1-8b"
+        assert out["base_url"] == "http://127.0.0.1:8000/v1"
+        assert "context_length" not in out
+
+        # Switching providers (custom → openrouter) → stale base_url cleared.
+        out = _apply_main_model_assignment(
+            {"provider": "custom", "base_url": "http://127.0.0.1:8000/v1"},
+            "openrouter",
+            "anthropic/claude-opus-4.8",
+        )
+        assert out["provider"] == "openrouter"
+        assert out["base_url"] == ""
+
+        # Same provider, no new base_url → existing custom endpoint preserved.
+        # Regression: picking a different MiMo model under xiaomi must NOT wipe a
+        # Token Plan base_url (https://token-plan-*.xiaomimimo.com/v1).
+        out = _apply_main_model_assignment(
+            {"provider": "xiaomi", "base_url": "https://token-plan-ams.xiaomimimo.com/v1"},
+            "xiaomi",
+            "mimo-v2.5-pro",
+        )
+        assert out["provider"] == "xiaomi"
+        assert out["default"] == "mimo-v2.5-pro"
+        assert out["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+
+        # A supplied base_url is honored for any provider, not just custom.
+        out = _apply_main_model_assignment(
+            {"provider": "xiaomi"},
+            "xiaomi",
+            "mimo-v2.5",
+            "https://token-plan-cn.xiaomimimo.com/v1",
+        )
+        assert out["base_url"] == "https://token-plan-cn.xiaomimimo.com/v1"
+
+        # Switching providers without a base_url → don't invent one, clear stale.
+        out = _apply_main_model_assignment(
+            {"provider": "openrouter", "base_url": "http://stale:1/v1"}, "custom", "m"
+        )
+        assert out["base_url"] == ""
+
+        # Non-dict input is coerced to a fresh dict (never raises).
+        out = _apply_main_model_assignment("not-a-dict", "custom", "m", "http://x/v1")
+        assert out == {"provider": "custom", "default": "m", "base_url": "http://x/v1"}
+
+    def test_parse_model_ids_handles_openai_and_bare_shapes(self):
+        """Model discovery must tolerate the common /v1/models shapes and
+        never raise (so a slightly non-standard local endpoint still works)."""
+        from hermes_cli.web_server import _parse_model_ids
+
+        class FakeResp:
+            def __init__(self, payload, ok=True):
+                self._payload = payload
+                self.is_success = ok
+
+            def json(self):
+                if isinstance(self._payload, Exception):
+                    raise self._payload
+                return self._payload
+
+        # OpenAI / vLLM / llama.cpp shape.
+        assert _parse_model_ids(
+            FakeResp({"data": [{"id": "llama-3.1-8b"}, {"id": "qwen2.5-7b"}]})
+        ) == ["llama-3.1-8b", "qwen2.5-7b"]
+        # Bare list of ids.
+        assert _parse_model_ids(FakeResp({"data": ["m1", "m2"]})) == ["m1", "m2"]
+        # Top-level list.
+        assert _parse_model_ids(FakeResp([{"id": "x"}])) == ["x"]
+        # Non-success / malformed / exception → [] (never raises).
+        assert _parse_model_ids(FakeResp({"data": []}, ok=False)) == []
+        assert _parse_model_ids(FakeResp({"nope": 1})) == []
+        assert _parse_model_ids(FakeResp(ValueError("bad json"))) == []
+
+    def test_set_model_main_custom_persists_base_url(self):
+        """Custom/local providers must persist model.base_url so the runtime
+        resolver (which ignores OPENAI_BASE_URL) can route to a self-hosted
+        endpoint without an API key. Regression for the desktop onboarding bug
+        where 'Local / custom endpoint' could never be configured."""
+        from hermes_cli.config import load_config
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "custom",
+                "model": "llama-3.1-8b",
+                "base_url": "http://127.0.0.1:8000/v1",
+            },
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data["provider"] == "custom"
+        assert data["base_url"] == "http://127.0.0.1:8000/v1"
+
+        model_cfg = load_config().get("model")
+        assert isinstance(model_cfg, dict)
+        assert model_cfg["provider"] == "custom"
+        assert model_cfg["default"] == "llama-3.1-8b"
+        assert model_cfg["base_url"] == "http://127.0.0.1:8000/v1"
+
+    def test_set_model_main_non_custom_clears_stale_base_url(self):
+        """Switching to a hosted provider must clear a stale base_url so the
+        resolver picks that provider's own default endpoint."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {
+            "provider": "custom",
+            "default": "llama-3.1-8b",
+            "base_url": "http://127.0.0.1:8000/v1",
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["base_url"] == ""
+
+    def test_set_model_main_same_provider_preserves_base_url(self):
+        """Re-picking a model under the SAME provider must NOT wipe a configured
+        base_url. Regression for the desktop bug where selecting a Xiaomi MiMo
+        model reset a Token Plan endpoint back to the registry default, breaking
+        Token Plan keys (https://token-plan-*.xiaomimimo.com/v1)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {
+            "provider": "xiaomi",
+            "default": "mimo-v2.5-pro",
+            "base_url": "https://token-plan-ams.xiaomimimo.com/v1",
+        }
+        save_config(cfg)
+
+        # Desktop model picker sends provider+model only (no base_url).
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "xiaomi", "model": "mimo-v2.5"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+
+        model_cfg = load_config().get("model")
+        assert isinstance(model_cfg, dict)
+        assert model_cfg["default"] == "mimo-v2.5"
+        assert model_cfg["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+
+    def test_set_model_main_reports_stale_auxiliary_pins(self):
+        """Switching the main provider must report auxiliary slots still pinned
+        to a *different* provider so the UI can warn the user their helper tasks
+        aren't following the switch (the silent credit-burn path)."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "nous", "default": "hermes-4"}
+        cfg["auxiliary"] = {
+            # Pinned to nous — same as the OLD main, becomes stale after switch.
+            "compression": {"provider": "nous", "model": "anthropic/claude-sonnet-4.6"},
+            # Auto — follows main, never stale.
+            "vision": {"provider": "auto", "model": ""},
+            # Pinned to a third provider — also stale vs the new main.
+            "curator": {"provider": "deepseek", "model": "deepseek-chat"},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        stale = resp.json()["stale_aux"]
+        stale_tasks = {entry["task"] for entry in stale}
+        assert stale_tasks == {"compression", "curator"}
+        # auto slot must never appear.
+        assert "vision" not in stale_tasks
+        # Provider/model echoed back for the UI label.
+        comp = next(e for e in stale if e["task"] == "compression")
+        assert comp["provider"] == "nous"
+        assert comp["model"] == "anthropic/claude-sonnet-4.6"
+
+    def test_set_model_main_no_stale_when_aux_matches_new_provider(self):
+        """Aux slots pinned to the SAME provider as the new main are not stale."""
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        cfg["model"] = {"provider": "nous", "default": "hermes-4"}
+        cfg["auxiliary"] = {
+            "compression": {"provider": "openrouter", "model": "google/gemini-2.5-flash"},
+            "vision": {"provider": "auto", "model": ""},
+        }
+        save_config(cfg)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "openrouter", "model": "anthropic/claude-opus-4.8"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["stale_aux"] == []
+
+        model_cfg = load_config().get("model")
+        assert model_cfg["provider"] == "openrouter"
+        assert model_cfg.get("base_url", "") == ""
+
+    def test_set_model_main_gateway_failure_does_not_block_save(self, monkeypatch):
+        """A Portal/gateway hiccup must never prevent saving the model."""
+        import hermes_cli.nous_subscription as ns
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("portal unreachable")
+
+        monkeypatch.setattr(ns, "apply_nous_managed_defaults", boom)
+
+        resp = self.client.post(
+            "/api/model/set",
+            json={"scope": "main", "provider": "nous", "model": "hermes-4"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["ok"] is True
+        assert data.get("gateway_tools", []) == []
+
+    def test_recommended_default_nous_honors_free_tier(self, monkeypatch):
+        """For a free-tier Nous user, the recommended default must be a free
+        model (mirroring `hermes model`), not the first curated paid entry."""
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: ["paid/expensive", "free/cheap"])
+        monkeypatch.setattr(
+            models_mod, "get_pricing_for_provider",
+            lambda provider: {"paid/expensive": {"input": "1"}, "free/cheap": {"input": "0"}},
+        )
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: True)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_free_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+        # Free partition keeps only the free model selectable.
+        monkeypatch.setattr(
+            models_mod, "partition_nous_models_by_tier",
+            lambda ids, pricing, free_tier: (["free/cheap"], ["paid/expensive"]),
+        )
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "nous"
+        assert data["model"] == "free/cheap"
+        assert data["free_tier"] is True
+
+    def test_recommended_default_nous_paid_uses_curated_default(self, monkeypatch):
+        """A paid Nous user gets the first curated/paid-augmented model."""
+        import hermes_cli.models as models_mod
+
+        monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", lambda: ["top/model", "other/model"])
+        monkeypatch.setattr(models_mod, "get_pricing_for_provider", lambda provider: {})
+        monkeypatch.setattr(models_mod, "check_nous_free_tier", lambda *, force_fresh=False: False)
+        monkeypatch.setattr(
+            models_mod, "union_with_portal_paid_recommendations",
+            lambda ids, pricing, url: (ids, pricing),
+        )
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["provider"] == "nous"
+        assert data["model"] == "top/model"
+        assert data["free_tier"] is False
+
+    def test_recommended_default_handles_failure_gracefully(self, monkeypatch):
+        """Endpoint never 500s — returns empty model on internal error."""
+        import hermes_cli.models as models_mod
+
+        def boom():
+            raise RuntimeError("portal down")
+
+        monkeypatch.setattr(models_mod, "get_curated_nous_model_ids", boom)
+
+        resp = self.client.get("/api/model/recommended-default?provider=nous")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == ""
+        assert data["free_tier"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -371,12 +2039,6 @@ class TestBuildSchemaFromConfig:
             assert entry["type"] == "select"
             assert "options" in entry
             assert "local" in entry["options"]
-            assert "vercel_sandbox" in entry["options"]
-        runtime_entry = CONFIG_SCHEMA["terminal.vercel_runtime"]
-        assert runtime_entry["type"] == "select"
-        assert "node24" in runtime_entry["options"]
-        assert "python3.13" in runtime_entry["options"]
-        assert len(runtime_entry["options"]) >= 3
 
     def test_empty_prefix_produces_correct_keys(self):
         from hermes_cli.web_server import _build_schema_from_config
@@ -714,6 +2376,30 @@ class TestNewEndpoints:
         profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
         assert profiles["cloned"]["skill_count"] == 1
 
+    def test_profiles_create_with_clone_from_duplicates_source(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        # Create a source profile and give it a distinctive skill.
+        assert self.client.post("/api/profiles", json={"name": "source-prof"}).status_code == 200
+        source_skill = get_hermes_home() / "profiles" / "source-prof" / "skills" / "custom" / "src-skill"
+        source_skill.mkdir(parents=True)
+        (source_skill / "SKILL.md").write_text("---\nname: src-skill\n---\n", encoding="utf-8")
+
+        # Duplicate it via an explicit clone_from source (not "default").
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "source-prof-copy", "clone_from": "source-prof"},
+        )
+
+        assert resp.status_code == 200
+        cloned_skill = (
+            get_hermes_home() / "profiles" / "source-prof-copy" / "skills" / "custom" / "src-skill" / "SKILL.md"
+        )
+        assert cloned_skill.exists()
+
     def test_profiles_create_without_clone_seeds_bundled_skills(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.profiles as profiles_mod
@@ -738,6 +2424,83 @@ class TestNewEndpoints:
         assert seeded_skill.exists()
         profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
         assert profiles["fresh"]["skill_count"] == 1
+
+    def test_profiles_create_builder_fields_model_mcp_and_keep_skills(self, monkeypatch):
+        """Profile-builder create: model + MCP servers + keep-skills selection
+        all land in the NEW profile's config, and hub installs are spawned
+        scoped to that profile via ``-p <name>``."""
+        from hermes_constants import (
+            get_hermes_home,
+            set_hermes_home_override,
+            reset_hermes_home_override,
+        )
+        from hermes_cli.config import load_config
+        from hermes_cli.skills_config import get_disabled_skills
+        import hermes_cli.profiles as profiles_mod
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        # Seed two known skills so keep-skills "replace" has something to act on.
+        def fake_seed(profile_dir, quiet=False):
+            for skill in ("keep-me", "drop-me"):
+                d = profile_dir / "skills" / "custom" / skill
+                d.mkdir(parents=True)
+                (d / "SKILL.md").write_text(f"---\nname: {skill}\n---\n", encoding="utf-8")
+            return {"copied": ["keep-me", "drop-me"]}
+
+        monkeypatch.setattr(profiles_mod, "seed_profile_skills", fake_seed)
+
+        # Capture hub-install spawns instead of launching real subprocesses.
+        spawned = []
+
+        class _FakeProc:
+            pid = 4321
+
+        def fake_spawn(subcommand, name):
+            spawned.append((list(subcommand), name))
+            return _FakeProc()
+
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={
+                "name": "builder",
+                "provider": "openrouter",
+                "model": "anthropic/claude-sonnet-4.6",
+                "mcp_servers": [
+                    {"name": "ctx7", "url": "https://mcp.context7.com/mcp"},
+                    {"name": "bogus"},  # no url/command -> must be skipped, no 500
+                ],
+                "keep_skills": ["keep-me"],
+                "hub_skills": ["someuser/some-skill"],
+            },
+        )
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model_set"] is True
+        assert data["mcp_written"] == 1  # bogus skipped
+        assert data["skills_disabled"] == 1  # drop-me disabled, keep-me kept
+        assert data["hub_installs"] == [{"identifier": "someuser/some-skill", "pid": 4321}]
+
+        # Hub install was scoped to the new profile.
+        assert spawned == [(["-p", "builder", "skills", "install", "someuser/some-skill"], "skills-install")]
+
+        # Verify the writes landed in the NEW profile's config, not the root.
+        prof_dir = get_hermes_home() / "profiles" / "builder"
+        token = set_hermes_home_override(str(prof_dir))
+        try:
+            cfg = load_config()
+            assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+            assert cfg["model"]["provider"] == "openrouter"
+            assert sorted((cfg.get("mcp_servers") or {}).keys()) == ["ctx7"]
+            disabled = get_disabled_skills(cfg)
+            assert "drop-me" in disabled
+            assert "keep-me" not in disabled
+        finally:
+            reset_hermes_home_override(token)
 
     def test_profile_open_terminal_uses_macos_terminal(self, monkeypatch):
         from hermes_constants import get_hermes_home
@@ -806,6 +2569,132 @@ class TestNewEndpoints:
     def test_profile_soul_unknown_profile_404(self):
         resp = self.client.get("/api/profiles/nonexistent/soul")
         assert resp.status_code == 404
+
+    # --- New profiles endpoints: active / description / model / describe-auto ---
+
+    def test_profiles_active_defaults(self):
+        from hermes_constants import get_hermes_home
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+
+        resp = self.client.get("/api/profiles/active")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active"] == "default"
+        assert data["current"] == "default"
+
+    def test_profiles_set_active_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "router"})
+
+        resp = self.client.post("/api/profiles/active", json={"name": "router"})
+        assert resp.status_code == 200
+        assert resp.json()["active"] == "router"
+        assert self.client.get("/api/profiles/active").json()["active"] == "router"
+
+    def test_profiles_set_active_unknown_404(self):
+        resp = self.client.post("/api/profiles/active", json={"name": "ghost"})
+        assert resp.status_code == 404
+
+    def test_profile_description_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "desc-prof"})
+
+        put = self.client.put(
+            "/api/profiles/desc-prof/description",
+            json={"description": "Handles code review"},
+        )
+        assert put.status_code == 200
+        body = put.json()
+        assert body["description"] == "Handles code review"
+        assert body["description_auto"] is False
+
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["desc-prof"]["description"] == "Handles code review"
+        assert profiles["desc-prof"]["description_auto"] is False
+
+    def test_profile_description_unknown_404(self):
+        resp = self.client.put(
+            "/api/profiles/nope/description", json={"description": "x"}
+        )
+        assert resp.status_code == 404
+
+    def test_profile_model_round_trip(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "model-prof"})
+
+        resp = self.client.put(
+            "/api/profiles/model-prof/model",
+            json={"provider": "openrouter", "model": "anthropic/claude-sonnet-4.6"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["provider"] == "openrouter"
+
+        import yaml
+        cfg_path = get_hermes_home() / "profiles" / "model-prof" / "config.yaml"
+        cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
+        assert cfg["model"]["provider"] == "openrouter"
+        assert cfg["model"]["default"] == "anthropic/claude-sonnet-4.6"
+
+    def test_profile_model_requires_provider_and_model(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "model-prof2"})
+        resp = self.client.put(
+            "/api/profiles/model-prof2/model",
+            json={"provider": "", "model": ""},
+        )
+        assert resp.status_code == 400
+
+    def test_profile_describe_auto_success(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "auto-prof"})
+
+        from hermes_cli import profile_describer
+        monkeypatch.setattr(
+            profile_describer,
+            "describe_profile",
+            lambda name, overwrite=False: profile_describer.DescribeOutcome(
+                name, True, "described", description="Generated blurb"
+            ),
+        )
+
+        resp = self.client.post("/api/profiles/auto-prof/describe-auto", json={})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["description"] == "Generated blurb"
+        assert body["description_auto"] is True
+
+    def test_profile_describe_auto_failure_is_not_auto(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        self.client.post("/api/profiles", json={"name": "auto-fail"})
+
+        from hermes_cli import profile_describer
+        monkeypatch.setattr(
+            profile_describer,
+            "describe_profile",
+            lambda name, overwrite=False: profile_describer.DescribeOutcome(
+                name, False, "no aux client", description=None
+            ),
+        )
+
+        resp = self.client.post("/api/profiles/auto-fail/describe-auto", json={})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is False
+        assert body["description_auto"] is False
 
     def test_skills_list(self):
         resp = self.client.get("/api/skills")
@@ -904,7 +2793,7 @@ class TestNewEndpoints:
         assert resp.json() == [
             {
                 "name": "web",
-                "label": "🔍 Web Search & Scraping",
+                "label": "Web Search & Scraping",
                 "description": "web_search, web_extract",
                 "enabled": True,
                 "available": True,
@@ -913,7 +2802,7 @@ class TestNewEndpoints:
             },
             {
                 "name": "skills",
-                "label": "📚 Skills",
+                "label": "Skills",
                 "description": "list, view, manage",
                 "enabled": True,
                 "available": True,
@@ -922,7 +2811,7 @@ class TestNewEndpoints:
             },
             {
                 "name": "memory",
-                "label": "💾 Memory",
+                "label": "Memory",
                 "description": "persistent memory across sessions",
                 "enabled": False,
                 "available": False,
@@ -930,6 +2819,132 @@ class TestNewEndpoints:
                 "tools": ["memory_read"],
             },
         ]
+
+    def test_toggle_toolset_enable_disable(self):
+        """PUT /api/tools/toolsets/{name} round-trips through config and the list view."""
+        # Enable a toolset that is off-by-default so the state change is observable.
+        resp = self.client.put("/api/tools/toolsets/x_search", json={"enabled": True})
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["name"] == "x_search"
+        assert body["enabled"] is True
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["x_search"]["enabled"] is True
+
+        # Disable it again.
+        resp = self.client.put("/api/tools/toolsets/x_search", json={"enabled": False})
+        assert resp.status_code == 200
+        assert resp.json()["enabled"] is False
+
+        listing = {t["name"]: t for t in self.client.get("/api/tools/toolsets").json()}
+        assert listing["x_search"]["enabled"] is False
+
+    def test_toggle_toolset_unknown_returns_400(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/not_a_real_toolset", json={"enabled": True}
+        )
+        assert resp.status_code == 400
+
+    def test_get_toolset_config_returns_provider_matrix(self):
+        """GET .../config returns provider rows with structured env_vars."""
+        resp = self.client.get("/api/tools/toolsets/tts/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "tts"
+        assert data["has_category"] is True
+        assert isinstance(data["providers"], list)
+        assert data["providers"], "tts always has at least the built-in providers"
+        # active_provider is part of the contract so the GUI can highlight the
+        # provider actually written to config (else it falls back to the first
+        # keyless one). It's either None or the name of one listed provider.
+        assert "active_provider" in data
+        names = {p["name"] for p in data["providers"]}
+        assert data["active_provider"] is None or data["active_provider"] in names
+        for prov in data["providers"]:
+            assert "name" in prov
+            assert "is_active" in prov
+            assert "env_vars" in prov
+            assert isinstance(prov["env_vars"], list)
+            for ev in prov["env_vars"]:
+                assert "key" in ev
+                assert "is_set" in ev
+        # active_provider summarizes the first provider flagged is_active
+        # (some catalogs list two rows backed by the same config value, e.g.
+        # Firecrawl cloud + self-hosted both map to web.backend=firecrawl).
+        active = [p["name"] for p in data["providers"] if p["is_active"]]
+        if active:
+            assert data["active_provider"] == active[0]
+        else:
+            assert data["active_provider"] is None
+
+    def test_get_toolset_config_reflects_selected_provider(self):
+        """Selecting a provider is reflected in the next /config read.
+
+        Regression: the GUI's provider panel highlighted the first keyless
+        provider on relaunch because /config never reported which provider was
+        actually active. After selecting one, is_active / active_provider must
+        point at it.
+        """
+        sel = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert sel.status_code == 200
+
+        resp = self.client.get("/api/tools/toolsets/web/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["active_provider"] == "Firecrawl Self-Hosted"
+        active = [p["name"] for p in data["providers"] if p["is_active"]]
+        # The first active row is what the GUI highlights; it must be the
+        # selected provider.
+        assert active, "expected at least one provider flagged active"
+        assert active[0] == "Firecrawl Self-Hosted"
+
+    def test_get_toolset_config_no_category_toolset(self):
+        """A toolset without a TOOL_CATEGORIES entry returns has_category False."""
+        resp = self.client.get("/api/tools/toolsets/todo/config")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["name"] == "todo"
+        assert data["has_category"] is False
+        assert data["providers"] == []
+
+    def test_get_toolset_config_unknown_returns_400(self):
+        resp = self.client.get("/api/tools/toolsets/not_a_real_toolset/config")
+        assert resp.status_code == 400
+
+    def test_select_toolset_provider_persists_backend(self):
+        """PUT .../provider writes the backend selection to config."""
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "Firecrawl Self-Hosted"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["ok"] is True
+        assert body["name"] == "web"
+        assert body["provider"] == "Firecrawl Self-Hosted"
+
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        assert cfg["web"]["backend"] == "firecrawl"
+
+    def test_select_toolset_provider_unknown_provider_returns_400(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/web/provider",
+            json={"provider": "No Such Provider"},
+        )
+        assert resp.status_code == 400
+
+    def test_select_toolset_provider_unknown_toolset_returns_400(self):
+        resp = self.client.put(
+            "/api/tools/toolsets/not_a_real_toolset/provider",
+            json={"provider": "whatever"},
+        )
+        assert resp.status_code == 400
 
     def test_config_raw_get(self):
         resp = self.client.get("/api/config/raw")
@@ -1826,12 +3841,284 @@ class TestNormaliseThemeExtensions:
         assert r["componentStyles"]["card"] == {"opacity": "0.8", "zIndex": "5"}
 
 
+class TestBulkDeleteSessionsEndpoint:
+    """Tests for ``POST /api/sessions/bulk-delete`` — backs the
+    dashboard's "Delete N selected" flow on the sessions page.
+
+    Locks in four things:
+
+    1. Route-ordering: ``/api/sessions/bulk-delete`` must shadow the
+       templated ``/api/sessions/{session_id}`` route below it (see
+       the block comment in ``hermes_cli/web_server.py``).
+    2. Behaviour parity with :meth:`SessionDB.delete_sessions` — real
+       deleted count, archive/active sessions deleted on explicit
+       selection.
+    3. The 500-ID payload cap is enforced.
+    4. Auth gating (issue #19533 contract).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.client = TestClient(app)
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _seed(self, ids):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            for sid in ids:
+                db.create_session(session_id=sid, source="cli")
+        finally:
+            db.close()
+
+    def test_requires_auth(self):
+        resp = self.client.post("/api/sessions/bulk-delete", json={"ids": ["x"]})
+        assert resp.status_code == 401
+
+    def test_deletes_listed_sessions_only(self):
+        from hermes_state import SessionDB
+
+        self._seed(["a", "b", "c"])
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": ["a", "b"]}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 2}
+
+        db = SessionDB()
+        try:
+            assert db.get_session("a") is None
+            assert db.get_session("b") is None
+            assert db.get_session("c") is not None
+        finally:
+            db.close()
+
+    def test_unknown_ids_silently_skipped(self):
+        """The endpoint never 404s on a missing ID — it returns the
+        real deleted count so a UI selection that raced against
+        another tab still resolves cleanly."""
+        self._seed(["real"])
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete",
+            json={"ids": ["real", "ghost1", "ghost2"]},
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 1}
+
+    def test_empty_list_is_noop(self):
+        """``ids: []`` returns ``deleted: 0`` (200, not 400) — the UI
+        treats an empty selection as a no-op rather than an error."""
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": []}
+        )
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 0}
+
+    def test_payload_cap_enforced(self):
+        """501 IDs returns 400 — a hard cap stops a runaway selection
+        from holding the SQLite writer for an extended window."""
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete",
+            json={"ids": [f"s{i}" for i in range(501)]},
+        )
+        assert resp.status_code == 400
+        # 500 exactly still succeeds (no rows actually present, so
+        # deleted=0 — but it's not the cap path).
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete",
+            json={"ids": [f"s{i}" for i in range(500)]},
+        )
+        assert resp.status_code == 200
+
+    def test_route_order_not_shadowed_by_session_id(self):
+        """Pin the route-ordering contract: ``POST /api/sessions/bulk-delete``
+        must hit the bulk handler, not be re-interpreted via the
+        templated ``/api/sessions/{session_id}`` family. Concretely the
+        response carries our ``ok`` + ``deleted`` keys."""
+        resp = self.auth_client.post(
+            "/api/sessions/bulk-delete", json={"ids": []}
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body.get("ok") is True
+        assert "deleted" in body, (
+            "If this assertion fails, /api/sessions/bulk-delete is "
+            "being shadowed by /api/sessions/{session_id} — check "
+            "registration order in hermes_cli/web_server.py."
+        )
+
+
+class TestDeleteEmptySessionsEndpoint:
+    """Tests for ``GET /api/sessions/empty/count`` and
+    ``DELETE /api/sessions/empty`` — the bulk-delete endpoints backing
+    the dashboard's "Delete empty" button.
+
+    Locks in three things the implementation has to get right:
+
+    1. Route-ordering: the literal ``/api/sessions/empty[/count]`` paths
+       must shadow the templated ``/api/sessions/{session_id}`` route
+       above them. A regression here would route ``DELETE /api/sessions/
+       empty`` to the single-session handler with ``session_id="empty"``
+       (which 404s instead of bulk-deleting).
+    2. Behaviour parity with :meth:`SessionDB.delete_empty_sessions`:
+       active sessions and archived sessions are both preserved.
+    3. Auth gating: both routes require the session token like every
+       other ``/api/*`` endpoint (issue #19533 contract).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        # Pin the SessionDB to the isolated HERMES_HOME so each test
+        # starts with a clean state.db.
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.client = TestClient(app)
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _seed(self):
+        """Build the standard test corpus:
+
+        * ``empty1`` / ``empty2`` — ended, no messages → should delete
+        * ``hasmsg``  — ended, has one message → must survive
+        * ``live``    — un-ended, empty → must survive (active)
+        * ``archived``— ended, empty, archived → must survive
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="empty1", source="cli")
+            db.end_session("empty1", end_reason="done")
+            db.create_session(session_id="empty2", source="cli")
+            db.end_session("empty2", end_reason="done")
+
+            db.create_session(session_id="hasmsg", source="cli")
+            db.append_message("hasmsg", role="user", content="hello")
+            db.end_session("hasmsg", end_reason="done")
+
+            db.create_session(session_id="live", source="cli")
+
+            db.create_session(session_id="archived", source="cli")
+            db.end_session("archived", end_reason="done")
+            db.set_session_archived("archived", True)
+        finally:
+            db.close()
+
+    def test_count_endpoint_requires_auth(self):
+        """GET /api/sessions/empty/count must 401 without the session token."""
+        resp = self.client.get("/api/sessions/empty/count")
+        assert resp.status_code == 401
+
+    def test_delete_endpoint_requires_auth(self):
+        """DELETE /api/sessions/empty must 401 without the session token.
+
+        Regression guard for issue #19533 — the bulk-delete is a strictly
+        destructive primitive, the middleware must gate it even if a
+        future refactor introduces a non-auth path."""
+        resp = self.client.delete("/api/sessions/empty")
+        assert resp.status_code == 401
+
+    def test_count_returns_only_empty_ended_unarchived(self):
+        """With the standard corpus, the count is exactly 2 — only
+        ``empty1`` and ``empty2`` qualify (``hasmsg`` has a message,
+        ``live`` is active, ``archived`` is archived)."""
+        self._seed()
+        resp = self.auth_client.get("/api/sessions/empty/count")
+        assert resp.status_code == 200
+        assert resp.json() == {"count": 2}
+
+    def test_delete_returns_count_and_removes_only_empties(self):
+        """DELETE returns the deleted count and removes only the
+        empty-ended-unarchived rows — same shape contract as the
+        DB-level method's unit tests."""
+        from hermes_state import SessionDB
+
+        self._seed()
+        resp = self.auth_client.delete("/api/sessions/empty")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 2}
+
+        db = SessionDB()
+        try:
+            assert db.get_session("empty1") is None
+            assert db.get_session("empty2") is None
+            # Survivors: hasmsg has a message, live is active, archived
+            # is archived. All three must still be there.
+            assert db.get_session("hasmsg") is not None
+            assert db.get_session("live") is not None
+            assert db.get_session("archived") is not None
+            # And the count endpoint now reports 0.
+            assert db.count_empty_sessions() == 0
+        finally:
+            db.close()
+
+    def test_delete_with_no_empties_returns_zero(self):
+        """No empty sessions → endpoint returns ``deleted: 0`` (200,
+        not 404). The dashboard relies on this no-op path to surface
+        a "Nothing to clean up" toast instead of an error."""
+        resp = self.auth_client.delete("/api/sessions/empty")
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "deleted": 0}
+
+    def test_route_order_empty_not_shadowed_by_session_id(self):
+        """Pin the route-ordering contract: ``DELETE /api/sessions/empty``
+        must hit the bulk handler, not the templated single-session
+        handler (which would 404 because no session has id 'empty').
+
+        Concretely: a request against the bulk path on an EMPTY corpus
+        returns ``{ok: True, deleted: 0}``. If the templated route were
+        winning, we'd see 404 ("Session not found") instead.
+        """
+        resp = self.auth_client.delete("/api/sessions/empty")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "deleted" in body, (
+            "If this assertion fails, the literal /api/sessions/empty "
+            "route is being shadowed by the templated /api/sessions/"
+            "{session_id} route — check registration order in "
+            "hermes_cli/web_server.py."
+        )
+
+
 class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
-        """Create a TestClient without the session token header."""
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        """Create a TestClient without the session token header.
+
+        Pulls in ``_install_example_plugin`` so ``test_plugin_route_allows_auth``
+        has the ``/api/plugins/example/hello`` endpoint available — the
+        example plugin is no longer a bundled plugin, so the fixture
+        installs it into the per-test ``HERMES_HOME``.
+        """
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -1856,10 +4143,12 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Use ``/api/plugins/example/hello`` from the example-dashboard plugin —
-        a stable, side-effect-free GET that's always loaded in tests. With a
-        valid token the handler should run (200); without one the middleware
-        should 401 before the handler is reached.
+        Uses ``/api/plugins/example/hello`` from the example-dashboard
+        test fixture (installed into HERMES_HOME by the class-level
+        ``_install_example_plugin`` fixture) — a stable, side-effect-free
+        GET that's only loaded for tests. With a valid token the handler
+        should run (200); without one the middleware should 401 before
+        the handler is reached.
         """
         # Without auth: middleware blocks before reaching the handler.
         resp = self.client.get("/api/plugins/example/hello")
@@ -1918,7 +4207,6 @@ class TestPluginAPIAuth:
         shared layer can't silently break the WS auth contract.
         """
         from starlette.websockets import WebSocketDisconnect
-        from hermes_cli.web_server import _SESSION_TOKEN
 
         # Without a token the WS endpoint must close the upgrade itself
         # (its own _check_ws_token), NOT 401 from the HTTP middleware.
@@ -2107,6 +4395,39 @@ class TestPtyWebSocket:
         assert env["HERMES_TUI_INLINE"] == "1"
         assert env["HERMES_TUI_DISABLE_MOUSE"] == "1"
 
+    def test_resolve_chat_argv_applies_terminal_backend_config(
+        self, monkeypatch, _isolate_hermes_home
+    ):
+        import hermes_cli.main as main_mod
+
+        config_path = Path(os.environ["HERMES_HOME"]) / "config.yaml"
+        config_path.write_text(
+            "\n".join(
+                [
+                    "terminal:",
+                    "  backend: docker",
+                    "  docker_image: example/hermes-tools:latest",
+                    "  docker_extra_args:",
+                    "    - --network=host",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_IMAGE", raising=False)
+        monkeypatch.delenv("TERMINAL_DOCKER_EXTRA_ARGS", raising=False)
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env["TERMINAL_ENV"] == "docker"
+        assert env["TERMINAL_DOCKER_IMAGE"] == "example/hermes-tools:latest"
+        assert env["TERMINAL_DOCKER_EXTRA_ARGS"] == '["--network=host"]'
+
     def test_rejects_when_embedded_chat_disabled(self, monkeypatch):
         monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)
         from starlette.websockets import WebSocketDisconnect
@@ -2114,7 +4435,7 @@ class TestPtyWebSocket:
         with pytest.raises(WebSocketDisconnect) as exc:
             with self.client.websocket_connect(self._url()):
                 pass
-        assert exc.value.code == 4403
+        assert exc.value.code == 4404
 
     def test_rejects_missing_token(self, monkeypatch):
         monkeypatch.setattr(
@@ -2200,7 +4521,7 @@ class TestPtyWebSocket:
 
         winsize_script = (
             "import fcntl, struct, termios, time; "
-            "time.sleep(0.15); "
+            "time.sleep(0.5); "
             "rows, cols, *_ = struct.unpack('HHHH', "
             "fcntl.ioctl(0, termios.TIOCGWINSZ, b'\\0' * 8)); "
             "print(cols); print(rows)"
@@ -2222,7 +4543,14 @@ class TestPtyWebSocket:
 
             deadline = time.monotonic() + 5.0
             while time.monotonic() < deadline:
-                frame = conn.receive_bytes()
+                # receive_bytes() blocks; once the child prints its winsize and
+                # exits, the PTY closes and further reads raise. Without this
+                # guard a missed-marker run blocks until the 30s pytest-timeout
+                # (flaky failure) instead of failing fast on the assert below.
+                try:
+                    frame = conn.receive_bytes()
+                except Exception:
+                    break
                 if frame:
                     buf += frame
                 if b"99" in buf and b"41" in buf:
@@ -2285,7 +4613,10 @@ class TestPtyWebSocket:
             self.ws_module.app.state, "bound_port", 9119, raising=False
         )
 
-        with self.client.websocket_connect(self._url(channel="abc-123")) as conn:
+        headers = {"host": "127.0.0.1:9119", "origin": "http://127.0.0.1:9119"}
+        with self.client.websocket_connect(
+            self._url(channel="abc-123"), headers=headers
+        ) as conn:
             try:
                 conn.receive_bytes()
             except Exception:
@@ -2296,39 +4627,62 @@ class TestPtyWebSocket:
         assert "channel=abc-123" in url
         assert "token=" in url
 
-    def test_pub_broadcasts_to_events_subscribers(self, monkeypatch):
-        """Frame written to /api/pub is rebroadcast verbatim to every
-        /api/events subscriber on the same channel."""
-        import time
-        from urllib.parse import urlencode
+    def test_pub_broadcasts_to_events_subscribers(self):
+        """A frame handed to _broadcast_event is sent verbatim to every
+        subscriber registered on that channel — and not to subscribers on
+        other channels.
+
+        This drives the broadcast unit directly under asyncio rather than
+        round-tripping through Starlette's TestClient WebSocket portal. The
+        portal version was flaky under heavy parallel CI load: the broadcast
+        had to traverse two nested threaded portals within a 10s wall-clock
+        budget, and a starved ASGI thread occasionally blew that budget even
+        though the server logic was correct. Testing _broadcast_event with
+        fake subscribers removes the scheduling surface entirely while
+        asserting the exact fan-out contract.
+        """
+        import asyncio
         from hermes_cli import web_server as ws_mod
 
-        qs = urlencode({"token": self.token, "channel": "broadcast-test"})
-        pub_path = f"/api/pub?{qs}"
-        sub_path = f"/api/events?{qs}"
+        class _FakeSub:
+            def __init__(self):
+                self.sent: list[str] = []
 
-        with self.client.websocket_connect(sub_path) as sub:
-            # Wait for the subscriber to be registered on the server side.
-            # websocket_connect returns when ws.accept() completes, but the
-            # server adds us to ``_event_channels`` in a follow-up await,
-            # so a publish immediately after connect can race ahead of the
-            # subscriber registration and the message is dropped.
-            deadline = time.monotonic() + 5.0
-            while time.monotonic() < deadline:
-                if ws_mod._event_channels.get("broadcast-test"):
-                    break
-                time.sleep(0.01)
-            else:
-                raise AssertionError(
-                    "subscriber did not register on channel within 5s"
+            async def send_text(self, payload: str) -> None:
+                self.sent.append(payload)
+
+        app = ws_mod.app
+
+        async def _run():
+            sub_a1 = _FakeSub()
+            sub_a2 = _FakeSub()
+            sub_other = _FakeSub()
+            frame = '{"type":"tool.start","payload":{"tool_id":"t1"}}'
+
+            event_channels, event_lock = ws_mod._get_event_state(app)
+            # Register two subscribers on the target channel and one on a
+            # different channel, exactly as the /api/events handler does.
+            async with event_lock:
+                event_channels.setdefault("broadcast-test", set()).update(
+                    {sub_a1, sub_a2}
                 )
+                event_channels.setdefault("other-channel", set()).add(sub_other)
+            try:
+                await ws_mod._broadcast_event(app, "broadcast-test", frame)
+            finally:
+                async with event_lock:
+                    event_channels.pop("broadcast-test", None)
+                    event_channels.pop("other-channel", None)
 
-            with self.client.websocket_connect(pub_path) as pub:
-                pub.send_text('{"type":"tool.start","payload":{"tool_id":"t1"}}')
-                received = sub.receive_text()
+            return sub_a1, sub_a2, sub_other, frame
 
-        assert "tool.start" in received
-        assert '"tool_id":"t1"' in received
+        sub_a1, sub_a2, sub_other, frame = asyncio.run(_run())
+
+        # Every subscriber on the channel got the frame verbatim, exactly once.
+        assert sub_a1.sent == [frame]
+        assert sub_a2.sent == [frame]
+        # A subscriber on a different channel got nothing.
+        assert sub_other.sent == []
 
     def test_events_rejects_missing_channel(self):
         from starlette.websockets import WebSocketDisconnect
@@ -2339,3 +4693,219 @@ class TestPtyWebSocket:
             ):
                 pass
         assert exc.value.code == 4400
+
+
+def test_resolve_chat_argv_injects_gateway_ws_url(monkeypatch):
+    import hermes_cli.main as cli_main
+    import hermes_cli.web_server as ws
+
+    monkeypatch.setattr(
+        cli_main,
+        "_make_tui_argv",
+        lambda *_args, **_kwargs: (["node", "fake-tui.js"], Path("/tmp")),
+    )
+    monkeypatch.setattr(ws.app.state, "bound_host", "127.0.0.1", raising=False)
+    monkeypatch.setattr(ws.app.state, "bound_port", 9119, raising=False)
+
+    _argv, _cwd, env = ws._resolve_chat_argv()
+
+    assert env is not None
+    gateway_url = env.get("HERMES_TUI_GATEWAY_URL", "")
+    assert gateway_url.startswith("ws://127.0.0.1:9119/api/ws?")
+    assert "token=" in gateway_url
+
+
+class TestDashboardPluginStaticAssetAllowlist:
+    """``/dashboard-plugins/<name>/<path>`` is unauthenticated by design —
+    the SPA loads plugin JS via ``<script src>`` and CSS via
+    ``<link href>``, neither of which can attach a custom auth header.
+    Instead the route restricts file types to the browser-asset
+    allowlist (JS/CSS/JSON/images/fonts) so that user-installed
+    plugins shipping a ``plugin_api.py`` backend module don't leak
+    their Python source to anyone reachable on the loopback port.
+
+    Regression test for the dashboard pentest finding filed alongside
+    the ``web-pentest`` skill (PR #32265 / issue #32267).
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
+        """Create a TestClient and install the example-dashboard fixture.
+
+        The static-asset allowlist tests need a plugin to point at —
+        they verify that ``/dashboard-plugins/example/manifest.json``
+        is served while ``plugin_api.py`` and ``__pycache__/*.pyc``
+        from the same directory are not. Since the example plugin is
+        no longer bundled, ``_install_example_plugin`` lays it down in
+        the per-test ``HERMES_HOME`` user-plugins dir.
+        """
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app
+
+        self.client = TestClient(app)
+
+    def test_python_source_is_404(self):
+        """The example plugin's ``plugin_api.py`` must NOT be served as
+        a static asset, even though the file exists under the plugin's
+        dashboard directory. Suffix not in the allowlist → 404."""
+        resp = self.client.get("/dashboard-plugins/example/plugin_api.py")
+        assert resp.status_code == 404
+
+    def test_pycache_is_404(self):
+        """Same protection for compiled Python (``.pyc``) inside the
+        plugin's ``__pycache__/``. Real plugins ship these as a
+        side-effect of running tests / dashboard once."""
+        # __pycache__ files are only generated after the api file has
+        # been imported once. Use the path the example plugin actually
+        # generates during the dashboard test boot.
+        resp = self.client.get(
+            "/dashboard-plugins/example/__pycache__/plugin_api.cpython-311.pyc"
+        )
+        # 404 either way (file may not exist on this CI Python version);
+        # what matters is we never get a 200 with the bytes.
+        assert resp.status_code == 404
+
+    def test_manifest_json_still_served(self):
+        """JSON files remain browser-fetchable — manifests, localized
+        data, source maps, etc. all sit in this bucket."""
+        resp = self.client.get("/dashboard-plugins/example/manifest.json")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("application/json")
+        # And the body is actually the manifest, not the SPA fallback.
+        body = resp.json()
+        assert body.get("name") == "example"
+
+    def test_unknown_plugin_is_404(self):
+        """Existing behaviour preserved: nonexistent plugin name → 404."""
+        resp = self.client.get(
+            "/dashboard-plugins/_definitely_not_a_plugin_/manifest.json"
+        )
+        assert resp.status_code == 404
+
+    def test_path_traversal_still_blocked(self):
+        """The allowlist is on top of the existing ``.resolve()`` /
+        ``is_relative_to()`` check — a ``.js`` named file at an
+        out-of-base path is still rejected as traversal, not served."""
+        resp = self.client.get(
+            "/dashboard-plugins/example/..%2Fplugin_api.py"
+        )
+        # 403 traversal-blocked OR 404 (depending on URL decode order)
+        # — never 200.
+        assert resp.status_code in (403, 404)
+
+
+def _fake_httpx_client(*, status: int | None = None, raise_exc: bool = False):
+    """Build a drop-in for httpx.Client whose .get() returns a canned status
+    (or raises a transport error). Patched in for the credential-validate probe
+    so tests never touch the network."""
+    class _Resp:
+        def __init__(self, code):
+            self.status_code = code
+
+        @property
+        def is_success(self):
+            return 200 <= self.status_code < 300
+
+    class _Client:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            if raise_exc:
+                raise RuntimeError("connection refused")
+            return _Resp(status)
+
+    return _Client
+
+
+class TestValidateProviderCredential:
+    """Live-probe credential validation (/api/providers/validate)."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _post(self, key, value):
+        return self.client.post("/api/providers/validate", json={"key": key, "value": value})
+
+    def test_rejected_key_blocks(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=401))
+        data = self._post("OPENROUTER_API_KEY", "sk-bogus").json()
+        assert data["ok"] is False and data["reachable"] is True
+
+    def test_valid_key_passes(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=200))
+        data = self._post("OPENAI_API_KEY", "sk-real").json()
+        assert data["ok"] is True and data["reachable"] is True
+
+    def test_rate_limited_counts_as_valid(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=429))
+        data = self._post("XAI_API_KEY", "xai-real").json()
+        assert data["ok"] is True
+
+    def test_network_error_is_unreachable_not_blocking(self, monkeypatch):
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(raise_exc=True))
+        data = self._post("OPENROUTER_API_KEY", "sk-real").json()
+        assert data["ok"] is False and data["reachable"] is False
+
+    def test_unknown_provider_is_not_validated(self):
+        # No probe for this key → don't block (ok True, reachable False).
+        data = self._post("SOME_OTHER_API_KEY", "whatever-value").json()
+        assert data["ok"] is True and data["reachable"] is False
+
+    def test_empty_value_rejected(self):
+        data = self._post("OPENAI_API_KEY", "   ").json()
+        assert data["ok"] is False
+
+
+class TestDesktopCronTicker:
+    """The dashboard backend fires cron jobs itself only when desktop-spawned."""
+
+    def _client(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app
+
+        return TestClient(app)
+
+    def test_ticker_runs_when_desktop(self, monkeypatch, _isolate_hermes_home):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+
+        with self._client():
+            assert called.wait(3.0), "expected cron tick under HERMES_DESKTOP=1"
+
+    def test_ticker_skipped_without_desktop(self, monkeypatch, _isolate_hermes_home):
+        import threading
+        import cron.scheduler as sched
+
+        called = threading.Event()
+        monkeypatch.setattr(sched, "tick", lambda *a, **k: called.set())
+        monkeypatch.delenv("HERMES_DESKTOP", raising=False)
+
+        with self._client():
+            assert not called.wait(0.5), "ticker must not run outside the desktop app"

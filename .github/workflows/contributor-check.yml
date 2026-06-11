@@ -3,11 +3,9 @@ name: Contributor Attribution Check
 on:
   pull_request:
     branches: [main]
-    paths:
-      # Only run when code files change (not docs-only PRs)
-      - '*.py'
-      - '**/*.py'
-      - '.github/workflows/contributor-check.yml'
+  # No paths filter — the job must always run so the required check
+  # reports a status (path-gated workflows leave checks "pending" forever
+  # when no matching files change, which blocks merge).
 
 permissions:
   contents: read
@@ -20,7 +18,21 @@ jobs:
         with:
           fetch-depth: 0  # Full history needed for git log
 
+      - name: Check if relevant files changed
+        id: filter
+        run: |
+          BASE="${{ github.event.pull_request.base.sha }}"
+          HEAD="${{ github.event.pull_request.head.sha }}"
+          CHANGED=$(git diff --name-only "$BASE"..."$HEAD" -- '*.py' '**/*.py' '.github/workflows/contributor-check.yml' || true)
+          if [ -n "$CHANGED" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "No Python files changed, skipping attribution check."
+          fi
+
       - name: Check for unmapped contributor emails
+        if: steps.filter.outputs.run == 'true'
         run: |
           # Get the merge base between this PR and main
           MERGE_BASE=$(git merge-base origin/main HEAD)

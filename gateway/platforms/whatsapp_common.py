@@ -52,8 +52,14 @@ class WhatsAppBehaviorMixin:
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH: int = 4096
+    supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
 
     DEFAULT_REPLY_PREFIX: str = "⚕ *Hermes Agent*\n────────────\n"
+
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """WhatsApp gates DM/group access at intake via dm_policy/group_policy."""
+        return True
 
     # ------------------------------------------------------------------ config
     def _effective_reply_prefix(self) -> str:

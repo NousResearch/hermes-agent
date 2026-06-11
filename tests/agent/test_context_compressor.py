@@ -41,6 +41,8 @@ class TestShouldCompress:
 
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_compression_rough_tokens = 90_000
         compressor.update_from_response({
             "prompt_tokens": 5000,
             "completion_tokens": 1000,
@@ -48,10 +50,37 @@ class TestUpdateFromResponse:
         })
         assert compressor.last_prompt_tokens == 5000
         assert compressor.last_completion_tokens == 1000
+        assert compressor.last_real_prompt_tokens == 5000
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
+        assert compressor.awaiting_real_usage_after_compression is False
 
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
+
+
+class TestPreflightDeferral:
+    def test_defers_when_recent_real_usage_fit_and_rough_growth_is_small(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(93_000) is True
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 93_000
+
+    def test_does_not_defer_when_rough_growth_is_large(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is False
+
+    def test_does_not_defer_without_recent_real_usage(self, compressor):
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 0
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(93_000) is False
 
 
 
@@ -65,11 +94,12 @@ class TestCompress:
         assert result == msgs
 
     def test_truncation_fallback_no_client(self, compressor):
-        # compressor has client=None and abort_on_summary_failure=False (default),
-        # so the LEGACY fallback path inserts a static "summary unavailable"
-        # placeholder and the middle window is dropped.
+        # Simulate "no summarizer available" explicitly. call_llm can otherwise
+        # discover the developer's real auxiliary credentials from auth state.
+        # The failed summary should use the deterministic fallback path.
         msgs = [{"role": "system", "content": "System prompt"}] + self._make_messages(10)
-        result = compressor.compress(msgs)
+        with patch("agent.context_compressor.call_llm", side_effect=RuntimeError("no provider")):
+            result = compressor.compress(msgs)
         assert len(result) < len(msgs)
         # Should keep system message and last N
         assert result[0]["role"] == "system"
@@ -77,6 +107,64 @@ class TestCompress:
         # Abort flag must NOT fire under the default config.
         assert compressor._last_compress_aborted is False
         assert compressor._last_summary_fallback_used is True
+
+    def test_summary_failure_uses_deterministic_fallback_with_recovered_context(self):
+        """Regression: failed LLM summaries should not emit a content-free marker.
+
+        The fallback should preserve locally recoverable continuity details so a
+        future turn does not see only "messages were removed" after compaction.
+        """
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=2,
+                quiet_mode=True,
+            )
+
+        msgs = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "Please fix the compression summary failure"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read_file",
+                        "arguments": '{"path":"agent/context_compressor.py","offset":1}',
+                    },
+                }],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": "read agent/context_compressor.py and found static fallback marker",
+            },
+            {"role": "assistant", "content": "I found the issue."},
+            {"role": "user", "content": "latest protected ask"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        with (
+            patch.object(c, "_find_tail_cut_by_tokens", return_value=5),
+            patch(
+                "agent.context_compressor.call_llm",
+                side_effect=RuntimeError("provider down"),
+            ),
+        ):
+            result = c.compress(msgs)
+
+        combined = "\n".join(str(m.get("content", "")) for m in result)
+        assert "## Active Task" in combined
+        assert "Please fix the compression summary failure" in combined
+        assert "read_file" in combined
+        assert "agent/context_compressor.py" in combined
+        assert "Summary generation was unavailable" in combined
+        assert "removed to free context space but could not be summarized" not in combined
+        assert c._last_summary_fallback_used is True
+        assert c._last_summary_dropped_count == 3
 
     def test_compression_increments_count(self, compressor):
         msgs = self._make_messages(10)
@@ -755,6 +843,123 @@ class TestSummaryFailureTrackingForGatewayWarning:
             isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
             for m in result
         )
+
+    def test_summary_failure_fallback_preserves_tool_paths_and_redacts_secret_context(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        secret = "ghp_" + ("a" * 36)
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": f"Fix /tmp/project/app.py and never leak {secret}"},
+            {
+                "role": "assistant",
+                "content": "I will inspect it.",
+                "tool_calls": [
+                    {
+                        "id": "call-1",
+                        "function": {
+                            "name": "read_file",
+                            "arguments": '{"path":"/tmp/project/app.py"}',
+                        },
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call-1", "content": f"read /tmp/project/app.py with token {secret}"},
+            {"role": "assistant", "content": "Found the bug in /tmp/project/app.py"},
+            {"role": "user", "content": "Patch it after this"},
+            {"role": "assistant", "content": "Ready to patch"},
+            {"role": "user", "content": "current live request should stay in tail"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        assert "Called tool(s): read_file" in fallback
+        assert "/tmp/project/app.py" in fallback
+        assert secret not in fallback
+        assert "ghp_" not in fallback
+
+    def test_summary_failure_fallback_supports_object_tool_calls_and_content_path_mentions(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        tool_call = MagicMock()
+        tool_call.id = "call-object"
+        tool_call.function.name = "terminal"
+        tool_call.function.arguments = '{"command":"python /repo/scripts/fix.py", "workdir":"/repo"}'
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Review ~/src/pkg/module.py before editing"},
+            {"role": "assistant", "content": "Running command", "tool_calls": [tool_call]},
+            {"role": "tool", "tool_call_id": "call-object", "content": "Traceback in /repo/src/pkg/module.py: boom"},
+            {"role": "assistant", "content": "Need to update C:\\work\\pkg\\module.py too"},
+            {"role": "user", "content": "Patch ~/src/pkg/module.py after checking those files"},
+            {"role": "assistant", "content": "Ready to patch"},
+            {"role": "user", "content": "tail task"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        assert "Called tool(s): terminal" in fallback
+        assert "/repo/scripts/fix.py" in fallback
+        assert "/repo" in fallback
+        assert "/repo/src/pkg/module.py" in fallback
+        assert "C:\\work\\pkg\\module.py" in fallback
+        assert "Traceback" in fallback
+        assert "## Last Dropped Turns" in fallback
+        assert "TOOL: Traceback in /repo/src/pkg/module.py: boom" in fallback
+
+    def test_summary_failure_fallback_preserves_last_dropped_turns_without_tail(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "Investigate dropped-window request in /tmp/active.py"},
+            {"role": "assistant", "content": "I inspected /tmp/active.py and found the failing branch"},
+            {"role": "tool", "tool_call_id": "call-old", "content": "ValueError: boom in /tmp/active.py"},
+            {"role": "assistant", "content": "Next step is patching /tmp/active.py"},
+            {"role": "user", "content": "Confirm regression coverage for /tmp/active.py"},
+            {"role": "assistant", "content": "Regression note is ready"},
+            {"role": "user", "content": "protected tail request must not be copied from dropped window"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        assert "## Last Dropped Turns" in fallback
+        assert "ASSISTANT: I inspected /tmp/active.py and found the failing branch" in fallback
+        assert "TOOL: ValueError: boom in /tmp/active.py" in fallback
+        assert "protected tail request must not be copied" not in fallback
+
+    def test_summary_failure_fallback_is_bounded(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=1, protect_last_n=1)
+
+        long_text = "important detail " * 2000
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "head user"},
+            {"role": "assistant", "content": "head assistant"},
+            {"role": "user", "content": long_text},
+            {"role": "assistant", "content": long_text},
+            {"role": "user", "content": long_text},
+            {"role": "assistant", "content": long_text},
+            {"role": "user", "content": "tail"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("timeout")):
+            result = c.compress(msgs)
+
+        fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
+        assert len(fallback) <= 8300
+        assert "deterministic fallback" in fallback
+        assert "important detail" in fallback
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()
@@ -1942,3 +2147,39 @@ class TestTruncateToolCallArgsJson:
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
         assert parsed["content"].endswith("...[truncated]")
+
+
+class TestPreflightSentinelGuard:
+    """Regression for #36718: the preflight token-display seed in
+    run_conversation must NOT overwrite the -1 sentinel that
+    compress_context() sets immediately after compression.
+
+    The old guard `_preflight_tokens > (last_prompt_tokens or 0)` evaluated
+    `(-1 or 0)` -> -1 (truthy), so any positive preflight estimate was > -1
+    and clobbered the sentinel with a schema-inflated rough count, re-firing
+    compression on the next turn. The fix treats any negative value as
+    "no real usage yet" and skips the seed.
+    """
+
+    def _seed(self, last_prompt_tokens, preflight_tokens):
+        # Mirror the exact guard in agent/conversation_loop.py run_conversation.
+        _last = last_prompt_tokens
+        if _last >= 0 and preflight_tokens > _last:
+            return preflight_tokens  # would overwrite
+        return last_prompt_tokens   # preserved
+
+    def test_sentinel_preserved_after_compression(self, compressor):
+        compressor.last_prompt_tokens = -1
+        # A large schema-inflated preflight estimate must NOT overwrite -1.
+        result = self._seed(compressor.last_prompt_tokens, 250_000)
+        assert result == -1
+
+    def test_real_value_still_revises_upward(self, compressor):
+        compressor.last_prompt_tokens = 10_000
+        result = self._seed(compressor.last_prompt_tokens, 50_000)
+        assert result == 50_000
+
+    def test_real_value_not_revised_downward(self, compressor):
+        compressor.last_prompt_tokens = 50_000
+        result = self._seed(compressor.last_prompt_tokens, 10_000)
+        assert result == 50_000

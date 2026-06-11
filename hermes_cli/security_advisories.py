@@ -36,7 +36,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional
 
@@ -104,7 +104,9 @@ ADVISORIES: tuple[Advisory, ...] = (
             "them to a hardcoded webhook. If you ran any Python process that "
             "imported mistralai 2.4.6 — including hermes when configured "
             "with provider=mistral for TTS or STT — assume those credentials "
-            "are exposed."
+            "are exposed. PyPI has since removed 2.4.6 and the project ships "
+            "clean releases again (2.4.7, 2.4.8); this advisory only fires if "
+            "the compromised 2.4.6 is still installed."
         ),
         url="https://socket.dev/blog/mini-shai-hulud-worm-pypi",
         compromised=(

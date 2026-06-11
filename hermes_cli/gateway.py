@@ -3228,12 +3228,25 @@ def systemd_uninstall(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service uninstalled")
 
 
+def _gateway_install_hint(system: bool = False) -> str:
+    """Suggested install command, preserving the active profile and scope.
+
+    Each profile gets its own service unit (``hermes-gateway-<profile>``),
+    so a user running ``hermes -p stock gateway start`` must install with
+    the same profile flag — plain ``hermes gateway install`` would install
+    the *default* profile's service instead (#44421).
+    """
+    scope_flag = " --system" if system else ""
+    profile_arg = _profile_arg()
+    profile_flag = f" {profile_arg}" if profile_arg else ""
+    return f"{'sudo ' if system else ''}hermes{profile_flag} gateway install{scope_flag}"
+
+
 def _require_service_installed(action: str, system: bool = False) -> None:
     unit_path = get_systemd_unit_path(system=system)
     if not unit_path.exists():
-        scope_flag = " --system" if system else ""
-        print("✗ Gateway service is not installed")
-        print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
+        print(f"✗ Gateway service is not installed")
+        print(f"  Run: {_gateway_install_hint(system)}")
         sys.exit(1)
 
 
@@ -3393,7 +3406,7 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
     if not unit_path.exists():
         print("✗ Gateway service is not installed")
-        print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
+        print(f"  Run: {_gateway_install_hint(system)}")
         return
 
     if has_conflicting_systemd_units():

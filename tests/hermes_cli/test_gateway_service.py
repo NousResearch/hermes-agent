@@ -417,6 +417,21 @@ class TestRequireServiceInstalled:
 
         gateway_cli._require_service_installed("start")
 
+    def test_install_hint_preserves_profile_flag(self, tmp_path, monkeypatch, capsys):
+        # `hermes -p stock gateway start` without a per-profile unit must
+        # suggest installing *that profile's* service — a bare
+        # `hermes gateway install` would install the default profile's
+        # unit instead (#44421).
+        unit_path = tmp_path / "hermes-gateway-stock.service"
+        monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
+        monkeypatch.setattr(gateway_cli, "_profile_arg", lambda hermes_home=None: "--profile stock")
+
+        with pytest.raises(SystemExit):
+            gateway_cli._require_service_installed("start")
+
+        out = capsys.readouterr().out
+        assert "hermes --profile stock gateway install" in out
+
 
 class TestGeneratedSystemdUnits:
     def _expected_timeout_stop_sec(self) -> str:

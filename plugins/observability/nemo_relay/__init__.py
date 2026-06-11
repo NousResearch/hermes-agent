@@ -78,16 +78,21 @@ class _Runtime:
             return False
         try:
             self._ensure_plugin_config_output_dirs(self.settings.plugins_config)
-            result = initialize(self.settings.plugins_config)
-            if inspect.isawaitable(result):
-                asyncio.run(result)
+            _resolve_awaitable(initialize(self.settings.plugins_config))
             return True
-        except RuntimeError:
-            logger.debug("NeMo Relay plugins.toml init skipped inside a running event loop")
-            return False
         except Exception as exc:
             logger.debug("NeMo Relay plugins.toml init failed: %s", exc, exc_info=True)
             return False
+
+    def _clear_plugins_toml(self) -> None:
+        if not self._plugin_config_initialized:
+            return
+        plugin_mod = getattr(self.nemo_relay, "plugin", None)
+        clear = getattr(plugin_mod, "clear", None)
+        if not callable(clear):
+            return
+        _resolve_awaitable(clear())
+        self._plugin_config_initialized = False
 
     def _ensure_plugin_config_output_dirs(self, config: dict[str, Any]) -> None:
         for component in config.get("components", []):
@@ -124,6 +129,8 @@ class _Runtime:
         self.atof_exporter.register("hermes.nemo_relay.atof")
 
     def ensure_session(self, kwargs: dict[str, Any]) -> _SessionState:
+        if self.settings.plugins_config and not self._plugin_config_initialized:
+            self._plugin_config_initialized = self._configure_plugins_toml()
         session_id = _session_id(kwargs)
         state = self.sessions.get(session_id)
         if state is not None:
@@ -189,6 +196,11 @@ class _Runtime:
                 state.atif_exporter.deregister(state.atif_subscriber_name)
             except Exception:
                 logger.debug("NeMo Relay ATIF deregister failed", exc_info=True)
+        if self._plugin_config_initialized and not self.sessions:
+            try:
+                self._clear_plugins_toml()
+            except Exception:
+                logger.debug("NeMo Relay plugins.toml clear failed", exc_info=True)
 
     def mark(self, name: str, kwargs: dict[str, Any]) -> None:
         state = self.ensure_session(kwargs)
@@ -561,6 +573,12 @@ def _load_settings() -> _Settings:
     plugins_toml_path = _env("HERMES_NEMO_RELAY_PLUGINS_TOML")
     plugins_config = _load_plugins_config(plugins_toml_path)
     adaptive_config = _enabled_component_config(plugins_config, "adaptive")
+    atif_enabled = _env_bool("HERMES_NEMO_RELAY_ATIF_ENABLED")
+    if atif_enabled and _observability_exporter_enabled(plugins_config, "atif"):
+        logger.debug(
+            "NeMo Relay direct ATIF fallback disabled because plugins.toml observability.atif owns exporter lifecycle"
+        )
+        atif_enabled = False
     return _Settings(
         plugins_toml_path=plugins_toml_path,
         plugins_config=plugins_config,
@@ -570,7 +588,7 @@ def _load_settings() -> _Settings:
         atof_output_directory=_env("HERMES_NEMO_RELAY_ATOF_OUTPUT_DIRECTORY"),
         atof_filename=_env("HERMES_NEMO_RELAY_ATOF_FILENAME") or "hermes-atof.jsonl",
         atof_mode=_env("HERMES_NEMO_RELAY_ATOF_MODE") or "append",
-        atif_enabled=_env_bool("HERMES_NEMO_RELAY_ATIF_ENABLED"),
+        atif_enabled=atif_enabled,
         atif_output_directory=_env("HERMES_NEMO_RELAY_ATIF_OUTPUT_DIRECTORY"),
         atif_filename_template=_env("HERMES_NEMO_RELAY_ATIF_FILENAME_TEMPLATE") or "hermes-atif-{session_id}.json",
         atif_subagent_export_mode=_atif_subagent_export_mode(),
@@ -616,6 +634,19 @@ def _adaptive_mode(config: dict[str, Any] | None) -> str:
     if isinstance(mode, str) and mode.strip():
         return mode.strip()
     return "observe"
+
+
+def _observability_exporter_enabled(
+    plugins_config: dict[str, Any] | None,
+    exporter_name: str,
+) -> bool:
+    observability_config = _enabled_component_config(plugins_config, "observability")
+    if not isinstance(observability_config, dict):
+        return False
+    exporter_config = observability_config.get(exporter_name)
+    if not isinstance(exporter_config, dict):
+        return False
+    return exporter_config.get("enabled", True) is not False
 
 
 def _env(name: str) -> str:

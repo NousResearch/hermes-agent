@@ -6577,9 +6577,10 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
         # selected profile, matching the config the server was saved into.
         # (asyncio.to_thread copies contextvars, but entering explicitly
         # keeps the lock-protected SKILLS_DIR swap balanced per-thread.)
-        # Known limit: the dedicated MCP event-loop thread spawned by the
-        # probe doesn't inherit the contextvar, so OAuth token-store paths
-        # resolve against the process HERMES_HOME.
+        # The probe's dedicated MCP event-loop thread is covered too:
+        # _run_on_mcp_loop wraps scheduled coroutines with the caller's
+        # HERMES_HOME override (see mcp_tool._wrap_with_home_override), so
+        # OAuth token stores resolve against the selected profile as well.
         with _profile_scope(profile):
             return _probe_single_server(name, servers[name])
 

@@ -4707,8 +4707,7 @@ class TelegramAdapter(BasePlatformAdapter):
             size_text = "unknown size"
         return (
             f"[Telegram {label} skipped: file size {size_text} exceeds the "
-            f"{limit_mb} MB limit. Ask the user to send a shorter voice note "
-            "or a smaller audio file.]"
+            f"{limit_mb} MB limit. Ask the user to send a smaller file.]"
         )
 
     def _telegram_media_size_allowed(self, source: Any, label: str) -> tuple[bool, Optional[str]]:
@@ -6600,6 +6599,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
         elif msg.video:
             try:
+                allowed, note = self._telegram_media_size_allowed(msg.video, "video file")
+                if not allowed:
+                    event.text = self._append_observed_note(event.text, note or "")
+                    logger.info("[Telegram] Skipped oversized user video (size=%s)", getattr(msg.video, "file_size", None))
+                    await self.handle_message(event)
+                    return
                 file_obj = await msg.video.get_file()
                 video_bytes = await file_obj.download_as_bytearray()
                 ext = ".mp4"

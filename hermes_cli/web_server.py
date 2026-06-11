@@ -8926,20 +8926,39 @@ def _primary_lan_ip() -> str:
         return ""
 
 
-def _presence_advertise_endpoint(host: str, port: int) -> str:
+def _presence_advertise_endpoint(
+    host: str,
+    port: int,
+    *,
+    auth_required: bool,
+    token: Optional[str] = None,
+) -> str:
     """Dialable ws endpoint to advertise in session-presence records.
 
     Loopback binds advertise nothing (the address is meaningless from
-    another device). Wildcard binds advertise the primary LAN IP; an
-    explicit non-loopback bind (LAN/Tailscale address) advertises itself.
+    another device). OAuth-gated non-loopback binds also advertise nothing:
+    clients need a short-lived WS ticket, not a reusable presence value.
+    Explicit non-loopback ``--insecure`` binds advertise the legacy session
+    token in the query string so trusted-LAN peers can actually dial.
     """
+    if auth_required:
+        return ""
+
     bound = (host or "").strip().lower()
     if not bound or bound in _LOOPBACK_HOSTS:
         return ""
+
     if bound in {"0.0.0.0", "::"}:
         lan_ip = _primary_lan_ip()
-        return f"ws://{lan_ip}:{port}/api/ws" if lan_ip else ""
-    return f"ws://{host.strip()}:{port}/api/ws"
+        endpoint = f"ws://{lan_ip}:{port}/api/ws" if lan_ip else ""
+    else:
+        endpoint = f"ws://{host.strip()}:{port}/api/ws"
+
+    session_token = _SESSION_TOKEN if token is None else token
+    if not endpoint or not session_token:
+        return ""
+
+    return f"{endpoint}?{urllib.parse.urlencode({'token': session_token})}"
 
 
 def _ws_client_reason(ws: "WebSocket") -> Optional[str]:
@@ -10697,7 +10716,11 @@ def start_server(
     # where to attach. setdefault keeps an operator-configured
     # HERMES_SESSION_PRESENCE_ENDPOINT authoritative; loopback binds
     # advertise nothing — the address would be meaningless off-machine.
-    _adv_endpoint = _presence_advertise_endpoint(host, port)
+    _adv_endpoint = _presence_advertise_endpoint(
+        host,
+        port,
+        auth_required=bool(app.state.auth_required),
+    )
     if _adv_endpoint:
         os.environ.setdefault("HERMES_SESSION_PRESENCE_ENDPOINT", _adv_endpoint)
 

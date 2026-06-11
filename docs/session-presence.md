@@ -64,6 +64,14 @@ records while the session is alive and clear them when the session finalizes.
 a private attach hint. Hermes treats this as data. Generic clients should not
 blindly execute endpoint values from a shared directory.
 
+Hermes Dashboard auto-publishes a WebSocket attach hint only when it is bound
+to a non-loopback interface with the explicit `--insecure` trusted-LAN opt-in.
+That hint includes the dashboard's ephemeral session token in the query string,
+because browser WebSocket clients cannot set the session-token header. OAuth
+gated public binds do not auto-publish a presence endpoint until remote attach
+has a ticket-minting handshake. If endpoint hints are enabled, treat the
+presence directory as trusted-device-only state.
+
 Examples of endpoint values a private adapter could understand:
 
 ```text

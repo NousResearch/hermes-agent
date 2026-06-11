@@ -63,8 +63,9 @@ def write_session_presence(
 ) -> dict[str, Any]:
     """Publish or refresh an active-session presence record.
 
-    The record is deliberately small and secret-free.  ``endpoint`` is optional
-    and should contain only a user-configured local/private attach hint.
+    The record is deliberately small.  ``endpoint`` is optional and may contain
+    a user-configured private attach hint; only publish it into trusted presence
+    directories.
     """
     sid = str(session_id or "").strip()
     if not sid:

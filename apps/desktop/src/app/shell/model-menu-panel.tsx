@@ -168,7 +168,11 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                 const meta = isCurrent
                   ? [
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
-                      reasoningEffortLabel(currentReasoningEffort) || copy.medium
+                      // No effort label on models whose reasoning Hermes
+                      // cannot steer — it would mirror the placebo dial.
+                      (caps?.reasoning ?? true)
+                        ? reasoningEffortLabel(currentReasoningEffort) || copy.medium
+                        : null
                     ]
                       .filter(Boolean)
                       .join(' ')

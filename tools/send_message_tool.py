@@ -384,6 +384,14 @@ def _handle_send(args):
     mirror_text = cleaned_message.strip() or _describe_media_for_mirror(media_files)
 
     used_home_channel = False
+    if not chat_id and target_ref:
+        return json.dumps({
+            "error": (
+                f"Explicit or resolved target '{target}' did not resolve to a chat_id; "
+                "refusing to fall back to the home channel. Use send_message(action='list') "
+                "and pass an exact target."
+            )
+        })
     if not chat_id:
         home = config.get_home_channel(platform)
         if not home and platform_name == "weixin":
@@ -443,6 +451,13 @@ def _handle_send(args):
                 force_document=force_document_attachments,
             )
         )
+        if isinstance(result, dict) and result.get("success"):
+            result.setdefault("target", target)
+            result.setdefault("platform", platform_name)
+            result.setdefault("actual_chat_id", chat_id)
+            if thread_id:
+                result.setdefault("actual_thread_id", thread_id)
+            result.setdefault("used_home_channel", used_home_channel)
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
 
@@ -544,6 +559,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return f"group:{group_id}", None, True
         return None, None, False
     if platform_name in _PHONE_PLATFORMS:
+        # Signal supports both E.164 DMs and group:<id> group targets. Treat
+        # group references as explicit so resolved channel-directory entries
+        # like signal:DroneProject -> group:<id> do not fall through to the
+        # configured home channel.
+        if platform_name == "signal" and target_ref.strip().startswith("group:"):
+            return target_ref.strip(), None, True
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters

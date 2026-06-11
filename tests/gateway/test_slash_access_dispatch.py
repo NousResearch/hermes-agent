@@ -526,6 +526,55 @@ async def test_channel_allowlist_blocks_unlisted_skill_command(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_channel_allowlist_allows_mention_prefixed_listed_skill_command(monkeypatch):
+    """Mention-gated groups can invoke an allowed skill slash after @bot."""
+    from agent import skill_commands
+
+    monkeypatch.setattr(
+        skill_commands,
+        "get_skill_commands",
+        lambda: {
+            "/deep-research": {
+                "name": "deep-research",
+                "description": "Deep research",
+                "skill_dir": "/tmp/deep-research",
+            },
+        },
+    )
+    monkeypatch.setattr(
+        skill_commands,
+        "build_skill_invocation_message",
+        lambda *args, **kwargs: "[deep-research invocation message]",
+    )
+    runner = _make_runner(
+        platform=Platform.SIGNAL,
+        platform_extra={
+            "channel_command_access": {
+                "DroneProject": {
+                    "allowed_slash_commands": ["deep-research"],
+                }
+            },
+        },
+    )
+    runner._draining = False
+    runner._handle_message_with_agent = AsyncMock(return_value="agent-ran")
+    source = _make_source(
+        platform=Platform.SIGNAL,
+        user_id="regular-user",
+        chat_type="group",
+        chat_id="group:opaque-signal-group-id",
+        chat_name="DroneProject",
+        chat_id_alt="opaque-signal-group-id",
+    )
+    event = _make_event("@niklas-agent /deep-research battery suppliers", source)
+
+    result = await runner._handle_message(event)
+
+    assert result == "agent-ran"
+    assert event.text == "[deep-research invocation message]"
+
+
+@pytest.mark.asyncio
 async def test_channel_allowlist_allows_listed_skill_command(monkeypatch):
     from agent import skill_commands
 

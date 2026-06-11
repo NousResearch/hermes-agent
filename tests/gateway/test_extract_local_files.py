@@ -8,10 +8,12 @@ deduplication, text cleanup, and extension routing.
 Based on PR #1636 by sudoingX (salvaged + hardened).
 """
 
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
+import gateway.platforms.base as base_module
 from gateway.platforms.base import BasePlatformAdapter
 
 
@@ -395,6 +397,50 @@ class TestEdgeCases:
     def test_deep_nested_path(self):
         paths, _ = _extract("At /a/b/c/d/e/f/g/h/image.png end")
         assert paths == ["/a/b/c/d/e/f/g/h/image.png"]
+
+
+class TestPrivateRuntimeArtifactFiltering:
+    def test_deep_research_state_and_manifest_are_never_delivery_attachments(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        job_dir = hermes_home / "deep-research" / "jobs" / "20260604063758-wn2meh"
+        job_dir.mkdir(parents=True)
+        manifest = job_dir / "manifest.json"
+        state = job_dir / "state.json"
+        result = job_dir / "result.md"
+        manifest.write_text('{"backend":"internal"}')
+        state.write_text('{"delivery":"internal"}')
+        result.write_text("# User-facing report\n")
+
+        monkeypatch.setattr(base_module, "_HERMES_HOME", hermes_home)
+        monkeypatch.setattr(base_module, "_HERMES_ROOT", hermes_home)
+
+        response = f"State: {state}\nManifest: {manifest}\nReport: {result}"
+        paths, cleaned = BasePlatformAdapter.extract_local_files(response)
+        assert paths == [str(state), str(manifest), str(result)]
+        assert str(state) not in cleaned
+        assert str(manifest) not in cleaned
+        assert str(result) not in cleaned
+
+        safe = BasePlatformAdapter.filter_local_delivery_paths(paths)
+        assert safe == [str(result.resolve())]
+
+        media, _ = BasePlatformAdapter.extract_media(
+            f"MEDIA:{manifest}\nMEDIA:{state}\nMEDIA:{result}"
+        )
+        safe_media = BasePlatformAdapter.filter_media_delivery_paths(media)
+        assert safe_media == [(str(result.resolve()), False)]
+
+    def test_manifest_with_same_name_outside_deep_research_jobs_still_allowed(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / "hermes-home"
+        public_dir = tmp_path / "exports"
+        public_dir.mkdir()
+        manifest = public_dir / "manifest.json"
+        manifest.write_text('{"ok": true}')
+
+        monkeypatch.setattr(base_module, "_HERMES_HOME", hermes_home)
+        monkeypatch.setattr(base_module, "_HERMES_ROOT", hermes_home)
+
+        assert BasePlatformAdapter.filter_local_delivery_paths([str(manifest)]) == [str(manifest.resolve())]
 
 
 if __name__ == "__main__":

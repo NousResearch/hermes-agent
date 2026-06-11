@@ -351,6 +351,81 @@ class TestSendMessageTool:
         send_mock.assert_not_awaited()
         mirror_mock.assert_not_called()
 
+    def test_explicit_signal_group_does_not_fall_back_to_home(self):
+        signal_cfg = SimpleNamespace(enabled=True, token="sig", extra={})
+        home = SimpleNamespace(chat_id="group:HOME")
+        config = SimpleNamespace(
+            platforms={Platform.SIGNAL: signal_cfg},
+            get_home_channel=lambda _platform: home,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "signal:group:DRONEPROJECT",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["actual_chat_id"] == "group:DRONEPROJECT"
+        assert result["used_home_channel"] is False
+        assert "home channel" not in result.get("note", "")
+        send_mock.assert_awaited_once_with(
+            Platform.SIGNAL,
+            signal_cfg,
+            "group:DRONEPROJECT",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
+    def test_resolved_signal_group_name_does_not_fall_back_to_home(self):
+        signal_cfg = SimpleNamespace(enabled=True, token="sig", extra={})
+        home = SimpleNamespace(chat_id="group:HOME")
+        config = SimpleNamespace(
+            platforms={Platform.SIGNAL: signal_cfg},
+            get_home_channel=lambda _platform: home,
+        )
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("gateway.channel_directory.resolve_channel_name", return_value="group:DRONEPROJECT"), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "signal:DroneProject",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        assert result["actual_chat_id"] == "group:DRONEPROJECT"
+        assert result["used_home_channel"] is False
+        assert "home channel" not in result.get("note", "")
+        send_mock.assert_awaited_once_with(
+            Platform.SIGNAL,
+            signal_cfg,
+            "group:DRONEPROJECT",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_resolved_telegram_topic_name_preserves_thread_id(self):
         config, telegram_cfg = _make_config()
 
@@ -1517,8 +1592,15 @@ class TestParseTargetRefE164:
         assert is_explicit is True
 
     def test_signal_group_target_is_explicit(self):
+        # Keep whitespace-tolerant parsing from local flavour and verify
+        # upstream's canonical group token case.
         chat_id, thread_id, is_explicit = _parse_target_ref("signal", "  group:abc123  ")
         assert chat_id == "group:abc123"
+        assert thread_id is None
+        assert is_explicit is True
+
+        chat_id, thread_id, is_explicit = _parse_target_ref("signal", "group:DRONEPROJECT")
+        assert chat_id == "group:DRONEPROJECT"
         assert thread_id is None
         assert is_explicit is True
 
@@ -1527,7 +1609,6 @@ class TestParseTargetRefE164:
         assert chat_id is None
         assert thread_id is None
         assert is_explicit is False
-
     def test_sms_e164_is_explicit(self):
         chat_id, _, is_explicit = _parse_target_ref("sms", "+15551234567")
         assert chat_id == "+15551234567"

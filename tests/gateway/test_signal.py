@@ -2688,6 +2688,69 @@ class TestSignalGroupV2Routing:
         assert captured[0].text == "hello sync v2"
 
     @pytest.mark.asyncio
+    async def test_sync_note_to_self_uuid_sender_routes_as_account_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._account_identifiers.add("account-uuid")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceUuid": "account-uuid",
+                "sourceName": "Alice",
+                "timestamp": 1700000000000,
+                "syncMessage": {
+                    "sentMessage": {
+                        "timestamp": 1700000000000,
+                        "destinationNumber": adapter.account,
+                        "message": "hello note self",
+                    }
+                },
+            }
+        })
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == adapter.account
+        assert captured[0].source.chat_type == "dm"
+        assert captured[0].source.user_id == adapter.account
+        assert captured[0].source.user_id_alt == "account-uuid"
+        assert captured[0].text == "hello note self"
+
+    @pytest.mark.asyncio
+    async def test_sync_note_to_self_destination_uuid_routes_as_account_dm(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._account_identifiers.add("account-uuid")
+        captured = []
+
+        async def _capture(event):
+            captured.append(event)
+
+        adapter.handle_message = _capture
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceUuid": "account-uuid",
+                "sourceName": "Alice",
+                "timestamp": 1700000000000,
+                "syncMessage": {
+                    "sentMessage": {
+                        "timestamp": 1700000000000,
+                        "destinationUuid": "account-uuid",
+                        "message": "hello note uuid",
+                    }
+                },
+            }
+        })
+
+        assert len(captured) == 1
+        assert captured[0].source.chat_id == adapter.account
+        assert captured[0].text == "hello note uuid"
+
+    @pytest.mark.asyncio
     async def test_legacy_group_info_still_works(self, monkeypatch):
         adapter = _make_signal_adapter(monkeypatch, group_allowed="*", require_mention=False)
         captured = []

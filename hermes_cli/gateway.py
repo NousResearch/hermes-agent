@@ -2780,7 +2780,23 @@ WantedBy=default.target
 
 
 def _normalize_service_definition(text: str) -> str:
-    return "\n".join(line.rstrip() for line in text.strip().splitlines())
+    """Normalize service text for current/stale comparisons.
+
+    Generated systemd units intentionally snapshot a broad PATH from the
+    invoking shell so user-installed tools remain available when systemd starts
+    the gateway. Shell PATHs can vary across invocations (especially WSL
+    Windows interop paths) without changing the service's executable, venv, or
+    Hermes home, so ignore the PATH payload when deciding whether the installed
+    unit is stale.
+    """
+    import re
+
+    normalized = "\n".join(line.rstrip() for line in text.strip().splitlines())
+    return re.sub(
+        r'Environment="PATH=[^"]*"',
+        'Environment="PATH=__HERMES_PATH__"',
+        normalized,
+    )
 
 
 # Directives that older systemd versions silently ignore/strip.  Normalize

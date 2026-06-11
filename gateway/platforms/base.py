@@ -1213,6 +1213,29 @@ def _path_under_denied_prefix(resolved: Path) -> bool:
     return False
 
 
+def _is_private_runtime_artifact(resolved: Path) -> bool:
+    """Return True for internal runtime audit files that must not be uploaded.
+
+    Deep Research job state/manifest JSON files contain backend provenance,
+    delivery targets, error payloads, and internal paths. They are useful for
+    operators on disk, but they should never be auto-attached to a public chat
+    just because an agent mentioned the path in a status message. This guard is
+    intentionally global (applies even to explicit MEDIA: tags) so the delivery
+    boundary cannot leak these internals via either bare-path extraction or
+    model-emitted media directives.
+    """
+    if resolved.name not in {"state.json", "manifest.json"}:
+        return False
+    for hermes_root in (_HERMES_HOME, _HERMES_ROOT):
+        try:
+            jobs_root = (hermes_root / "deep-research" / "jobs").expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        if _path_is_within(resolved, jobs_root):
+            return True
+    return False
+
+
 def _file_is_recently_produced(resolved: Path, window_seconds: float) -> bool:
     """Return True if the file's mtime is within ``window_seconds`` of now.
 
@@ -1282,6 +1305,9 @@ def validate_media_delivery_path(path: str) -> Optional[str]:
         return None
 
     if not resolved.is_file():
+        return None
+
+    if _is_private_runtime_artifact(resolved):
         return None
 
     # Cache / operator allowlist is always honored — these are unconditionally
@@ -1779,16 +1805,35 @@ class MessageEvent:
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
     
+    def _command_text(self) -> str:
+        """Return the slash-command portion of this message, if present.
+
+        In mention-gated group chats, users commonly type messages like
+        ``@hermes /status`` or ``@bot-name /deep-research ...`` so the platform
+        can wake the bot while the actual slash command appears after the bot
+        mention. Treat only a leading mention followed immediately by a slash
+        token as command syntax; ordinary prose containing an @mention is left
+        untouched.
+        """
+        text = (self.text or "").lstrip()
+        if text.startswith("/"):
+            return text
+        parts = text.split(maxsplit=1)
+        if len(parts) == 2 and parts[0].startswith("@") and parts[1].startswith("/"):
+            return parts[1]
+        return ""
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.text.startswith("/")
+        return bool(self._command_text())
     
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
-        if not self.is_command():
+        command_text = self._command_text()
+        if not command_text:
             return None
         # Split on space and get first word, strip the /
-        parts = self.text.split(maxsplit=1)
+        parts = command_text.split(maxsplit=1)
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]
@@ -1799,9 +1844,10 @@ class MessageEvent:
     
     def get_command_args(self) -> str:
         """Get the arguments after a command."""
-        if not self.is_command():
+        command_text = self._command_text()
+        if not command_text:
             return self.text
-        parts = self.text.split(maxsplit=1)
+        parts = command_text.split(maxsplit=1)
         args = parts[1] if len(parts) > 1 else ""
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")

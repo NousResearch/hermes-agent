@@ -495,13 +495,26 @@ class SignalAdapter(BasePlatformAdapter):
         if not names_to_resolve:
             return
         try:
-            groups = await self._rpc(
-                "listGroups",
-                {"account": self.account},
-                rpc_id="listGroups_allowlist",
-                log_failures=False,
-                timeout=15.0,
-            )
+            groups = None
+
+            # First try account-scoped listGroups (legacy behavior) and fall
+            # back to default listGroups. The latter is needed when the active
+            # Hermes profile contains a masked/redacted account value but the
+            # signal-cli daemon has a configured default account.
+            params_variants: list[dict] = []
+            if self.account and "*" not in str(self.account):
+                params_variants.append({"account": self.account})
+            params_variants.append({})
+            for params in params_variants:
+                groups = await self._rpc(
+                    "listGroups",
+                    params,
+                    rpc_id="listGroups_allowlist",
+                    log_failures=False,
+                    timeout=15.0,
+                )
+                if isinstance(groups, list):
+                    break
         except Exception:
             logger.debug("Signal: failed to resolve group allowlist names", exc_info=True)
             return
@@ -666,7 +679,12 @@ class SignalAdapter(BasePlatformAdapter):
             if sync_msg and isinstance(sync_msg, dict):
                 sent_msg = sync_msg.get("sentMessage")
                 if sent_msg and isinstance(sent_msg, dict):
-                    dest = sent_msg.get("destinationNumber") or sent_msg.get("destination")
+                    dest = (
+                        sent_msg.get("destinationNumber")
+                        or sent_msg.get("destination")
+                        or sent_msg.get("destinationUuid")
+                        or sent_msg.get("destinationServiceId")
+                    )
                     sent_ts = sent_msg.get("timestamp")
                     sent_msg_group_info = sent_msg.get("groupInfo") or {}
                     sent_msg_group_v2 = sent_msg.get("groupV2") or {}
@@ -674,13 +692,24 @@ class SignalAdapter(BasePlatformAdapter):
                         (sent_msg_group_v2.get("id") if isinstance(sent_msg_group_v2, dict) else None)
                         or (sent_msg_group_info.get("groupId") if isinstance(sent_msg_group_info, dict) else None)
                     )
-                    if dest == self._account_normalized or sent_msg_group_id:
+                    is_self_destination = bool(dest and dest in self._account_identifiers)
+                    if is_self_destination or sent_msg_group_id:
                         # Check if this is an echo of our own outbound reply
                         if self._consume_sent_timestamp(sent_ts):
                             return
-                        # Genuine user Note to Self — promote to dataMessage
+                        # Genuine user Note to Self — promote to dataMessage. Linked-device
+                        # sync envelopes may identify the sender only by the account UUID;
+                        # normalize Note-to-Self DMs back to the configured account number
+                        # so the gateway's SIGNAL_ALLOWED_USERS check authorizes them.
                         is_note_to_self = True
                         envelope_data = {**envelope_data, "dataMessage": sent_msg}
+                        if is_self_destination and not sent_msg_group_id:
+                            envelope_data["sourceNumber"] = self._account_normalized
+                            if envelope_data.get("sourceUuid"):
+                                self._remember_recipient_identifiers(
+                                    self._account_normalized,
+                                    envelope_data.get("sourceUuid"),
+                                )
             if not is_note_to_self:
                 return
 
@@ -868,7 +897,7 @@ class SignalAdapter(BasePlatformAdapter):
         # Build session source
         source = self.build_source(
             chat_id=chat_id,
-            chat_name=group_info.get("groupName") if group_info else sender_name,
+            chat_name=group_name if is_group else sender_name,
             chat_type=chat_type,
             user_id=sender,
             user_name=sender_name or sender,

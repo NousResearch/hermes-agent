@@ -642,6 +642,13 @@ class AIAgent:
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
 
+        # Re-arm the context-fill warning for the fresh session.  The fired
+        # state is keyed to the engine's compression_count, which the engine
+        # reset below sends back to 0 — without this line a warning fired at
+        # cycle 0 in the old session would suppress the first warning of the
+        # new one.
+        self._context_fill_warning_cycle = None
+
         # Context engine reset/transition (works for built-in compressor and plugins)
         self._transition_context_engine_session(
             old_session_id=old_session_id,

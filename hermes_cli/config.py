@@ -1141,6 +1141,16 @@ DEFAULT_CONFIG = {
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
+        "warning_enabled": True,      # surface a one-time reminder when context usage
+                                      # crosses warning_threshold, before auto-compression
+                                      # fires. Warns once per compression cycle; re-arms
+                                      # after each compaction (and on /new — see
+                                      # reset_session_state).
+        "warning_threshold": 0.7,     # warn when context usage reaches this ratio of the
+                                      # model's context window. Only meaningful when set
+                                      # below compression.threshold — otherwise compression
+                                      # fires first and the warning never appears.
+        "warning_message": "Context is getting high. Save important progress before continuing.",
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
         "hygiene_hard_message_limit": 400,  # gateway session-hygiene force-compress threshold by message count

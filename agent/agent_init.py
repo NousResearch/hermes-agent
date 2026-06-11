@@ -1323,6 +1323,26 @@ def init_agent(
         _compression_cfg.get("abort_on_summary_failure", False)
     ).lower() in {"true", "1", "yes"}
 
+    # Context-fill warning: one-time per-compression-cycle reminder emitted
+    # via _emit_status when usage crosses compression.warning_threshold,
+    # before auto-compression fires at compression.threshold.  The fired
+    # state lives on the agent (_context_fill_warning_cycle) keyed to the
+    # engine's compression_count — see conversation_loop's
+    # _maybe_emit_context_fill_warning.
+    agent._context_warning_enabled = str(
+        _compression_cfg.get("warning_enabled", True)
+    ).lower() in {"true", "1", "yes"}
+    try:
+        agent._context_warning_threshold = float(
+            _compression_cfg.get("warning_threshold", 0.7)
+        )
+    except (TypeError, ValueError):
+        agent._context_warning_threshold = 0.7
+    agent._context_warning_message = str(
+        _compression_cfg.get("warning_message", "") or ""
+    ).strip()
+    agent._context_fill_warning_cycle = None
+
     # Read optional explicit context_length override for the auxiliary
     # compression model. Custom endpoints often cannot report this via
     # /models, so the startup feasibility check needs the config hint.

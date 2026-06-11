@@ -524,6 +524,12 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
 | `platform` | `str` | Where the session is running: `"cli"`, `"telegram"`, `"discord"`, etc. |
+| `context_tokens` | `int` | Best-known context usage in tokens (post-preflight; `0` right after a compaction until the next real API response) |
+| `context_length` | `int` | The model's context window in tokens (`0` if unknown) |
+| `context_percent` | `float` | `context_tokens / context_length * 100` (`0.0` when the window is unknown) |
+| `compression_count` | `int` | Number of compactions so far in this session |
+| `compression_threshold` | `float \| None` | Configured compression trigger ratio (`compression.threshold`) |
+| `context_warning_threshold` | `float \| None` | Configured context-fill warning ratio (`compression.warning_threshold`) |
 
 **Fires:** In `run_agent.py`, inside `run_conversation()`, after context compression but before the main `while` loop. Fires once per `run_conversation()` call (i.e. once per user turn), not once per API call within the tool loop.
 

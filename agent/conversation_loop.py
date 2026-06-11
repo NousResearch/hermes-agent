@@ -124,6 +124,94 @@ def _ra():
     return run_agent
 
 
+_DEFAULT_CONTEXT_WARNING_MESSAGE = (
+    "Context is getting high. Save important progress before continuing."
+)
+
+
+def _context_usage_snapshot(agent: Any) -> Dict[str, Any]:
+    """Best-known context usage, shaped for the ``pre_llm_call`` hook payload.
+
+    Reads the active context engine's tracked counters — the same signal the
+    CLI status bar renders.  ``last_prompt_tokens`` is parked at the ``-1``
+    sentinel right after a compression (until the next real API response
+    reports usage), so it is clamped to 0 here; consumers never see a
+    negative count.
+
+    Safe on agents without a context engine (all fields zero/None).
+    """
+    engine = getattr(agent, "context_compressor", None)
+    try:
+        tokens = int(getattr(engine, "last_prompt_tokens", 0) or 0)
+        length = int(getattr(engine, "context_length", 0) or 0)
+        compressions = int(getattr(engine, "compression_count", 0) or 0)
+    except (TypeError, ValueError):
+        tokens, length, compressions = 0, 0, 0
+    tokens = max(0, tokens)
+    length = max(0, length)
+    return {
+        "context_tokens": tokens,
+        "context_length": length,
+        "context_percent": (tokens / length * 100.0) if length else 0.0,
+        "compression_count": compressions,
+        "compression_threshold": getattr(engine, "threshold_percent", None),
+        "context_warning_threshold": getattr(
+            agent, "_context_warning_threshold", None
+        ),
+    }
+
+
+def _maybe_emit_context_fill_warning(agent: Any) -> bool:
+    """Surface the one-time context-fill warning when usage crosses
+    ``compression.warning_threshold`` (default 0.7), before auto-compression
+    fires at ``compression.threshold``.
+
+    Fires at most once per compression cycle: the fired state
+    (``agent._context_fill_warning_cycle``) is keyed to the engine's
+    ``compression_count``, so each compaction — which increments the count
+    and parks ``last_prompt_tokens`` at the ``-1`` sentinel — re-arms the
+    warning for the next context buildup.  ``reset_session_state`` clears
+    the state on /new // reset.
+
+    Emitted via ``_emit_status`` so every host surfaces it the same way as
+    other lifecycle notices (CLI print, gateway chat message, TUI/desktop
+    status event).  Nothing is injected into the message list, so prompt
+    caching and persisted history are untouched.
+
+    Returns True when the warning was emitted by this call.
+    """
+    if not getattr(agent, "_context_warning_enabled", False):
+        return False
+    engine = getattr(agent, "context_compressor", None)
+    if engine is None:
+        return False
+    try:
+        threshold = float(getattr(agent, "_context_warning_threshold", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return False
+    if threshold <= 0:
+        return False
+
+    snapshot = _context_usage_snapshot(agent)
+    if not snapshot["context_length"]:
+        return False
+    cycle = snapshot["compression_count"]
+    if getattr(agent, "_context_fill_warning_cycle", None) == cycle:
+        return False  # already warned during this buildup
+    if snapshot["context_tokens"] / snapshot["context_length"] < threshold:
+        return False
+
+    agent._context_fill_warning_cycle = cycle
+    message = (
+        str(getattr(agent, "_context_warning_message", "") or "").strip()
+        or _DEFAULT_CONTEXT_WARNING_MESSAGE
+    )
+    agent._emit_status(
+        f"⚠️ CONTEXT {snapshot['context_percent']:.0f}% FULL\n\n{message}"
+    )
+    return True
+
+
 def _nous_entitlement_message(capability: str) -> str:
     try:
         from hermes_cli.nous_account import (
@@ -419,6 +507,8 @@ def run_conversation(
         set_session_context=set_session_context,
         set_current_write_origin=set_current_write_origin,
         ra=_ra,
+        context_usage_snapshot=_context_usage_snapshot,
+        maybe_emit_context_fill_warning=_maybe_emit_context_fill_warning,
     )
     user_message = _ctx.user_message
     original_user_message = _ctx.original_user_message

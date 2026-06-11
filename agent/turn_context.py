@@ -77,6 +77,8 @@ def build_turn_context(
     set_session_context,
     set_current_write_origin,
     ra,
+    context_usage_snapshot,
+    maybe_emit_context_fill_warning,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -313,6 +315,15 @@ def build_turn_context(
                 if not _compressor.should_compress(_preflight_tokens):
                     break
 
+    # ── Context-fill warning ──
+    # One-time reminder that context usage crossed
+    # compression.warning_threshold and auto-compression is approaching.
+    # Runs AFTER preflight so it reads the freshest signal: preflight seeds
+    # compressor.last_prompt_tokens with its estimate when safe, and a
+    # compaction parks the sentinel/-1 + bumps compression_count, which
+    # re-arms the warning for the next buildup cycle.
+    maybe_emit_context_fill_warning(agent)
+
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
     try:
@@ -328,6 +339,7 @@ def build_turn_context(
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
+            **context_usage_snapshot(agent),
         )
         _ctx_parts: list[str] = []
         for r in _pre_results:

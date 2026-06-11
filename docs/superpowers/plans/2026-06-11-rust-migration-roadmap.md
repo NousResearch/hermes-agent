@@ -189,6 +189,9 @@ language-specific setup where needed.
 - Windows bootstrap tool stages for `uv`, `git`, `node`, and `system-packages` now use Rust preflight checks to skip
   the script process when the required tools are already available, while preserving script fallback when anything is
   missing or the detected Node.js version is too old for the desktop build.
+- Windows `system-packages` now installs ripgrep natively from a bundled or cached release ZIP before falling back to
+  PowerShell for ffmpeg/package-manager recovery, reducing one common package-manager dependency without dropping TTS
+  voice-message support.
 - Windows `uv` now has a Rust native-first GitHub release ZIP path for x64, ARM64, and x86, installing `uv.exe` into
   `$HERMES_HOME/bin` and preserving the PowerShell astral installer as fallback for download, extraction, or version
   check failures.
@@ -360,6 +363,8 @@ language-specific setup where needed.
   runtime stages prefer matching bundled archives before falling back to the download cache.
 - Windows installer release workflow prepares x64 Node v22, uv, and pinned Git for Windows archives before Tauri
   packaging, then writes `bootstrap-tools-manifest.json` with archive URL, size, and SHA-256 metadata for review.
+- Windows installer release preparation now includes the pinned ripgrep ZIP used by the native `system-packages`
+  stage, so packaged installers can provide fast file search without first invoking winget/choco/scoop.
 - The same release preparation helper now supports `--platform linux|macos` for x64/arm64 Node and uv tarballs, matching
   the Unix Rust Node/uv installer asset matrix when future macOS/Linux installer packaging wires in bundled tools.
 - A manual Unix installer workflow now builds Linux and macOS Tauri setup artifacts with matching bundled Node/`uv`

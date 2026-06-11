@@ -657,6 +657,16 @@ async fn run_bootstrap(
                     )
                     .await,
                 )
+            } else if cfg!(target_os = "windows")
+                && stage.name.eq_ignore_ascii_case("system-packages")
+            {
+                Some(
+                    crate::orchestrator::install_windows_system_packages_stage(
+                        &hermes_home,
+                        bundled_tools_dir.as_deref(),
+                    )
+                    .await,
+                )
             } else if stage.name.eq_ignore_ascii_case("python") {
                 Some(crate::orchestrator::install_python_runtime_stage(&hermes_home))
             } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("node") {
@@ -1064,6 +1074,7 @@ fn should_fallback_native_stage(stage_name: &str, install_root: &std::path::Path
         || stage_name.eq_ignore_ascii_case("venv")
         || stage_name.eq_ignore_ascii_case("uv")
         || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("git"))
+        || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("system-packages"))
         || stage_name.eq_ignore_ascii_case("python")
         || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("node"))
         || is_python_dependencies_stage(stage_name)
@@ -1468,6 +1479,10 @@ mod tests {
         assert!(should_fallback_native_stage("dependencies", &install_root));
         assert!(should_fallback_native_stage("python-deps", &install_root));
         assert!(should_fallback_native_stage("platform-sdks", &install_root));
+        assert_eq!(
+            should_fallback_native_stage("system-packages", &install_root),
+            cfg!(target_os = "windows")
+        );
         assert_eq!(
             should_fallback_native_stage("node-deps", &install_root),
             cfg!(target_os = "windows")

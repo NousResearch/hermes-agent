@@ -63,12 +63,16 @@ class PrepareBootstrapToolsTests(unittest.TestCase):
             [
                 "node-v22.19.0-win-x64.zip",
                 "uv-x86_64-pc-windows-msvc.zip",
+                "ripgrep-15.1.0-x86_64-pc-windows-msvc.zip",
                 "PortableGit-2.54.0-64-bit.7z.exe",
             ],
         )
         self.assertTrue(x64_specs[0].url.endswith("/latest-v22.x/node-v22.19.0-win-x64.zip"))
         self.assertTrue(
-            x64_specs[2].url.endswith("/v2.54.0.windows.1/PortableGit-2.54.0-64-bit.7z.exe")
+            x64_specs[2].url.endswith("/15.1.0/ripgrep-15.1.0-x86_64-pc-windows-msvc.zip")
+        )
+        self.assertTrue(
+            x64_specs[3].url.endswith("/v2.54.0.windows.1/PortableGit-2.54.0-64-bit.7z.exe")
         )
 
         arm64_specs = module.archive_specs_for_arch("arm64", "node-v22.19.0-win-arm64.zip")
@@ -77,6 +81,7 @@ class PrepareBootstrapToolsTests(unittest.TestCase):
             [
                 "node-v22.19.0-win-arm64.zip",
                 "uv-aarch64-pc-windows-msvc.zip",
+                "ripgrep-15.1.0-aarch64-pc-windows-msvc.zip",
                 "PortableGit-2.54.0-arm64.7z.exe",
             ],
         )

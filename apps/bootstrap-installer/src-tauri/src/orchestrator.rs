@@ -126,6 +126,17 @@ pub struct WindowsGitRuntimeStagePlan {
     pub is_zip: bool,
 }
 
+/// Native Windows ripgrep runtime installation plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsRipgrepRuntimeStagePlan {
+    pub version: &'static str,
+    pub archive_name: String,
+    pub download_url: String,
+    pub archive_path: PathBuf,
+    pub install_dir: PathBuf,
+    pub rg_exe: PathBuf,
+}
+
 /// Native Unix Node runtime installation plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnixNodeRuntimeStagePlan {
@@ -1332,6 +1343,113 @@ pub fn windows_git_runtime_stage_plan(
     })
 }
 
+/// Build a Windows ripgrep runtime plan matching the pinned release asset.
+pub fn windows_ripgrep_runtime_stage_plan(
+    hermes_home: &Path,
+    arch: &str,
+) -> Result<WindowsRipgrepRuntimeStagePlan> {
+    let version = "15.1.0";
+    let target = match arch {
+        "arm64" => "aarch64-pc-windows-msvc",
+        "x64" => "x86_64-pc-windows-msvc",
+        "x86" => "i686-pc-windows-msvc",
+        other => return Err(anyhow!("unsupported Windows architecture for ripgrep: {other}")),
+    };
+    let archive_name = format!("ripgrep-{version}-{target}.zip");
+    let download_url =
+        format!("https://github.com/BurntSushi/ripgrep/releases/download/{version}/{archive_name}");
+    let archive_path = hermes_home
+        .join("bootstrap-cache")
+        .join(&archive_name);
+    let install_dir = hermes_home.join("bin");
+    let rg_exe = install_dir.join("rg.exe");
+    Ok(WindowsRipgrepRuntimeStagePlan {
+        version,
+        archive_name,
+        download_url,
+        archive_path,
+        install_dir,
+        rg_exe,
+    })
+}
+
+/// Install Windows ripgrep natively and leave ffmpeg to script fallback if needed.
+pub async fn install_windows_system_packages_stage(
+    hermes_home: &Path,
+    bundled_tools_dir: Option<&Path>,
+) -> Result<serde_json::Value> {
+    if !cfg!(target_os = "windows") {
+        return Err(anyhow!(
+            "native Windows system package stage is only available on Windows"
+        ));
+    }
+
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let managed_rg = managed_tool_path(hermes_home, "rg");
+    let rg_before = find_executable_on_path("rg", &path_env, &pathext)
+        .or_else(|| managed_rg.is_file().then_some(managed_rg.clone()));
+    let mut archive_name = None;
+    let mut archive_source_kind = None;
+
+    if rg_before.is_none() {
+        let arch = windows_node_arch_slug();
+        let plan = windows_ripgrep_runtime_stage_plan(hermes_home, &arch)?;
+        let archive_source =
+            resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
+        if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+            crate::artifact::download_to_cache(
+                crate::artifact::DownloadSpec {
+                    url: plan.download_url.clone(),
+                    user_agent: "Hermes-Setup",
+                    expected_sha256: None,
+                },
+                &archive_source.path,
+            )
+            .await
+            .with_context(|| format!("downloading {}", plan.archive_name))?;
+        }
+
+        install_windows_ripgrep_archive(&archive_source.path, &plan.install_dir)?;
+        if !plan.rg_exe.is_file() {
+            return Err(anyhow!(
+                "ripgrep extraction did not produce {}",
+                plan.rg_exe.display()
+            ));
+        }
+        let status = Command::new(&plan.rg_exe)
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("checking {}", plan.rg_exe.display()))?;
+        if !status.success() {
+            return Err(anyhow!("installed ripgrep failed version check"));
+        }
+        prepend_process_path(&plan.install_dir);
+        persist_windows_path_entries(&[plan.install_dir.clone()])?;
+        archive_name = Some(plan.archive_name);
+        archive_source_kind = Some(archive_source.kind.as_str().to_string());
+    } else if rg_before.as_deref() == Some(managed_rg.as_path()) {
+        let bin_dir = hermes_home.join("bin");
+        prepend_process_path(&bin_dir);
+        persist_windows_path_entries(&[bin_dir])?;
+    }
+
+    let refreshed_path = std::env::var_os("PATH").unwrap_or_default();
+    let ffmpeg = find_executable_on_path("ffmpeg", &refreshed_path, &pathext);
+    if ffmpeg.is_none() {
+        return Err(anyhow!("ffmpeg is not available; script fallback required"));
+    }
+
+    Ok(serde_json::json!({
+        "ripgrep": find_executable_on_path("rg", &refreshed_path, &pathext),
+        "ffmpeg": ffmpeg,
+        "archive": archive_name,
+        "archiveSource": archive_source_kind,
+    }))
+}
+
 /// Install Git for Windows natively before falling back to PowerShell.
 pub async fn install_windows_git_runtime_stage(
     hermes_home: &Path,
@@ -2456,6 +2574,31 @@ fn install_windows_git_archive(plan: &WindowsGitRuntimeStagePlan) -> Result<()> 
     ))
 }
 
+fn install_windows_ripgrep_archive(archive_path: &Path, install_dir: &Path) -> Result<()> {
+    fs::create_dir_all(install_dir)
+        .with_context(|| format!("creating ripgrep install dir {}", install_dir.display()))?;
+    let tmp_dir = install_dir.join("ripgrep-extracting");
+    remove_path_if_exists(&tmp_dir)?;
+    fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("creating ripgrep extraction directory {}", tmp_dir.display()))?;
+
+    let result = (|| -> Result<()> {
+        crate::artifact::extract_zip_archive(archive_path, &tmp_dir)?;
+        let extracted_rg = find_file_named(&tmp_dir, "rg.exe")?;
+        fs::copy(&extracted_rg, install_dir.join("rg.exe")).with_context(|| {
+            format!(
+                "copying ripgrep binary {} to {}",
+                extracted_rg.display(),
+                install_dir.display()
+            )
+        })?;
+        Ok(())
+    })();
+    let cleanup = remove_path_if_exists(&tmp_dir);
+    result?;
+    cleanup
+}
+
 fn find_windows_git_bash(install_dir: &Path) -> Option<PathBuf> {
     [
         install_dir.join("bin").join("bash.exe"),
@@ -2861,6 +3004,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("git") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
+    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("system-packages") {
+        return StageExecutionMode::NativeWithScriptFallback;
+    }
     if !cfg!(target_os = "windows") && name.eq_ignore_ascii_case("prerequisites") {
         return StageExecutionMode::ProbeThenScript;
     }
@@ -2924,7 +3070,9 @@ fn executable_candidates(name: &str, pathext: &str) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::events::StageInfo;
+    use std::io::Write;
     use std::path::PathBuf;
+    use zip::write::SimpleFileOptions;
 
     fn stage(name: &str) -> StageInfo {
         StageInfo {
@@ -2933,6 +3081,16 @@ mod tests {
             category: "install".to_string(),
             needs_user_input: false,
         }
+    }
+
+    fn write_test_zip(path: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        for (name, bytes) in entries {
+            zip.start_file(*name, SimpleFileOptions::default()).unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
     }
 
     #[test]
@@ -2960,6 +3118,7 @@ mod tests {
             stage("uv"),
             stage("git"),
             stage("node"),
+            stage("system-packages"),
             stage("platform-sdks"),
             stage("node-deps"),
             stage("desktop"),
@@ -2969,7 +3128,7 @@ mod tests {
         ];
         let plan = build_stage_plan(&stages, false);
 
-        assert_eq!(plan.len(), 12);
+        assert_eq!(plan.len(), 13);
         assert_eq!(plan[0].name, "repository");
         assert_eq!(plan[0].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[0].script_fallback, true);
@@ -3001,38 +3160,47 @@ mod tests {
         assert_eq!(plan[5].execution, node_execution);
         assert_eq!(plan[5].rust_probe, !cfg!(target_os = "windows"));
         assert_eq!(plan[5].script_fallback, true);
-        assert_eq!(plan[6].name, "platform-sdks");
-        assert_eq!(plan[6].execution, StageExecutionMode::NativeWithScriptFallback);
+        let system_packages_execution = if cfg!(target_os = "windows") {
+            StageExecutionMode::NativeWithScriptFallback
+        } else {
+            StageExecutionMode::ProbeThenScript
+        };
+        assert_eq!(plan[6].name, "system-packages");
+        assert_eq!(plan[6].execution, system_packages_execution);
+        assert_eq!(plan[6].rust_probe, !cfg!(target_os = "windows"));
         assert_eq!(plan[6].script_fallback, true);
+        assert_eq!(plan[7].name, "platform-sdks");
+        assert_eq!(plan[7].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[7].script_fallback, true);
         let node_deps_native = node_deps_stage_is_native_first_for_target(std::env::consts::OS);
         let node_deps_execution = if node_deps_native {
             StageExecutionMode::NativeWithScriptFallback
         } else {
             StageExecutionMode::ProbeThenScript
         };
-        assert_eq!(plan[7].name, "node-deps");
-        assert_eq!(plan[7].execution, node_deps_execution);
-        assert_eq!(plan[7].rust_probe, !node_deps_native);
-        assert_eq!(plan[7].script_fallback, true);
-        assert_eq!(plan[8].name, "desktop");
+        assert_eq!(plan[8].name, "node-deps");
+        assert_eq!(plan[8].execution, node_deps_execution);
+        assert_eq!(plan[8].rust_probe, !node_deps_native);
+        assert_eq!(plan[8].script_fallback, true);
+        assert_eq!(plan[9].name, "desktop");
         let desktop_native = desktop_stage_is_native_first_for_target(std::env::consts::OS);
         let desktop_execution = if desktop_native {
             StageExecutionMode::NativeWithScriptFallback
         } else {
             StageExecutionMode::ProbeThenScript
         };
-        assert_eq!(plan[8].execution, desktop_execution);
-        assert_eq!(plan[8].rust_probe, !desktop_native);
-        assert_eq!(plan[8].script_fallback, true);
-        assert_eq!(plan[9].name, "venv");
-        assert_eq!(plan[9].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[9].execution, desktop_execution);
+        assert_eq!(plan[9].rust_probe, !desktop_native);
         assert_eq!(plan[9].script_fallback, true);
-        assert_eq!(plan[10].name, "dependencies");
+        assert_eq!(plan[10].name, "venv");
         assert_eq!(plan[10].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[10].script_fallback, true);
-        assert_eq!(plan[11].name, "python-deps");
+        assert_eq!(plan[11].name, "dependencies");
         assert_eq!(plan[11].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[11].script_fallback, true);
+        assert_eq!(plan[12].name, "python-deps");
+        assert_eq!(plan[12].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[12].script_fallback, true);
     }
 
     #[test]
@@ -3278,6 +3446,63 @@ mod tests {
         std::fs::write(tools.join("npm.cmd"), b"npm").unwrap();
         assert!(node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD").is_none());
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn windows_ripgrep_runtime_stage_plan_matches_pinned_release_asset() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-ripgrep-runtime-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+
+        let x64 = windows_ripgrep_runtime_stage_plan(&hermes_home, "x64").unwrap();
+        assert_eq!(x64.version, "15.1.0");
+        assert_eq!(
+            x64.archive_name,
+            "ripgrep-15.1.0-x86_64-pc-windows-msvc.zip"
+        );
+        assert_eq!(
+            x64.download_url,
+            concat!(
+                "https://github.com/BurntSushi/ripgrep/releases/download/",
+                "15.1.0/ripgrep-15.1.0-x86_64-pc-windows-msvc.zip"
+            )
+        );
+        assert_eq!(x64.install_dir, hermes_home.join("bin"));
+        assert_eq!(x64.rg_exe, hermes_home.join("bin").join("rg.exe"));
+
+        let arm = windows_ripgrep_runtime_stage_plan(&hermes_home, "arm64").unwrap();
+        assert_eq!(
+            arm.archive_name,
+            "ripgrep-15.1.0-aarch64-pc-windows-msvc.zip"
+        );
+        let x86 = windows_ripgrep_runtime_stage_plan(&hermes_home, "x86").unwrap();
+        assert_eq!(x86.archive_name, "ripgrep-15.1.0-i686-pc-windows-msvc.zip");
+        assert!(windows_ripgrep_runtime_stage_plan(&hermes_home, "mips").is_err());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_windows_ripgrep_archive_copies_rg_exe_from_nested_zip() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-ripgrep-archive-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("ripgrep.zip");
+        let install_dir = root.join("bin");
+        write_test_zip(
+            &archive,
+            &[("ripgrep-15.1.0-x86_64-pc-windows-msvc/rg.exe", b"fake rg")],
+        );
+
+        install_windows_ripgrep_archive(&archive, &install_dir).unwrap();
+
+        assert_eq!(std::fs::read(install_dir.join("rg.exe")).unwrap(), b"fake rg");
+        assert!(!install_dir.join("ripgrep-extracting").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

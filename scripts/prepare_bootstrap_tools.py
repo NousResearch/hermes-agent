@@ -27,6 +27,7 @@ DEFAULT_OUTPUT_DIR = REPO_ROOT / "apps" / "bootstrap-installer" / "src-tauri" / 
 NODE_MAJOR = 22
 USER_AGENT = "Hermes-Setup"
 NODE_INDEX_URL = f"https://nodejs.org/dist/latest-v{NODE_MAJOR}.x/"
+RIPGREP_VERSION = "15.1.0"
 GIT_TAG = "v2.54.0.windows.1"
 GIT_VERSION = "2.54.0"
 MANIFEST_NAME = "bootstrap-tools-manifest.json"
@@ -48,6 +49,12 @@ GIT_ARCHIVE_NAMES = {
     "x64": "PortableGit-2.54.0-64-bit.7z.exe",
     "arm64": "PortableGit-2.54.0-arm64.7z.exe",
     "x86": "MinGit-2.54.0-32-bit.zip",
+}
+
+RIPGREP_ARCHIVE_NAMES = {
+    "x64": f"ripgrep-{RIPGREP_VERSION}-x86_64-pc-windows-msvc.zip",
+    "arm64": f"ripgrep-{RIPGREP_VERSION}-aarch64-pc-windows-msvc.zip",
+    "x86": f"ripgrep-{RIPGREP_VERSION}-i686-pc-windows-msvc.zip",
 }
 
 
@@ -108,7 +115,7 @@ def select_latest_unix_node_archive(
 def archive_specs_for_arch(arch: str, node_archive_name: str) -> list[ArchiveSpec]:
     """Build the archive list that matches the Rust installer runtime matrix."""
 
-    if arch not in UV_ARCHIVE_NAMES or arch not in GIT_ARCHIVE_NAMES:
+    if arch not in UV_ARCHIVE_NAMES or arch not in GIT_ARCHIVE_NAMES or arch not in RIPGREP_ARCHIVE_NAMES:
         raise ValueError(f"unsupported Windows architecture: {arch}")
     return [
         ArchiveSpec(
@@ -118,6 +125,13 @@ def archive_specs_for_arch(arch: str, node_archive_name: str) -> list[ArchiveSpe
         ArchiveSpec(
             name=UV_ARCHIVE_NAMES[arch],
             url=f"https://github.com/astral-sh/uv/releases/latest/download/{UV_ARCHIVE_NAMES[arch]}",
+        ),
+        ArchiveSpec(
+            name=RIPGREP_ARCHIVE_NAMES[arch],
+            url=(
+                "https://github.com/BurntSushi/ripgrep/releases/download/"
+                f"{RIPGREP_VERSION}/{RIPGREP_ARCHIVE_NAMES[arch]}"
+            ),
         ),
         ArchiveSpec(
             name=GIT_ARCHIVE_NAMES[arch],

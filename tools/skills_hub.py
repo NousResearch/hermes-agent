@@ -874,7 +874,10 @@ class GitHubSource(SkillSource):
         if resp is not None and resp.status_code == 200:
             if _is_binary_skill_file(path):
                 return resp.content
-            return resp.text
+            try:
+                return resp.content.decode("utf-8")
+            except UnicodeDecodeError:
+                return resp.content
         return None
 
     def _get_skillsh_groupings(self, repo: str) -> Optional[Dict[str, str]]:

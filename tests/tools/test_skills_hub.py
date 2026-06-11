@@ -1815,6 +1815,66 @@ class TestGitHubFetchFileContent:
         assert content.startswith(b"\x89PNG")
         assert content != resp.text
 
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_unknown_suffix_invalid_utf8_returns_raw_bytes(self, mock_get):
+        model_bytes = b"GGUF\x00\xff\xfe\x80weights"
+        resp = MagicMock(status_code=200)
+        resp.content = model_bytes
+        resp.text = model_bytes.decode("utf-8", errors="replace")
+        mock_get.return_value = resp
+
+        content = self._source()._fetch_file_content(
+            "owner/repo", "skill/assets/model.gguf"
+        )
+
+        assert content == model_bytes
+        assert isinstance(content, bytes)
+        assert content != resp.text
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_extensionless_invalid_utf8_round_trips_through_quarantine(
+        self, mock_get, tmp_path
+    ):
+        import tools.skills_hub as hub
+
+        raw_fixture = b"\x00\xff\xfe\x80extensionless-fixture"
+        responses = {
+            "https://api.github.com/repos/owner/repo/contents/demo-skill/SKILL.md": b"---\nname: demo-skill\n---\n",
+            "https://api.github.com/repos/owner/repo/contents/demo-skill/assets/fixture": raw_fixture,
+        }
+
+        def fake_get(url, **_kwargs):
+            content = responses[url]
+            resp = MagicMock(status_code=200)
+            resp.content = content
+            resp.text = content.decode("utf-8", errors="replace")
+            return resp
+
+        mock_get.side_effect = fake_get
+        src = self._source()
+        src._tree_cache["owner/repo"] = (
+            "main",
+            [
+                {"type": "blob", "path": "demo-skill/SKILL.md"},
+                {"type": "blob", "path": "demo-skill/assets/fixture"},
+            ],
+        )
+        hub_dir = tmp_path / "skills" / ".hub"
+
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = src.fetch("owner/repo/demo-skill")
+            assert bundle is not None
+            assert bundle.files["assets/fixture"] == raw_fixture
+            q_path = quarantine_bundle(bundle)
+
+        assert (q_path / "assets" / "fixture").read_bytes() == raw_fixture
+
 
 # ---------------------------------------------------------------------------
 # GitHubSource._download_directory — tree API + fallback (#2940)

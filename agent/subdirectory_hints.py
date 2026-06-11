@@ -144,7 +144,9 @@ class SubdirectoryHintTracker:
                 if parent == p:
                     break  # filesystem root
                 p = parent
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
+            # RuntimeError is raised by Path.expanduser() when a ~user token
+            # references a non-existent account (passwd lookup fails).
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):

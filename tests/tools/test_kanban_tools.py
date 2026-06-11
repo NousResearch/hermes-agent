@@ -1812,3 +1812,38 @@ def test_board_param_in_all_schemas():
         assert "board" not in schema["parameters"].get("required", []), (
             f"{schema['name']} marks board as required; must be optional"
         )
+
+
+def test_complete_is_idempotent_for_already_done_task(worker_env):
+    """A worker calling kanban_complete on an ALREADY-done task with no summary
+    must get success (not 'provide at least one of: summary'), so it exits cleanly.
+
+    Regression: the parameter validation ran BEFORE the already-terminal check, so
+    a worker that re-called complete on a done task (with nothing to add) hit the
+    'provide a summary' error, retried forever, and became a zombie that held an
+    inference slot. complete must be idempotent for terminal tasks.
+    """
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    tid = worker_env  # already created + claimed (status running)
+
+    # Drive the task to a terminal (done) state, as the dispatcher would after a
+    # successful first completion.
+    conn = kb.connect()
+    try:
+        assert kb.complete_task(conn, tid, summary="first completion") is True
+    finally:
+        conn.close()
+
+    # Now the worker calls complete again with NO summary (it has nothing to add —
+    # the task is already done). This is the exact call that used to loop forever.
+    out = kt._handle_complete({"task_id": tid})
+    d = json.loads(out)
+
+    assert d.get("ok") is True, (
+        f"completing an already-done task must succeed, got: {out}"
+    )
+    assert "provide at least one of" not in out, (
+        "must NOT demand a summary for an already-terminal task"
+    )

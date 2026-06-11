@@ -483,6 +483,26 @@ def _handle_complete(args: dict, **kw) -> str:
     ownership_err = _enforce_worker_task_ownership(tid)
     if ownership_err:
         return ownership_err
+    # Idempotent early-out for an already-terminal task. If the task is already
+    # done/archived the work is finished, so return success and let the worker exit
+    # cleanly — WITHOUT requiring a summary. Otherwise a worker that re-calls
+    # kanban_complete on a done task with no summary hits the "provide at least one
+    # of: summary" validation below, retries the identical call (it has nothing to
+    # add — the task is done), and loops forever, becoming a zombie that never exits
+    # and holds an inference slot. The parameter validation must not gate a task that
+    # is already complete.
+    try:
+        kb_chk, conn_chk = _connect(board=args.get("board"))
+        try:
+            _existing = kb_chk.get_task(conn_chk, tid)
+        finally:
+            conn_chk.close()
+        if _existing is not None and getattr(_existing, "status", None) in ("done", "archived"):
+            return _ok(task_id=tid, already_complete=True)
+    except Exception:
+        # A failure in the status probe must never block a legitimate completion;
+        # fall through to the normal path.
+        pass
     summary = args.get("summary")
     metadata = args.get("metadata")
     result = args.get("result")

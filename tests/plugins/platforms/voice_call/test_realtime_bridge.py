@@ -423,6 +423,89 @@ async def test_interim_sends_do_not_resolve_consults_and_are_not_spoken(
 
 
 @pytest.mark.asyncio
+async def test_consult_filler_plays_after_function_call_response_ends(
+    fake_runtime, monkeypatch
+):
+    """At tool_call time the function-call response is still active, so the
+    filler must play on the following response_done (this was silently
+    skipped before — callers sat in silence during consults)."""
+    import time as time_mod
+
+    class SlowLlm:
+        def complete(self, messages, **kwargs):
+            time_mod.sleep(0.2)  # consult outlives the response_done below
+
+            class R:
+                text = "slow answer"
+            return R()
+
+    monkeypatch.setattr(bridge_mod, "_plugin_llm_factory", lambda: SlowLlm())
+    ws = FakeCarrierWs([])
+    session = FakeSession()
+    session.response_active = True  # mid function-call response
+    bridge = _bridge(fake_runtime, _record(), session)
+
+    run = asyncio.create_task(bridge.run(ws))
+    await asyncio.sleep(0.02)
+    session.push(RealtimeEvent(
+        type="tool_call", tool_call_id="c-slow", tool_name="agent_consult",
+        tool_args={"question": "anything slow"},
+    ))
+    await asyncio.sleep(0.05)
+    assert session.injected_text == []  # response still active → no filler yet
+    session.response_active = False
+    session.push(RealtimeEvent(type="response_done"))
+    await asyncio.sleep(0.05)
+    assert session.injected_text == [fake_runtime.config.responder.thinking_phrase]
+    await asyncio.sleep(0.3)
+    assert ("c-slow", "slow answer") in session.tool_results
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
+
+
+@pytest.mark.asyncio
+async def test_empty_args_consult_joins_in_flight_one(fake_runtime):
+    """A flailing empty-args agent_consult must share the running consult's
+    answer instead of superseding it (which used to interrupt the gateway
+    turn mid-research)."""
+    ws = FakeCarrierWs([])
+    session = FakeSession()
+    record = _record()
+    bridge = _bridge(fake_runtime, record, session)
+    dispatched = []
+
+    class FakeAdapter:
+        def build_source(self, **kwargs):
+            return kwargs
+
+        async def handle_message(self, event):
+            dispatched.append(event.text)
+
+    fake_runtime.adapter = FakeAdapter()
+    run = asyncio.create_task(bridge.run(ws))
+    await asyncio.sleep(0.02)
+    session.push(RealtimeEvent(
+        type="tool_call", tool_call_id="c-1", tool_name="agent_consult",
+        tool_args={"question": "weather in Dublin?"},
+    ))
+    await asyncio.sleep(0.05)
+    session.push(RealtimeEvent(
+        type="tool_call", tool_call_id="c-2", tool_name="agent_consult",
+        tool_args={},  # the flail
+    ))
+    await asyncio.sleep(0.05)
+    assert dispatched == ["weather in Dublin?"]  # no second gateway turn
+    # The real answer lands; both tool calls get it.
+    await bridge.deliver_agent_text("Fourteen degrees and raining.")
+    await asyncio.sleep(0.05)
+    results = dict(session.tool_results)
+    assert results["c-1"] == "Fourteen degrees and raining."
+    assert results["c-2"] == "Fourteen degrees and raining."
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
+
+
+@pytest.mark.asyncio
 async def test_newer_consult_supersedes_pending_one(fake_runtime):
     """A second question while a consult is in flight resolves the first
     future benignly instead of leaving its tool result hanging."""

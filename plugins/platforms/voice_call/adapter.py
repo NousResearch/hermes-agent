@@ -307,6 +307,11 @@ def _register_platform(ctx) -> None:
             "You are speaking on a live phone call. Reply in one to three "
             "short, natural, spoken-style sentences of plain text — no "
             "markdown, URLs, code, emoji, or lists. Never read secrets, "
-            "tokens, or credentials aloud."
+            "tokens, or credentials aloud. The caller is waiting on the "
+            "line, so speed beats thoroughness: answer from a single quick "
+            "web_search when you need fresh information, and avoid slow "
+            "deep research (web_extract, browsing, multi-step "
+            "investigation) unless the caller explicitly asks you to dig "
+            "deeper."
         ),
     )

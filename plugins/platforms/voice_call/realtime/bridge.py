@@ -211,6 +211,10 @@ class RealtimeCallBridge:
         # reply arrives via adapter.send() → runtime.speak_for_chat() →
         # deliver_agent_text(); this future hands it back to the consult.
         self._consult_future: Optional[asyncio.Future] = None
+        # The "let me check" filler can't play at tool_call time (the
+        # function-call response is still active) — it plays on the next
+        # response_done while the consult is still pending.
+        self._consult_filler_pending = False
 
     async def run(self, ws) -> None:
         self._ws = ws
@@ -321,6 +325,7 @@ class RealtimeCallBridge:
                 )
             elif event.type == "response_done":
                 await self._flush_deferred_tool_results()
+                await self._maybe_speak_filler()
             elif event.type == "error":
                 # A cancel racing a just-finished response is benign noise.
                 if "no active response" in (event.text or "").lower():
@@ -370,32 +375,86 @@ class RealtimeCallBridge:
 
     # -- agent_consult ---------------------------------------------------------------
 
+    async def _maybe_speak_filler(self) -> None:
+        """Speak the "let me check" filler once a consult is running and the
+        model's function-call response has finished (it can't play earlier —
+        the response is still active at tool_call time; the flag is cleared
+        when the consult completes)."""
+        if not self._consult_filler_pending or self.session.response_active:
+            return
+        self._consult_filler_pending = False
+        phrase = self.runtime.config.responder.thinking_phrase
+        if not phrase:
+            return
+        try:
+            await self.session.inject_text(phrase)
+            logger.info(
+                "voice_call realtime: spoke consult filler call=%s",
+                self.record.call_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("voice_call realtime: filler inject failed", exc_info=True)
+
     async def _handle_tool_call(self, event) -> None:
         question = str(event.tool_args.get("question", "")).strip()
         started_at = time.time()
-        # Consults take seconds (full agent run) — speak a filler so the
-        # caller isn't sitting in silence wondering if the call dropped
-        # (silence provokes "hello?", which used to barge-in the answer).
-        phrase = self.runtime.config.responder.thinking_phrase
-        if phrase and not self.session.response_active:
-            try:
-                await self.session.inject_text(phrase)
-            except Exception:  # noqa: BLE001
-                logger.debug("voice_call realtime: filler inject failed",
-                             exc_info=True)
         timeout = max(15.0, float(self.runtime.config.responder.response_timeout_s))
+
+        # Empty-args consults happen when the model flails (e.g. retrying
+        # after a timeout). OpenClaw's fallback: join an in-flight consult
+        # if one exists, else use the caller's last utterance as the question.
+        if not question:
+            pending = self._consult_future
+            if pending is not None and not pending.done():
+                logger.info(
+                    "voice_call realtime: empty consult joins the in-flight "
+                    "one call=%s", self.record.call_id,
+                )
+                try:
+                    answer = await asyncio.wait_for(
+                        asyncio.shield(pending), timeout=timeout
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    answer = (
+                        "Still looking that up — the answer will arrive "
+                        "shortly; do not call this tool again for the same "
+                        "question."
+                    )
+                await self._deliver_tool_result(event.tool_call_id, answer)
+                return
+            question = next(
+                (t.text for t in reversed(self.record.transcript)
+                 if t.speaker == "user"),
+                "",
+            )
+
+        # Queue the spoken "let me check" filler — usually the function-call
+        # response is still active here, so it plays on the next
+        # response_done; if the session is already idle it plays now.
+        if self.runtime.config.responder.thinking_phrase:
+            self._consult_filler_pending = True
+            await self._maybe_speak_filler()
         try:
             answer = await asyncio.wait_for(
                 self._consult_agent(question), timeout=timeout
             )
             status = "ok"
         except asyncio.TimeoutError:
-            answer = "Sorry, looking that up took too long."
+            # The gateway turn is usually still running; its answer will be
+            # spoken when it lands (deliver_agent_text → inject). Keep the
+            # model from re-asking in the meantime.
+            answer = (
+                "This is taking longer than expected. Tell the caller you are "
+                "still checking; the answer will be spoken as soon as it is "
+                "ready. Do not call this tool again for the same question."
+            )
             status = "timeout"
         except Exception as e:  # noqa: BLE001
             logger.exception("voice_call realtime: agent_consult failed")
             answer = f"Sorry, I could not check that: {e}"
             status = "error"
+        finally:
+            self._consult_filler_pending = False
         logger.info(
             "voice_call realtime: consult completed call=%s status=%s "
             "elapsed=%.1fs answer_chars=%d",

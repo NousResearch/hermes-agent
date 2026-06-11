@@ -855,38 +855,33 @@ export default function ModelsPage() {
       });
   }, []);
 
-  const load = useCallback(
-    (opts?: { silent?: boolean }) => {
-      if (!opts?.silent) {
-        setLoading(true);
-        setError(null);
-      }
-      Promise.all([
-        api.getModelsAnalytics(days),
-        api.getAuxiliaryModels().catch(() => null),
-      ])
-        .then(([models, auxData]) => {
-          setData(models);
-          setAux(auxData);
-        })
-        .catch((err) => {
-          if (!opts?.silent) setError(String(err));
-        })
-        .finally(() => {
-          if (!opts?.silent) setLoading(false);
-        });
-    },
-    [days],
-  );
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    Promise.all([
+      api.getModelsAnalytics(days),
+      api.getAuxiliaryModels().catch(() => null),
+    ])
+      .then(([models, auxData]) => {
+        setData(models);
+        setAux(auxData);
+      })
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoading(false));
+  }, [days]);
 
-  const onAssigned = useCallback(() => {
-    // Reload aux state after any assignment change.
+  const refreshAux = useCallback(() => {
     api
       .getAuxiliaryModels()
       .then(setAux)
       .catch(() => {});
-    setSaveKey((k) => k + 1);
   }, []);
+
+  const onAssigned = useCallback(() => {
+    // Reload aux state after any assignment change.
+    refreshAux();
+    setSaveKey((k) => k + 1);
+  }, [refreshAux]);
 
   useLayoutEffect(() => {
     // Period selector + refresh both live in afterTitle so the controls
@@ -912,7 +907,7 @@ export default function ModelsPage() {
           ghost
           size="icon"
           className="text-muted-foreground hover:text-foreground"
-          onClick={() => load()}
+          onClick={load}
           disabled={loading}
           aria-label={t.common.refresh}
         >
@@ -932,18 +927,22 @@ export default function ModelsPage() {
   }, [load]);
 
   // Model assignments can change outside this page (config editor, chat
-  // /model --global, CLI) — refetch silently when the page regains focus.
+  // /model --global, CLI), so refetch them when the page regains focus.
   useEffect(() => {
-    const refetch = () => {
-      if (document.visibilityState === "visible") load({ silent: true });
+    let last = 0;
+    const onFocus = () => {
+      if (document.visibilityState !== "visible") return;
+      if (Date.now() - last < 1000) return;
+      last = Date.now();
+      refreshAux();
     };
-    window.addEventListener("focus", refetch);
-    document.addEventListener("visibilitychange", refetch);
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onFocus);
     return () => {
-      window.removeEventListener("focus", refetch);
-      document.removeEventListener("visibilitychange", refetch);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onFocus);
     };
-  }, [load]);
+  }, [refreshAux]);
 
   return (
     <div className="flex min-w-0 max-w-full flex-col gap-6">

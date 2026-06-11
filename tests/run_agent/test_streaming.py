@@ -986,6 +986,54 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
+    def test_anthropic_stream_strips_leaked_openai_kwargs_before_sdk(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.anthropic.com",
+            model="claude-sonnet-4-6",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+
+        final_message = SimpleNamespace(
+            content=[],
+            stop_reason="end_turn",
+        )
+        mock_stream = MagicMock()
+        mock_stream.__enter__ = MagicMock(return_value=mock_stream)
+        mock_stream.__exit__ = MagicMock(return_value=False)
+        mock_stream.__iter__ = MagicMock(return_value=iter([]))
+        mock_stream.get_final_message.return_value = final_message
+
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.stream.return_value = mock_stream
+
+        contaminated_kwargs = {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 4096,
+            "instructions": "Leaked from an OpenAI Responses request",
+            "input": [{"role": "user", "content": "OpenAI Responses shape"}],
+            "parallel_tool_calls": True,
+        }
+
+        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=False):
+            response = agent._interruptible_streaming_api_call(contaminated_kwargs)
+
+        assert response is final_message
+        call_kwargs = agent._anthropic_client.messages.stream.call_args.kwargs
+        assert "instructions" not in call_kwargs
+        assert "input" not in call_kwargs
+        assert "parallel_tool_calls" not in call_kwargs
+        assert call_kwargs["model"] == "claude-sonnet-4-6"
+        assert call_kwargs["messages"] == [{"role": "user", "content": "Hi"}]
+        assert call_kwargs["max_tokens"] == 4096
+
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
         self, mock_replace, monkeypatch,

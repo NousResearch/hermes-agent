@@ -1419,6 +1419,93 @@ class TestBuildAnthropicKwargs:
 
 
 # ---------------------------------------------------------------------------
+# Foreign-kwarg sanitization (regression for #31673)
+# ---------------------------------------------------------------------------
+
+
+class TestSanitizeAnthropicKwargs:
+    """sanitize_anthropic_kwargs strips Responses-only kwargs before SDK use."""
+
+    def test_drops_instructions_kwarg(self):
+        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+
+        kwargs = {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 4096,
+            "instructions": "You are a helpful assistant.",
+        }
+        sanitize_anthropic_kwargs(kwargs, log_prefix="[test] ")
+        assert "instructions" not in kwargs
+        assert kwargs["model"] == "claude-sonnet-4-6"
+        assert kwargs["max_tokens"] == 4096
+
+    def test_drops_input_kwarg(self):
+        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+
+        kwargs = {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "input": [{"role": "user", "content": "leaked"}],
+        }
+        sanitize_anthropic_kwargs(kwargs)
+        assert "input" not in kwargs
+        assert kwargs["messages"] == [{"role": "user", "content": "Hi"}]
+
+    def test_drops_other_responses_only_kwargs(self):
+        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+
+        kwargs = {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "store": False,
+            "parallel_tool_calls": True,
+        }
+        sanitize_anthropic_kwargs(kwargs)
+        assert "store" not in kwargs
+        assert "parallel_tool_calls" not in kwargs
+        assert kwargs["messages"] == [{"role": "user", "content": "Hi"}]
+
+    def test_noop_when_clean(self):
+        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+
+        kwargs = {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 4096,
+            "system": "Be helpful.",
+        }
+        before = dict(kwargs)
+        sanitize_anthropic_kwargs(kwargs)
+        assert kwargs == before
+
+    def test_returns_kwargs_for_chaining(self):
+        from agent.anthropic_adapter import sanitize_anthropic_kwargs
+
+        kwargs = {"model": "claude-sonnet-4-6", "messages": []}
+        assert sanitize_anthropic_kwargs(kwargs) is kwargs
+
+    def test_wire_sanitizer_strips_leaked_instructions_after_build(self):
+        from agent.anthropic_adapter import (
+            build_anthropic_kwargs,
+            sanitize_anthropic_kwargs,
+        )
+
+        kwargs = build_anthropic_kwargs(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+        )
+        assert "instructions" not in kwargs
+
+        kwargs["instructions"] = "leaked from auxiliary path"
+        sanitize_anthropic_kwargs(kwargs)
+        assert "instructions" not in kwargs
+
+
+# ---------------------------------------------------------------------------
 # Model output limit lookup
 # ---------------------------------------------------------------------------
 

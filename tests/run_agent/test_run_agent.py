@@ -5754,6 +5754,43 @@ class TestAnthropicCredentialRefresh:
         agent._anthropic_client.messages.create.assert_called_once_with(model="claude-sonnet-4-20250514")
         assert result is response
 
+    def test_anthropic_messages_create_strips_leaked_instructions(self):
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("agent.anthropic_adapter.build_anthropic_client", return_value=MagicMock()),
+        ):
+            agent = AIAgent(
+                api_key="sk-ant-api03-test",
+                base_url="https://api.anthropic.com",
+                api_mode="anthropic_messages",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        response = SimpleNamespace(content=[])
+        agent._anthropic_client = MagicMock()
+        agent._anthropic_client.messages.create.return_value = response
+
+        contaminated_kwargs = {
+            "model": "claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": "Hi"}],
+            "max_tokens": 4096,
+            "instructions": "You are a helpful assistant.",
+            "input": [{"role": "user", "content": "leaked"}],
+        }
+
+        with patch.object(agent, "_try_refresh_anthropic_client_credentials", return_value=True):
+            agent._anthropic_messages_create(contaminated_kwargs)
+
+        call_kwargs = agent._anthropic_client.messages.create.call_args.kwargs
+        assert "instructions" not in call_kwargs
+        assert "input" not in call_kwargs
+        assert call_kwargs["model"] == "claude-sonnet-4-6"
+        assert call_kwargs["max_tokens"] == 4096
+        assert call_kwargs["messages"] == [{"role": "user", "content": "Hi"}]
+
 
 # ===================================================================
 # _streaming_api_call tests

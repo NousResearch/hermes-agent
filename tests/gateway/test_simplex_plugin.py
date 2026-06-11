@@ -133,6 +133,35 @@ def test_corr_id_pending_set_self_trims():
 # 7. Outbound send (mocked WS)
 # ---------------------------------------------------------------------------
 
+@pytest.mark.asyncio
+async def test_send_dm():
+    """DMs use the structured ``/_send @<id> json [...]`` form.
+
+    The bare ``@<id> text`` chat-command form is unreliable — the
+    daemon silently drops messages when it cannot resolve the display
+    name.  The structured ``/_send`` form addresses by ID and
+    survives newlines/quoting through ``json.dumps``, matching what
+    ``send_image`` and ``send_document`` already do.
+    """
+    from gateway.config import PlatformConfig
+    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    adapter = SimplexAdapter(cfg)
+
+    mock_ws = AsyncMock()
+    adapter._ws = mock_ws
+
+    result = await adapter.send("contact-42", "Hello, SimpleX!")
+    mock_ws.send.assert_called_once()
+    payload = json.loads(mock_ws.send.call_args[0][0])
+    assert payload["cmd"].startswith("/_send @contact-42 json ")
+    msg_content = json.loads(payload["cmd"].split(" json ", 1)[1])[0][
+        "msgContent"
+    ]
+    assert msg_content == {"type": "text", "text": "Hello, SimpleX!"}
+    assert payload["corrId"].startswith(_CORR_PREFIX)
+    assert result.success is True
+
+
 
 @pytest.mark.asyncio
 async def test_send_group():

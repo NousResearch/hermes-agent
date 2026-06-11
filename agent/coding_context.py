@@ -49,8 +49,10 @@ Activation (config ``agent.coding_context``):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -76,14 +78,30 @@ _PROJECT_MARKERS = (
     "AGENTS.md", "CLAUDE.md", ".cursorrules",
 )
 
+# Agent-instruction files surfaced separately from manifests in the snapshot.
+_CONTEXT_FILES = ("AGENTS.md", "CLAUDE.md", ".cursorrules")
+
+# Lockfile → package manager, checked in priority order.
+_PY_LOCKFILES = (("uv.lock", "uv"), ("poetry.lock", "poetry"), ("Pipfile.lock", "pipenv"))
+_JS_LOCKFILES = (
+    ("pnpm-lock.yaml", "pnpm"), ("bun.lockb", "bun"), ("bun.lock", "bun"),
+    ("yarn.lock", "yarn"), ("package-lock.json", "npm"),
+)
+
+# package.json scripts / Makefile targets worth surfacing as verify commands.
+_VERIFY_TARGETS = ("test", "tests", "lint", "typecheck", "check", "build", "fmt", "format")
+_MAX_VERIFY_COMMANDS = 8
+_MAX_FACT_FILE_BYTES = 256 * 1024
+
 _GIT_TIMEOUT = 2.5
 
 
 # Per-model edit-format steering. Matching the edit tool format to how a model
 # was trained reduces mistakes and wasted reasoning (OpenAI/Codex handle
-# patch-style diffs best; Anthropic models do best with string-replacement).
-# Our `patch` tool exposes both: mode="patch" (V4A multi-file) and
-# mode="replace" (find-and-swap). We nudge each family toward
+# patch-style diffs best; Anthropic models — and most open-weight coding
+# models, whose RL scaffolds use str_replace-style editors — do best with
+# string-replacement). Our `patch` tool exposes both: mode="patch" (V4A
+# multi-file) and mode="replace" (find-and-swap). We nudge each family toward
 # its native format. Unknown families get nothing (the brief's neutral wording
 # stands). Substrings match the model id; aligned with TOOL_USE_ENFORCEMENT_MODELS.
 _EDIT_FORMAT_GUIDANCE: dict[str, tuple[tuple[str, ...], str]] = {
@@ -95,7 +113,9 @@ _EDIT_FORMAT_GUIDANCE: dict[str, tuple[tuple[str, ...], str]] = {
         "most reliably. Use `mode='replace'` for a single small swap.",
     ),
     "replace": (
-        ("claude", "sonnet", "opus", "haiku"),
+        ("claude", "sonnet", "opus", "haiku",
+         "gemini", "gemma", "deepseek", "qwen", "kimi", "glm", "grok",
+         "hermes", "llama", "mistral", "devstral", "minimax"),
         "- Edit format: author new files with `write_file`; for edits to "
         "existing code prefer `patch` in `mode='replace'` — match a unique "
         "snippet and swap it. Reach for `mode='patch'` (V4A) only when an edit "
@@ -139,6 +159,8 @@ CODING_AGENT_GUIDANCE = (
     "- Read the relevant files with `read_file` and locate code with "
     "`search_files` before changing anything. Trace a symbol to its definition "
     "and usages rather than guessing its shape.\n"
+    "- Batch independent lookups: when several reads/searches don't depend on "
+    "each other, issue them together in one turn instead of one at a time.\n"
     "- Never invent files, symbols, APIs, or imports. If you haven't seen it in "
     "the repo, go look. Don't assume a library is available — check the project "
     "manifest (pyproject.toml / package.json / Cargo.toml / go.mod) and how "
@@ -150,23 +172,29 @@ CODING_AGENT_GUIDANCE = (
     "code when the user explicitly asks to see it.\n"
     "- Match the project's existing style and conventions; AGENTS.md / "
     "CLAUDE.md / .cursorrules already in context win over your defaults. Touch "
-    "only what the task needs, and add any imports/dependencies your code "
-    "requires.\n"
+    "only what the task needs — no drive-by refactors, renames, or reformatting "
+    "— and add any imports/dependencies your code requires.\n"
     "- If an edit fails to apply, re-read the file to get the current exact "
-    "contents before retrying — don't repeat a stale patch.\n"
+    "contents before retrying — don't repeat a stale patch. If the same region "
+    "fails twice, rewrite the enclosing function or file with `write_file` "
+    "instead of attempting a third patch.\n"
     "\n"
     "Verify, and know when to stop:\n"
     "- Use `terminal` for git, builds, tests, and inspection. Run the relevant "
     "tests/linter/build and confirm they pass before claiming the work is done.\n"
+    "- Fix root causes, not symptoms: when you find a bug, check sibling call "
+    "paths for the same flaw and fix the class, not just the reported site.\n"
     "- When fixing linter/type errors on a file, stop after about three "
     "attempts on the same file and ask the user rather than looping.\n"
     "- Track multi-step work with `todo`. Reference code as `path:line` instead "
     "of pasting whole files.\n"
     "\n"
     "Respect the user's repo: don't commit, push, or rewrite history unless "
-    "asked. The Workspace block below is a snapshot from session start — re-run "
-    "`git status`/`git branch` before relying on it. Be concise: lead with the "
-    "change or answer, not a preamble."
+    "asked, and never read, print, or commit secrets — leave `.env` and "
+    "credential files alone unless the user explicitly asks. The Workspace "
+    "block below is a snapshot from session start — re-run `git status`/"
+    "`git branch` before relying on it. Be concise: lead with the change or "
+    "answer, not a preamble."
 )
 
 
@@ -275,20 +303,32 @@ def _git_root(cwd: Path) -> Optional[Path]:
     return None
 
 
-def _has_project_marker(cwd: Path) -> bool:
-    """Cheap check: does cwd (or a parent up to the git root) look like a project?
+def _home() -> Optional[Path]:
+    try:
+        return Path.home().resolve()
+    except (OSError, RuntimeError):
+        return None
+
+
+def _marker_root(cwd: Path) -> Optional[Path]:
+    """Nearest ancestor that looks like a project root, or ``None``.
 
     Walks up at most a few levels so a manifest in the workspace root counts
-    even when the user is in a subdirectory.
+    even when the user is in a subdirectory. ``$HOME`` itself is skipped — a
+    Makefile or AGENTS.md sitting in the home directory is global user config,
+    not a project-root signal.
     """
     current = cwd.resolve()
+    home = _home()
     for depth, parent in enumerate([current, *current.parents]):
         if depth > 6:
             break
+        if parent == home:
+            continue
         for marker in _PROJECT_MARKERS:
             if (parent / marker).exists():
-                return True
-    return False
+                return parent
+    return None
 
 
 def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
@@ -297,6 +337,10 @@ def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
     ``auto``/``focus``: coding when the surface is interactive AND the cwd is a
     code workspace (a git repo or a recognised project root). ``on``: always
     coding. ``off``: always general.
+
+    A git repo rooted at ``$HOME`` (the dotfiles pattern) is NOT a workspace
+    signal — without the guard, every session anywhere under a dotfiles-managed
+    home directory would silently flip to the coding posture.
 
     Detection is intentionally not memoized: it's a handful of ``stat`` calls,
     and callers resolve the mode once per session anyway. Caching here would
@@ -310,7 +354,10 @@ def _detect_profile_name(mode: str, platform: str, cwd_str: str) -> str:
     if platform and platform.strip().lower() not in INTERACTIVE_CODING_PLATFORMS:
         return GENERAL_PROFILE.name
     cwd = Path(cwd_str)
-    if _git_root(cwd) is not None or _has_project_marker(cwd):
+    git_root = _git_root(cwd)
+    if git_root is not None and git_root == _home():
+        git_root = None  # dotfiles repo at $HOME — not a code workspace
+    if git_root is not None or _marker_root(cwd) is not None:
         return CODING_PROFILE.name
     return GENERAL_PROFILE.name
 
@@ -543,43 +590,111 @@ def _parse_status(porcelain: str) -> tuple[dict[str, str], dict[str, int]]:
     return branch, counts
 
 
+def _read_small(path: Path) -> str:
+    """Read a small text file, or ``""`` — never raises, never reads huge files."""
+    try:
+        if not path.is_file() or path.stat().st_size > _MAX_FACT_FILE_BYTES:
+            return ""
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+
+
+def _project_facts(root: Path) -> list[str]:
+    """Detected project facts for the workspace snapshot.
+
+    The point is to hand the model its *verify loop* up front — which manifest,
+    which package manager, and the exact test/lint/build commands — instead of
+    making it rediscover them every session. Cheap: stat calls plus reads of a
+    couple of small files; built once at prompt-build time (cache-safe).
+    """
+    facts: list[str] = []
+
+    manifests = [m for m in _PROJECT_MARKERS if m not in _CONTEXT_FILES and (root / m).is_file()]
+    package_managers = [
+        pm for lock, pm in (*_PY_LOCKFILES, *_JS_LOCKFILES) if (root / lock).is_file()
+    ]
+    if manifests:
+        line = f"- Project: {', '.join(manifests[:6])}"
+        if package_managers:
+            line += f" ({'/'.join(dict.fromkeys(package_managers))})"
+        facts.append(line)
+
+    verify: list[str] = []
+    if (root / "scripts" / "run_tests.sh").is_file():
+        verify.append("scripts/run_tests.sh")
+    if (root / "package.json").is_file():
+        try:
+            scripts = json.loads(_read_small(root / "package.json") or "{}").get("scripts") or {}
+        except (json.JSONDecodeError, AttributeError):
+            scripts = {}
+        js_pm = next((pm for lock, pm in _JS_LOCKFILES if (root / lock).is_file()), "npm")
+        verify.extend(f"{js_pm} run {name}" for name in _VERIFY_TARGETS if name in scripts)
+    if (root / "pytest.ini").is_file() or "[tool.pytest" in _read_small(root / "pyproject.toml"):
+        verify.append("pytest")
+    makefile = _read_small(root / "Makefile")
+    if makefile:
+        verify.extend(
+            f"make {name}" for name in _VERIFY_TARGETS
+            if re.search(rf"^{re.escape(name)}\s*:", makefile, re.MULTILINE)
+        )
+    if verify:
+        deduped = list(dict.fromkeys(verify))[:_MAX_VERIFY_COMMANDS]
+        facts.append(f"- Verify: {'; '.join(deduped)}")
+
+    context_files = [c for c in _CONTEXT_FILES if (root / c).is_file()]
+    if context_files:
+        facts.append(f"- Context files: {', '.join(context_files)}")
+
+    return facts
+
+
 def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
-    """Live git/workspace snapshot for the system prompt (empty if not a repo)."""
-    root = _git_root(_resolve_cwd(cwd))
+    """Workspace snapshot for the system prompt (empty outside a workspace).
+
+    Git state (branch/status/commits) when the cwd is in a repo, plus detected
+    project facts (manifest, package manager, verify commands, context files)
+    — so marker-only (non-git) projects still get a snapshot.
+    """
+    resolved = _resolve_cwd(cwd)
+    git_root = _git_root(resolved)
+    root = git_root or _marker_root(resolved)
     if root is None:
         return ""
 
     lines = ["Workspace (snapshot at session start — re-check with `git` before acting on it):"]
     lines.append(f"- Root: {root}")
 
-    branch, counts = _parse_status(_git(root, "status", "--porcelain=2", "--branch"))
-    head = branch.get("head", "")
-    if head and head != "(detached)":
-        line = f"- Branch: {head}"
-        if branch.get("upstream"):
-            line += f" \u2192 {branch['upstream']}"
-            ahead, behind = branch.get("ahead", "0"), branch.get("behind", "0")
-            if ahead != "0" or behind != "0":
-                line += f" (ahead {ahead}, behind {behind})"
-        lines.append(line)
-    elif head == "(detached)":
-        lines.append("- Branch: (detached HEAD)")
+    if git_root is not None:
+        branch, counts = _parse_status(_git(root, "status", "--porcelain=2", "--branch"))
+        head = branch.get("head", "")
+        if head and head != "(detached)":
+            line = f"- Branch: {head}"
+            if branch.get("upstream"):
+                line += f" \u2192 {branch['upstream']}"
+                ahead, behind = branch.get("ahead", "0"), branch.get("behind", "0")
+                if ahead != "0" or behind != "0":
+                    line += f" (ahead {ahead}, behind {behind})"
+            lines.append(line)
+        elif head == "(detached)":
+            lines.append("- Branch: (detached HEAD)")
 
-    # Linked worktree: the per-worktree git dir differs from the shared common dir.
-    git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
-    if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
-        main_tree = Path(common_dir).resolve().parent
-        lines.append(f"- Worktree: linked (primary tree at {main_tree})")
+        # Linked worktree: the per-worktree git dir differs from the shared common dir.
+        git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
+        if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
+            main_tree = Path(common_dir).resolve().parent
+            lines.append(f"- Worktree: linked (primary tree at {main_tree})")
 
-    dirty = [f"{n} {label}" for label, n in (
-        ("staged", counts["staged"]), ("modified", counts["modified"]),
-        ("untracked", counts["untracked"]), ("conflicts", counts["conflicts"]),
-    ) if n]
-    lines.append(f"- Status: {', '.join(dirty) if dirty else 'clean'}")
+        dirty = [f"{n} {label}" for label, n in (
+            ("staged", counts["staged"]), ("modified", counts["modified"]),
+            ("untracked", counts["untracked"]), ("conflicts", counts["conflicts"]),
+        ) if n]
+        lines.append(f"- Status: {', '.join(dirty) if dirty else 'clean'}")
 
-    recent = _git(root, "log", "-3", "--pretty=%h %s")
-    if recent:
-        lines.append("- Recent commits:")
-        lines.extend(f"    {c}" for c in recent.splitlines())
+        recent = _git(root, "log", "-3", "--pretty=%h %s")
+        if recent:
+            lines.append("- Recent commits:")
+            lines.extend(f"    {c}" for c in recent.splitlines())
 
+    lines.extend(_project_facts(root))
     return "\n".join(lines)

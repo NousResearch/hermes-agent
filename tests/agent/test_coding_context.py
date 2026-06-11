@@ -1,6 +1,8 @@
 """Tests for agent.coding_context — RuntimeMode seam, resolver, toolset, git probe."""
 
+import json
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -118,6 +120,103 @@ class TestWorkspaceBlock:
         assert "clean" not in block.split("Status:")[1].splitlines()[0]
 
 
+# ── project facts (verify-loop detection) ───────────────────────────────────
+
+class TestProjectFacts:
+    def test_package_json_scripts_surface_verify_commands(self, tmp_path):
+        _git_init(tmp_path)
+        (tmp_path / "package.json").write_text(
+            json.dumps({"scripts": {"test": "vitest", "lint": "eslint .", "dev": "vite"}})
+        )
+        (tmp_path / "pnpm-lock.yaml").write_text("")
+        block = cc.build_coding_workspace_block(tmp_path)
+        assert "Project: package.json (pnpm)" in block
+        assert "pnpm run test" in block and "pnpm run lint" in block
+        # Non-verify scripts (dev servers, …) stay out of the snapshot.
+        assert "run dev" not in block
+
+    def test_pytest_config_and_run_tests_script(self, tmp_path):
+        _git_init(tmp_path)
+        (tmp_path / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+        scripts = tmp_path / "scripts"
+        scripts.mkdir()
+        (scripts / "run_tests.sh").write_text("#!/bin/sh\n")
+        block = cc.build_coding_workspace_block(tmp_path)
+        assert "scripts/run_tests.sh" in block
+        assert "pytest" in block.split("Verify:")[1]
+
+    def test_makefile_verify_targets_only(self, tmp_path):
+        _git_init(tmp_path)
+        (tmp_path / "Makefile").write_text("test:\n\tgo test ./...\n\ndeploy:\n\t./deploy.sh\n")
+        block = cc.build_coding_workspace_block(tmp_path)
+        assert "make test" in block
+        assert "make deploy" not in block
+
+    def test_context_files_listed(self, tmp_path):
+        _git_init(tmp_path)
+        (tmp_path / "AGENTS.md").write_text("# rules")
+        block = cc.build_coding_workspace_block(tmp_path)
+        assert "Context files: AGENTS.md" in block
+
+    def test_marker_only_project_gets_snapshot_without_git(self, tmp_path):
+        # A non-git project (manifest only) still gets a workspace snapshot —
+        # just without the git lines.
+        (tmp_path / "package.json").write_text("{}")
+        block = cc.build_coding_workspace_block(tmp_path)
+        assert f"Root: {tmp_path.resolve()}" in block
+        assert "package.json" in block
+        assert "Branch:" not in block and "Status:" not in block
+
+    def test_malformed_package_json_is_ignored(self, tmp_path):
+        _git_init(tmp_path)
+        (tmp_path / "package.json").write_text("{not json")
+        block = cc.build_coding_workspace_block(tmp_path)
+        assert "Project: package.json" in block
+        assert "Verify:" not in block
+
+
+# ── $HOME dotfiles guard ────────────────────────────────────────────────────
+
+class TestHomeDotfilesGuard:
+    def test_dotfiles_repo_at_home_is_not_coding(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        _git_init(home)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        cfg = {"agent": {"coding_context": "auto"}}
+        assert cc.is_coding_context(platform="cli", cwd=home, config=cfg) is False
+        # …and a plain subdirectory of the dotfiles repo stays general too.
+        docs = home / "Documents"
+        docs.mkdir()
+        assert cc.is_coding_context(platform="cli", cwd=docs, config=cfg) is False
+
+    def test_marker_at_home_is_not_a_project_signal(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        (home / "Makefile").write_text("all:\n")
+        monkeypatch.setattr(Path, "home", lambda: home)
+        cfg = {"agent": {"coding_context": "auto"}}
+        assert cc.is_coding_context(platform="cli", cwd=home, config=cfg) is False
+
+    def test_real_project_under_dotfiles_home_still_detects(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        _git_init(home)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        proj = home / "www" / "app"
+        proj.mkdir(parents=True)
+        (proj / "package.json").write_text("{}")
+        cfg = {"agent": {"coding_context": "auto"}}
+        assert cc.is_coding_context(platform="cli", cwd=proj, config=cfg) is True
+
+    def test_on_mode_bypasses_the_guard(self, tmp_path, monkeypatch):
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(Path, "home", lambda: home)
+        cfg = {"agent": {"coding_context": "on"}}
+        assert cc.is_coding_context(platform="cli", cwd=home, config=cfg) is True
+
+
 # ── prompt assembly integration ─────────────────────────────────────────────
 
 class TestStatusParsing:
@@ -191,8 +290,15 @@ class TestEditFormatSteering:
         assert cc._model_family("openai/codex-mini") == "patch"
         assert cc._model_family("anthropic/claude-opus-4.8") == "replace"
         assert cc._model_family("anthropic/claude-sonnet-4") == "replace"
+        # Gemini + open-weight coding models (RL'd on str_replace-style
+        # editors) steer to replace, not neutral.
+        for m in (
+            "google/gemini-3-pro", "deepseek-v3.2", "qwen3-coder",
+            "moonshot/kimi-k2", "zai/glm-4.6", "nousresearch/hermes-4-405b",
+        ):
+            assert cc._model_family(m) == "replace"
         # Unknown family and no model both fall through to neutral wording.
-        assert cc._model_family("moonshot/kimi-k2") is None
+        assert cc._model_family("acme/foo-1") is None
         assert cc._model_family(None) is None
         assert cc._model_family("") is None
 
@@ -223,7 +329,7 @@ class TestEditFormatSteering:
         _git_init(tmp_path)
         mode = cc.resolve_runtime_mode(
             platform="cli", cwd=tmp_path,
-            config={"agent": {"coding_context": "on"}}, model="moonshot/kimi-k2",
+            config={"agent": {"coding_context": "on"}}, model="acme/foo-1",
         )
         assert mode.system_blocks()[0] == cc.CODING_AGENT_GUIDANCE
 

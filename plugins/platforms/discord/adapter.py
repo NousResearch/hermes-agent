@@ -914,19 +914,27 @@ class DiscordAdapter(BasePlatformAdapter):
             # this adapter is discarded.  Without this, the task keeps running and
             # a later successful reconnect leaves two active Discord clients that
             # each process every message, producing duplicate threads/responses.
-            if self._bot_task and not self._bot_task.done():
-                self._bot_task.cancel()
-                try:
-                    await self._bot_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-                self._bot_task = None
+            await self._cancel_bot_task()
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            # Same zombie-client hazard as the timeout branch: the background
+            # client.start() task may already be running when a later setup
+            # step raises. Cancel it so the discarded adapter cannot connect.
+            await self._cancel_bot_task()
             self._release_platform_lock()
             return False
+
+    async def _cancel_bot_task(self) -> None:
+        """Cancel and await the background client.start() task, if running."""
+        if self._bot_task and not self._bot_task.done():
+            self._bot_task.cancel()
+            try:
+                await self._bot_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._bot_task = None
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
@@ -936,13 +944,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # discord.py's reconnect loop can ignore the closed flag while a
         # WebSocket handshake is in flight.  Explicitly cancelling the task here
         # ensures the zombie client cannot receive or dispatch any further events.
-        if self._bot_task and not self._bot_task.done():
-            self._bot_task.cancel()
-            try:
-                await self._bot_task
-            except (asyncio.CancelledError, Exception):
-                pass
-        self._bot_task = None
+        await self._cancel_bot_task()
 
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):

@@ -341,6 +341,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
+        # Channel consent gate state (channel_consent_gate config). Lazy:
+        # the JSON store is only touched when the gate is enabled.
+        self._consent_store: Optional[Any] = None
         # Track timestamps of messages sent by the bot so we can respond
         # to thread replies even without an explicit @mention.
         self._bot_message_ts: set = set()
@@ -897,6 +900,22 @@ class SlackAdapter(BasePlatformAdapter):
             @self._app.event("assistant_thread_context_changed")
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
+
+            # Notify a configured channel when the bot itself is added to a
+            # channel (channel_join_notification in platform config). The
+            # handler is registered unconditionally so Slack doesn't log
+            # "unhandled request" warnings when the workspace subscribes to
+            # member_joined_channel; it no-ops unless configured.
+            @self._app.event("member_joined_channel")
+            async def handle_member_joined_channel(event, say):
+                await self._handle_member_joined_channel(event)
+
+            # Consent gate buttons (channel_consent_gate config).
+            for _action_id in (
+                "hermes_consent_activate",
+                "hermes_consent_decline",
+            ):
+                self._app.action(_action_id)(self._handle_consent_action)
 
             # Register slash command handler(s)
             #
@@ -2108,6 +2127,260 @@ class SlackAdapter(BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
 
+    # Default notice when channel_join_notification.message is unset.
+    DEFAULT_CHANNEL_JOIN_MESSAGE = (
+        "I was added to {channel_ref} by {inviter_ref}."
+    )
+
+    async def _handle_member_joined_channel(self, event: dict) -> None:
+        """React to the bot being added to a channel.
+
+        Two independent features hang off this event, both no-ops unless
+        configured:
+          - ``channel_join_notification``: post a notice to a status channel.
+          - ``channel_consent_gate``: mark the new channel dormant and post
+            an Activate/Decline Block Kit prompt into it; the bot ignores
+            the channel's messages until a human clicks Activate.
+
+        Only the bot's OWN join triggers anything (Slack delivers
+        member_joined_channel for every member when subscribed).
+        """
+        joined_user = event.get("user", "")
+        team_id = event.get("team") or ""
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        if not joined_user or not bot_uid or joined_user != bot_uid:
+            return
+
+        channel_id = event.get("channel", "")
+        if not channel_id:
+            return
+        inviter_id = event.get("inviter", "")
+
+        await self._send_channel_join_notification(channel_id, inviter_id)
+
+        if self.config.channel_consent_gate:
+            await self._post_consent_prompt(channel_id, inviter_id)
+
+    async def _send_channel_join_notification(
+        self, channel_id: str, inviter_id: str
+    ) -> None:
+        """Post the channel_join_notification notice, if configured."""
+        cfg = self.config.channel_join_notification
+        if not cfg:
+            return
+
+        target = str(cfg.get("channel", "")).strip()
+        if not target:
+            return
+        # Don't announce joining the announcements channel itself.
+        if channel_id == target or target.lstrip("#") == channel_id:
+            return
+
+        template = cfg.get("message") or self.DEFAULT_CHANNEL_JOIN_MESSAGE
+        inviter_ref = f"<@{inviter_id}>" if inviter_id else "someone"
+        try:
+            text = template.format(
+                channel_id=channel_id,
+                channel_ref=f"<#{channel_id}>",
+                inviter_id=inviter_id or "unknown",
+                inviter_ref=inviter_ref,
+            )
+        except (KeyError, IndexError, ValueError):
+            logger.warning(
+                "[Slack] channel_join_notification message template has "
+                "invalid placeholders; using default. Template: %r",
+                template,
+            )
+            text = self.DEFAULT_CHANNEL_JOIN_MESSAGE.format(
+                channel_ref=f"<#{channel_id}>",
+                inviter_ref=inviter_ref,
+            )
+
+        result = await self.send(target, text)
+        if not result.success:
+            logger.warning(
+                "[Slack] channel_join_notification send to %s failed: %s",
+                target,
+                result.error,
+            )
+
+    # ------------------------------------------------------------------
+    # Channel consent gate (channel_consent_gate config)
+    # ------------------------------------------------------------------
+
+    def _get_consent_store(self):
+        """Lazy-init the persistent consent store."""
+        if self._consent_store is None:
+            from gateway.platforms.slack_consent import ChannelConsentStore
+
+            self._consent_store = ChannelConsentStore()
+        return self._consent_store
+
+    def _is_channel_consent_blocked(self, channel_id: str) -> bool:
+        """True when the consent gate says this channel is dormant."""
+        if not self.config.channel_consent_gate or not channel_id:
+            return False
+        try:
+            return self._get_consent_store().is_dormant(channel_id)
+        except Exception:  # pragma: no cover - defensive
+            logger.warning(
+                "[Slack] Consent store check failed for %s; failing open",
+                channel_id,
+                exc_info=True,
+            )
+            return False
+
+    async def _post_consent_prompt(
+        self, channel_id: str, inviter_id: str
+    ) -> None:
+        """Mark the channel pending and post the Activate/Decline prompt."""
+        try:
+            store = self._get_consent_store()
+            # Re-invites to an already-approved channel shouldn't reset
+            # consent; only start tracking on first sight or after decline.
+            if store.status(channel_id) == "approved":
+                return
+            store.set(channel_id, "pending")
+        except Exception:  # pragma: no cover - defensive
+            logger.warning(
+                "[Slack] Could not persist pending consent for %s",
+                channel_id,
+                exc_info=True,
+            )
+            return
+
+        inviter_ref = f"<@{inviter_id}>" if inviter_id else "someone"
+        prompt = (
+            f"Hi! I was added to this channel by {inviter_ref}. "
+            "I'll stay dormant — not reading or responding to messages — "
+            "until someone confirms I should be active here."
+        )
+        blocks = [
+            {
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": prompt},
+            },
+            {
+                "type": "actions",
+                "elements": [
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "✅ Activate"},
+                        "style": "primary",
+                        "action_id": "hermes_consent_activate",
+                        "value": channel_id,
+                    },
+                    {
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "🚫 Decline"},
+                        "action_id": "hermes_consent_decline",
+                        "value": channel_id,
+                    },
+                ],
+            },
+        ]
+        try:
+            client = self._get_client(channel_id)
+            if client is None:
+                return
+            await client.chat_postMessage(
+                channel=channel_id,
+                text=prompt,  # fallback for notifications/accessibility
+                blocks=blocks,
+            )
+        except Exception:
+            logger.warning(
+                "[Slack] Could not post consent prompt to %s",
+                channel_id,
+                exc_info=True,
+            )
+
+    async def _handle_consent_action(self, ack, body, action) -> None:
+        """Handle Activate/Decline clicks on the consent prompt."""
+        await ack()
+
+        action_id = action.get("action_id", "")
+        channel_id = action.get("value", "") or body.get("channel", {}).get(
+            "id", ""
+        )
+        user_name = body.get("user", {}).get("name", "unknown")
+        user_id = body.get("user", {}).get("id", "")
+        message = body.get("message", {})
+        msg_ts = message.get("ts", "")
+
+        if not channel_id:
+            return
+
+        if not self._is_interactive_user_authorized(
+            user_id,
+            channel_id=channel_id,
+            user_name=user_name,
+        ):
+            logger.warning(
+                "[Slack] Unauthorized consent click by %s (%s) - ignoring",
+                user_name,
+                user_id,
+            )
+            return
+
+        approved = action_id == "hermes_consent_activate"
+        try:
+            self._get_consent_store().set(
+                channel_id,
+                "approved" if approved else "declined",
+                by_user_id=user_id,
+                by_user_name=user_name,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.warning(
+                "[Slack] Could not persist consent decision for %s",
+                channel_id,
+                exc_info=True,
+            )
+            return
+
+        decision_text = (
+            f"✅ Activated by <@{user_id}> — I'm now live in this channel."
+            if approved
+            else (
+                f"🚫 Declined by <@{user_id}> — I'll stay dormant here. "
+                "Re-invite me to ask again."
+            )
+        )
+
+        # Replace the prompt (buttons removed) with the decision.
+        try:
+            client = self._get_client(channel_id)
+            if client is not None and msg_ts:
+                await client.chat_update(
+                    channel=channel_id,
+                    ts=msg_ts,
+                    text=decision_text,
+                    blocks=[
+                        {
+                            "type": "section",
+                            "text": {
+                                "type": "mrkdwn",
+                                "text": decision_text,
+                            },
+                        }
+                    ],
+                )
+        except Exception:
+            logger.warning(
+                "[Slack] Could not update consent prompt in %s",
+                channel_id,
+                exc_info=True,
+            )
+
+        logger.info(
+            "[Slack] Channel %s consent %s by %s (%s)",
+            channel_id,
+            "approved" if approved else "declined",
+            user_name,
+            user_id,
+        )
+
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
@@ -2283,6 +2556,16 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_type and channel_id.startswith("D"):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
+
+        # Consent gate: stay fully dormant in channels pending/declined
+        # consent — no processing, no session, no memory. DMs are never
+        # gated (the gate governs channel membership, not direct chats).
+        if not is_dm and self._is_channel_consent_blocked(channel_id):
+            logger.debug(
+                "[Slack] Ignoring message in consent-gated channel %s",
+                channel_id,
+            )
+            return
 
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a

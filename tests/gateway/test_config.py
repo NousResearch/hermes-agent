@@ -71,6 +71,70 @@ class TestPlatformConfigRoundtrip:
         restored = PlatformConfig.from_dict({"gateway_restart_notification": "false"})
         assert restored.gateway_restart_notification is False
 
+    def test_channel_join_notification_defaults_none(self):
+        assert PlatformConfig().channel_join_notification is None
+        assert PlatformConfig.from_dict({}).channel_join_notification is None
+
+    def test_channel_join_notification_roundtrip(self):
+        cjn = {"channel": "#singularity-status", "message": "joined {channel_ref}"}
+        pc = PlatformConfig(enabled=True, channel_join_notification=cjn)
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.channel_join_notification == cjn
+
+    def test_channel_join_notification_from_extra(self):
+        restored = PlatformConfig.from_dict(
+            {"extra": {"channel_join_notification": {"channel": "C0123"}}}
+        )
+        assert restored.channel_join_notification == {"channel": "C0123"}
+
+    def test_channel_join_notification_rejects_malformed(self):
+        # Not a dict
+        assert (
+            PlatformConfig.from_dict(
+                {"channel_join_notification": "yes"}
+            ).channel_join_notification
+            is None
+        )
+        # Dict missing channel
+        assert (
+            PlatformConfig.from_dict(
+                {"channel_join_notification": {"message": "hi"}}
+            ).channel_join_notification
+            is None
+        )
+        # Blank channel
+        assert (
+            PlatformConfig.from_dict(
+                {"channel_join_notification": {"channel": "  "}}
+            ).channel_join_notification
+            is None
+        )
+
+    def test_channel_join_notification_drops_none_values(self):
+        restored = PlatformConfig.from_dict(
+            {"channel_join_notification": {"channel": "C0123", "message": None}}
+        )
+        assert restored.channel_join_notification == {"channel": "C0123"}
+
+    def test_channel_consent_gate_defaults_false(self):
+        assert PlatformConfig().channel_consent_gate is False
+        assert PlatformConfig.from_dict({}).channel_consent_gate is False
+
+    def test_channel_consent_gate_roundtrip_true(self):
+        pc = PlatformConfig(enabled=True, channel_consent_gate=True)
+        restored = PlatformConfig.from_dict(pc.to_dict())
+        assert restored.channel_consent_gate is True
+
+    def test_channel_consent_gate_from_extra(self):
+        restored = PlatformConfig.from_dict(
+            {"extra": {"channel_consent_gate": True}}
+        )
+        assert restored.channel_consent_gate is True
+
+    def test_channel_consent_gate_coerces_quoted_true(self):
+        restored = PlatformConfig.from_dict({"channel_consent_gate": "true"})
+        assert restored.channel_consent_gate is True
+
 
 class TestGetConnectedPlatforms:
     def test_returns_enabled_with_token(self):

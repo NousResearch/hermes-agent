@@ -334,6 +334,21 @@ class PlatformConfig:
     # noise; keep True for back-channels where the operator wants them.
     gateway_restart_notification: bool = True
 
+    # Optional notification when the bot is added to a channel (Slack).
+    # Dict with keys:
+    #   channel: target channel for the notice (id like "C0123…" or "#name")
+    #   message: optional template; placeholders {channel_id}, {inviter_id},
+    #            {channel_ref} (renders as a clickable <#id>), {inviter_ref}
+    # Default None preserves stock behavior (no notification, event ignored).
+    channel_join_notification: Optional[Dict[str, str]] = None
+
+    # Consent gate (Slack): when True, the bot stays dormant in channels it
+    # is newly added to until a human clicks "Activate" on the Block Kit
+    # prompt it posts on join. Channels joined before the gate was enabled
+    # are unaffected (the gate only tracks joins it observed). Default False
+    # preserves stock behavior.
+    channel_consent_gate: bool = False
+
     # Platform-specific settings
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -344,6 +359,10 @@ class PlatformConfig:
             "reply_to_mode": self.reply_to_mode,
             "gateway_restart_notification": self.gateway_restart_notification,
         }
+        if self.channel_join_notification:
+            result["channel_join_notification"] = self.channel_join_notification
+        if self.channel_consent_gate:
+            result["channel_consent_gate"] = self.channel_consent_gate
         if self.token:
             result["token"] = self.token
         if self.api_key:
@@ -366,6 +385,26 @@ class PlatformConfig:
         if _grn is None:
             _grn = data.get("extra", {}).get("gateway_restart_notification")
 
+        # channel_join_notification: same dual lookup (top-level or bridged
+        # into extra).  Must be a dict with a non-empty "channel"; anything
+        # else is ignored so a malformed YAML block degrades to stock
+        # behavior instead of crashing the gateway at startup.
+        _cjn = data.get("channel_join_notification")
+        if _cjn is None:
+            _cjn = data.get("extra", {}).get("channel_join_notification")
+        if not isinstance(_cjn, dict) or not str(_cjn.get("channel") or "").strip():
+            _cjn = None
+        else:
+            _cjn = {
+                str(k): str(v)
+                for k, v in _cjn.items()
+                if v is not None
+            }
+
+        _ccg = data.get("channel_consent_gate")
+        if _ccg is None:
+            _ccg = data.get("extra", {}).get("channel_consent_gate")
+
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
@@ -373,6 +412,8 @@ class PlatformConfig:
             home_channel=home_channel,
             reply_to_mode=data.get("reply_to_mode", "first"),
             gateway_restart_notification=_coerce_bool(_grn, True),
+            channel_join_notification=_cjn,
+            channel_consent_gate=_coerce_bool(_ccg, False),
             extra=data.get("extra", {}),
         )
 
@@ -979,6 +1020,10 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = channel_prompts
                 if "gateway_restart_notification" in platform_cfg:
                     bridged["gateway_restart_notification"] = platform_cfg["gateway_restart_notification"]
+                if "channel_join_notification" in platform_cfg:
+                    bridged["channel_join_notification"] = platform_cfg["channel_join_notification"]
+                if "channel_consent_gate" in platform_cfg:
+                    bridged["channel_consent_gate"] = platform_cfg["channel_consent_gate"]
                 enabled_was_explicit = _cfg_toplevel and "enabled" in platform_cfg
                 if not bridged and not enabled_was_explicit:
                     continue

@@ -79,28 +79,39 @@ async function resolveServedDashboardToken(baseUrl, fallbackToken, options = {})
 }
 
 /**
- * Decide whether a served-token mismatch means we are talking to a backend we
- * did NOT spawn.
- *
- * The desktop pins HERMES_DASHBOARD_SESSION_TOKEN on every backend it spawns,
- * and the dashboard honors that env at import — so a LIVE child of ours always
- * serves our token. The only way the served token differs while our child is
- * dead is that the readiness probe (public /api/status) answered from a
- * different process: an orphaned dashboard or port squatter that won the bind
- * race while our child exited. Adopting that process's token would silently
- * authenticate the renderer against a foreign backend (possibly the wrong
- * profile), so callers must fail loudly instead.
- *
- * A mismatch with a live child is the benign case the served-token fallback
- * exists for: our own child served a regenerated token because the env pin
- * did not survive the spawn (e.g. shell-wrapped CLI shims).
+ * A served token that differs from our spawn token while our child is DEAD
+ * came from a process we did not spawn (orphan/port squatter that satisfied
+ * the public /api/status readiness probe). With a live child the mismatch is
+ * benign: our own backend regenerated the token because the env pin did not
+ * survive the spawn.
  */
 function isForeignBackendToken({ servedToken, spawnToken, childAlive }) {
   return Boolean(servedToken) && servedToken !== spawnToken && !childAlive
 }
 
+/**
+ * Resolve the token the backend actually serves, adopting benign drift and
+ * failing loudly on a foreign backend. `childAlive` is a thunk so liveness is
+ * sampled after the fetch, not before.
+ */
+async function adoptServedDashboardToken(baseUrl, spawnToken, { childAlive, label = 'Hermes backend', ...options }) {
+  const servedToken = await resolveServedDashboardToken(baseUrl, spawnToken, options).catch(error => {
+    options.rememberLog?.(`[boot] could not read served dashboard token (${label}): ${error.message}`)
+    return spawnToken
+  })
+
+  if (isForeignBackendToken({ servedToken, spawnToken, childAlive: childAlive() })) {
+    throw new Error(
+      `${label} exited and ${dashboardIndexUrl(baseUrl)} is served by a process we did not spawn; refusing its session token.`
+    )
+  }
+
+  return servedToken
+}
+
 module.exports = {
   DEFAULT_TOKEN_FETCH_TIMEOUT_MS,
+  adoptServedDashboardToken,
   dashboardIndexUrl,
   extractInjectedDashboardToken,
   fetchPublicText,

@@ -9,6 +9,7 @@ const test = require('node:test')
 const assert = require('node:assert/strict')
 
 const {
+  adoptServedDashboardToken,
   dashboardIndexUrl,
   extractInjectedDashboardToken,
   fetchPublicText,
@@ -89,22 +90,53 @@ test('fetchPublicText rejects unsupported protocols', async () => {
   await assert.rejects(() => fetchPublicText('file:///tmp/index.html'), /Unsupported Hermes backend URL protocol/)
 })
 
-test('isForeignBackendToken flags a mismatched token from a dead child', () => {
-  assert.equal(isForeignBackendToken({ servedToken: 'other', spawnToken: 'mine', childAlive: false }), true)
+test('isForeignBackendToken only flags a mismatched token from a dead child', () => {
+  const cases = [
+    [{ servedToken: 'other', spawnToken: 'mine', childAlive: false }, true],
+    // Live child + drift = our backend regenerated the token (env pin lost).
+    [{ servedToken: 'other', spawnToken: 'mine', childAlive: true }, false],
+    [{ servedToken: 'mine', spawnToken: 'mine', childAlive: false }, false],
+    [{ servedToken: 'mine', spawnToken: 'mine', childAlive: true }, false],
+    [{ servedToken: null, spawnToken: 'mine', childAlive: false }, false],
+    [{ servedToken: '', spawnToken: 'mine', childAlive: false }, false]
+  ]
+  for (const [input, expected] of cases) {
+    assert.equal(isForeignBackendToken(input), expected, JSON.stringify(input))
+  }
 })
 
-test('isForeignBackendToken trusts a mismatched token while our child is alive', () => {
-  // Live child + different token = our own backend regenerated the token
-  // because the env pin did not survive the spawn. Adopting it is correct.
-  assert.equal(isForeignBackendToken({ servedToken: 'other', spawnToken: 'mine', childAlive: true }), false)
+test('adoptServedDashboardToken adopts drift from a live child', async () => {
+  const token = await adoptServedDashboardToken('http://127.0.0.1:9120', 'spawn-token', {
+    childAlive: () => true,
+    fetchText: async () => '<script>window.__HERMES_SESSION_TOKEN__="served-token";</script>'
+  })
+
+  assert.equal(token, 'served-token')
 })
 
-test('isForeignBackendToken trusts a matching token regardless of liveness', () => {
-  assert.equal(isForeignBackendToken({ servedToken: 'mine', spawnToken: 'mine', childAlive: false }), false)
-  assert.equal(isForeignBackendToken({ servedToken: 'mine', spawnToken: 'mine', childAlive: true }), false)
+test('adoptServedDashboardToken refuses a foreign token when our child is dead', async () => {
+  await assert.rejects(
+    () =>
+      adoptServedDashboardToken('http://127.0.0.1:9120', 'spawn-token', {
+        childAlive: () => false,
+        fetchText: async () => '<script>window.__HERMES_SESSION_TOKEN__="squatter-token";</script>',
+        label: 'Hermes backend for profile "work"'
+      }),
+    /profile "work".*process we did not spawn/
+  )
 })
 
-test('isForeignBackendToken ignores an absent served token', () => {
-  assert.equal(isForeignBackendToken({ servedToken: null, spawnToken: 'mine', childAlive: false }), false)
-  assert.equal(isForeignBackendToken({ servedToken: '', spawnToken: 'mine', childAlive: false }), false)
+test('adoptServedDashboardToken falls back to the spawn token when the fetch fails', async () => {
+  const logs = []
+  const token = await adoptServedDashboardToken('http://127.0.0.1:9120', 'spawn-token', {
+    childAlive: () => true,
+    fetchText: async () => {
+      throw new Error('boom')
+    },
+    rememberLog: line => logs.push(line)
+  })
+
+  assert.equal(token, 'spawn-token')
+  assert.equal(logs.length, 1)
+  assert.match(logs[0], /could not read served dashboard token \(Hermes backend\): boom/)
 })

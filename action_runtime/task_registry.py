@@ -88,6 +88,12 @@ class AgentTaskRecord:
     tool_count: int = 0
     last_tool: Optional[str] = None
     result: Optional[ExecutionResult] = None
+    # Set at register() time by task.submit (when the caller sent one) so an
+    # in-flight duplicate is detectable by KEY, not just task_id — a
+    # broken-pipe retry typically omits task_id and gets a fresh uuid4, so
+    # the key is the only identity that survives the retry
+    # (``find_running_by_key``).  ``complete()`` folds the final result into
+    # the replay store under it.  Never serialized.
     idempotency_key: Optional[str] = None
     # §12 trace plumbing: correlates one logical request across
     # task → result → record. None = a pre-trace caller.
@@ -272,6 +278,26 @@ class AgentTaskRegistry:
                 for r in self._records.values()
                 if r.status is TaskStatus.RUNNING
             ]
+
+    def find_running_by_key(self, idempotency_key: str) -> Optional[AgentTaskRecord]:
+        """Locked lookup of the RUNNING record carrying *idempotency_key*.
+
+        The in-flight half of idempotency: the replay store only covers keys
+        AFTER completion (``complete()`` → ``remember()``), so the submit
+        path uses this to refuse re-executing a batch whose first run is
+        still live.  Falsy keys never match — most records carry the default
+        ``None`` and must not collide with each other.
+        """
+        if not idempotency_key:
+            return None
+        with self._lock:
+            for record in self._records.values():
+                if (
+                    record.status is TaskStatus.RUNNING
+                    and record.idempotency_key == idempotency_key
+                ):
+                    return record
+        return None
 
     def complete(self, task_id: str, result: Optional[ExecutionResult]) -> bool:
         """Transition to a terminal status.

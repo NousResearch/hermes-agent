@@ -344,6 +344,26 @@ def test_replay_stores_rich_wire_shape():
     assert replayed["outputs"] == {"output": "ok"}
 
 
+def test_find_running_by_key_matches_only_live_records():
+    """The in-flight half of idempotency: a RUNNING record is findable by
+    its key; completion frees the key (the replay store owns it from then
+    on); falsy keys never match the default-None majority."""
+    reg = AgentTaskRegistry()
+    reg.register(AgentTaskRecord(task_id="no-key"))  # idempotency_key=None
+    reg.register(AgentTaskRecord(task_id="t-keyed", idempotency_key="idem-1"))
+
+    found = reg.find_running_by_key("idem-1")
+    assert found is not None
+    assert found.task_id == "t-keyed"
+    assert reg.find_running_by_key("other-key") is None
+    # None/"" must NOT match the keyless RUNNING record.
+    assert reg.find_running_by_key(None) is None
+    assert reg.find_running_by_key("") is None
+
+    reg.complete("t-keyed", _result())
+    assert reg.find_running_by_key("idem-1") is None
+
+
 # ---------------------------------------------------------------------------
 # snapshot
 # ---------------------------------------------------------------------------

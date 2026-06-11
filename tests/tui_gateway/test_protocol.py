@@ -1726,6 +1726,102 @@ def test_task_submit_delegate_links_children_to_submitted_task_id(
     assert registry.get("task-del-link").status.value == "succeeded"
 
 
+def test_task_submit_delegate_threads_gateway_session_id_to_children(
+    server, registry, spawn_home, monkeypatch
+):
+    """Step 7 wart 1: the gateway hands the SAME session id it resolved for
+    the parent batch record to the engine as registry_session_id, so child
+    records share the parent's session namespace — their _tasks.jsonl lines
+    land in the parent's spawn-trees dir (not the agent's persistent session
+    key, which matches no live gateway session)."""
+    from action_runtime.contract import ExecutionResult, Status
+    from action_runtime.task_registry import AgentTaskRecord
+
+    sid = "sess-ns"
+    _delegate_session(server, sid)
+    seen = {}
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        # Register + complete a child through the REAL registry paths with
+        # the session_id the kwarg delivers — the same record shape
+        # _run_single_child produces (the engine side of this contract is
+        # pinned in tests/tools/test_delegate_registry_dualwrite.py).
+        seen["registry_session_id"] = kwargs.get("registry_session_id")
+        registry.register(AgentTaskRecord(
+            task_id="sa-0-child0ns",
+            parent_task_id=kwargs.get("registry_parent_task_id"),
+            session_id=kwargs.get("registry_session_id"),
+            goal="task a",
+            label="task a",
+            intent="delegate",
+        ))
+        registry.complete(
+            "sa-0-child0ns",
+            ExecutionResult(
+                task_id="sa-0-child0ns",
+                status=Status.SUCCEEDED,
+                outputs={"summary": "a done"},
+            ),
+        )
+        return json.dumps({
+            "results": [
+                {"task_index": 0, "task_id": "sa-0-child0ns",
+                 "status": "completed", "summary": "a done", "error": None},
+            ],
+            "total_duration_seconds": 0.5,
+        })
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+    events = _capture_task_events(server, monkeypatch)
+
+    resp = server.handle_request({
+        "id": "r-del-sess-ns",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["task a"]},
+            "task_id": "task-del-ns",
+        },
+    })
+
+    assert "error" not in resp
+    assert resp["result"]["status"] == "succeeded"
+    # Wart 4: the aggregate entry the wire carries names the child id.
+    assert resp["result"]["outputs"]["results"][0]["task_id"] == "sa-0-child0ns"
+    # The engine received the gateway sid the parent record carries...
+    assert seen["registry_session_id"] == sid
+    assert registry.get("task-del-ns").session_id == sid
+    assert registry.get("sa-0-child0ns").session_id == sid
+    # ...so child and parent snapshots land in ONE _tasks.jsonl: the child's
+    # completion line first (it finished mid-batch), then the parent's.
+    lines = (
+        (spawn_home / "spawn-trees" / sid / "_tasks.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert [json.loads(line)["task_id"] for line in lines] == [
+        "sa-0-child0ns", "task-del-ns",
+    ]
+    assert {json.loads(line)["session_id"] for line in lines} == {sid}
+    # ...and every task.* push event of the batch routes on that ONE gateway
+    # sid — _registry_task_event emits with the snapshot's session_id, so a
+    # child event carrying the agent's persistent session key would match no
+    # live gateway session and survive only via the stdio fallback (dropped
+    # outright on per-session WS transports).
+    task_events = [
+        (name, esid, payload["task_id"])
+        for name, esid, payload in events
+        if name in ("task.started", "task.completed")
+    ]
+    assert task_events == [
+        ("task.started", sid, "task-del-ns"),
+        ("task.started", sid, "sa-0-child0ns"),
+        ("task.completed", sid, "sa-0-child0ns"),
+        ("task.completed", sid, "task-del-ns"),
+    ]
+
+
 def test_task_submit_delegate_echoes_trace_id(server, registry, monkeypatch):
     """Task 2.1 (§12): intent=delegate threads trace_id onto the parent
     AgentTaskRecord AND the final ExecutionResult before complete(), so the
@@ -2002,6 +2098,82 @@ def test_task_submit_delegate_inflight_duplicate_task_id_is_rejected(
     assert calls == []
     # The first run's record is untouched.
     assert registry.get("task-dup-1").status.value == "running"
+
+
+def test_task_submit_delegate_inflight_duplicate_idempotency_key_is_rejected(
+    server, registry, monkeypatch
+):
+    """The broken-pipe retry the idempotency key exists for: same
+    idempotency_key, NO task_id (→ fresh uuid4 default), while the first
+    batch is still RUNNING.  The replay store only covers keys after
+    completion and the task_id check can't see the fresh uuid, so the KEY
+    must be the in-flight identity — the retry gets the same 4034 the
+    task_id-level duplicate gets (naming the first run's task_id so the
+    caller can join it) and the engine never runs a second time."""
+    sid = "test-session"
+    _delegate_session(server, sid)
+    # The reconnected client retries on a fresh session, so the original
+    # session's busy gate cannot intercept the retry — only the key-level
+    # check stands between it and a full re-execution.
+    _delegate_session(server, "retry-session")
+    calls = []
+    retry_resp = {}
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        calls.append(tasks)
+        if len(calls) == 1:
+            # Mid-flight: the first run is RUNNING right now — replay the
+            # submit exactly as the reconnected client would.
+            retry_resp.update(server.handle_request({
+                "id": "r-del-key-dup-2",
+                "method": "task.submit",
+                "params": {
+                    "session_id": "retry-session",
+                    "intent": "delegate",
+                    "inputs": {"tasks": ["a"]},
+                    "idempotency_key": "idem-key-dup",
+                },
+            }))
+        return json.dumps({
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "done",
+                 "error": None},
+            ],
+            "total_duration_seconds": 0.1,
+        })
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    resp1 = server.handle_request({
+        "id": "r-del-key-dup-1",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "idempotency_key": "idem-key-dup",
+        },
+    })
+
+    assert len(calls) == 1  # the retry never reached the engine
+    assert retry_resp["error"]["code"] == 4034
+    assert "already running" in retry_resp["error"]["message"]
+    # The rejection names the FIRST run's task_id — the join handle.
+    assert resp1["result"]["task_id"] in retry_resp["error"]["message"]
+    assert resp1["result"]["status"] == "succeeded"
+    # A retry AFTER completion replays the stored result as before.
+    resp3 = server.handle_request({
+        "id": "r-del-key-dup-3",
+        "method": "task.submit",
+        "params": {
+            "session_id": "retry-session",
+            "intent": "delegate",
+            "inputs": {"tasks": ["a"]},
+            "idempotency_key": "idem-key-dup",
+        },
+    })
+    assert len(calls) == 1
+    assert resp3["result"]["replayed"] is True
 
 
 def test_task_submit_delegate_clears_stale_parent_interrupt(

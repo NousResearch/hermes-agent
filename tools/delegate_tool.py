@@ -1386,11 +1386,16 @@ def _dump_subagent_timeout_diagnostic(
         return None
 
 
-def _entry_to_execution_result(entry: Any) -> Optional[ExecutionResult]:
+def _entry_to_execution_result(
+    entry: Any, task_id: Optional[str] = None
+) -> Optional[ExecutionResult]:
     """Map a _run_single_child result dict to a terminal ExecutionResult.
 
     Phase 5 Step 2 dual-write (central-brain-openclaw.md): the registry record
     is completed from the same per-child entry the legacy path returns.
+    ``task_id`` is the child's subagent id — results always carry their id
+    (the same rule the parent batch result follows), so child task.completed
+    payloads and _tasks.jsonl lines embed it.
     Returns None when the entry is missing or unrecognized — the registry maps
     a None result to FAILED (the run died without an honest answer).
     """
@@ -1399,7 +1404,7 @@ def _entry_to_execution_result(entry: Any) -> Optional[ExecutionResult]:
     status = entry.get("status")
     if status == "completed":
         return ExecutionResult(
-            task_id=None,
+            task_id=task_id,
             status=Status.SUCCEEDED,
             outputs={"summary": entry.get("summary") or ""},
         )
@@ -1407,7 +1412,7 @@ def _entry_to_execution_result(entry: Any) -> Optional[ExecutionResult]:
         # Doc ruling: interrupted/timeout map to FAILED + TRANSPORT, not
         # retryable — the Core must replan, not blindly re-run.
         return ExecutionResult(
-            task_id=None,
+            task_id=task_id,
             status=Status.FAILED,
             error=ExecError(
                 type=ErrorType.TRANSPORT,
@@ -1419,7 +1424,7 @@ def _entry_to_execution_result(entry: Any) -> Optional[ExecutionResult]:
         # "failed": the child ran but produced no usable output (provider
         # side); "error": an exception escaped the run itself (our side).
         return ExecutionResult(
-            task_id=None,
+            task_id=task_id,
             status=Status.FAILED,
             error=ExecError(
                 type=(
@@ -1434,12 +1439,23 @@ def _entry_to_execution_result(entry: Any) -> Optional[ExecutionResult]:
     return None
 
 
+def _child_registry_task_id(child: Any) -> Optional[str]:
+    """The child's registry task_id (its stable subagent id), or None.
+
+    Same isinstance guard the register site uses — test doubles hand back
+    MagicMock attrs, which must never leak into a JSON-serialized entry.
+    """
+    sid = getattr(child, "_subagent_id", None)
+    return sid if isinstance(sid, str) else None
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
     child=None,
     parent_agent=None,
     registry_parent_task_id: Optional[str] = None,
+    registry_session_id: Optional[str] = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
@@ -1452,6 +1468,14 @@ def _run_single_child(
     link to the parent record. The legacy _register_subagent dict and the
     engine's behavior are untouched; None keeps today's engine default
     (the spawning agent's _parent_subagent_id).
+
+    ``registry_session_id`` (Step 7 wart 1) is the matching override for the
+    record's session_id: a task.submit intent="delegate" batch passes the
+    GATEWAY session id it resolved, so child records land in the same
+    spawn-trees dir as the parent record and child task.* events carry a
+    session_id a live gateway session actually owns — not the agent's
+    persistent session key. None keeps today's default
+    (``parent_agent.session_id``) for non-gateway delegate runs.
     """
     child_start = time.monotonic()
 
@@ -1594,7 +1618,14 @@ def _run_single_child(
         # session_id ties the record to the parent's persistent session so
         # complete() appends the snapshot to that session's _tasks.jsonl
         # (Step 6a); test doubles without a string session_id skip it.
-        _raw_session = getattr(parent_agent, "session_id", None)
+        # Step 7 wart 1: a caller-supplied gateway session id (the same one
+        # the parent batch record carries) beats the agent's persistent
+        # session key, so parent and children share one session namespace.
+        _raw_session = (
+            registry_session_id
+            if isinstance(registry_session_id, str)
+            else getattr(parent_agent, "session_id", None)
+        )
         try:
             get_registry().register(
                 AgentTaskRecord(
@@ -1760,6 +1791,9 @@ def _run_single_child(
 
             entry = {
                 "task_index": task_index,
+                # Step 7 wart 4 (additive): the child's registry id, so a
+                # Core caller can correlate aggregate entries to records.
+                "task_id": _subagent_id,
                 "status": "timeout" if is_timeout else "error",
                 "summary": None,
                 "error": _err,
@@ -1850,6 +1884,9 @@ def _run_single_child(
 
         entry = {
             "task_index": task_index,
+            # Step 7 wart 4 (additive): the child's registry id, so a Core
+            # caller can correlate aggregate entries to records.
+            "task_id": _subagent_id,
             "status": status,
             "summary": summary,
             "api_calls": api_calls,
@@ -1998,6 +2035,8 @@ def _run_single_child(
                 logger.debug("Progress callback failure relay failed: %s", e)
         entry = {
             "task_index": task_index,
+            # Step 7 wart 4 (additive): see the normal-exit entry above.
+            "task_id": _subagent_id,
             "status": "error",
             "summary": None,
             "error": str(exc),
@@ -2027,7 +2066,7 @@ def _run_single_child(
             # before producing a result dict; complete() maps that to FAILED.
             try:
                 get_registry().complete(
-                    _subagent_id, _entry_to_execution_result(entry)
+                    _subagent_id, _entry_to_execution_result(entry, _subagent_id)
                 )
             except Exception:
                 logger.debug("registry dual-write complete failed", exc_info=True)
@@ -2104,6 +2143,7 @@ def delegate_task(
     role: Optional[str] = None,
     parent_agent=None,
     registry_parent_task_id: Optional[str] = None,
+    registry_session_id: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2121,6 +2161,11 @@ def delegate_task(
     for task.submit intent="delegate": when set, each child's
     AgentTaskRecord links to that caller-supplied parent task_id instead of
     the engine-internal _parent_subagent_id. None keeps today's behavior.
+
+    'registry_session_id' (Step 7 wart 1) is the matching session override:
+    when set, each child's record carries that GATEWAY session id instead of
+    the agent's persistent session key, so children persist/route alongside
+    the parent batch record. None keeps today's behavior.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2282,6 +2327,7 @@ def delegate_task(
             child,
             parent_agent,
             registry_parent_task_id=registry_parent_task_id,
+            registry_session_id=registry_session_id,
         )
         results.append(result)
     else:
@@ -2299,6 +2345,7 @@ def delegate_task(
                     child=child,
                     parent_agent=parent_agent,
                     registry_parent_task_id=registry_parent_task_id,
+                    registry_session_id=registry_session_id,
                 )
                 futures[future] = i
 
@@ -2325,6 +2372,9 @@ def delegate_task(
                             except Exception as exc:
                                 entry = {
                                     "task_index": idx,
+                                    "task_id": _child_registry_task_id(
+                                        _child_by_index.get(idx)
+                                    ),
                                     "status": "error",
                                     "summary": None,
                                     "error": str(exc),
@@ -2337,6 +2387,9 @@ def delegate_task(
                         else:
                             entry = {
                                 "task_index": idx,
+                                "task_id": _child_registry_task_id(
+                                    _child_by_index.get(idx)
+                                ),
                                 "status": "interrupted",
                                 "summary": None,
                                 "error": "Parent agent interrupted — child did not finish in time",
@@ -2362,6 +2415,9 @@ def delegate_task(
                         idx = futures[future]
                         entry = {
                             "task_index": idx,
+                            "task_id": _child_registry_task_id(
+                                _child_by_index.get(idx)
+                            ),
                             "status": "error",
                             "summary": None,
                             "error": str(exc),

@@ -262,7 +262,10 @@ def test_delegate_task_threads_caller_parent_id_to_child_record(
 
     import json
 
-    assert json.loads(raw)["results"][0]["status"] == "completed"
+    entry = json.loads(raw)["results"][0]
+    assert entry["status"] == "completed"
+    # Wart 4: the single-task fast path names the child id too.
+    assert entry["task_id"] == sid
     rec = registry.get(sid)
     assert rec is not None
     assert rec.parent_task_id == "task-caller-e2e"
@@ -333,8 +336,8 @@ def test_delegate_task_threads_caller_parent_id_to_parallel_child_records(
 
 
 def test_registry_parent_task_id_stays_out_of_model_schema():
-    """registry_parent_task_id is internal gateway plumbing; models must
-    never see it as a callable tool parameter."""
+    """registry_parent_task_id / registry_session_id are internal gateway
+    plumbing; models must never see them as callable tool parameters."""
     from tools import delegate_tool
 
     static_props = delegate_tool.DELEGATE_TASK_SCHEMA["parameters"]["properties"]
@@ -342,14 +345,124 @@ def test_registry_parent_task_id_stays_out_of_model_schema():
         "properties"
     ]
 
-    assert "registry_parent_task_id" not in static_props
-    assert "registry_parent_task_id" not in dynamic_props
-    assert "registry_parent_task_id" not in static_props["tasks"]["items"][
-        "properties"
+    for kwarg in ("registry_parent_task_id", "registry_session_id"):
+        assert kwarg not in static_props
+        assert kwarg not in dynamic_props
+        assert kwarg not in static_props["tasks"]["items"]["properties"]
+        assert kwarg not in dynamic_props["tasks"]["items"]["properties"]
+
+
+# ── caller-supplied gateway session id (Step 7 wart 1) ──────────────────
+
+
+def test_caller_session_id_overrides_agent_session_key(registry):
+    """registry_session_id (the gateway sid the parent batch record carries)
+    beats the agent's persistent session key, so child records share the
+    parent record's session namespace — same spawn-trees dir, and child
+    task.* events carry a session_id a live gateway session owns."""
+    parent = _make_parent()
+    parent.session_id = "agent-persistent-key"
+    sid = "sa-0-7sessovr"
+    child = _make_child(sid)
+
+    result = _run_single_child(
+        task_index=0,
+        goal="gateway session",
+        child=child,
+        parent_agent=parent,
+        registry_session_id="gw-sess-1",
+    )
+
+    assert result["status"] == "completed"
+    assert registry.get(sid).session_id == "gw-sess-1"
+
+
+def test_agent_session_key_default_when_caller_session_absent(registry):
+    """Without registry_session_id, today's default is byte-identical: the
+    record carries the spawning agent's persistent session key (the
+    non-gateway delegate path)."""
+    parent = _make_parent()
+    parent.session_id = "agent-persistent-key"
+    sid = "sa-0-7sessdef"
+    child = _make_child(sid)
+
+    result = _run_single_child(
+        task_index=0, goal="engine default session", child=child, parent_agent=parent
+    )
+
+    assert result["status"] == "completed"
+    assert registry.get(sid).session_id == "agent-persistent-key"
+
+
+def test_delegate_task_threads_caller_session_id_to_parallel_child_records(
+    registry, monkeypatch
+):
+    """End-to-end through the real engine: delegate_task(...,
+    registry_session_id=...) reaches _run_single_child's register site on
+    the batch/parallel path, so every child record carries the gateway sid
+    alongside the caller parent task_id — one session namespace for the
+    whole tree.  Also pins wart 4: each aggregate entry names its child's
+    task_id so a Core caller can correlate entries to registry records."""
+    import json
+    import sys
+    import types
+
+    from tools import delegate_tool
+
+    children = [
+        _make_child("sa-0-sessaa", summary="linked A"),
+        _make_child("sa-1-sessbb", summary="linked B"),
     ]
-    assert "registry_parent_task_id" not in dynamic_props["tasks"]["items"][
-        "properties"
-    ]
+    for child in children:
+        child._delegate_role = "leaf"
+        child._delegate_saved_tool_names = []
+
+    monkeypatch.setattr(
+        delegate_tool,
+        "_build_child_agent",
+        lambda **kwargs: children[kwargs["task_index"]],
+    )
+    monkeypatch.setattr(delegate_tool, "_get_max_concurrent_children", lambda: 2)
+    monkeypatch.setattr(
+        delegate_tool,
+        "_resolve_delegation_credentials",
+        lambda cfg, parent: {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+        },
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(invoke_hook=lambda *a, **k: None),
+    )
+    parent = _make_parent()
+    parent.session_id = "agent-persistent-key"
+    parent._delegate_spinner = None
+    parent._interrupt_requested = False
+    parent._memory_manager = None
+
+    raw = delegate_tool.delegate_task(
+        tasks=[{"goal": "sess batch A"}, {"goal": "sess batch B"}],
+        parent_agent=parent,
+        registry_parent_task_id="task-caller-sess",
+        registry_session_id="gw-sess-batch",
+    )
+
+    results = json.loads(raw)["results"]
+    assert [r["status"] for r in results] == ["completed", "completed"]
+    # Wart 4: aggregate entries carry the child ids (sorted by task_index).
+    assert [r["task_id"] for r in results] == ["sa-0-sessaa", "sa-1-sessbb"]
+    for child in children:
+        rec = registry.get(child._subagent_id)
+        assert rec is not None
+        assert rec.session_id == "gw-sess-batch"
+        assert rec.parent_task_id == "task-caller-sess"
 
 
 # ── complete on normal exit ─────────────────────────────────────────────
@@ -364,12 +477,16 @@ def test_complete_on_normal_exit_mirrors_status_and_drops_agent_ref(registry):
     )
 
     assert result["status"] == "completed"
+    # Wart 4: the legacy entry names its child id (additive key).
+    assert result["task_id"] == sid
     rec = registry.get(sid)
     assert rec is not None
     assert rec.status is TaskStatus.SUCCEEDED
     assert rec.agent_ref is None
     assert rec.finished_at is not None
     assert rec.result is not None
+    # Wart 3: child results always carry their id, like the parents'.
+    assert rec.result.task_id == sid
     assert rec.result.status is Status.SUCCEEDED
     assert rec.result.outputs == {"summary": "task finished"}
     assert registry.list_active() == []
@@ -386,6 +503,7 @@ def test_complete_on_interrupted_child_maps_transport_failed(registry):
     assert result["status"] == "interrupted"
     rec = registry.get(sid)
     assert rec.status is TaskStatus.FAILED
+    assert rec.result.task_id == sid
     assert rec.result.status is Status.FAILED
     assert rec.result.error.type is ErrorType.TRANSPORT
     assert rec.result.error.message == "interrupted"
@@ -402,8 +520,10 @@ def test_complete_on_child_exception_maps_internal_failed(registry):
     )
 
     assert result["status"] == "error"
+    assert result["task_id"] == sid
     rec = registry.get(sid)
     assert rec.status is TaskStatus.FAILED
+    assert rec.result.task_id == sid
     assert rec.result.error.type is ErrorType.INTERNAL
     assert "boom" in rec.result.error.message
     assert rec.agent_ref is None
@@ -516,6 +636,11 @@ def test_entry_mapping_terminal_rules():
     assert res.status is Status.SUCCEEDED
     assert res.outputs == {"summary": "ok"}
     assert res.error is None
+    # Wart 3: task_id defaults to None and passes through on every branch.
+    assert res.task_id is None
+    for status in ("completed", "interrupted", "timeout", "failed", "error"):
+        mapped = _entry_to_execution_result({"status": status}, "sa-0-mapid01")
+        assert mapped.task_id == "sa-0-mapid01"
 
     res = _entry_to_execution_result({"status": "failed", "error": "no output"})
     assert res.status is Status.FAILED

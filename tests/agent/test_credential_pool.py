@@ -444,6 +444,113 @@ def test_token_invalidated_marks_credential_dead(tmp_path, monkeypatch):
     assert persisted["last_error_reason"] == "token_invalidated"
 
 
+def test_load_pool_collapses_duplicate_seeded_source_and_id(tmp_path, monkeypatch):
+    """Duplicate singleton credentials must not trap rotation on one id forever.
+
+    Regression: shared Codex auth could leave two ``device_code`` entries with
+    the same id, one DEAD and one fresh. ``current()`` / ``_replace_entry()``
+    then kept addressing the first id match and the gateway spun on 401
+    token_invalidated without reaching fallback.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "same-id",
+                        "label": "revoked-device-code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "revoked-at",
+                        "refresh_token": "revoked-rt",
+                        "last_status": "dead",
+                        "last_error_code": 401,
+                        "last_error_reason": "token_invalidated",
+                        "last_refresh": "2026-06-10T16:27:09Z",
+                    },
+                    {
+                        "id": "same-id",
+                        "label": "fresh-device-code",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "device_code",
+                        "access_token": "fresh-at",
+                        "refresh_token": "fresh-rt",
+                        "last_status": None,
+                        "last_error_code": None,
+                        "last_error_reason": None,
+                        "last_refresh": "2026-06-10T16:32:08Z",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entries = pool.entries()
+
+    assert len(entries) == 1
+    assert entries[0].label == "fresh-device-code"
+    assert entries[0].last_status is None
+    selected = pool.select()
+    assert selected is not None
+    assert selected.access_token == "fresh-at"
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openai-codex"]
+    assert len(persisted) == 1
+    assert persisted[0]["label"] == "fresh-device-code"
+
+
+def test_load_pool_rewrites_duplicate_manual_ids_without_dropping_credentials(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openrouter": [
+                    {
+                        "id": "same-id",
+                        "label": "manual-a",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "key-a",
+                    },
+                    {
+                        "id": "same-id",
+                        "label": "manual-b",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "key-b",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openrouter")
+    entries = pool.entries()
+
+    assert len(entries) == 2
+    assert {entry.label for entry in entries} == {"manual-a", "manual-b"}
+    assert len({entry.id for entry in entries}) == 2
+
+    auth_payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    persisted = auth_payload["credential_pool"]["openrouter"]
+    assert len({entry["id"] for entry in persisted}) == 2
+
+
 def test_dead_credential_never_re_enters_rotation_after_ttl(tmp_path, monkeypatch):
     """A DEAD credential must stay excluded regardless of how much time passes.
 

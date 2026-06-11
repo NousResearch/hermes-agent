@@ -1133,6 +1133,15 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool
         _fb_is_azure = agent._is_azure_openai_url(fb_base_url)
         if fb_provider == "openai-codex":
             fb_api_mode = "codex_responses"
+        elif (
+            fb_provider in {"kimi-coding", "kimi-coding-cn"}
+            or (base_url_host_matches(fb_base_url, "api.kimi.com") and "/coding" in fb_base_url.lower())
+        ):
+            # Kimi Coding Plan speaks Anthropic Messages on the /coding route.
+            # resolve_provider_client wraps it in an OpenAI-compatible shim, but
+            # the main loop still needs the Anthropic transport mode so fallback
+            # requests don't hit /chat/completions and 404.
+            fb_api_mode = "anthropic_messages"
         elif fb_provider == "anthropic" or fb_base_url.rstrip("/").lower().endswith("/anthropic"):
             fb_api_mode = "anthropic_messages"
         elif _fb_is_azure:

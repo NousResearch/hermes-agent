@@ -15,3 +15,8 @@
 - Estado: implementado
 - Descripción: los perfiles que no tengan `providers.openai-codex` local pueden usar el auth Codex del root/global como credencial compartida; si el token necesita refresh, se actualiza el auth global bajo un lock del propio fichero en vez de clonar tokens rotados al `auth.json` aislado del perfil.
 - Notas: `HERMES_CODEX_SHARED_AUTH=0` fuerza auth Codex estrictamente por perfil. `get_codex_auth_status()` expone `auth_scope/auth_store` para diagnosticar si se usa perfil o shared.
+
+## Credential pool duplicate-id and Kimi fallback hardening
+- Estado: implementado
+- Descripción: el cargador de pools de credenciales sanea entradas auto-sembradas duplicadas por `source`, conserva la credencial más sana/fresca y garantiza IDs únicos para evitar bucles de rotación 401 con credenciales OAuth inválidas. El fallback a `kimi-coding` usa modo Anthropic Messages para endpoints `/coding`, evitando 404 al caer desde Codex.
+- Notas: aplicado para desbloquear perfiles ZKTeco con una sola credencial Codex y fallback `kimi-coding/kimi-k2-0905`.

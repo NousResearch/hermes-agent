@@ -1622,6 +1622,94 @@ def _normalize_pool_priorities(provider: str, entries: List[PooledCredential]) -
     return changed
 
 
+def _credential_health_rank(entry: PooledCredential) -> int:
+    """Sort key component for duplicate cleanup: usable > exhausted > dead."""
+    if entry.last_status == STATUS_DEAD:
+        return 2
+    if entry.last_status == STATUS_EXHAUSTED:
+        return 1
+    return 0
+
+
+def _credential_freshness(entry: PooledCredential) -> float:
+    """Best-effort timestamp used to keep the freshest duplicate credential."""
+    for value in (
+        entry.last_refresh,
+        entry.last_status_at,
+        entry.expires_at,
+        entry.expires_at_ms,
+    ):
+        parsed = _parse_absolute_timestamp(value)
+        if parsed is not None:
+            return parsed
+    return 0.0
+
+
+def _deduplicate_pool_entries(provider: str, entries: List[PooledCredential]) -> bool:
+    """Remove unsafe duplicate seeded entries and ensure every entry has a unique id.
+
+    Runtime rotation uses credential ids for ``current()``, ``_replace_entry()``,
+    lease tracking, and persisted status updates. If two entries share an id,
+    a 401 on one credential can mark/select the other and spin forever. This was
+    observed with OpenAI Codex shared-auth pools where a DEAD singleton and a
+    fresh singleton both had ``id=b279b4``.
+
+    Auto-seeded singleton/env sources should only have one active entry per
+    source, so collapse duplicates and prefer the healthiest/freshest one.
+    Manual entries are user-managed independent credentials, so preserve them
+    and only rewrite colliding ids.
+    """
+    changed = False
+
+    best_by_source: Dict[str, Tuple[int, PooledCredential]] = {}
+    duplicate_indexes: Set[int] = set()
+    for idx, entry in enumerate(entries):
+        if _is_manual_source(entry.source):
+            continue
+        source = (entry.source or "").strip()
+        if not source:
+            continue
+        existing = best_by_source.get(source)
+        if existing is None:
+            best_by_source[source] = (idx, entry)
+            continue
+        existing_idx, existing_entry = existing
+        candidate_key = (
+            _credential_health_rank(entry),
+            -_credential_freshness(entry),
+            entry.priority,
+        )
+        existing_key = (
+            _credential_health_rank(existing_entry),
+            -_credential_freshness(existing_entry),
+            existing_entry.priority,
+        )
+        if candidate_key < existing_key:
+            duplicate_indexes.add(existing_idx)
+            best_by_source[source] = (idx, entry)
+        else:
+            duplicate_indexes.add(idx)
+
+    if duplicate_indexes:
+        entries[:] = [entry for idx, entry in enumerate(entries) if idx not in duplicate_indexes]
+        changed = True
+
+    seen_ids: Set[str] = set()
+    for idx, entry in enumerate(entries):
+        entry_id = str(entry.id or "").strip()
+        if entry_id and entry_id not in seen_ids:
+            seen_ids.add(entry_id)
+            continue
+        new_id = uuid.uuid4().hex[:6]
+        while new_id in seen_ids:
+            new_id = uuid.uuid4().hex[:6]
+        entries[idx] = replace(entry, id=new_id)
+        seen_ids.add(new_id)
+        changed = True
+
+    return changed
+
+
 def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tuple[bool, Set[str]]:
     changed = False
     active_sources: Set[str] = set()
@@ -2163,16 +2251,17 @@ def load_pool(provider: str) -> CredentialPool:
         for payload in raw_entries
     )
     entries = [PooledCredential.from_dict(provider, payload) for payload in raw_entries]
+    dedupe_changed = _deduplicate_pool_entries(provider, entries)
 
     if provider.startswith(CUSTOM_POOL_PREFIX):
         # Custom endpoint pool — seed from custom_providers config and model config
         custom_changed, custom_sources = _seed_custom_pool(provider, entries)
-        changed = raw_needs_sanitization or custom_changed
+        changed = raw_needs_sanitization or dedupe_changed or custom_changed
         changed |= _prune_stale_seeded_entries(entries, custom_sources)
     else:
         singleton_changed, singleton_sources = _seed_from_singletons(provider, entries)
         env_changed, env_sources = _seed_from_env(provider, entries)
-        changed = raw_needs_sanitization or singleton_changed or env_changed
+        changed = raw_needs_sanitization or dedupe_changed or singleton_changed or env_changed
         changed |= _prune_stale_seeded_entries(entries, singleton_sources | env_sources)
         changed |= _normalize_pool_priorities(provider, entries)
 

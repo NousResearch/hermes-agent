@@ -548,6 +548,23 @@ async fn run_bootstrap(
             continue;
         }
 
+        #[cfg(target_os = "windows")]
+        if let Some(frame) =
+            crate::orchestrator::windows_node_deps_skip_result_from_env(stage, &hermes_home)
+        {
+            emit_event(
+                &app,
+                BootstrapEvent::Stage {
+                    name: stage.name.clone(),
+                    state: StageState::Skipped,
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                    result: Some(frame),
+                    error: None,
+                },
+            );
+            continue;
+        }
+
         let native_stage_result = {
             if stage.name.eq_ignore_ascii_case("bootstrap-marker") {
                 Some(crate::orchestrator::write_bootstrap_marker(

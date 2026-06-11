@@ -149,6 +149,8 @@ language-specific setup where needed.
 - Windows bootstrap tool stages for `uv`, `git`, `node`, and `system-packages` now use Rust preflight checks to skip
   the script process when the required tools are already available, while preserving script fallback when anything is
   missing or the detected Node.js version is too old for the desktop build.
+- Windows `node-deps` now uses a Rust no-op skip when npm is unavailable, matching the existing script behavior without
+  starting PowerShell for a stage that can only skip.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` and the Unix `config` stage now run as native Rust stages while preserving Python
   `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.

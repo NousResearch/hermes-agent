@@ -192,6 +192,42 @@ pub fn satisfied_tool_stage_skip_result_from_env(
     )
 }
 
+/// Return a Rust-side skip result for Windows node-deps when npm is absent.
+pub fn windows_node_deps_skip_result<P>(
+    stage: &StageInfo,
+    hermes_home: &Path,
+    path_env: P,
+    pathext: &str,
+) -> Option<crate::events::StageResultPayload>
+where
+    P: AsRef<OsStr>,
+{
+    if !stage.name.eq_ignore_ascii_case("node-deps") {
+        return None;
+    }
+    if find_npm_executable(hermes_home, path_env, pathext).is_some() {
+        return None;
+    }
+    Some(crate::events::StageResultPayload {
+        stage: stage.name.clone(),
+        ok: true,
+        skipped: true,
+        reason: Some("npm not available".to_string()),
+        data: None,
+    })
+}
+
+/// Return a Rust-side skip result for Windows node-deps in this process.
+#[cfg(target_os = "windows")]
+pub fn windows_node_deps_skip_result_from_env(
+    stage: &StageInfo,
+    hermes_home: &Path,
+) -> Option<crate::events::StageResultPayload> {
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    windows_node_deps_skip_result(stage, hermes_home, path_env, &pathext)
+}
+
 /// Return a compact log line for the current Rust orchestration coverage.
 pub fn summarize_plan(report: &InstallStateReport, plan: &[PlannedStage]) -> String {
     let tool_summary = report
@@ -1131,6 +1167,30 @@ mod tests {
         )
         .is_some());
         assert!(satisfied_tool_stage_skip_result(&venv, &hermes_home, &tools, ".EXE").is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn windows_node_deps_skip_result_skips_only_when_npm_is_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-node-deps-skip-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let tools = root.join("tools");
+        std::fs::create_dir_all(&tools).unwrap();
+
+        let node_deps = stage_info("node-deps", "Installing Node.js dependencies", "install", false);
+        let skipped = windows_node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD")
+            .unwrap();
+
+        assert_eq!(skipped.stage, "node-deps");
+        assert_eq!(skipped.ok, true);
+        assert_eq!(skipped.skipped, true);
+        assert_eq!(skipped.reason.as_deref(), Some("npm not available"));
+        std::fs::write(tools.join("npm.cmd"), b"npm").unwrap();
+        assert!(windows_node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD").is_none());
 
         let _ = std::fs::remove_dir_all(&root);
     }

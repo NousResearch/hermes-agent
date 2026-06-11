@@ -296,12 +296,12 @@ function SessionRow({
     if (isExpanded && messages === null && !loading) {
       setLoading(true);
       api
-        .getSessionMessages(session.id)
+        .getSessionMessages(session.id, session.profile)
         .then((resp) => setMessages(resp.messages))
         .catch((err) => setError(String(err)))
         .finally(() => setLoading(false));
     }
-  }, [isExpanded, session.id, messages, loading]);
+  }, [isExpanded, session.id, session.profile, messages, loading]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]

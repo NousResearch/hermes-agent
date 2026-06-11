@@ -293,8 +293,10 @@ export const api = {
     }),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
-  getSessionMessages: (id: string) =>
-    fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
+  getSessionMessages: (id: string, profile?: string | null) =>
+    fetchJSON<SessionMessagesResponse>(
+      `/api/sessions/${encodeURIComponent(id)}/messages${profile ? `?profile=${encodeURIComponent(profile)}` : ""}`,
+    ),
   getSessionLatestDescendant: (id: string) =>
     fetchJSON<SessionLatestDescendantResponse>(
       `/api/sessions/${encodeURIComponent(id)}/latest-descendant`,
@@ -1497,6 +1499,9 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  /** Owning profile name — present when session comes from
+   *  `/api/profiles/sessions` (multi-profile aggregation). */
+  profile?: string | null;
 }
 
 export interface SessionLatestDescendantResponse {

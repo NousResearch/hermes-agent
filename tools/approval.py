@@ -1428,6 +1428,13 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                # Mirror the CLI's allow_permanent gate (see prompt_dangerous_approval
+                # below). When a tirith content-security warning is present the
+                # backend silently downgrades an "always" choice to session scope
+                # (see the persistence loop after the decision), so the UI must not
+                # offer a permanent allow it can't honor. Without this field the
+                # TUI/desktop always render "Always allow".
+                "allow_permanent": not has_tirith,
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"

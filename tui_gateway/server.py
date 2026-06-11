@@ -1559,6 +1559,25 @@ def _runtime_model_config(agent, existing: dict | None = None) -> dict:
     if model:
         config["model"] = model
     if provider:
+        if provider == "custom" and base_url:
+            # ``agent.provider`` is the RESOLVED provider, and for any named
+            # ``providers:`` / ``custom_providers:`` entry that is the literal
+            # string "custom" — persisting it loses the entry identity, so a
+            # later resume/rebuild cannot re-resolve the entry's credentials
+            # (the api_key is deliberately never persisted; see
+            # _stored_session_runtime_overrides). Recover the canonical
+            # ``custom:<name>`` menu key from the endpoint URL so
+            # resolve_runtime_provider() can find the entry again.
+            try:
+                from hermes_cli.runtime_provider import (
+                    find_custom_provider_identity,
+                )
+
+                provider = find_custom_provider_identity(base_url) or provider
+            except Exception:
+                logger.debug(
+                    "custom provider identity lookup failed", exc_info=True
+                )
         config["provider"] = provider
     if base_url:
         config["base_url"] = base_url
@@ -3310,9 +3329,30 @@ def _make_agent(
         override_base_url = model_override.get("base_url")
         override_api_key = model_override.get("api_key")
         override_api_mode = model_override.get("api_mode")
+        resolve_kwargs = {}
+        if (
+            override_base_url
+            and str(requested_provider or "").strip().lower() == "custom"
+        ):
+            # Session rows persisted before the custom-provider identity fix
+            # (see _runtime_model_config) stored the resolved provider
+            # "custom", which _get_named_custom_provider cannot match back to
+            # a named ``providers:`` / ``custom_providers:`` entry — the
+            # rebuild then either raised auth_unavailable or silently
+            # resolved placeholder credentials against the patched-back
+            # base_url. Recover the entry identity from the persisted
+            # base_url; failing that, hand the base_url to the direct-alias
+            # branch so pool/env credentials can still be resolved for it.
+            from hermes_cli.runtime_provider import find_custom_provider_identity
+
+            recovered = find_custom_provider_identity(override_base_url)
+            if recovered:
+                requested_provider = recovered
+            resolve_kwargs["explicit_base_url"] = override_base_url
         runtime = resolve_runtime_provider(
             requested=requested_provider,
             target_model=model or None,
+            **resolve_kwargs,
         )
         # The switch already resolved concrete credentials/endpoint; honor them
         # so a custom/named endpoint survives the rebuild even if global

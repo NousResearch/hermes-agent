@@ -2917,6 +2917,7 @@ def login_spotify_command(args) -> None:
     accounts_base_url = _spotify_accounts_base_url(existing_state)
     api_base_url = _spotify_api_base_url(existing_state)
     open_browser = not getattr(args, "no_browser", False)
+    manual_paste = bool(getattr(args, "manual_paste", False))
 
     code_verifier = _spotify_code_verifier()
     code_challenge = _spotify_code_challenge(code_verifier)
@@ -2941,7 +2942,8 @@ def login_spotify_command(args) -> None:
     print(f"Full setup guide: {SPOTIFY_DOCS_URL}")
     print()
 
-    _print_loopback_ssh_hint(redirect_uri, docs_url=SPOTIFY_DOCS_URL)
+    if not manual_paste:
+        _print_loopback_ssh_hint(redirect_uri, docs_url=SPOTIFY_DOCS_URL)
 
     if open_browser and not _is_remote_session() and _can_open_graphical_browser():
         try:
@@ -2953,14 +2955,17 @@ def login_spotify_command(args) -> None:
         else:
             print("Could not open the browser automatically; use the URL above.")
 
-    callback = _spotify_wait_for_callback(
-        redirect_uri,
-        timeout_seconds=float(getattr(args, "timeout", None) or 180.0),
-    )
+    if manual_paste:
+        callback = _prompt_manual_callback_paste(redirect_uri)
+    else:
+        callback = _spotify_wait_for_callback(
+            redirect_uri,
+            timeout_seconds=float(getattr(args, "timeout", None) or 180.0),
+        )
     if callback.get("error"):
         detail = callback.get("error_description") or callback["error"]
         raise SystemExit(f"Spotify authorization failed: {detail}")
-    if callback.get("state") != state_nonce:
+    if callback.get("state") != state_nonce and not callback.get("_manual_paste"):
         raise SystemExit("Spotify authorization failed: state mismatch.")
 
     token_payload = _spotify_exchange_code_for_tokens(

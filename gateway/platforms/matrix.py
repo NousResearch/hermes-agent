@@ -58,7 +58,7 @@ import os
 import re
 import time
 from urllib.parse import urlsplit, urlunsplit
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from html import escape as _html_escape
 from html.parser import HTMLParser
@@ -333,11 +333,7 @@ class _MatrixModelPickerPrompt:
     requester_user_id: str | None = None
     expires_at: float | None = None
     resolved: bool = False
-    bot_reaction_events: dict[str, str] = None
-
-    def __post_init__(self) -> None:
-        if self.bot_reaction_events is None:
-            self.bot_reaction_events = {}
+    bot_reaction_events: dict[str, str] = field(default_factory=dict)
 
 
 # Matrix message size limit (4000 chars practical, spec has no hard limit
@@ -2321,6 +2317,25 @@ class MatrixAdapter(BasePlatformAdapter):
         """Return True when MATRIX_ALLOWED_ROOMS permits the room."""
         return not self._allowed_room_ids or room_id in self._allowed_room_ids
 
+    async def _is_allowed_matrix_room_event(self, room_id: str) -> bool:
+        """Return True when a room event may proceed past intake filters.
+
+        MATRIX_ALLOWED_ROOMS constrains shared rooms. Matrix DMs are exempt so
+        personal chats still work when operators use a room allowlist for
+        project rooms.
+        """
+        if self._is_allowed_matrix_room(room_id):
+            return True
+        try:
+            return await self._is_dm_room(room_id)
+        except Exception as exc:
+            logger.debug(
+                "Matrix: could not resolve room identity for allowlist check in %s: %s",
+                room_id,
+                exc,
+            )
+            return False
+
     async def _on_room_message(self, event: Any) -> None:
         """Handle incoming room message events (text, media)."""
         room_id = str(getattr(event, "room_id", ""))
@@ -2359,7 +2374,7 @@ class MatrixAdapter(BasePlatformAdapter):
                 room_id,
             )
             return
-        if not self._is_allowed_matrix_room(room_id):
+        if not await self._is_allowed_matrix_room_event(room_id):
             logger.info(
                 "Matrix: ignoring message from unauthorized room %s",
                 room_id,

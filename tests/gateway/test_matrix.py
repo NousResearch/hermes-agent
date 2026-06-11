@@ -3792,6 +3792,7 @@ class TestMatrixOnRoomMessageFilter:
     @pytest.mark.asyncio
     async def test_unauthorized_room_is_dropped(self):
         self.adapter._allowed_room_ids = {"!allowed:example.org"}
+        self.adapter._is_dm_room = AsyncMock(return_value=False)
         ev = self._mk_event(
             sender="@alice:example.org",
             body="hello bot",
@@ -3799,6 +3800,18 @@ class TestMatrixOnRoomMessageFilter:
         )
         await self.adapter._on_room_message(ev)
         self.adapter._handle_text_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dm_room_bypasses_allowed_room_gate(self):
+        self.adapter._allowed_room_ids = {"!project:example.org"}
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        ev = self._mk_event(
+            sender="@alice:example.org",
+            body="hello bot",
+            room_id="!dm:example.org",
+        )
+        await self.adapter._on_room_message(ev)
+        self.adapter._handle_text_message.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_configured_bridge_pattern_is_dropped(self):

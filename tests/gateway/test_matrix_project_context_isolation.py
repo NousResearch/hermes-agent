@@ -370,7 +370,10 @@ async def test_matrix_status_reports_current_matrix_room_scope():
     assert PROJECT_B_NAME in result
     assert PROJECT_B_ROOM_ID in result
     assert "session_scope: room" in result
-    assert build_session_key(source_b) in result
+    session_key = build_session_key(source_b)
+    assert session_key not in result
+    assert session_key[:8] not in result
+    assert "session_key: sha256:" in result
     assert PROJECT_A_NAME not in result
     assert PROJECT_A_ROOM_ID not in result
 

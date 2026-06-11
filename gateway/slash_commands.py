@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import logging
 import os
@@ -458,7 +459,10 @@ class GatewaySlashCommandsMixin:
                 t("gateway.status.matrix_scope_room_id", room_id=source.chat_id),
                 t("gateway.status.matrix_scope_thread", thread_id=thread),
                 t("gateway.status.matrix_scope_mode", scope=scope),
-                t("gateway.status.matrix_scope_key", session_key=session_key),
+                t(
+                    "gateway.status.matrix_scope_key",
+                    session_key=self._redact_matrix_session_key(session_key),
+                ),
             ])
         lines.extend([
             "",
@@ -466,6 +470,13 @@ class GatewaySlashCommandsMixin:
         ])
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _redact_matrix_session_key(session_key: str) -> str:
+        """Return a stable Matrix session-key fingerprint for shared room status."""
+        text = str(session_key or "")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        return f"sha256:{digest}"
 
     def _gateway_session_origin_for_id(self, session_id: str) -> Optional[SessionSource]:
         """Best-effort origin lookup for gateway session IDs."""

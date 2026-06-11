@@ -728,8 +728,13 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'approval.request': {
         const description = String(ev.payload.description ?? 'dangerous command')
+        // Backend omits the field for the common case; only an explicit false
+        // (tirith warning present) drops the permanent-allow option.
+        const allowPermanent = ev.payload.allow_permanent !== false
 
-        patchOverlayState({ approval: { command: String(ev.payload.command ?? ''), description } })
+        patchOverlayState({
+          approval: { allowPermanent, command: String(ev.payload.command ?? ''), description }
+        })
         setStatus('approval needed')
 
         return

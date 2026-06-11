@@ -633,14 +633,21 @@ export function useMessageStream({
         const runningChanged = typeof payload?.running === 'boolean'
 
         if (apply) {
-          const runtimeInfo: { branch?: string; cwd?: string } = {}
+          const runtimeInfo: Partial<
+            Pick<
+              ClientSessionState,
+              'branch' | 'cwd' | 'fast' | 'model' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+            >
+          > = {}
 
           if (modelChanged) {
             setCurrentModel(payload!.model || '')
+            runtimeInfo.model = payload!.model || ''
           }
 
           if (providerChanged) {
             setCurrentProvider(payload!.provider || '')
+            runtimeInfo.provider = payload!.provider || ''
           }
 
           if (typeof payload?.cwd === 'string') {
@@ -653,32 +660,32 @@ export function useMessageStream({
             runtimeInfo.branch = payload.branch
           }
 
-          if (sessionId && (runtimeInfo.cwd !== undefined || runtimeInfo.branch !== undefined)) {
-            updateSessionState(sessionId, state => ({
-              ...state,
-              branch: runtimeInfo.branch ?? state.branch,
-              cwd: runtimeInfo.cwd ?? state.cwd
-            }))
-          }
-
           if (typeof payload?.personality === 'string') {
             setCurrentPersonality(normalizePersonalityValue(payload.personality))
           }
 
           if (typeof payload?.reasoning_effort === 'string') {
             setCurrentReasoningEffort(payload.reasoning_effort)
+            runtimeInfo.reasoningEffort = payload.reasoning_effort
           }
 
           if (typeof payload?.service_tier === 'string') {
             setCurrentServiceTier(payload.service_tier)
+            runtimeInfo.serviceTier = payload.service_tier
           }
 
           if (typeof payload?.fast === 'boolean') {
             setCurrentFastMode(payload.fast)
+            runtimeInfo.fast = payload.fast
           }
 
           if (typeof payload?.yolo === 'boolean') {
             setYoloActive(payload.yolo)
+            runtimeInfo.yolo = payload.yolo
+          }
+
+          if (sessionId && Object.keys(runtimeInfo).length > 0) {
+            updateSessionState(sessionId, state => ({ ...state, ...runtimeInfo }))
           }
 
           if (runningChanged && sessionId) {

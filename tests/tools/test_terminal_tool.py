@@ -90,6 +90,30 @@ def test_cached_sudo_password_is_used_when_env_is_unset(monkeypatch):
     assert sudo_stdin == "cached-pass\n"
 
 
+def test_registered_sudo_callback_is_used_without_interactive_env(monkeypatch):
+    monkeypatch.delenv("SUDO_PASSWORD", raising=False)
+    monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+    monkeypatch.setattr(terminal_tool, "_sudo_nopasswd_works", lambda: False)
+
+    calls = []
+
+    def sudo_callback():
+        calls.append("called")
+        return "callback-pass"
+
+    terminal_tool.set_sudo_password_callback(sudo_callback)
+    try:
+        transformed, sudo_stdin = terminal_tool._transform_sudo_command(
+            "echo ok | sudo tee /tmp/hermes-test"
+        )
+    finally:
+        terminal_tool.set_sudo_password_callback(None)
+
+    assert calls == ["called"]
+    assert transformed == "echo ok | sudo -S -p '' tee /tmp/hermes-test"
+    assert sudo_stdin == "callback-pass\n"
+
+
 def test_cached_sudo_password_isolated_by_session_key(monkeypatch):
     monkeypatch.delenv("SUDO_PASSWORD", raising=False)
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)

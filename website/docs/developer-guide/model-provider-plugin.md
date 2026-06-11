@@ -131,8 +131,9 @@ class AcmeProfile(ProviderProfile):
 
     def build_api_kwargs_extras(self, *, reasoning_config=None, **context):
         """Returns (extra_body_additions, top_level_kwargs). Needed when some
-        fields go top-level (Kimi's reasoning_effort) and some go in extra_body
-        (OpenRouter's reasoning dict). Default: ({}, {})."""
+        fields go top-level (Kimi's reasoning_effort, OpenRouter's verbosity for
+        adaptive Anthropic models) and some go in extra_body (OpenRouter's
+        reasoning dict). Default: ({}, {})."""
         return {}, {}
 
     def fetch_models(self, *, api_key=None, timeout=8.0) -> list[str] | None:

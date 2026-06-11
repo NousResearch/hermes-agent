@@ -1290,6 +1290,14 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        "tts_audio_tags": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "extra_body": {},
+        },
         # Triage specifier — flesh out a rough one-liner in the Kanban
         # Triage column into a concrete spec, then promote it to ``todo``.
         # Invoked by ``hermes kanban specify`` (single id or --all). Set a
@@ -1556,7 +1564,7 @@ DEFAULT_CONFIG = {
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
@@ -1571,6 +1579,19 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "gemini": {
+            "model": "gemini-2.5-flash-preview-tts",
+            "voice": "Kore",
+            # When true, Gemini 3.1 TTS uses a hidden auxiliary-model rewrite
+            # pass to insert freeform square-bracket audio tags into the TTS
+            # script. Visible chat replies are unchanged.
+            "audio_tags": False,
+            # Optional local Markdown/text file with Gemini TTS performance
+            # direction. It may include AUDIO PROFILE, SCENE, DIRECTOR'S NOTES,
+            # SAMPLE CONTEXT, and either a `{transcript}` placeholder or no
+            # transcript section; Hermes appends the live transcript when absent.
+            "persona_prompt_file": "",
         },
         "xai": {
             "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
@@ -5808,18 +5829,22 @@ def remove_env_value(key: str) -> bool:
                 f.flush()
                 os.fsync(f.fileno())
             atomic_replace(tmp_path, env_path)
+            # Preserve the original file mode (e.g. 0640 for Docker volume
+            # mounts) instead of letting _secure_file unconditionally tighten
+            # to 0600. Mirrors save_env_value().
             if original_mode is not None:
                 try:
                     os.chmod(env_path, original_mode)
                 except OSError:
                     pass
+            else:
+                _secure_file(env_path)
         except BaseException:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
             raise
-        _secure_file(env_path)
 
     os.environ.pop(key, None)
     invalidate_env_cache()

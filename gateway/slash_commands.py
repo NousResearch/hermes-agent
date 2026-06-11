@@ -47,6 +47,19 @@ logger = logging.getLogger("gateway.run")
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
+    def _typed_command_prefix_for(self, platform) -> str:
+        """Return the prefix users can always type to reach Hermes commands.
+
+        Reads the adapter's ``typed_command_prefix`` capability flag
+        (default "/"). Slack and Matrix return "!" because typed "/"
+        commands are blocked in Slack threads / reserved by Matrix clients;
+        their adapters rewrite "!command" to "/command" on receive.
+        Instruction text built for those platforms must show the prefix
+        that actually works when typed.
+        """
+        adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
+        return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
+
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
@@ -1324,13 +1337,14 @@ class GatewaySlashCommandsMixin:
                 # an explicit decision).
                 return await _finish_switch()
 
+            _p = self._typed_command_prefix_for(event.source.platform)
             return await self._request_slash_confirm(
                 event=event,
                 command="model",
                 title="Expensive Model Warning",
                 message=(
                     f"⚠️ **Expensive Model Warning**\n\n{_cost_warning.message}\n\n"
-                    "_Text fallback: reply `/approve` to switch or `/cancel` to keep "
+                    f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep "
                     "the current model._"
                 ),
                 handler=_on_cost_confirm,
@@ -2042,6 +2056,64 @@ class GatewaySlashCommandsMixin:
         if out is None:
             out = ("Unknown /memory subcommand. Use: pending, approve <id>, "
                    "reject <id>, approval <on|off>.")
+        return out
+
+    async def _handle_skills_command(self, event: MessageEvent) -> str:
+        """Handle /skills on the gateway — pending skill-write review only.
+
+        The full skills hub (search/browse/install) stays CLI-only; this
+        handler covers the write-approval review surface (pending / approve /
+        reject / diff / approval) so a skill staged from a gateway session can
+        be reviewed from that same session. Gated by ``skills.write_approval``
+        via the CommandDef's ``gateway_config_gate``; also answers when staged
+        writes still exist after the gate was turned off (so they are never
+        stranded).
+
+        ``diff`` output is truncated for chat bubbles — the full diff lives in
+        the CLI (``/skills diff <id>``) and the pending JSON file.
+        """
+        from gateway.run import _hermes_home
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+
+        raw_args = event.get_command_args().strip()
+        args = raw_args.split() if raw_args else []
+        session_key = self._session_key_for_source(event.source)
+        config_path = _hermes_home / "config.yaml"
+
+        gate_on = wa.write_approval_enabled(wa.SKILLS)
+        wants_toggle = bool(args) and args[0].lower() in {"approval", "mode"}
+        if not gate_on and not wants_toggle and wa.pending_count(wa.SKILLS) == 0:
+            return ("Skill write approval is off (skills.write_approval). "
+                    "Enable it with /skills approval on, then review staged "
+                    "writes here with /skills pending.")
+
+        def _set_approval(enabled: bool):
+            import yaml
+            user_config = {}
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+            user_config.setdefault("skills", {})["write_approval"] = bool(enabled)
+            atomic_yaml_write(config_path, user_config)
+            # New setting must take effect next message → drop cached agent.
+            self._evict_cached_agent(session_key)
+
+        out = handle_pending_subcommand(
+            wa.SKILLS, args, set_mode_fn=_set_approval,
+        )
+        if out is None:
+            return ("Unknown /skills subcommand on this platform. Use: pending, "
+                    "approve <id>, reject <id>, diff <id>, approval <on|off>. "
+                    "(Search/install are CLI-only.)")
+
+        # Chat bubbles can't hold a full skill diff — truncate and point at
+        # the real review surfaces.
+        if args and args[0].lower() == "diff" and len(out) > 3000:
+            pending_id = args[1] if len(args) > 1 else "<id>"
+            out = (out[:3000]
+                   + f"\n… (truncated — full diff: `/skills diff {pending_id}` "
+                     f"on the CLI, or ~/.hermes/pending/skills/{pending_id}.json)")
         return out
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:

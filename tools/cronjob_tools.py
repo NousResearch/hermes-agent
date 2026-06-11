@@ -326,15 +326,23 @@ def _resolve_model_override(model_obj: Optional[Dict[str, Any]]) -> tuple:
         return (None, None)
     model_name = (model_obj.get("model") or "").strip() or None
     provider_name = (model_obj.get("provider") or "").strip() or None
-    # Bare "custom" is an incomplete spec — the canonical form is
-    # "custom:<name>" matching a custom_providers entry. LLMs frequently
+    # Bare "custom" is usually an incomplete spec — the canonical form is
+    # "custom:<name>" matching a custom_providers entry, and LLMs frequently
     # supply the bare type because the schema does not advertise the
-    # ":<name>" suffix, which used to bypass the pinning path below and
-    # leave the job stored with an unresolvable "custom" provider. Treat
-    # the bare value as "no provider supplied" so the current main
-    # provider gets pinned instead.
+    # ":<name>" suffix. It is only a problem when it can't resolve at runtime:
+    # a user may literally name a ``providers.custom`` (or custom_providers
+    # "custom") entry, in which case the job should keep ``provider="custom"``
+    # and run against that endpoint. Only when no such entry exists do we treat
+    # the bare value as "no provider supplied" and pin the current main
+    # provider below — otherwise pinning to ``model.provider`` (e.g. codex)
+    # silently hijacks a job that meant to use the configured custom endpoint.
     if provider_name == "custom":
-        provider_name = None
+        try:
+            from hermes_cli.runtime_provider import has_named_custom_provider
+            if not has_named_custom_provider("custom"):
+                provider_name = None
+        except Exception:
+            provider_name = None
     if model_name and not provider_name:
         # Pin to the current main provider so the job is stable
         try:

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
     "@nous-research/ui": "0.18.2",
@@ -45,7 +46,7 @@
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.4.0",
     "three": "^0.180.0",
-    "typescript": "~5.9.3",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.56.1",
     "vite": "^7.3.1"
   }

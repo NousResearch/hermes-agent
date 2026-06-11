@@ -23,6 +23,18 @@ pub struct PathUpdatePlan {
     pub next_path: String,
 }
 
+/// Planned Windows shortcut pointing at the packaged Hermes desktop app.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ShortcutPlan {
+    pub path: PathBuf,
+    pub target: PathBuf,
+    #[serde(rename = "workingDirectory")]
+    pub working_directory: PathBuf,
+    #[serde(rename = "iconLocation")]
+    pub icon_location: String,
+    pub description: String,
+}
+
 /// Compute the PATH that would make the Hermes command available.
 pub fn plan_path_update(
     install_root: &Path,
@@ -75,9 +87,102 @@ pub fn write_shell_profile_update(profile_path: &Path, plan: &PathUpdatePlan) ->
     fs::write(profile_path, next).map_err(|err| ManagerError::io(profile_path, err))
 }
 
+/// Plan Start Menu and Desktop shortcuts for a packaged Hermes desktop executable.
+pub fn plan_windows_shortcuts(
+    target_exe: &Path,
+    programs_dir: &Path,
+    desktop_dir: &Path,
+    icon_exists: bool,
+) -> Vec<ShortcutPlan> {
+    let working_directory = target_exe.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+    let icon_path = working_directory.join("resources").join("icon.ico");
+    let icon_location = if icon_exists {
+        format!("{},0", icon_path.display())
+    } else {
+        format!("{},0", target_exe.display())
+    };
+    [programs_dir, desktop_dir]
+        .into_iter()
+        .map(|dir| ShortcutPlan {
+            path: dir.join("Hermes.lnk"),
+            target: target_exe.to_path_buf(),
+            working_directory: working_directory.clone(),
+            icon_location: icon_location.clone(),
+            description: "Hermes Agent".to_string(),
+        })
+        .collect()
+}
+
+/// Create or replace the planned Windows shortcuts.
+#[cfg(target_os = "windows")]
+pub fn write_windows_shortcuts(plans: &[ShortcutPlan]) -> Result<()> {
+    for plan in plans {
+        write_one_windows_shortcut(plan)?;
+    }
+    Ok(())
+}
+
+/// Return an actionable error on non-Windows platforms.
+#[cfg(not(target_os = "windows"))]
+pub fn write_windows_shortcuts(_plans: &[ShortcutPlan]) -> Result<()> {
+    Err(ManagerError::InvalidManifest(
+        "write-shortcuts is only supported on Windows".to_string(),
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn write_one_windows_shortcut(plan: &ShortcutPlan) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+
+    let script = r#"
+& {
+    param($LinkPath, $TargetPath, $WorkingDirectory, $IconLocation, $Description)
+    $ErrorActionPreference = 'Stop'
+    $parent = Split-Path -Parent $LinkPath
+    if ($parent) { New-Item -ItemType Directory -Force -Path $parent | Out-Null }
+    $shell = New-Object -ComObject WScript.Shell
+    $shortcut = $shell.CreateShortcut($LinkPath)
+    $shortcut.TargetPath = $TargetPath
+    $shortcut.WorkingDirectory = $WorkingDirectory
+    $shortcut.IconLocation = $IconLocation
+    $shortcut.Description = $Description
+    $shortcut.Save()
+}
+"#;
+
+    let status = std::process::Command::new("powershell.exe")
+        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .arg(&plan.path)
+        .arg(&plan.target)
+        .arg(&plan.working_directory)
+        .arg(&plan.icon_location)
+        .arg(&plan.description)
+        .creation_flags(0x0800_0000)
+        .status()
+        .map_err(|err| ManagerError::io(&plan.path, err))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(ManagerError::InvalidManifest(format!(
+            "failed to create shortcut {}: exit {}",
+            plan.path.display(),
+            status
+        )))
+    }
+}
+
 /// Read the current user's Windows PATH registry value.
 #[cfg(target_os = "windows")]
 pub fn read_windows_user_path() -> Result<Option<String>> {
+    match read_windows_user_env_var("Path")? {
+        Some(value) => Ok(Some(value)),
+        None => read_windows_user_env_var("PATH"),
+    }
+}
+
+/// Read a current-user Windows environment variable.
+#[cfg(target_os = "windows")]
+pub fn read_windows_user_env_var(name: &str) -> Result<Option<String>> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
 
@@ -87,22 +192,22 @@ pub fn read_windows_user_path() -> Result<Option<String>> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(err) => return Err(ManagerError::io("HKCU\\Environment", err)),
     };
-    match environment.get_value::<String, _>("Path") {
+    match environment.get_value::<String, _>(name) {
         Ok(value) => Ok(Some(value)),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            match environment.get_value::<String, _>("PATH") {
-                Ok(value) => Ok(Some(value)),
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                Err(err) => Err(ManagerError::io("HKCU\\Environment\\PATH", err)),
-            }
-        }
-        Err(err) => Err(ManagerError::io("HKCU\\Environment\\Path", err)),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(ManagerError::io(format!("HKCU\\Environment\\{name}"), err)),
     }
 }
 
 /// Return no registry PATH off Windows.
 #[cfg(not(target_os = "windows"))]
 pub fn read_windows_user_path() -> Result<Option<String>> {
+    Ok(None)
+}
+
+/// Return no registry environment variable off Windows.
+#[cfg(not(target_os = "windows"))]
+pub fn read_windows_user_env_var(_name: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
@@ -113,6 +218,14 @@ pub fn write_windows_user_path_update(plan: &PathUpdatePlan) -> Result<bool> {
         return Ok(false);
     }
 
+    write_windows_user_env_var("Path", &plan.next_path)?;
+    broadcast_windows_environment_change();
+    Ok(true)
+}
+
+/// Write a current-user Windows environment variable.
+#[cfg(target_os = "windows")]
+pub fn write_windows_user_env_var(name: &str, value: &str) -> Result<()> {
     use winreg::enums::HKEY_CURRENT_USER;
     use winreg::RegKey;
 
@@ -121,10 +234,8 @@ pub fn write_windows_user_path_update(plan: &PathUpdatePlan) -> Result<bool> {
         .create_subkey("Environment")
         .map_err(|err| ManagerError::io("HKCU\\Environment", err))?;
     environment
-        .set_value("Path", &plan.next_path)
-        .map_err(|err| ManagerError::io("HKCU\\Environment\\Path", err))?;
-    broadcast_windows_environment_change();
-    Ok(true)
+        .set_value(name, &value)
+        .map_err(|err| ManagerError::io(format!("HKCU\\Environment\\{name}"), err))
 }
 
 /// Return an actionable error on non-Windows platforms.
@@ -132,6 +243,14 @@ pub fn write_windows_user_path_update(plan: &PathUpdatePlan) -> Result<bool> {
 pub fn write_windows_user_path_update(_plan: &PathUpdatePlan) -> Result<bool> {
     Err(ManagerError::InvalidManifest(
         "write-user-path is only supported on Windows".to_string(),
+    ))
+}
+
+/// Return an actionable error on non-Windows platforms.
+#[cfg(not(target_os = "windows"))]
+pub fn write_windows_user_env_var(_name: &str, _value: &str) -> Result<()> {
+    Err(ManagerError::InvalidManifest(
+        "Windows user environment writes are only supported on Windows".to_string(),
     ))
 }
 
@@ -290,6 +409,30 @@ mod tests {
         let text = std::fs::read_to_string(&profile).unwrap();
         assert!(!text.contains("old"));
         assert!(text.contains("export PATH=\"/new/hermes/bin:$PATH\""));
+    }
+
+    #[test]
+    fn plan_windows_shortcuts_points_to_packaged_exe_and_icon() {
+        let target = PathBuf::from("C:/hermes/apps/desktop/release/win-unpacked/Hermes.exe");
+        let plans = plan_windows_shortcuts(
+            &target,
+            Path::new("C:/Users/example/AppData/Roaming/Microsoft/Windows/Start Menu/Programs"),
+            Path::new("C:/Users/example/Desktop"),
+            true,
+        );
+
+        assert_eq!(plans.len(), 2);
+        assert_eq!(plans[0].path.file_name().unwrap(), "Hermes.lnk");
+        assert_eq!(plans[0].target, target);
+        assert_eq!(
+            plans[0].working_directory,
+            PathBuf::from("C:/hermes/apps/desktop/release/win-unpacked")
+        );
+        assert!(plans[0]
+            .icon_location
+            .replace('\\', "/")
+            .ends_with("resources/icon.ico,0"));
+        assert_eq!(plans[0].description, "Hermes Agent");
     }
 
     #[test]

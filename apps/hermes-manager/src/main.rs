@@ -51,7 +51,7 @@ enum Command {
         /// Override install root; defaults to HERMES_HOME/hermes-agent.
         #[arg(long)]
         install_root: Option<PathBuf>,
-        /// Current user PATH value to plan from; defaults to HKCU Environment Path.
+        /// Current PATH value to plan from; defaults to the process PATH.
         #[arg(long)]
         current_path: Option<String>,
         /// Plan using Windows PATH conventions.
@@ -78,10 +78,43 @@ enum Command {
         /// Override install root; defaults to HERMES_HOME/hermes-agent.
         #[arg(long)]
         install_root: Option<PathBuf>,
-        /// Current PATH value to plan from; defaults to the process PATH.
+        /// Current user PATH value to plan from; defaults to HKCU Environment Path.
         #[arg(long)]
         current_path: Option<String>,
         /// Do not write the registry; only report what would happen.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Plan Start Menu and Desktop shortcuts for the packaged desktop app.
+    PlanShortcuts {
+        /// Packaged Hermes desktop executable.
+        #[arg(long)]
+        target_exe: Option<PathBuf>,
+        /// Override install root; defaults to HERMES_HOME/hermes-agent.
+        #[arg(long)]
+        install_root: Option<PathBuf>,
+        /// Override Start Menu Programs directory.
+        #[arg(long)]
+        programs_dir: Option<PathBuf>,
+        /// Override Desktop directory.
+        #[arg(long)]
+        desktop_dir: Option<PathBuf>,
+    },
+    /// Write Start Menu and Desktop shortcuts for the packaged desktop app.
+    WriteShortcuts {
+        /// Packaged Hermes desktop executable.
+        #[arg(long)]
+        target_exe: Option<PathBuf>,
+        /// Override install root; defaults to HERMES_HOME/hermes-agent.
+        #[arg(long)]
+        install_root: Option<PathBuf>,
+        /// Override Start Menu Programs directory.
+        #[arg(long)]
+        programs_dir: Option<PathBuf>,
+        /// Override Desktop directory.
+        #[arg(long)]
+        desktop_dir: Option<PathBuf>,
+        /// Do not write shortcuts; only report what would happen.
         #[arg(long)]
         dry_run: bool,
     },
@@ -119,6 +152,16 @@ struct PathApplyReport {
     hermes_bin: String,
     changed: bool,
     applied: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ShortcutApplyReport {
+    ok: bool,
+    command: &'static str,
+    #[serde(rename = "dryRun")]
+    dry_run: bool,
+    applied: bool,
+    shortcuts: Vec<String>,
 }
 
 fn main() {
@@ -305,9 +348,102 @@ fn run() -> hermes_manager::Result<()> {
                 println!("hermes_bin={}", plan.hermes_bin.display());
             }
         }
+        Command::PlanShortcuts {
+            target_exe,
+            install_root,
+            programs_dir,
+            desktop_dir,
+        } => {
+            let plans = resolve_shortcut_plans(&home, target_exe, install_root, programs_dir, desktop_dir);
+            if cli.json {
+                let text = serde_json::to_string_pretty(&plans)
+                    .map_err(|err| hermes_manager::ManagerError::InvalidManifest(err.to_string()))?;
+                println!("{text}");
+            } else {
+                for plan in plans {
+                    println!("shortcut={}", plan.path.display());
+                    println!("target={}", plan.target.display());
+                }
+            }
+        }
+        Command::WriteShortcuts {
+            target_exe,
+            install_root,
+            programs_dir,
+            desktop_dir,
+            dry_run,
+        } => {
+            let plans = resolve_shortcut_plans(&home, target_exe, install_root, programs_dir, desktop_dir);
+            if !dry_run {
+                hermes_manager::platform::write_windows_shortcuts(&plans)?;
+            }
+            if cli.json {
+                let text = serde_json::to_string_pretty(&ShortcutApplyReport {
+                    ok: true,
+                    command: "write-shortcuts",
+                    dry_run,
+                    applied: !dry_run,
+                    shortcuts: plans.iter().map(|plan| plan.path.display().to_string()).collect(),
+                })
+                .map_err(|err| hermes_manager::ManagerError::InvalidManifest(err.to_string()))?;
+                println!("{text}");
+            } else {
+                let prefix = if dry_run { "would_create" } else { "created" };
+                for plan in plans {
+                    println!("{prefix}={}", plan.path.display());
+                }
+            }
+        }
     }
 
     Ok(())
+}
+
+fn resolve_shortcut_plans(
+    home: &std::path::Path,
+    target_exe: Option<PathBuf>,
+    install_root: Option<PathBuf>,
+    programs_dir: Option<PathBuf>,
+    desktop_dir: Option<PathBuf>,
+) -> Vec<hermes_manager::platform::ShortcutPlan> {
+    let install_root = install_root.unwrap_or_else(|| hermes_manager::paths::agent_root(home));
+    let target_exe = target_exe.unwrap_or_else(|| {
+        install_root
+            .join("apps")
+            .join("desktop")
+            .join("release")
+            .join("win-unpacked")
+            .join("Hermes.exe")
+    });
+    let programs_dir = programs_dir.unwrap_or_else(default_windows_programs_dir);
+    let desktop_dir = desktop_dir.unwrap_or_else(default_windows_desktop_dir);
+    let icon_exists = target_exe
+        .parent()
+        .map(|parent| parent.join("resources").join("icon.ico").is_file())
+        .unwrap_or(false);
+    hermes_manager::platform::plan_windows_shortcuts(
+        &target_exe,
+        &programs_dir,
+        &desktop_dir,
+        icon_exists,
+    )
+}
+
+fn default_windows_programs_dir() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Microsoft")
+        .join("Windows")
+        .join("Start Menu")
+        .join("Programs")
+}
+
+fn default_windows_desktop_dir() -> PathBuf {
+    std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Desktop")
 }
 
 fn print_json_report(report: CommandReport) -> hermes_manager::Result<()> {
@@ -362,5 +498,33 @@ mod tests {
         );
         assert_eq!(value["changed"], true);
         assert_eq!(value["applied"], false);
+    }
+
+    #[test]
+    fn default_shortcut_dirs_follow_windows_user_locations() {
+        let programs = default_windows_programs_dir();
+        let desktop = default_windows_desktop_dir();
+
+        assert!(programs.ends_with("Microsoft/Windows/Start Menu/Programs"));
+        assert!(desktop.ends_with("Desktop"));
+    }
+
+    #[test]
+    fn shortcut_apply_report_serializes_machine_readable_result() {
+        let report = ShortcutApplyReport {
+            ok: true,
+            command: "write-shortcuts",
+            dry_run: true,
+            applied: false,
+            shortcuts: vec!["C:/Users/example/Desktop/Hermes.lnk".to_string()],
+        };
+
+        let value = serde_json::to_value(report).expect("report should serialize");
+
+        assert_eq!(value["ok"], true);
+        assert_eq!(value["command"], "write-shortcuts");
+        assert_eq!(value["dryRun"], true);
+        assert_eq!(value["applied"], false);
+        assert_eq!(value["shortcuts"][0], "C:/Users/example/Desktop/Hermes.lnk");
     }
 }

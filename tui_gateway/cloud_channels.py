@@ -124,6 +124,16 @@ def list_channels() -> dict:
     return _request("GET", "/v1/channels")
 
 
+def list_messages(channel_id: str, *, since_seq: int = 0, limit: int = 100) -> dict:
+    """Return a page of cloud-channel messages visible to the account."""
+    channel = urllib.parse.quote(str(channel_id), safe="")
+    query = urllib.parse.urlencode({
+        "since_seq": max(0, int(since_seq or 0)),
+        "limit": max(1, min(500, int(limit or 100))),
+    })
+    return _request("GET", f"/v1/channels/{channel}/messages?{query}")
+
+
 def rows_to_batch(rows: list[dict], device_name: str) -> list[dict]:
     """Map local ``messages`` rows to the cloud push shape.
 

@@ -4187,6 +4187,34 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, result)
 
 
+@method("cloud.channel_messages")
+def _(rid, params: dict) -> dict:
+    """Read cloud-channel message history for a joined/owned channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    channel_id = str(params.get("channel_id") or "").strip()
+    if not channel_id:
+        return _err(rid, 4006, "channel_id required")
+
+    try:
+        since_seq = int(params.get("since_seq") or 0)
+    except Exception:
+        since_seq = 0
+    try:
+        limit = int(params.get("limit") or 100)
+    except Exception:
+        limit = 100
+
+    try:
+        result = cloud_channels.list_messages(channel_id, since_seq=since_seq, limit=limit)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud channel messages failed: {e}")
+    return _ok(rid, result)
+
+
 @method("session.delete")
 def _(rid, params: dict) -> dict:
     """Delete a stored session and its on-disk transcript files.

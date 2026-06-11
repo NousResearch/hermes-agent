@@ -48,6 +48,33 @@ interface CloudAcceptInviteResult {
   permission?: string
 }
 
+export interface CloudChannelMessage {
+  content?: string | null
+  created_at?: string | null
+  finish_reason?: string | null
+  id?: string
+  origin_device_id?: string | null
+  origin_message_id?: string | null
+  origin_ts?: number | null
+  role: string
+  sender_account_id?: string | null
+  sender_device?: string | null
+  seq: number
+  token_count?: number | null
+  tool_calls?: unknown
+  tool_name?: string | null
+}
+
+export interface CloudChannelMessagesResult {
+  count?: number
+  last_seq?: number
+  limit?: number
+  messages?: CloudChannelMessage[]
+  next_seq?: number
+  since_seq?: number
+  truncated?: boolean
+}
+
 export interface CloudChannelMember {
   account_id: string
   display_name?: string | null
@@ -266,6 +293,50 @@ export async function loadCloudChannels(): Promise<CloudChannel[] | null> {
     }
 
     notifyError(err, 'Could not load cloud channels')
+
+    return null
+  }
+}
+
+export async function loadCloudChannelMessages(
+  channelId: string,
+  options: { limit?: number; sinceSeq?: number } = {}
+): Promise<CloudChannelMessagesResult | null> {
+  const gateway = activeGateway()
+  const trimmed = channelId.trim()
+
+  if (!gateway) {
+    notify({ kind: 'error', title: 'Cloud messages', message: 'Not connected yet - try again in a moment.' })
+
+    return null
+  }
+
+  if (!trimmed) {
+    notify({ kind: 'error', title: 'Cloud messages', message: 'Channel ID is required.' })
+
+    return null
+  }
+
+  try {
+    return await gateway.request<CloudChannelMessagesResult>('cloud.channel_messages', {
+      channel_id: trimmed,
+      limit: options.limit ?? 100,
+      since_seq: options.sinceSeq ?? 0
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+
+    if (/not configured/i.test(message)) {
+      notify({
+        kind: 'error',
+        title: "Cloud sharing isn't set up",
+        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
+      })
+
+      return null
+    }
+
+    notifyError(err, 'Could not load cloud messages')
 
     return null
   }

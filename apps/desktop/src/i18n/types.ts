@@ -868,6 +868,14 @@ export interface Translations {
     cloudChannelsOwner: string
     cloudChannelsRead: string
     cloudChannelsSeq: (seq: string) => string
+    cloudMessagesTitle: string
+    cloudMessagesPickChannel: string
+    cloudMessagesLoading: string
+    cloudMessagesEmpty: string
+    cloudMessagesRefresh: string
+    cloudMessagesLoadMore: string
+    cloudMessagesLoadingMore: string
+    cloudMessagesNoContent: string
     allPinned: string
     shiftClickHint: string
     noWorkspace: string

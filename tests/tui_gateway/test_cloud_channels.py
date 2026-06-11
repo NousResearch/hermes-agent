@@ -119,6 +119,21 @@ def test_list_channels_gets_owned_and_joined_channels(monkeypatch):
     assert sent == [("GET", "/v1/channels", None)]
 
 
+def test_list_messages_gets_channel_messages_with_cursor(monkeypatch):
+    sent = []
+
+    def fake_request(method, path, body=None, timeout=15.0):
+        sent.append((method, path, body))
+        return {"messages": [{"seq": 42, "role": "user", "content": "hello"}], "count": 1}
+
+    monkeypatch.setattr(cloud_channels, "_request", fake_request)
+
+    result = cloud_channels.list_messages("chan/1", since_seq=41, limit=25)
+
+    assert result["count"] == 1
+    assert sent == [("GET", "/v1/channels/chan%2F1/messages?since_seq=41&limit=25", None)]
+
+
 @pytest.fixture()
 def message_db(tmp_path):
     path = tmp_path / "state.db"

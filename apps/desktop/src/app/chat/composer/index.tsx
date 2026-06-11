@@ -77,6 +77,7 @@ import {
   type InlineRefInput,
   insertInlineRefsIntoEditor
 } from './inline-refs'
+import { useRestingComposerPlaceholder } from './placeholder'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
@@ -101,8 +102,6 @@ const COMPOSER_SINGLE_LINE_MAX_PX = 36
 
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
-
-const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
 /** Completion items can carry an `action` (set in use-slash-completions) that
  *  runs a side effect on pick instead of inserting a chip — e.g. the session
@@ -222,7 +221,7 @@ export function ChatBar({
 
   const showHelpHint = draft === '?'
 
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const gatewayState = useStore($gatewayState)
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
@@ -232,29 +231,13 @@ export function ChatBar({
   // *different* conversation. Critically, the first id assignment of a freshly
   // started session (null → id, on the first send) is treated as the same
   // conversation so the placeholder doesn't visibly flip mid-stream.
-  const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
-  )
-
-  const prevSessionIdRef = useRef(sessionId)
-
-  useEffect(() => {
-    const prev = prevSessionIdRef.current
-    prevSessionIdRef.current = sessionId
-
-    if (prev === sessionId) {
-      return
-    }
-
-    // null → id: the new session we're already in just got persisted. Keep the
-    // starter we showed instead of swapping to a follow-up under the user.
-    if (prev == null && sessionId) {
-      return
-    }
-
-    resetBrowseState(prev)
-    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
-  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
+  const restingPlaceholder = useRestingComposerPlaceholder({
+    followUpPlaceholders,
+    locale,
+    newSessionPlaceholders,
+    onConversationChanged: resetBrowseState,
+    sessionId
+  })
 
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to

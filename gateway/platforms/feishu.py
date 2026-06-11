@@ -1840,6 +1840,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 metadata=metadata,
             )
             if result is not None:
+                logger.info("[Feishu] send() → streaming card path: success=%s msg_id=%s", result.success, result.message_id)
                 return result
             # Streaming card failed — fall through to post/text below.
             logger.warning("[Feishu] Streaming card send failed; falling back to post/text")
@@ -1927,7 +1928,7 @@ class FeishuAdapter(BasePlatformAdapter):
         # caller from treating the missing card as an edit failure and
         # falling back to a full send, which would duplicate the response.
         if self._streaming_card_enabled and finalize:
-            logger.debug(
+            logger.info(
                 "[Feishu] Streaming card %s already closed; treating finalize as success",
                 message_id,
             )
@@ -2105,7 +2106,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 "streaming": True,
             }
 
-            logger.debug("[Feishu] Streaming card created: card_id=%s", card_id)
+            logger.info("[Feishu] Streaming card created: card_id=%s msg_id=%s", card_id, self._extract_response_field(msg_response, "message_id"))
             return SendResult(success=True, message_id=card_id)
 
         except Exception as exc:

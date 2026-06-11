@@ -2279,12 +2279,20 @@ class ClawHubSource(SkillSource):
         # terminates well before this on `nextCursor` going None — the cap is
         # a safety rail against an infinite-cursor loop.
         max_pages = 750
-        deadline = time.monotonic() + self.CATALOG_WALK_BUDGET_SECONDS
+        # Wall-clock budget is for interactive browse (max_items > 0) only.
+        # The offline index builder passes max_items=0 and must walk the full
+        # catalog — a 12s cap there ships ~3k skills and trips the deploy
+        # health floor (20k).
+        deadline = (
+            time.monotonic() + self.CATALOG_WALK_BUDGET_SECONDS
+            if max_items > 0
+            else None
+        )
         hit_deadline = False
         hit_max_items = False
 
         for _ in range(max_pages):
-            if time.monotonic() > deadline:
+            if deadline is not None and time.monotonic() > deadline:
                 hit_deadline = True
                 break
             params: Dict[str, Any] = {"limit": 200}

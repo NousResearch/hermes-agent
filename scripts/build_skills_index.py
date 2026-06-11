@@ -272,8 +272,9 @@ def main():
     # (well above current catalog size) lets the full catalog land in the
     # index instead of being truncated at an arbitrary build-time limit.
     SOURCE_LIMITS = {
-        # ClawHub had 49,698+ skills as of May 2026; 200k leaves headroom.
-        "clawhub": 200_000,
+        # 0 = unbounded catalog walk (max_items=0 in ClawHubSource). A positive
+        # limit bounds the walk and also enables the interactive 12s budget.
+        "clawhub": 0,
         "lobehub": 100_000,
         "browse-sh": 5_000,
         "claude-marketplace": 5_000,

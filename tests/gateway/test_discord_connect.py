@@ -266,11 +266,12 @@ async def test_connect_releases_token_lock_on_timeout(monkeypatch):
         ),
     )
 
-    async def fake_wait_for(awaitable, timeout):
-        awaitable.close()
+    async def fake_wait_for_ready(ready_event, bot_task, timeout):
         raise asyncio.TimeoutError()
 
-    monkeypatch.setattr(discord_platform.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(
+        discord_platform, "_wait_for_ready_or_bot_exit", fake_wait_for_ready
+    )
 
     ok = await adapter.connect()
 
@@ -314,11 +315,12 @@ async def test_connect_timeout_cancels_bot_task(monkeypatch):
         ),
     )
 
-    async def fake_wait_for(awaitable, timeout):
-        awaitable.close()
+    async def fake_wait_for_ready(ready_event, bot_task, timeout):
         raise asyncio.TimeoutError()
 
-    monkeypatch.setattr(discord_platform.asyncio, "wait_for", fake_wait_for)
+    monkeypatch.setattr(
+        discord_platform, "_wait_for_ready_or_bot_exit", fake_wait_for_ready
+    )
 
     ok = await adapter.connect()
 

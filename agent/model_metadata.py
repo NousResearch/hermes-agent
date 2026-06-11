@@ -927,7 +927,33 @@ def _load_context_cache() -> Dict[str, int]:
         return {}
 
 
-def save_context_length(model: str, base_url: str, length: int) -> None:
+def _context_cache_known_floor(
+    model: str, base_url: str, provider: str = ""
+) -> Optional[int]:
+    """Return the known-default floor below which cached values are stale.
+
+    Conservative by design: this returns the Gemini known-default context
+    floor only when the model name looks like Gemini AND we can positively
+    identify the Gemini provider — either via the explicit ``provider``
+    argument or by inferring it from ``base_url`` (the literal
+    ``generativelanguage.googleapis.com`` host).  Threading the explicit
+    provider through means Gemini reached via a proxy / custom base_url
+    (where the host doesn't infer as "gemini") is still floor-protected.
+    Returns None for every non-Gemini case so no other provider is affected.
+    """
+    model_lower = (model or "").lower()
+    if "gemini" not in model_lower:
+        return None
+    if (provider or "").strip().lower() == "gemini":
+        return DEFAULT_CONTEXT_LENGTHS["gemini"]
+    if _infer_provider_from_url(base_url or "") == "gemini":
+        return DEFAULT_CONTEXT_LENGTHS["gemini"]
+    return None
+
+
+def save_context_length(
+    model: str, base_url: str, length: int, provider: str = ""
+) -> None:
     """Persist a discovered context length for a model+provider combo.
 
     Cache key is ``model@base_url`` so the same model name served from
@@ -935,6 +961,19 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     """
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
+    floor = _context_cache_known_floor(model, base_url, provider)
+    if floor is not None and length < floor:
+        if cache.get(key, floor) < floor:
+            # Reuse the shared invalidation helper instead of inlining a
+            # duplicate yaml.dump (it re-loads, drops the key, and rewrites).
+            _invalidate_cached_context_length(model, base_url)
+        logger.info(
+            "Ignoring context length cache %s -> %s tokens below known floor %s",
+            key,
+            f"{length:,}",
+            f"{floor:,}",
+        )
+        return
     if cache.get(key) == length:
         return  # already stored
     cache[key] = length
@@ -1720,6 +1759,16 @@ def get_model_context_length(
                     "Dropping stale Grok-4.3 cache entry %s@%s -> %s (pre-catalog value); "
                     "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            elif (
+                (floor := _context_cache_known_floor(model, base_url, provider)) is not None
+                and cached < floor
+            ):
+                logger.info(
+                    "Dropping stale Gemini cache entry %s@%s -> %s below known floor %s; "
+                    "re-resolving via hardcoded defaults",
+                    model, base_url, f"{cached:,}", f"{floor:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
             # Nous Portal: the portal /v1/models endpoint is authoritative.

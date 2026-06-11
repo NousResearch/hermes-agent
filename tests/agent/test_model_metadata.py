@@ -184,6 +184,35 @@ class TestDefaultContextLengths:
                 api_key="oauth-token",
             ) == 256000
 
+    def test_low_gemini_cache_is_ignored_and_invalidated(self, tmp_path, monkeypatch):
+        """A stale low Gemini cache entry must not override the known 1M default."""
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://generativelanguage.googleapis.com/v1beta"
+        stale_key = f"gemini-3.5-flash@{base_url}"
+        other_key = "other-model@https://api.example.com/v1"
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            stale_key: 131_072,
+            other_key: 64_000,
+        }}))
+
+        with patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = mm.get_model_context_length(
+                model="gemini-3.5-flash",
+                base_url=base_url,
+                provider="gemini",
+            )
+
+        assert ctx == 1_048_576
+        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert stale_key not in remaining
+        assert remaining.get(other_key) == 64_000
+
     def test_deepseek_v4_models_1m_context(self):
         from agent.model_metadata import get_model_context_length
         from unittest.mock import patch as mock_patch
@@ -1438,6 +1467,17 @@ class TestContextLengthCache:
             save_context_length("model", "http://x", 64000)
             assert get_cached_context_length("model", "http://x") == 64000
 
+    def test_save_rejects_gemini_value_below_known_default(self, tmp_path):
+        """Do not persist accidental Gemini probe-down values below the family floor."""
+        cache_file = tmp_path / "cache.yaml"
+        base_url = "https://generativelanguage.googleapis.com/v1beta"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("gemini-3.5-flash", base_url, 131_072)
+
+        if cache_file.exists():
+            data = yaml.safe_load(cache_file.read_text()) or {}
+            assert f"gemini-3.5-flash@{base_url}" not in data.get("context_lengths", {})
+
     def test_corrupted_yaml_returns_empty(self, tmp_path):
         """Corrupted cache file is handled gracefully."""
         cache_file = tmp_path / "cache.yaml"
@@ -1524,3 +1564,161 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
+
+
+class TestGeminiContextCacheFloor:
+    """Harden the Gemini known-default context-cache floor.
+
+    The floor exists so a stale low cached value (e.g. a 131K probe-down)
+    never masks Gemini's real ~1M window.  These tests pin down:
+
+      a. A HIGH cached value (>= floor) is honored — the floor must not
+         over-fire and clobber a legitimately large cached entry.
+      b. A non-Gemini model is never floor-protected — no other provider
+         is touched (conservative by design).
+      c. Gemini reached via an explicit provider="gemini" with a NON-
+         googleapis base_url IS floor-protected now that the explicit
+         provider is threaded through (proxy / custom base_url case).
+    """
+
+    GEMINI_FLOOR = DEFAULT_CONTEXT_LENGTHS["gemini"]  # 1_048_576
+
+    def _isolate_cache(self, mm, tmp_path, monkeypatch):
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+        return cache_file
+
+    def test_known_floor_returns_for_explicit_gemini_provider_non_googleapis_url(self):
+        """Unit: the floor helper now fires off the explicit provider arg
+        even when the base_url host does NOT infer as gemini."""
+        from agent.model_metadata import _context_cache_known_floor
+
+        proxy_url = "https://gemini-proxy.internal.example.com/v1"
+        # Without the explicit provider, a non-googleapis host yields no floor.
+        assert _context_cache_known_floor("gemini-3.5-flash", proxy_url) is None
+        # With provider="gemini", the floor is returned despite the proxy URL.
+        assert (
+            _context_cache_known_floor("gemini-3.5-flash", proxy_url, "gemini")
+            == self.GEMINI_FLOOR
+        )
+
+    def test_known_floor_never_returns_for_non_gemini_model(self):
+        """A non-Gemini model is never floor-protected, even with
+        provider='gemini' or the literal Gemini host."""
+        from agent.model_metadata import _context_cache_known_floor
+
+        googleapis = "https://generativelanguage.googleapis.com/v1beta"
+        assert _context_cache_known_floor("claude-opus-4-8", googleapis, "gemini") is None
+        assert _context_cache_known_floor("gpt-5.5", googleapis) is None
+        assert _context_cache_known_floor("llama-3.3-70b", "https://x", "gemini") is None
+
+    def test_high_gemini_cache_value_is_honored(self, tmp_path, monkeypatch):
+        """(a) A cached value AT/ABOVE the floor must be returned as-is —
+        the floor guard must not over-fire and invalidate a good entry."""
+        from agent import model_metadata as mm
+
+        cache_file = self._isolate_cache(mm, tmp_path, monkeypatch)
+        base_url = "https://generativelanguage.googleapis.com/v1beta"
+        good_key = f"gemini-3.5-pro@{base_url}"
+        # Floor is 1,048,576 — store a value AT the floor (>= floor, honored).
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            good_key: self.GEMINI_FLOOR,
+        }}))
+
+        with patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = mm.get_model_context_length(
+                model="gemini-3.5-pro",
+                base_url=base_url,
+                provider="gemini",
+            )
+
+        assert ctx == self.GEMINI_FLOOR, "High Gemini cache value must be honored"
+        # The entry must still be on disk — not invalidated.
+        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert remaining.get(good_key) == self.GEMINI_FLOOR
+
+    def test_non_gemini_cache_value_is_unaffected(self, tmp_path, monkeypatch):
+        """(b) A non-Gemini model with a low cached value is returned
+        verbatim — the Gemini floor never touches other providers."""
+        from agent import model_metadata as mm
+
+        cache_file = self._isolate_cache(mm, tmp_path, monkeypatch)
+        base_url = "https://api.example.com/v1"
+        key = f"some-small-model@{base_url}"
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            key: 32_768,
+        }}))
+
+        with patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = mm.get_model_context_length(
+                model="some-small-model",
+                base_url=base_url,
+                provider="custom",
+            )
+
+        assert ctx == 32_768, "Non-Gemini low cache value must be returned as-is"
+        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert remaining.get(key) == 32_768, "Non-Gemini entry must survive"
+
+    def test_low_gemini_cache_floor_fires_via_explicit_provider_on_proxy_url(
+        self, tmp_path, monkeypatch
+    ):
+        """(c) The breaking case: Gemini behind a proxy / custom base_url
+        whose host does NOT infer as 'gemini'.  With the explicit
+        provider='gemini' threaded through, a stale low cache entry is
+        dropped and re-resolved to the 1M hardcoded default."""
+        from agent import model_metadata as mm
+
+        cache_file = self._isolate_cache(mm, tmp_path, monkeypatch)
+        # NON-googleapis host: _infer_provider_from_url(...) != "gemini".
+        base_url = "https://gemini-proxy.internal.example.com/v1"
+        assert mm._infer_provider_from_url(base_url) != "gemini"
+
+        stale_key = f"gemini-3.5-flash@{base_url}"
+        other_key = "other-model@https://api.example.com/v1"
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            stale_key: 131_072,   # stale low value below the 1M floor
+            other_key: 64_000,    # unrelated, must survive
+        }}))
+
+        with patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = mm.get_model_context_length(
+                model="gemini-3.5-flash",
+                base_url=base_url,
+                provider="gemini",
+            )
+
+        assert ctx == self.GEMINI_FLOOR, (
+            f"Gemini-via-proxy floor must fire off explicit provider; got {ctx}"
+        )
+        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert stale_key not in remaining, "Stale low Gemini entry must be invalidated"
+        assert remaining.get(other_key) == 64_000, "Unrelated entries must survive"
+
+    def test_save_drops_low_gemini_value_via_explicit_provider_on_proxy_url(
+        self, tmp_path, monkeypatch
+    ):
+        """Write-side: save_context_length must also refuse to persist a
+        sub-floor Gemini value when the floor is identified via the explicit
+        provider on a non-googleapis base_url — exercising the dedup'd
+        invalidation branch."""
+        from agent import model_metadata as mm
+
+        cache_file = self._isolate_cache(mm, tmp_path, monkeypatch)
+        base_url = "https://gemini-proxy.internal.example.com/v1"
+        key = f"gemini-3.5-flash@{base_url}"
+        # Seed a pre-existing stale low entry so the drop branch runs.
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            key: 200_000,
+        }}))
+
+        mm.save_context_length("gemini-3.5-flash", base_url, 131_072, provider="gemini")
+
+        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert key not in remaining, "Sub-floor Gemini value must not be persisted"

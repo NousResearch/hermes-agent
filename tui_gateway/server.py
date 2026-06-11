@@ -9277,7 +9277,11 @@ def _delegate_aggregate_to_result(task_id: str, raw: Any) -> "ExecutionResult":
 
 
 def _task_submit_delegate(
-    rid, params: dict, task_id: str, trace_id: Optional[str] = None
+    rid,
+    params: dict,
+    task_id: str,
+    trace_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
 ) -> tuple[Optional["ExecutionResult"], Optional[dict]]:
     """task.submit intent="delegate" core (Phase 5 Step 5).
 
@@ -9291,6 +9295,11 @@ def _task_submit_delegate(
     ``trace_id`` (§12 trace plumbing) is threaded onto the parent
     AgentTaskRecord and the final ExecutionResult — set BEFORE the registry
     ``complete()`` so the persisted snapshot carries it too.
+
+    ``idempotency_key`` is the caller's replay key, already a miss in the
+    replay store (the handler checks before calling here). It joins the
+    in-flight duplicate check below and is stamped onto the parent record at
+    ``register()`` time so a retry can find the live run by key.
     """
     inputs = params.get("inputs")
     if not isinstance(inputs, dict):
@@ -9319,14 +9328,26 @@ def _task_submit_delegate(
 
     # In-flight duplicate: the idempotency replay store only covers keys
     # AFTER completion, so a retry while the first run is still live would
-    # re-execute the batch. Reject it before any session/agent work; a
-    # registry bug degrades to a cache miss (the duplicate check is skipped).
+    # re-execute the batch. BOTH identities are checked — task_id, and the
+    # idempotency_key (a broken-pipe retry typically omits task_id and gets
+    # a fresh uuid4 default, so the key is the only identity that survives
+    # the retry). Reject before any session/agent work; a registry bug
+    # degrades to a cache miss (the duplicate check is skipped).
     try:
         from action_runtime.task_registry import TaskStatus, get_registry
 
         existing = get_registry().get(task_id)
         if existing is not None and existing.status is TaskStatus.RUNNING:
             return None, _err(rid, 4034, f"task already running: {task_id}")
+        if idempotency_key:
+            pending = get_registry().find_running_by_key(idempotency_key)
+            if pending is not None:
+                # Same 4034 shape as the task_id-level rejection, naming the
+                # FIRST run's task_id so the caller can join it via
+                # task.status / task.cancel instead of resubmitting.
+                return None, _err(
+                    rid, 4034, f"task already running: {pending.task_id}"
+                )
     except Exception:
         logger.debug("task.submit delegate in-flight check failed", exc_info=True)
 
@@ -9345,6 +9366,13 @@ def _task_submit_delegate(
     # interrupt state. Same rejection prompt.submit gives a busy session.
     if not session.begin_turn():
         return None, _err(rid, 4009, "session busy")
+
+    # ONE session namespace for the whole batch (Step 7 wart 1): the parent
+    # record and every child registered during the run carry this gateway
+    # session id, so children's _tasks.jsonl lines land in the parent's
+    # spawn-trees dir and child task.* events route to a live session —
+    # not the agent's persistent session key.
+    gateway_session_id = str(params.get("session_id") or "") or None
 
     try:
         # Honest visibility while the batch runs: register the parent task so
@@ -9373,13 +9401,19 @@ def _task_submit_delegate(
             get_registry().register(
                 AgentTaskRecord(
                     task_id=task_id,
-                    session_id=str(params.get("session_id") or "") or None,
+                    session_id=gateway_session_id,
                     goal=str(tasks[0].get("goal") or "")[:120],
                     label=batch_label,
                     intent="delegate",
                     model=getattr(agent, "model", None),
                     agent_ref=agent_ref,
                     trace_id=trace_id,
+                    # Makes the live run findable by key (the in-flight
+                    # duplicate check above); complete() also folds the
+                    # result into the replay store under it — the handler's
+                    # own _task_result_store then overwrites with the
+                    # identical rich dict.
+                    idempotency_key=idempotency_key,
                 )
             )
         except Exception:
@@ -9394,9 +9428,13 @@ def _task_submit_delegate(
 
             # Task 2.3 (doc Step 5 ruling): children registered during this
             # run link to THIS parent record's task_id, not the engine's
-            # internal _parent_subagent_id.
+            # internal _parent_subagent_id — and (Step 7 wart 1) carry the
+            # same gateway session id as the parent record.
             raw = delegate_task(
-                tasks=tasks, parent_agent=agent, registry_parent_task_id=task_id
+                tasks=tasks,
+                parent_agent=agent,
+                registry_parent_task_id=task_id,
+                registry_session_id=gateway_session_id,
             )
             result = _delegate_aggregate_to_result(task_id, raw)
         except Exception as e:
@@ -9483,7 +9521,9 @@ def _(rid, params: dict) -> dict:
     trace_id = _param_trace_id(params)
 
     if intent == "delegate":
-        result, err = _task_submit_delegate(rid, params, task_id, trace_id=trace_id)
+        result, err = _task_submit_delegate(
+            rid, params, task_id, trace_id=trace_id, idempotency_key=idempotency_key
+        )
     else:
         inputs = params.get("inputs")
         if not isinstance(inputs, dict):

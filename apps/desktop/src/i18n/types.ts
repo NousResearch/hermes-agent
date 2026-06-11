@@ -899,6 +899,9 @@ export interface Translations {
       archive: string
       restore: string
       delete: string
+      archiveCount: (count: number) => string
+      restoreCount: (count: number) => string
+      deleteCount: (count: number) => string
       clearSelection: string
       deleteDialogTitle: (count: number) => string
       deleteDialogDesc: string

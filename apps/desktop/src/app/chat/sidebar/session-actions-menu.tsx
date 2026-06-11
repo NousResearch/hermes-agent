@@ -35,6 +35,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { notify, notifyError } from '@/store/notifications'
 import { setSessions } from '@/store/session'
+import { clearSidebarSelection } from '@/store/sidebar-selection'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 interface SessionActions {
@@ -53,7 +54,18 @@ interface SessionActions {
   onSelect?: () => void
 }
 
+type BulkSessionHandler = (sessionIds: string[]) => Promise<unknown> | void
+
+export interface SessionBulkContextActions {
+  archived?: boolean
+  onArchiveSessions?: BulkSessionHandler
+  onDeleteSessions?: BulkSessionHandler
+  onRestoreSessions?: BulkSessionHandler
+  sessionIds: readonly string[]
+}
+
 type MenuItem = typeof DropdownMenuItem | typeof ContextMenuItem
+type PendingBulkAction = 'archive' | 'delete' | 'restore' | null
 
 interface ItemSpec {
   className?: string
@@ -283,6 +295,117 @@ function useSessionActions({
   return { deleteCloudDialog, inviteDialog, membersDialog, renameDialog, renderItems }
 }
 
+function useBulkSessionActions({
+  archived = false,
+  onArchiveSessions,
+  onDeleteSessions,
+  onRestoreSessions,
+  sessionIds
+}: SessionBulkContextActions) {
+  const { t } = useI18n()
+  const s = t.sidebar.bulk
+  const [pending, setPending] = useState<PendingBulkAction>(null)
+  const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+
+  const count = sessionIds.length
+
+  const runBulk = async (action: Exclude<PendingBulkAction, null>, run?: BulkSessionHandler) => {
+    if (pending || !run) {
+      return
+    }
+
+    setPending(action)
+
+    try {
+      await run([...sessionIds])
+      clearSidebarSelection()
+    } finally {
+      setPending(null)
+    }
+  }
+
+  const deleteSelected = () => {
+    triggerHaptic('warning')
+    setConfirmDeleteOpen(false)
+    void runBulk('delete', onDeleteSessions)
+  }
+
+  const items: ItemSpec[] = archived
+    ? [
+        {
+          disabled: pending !== null || !onRestoreSessions,
+          icon: 'history',
+          label: s.restoreCount(count),
+          onSelect: () => {
+            triggerHaptic('selection')
+            void runBulk('restore', onRestoreSessions)
+          }
+        },
+        {
+          className: 'text-destructive focus:text-destructive',
+          disabled: pending !== null || !onDeleteSessions,
+          icon: 'trash',
+          label: s.deleteCount(count),
+          onSelect: () => {
+            triggerHaptic('warning')
+            setConfirmDeleteOpen(true)
+          },
+          variant: 'destructive'
+        }
+      ]
+    : [
+        {
+          disabled: pending !== null || !onArchiveSessions,
+          icon: 'archive',
+          label: s.archiveCount(count),
+          onSelect: () => {
+            triggerHaptic('selection')
+            void runBulk('archive', onArchiveSessions)
+          }
+        },
+        {
+          className: 'text-destructive focus:text-destructive',
+          disabled: pending !== null || !onDeleteSessions,
+          icon: 'trash',
+          label: s.deleteCount(count),
+          onSelect: () => {
+            triggerHaptic('warning')
+            setConfirmDeleteOpen(true)
+          },
+          variant: 'destructive'
+        }
+      ]
+
+  const deleteDialog = (
+    <Dialog onOpenChange={setConfirmDeleteOpen} open={confirmDeleteOpen}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{s.deleteDialogTitle(count)}</DialogTitle>
+          <DialogDescription>{s.deleteDialogDesc}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button disabled={pending !== null} onClick={() => setConfirmDeleteOpen(false)} type="button" variant="ghost">
+            {t.common.cancel}
+          </Button>
+          <Button disabled={pending !== null} onClick={deleteSelected} type="button" variant="destructive">
+            {s.deleteConfirm}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+
+  const renderItems = (Item: MenuItem) =>
+    items.map(({ className, disabled, icon, label, onSelect, variant }) => (
+      <Item className={className} disabled={disabled} key={label} onSelect={onSelect} variant={variant}>
+        <Codicon name={icon} size="0.875rem" />
+        <span>{label}</span>
+      </Item>
+    ))
+
+  return { count, deleteDialog, renderItems }
+}
+
 interface SessionActionsMenuProps
   extends SessionActions, Pick<React.ComponentProps<typeof DropdownMenuContent>, 'align' | 'sideOffset'> {
   children: React.ReactNode
@@ -321,25 +444,43 @@ export function SessionActionsMenu({
 }
 
 interface SessionContextMenuProps extends SessionActions {
+  bulkActions?: SessionBulkContextActions
   children: React.ReactNode
 }
 
-export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
+export function SessionContextMenu({ bulkActions, children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
   const { deleteCloudDialog, inviteDialog, membersDialog, renameDialog, renderItems } = useSessionActions(actions)
+
+  const bulk = useBulkSessionActions({
+    archived: actions.archived,
+    ...bulkActions,
+    sessionIds: bulkActions?.sessionIds ?? []
+  })
+
+  const showBulkMenu = Boolean(bulkActions && bulkActions.sessionIds.length > 1)
 
   return (
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-48">
-          {renderItems(ContextMenuItem)}
+        <ContextMenuContent
+          aria-label={showBulkMenu ? t.sidebar.bulk.selectedCount(bulk.count) : t.sidebar.row.actionsFor(actions.title)}
+          className="w-48"
+        >
+          {showBulkMenu ? bulk.renderItems(ContextMenuItem) : renderItems(ContextMenuItem)}
         </ContextMenuContent>
       </ContextMenu>
-      {deleteCloudDialog}
-      {inviteDialog}
-      {membersDialog}
-      {renameDialog}
+      {showBulkMenu ? (
+        bulk.deleteDialog
+      ) : (
+        <>
+          {deleteCloudDialog}
+          {inviteDialog}
+          {membersDialog}
+          {renameDialog}
+        </>
+      )}
     </>
   )
 }
@@ -483,6 +624,7 @@ function CloudMembersDialog({ open, onOpenChange, sessionId }: CloudMembersDialo
           ) : (
             members.map(member => {
               const permission = cloudMemberPermission(member.permission)
+
               const busy =
                 pendingMemberId === `permission:${member.account_id}` ||
                 pendingMemberId === `remove:${member.account_id}`
@@ -578,6 +720,7 @@ function InviteCloudDialog({ open, onOpenChange, sessionId }: InviteCloudDialogP
 
     try {
       const ok = await inviteCloudChannelMember(sessionId, email)
+
       if (ok) {
         onOpenChange(false)
       }

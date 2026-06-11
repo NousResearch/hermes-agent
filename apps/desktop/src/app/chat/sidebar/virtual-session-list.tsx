@@ -26,6 +26,10 @@ interface SessionRowCommonProps {
   onSessionDragEnd?: () => void
   onSessionDragStart?: (payload: SessionDragPayload) => void
   onToggleSelect?: (mode: 'range' | 'single') => void
+  bulkSelectedSessionIds?: readonly string[]
+  onArchiveSelectedSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onDeleteSelectedSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onRestoreSelectedSessions?: (sessionIds: string[]) => Promise<unknown> | void
 }
 
 interface VirtualSessionListProps {
@@ -50,8 +54,12 @@ interface VirtualSessionListProps {
   /** Multi-select wiring, provided by the owning section. */
   selectable?: boolean
   selectionActive?: boolean
+  selectedSessionIds?: readonly string[]
   selectedIds?: ReadonlySet<string>
   onToggleSelect?: (sessionId: string, mode: 'range' | 'single') => void
+  onArchiveSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onDeleteSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onRestoreSessions?: (sessionIds: string[]) => Promise<unknown> | void
 }
 
 const ROW_ESTIMATE_PX = 28
@@ -76,8 +84,12 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onRestoreSession,
   selectable = false,
   selectionActive = false,
+  selectedSessionIds,
   selectedIds,
-  onToggleSelect
+  onToggleSelect,
+  onArchiveSessions,
+  onDeleteSessions,
+  onRestoreSessions
 }) => {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
 
@@ -103,17 +115,23 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       return null
     }
 
+    const rowIsChecked = selectedIds?.has(session.id) ?? false
+
     const commonProps: SessionRowCommonProps = {
       archived,
-      checked: selectedIds?.has(session.id) ?? false,
+      bulkSelectedSessionIds: rowIsChecked && selectedSessionIds && selectedSessionIds.length > 1 ? selectedSessionIds : undefined,
+      checked: rowIsChecked,
       dragging: draggingSessionId === session.id,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),
+      onArchiveSelectedSessions: onArchiveSessions,
       onDelete: () => onDeleteSession(session.id),
+      onDeleteSelectedSessions: onDeleteSessions,
       onPin: () => onTogglePin(sessionPinId(session)),
       onRestore: onRestoreSession ? () => onRestoreSession(session.id) : undefined,
+      onRestoreSelectedSessions: onRestoreSessions,
       onResume: () => onResumeSession(session.id),
       onSessionDragEnd,
       onSessionDragStart,

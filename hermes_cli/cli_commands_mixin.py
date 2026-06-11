@@ -920,8 +920,9 @@ class CLICommandsMixin:
     def _handle_gquota_command(self, cmd_original: str) -> None:
         """Show Google Gemini Code Assist quota usage for the current OAuth account."""
         try:
+            from agent import google_oauth
             from agent.google_oauth import get_valid_access_token, GoogleOAuthError, load_credentials
-            from agent.google_code_assist import retrieve_user_quota, CodeAssistError
+            from agent.google_code_assist import retrieve_user_quota, resolve_project_context, CodeAssistError
         except ImportError as exc:
             self._console_print(f"  [red]Gemini modules unavailable: {exc}[/]")
             return
@@ -935,6 +936,24 @@ class CLICommandsMixin:
 
         creds = load_credentials()
         project_id = (creds.project_id if creds else "") or ""
+        project_source = "stored" if project_id else "auto / free-tier"
+
+        if not project_id:
+            try:
+                ctx = resolve_project_context(
+                    access_token,
+                    env_project_id=google_oauth.resolve_project_id_from_env(),
+                    user_agent_model=str(getattr(self, "current_model", "") or ""),
+                )
+                project_id = ctx.project_id or ""
+                project_source = ctx.source or project_source
+                if project_id or ctx.managed_project_id:
+                    google_oauth.update_project_ids(
+                        project_id=project_id,
+                        managed_project_id=ctx.managed_project_id,
+                    )
+            except CodeAssistError as exc:
+                self._console_print(f"  [yellow]Project discovery failed; falling back to auto quota lookup:[/] {exc}")
 
         try:
             buckets = retrieve_user_quota(access_token, project_id=project_id)
@@ -949,7 +968,9 @@ class CLICommandsMixin:
         # Sort for stable display, group by model
         buckets.sort(key=lambda b: (b.model_id, b.token_type))
         self._console_print()
-        self._console_print(f"  [bold]Gemini Code Assist quota[/]  (project: {project_id or '(auto / free-tier)'})")
+        project_label = project_id or "(auto / free-tier)"
+        self._console_print(f"  [bold]Gemini Code Assist quota[/]  (project: {project_label}, source: {project_source})")
+        self._console_print("  [dim]/gquota shows daily Code Assist buckets only; hidden RPM/TPM, web-search, account, and model-capacity limits can still return 429.[/]")
         self._console_print()
         for b in buckets:
             pct = max(0.0, min(1.0, b.remaining_fraction))

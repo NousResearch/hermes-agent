@@ -3355,8 +3355,18 @@ def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
     Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
-    ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
-    bootstrap to make launchd re-read the updated plist immediately.
+    ``launchctl kickstart`` cycle — no daemon-reload is needed. We use ``kickstart``
+    to make launchd re-read the updated plist and restart the service immediately.
+
+    .. note::
+
+       We use ``kickstart`` instead of the ``bootout``/``bootstrap`` pair because
+       ``bootout`` tears down the service's process group.  When this function is
+       called from *inside* the gateway process tree (e.g. agent-initiated
+       self-update), the calling CLI is a descendant of the gateway service and
+       dies with ``bootout`` before ``bootstrap`` can run, leaving the service
+       permanently unloaded (#43842).  ``kickstart`` atomically restarts the
+       service without an unload/load gap.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
@@ -3364,14 +3374,10 @@ def refresh_launchd_plist_if_needed() -> bool:
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
     label = get_launchd_label()
-    # Bootout/bootstrap so launchd picks up the new definition
+    # Kickstart: re-read the updated plist and restart the service atomically.
+    # Using --force ensures the existing instance is killed and a fresh one started.
     subprocess.run(
-        ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
-        check=False,
-        timeout=90,
-    )
-    subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+        ["launchctl", "kickstart", "--force", f"{_launchd_domain()}/{label}"],
         check=False,
         timeout=30,
     )

@@ -111,6 +111,8 @@ language-specific setup where needed.
 - Rust ZIP extraction exists with path traversal protection for future repository/archive fallback replacement.
 - Rust repository archive fallback primitives can build GitHub ZIP URLs, strip the archive's single top-level directory,
   and refuse to overwrite an existing install root.
+- Bootstrap installer can use the Rust repository archive path for Windows fresh installs, while existing install roots
+  still fall back to the script-backed Git update path.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` now runs as a native Rust stage while preserving Python `tools/skills_sync.py` when available and
   retaining the existing bundled-skill copy fallback.
@@ -155,6 +157,12 @@ language-specific setup where needed.
   shell profile file, with dry-run and JSON output support.
 - `hermes-manager write-user-path` can dry-run or write the current user's Windows `Path` registry value, using the
   registry as the default source of truth and broadcasting an environment-change notification after apply.
+- Bootstrap installer now runs the Windows `path` stage natively, preserving user `Path` and `HERMES_HOME` setup while
+  leaving Unix symlink/profile behavior script-backed until full parity exists.
+- `hermes-manager plan-shortcuts` reports Start Menu and Desktop `.lnk` targets for the packaged Windows desktop app,
+  including working directory and icon location, without mutating user state.
+- `hermes-manager write-shortcuts` can dry-run or create those `.lnk` files through the built-in Windows shortcut COM
+  API, keeping shortcut setup in the Rust-managed command surface.
 
 **Exit Criteria:**
 - Rust manager can perform platform cleanup with parity to Python/shell uninstall.
@@ -191,6 +199,8 @@ language-specific setup where needed.
   for development and non-immutable builds.
 - Bootstrap logs now include an embedded install-script resource summary with size and SHA-256 prefix for diagnostics
   and future release manifest integration.
+- Desktop release staging writes install-script metadata into `embedded_resources`, so release manifests document
+  embedded script names, sizes, and SHA-256 values without treating them as standalone files.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

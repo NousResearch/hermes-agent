@@ -195,6 +195,21 @@ def test_guard_live_gateway_ignores_stale_cron_env(monkeypatch, gw_session):
         clear_session_vars(tokens)
 
 
+def test_guard_exec_ask_ignores_stale_cron_env_without_context(monkeypatch, gw_session):
+    """Gateway execute_code ask mode must beat stale cron env even without ContextVars."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
+
+    _register_resolver(gw_session, "once")
+    res = A.check_execute_code_guard("import os; print(1)", "local")
+    assert res["approved"] is True
+    assert res.get("user_approved") is True
+    assert res.get("outcome") != "blocked"
+
+
 def test_guard_gateway_user_approves_is_one_shot(gw_session):
     _register_resolver(gw_session, "once")
     res = A.check_execute_code_guard("import os; print(1)", "local")

@@ -217,6 +217,23 @@ def clear_session_vars(tokens: list) -> None:
         pass
 
 
+def get_raw_session_value(name: str) -> str | None:
+    """Return the raw context-local value for a session env var.
+
+    Returns ``None`` when the ContextVar has never been set in this context.
+    Unlike ``get_session_env()``, this never falls back to ``os.environ``.
+    Callers use this when they must distinguish explicit context state from a
+    stale process-global environment value.
+    """
+    var = _VAR_MAP.get(name)
+    if var is None:
+        return None
+    value = var.get()
+    if value is _UNSET:
+        return None
+    return value
+
+
 def get_session_env(name: str, default: str = "") -> str:
     """Read a session context variable by its legacy ``HERMES_SESSION_*`` name.
 

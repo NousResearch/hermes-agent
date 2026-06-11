@@ -139,15 +139,33 @@ def _is_cron_approval_context() -> bool:
     Prefer the context-local marker set by ``cron.scheduler.run_job`` so a
     scheduler tick in the long-lived gateway process cannot poison later live
     Discord/Telegram/etc. sessions through process-global ``os.environ``.
-    The env fallback is kept for standalone cron/test callers that do not bind
-    session contextvars.
+
+    Keep the env fallback for standalone cron/test callers, but do not let a
+    stale process-global HERMES_CRON_SESSION override explicit user-present
+    gateway/execute-code approval markers. Gateway startup sets
+    HERMES_EXEC_ASK=1 so live chat turns can ask the user; stale cron env must
+    not convert those turns back into unattended cron.
     """
     try:
-        from gateway.session_context import get_session_env
+        from gateway.session_context import get_raw_session_value, get_session_env
 
-        return is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""))
+        raw_cron = get_raw_session_value("HERMES_CRON_SESSION")
+        if raw_cron is not None:
+            return is_truthy_value(raw_cron)
+
+        if env_var_enabled("HERMES_CRON_SESSION"):
+            if env_var_enabled("HERMES_EXEC_ASK") or env_var_enabled("HERMES_GATEWAY_SESSION"):
+                return False
+            if get_session_env("HERMES_SESSION_PLATFORM", ""):
+                return False
+            return True
+        return False
     except Exception:
-        return env_var_enabled("HERMES_CRON_SESSION")
+        if not env_var_enabled("HERMES_CRON_SESSION"):
+            return False
+        if env_var_enabled("HERMES_EXEC_ASK") or env_var_enabled("HERMES_GATEWAY_SESSION"):
+            return False
+        return True
 
 
 def _is_gateway_approval_context() -> bool:

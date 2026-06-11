@@ -1,0 +1,110 @@
+# Builds unsigned Linux and macOS Tauri setup installers with bundled bootstrap tools.
+
+name: Build Unix Installers
+
+on:
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    authorize:
+        name: Authorize (admins only)
+        runs-on: ubuntu-latest
+        timeout-minutes: 5
+        steps:
+            - name: Check actor is a repo admin
+              env:
+                  GH_TOKEN: ${{ github.token }}
+                  ACTOR: ${{ github.actor }}
+              run: |
+                  set -euo pipefail
+                  perm=$(gh api \
+                      "repos/${{ github.repository }}/collaborators/${ACTOR}/permission" \
+                      --jq '.permission')
+                  echo "Actor '${ACTOR}' has permission: ${perm}"
+                  if [ "${perm}" != "admin" ]; then
+                      echo "::error::'${ACTOR}' is not a repo admin (permission=${perm}). Refusing to build."
+                      exit 1
+                  fi
+                  echo "Authorized: '${ACTOR}' is an admin."
+
+    build:
+        name: ${{ matrix.name }}
+        needs: authorize
+        runs-on: ${{ matrix.os }}
+        timeout-minutes: 45
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - name: Hermes-Setup Linux
+                      os: ubuntu-latest
+                      platform: linux
+                      artifact-name: Hermes-Setup-linux
+                      artifact-path: |
+                          apps/bootstrap-installer/src-tauri/target/release/bundle/appimage/*.AppImage
+                          apps/bootstrap-installer/src-tauri/bootstrap-tools/bootstrap-tools-manifest.json
+                    - name: Hermes-Setup macOS
+                      os: macos-latest
+                      platform: macos
+                      artifact-name: Hermes-Setup-macos
+                      artifact-path: |
+                          apps/bootstrap-installer/src-tauri/target/release/bundle/dmg/*.dmg
+                          apps/bootstrap-installer/src-tauri/target/release/bundle/macos/*.app
+                          apps/bootstrap-installer/src-tauri/bootstrap-tools/bootstrap-tools-manifest.json
+
+        steps:
+            - name: Checkout code
+              uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+            - name: Setup Node.js
+              uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+              with:
+                  node-version: 22
+                  cache: npm
+
+            - name: Install npm dependencies
+              run: npm ci
+
+            - name: Setup Rust
+              uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+
+            - name: Cache Rust targets
+              uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+              with:
+                  workspaces: apps/bootstrap-installer/src-tauri
+
+            - name: Install Linux Tauri dependencies
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y \
+                      build-essential \
+                      curl \
+                      file \
+                      libayatana-appindicator3-dev \
+                      librsvg2-dev \
+                      libssl-dev \
+                      libwebkit2gtk-4.1-dev \
+                      libxdo-dev \
+                      patchelf \
+                      wget
+
+            - name: Bundle bootstrap tool archives
+              run: >
+                  python scripts/prepare_bootstrap_tools.py
+                  --platform ${{ matrix.platform }}
+                  --arch ${{ runner.arch == 'ARM64' && 'arm64' || 'x64' }}
+
+            - name: Build installer
+              run: npm run tauri:build
+              working-directory: apps/bootstrap-installer
+
+            - name: Upload installer artifacts
+              uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+              with:
+                  name: ${{ matrix.artifact-name }}
+                  path: ${{ matrix.artifact-path }}
+                  if-no-files-found: error

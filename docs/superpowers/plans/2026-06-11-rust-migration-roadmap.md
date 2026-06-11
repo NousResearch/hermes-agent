@@ -347,6 +347,8 @@ language-specific setup where needed.
   packaging, then writes `bootstrap-tools-manifest.json` with archive URL, size, and SHA-256 metadata for review.
 - The same release preparation helper now supports `--platform linux|macos` for x64/arm64 Node and uv tarballs, matching
   the Unix Rust Node/uv installer asset matrix when future macOS/Linux installer packaging wires in bundled tools.
+- A manual Unix installer workflow now builds Linux and macOS Tauri setup artifacts with matching bundled Node/`uv`
+  archives and uploads the generated `bootstrap-tools-manifest.json` alongside the installer artifacts.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

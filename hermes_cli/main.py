@@ -678,6 +678,46 @@ def _relative_time(ts) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
 
 
+def _disp_width(text: str) -> int:
+    """Terminal display width of *text* (CJK characters occupy 2 columns).
+
+    ``wcswidth`` returns ``-1`` for control characters; clamp to 0 so a
+    weird character can't poison the column math (same convention as
+    ``agent/markdown_tables.py``).
+    """
+    from wcwidth import wcswidth
+
+    w = wcswidth(text)
+    return w if w > 0 else 0
+
+
+def _clip_to_width(text: str, width: int) -> str:
+    """Truncate *text* to at most *width* display columns.
+
+    A plain slice (``text[:n]``) counts characters, so CJK text can still
+    overflow its column by up to 2x; this never splits a double-width
+    character across the boundary.
+    """
+    if _disp_width(text) <= width:
+        return text
+    from wcwidth import wcwidth
+
+    out = []
+    used = 0
+    for ch in text:
+        w = max(wcwidth(ch), 0)
+        if used + w > width:
+            break
+        out.append(ch)
+        used += w
+    return "".join(out)
+
+
+def _pad_to_width(text: str, width: int) -> str:
+    """Column-aware ``str.ljust`` — pads to *width* display columns."""
+    return text + " " * max(0, width - _disp_width(text))
+
+
 def _has_any_provider_configured() -> bool:
     """Check if at least one inference provider is usable."""
     from hermes_cli.config import get_env_path, get_hermes_home, load_config
@@ -11576,20 +11616,30 @@ def main():
             else:
                 print(f"{'Preview':<50} {'Last Active':<13} {'Src':<6} {'ID'}")
                 print("─" * 95)
+            # Truncate and pad by display columns, not characters — CJK
+            # characters are double-width, so str slices / format-spec
+            # padding shift every column to their right (#44199).
             for s in sessions:
                 last_active = _relative_time(s.get("last_active"))
                 preview = (
-                    s.get("preview", "")[:38]
+                    _clip_to_width(s.get("preview", ""), 38)
                     if has_titles
-                    else s.get("preview", "")[:48]
+                    else _clip_to_width(s.get("preview", ""), 48)
                 )
                 if has_titles:
-                    title = (s.get("title") or "—")[:30]
+                    title = _clip_to_width(s.get("title") or "—", 30)
                     sid = s["id"]
-                    print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
+                    print(
+                        f"{_pad_to_width(title, 32)} "
+                        f"{_pad_to_width(preview, 40)} "
+                        f"{last_active:<13} {sid}"
+                    )
                 else:
                     sid = s["id"]
-                    print(f"{preview:<50} {last_active:<13} {s['source']:<6} {sid}")
+                    print(
+                        f"{_pad_to_width(preview, 50)} "
+                        f"{last_active:<13} {s['source']:<6} {sid}"
+                    )
 
         elif action == "export":
             if args.session_id:

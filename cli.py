@@ -5716,7 +5716,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if not sessions:
             return False
 
-        from hermes_cli.main import _relative_time
+        from hermes_cli.main import _clip_to_width, _pad_to_width, _relative_time
 
         print()
         if reason == "history":
@@ -5727,10 +5727,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print(f"  {'#':<3} {'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
         print(f"  {'─' * 3} {'─' * 32} {'─' * 40} {'─' * 13} {'─' * 24}")
         for idx, session in enumerate(sessions, start=1):
+            # Truncate/pad by display columns — CJK characters are
+            # double-width, so str slices / format-spec padding shift
+            # every column to their right (#44199). Titles are padded but
+            # never clipped: they render in full by design (#14082).
             title = session.get("title") or "—"
-            preview = (session.get("preview") or "")[:38]
+            preview = _clip_to_width(session.get("preview") or "", 38)
             last_active = _relative_time(session.get("last_active"))
-            print(f"  {idx:<3} {title:<32} {preview:<40} {last_active:<13} {session['id']}")
+            print(
+                f"  {idx:<3} {_pad_to_width(title, 32)} "
+                f"{_pad_to_width(preview, 40)} {last_active:<13} {session['id']}"
+            )
         print()
         print("  Use /resume <number>, /resume <session id>, or /resume <session title> to continue.")
         print("  Example: /resume 2")

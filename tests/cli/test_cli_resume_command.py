@@ -38,6 +38,32 @@ class TestCliResumeCommand:
         assert "/resume 2" in output
         assert "/resume <session title>" in output
 
+    def test_show_recent_sessions_aligns_cjk_titles(self, capsys):
+        # CJK characters are double-width in terminals; padding by character
+        # count shifts every column to their right (#44199). The ID column
+        # must start at the same display column in every row.
+        from wcwidth import wcswidth
+
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[
+            {"id": "sess_002", "title": "整理论文和更新README #4",
+             "preview": "我更新了paper/和其他文件", "last_active": None},
+            {"id": "sess_001", "title": "Research", "preview": "read docs",
+             "last_active": None},
+        ])
+
+        shown = cli_obj._show_recent_sessions(reason="resume")
+        output = capsys.readouterr().out
+
+        assert shown is True
+        id_columns = {
+            wcswidth(line.split(sid)[0])
+            for line in output.splitlines()
+            for sid in ("sess_001", "sess_002")
+            if sid in line
+        }
+        assert len(id_columns) == 1
+
     def test_handle_resume_by_index_switches_to_numbered_session(self):
         cli_obj = _make_cli()
         cli_obj._list_recent_sessions = MagicMock(return_value=[

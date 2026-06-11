@@ -883,7 +883,7 @@
             HOME = cfg.stateDir;
             HERMES_HOME = "${cfg.stateDir}/.hermes";
             HERMES_MANAGED = "true";
-            MESSAGING_CWD = cfg.workingDirectory;
+            TERMINAL_CWD = cfg.workingDirectory;
           };
 
           serviceConfig = {
@@ -980,7 +980,7 @@
                 --env HERMES_HOME=${containerDataDir}/.hermes \
                 --env HERMES_MANAGED=true \
                 --env HOME=${containerHomeDir} \
-                --env MESSAGING_CWD=${containerWorkDir} \
+                --env TERMINAL_CWD=${containerWorkDir} \
                 ${lib.concatStringsSep " " cfg.container.extraOptions} \
                 ${cfg.container.image} \
                 ${containerDataDir}/current-package/bin/hermes gateway run --replace ${lib.concatStringsSep " " cfg.extraArgs}

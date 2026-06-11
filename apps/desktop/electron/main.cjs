@@ -4853,7 +4853,7 @@ function focusWindow(win) {
 // Open (or focus) a standalone window for a single chat session.
 function createSessionWindow(sessionId) {
   return sessionWindows.openOrFocus(sessionId, () => {
-    const icon = getAppIconPath()
+    const icon = IS_MAC ? undefined : getAppIconPath()
     const win = new BrowserWindow({
       width: 480,
       height: 800,
@@ -4899,7 +4899,7 @@ function createSessionWindow(sessionId) {
 }
 
 function createWindow() {
-  const icon = getAppIconPath()
+  const icon = IS_MAC ? undefined : getAppIconPath()
   mainWindow = new BrowserWindow({
     width: 1220,
     height: 800,
@@ -4939,9 +4939,9 @@ function createWindow() {
 
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
-    if (icon) {
-      app.dock?.setIcon(icon)
-    }
+    // The macOS Dock should resolve the packaged bundle icon. Setting a
+    // runtime Dock icon makes running and pinned/closed states use different
+    // assets, which causes visible size drift when users launch or quit Hermes.
   }
 
   if (!IS_MAC) {

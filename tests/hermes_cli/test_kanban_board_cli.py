@@ -78,3 +78,20 @@ def test_board_json_dispatch(kanban_home, capsys):
     assert rc == 0
     data = json.loads(out)
     assert any(t["title"] == "hello world" for t in data)
+
+
+def test_board_layout_default_is_auto():
+    assert _parse(["board"]).layout == "auto"
+
+
+def test_board_layout_stack():
+    assert _parse(["board", "--layout", "stack"]).layout == "stack"
+
+
+def test_board_layout_columns():
+    assert _parse(["board", "--layout", "columns"]).layout == "columns"
+
+
+def test_board_layout_rejects_unknown():
+    with pytest.raises(SystemExit):
+        _parse(["board", "--layout", "grid"])

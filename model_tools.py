@@ -1014,6 +1014,42 @@ def handle_function_call(
         except Exception as _mw_err:
             logger.debug("tool_request middleware error: %s", _mw_err)
 
+    # ── Governance Policy Gate ───────────────────────────────────────
+    # Classify and log the *real* tool after any Tool Search bridge unwrap and
+    # request-middleware normalization. Hard denials always block;
+    # approval/backup gates become hard blocks when
+    # HERMES_POLICY_GATE_MODE=strict|enforce so rollout can be audited first.
+    try:
+        from governance.policy import PolicyGate, classify_tool_call
+
+        profile = (
+            os.getenv("HERMES_PROFILE")
+            or os.getenv("HERMES_ACTIVE_PROFILE")
+            or os.getenv("HERMES_PROFILE_NAME")
+            or "default"
+        )
+        gate = PolicyGate(profile=profile)
+        policy_request = classify_tool_call(function_name, function_args or {}, profile=profile)
+        policy_decision = gate.evaluate(policy_request)
+        if gate.should_block_dispatch(policy_decision):
+            return json.dumps({
+                "error": f"Policy Gate blocked {function_name}: {policy_decision.reason}",
+                "policy_gate": {
+                    "decision": policy_decision.decision.value,
+                    "action_class": policy_request.action_class.value,
+                    "risk_tier": policy_request.risk_tier,
+                    "capability_check": policy_decision.capability_check,
+                    "backup_check": policy_decision.backup_check,
+                    "log_ref": policy_decision.log_ref,
+                },
+            }, ensure_ascii=False)
+    except Exception as _policy_err:
+        logger.debug("Policy Gate error for %s: %s", function_name, _policy_err)
+        if os.getenv("HERMES_POLICY_GATE_FAIL_CLOSED", "").strip().lower() in {"1", "true", "yes"}:
+            return json.dumps({
+                "error": f"Policy Gate failed closed for {function_name}: {_sanitize_tool_error(str(_policy_err))}",
+            }, ensure_ascii=False)
+
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})

@@ -80,6 +80,36 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return _first_threat_message(content, scope="strict")
 
 
+def _record_memory_governance(
+    *,
+    operation: str,
+    memory_target: str,
+    proposed_content: str,
+    decision: str,
+    decision_reason: str = "",
+    normalized_content: Optional[str] = None,
+) -> None:
+    """Best-effort durable-memory admission logging.
+
+    The memory tool is itself part of the user's continuity substrate; ledger
+    failures must not clobber or block the memory file unless the caller has
+    separately enabled strict Policy Gate enforcement around the tool call.
+    """
+    try:
+        from governance.memory_governor import record_memory_tool_decision
+
+        record_memory_tool_decision(
+            operation=operation,
+            memory_target=memory_target,
+            proposed_content=proposed_content,
+            normalized_content=normalized_content,
+            decision=decision,
+            decision_reason=decision_reason,
+        )
+    except Exception:
+        logger.debug("memory governance logging failed", exc_info=True)
+
+
 def _drift_error(path: "Path", bak_path: str) -> Dict[str, Any]:
     """Build the error dict returned when external drift is detected.
 
@@ -298,11 +328,25 @@ class MemoryStore:
         """Append a new entry. Returns error if it would exceed the char limit."""
         content = content.strip()
         if not content:
+            _record_memory_governance(
+                operation="add",
+                memory_target=target,
+                proposed_content=content,
+                decision="reject_policy",
+                decision_reason="Content cannot be empty.",
+            )
             return {"success": False, "error": "Content cannot be empty."}
 
         # Scan for injection/exfiltration before accepting
         scan_error = _scan_memory_content(content)
         if scan_error:
+            _record_memory_governance(
+                operation="add",
+                memory_target=target,
+                proposed_content=content,
+                decision="reject_security",
+                decision_reason=scan_error,
+            )
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
@@ -327,15 +371,23 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
+                error = (
+                    f"Memory at {current:,}/{limit:,} chars. "
+                    f"Adding this entry ({len(content)} chars) would exceed the limit. "
+                    f"Consolidate now: use 'replace' to merge overlapping entries into "
+                    f"shorter ones or 'remove' stale or less important entries (see "
+                    f"current_entries below), then retry this add — all in this turn."
+                )
+                _record_memory_governance(
+                    operation="add",
+                    memory_target=target,
+                    proposed_content=content,
+                    decision="reject_over_capacity",
+                    decision_reason=error,
+                )
                 return {
                     "success": False,
-                    "error": (
-                        f"Memory at {current:,}/{limit:,} chars. "
-                        f"Adding this entry ({len(content)} chars) would exceed the limit. "
-                        f"Consolidate now: use 'replace' to merge overlapping entries into "
-                        f"shorter ones or 'remove' stale or less important entries (see "
-                        f"current_entries below), then retry this add — all in this turn."
-                    ),
+                    "error": error,
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
                 }
@@ -344,6 +396,13 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+        _record_memory_governance(
+            operation="add",
+            memory_target=target,
+            proposed_content=content,
+            normalized_content=content,
+            decision="admit",
+        )
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
@@ -351,13 +410,34 @@ class MemoryStore:
         old_text = old_text.strip()
         new_content = new_content.strip()
         if not old_text:
+            _record_memory_governance(
+                operation="replace",
+                memory_target=target,
+                proposed_content=new_content,
+                decision="reject_policy",
+                decision_reason="old_text cannot be empty.",
+            )
             return {"success": False, "error": "old_text cannot be empty."}
         if not new_content:
+            _record_memory_governance(
+                operation="replace",
+                memory_target=target,
+                proposed_content=new_content,
+                decision="reject_policy",
+                decision_reason="new_content cannot be empty. Use 'remove' to delete entries.",
+            )
             return {"success": False, "error": "new_content cannot be empty. Use 'remove' to delete entries."}
 
         # Scan replacement content for injection/exfiltration
         scan_error = _scan_memory_content(new_content)
         if scan_error:
+            _record_memory_governance(
+                operation="replace",
+                memory_target=target,
+                proposed_content=new_content,
+                decision="reject_security",
+                decision_reason=scan_error,
+            )
             return {"success": False, "error": scan_error}
 
         with self._file_lock(self._path_for(target)):
@@ -393,14 +473,22 @@ class MemoryStore:
 
             if new_total > limit:
                 current = self._char_count(target)
+                error = (
+                    f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
+                    f"Shorten the new content, or 'remove' other stale or less important "
+                    f"entries to make room (see current_entries below), then retry — all "
+                    f"in this turn."
+                )
+                _record_memory_governance(
+                    operation="replace",
+                    memory_target=target,
+                    proposed_content=new_content,
+                    decision="reject_over_capacity",
+                    decision_reason=error,
+                )
                 return {
                     "success": False,
-                    "error": (
-                        f"Replacement would put memory at {new_total:,}/{limit:,} chars. "
-                        f"Shorten the new content, or 'remove' other stale or less important "
-                        f"entries to make room (see current_entries below), then retry — all "
-                        f"in this turn."
-                    ),
+                    "error": error,
                     "current_entries": entries,
                     "usage": f"{current:,}/{limit:,}",
                 }
@@ -409,12 +497,27 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+        _record_memory_governance(
+            operation="replace",
+            memory_target=target,
+            proposed_content=new_content,
+            normalized_content=new_content,
+            decision="admit",
+            decision_reason=f"replaced entry matching {old_text!r}",
+        )
         return self._success_response(target, "Entry replaced.")
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
         old_text = old_text.strip()
         if not old_text:
+            _record_memory_governance(
+                operation="remove",
+                memory_target=target,
+                proposed_content=old_text,
+                decision="reject_policy",
+                decision_reason="old_text cannot be empty.",
+            )
             return {"success": False, "error": "old_text cannot be empty."}
 
         with self._file_lock(self._path_for(target)):
@@ -441,10 +544,18 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
-            entries.pop(idx)
+            removed = entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+        _record_memory_governance(
+            operation="remove",
+            memory_target=target,
+            proposed_content=removed,
+            normalized_content="",
+            decision="remove",
+            decision_reason=f"removed entry matching {old_text!r}",
+        )
         return self._success_response(target, "Entry removed.")
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:

@@ -1,0 +1,35 @@
+manifest_version: 1
+
+name: clearfeed
+description: Search, inspect, and manage ClearFeed requests, customers, collections, teams, users, tickets, and insights.
+source: https://github.com/clearfeed/clearfeed-mcp
+
+transport:
+  type: http
+  url: https://mcp.clearfeed.app/mcp
+
+auth:
+  type: oauth
+
+tools:
+  default_enabled:
+    - requests_search
+    - requests_list
+    - requests_get
+    - customers_search
+    - customers_list
+    - customers_get
+    - collections_list
+    - teams_list
+    - teams_get
+    - users_list
+    - insights_query
+
+post_install: |
+  On first connection, Hermes will open a browser to authenticate with ClearFeed.
+  The connector is scoped to your selected ClearFeed Account.
+
+  The default tool set is read-heavy. You can enable mutating tools with:
+    hermes mcp configure clearfeed
+
+  Start a new Hermes session or run /reload-mcp to load the ClearFeed tools.

@@ -1919,6 +1919,20 @@ class FeishuAdapter(BasePlatformAdapter):
                 finalize=finalize,
             )
 
+        # When streaming cards are enabled, the message_id may be a card_id
+        # that was already closed by a prior finalize call (e.g. the
+        # stream_consumer's got_done path first edits with finalize=True
+        # in the mid-stream update, then attempts a second finalize in the
+        # dedicated got_done block).  Returning success here prevents the
+        # caller from treating the missing card as an edit failure and
+        # falling back to a full send, which would duplicate the response.
+        if self._streaming_card_enabled and finalize:
+            logger.debug(
+                "[Feishu] Streaming card %s already closed; treating finalize as success",
+                message_id,
+            )
+            return SendResult(success=True, message_id=message_id)
+
         # --- Existing IM v1 update path --------------------------------------
         content = self.format_message(content)
         try:
@@ -1947,49 +1961,44 @@ class FeishuAdapter(BasePlatformAdapter):
     # Streaming card helpers (cardkit v1, schema 2.0)
     # =========================================================================
 
+    @staticmethod
     def _build_streaming_card_json(
-        self,
         initial_content: str = "",
-        model_name: str = "",
-        context_pct: Optional[int] = None,
     ) -> str:
         """Build a cardkit v1 schema-2.0 JSON string with streaming enabled.
 
-        *model_name* and *context_pct* are displayed in the card header's
-        subtitle when provided, giving users visibility into which model
-        is responding and how much of the context window is consumed.
+        The ``summary.content`` is populated from the first ~60 characters of
+        *initial_content* so that the Feishu conversation list shows a
+        meaningful preview instead of the default ``[生成中...]``.
         """
-        # Build subtitle from runtime info when available
-        subtitle_parts: list[str] = []
-        if model_name:
-            subtitle_parts.append(model_name)
-        if context_pct is not None:
-            subtitle_parts.append(f"ctx {context_pct}%")
-        subtitle = " · ".join(subtitle_parts) if subtitle_parts else ""
-
-        header: Dict[str, Any] = {
-            "title": {
-                "tag": "plain_text",
-                "content": "Hermes",
-            },
-            "template": "blue",
-            "ud_icon": {
-                "token": "larkco...rful",
-                "style": {"color": "blue"},
-            },
-        }
-        if subtitle:
-            header["subtitle"] = {
-                "tag": "plain_text",
-                "content": subtitle,
-            }
+        # Strip markdown formatting for the chat-list preview.
+        import re as _re
+        preview_text = _re.sub(r"[#*`_~\[\]()>|]", "", initial_content).strip()
+        preview_text = preview_text.replace("\n", " ")[:60].strip()
 
         card: Dict[str, Any] = {
             "schema": "2.0",
-            "header": header,
+            "header": {
+                "title": {
+                    "tag": "lark_md",
+                    "content": "🪶 Hermes",
+                },
+                "text_tag_list": [
+                    {
+                        "tag": "text_tag",
+                        "text": {"tag": "plain_text", "content": "AI"},
+                        "color": "blue",
+                    },
+                ],
+                "template": "blue",
+                "ud_icon": {
+                    "token": "larkcommunity_colorful",
+                    "style": {"color": "blue"},
+                },
+            },
             "config": {
                 "streaming_mode": True,
-                "summary": {"content": ""},
+                "summary": {"content": preview_text},
                 "streaming_config": {
                     "print_frequency_ms": {"default": 70},
                     "print_step": {"default": 1},
@@ -2031,25 +2040,7 @@ class FeishuAdapter(BasePlatformAdapter):
 
             formatted = self.format_message(content)
             truncated = formatted[: self.MAX_MESSAGE_LENGTH]
-
-            # Resolve runtime info for the card header subtitle.
-            # model_name: try metadata first, then read from gateway config.
-            # context_pct: from metadata if the caller injected it.
-            model_name = ""
-            context_pct: Optional[int] = None
-            if metadata:
-                model_name = metadata.get("_model", "")
-                context_pct = metadata.get("_context_pct")
-            if not model_name:
-                try:
-                    from gateway.run import _resolve_gateway_model
-                    model_name = _resolve_gateway_model()
-                except Exception:
-                    pass
-
-            card_json = self._build_streaming_card_json(
-                truncated, model_name=model_name, context_pct=context_pct,
-            )
+            card_json = self._build_streaming_card_json(truncated)
 
             # Step 1: Create card entity via cardkit v1
             create_body = CreateCardRequestBody.builder() \

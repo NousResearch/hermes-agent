@@ -455,15 +455,21 @@ def test_self_host_kill_blocks_command_and_builtin_wrappers(clean_session):
     # anchor.
     pid = _os.getpid()
     assert _check_self_host_kill(f"command kill {pid}")[0] is True
+    assert _check_self_host_kill(f"command -- kill {pid}")[0] is True
     assert _check_self_host_kill(f"builtin kill {pid}")[0] is True
+    assert _check_self_host_kill(f"builtin -- kill {pid}")[0] is True
     assert _check_self_host_kill("command -p kill $$")[0] is True
+    assert _check_self_host_kill("command -p -- kill $$")[0] is True
     assert _check_self_host_kill(f"command builtin kill {pid}")[0] is True
+    assert _check_self_host_kill(f"command -- builtin -- kill {pid}")[0] is True
 
 
 def test_self_host_kill_blocks_standard_wrapper_prefixes(clean_session):
     pid = _os.getpid()
     assert _check_self_host_kill(f"sudo kill {pid}")[0] is True
+    assert _check_self_host_kill(f"sudo -- kill {pid}")[0] is True
     assert _check_self_host_kill(f"env kill {pid}")[0] is True
+    assert _check_self_host_kill(f"env -- kill {pid}")[0] is True
     assert _check_self_host_kill("exec kill $PPID")[0] is True
     assert _check_self_host_kill(f"nohup setsid kill -9 {pid}")[0] is True
 
@@ -480,7 +486,13 @@ def test_self_host_kill_allows_command_v_lookup(clean_session):
 
 
 def test_check_all_command_guards_blocks_wrapped_self_host_kill(clean_session):
-    for cmd in (f"command kill {_os.getpid()}", f"builtin kill {_os.getpid()}"):
+    for cmd in (
+        f"command kill {_os.getpid()}",
+        f"command -- kill {_os.getpid()}",
+        f"builtin kill {_os.getpid()}",
+        f"builtin -- kill {_os.getpid()}",
+        f"env -- kill {_os.getpid()}",
+    ):
         result = check_all_command_guards(cmd, "local")
         assert result["approved"] is False, cmd
         assert result.get("hardline") is True, cmd

@@ -197,6 +197,8 @@ function IdleView({
     )
   }
 
+  // When a checkout is both behind and stale, show the commit list first. The
+  // pull/rebuild flow supersedes the local stale-bundle nudge.
   if (behind === 0 && rebuildNeeded) {
     return (
       <div className="grid gap-5 px-6 pb-6 pt-7 pr-8">

@@ -2,6 +2,8 @@ import { FIELD_DESCRIPTIONS, FIELD_LABELS } from '@/app/settings/constants'
 
 import type { Translations } from './types'
 
+const REBUILD_NEEDED = 'Source code changed — rebuild to apply local changes.'
+
 export const en: Translations = {
   common: {
     apply: 'Apply',
@@ -332,7 +334,7 @@ export const en: Translations = {
       cantReach: "We couldn't reach the update server.",
       tapCheck: 'Tap "Check now" to look for updates.',
       updateReady: count => `A new update is ready (${count} change${count === 1 ? '' : 's'} included).`,
-      rebuildNeeded: 'Source code changed — rebuild to apply local changes.',
+      rebuildNeeded: REBUILD_NEEDED,
       rebuildNow: 'Rebuild now',
       lastChecked: age => `Last checked ${age}`,
       justNowSuffix: ' · just now',

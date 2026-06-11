@@ -237,14 +237,15 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 # Matches: start of string, after command separators (; && || | newline),
 # after subshell openers ( `$(` or backtick ), optionally consuming
 # leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid,
-# `command [-p]`, builtin). Only `command -p` is treated as a wrapper:
-# `command -v`/`-V` resolve a name without executing it.
+# `command [-p]`, builtin), including their `--` argument separator.
+# Only `command -p` is treated as a wrapper: `command -v`/`-V` resolve
+# a name without executing it.
 _CMDPOS = (
     r'(?:^|[;&|\n`]|\$\()'         # start position
     r'\s*'                          # optional whitespace
-    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
-    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time|builtin|command(?:\s+-p)?)\s+)*'  # optional wrapper commands
+    r'(?:sudo\s+(?:(?:-[^\s]+|--)\s+)*)?'  # optional sudo with flags
+    r'(?:env\s+(?:--\s+)?(?:\w+=\S*\s+)*)?'  # optional env + VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time|builtin|command(?:\s+-p)?)\s+(?:--\s+)?)*'  # optional wrapper commands
     r'\s*'
 )
 

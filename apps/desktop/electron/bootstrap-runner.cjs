@@ -50,7 +50,7 @@ function hiddenWindowsChildOptions(options = {}) {
 }
 
 const STAMP_COMMIT_RE = /^[0-9a-f]{7,40}$/i
-const STAMP_REF_RE = /^[0-9A-Za-z._/-]{1,200}$/
+const STAMP_REF_RE = /^[0-9A-Za-z._/\-]{1,200}$/
 const DEFAULT_GITHUB_REPOSITORY = 'NousResearch/hermes-agent'
 
 // Stages flagged needs_user_input=true in the manifest are skipped by the
@@ -236,6 +236,15 @@ async function downloadInstallScript(installStamp, destPath) {
   throw new Error(`Failed to download ${scriptName}: ${errors.join('; ')}`)
 }
 
+/**
+ * Resolve the installer script used by first-launch bootstrap.
+ *
+ * Fallback order:
+ * 1. local source checkout for dev builds;
+ * 2. cached script for the stamped ref;
+ * 3. GitHub raw script from the stamp repository, then the default repo;
+ * 4. installed agent checkout when the stamped ref is unreachable.
+ */
 async function resolveInstallScript({ installStamp, sourceRepoRoot, hermesHome, emit }) {
   // 1. Dev shortcut: prefer a local checkout's installer so we can iterate
   //    without pushing. SOURCE_REPO_ROOT comes from main.cjs (path.resolve

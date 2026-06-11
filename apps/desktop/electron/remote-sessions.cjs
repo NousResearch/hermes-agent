@@ -32,7 +32,10 @@ const REMOTE_PROBE_ATTEMPT_TIMEOUT_MS = 1_500
 const REMOTE_DOWN_COOLDOWN_MS = 30_000
 // Sidebar wait ceilings for the remote splice. "Cold" = the profile's backend
 // connection is not established yet (probe + fetch must both fit); "warm" =
-// an established connection where only the list fetch remains.
+// an established connection where only the list fetch remains. These are
+// intentionally conservative for interactive sidebar refreshes: a slow WAN
+// remote may miss one refresh cycle, but the in-flight fetch keeps warming the
+// pool so a later refresh can pick it up without blocking the local list.
 const COLD_REMOTE_SPLICE_BUDGET_MS = 2_000
 const WARM_REMOTE_SPLICE_BUDGET_MS = 5_000
 

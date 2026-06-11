@@ -866,6 +866,8 @@ export const api = {
 
   // ── Admin: Webhooks ─────────────────────────────────────────────────
   getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+  enableWebhooks: () =>
+    fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
   createWebhook: (body: WebhookCreate) =>
     fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
       method: "POST",
@@ -1286,6 +1288,17 @@ export interface WebhooksResponse {
   enabled: boolean;
   base_url: string;
   subscriptions: WebhookRoute[];
+}
+
+export interface WebhookEnableResponse {
+  ok: boolean;
+  platform: "webhook";
+  enabled: true;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
 }
 
 export interface WebhookCreate {

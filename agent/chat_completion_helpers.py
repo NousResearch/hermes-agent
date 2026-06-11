@@ -1698,6 +1698,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
     # poll loop uses this to detect stale connections that keep receiving
     # SSE keep-alive pings but no actual data.
     last_chunk_time = {"t": time.time()}
+    # Stale-stream patience, shared between the httpx socket read timeout
+    # (built in ``_call_chat_completions`` below) and the stale-stream detector
+    # (computed further down, before the worker thread starts).  Initialized
+    # here so the read-timeout builder can floor itself at the stale value and
+    # never fire before the detector.  ``None`` until the detector value is
+    # resolved, so the builder degrades to its plain default if it ever runs
+    # first.
+    _stream_stale_timeout = None
 
     def _fire_first_delta():
         if not first_delta_fired["done"] and on_first_delta:
@@ -1733,6 +1741,26 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 logger.debug(
                     "Local provider detected (%s) — stream read timeout raised to %.0fs",
                     agent.base_url, _stream_read_timeout,
+                )
+            elif (
+                _stream_read_timeout == 120.0
+                and _stream_stale_timeout is not None
+                and _stream_stale_timeout != float("inf")
+                and _stream_stale_timeout > _stream_read_timeout
+            ):
+                # Cloud reasoning models (e.g. Opus) routinely pause mid-stream
+                # for minutes during extended thinking.  The stale-stream
+                # detector is deliberately scaled up to tolerate this (180–300s,
+                # see the stale-timeout block below), but the raw httpx socket
+                # read timeout defaulted to a flat 120s and fired *first* —
+                # tearing down a healthy reasoning stream before the stale
+                # detector (which owns retry + diagnostics) could act.  Keep the
+                # socket read timeout in step with the detector so it no longer
+                # preempts it.
+                _stream_read_timeout = _stream_stale_timeout
+                logger.debug(
+                    "Cloud reasoning stream — read timeout raised to %.0fs to "
+                    "match stale-stream detector", _stream_read_timeout,
                 )
         # Cap connect/pool at 60s even when provider timeout is higher.
         # connect/pool cover TCP handshake, not model inference.

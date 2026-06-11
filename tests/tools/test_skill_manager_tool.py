@@ -704,6 +704,121 @@ class TestSecurityScanGate:
 
 
 # ---------------------------------------------------------------------------
+# Post-write persistence verification (issue #31657)
+# ---------------------------------------------------------------------------
+
+
+class TestPersistenceVerification:
+    """Regression: skill_manage must surface an error — not report success —
+    when the SKILL.md file silently fails to land on disk. Previously the
+    handler trusted ``_atomic_write_text`` and returned ``success: True`` even
+    when the file vanished, leading to skills "disappearing" across sessions.
+    """
+
+    def test_create_reports_failure_when_file_missing_after_write(self, tmp_path):
+        # Simulate a write path that returns without creating the file (e.g.
+        # a buggy atomic_replace, a filesystem that silently drops the rename,
+        # or any future regression in _atomic_write_text). The verifier must
+        # catch this and turn success: True into a structured error.
+        with _skill_dir(tmp_path):
+            with patch("tools.skill_manager_tool._atomic_write_text", return_value=None):
+                result = _create_skill("ghost-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "ghost-skill" in result["error"]
+        assert "persist" in result["error"].lower()
+        # And the (empty) skill dir must be rolled back so the in-memory
+        # index doesn't show a skill that has no SKILL.md.
+        assert not (tmp_path / "ghost-skill").exists()
+
+    def test_create_reports_failure_when_write_raises(self, tmp_path):
+        # Disk full / permission denied / EIO — the exception must be caught
+        # and converted into a structured error instead of bubbling up and
+        # getting swallowed by the tool dispatcher.
+        with _skill_dir(tmp_path):
+            with patch(
+                "tools.skill_manager_tool._atomic_write_text",
+                side_effect=OSError("disk full"),
+            ):
+                result = _create_skill("doomed-skill", VALID_SKILL_CONTENT)
+        assert result["success"] is False
+        assert "persist" in result["error"].lower()
+        assert "disk full" in result["error"] or "OSError" in result["error"]
+        assert not (tmp_path / "doomed-skill").exists()
+
+    def test_edit_preserves_original_when_persistence_fails(self, tmp_path):
+        with _skill_dir(tmp_path):
+            _create_skill("keep-me", VALID_SKILL_CONTENT)
+            with patch("tools.skill_manager_tool._atomic_write_text", return_value=None):
+                result = _edit_skill("keep-me", VALID_SKILL_CONTENT_2)
+        assert result["success"] is False
+        # The verification ran on the real write, so the patched no-op produced
+        # the "missing on disk" error. The original SKILL.md must still be on
+        # disk because we did not actually overwrite it.
+        on_disk = (tmp_path / "keep-me" / "SKILL.md").read_text()
+        assert "A test skill for unit testing." in on_disk
+
+    def test_dispatcher_surfaces_persistence_error_via_skill_manage(self, tmp_path):
+        # End-to-end: the JSON the agent sees must carry success=False so the
+        # agent can react (retry, alert the user) instead of building further
+        # work on a phantom skill.
+        with _skill_dir(tmp_path):
+            with patch("tools.skill_manager_tool._atomic_write_text", return_value=None):
+                payload = skill_manage(
+                    action="create",
+                    name="phantom-skill",
+                    content=VALID_SKILL_CONTENT,
+                )
+        decoded = json.loads(payload)
+        assert decoded["success"] is False
+        assert "phantom-skill" in decoded["error"]
+
+    def test_patch_via_dispatcher_reports_failed_persist_and_keeps_original(self, tmp_path):
+        # Same end-to-end guard for action=patch: a write helper that silently
+        # returns without changing disk must not become success=True, and the
+        # original SKILL.md body must remain the source of truth.
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="patch-persist", content=VALID_SKILL_CONTENT)
+            with patch("tools.skill_manager_tool._atomic_write_text", return_value=None):
+                payload = skill_manage(
+                    action="patch",
+                    name="patch-persist",
+                    old_string="Do the thing.",
+                    new_string="Do the new thing.",
+                )
+
+        decoded = json.loads(payload)
+        assert decoded["success"] is False
+        assert "patch-persist" in decoded["error"]
+        assert "persist" in decoded["error"].lower()
+        on_disk = (tmp_path / "patch-persist" / "SKILL.md").read_text()
+        assert "Do the thing." in on_disk
+        assert "Do the new thing." not in on_disk
+
+    def test_write_file_via_dispatcher_rolls_back_new_file_on_failed_persist(self, tmp_path):
+        # New supporting files create their parent directory before the atomic
+        # write. If the write never persists, rollback must remove both the
+        # phantom file and any empty directory it created so the skill tree
+        # matches its pre-write state.
+        with _skill_dir(tmp_path):
+            skill_manage(action="create", name="write-persist", content=VALID_SKILL_CONTENT)
+            with patch("tools.skill_manager_tool._atomic_write_text", return_value=None):
+                payload = skill_manage(
+                    action="write_file",
+                    name="write-persist",
+                    file_path="references/api.md",
+                    file_content="# API\nEndpoint docs.",
+                )
+
+        decoded = json.loads(payload)
+        assert decoded["success"] is False
+        assert "write-persist" in decoded["error"]
+        assert "references/api.md" in decoded["error"]
+        assert "persist" in decoded["error"].lower()
+        assert not (tmp_path / "write-persist" / "references" / "api.md").exists()
+        assert not (tmp_path / "write-persist" / "references").exists()
+
+
+# ---------------------------------------------------------------------------
 # External skills directories (skills.external_dirs) — mutations in place
 # ---------------------------------------------------------------------------
 

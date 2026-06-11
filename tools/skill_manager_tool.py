@@ -446,6 +446,17 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
     return target, None
 
 
+def _prune_empty_skill_subdirs(start_dir: Path, skill_dir: Path) -> None:
+    """Remove empty directories created below a skill root during rollback."""
+    current = start_dir
+    while current != skill_dir and current.exists():
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
+
+
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
     """
     Atomically write text content to a file.
@@ -476,6 +487,40 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         except OSError:
             logger.error("Failed to remove temporary file %s during atomic write", temp_path, exc_info=True)
         raise
+
+
+def _atomic_write_and_verify(file_path: Path, content: str, encoding: str = "utf-8") -> Optional[str]:
+    """Write atomically, then verify on-disk persistence with one retry."""
+
+    def _attempt() -> Optional[str]:
+        try:
+            _atomic_write_text(file_path, content, encoding=encoding)
+        except Exception as exc:  # noqa: BLE001 - surface any I/O failure
+            return f"write to {file_path} raised {type(exc).__name__}: {exc}"
+        if not os.path.exists(file_path):
+            return f"file does not exist on disk after write: {file_path}"
+        try:
+            written = file_path.read_text(encoding=encoding)
+        except OSError as exc:
+            return f"could not read back {file_path} after write: {exc}"
+        if written != content:
+            return (
+                f"on-disk content of {file_path} does not match what was written "
+                f"(expected {len(content)} chars, got {len(written)})"
+            )
+        return None
+
+    err = _attempt()
+    if err is None:
+        return None
+    logger.warning("skill_manage write verification failed for %s: %s; retrying once", file_path, err)
+    err2 = _attempt()
+    if err2 is None:
+        return None
+    return (
+        f"Skill file was not persisted to disk after two attempts at {file_path}. "
+        f"Last error: {err2}"
+    )
 
 
 # =============================================================================
@@ -514,9 +559,12 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_dir = _resolve_skill_dir(name, category)
     skill_dir.mkdir(parents=True, exist_ok=True)
 
-    # Write SKILL.md atomically
+    # Write SKILL.md atomically and verify it landed on disk.
     skill_md = skill_dir / "SKILL.md"
-    _atomic_write_text(skill_md, content)
+    persist_err = _atomic_write_and_verify(skill_md, content)
+    if persist_err:
+        shutil.rmtree(skill_dir, ignore_errors=True)
+        return {"success": False, "error": f"Failed to persist skill '{name}': {persist_err}"}
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
@@ -553,13 +601,21 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name)}
 
-    skill_md = existing["path"] / "SKILL.md"
+    skill_dir = existing["path"]
+    skill_md = skill_dir / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
-    _atomic_write_text(skill_md, content)
+    persist_err = _atomic_write_and_verify(skill_md, content)
+    if persist_err:
+        if original_content is not None:
+            try:
+                _atomic_write_text(skill_md, original_content)
+            except Exception:
+                logger.warning("Rollback after persistence failure on %s also failed", skill_md, exc_info=True)
+        return {"success": False, "error": f"Failed to persist skill '{name}': {persist_err}"}
 
     # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    scan_error = _security_scan_skill(skill_dir)
     if scan_error:
         if original_content is not None:
             _atomic_write_text(skill_md, original_content)
@@ -652,7 +708,13 @@ def _patch_skill(
             }
 
     original_content = content  # for rollback
-    _atomic_write_text(target, new_content)
+    persist_err = _atomic_write_and_verify(target, new_content)
+    if persist_err:
+        try:
+            _atomic_write_text(target, original_content)
+        except Exception:
+            logger.warning("Rollback after persistence failure on %s also failed", target, exc_info=True)
+        return {"success": False, "error": f"Failed to persist patch to '{name}': {persist_err}"}
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
@@ -751,13 +813,27 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     if not existing:
         return {"success": False, "error": _skill_not_found_error(name, " Create it first with action='create'.")}
 
-    target, err = _resolve_skill_target(existing["path"], file_path)
+    skill_dir = existing["path"]
+    target, err = _resolve_skill_target(skill_dir, file_path)
     if err:
         return {"success": False, "error": err}
     target.parent.mkdir(parents=True, exist_ok=True)
     # Back up for rollback
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
-    _atomic_write_text(target, file_content)
+    persist_err = _atomic_write_and_verify(target, file_content)
+    if persist_err:
+        if original_content is not None:
+            try:
+                _atomic_write_text(target, original_content)
+            except Exception:
+                logger.warning("Rollback after persistence failure on %s also failed", target, exc_info=True)
+        else:
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                pass
+            _prune_empty_skill_subdirs(target.parent, skill_dir)
+        return {"success": False, "error": f"Failed to persist file '{file_path}' to skill '{name}': {persist_err}"}
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(existing["path"])
@@ -766,6 +842,7 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
             _atomic_write_text(target, original_content)
         else:
             target.unlink(missing_ok=True)
+            _prune_empty_skill_subdirs(target.parent, skill_dir)
         return {"success": False, "error": scan_error}
 
     return {

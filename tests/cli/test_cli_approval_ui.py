@@ -322,7 +322,16 @@ class TestCliApprovalUi:
                     "failed": False,
                 }
 
-        with patch.object(cli_module, "AIAgent", FakeAgent), \
+        # The background task builds its agent via the brain_host_gate
+        # chokepoint (agent/brain_host_gate.py), not cli.AIAgent, since the
+        # BrainHost migration — patch the gate so FakeAgent intercepts the
+        # construction the production path actually performs.
+        from agent import brain_host_gate
+
+        def _fake_build_agent(_intent, **kwargs):
+            return FakeAgent(**kwargs)
+
+        with patch.object(brain_host_gate, "build_agent", _fake_build_agent), \
              patch.object(cli_module, "_cprint"), \
              patch.object(cli_module, "ChatConsole") as chat_console:
             chat_console.return_value.print = MagicMock()

@@ -157,10 +157,16 @@ def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
         lambda timeout=0.75: waited.__setitem__("done", True),
     )
 
-    def _fake_agent(*_a, **_k):
+    # Agent construction goes through the brain_host_gate chokepoint
+    # (agent/brain_host_gate.py), not cli.AIAgent, since the BrainHost
+    # migration — patch the gate so the build-after-wait order is asserted
+    # at the seam production actually uses.
+    from agent import brain_host_gate
+
+    def _fake_build_agent(*_a, **_k):
         assert waited["done"] is True
         return types.SimpleNamespace()
 
-    monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
+    monkeypatch.setattr(brain_host_gate, "build_agent", _fake_build_agent)
 
     assert cli._init_agent() is True

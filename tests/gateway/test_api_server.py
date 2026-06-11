@@ -567,12 +567,15 @@ class TestHealthDetailedEndpoint:
                 assert data["platforms"] == {}
 
     @pytest.mark.asyncio
-    async def test_health_detailed_does_not_require_auth(self, auth_adapter):
-        """Health detailed endpoint should be accessible without auth, like /health."""
+    async def test_health_detailed_requires_auth_when_key_configured(self, auth_adapter):
+        """Detailed status includes runtime/platform data, so it follows API auth."""
         app = _create_app(auth_adapter)
         with patch("gateway.status.read_runtime_status", return_value=None):
             async with TestClient(TestServer(app)) as cli:
                 resp = await cli.get("/health/detailed")
+                assert resp.status == 401
+
+                resp = await cli.get("/health/detailed", headers={"Authorization": "Bearer sk-secret"})
                 assert resp.status == 200
 
 
@@ -874,6 +877,42 @@ class TestChatCompletionsEndpoint:
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.post("/v1/chat/completions", json={"model": "test", "messages": []})
             assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_rejects_assistant_final_message(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test",
+                    "messages": [
+                        {"role": "user", "content": "hi"},
+                        {"role": "assistant", "content": "this must not be replayed"},
+                    ],
+                },
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "Last non-system message" in data["error"]["message"]
+
+    @pytest.mark.asyncio
+    async def test_rejects_private_image_url(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test",
+                    "messages": [{
+                        "role": "user",
+                        "content": [{"type": "image_url", "image_url": {"url": "http://127.0.0.1/image.png"}}],
+                    }],
+                },
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert "SSRF" in data["error"]["message"]
 
     @pytest.mark.asyncio
     async def test_stream_true_returns_sse(self, adapter):

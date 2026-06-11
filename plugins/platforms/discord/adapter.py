@@ -1486,6 +1486,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     msg = await channel.send(
                         content=chunk,
                         reference=chunk_reference,
+                        allowed_mentions=_build_allowed_mentions(),
                     )
                 except Exception as e:
                     err_text = str(e)
@@ -1508,6 +1509,7 @@ class DiscordAdapter(BasePlatformAdapter):
                         msg = await channel.send(
                             content=chunk,
                             reference=None,
+                            allowed_mentions=_build_allowed_mentions(),
                         )
                     else:
                         raise
@@ -1568,7 +1570,7 @@ class DiscordAdapter(BasePlatformAdapter):
         warnings: list[str] = []
         for chunk in chunks[1:]:
             try:
-                msg = await thread_channel.send(content=chunk)
+                msg = await thread_channel.send(content=chunk, allowed_mentions=_build_allowed_mentions())
                 message_ids.append(str(msg.id))
             except Exception as e:
                 warning = f"Failed to send follow-up chunk to forum thread {thread_id}: {e}"
@@ -1700,7 +1702,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     content=(caption or "").strip(),
                     file=file,
                 )
-            msg = await channel.send(content=caption if caption else None, file=file)
+            msg = await channel.send(
+                content=caption if caption else None,
+                file=file,
+                allowed_mentions=_build_allowed_mentions(),
+            )
         return SendResult(success=True, message_id=str(msg.id))
 
     async def send_multiple_images(
@@ -1816,7 +1822,11 @@ class DiscordAdapter(BasePlatformAdapter):
                         files=files,
                     )
                 else:
-                    await channel.send(content=content, files=files)
+                    await channel.send(
+                        content=content,
+                        files=files,
+                        allowed_mentions=_build_allowed_mentions(),
+                    )
             except Exception as e:
                 logger.warning(
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",

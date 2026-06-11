@@ -74,6 +74,7 @@ from acp_adapter.permissions import make_approval_callback
 from acp_adapter.provenance import session_provenance_meta
 from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 from acp_adapter.tools import build_tool_complete, build_tool_start
+from agent.file_safety import get_read_block_error
 
 logger = logging.getLogger(__name__)
 
@@ -169,12 +170,16 @@ def _path_from_file_uri(uri: str) -> Path | None:
     else:
         path_text = unquote(raw)
 
-    # file:///C:/Users/... or C:\Users\...
+    # file:///C:/Users/... or C:\\Users\\...
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
+        if os.name == "nt":
+            return Path(path_text[1:])
         drive = path_text[1].lower()
         rest = path_text[3:].lstrip("/\\").replace("\\", "/")
         return Path("/mnt") / drive / rest
     if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
+        if os.name == "nt":
+            return Path(path_text)
         drive = path_text[0].lower()
         rest = path_text[2:].lstrip("/\\").replace("\\", "/")
         return Path("/mnt") / drive / rest
@@ -234,6 +239,18 @@ def _resource_link_to_parts(block: ResourceContentBlock) -> list[dict[str, Any]]
                 name=name,
                 title=title,
                 body="[Resource link only; Hermes cannot read non-file ACP resource URIs directly.]",
+            ),
+        }]
+
+    read_block_error = get_read_block_error(str(path.expanduser()))
+    if read_block_error:
+        return [{
+            "type": "text",
+            "text": _format_resource_text(
+                uri=uri,
+                name=name,
+                title=title,
+                body=f"[Resource blocked: {read_block_error}]",
             ),
         }]
 

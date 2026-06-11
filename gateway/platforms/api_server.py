@@ -58,6 +58,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from tools.url_safety import is_safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,10 @@ def _normalize_multimodal_content(content: Any) -> Any:
             elif not (lowered.startswith("http://") or lowered.startswith("https://")):
                 raise ValueError(
                     "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
+                )
+            elif not is_safe_url(url_value):
+                raise ValueError(
+                    "invalid_image_url:Potential SSRF blocked: image URLs must not target private or local addresses."
                 )
             image_part: Dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
             if detail is not None:
@@ -1079,8 +1084,13 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns gateway state, connected platforms, PID, and uptime so the
         dashboard can display full status without needing a shared PID file or
-        /proc access.  No authentication required.
+        /proc access.  Unlike /health, detailed runtime/platform data follows
+        API auth when an API key is configured.
         """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
         from gateway.status import read_runtime_status
 
         runtime = read_runtime_status() or {}
@@ -1767,6 +1777,14 @@ class APIServerAdapter(BasePlatformAdapter):
         user_message: Any = ""
         history = []
         if conversation_messages:
+            if conversation_messages[-1].get("role") != "user":
+                return web.json_response(
+                    _openai_error(
+                        "Last non-system message must have role 'user'. "
+                        "Assistant messages are history only and cannot be replayed as fresh input."
+                    ),
+                    status=400,
+                )
             user_message = conversation_messages[-1].get("content", "")
             history = conversation_messages[:-1]
 

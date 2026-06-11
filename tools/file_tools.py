@@ -1187,8 +1187,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     if mode == "patch" and patch:
         import re as _re
         from tools.path_security import has_traversal_component
-        for _m in _re.finditer(r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$', patch, _re.MULTILINE):
-            v4a_path = _m.group(1).strip()
+        for _m in _re.finditer(
+            r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$|^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)\s*$',
+            patch,
+            _re.MULTILINE,
+        ):
+            v4a_paths = [group.strip() for group in _m.groups() if group and group.strip()]
             # V4A path headers come from patch CONTENT, not the explicit
             # ``path=`` arg — so they're more attacker-influenceable (skill
             # content, web extract, prompt injection). Reject ``..`` traversal
@@ -1197,13 +1201,14 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
             # cwd without ``..``. The explicit ``path=`` arg is unchanged
             # because the agent uses relative ``..`` paths legitimately
             # (e.g. ``patch path="../other_module/x.py"`` from a worktree).
-            if has_traversal_component(v4a_path):
-                return tool_error(
-                    f"V4A patch header contains '..' traversal: {v4a_path!r}. "
-                    "Use the agent's cwd-relative path (no '..') or an absolute "
-                    "path in '*** Update File:' / '*** Add File:' / '*** Delete File:' headers."
-                )
-            _paths_to_check.append(v4a_path)
+            for v4a_path in v4a_paths:
+                if has_traversal_component(v4a_path):
+                    return tool_error(
+                        f"V4A patch header contains '..' traversal: {v4a_path!r}. "
+                        "Use the agent's cwd-relative path (no '..') or an absolute "
+                        "path in V4A file headers."
+                    )
+                _paths_to_check.append(v4a_path)
     for _p in _paths_to_check:
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:

@@ -893,19 +893,39 @@ function Test-Node {
 }
 
 function Update-ProcessPathForPackages {
-    # Rebuild the current process PATH from the persisted User+Machine hives plus
-    # winget's alias-shim directory, so a freshly-installed shim (rg.exe,
-    # ffmpeg.exe) becomes visible to Get-Command in THIS process without
-    # spawning a new shell. Called after every package-manager attempt
-    # (winget/choco/scoop): previously PATH was only refreshed inside the winget
-    # branch, so a successful choco/scoop fallback -- or any install on a box
-    # without winget -- could be misreported as "not installed".
-    $envPath = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
+    # Make freshly-installed shims (rg.exe, ffmpeg.exe) visible to Get-Command in
+    # THIS process without spawning a new shell, by folding the persisted
+    # User+Machine hives plus winget's alias-shim directory into $env:Path.
+    # Called after every package-manager attempt (winget/choco/scoop): previously
+    # PATH was only refreshed inside the winget branch, so a successful
+    # choco/scoop fallback -- or any install on a box without winget -- could be
+    # misreported as "not installed".
+    #
+    # MERGE rather than overwrite: start from the existing process PATH so any
+    # process-only entries added earlier in this installer run survive, then
+    # APPEND hive/winget-Links entries not already present (case-insensitive,
+    # order-preserving dedupe). A wholesale replace would silently drop those
+    # process-only entries.
+    $candidates = @()
+    $candidates += $env:Path
+    $candidates += [Environment]::GetEnvironmentVariable("Path", "User")
+    $candidates += [Environment]::GetEnvironmentVariable("Path", "Machine")
     $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
     if (Test-Path $wingetLinks) {
-        $envPath = "$envPath;$wingetLinks"
+        $candidates += $wingetLinks
     }
-    $env:Path = $envPath
+    $seen = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $ordered = New-Object System.Collections.Generic.List[string]
+    foreach ($chunk in $candidates) {
+        if ([string]::IsNullOrEmpty($chunk)) { continue }
+        foreach ($entry in $chunk.Split(';')) {
+            $trimmed = $entry.Trim()
+            if ($trimmed -and $seen.Add($trimmed)) {
+                $ordered.Add($trimmed)
+            }
+        }
+    }
+    $env:Path = [string]::Join(';', $ordered)
 }
 
 function Install-SystemPackages {

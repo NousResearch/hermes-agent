@@ -8958,73 +8958,220 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
 # ---------------------------------------------------------------------------
 
 
+def _empty_skill_analytics() -> Dict[str, Any]:
+    return {
+        "summary": {
+            "total_skill_loads": 0,
+            "total_skill_edits": 0,
+            "total_skill_actions": 0,
+            "distinct_skills_used": 0,
+        },
+        "top_skills": [],
+    }
+
+
+def _list_analytics_db_paths() -> List[Path]:
+    from hermes_cli import profiles as profiles_mod
+
+    try:
+        profile_paths = [Path(profile.path) for profile in profiles_mod.list_profiles()]
+    except Exception:
+        _log.exception("Analytics profile listing failed; falling back to directory scan")
+        profile_paths = [Path(profile["path"]) for profile in _fallback_profile_dicts(profiles_mod)]
+
+    db_paths: List[Path] = []
+    seen: set[Path] = set()
+    for profile_path in profile_paths:
+        db_path = profile_path / "state.db"
+        if not db_path.is_file():
+            continue
+        resolved = db_path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        db_paths.append(db_path)
+    return db_paths
+
+
+def _merge_skill_reports(skill_reports: List[Dict[str, Any]]) -> Dict[str, Any]:
+    merged: Dict[str, Dict[str, Any]] = {}
+    for report in skill_reports:
+        for skill in report.get("top_skills", []):
+            entry = merged.setdefault(skill["skill"], {
+                "skill": skill["skill"],
+                "view_count": 0,
+                "manage_count": 0,
+                "total_count": 0,
+                "percentage": 0.0,
+                "last_used_at": None,
+            })
+            entry["view_count"] += int(skill.get("view_count") or 0)
+            entry["manage_count"] += int(skill.get("manage_count") or 0)
+            entry["total_count"] += int(skill.get("total_count") or 0)
+            last_used_at = skill.get("last_used_at")
+            if last_used_at is not None and (
+                entry["last_used_at"] is None or last_used_at > entry["last_used_at"]
+            ):
+                entry["last_used_at"] = last_used_at
+
+    top_skills = list(merged.values())
+    total_skill_loads = sum(skill["view_count"] for skill in top_skills)
+    total_skill_edits = sum(skill["manage_count"] for skill in top_skills)
+    total_skill_actions = total_skill_loads + total_skill_edits
+    for skill in top_skills:
+        skill["percentage"] = (
+            skill["total_count"] / total_skill_actions * 100
+            if total_skill_actions
+            else 0.0
+        )
+    top_skills.sort(
+        key=lambda skill: (
+            skill["total_count"],
+            skill["view_count"],
+            skill["manage_count"],
+            skill["last_used_at"] or 0,
+            skill["skill"],
+        ),
+        reverse=True,
+    )
+
+    return {
+        "summary": {
+            "total_skill_loads": total_skill_loads,
+            "total_skill_edits": total_skill_edits,
+            "total_skill_actions": total_skill_actions,
+            "distinct_skills_used": len(top_skills),
+        },
+        "top_skills": top_skills,
+    }
+
+
 @app.get("/api/analytics/usage")
 async def get_usage_analytics(days: int = 30):
     from hermes_state import SessionDB
     from agent.insights import InsightsEngine
 
-    db = SessionDB()
-    try:
-        cutoff = time.time() - (days * 86400)
-        cur = db._conn.execute("""
-            SELECT date(started_at, 'unixepoch') as day,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ?
-            GROUP BY day ORDER BY day
-        """, (cutoff,))
-        daily = [dict(r) for r in cur.fetchall()]
+    cutoff = time.time() - (days * 86400)
+    daily_by_day: Dict[str, Dict[str, Any]] = {}
+    models_by_name: Dict[str, Dict[str, Any]] = {}
+    totals = {
+        "total_input": 0,
+        "total_output": 0,
+        "total_cache_read": 0,
+        "total_reasoning": 0,
+        "total_estimated_cost": 0.0,
+        "total_actual_cost": 0.0,
+        "total_sessions": 0,
+        "total_api_calls": 0,
+    }
+    skill_reports: List[Dict[str, Any]] = []
 
-        cur2 = db._conn.execute("""
-            SELECT model,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL
-            GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, (cutoff,))
-        by_model = [dict(r) for r in cur2.fetchall()]
+    for db_path in _list_analytics_db_paths():
+        db = SessionDB(db_path=db_path)
+        try:
+            cur = db._conn.execute("""
+                SELECT date(started_at, 'unixepoch') as day,
+                       SUM(input_tokens) as input_tokens,
+                       SUM(output_tokens) as output_tokens,
+                       SUM(cache_read_tokens) as cache_read_tokens,
+                       SUM(reasoning_tokens) as reasoning_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                       COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                       COUNT(*) as sessions,
+                       SUM(COALESCE(api_call_count, 0)) as api_calls
+                FROM sessions WHERE started_at > ?
+                GROUP BY day ORDER BY day
+            """, (cutoff,))
+            for row in cur.fetchall():
+                day = row["day"]
+                entry = daily_by_day.setdefault(day, {
+                    "day": day,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "estimated_cost": 0.0,
+                    "actual_cost": 0.0,
+                    "sessions": 0,
+                    "api_calls": 0,
+                })
+                entry["input_tokens"] += int(row["input_tokens"] or 0)
+                entry["output_tokens"] += int(row["output_tokens"] or 0)
+                entry["cache_read_tokens"] += int(row["cache_read_tokens"] or 0)
+                entry["reasoning_tokens"] += int(row["reasoning_tokens"] or 0)
+                entry["estimated_cost"] += float(row["estimated_cost"] or 0.0)
+                entry["actual_cost"] += float(row["actual_cost"] or 0.0)
+                entry["sessions"] += int(row["sessions"] or 0)
+                entry["api_calls"] += int(row["api_calls"] or 0)
 
-        cur3 = db._conn.execute("""
-            SELECT SUM(input_tokens) as total_input,
-                   SUM(output_tokens) as total_output,
-                   SUM(cache_read_tokens) as total_cache_read,
-                   SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions,
-                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ?
-        """, (cutoff,))
-        totals = dict(cur3.fetchone())
-        insights_report = InsightsEngine(db).generate(days=days)
-        skills = insights_report.get("skills", {
-            "summary": {
-                "total_skill_loads": 0,
-                "total_skill_edits": 0,
-                "total_skill_actions": 0,
-                "distinct_skills_used": 0,
-            },
-            "top_skills": [],
-        })
+            cur2 = db._conn.execute("""
+                SELECT model,
+                       SUM(input_tokens) as input_tokens,
+                       SUM(output_tokens) as output_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                       COUNT(*) as sessions,
+                       SUM(COALESCE(api_call_count, 0)) as api_calls
+                FROM sessions WHERE started_at > ? AND model IS NOT NULL
+                GROUP BY model ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            """, (cutoff,))
+            for row in cur2.fetchall():
+                model = row["model"]
+                entry = models_by_name.setdefault(model, {
+                    "model": model,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "estimated_cost": 0.0,
+                    "sessions": 0,
+                    "api_calls": 0,
+                })
+                entry["input_tokens"] += int(row["input_tokens"] or 0)
+                entry["output_tokens"] += int(row["output_tokens"] or 0)
+                entry["estimated_cost"] += float(row["estimated_cost"] or 0.0)
+                entry["sessions"] += int(row["sessions"] or 0)
+                entry["api_calls"] += int(row["api_calls"] or 0)
 
-        return {
-            "daily": daily,
-            "by_model": by_model,
-            "totals": totals,
-            "period_days": days,
-            "skills": skills,
-        }
-    finally:
-        db.close()
+            cur3 = db._conn.execute("""
+                SELECT SUM(input_tokens) as total_input,
+                       SUM(output_tokens) as total_output,
+                       SUM(cache_read_tokens) as total_cache_read,
+                       SUM(reasoning_tokens) as total_reasoning,
+                       COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
+                       COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
+                       COUNT(*) as total_sessions,
+                       SUM(COALESCE(api_call_count, 0)) as total_api_calls
+                FROM sessions WHERE started_at > ?
+            """, (cutoff,))
+            row = dict(cur3.fetchone())
+            totals["total_input"] += int(row["total_input"] or 0)
+            totals["total_output"] += int(row["total_output"] or 0)
+            totals["total_cache_read"] += int(row["total_cache_read"] or 0)
+            totals["total_reasoning"] += int(row["total_reasoning"] or 0)
+            totals["total_estimated_cost"] += float(row["total_estimated_cost"] or 0.0)
+            totals["total_actual_cost"] += float(row["total_actual_cost"] or 0.0)
+            totals["total_sessions"] += int(row["total_sessions"] or 0)
+            totals["total_api_calls"] += int(row["total_api_calls"] or 0)
+
+            skill_reports.append(
+                InsightsEngine(db).generate(days=days).get("skills", _empty_skill_analytics())
+            )
+        finally:
+            db.close()
+
+    daily = [daily_by_day[day] for day in sorted(daily_by_day)]
+    by_model = sorted(
+        models_by_name.values(),
+        key=lambda row: (row["input_tokens"] + row["output_tokens"], row["model"]),
+        reverse=True,
+    )
+    skills = _merge_skill_reports(skill_reports) if skill_reports else _empty_skill_analytics()
+
+    return {
+        "daily": daily,
+        "by_model": by_model,
+        "totals": totals,
+        "period_days": days,
+        "skills": skills,
+    }
 
 
 @app.get("/api/analytics/models")
@@ -9036,88 +9183,139 @@ async def get_models_analytics(days: int = 30):
     """
     from hermes_state import SessionDB
 
-    db = SessionDB()
-    try:
-        cutoff = time.time() - (days * 86400)
+    cutoff = time.time() - (days * 86400)
+    rows_by_key: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    distinct_models: set[str] = set()
+    totals = {
+        "distinct_models": 0,
+        "total_input": 0,
+        "total_output": 0,
+        "total_cache_read": 0,
+        "total_reasoning": 0,
+        "total_estimated_cost": 0.0,
+        "total_actual_cost": 0.0,
+        "total_sessions": 0,
+        "total_api_calls": 0,
+    }
 
-        cur = db._conn.execute("""
-            SELECT model,
-                   billing_provider,
-                   SUM(input_tokens) as input_tokens,
-                   SUM(output_tokens) as output_tokens,
-                   SUM(cache_read_tokens) as cache_read_tokens,
-                   SUM(reasoning_tokens) as reasoning_tokens,
-                   COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
-                   COUNT(*) as sessions,
-                   SUM(COALESCE(api_call_count, 0)) as api_calls,
-                   SUM(tool_call_count) as tool_calls,
-                   MAX(started_at) as last_used_at,
-                   AVG(input_tokens + output_tokens) as avg_tokens_per_session
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
-            GROUP BY model, billing_provider
-            ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
-        """, (cutoff,))
-        rows = [dict(r) for r in cur.fetchall()]
+    for db_path in _list_analytics_db_paths():
+        db = SessionDB(db_path=db_path)
+        try:
+            cur = db._conn.execute("""
+                SELECT model,
+                       billing_provider,
+                       SUM(input_tokens) as input_tokens,
+                       SUM(output_tokens) as output_tokens,
+                       SUM(cache_read_tokens) as cache_read_tokens,
+                       SUM(reasoning_tokens) as reasoning_tokens,
+                       COALESCE(SUM(estimated_cost_usd), 0) as estimated_cost,
+                       COALESCE(SUM(actual_cost_usd), 0) as actual_cost,
+                       COUNT(*) as sessions,
+                       SUM(COALESCE(api_call_count, 0)) as api_calls,
+                       SUM(tool_call_count) as tool_calls,
+                       MAX(started_at) as last_used_at,
+                       AVG(input_tokens + output_tokens) as avg_tokens_per_session
+                FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+                GROUP BY model, billing_provider
+                ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC
+            """, (cutoff,))
+            for row in cur.fetchall():
+                model = row["model"]
+                provider = row["billing_provider"] or ""
+                distinct_models.add(model)
+                key = (model, provider)
+                entry = rows_by_key.setdefault(key, {
+                    "model": model,
+                    "provider": provider,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "cache_read_tokens": 0,
+                    "reasoning_tokens": 0,
+                    "estimated_cost": 0.0,
+                    "actual_cost": 0.0,
+                    "sessions": 0,
+                    "api_calls": 0,
+                    "tool_calls": 0,
+                    "last_used_at": None,
+                    "avg_tokens_per_session": 0.0,
+                    "capabilities": {},
+                })
+                entry["input_tokens"] += int(row["input_tokens"] or 0)
+                entry["output_tokens"] += int(row["output_tokens"] or 0)
+                entry["cache_read_tokens"] += int(row["cache_read_tokens"] or 0)
+                entry["reasoning_tokens"] += int(row["reasoning_tokens"] or 0)
+                entry["estimated_cost"] += float(row["estimated_cost"] or 0.0)
+                entry["actual_cost"] += float(row["actual_cost"] or 0.0)
+                entry["sessions"] += int(row["sessions"] or 0)
+                entry["api_calls"] += int(row["api_calls"] or 0)
+                entry["tool_calls"] += int(row["tool_calls"] or 0)
+                last_used_at = row["last_used_at"]
+                if last_used_at is not None and (
+                    entry["last_used_at"] is None or last_used_at > entry["last_used_at"]
+                ):
+                    entry["last_used_at"] = last_used_at
 
-        models = []
-        for row in rows:
-            provider = row.get("billing_provider") or ""
-            model_name = row["model"]
-            caps = {}
-            try:
-                from agent.models_dev import get_model_capabilities
-                mc = get_model_capabilities(provider=provider, model=model_name)
-                if mc is not None:
-                    caps = {
-                        "supports_tools": mc.supports_tools,
-                        "supports_vision": mc.supports_vision,
-                        "supports_reasoning": mc.supports_reasoning,
-                        "context_window": mc.context_window,
-                        "max_output_tokens": mc.max_output_tokens,
-                        "model_family": mc.model_family,
-                    }
-            except Exception:
-                pass
+            totals_cur = db._conn.execute("""
+                SELECT COUNT(DISTINCT model) as distinct_models,
+                       SUM(input_tokens) as total_input,
+                       SUM(output_tokens) as total_output,
+                       SUM(cache_read_tokens) as total_cache_read,
+                       SUM(reasoning_tokens) as total_reasoning,
+                       COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
+                       COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
+                       COUNT(*) as total_sessions,
+                       SUM(COALESCE(api_call_count, 0)) as total_api_calls
+                FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
+            """, (cutoff,))
+            row = dict(totals_cur.fetchone())
+            totals["total_input"] += int(row["total_input"] or 0)
+            totals["total_output"] += int(row["total_output"] or 0)
+            totals["total_cache_read"] += int(row["total_cache_read"] or 0)
+            totals["total_reasoning"] += int(row["total_reasoning"] or 0)
+            totals["total_estimated_cost"] += float(row["total_estimated_cost"] or 0.0)
+            totals["total_actual_cost"] += float(row["total_actual_cost"] or 0.0)
+            totals["total_sessions"] += int(row["total_sessions"] or 0)
+            totals["total_api_calls"] += int(row["total_api_calls"] or 0)
+        finally:
+            db.close()
 
-            models.append({
-                "model": model_name,
-                "provider": provider,
-                "input_tokens": row["input_tokens"],
-                "output_tokens": row["output_tokens"],
-                "cache_read_tokens": row["cache_read_tokens"],
-                "reasoning_tokens": row["reasoning_tokens"],
-                "estimated_cost": row["estimated_cost"],
-                "actual_cost": row["actual_cost"],
-                "sessions": row["sessions"],
-                "api_calls": row["api_calls"],
-                "tool_calls": row["tool_calls"],
-                "last_used_at": row["last_used_at"],
-                "avg_tokens_per_session": row["avg_tokens_per_session"],
-                "capabilities": caps,
-            })
+    models = []
+    for row in rows_by_key.values():
+        provider = row["provider"]
+        model_name = row["model"]
+        total_tokens = row["input_tokens"] + row["output_tokens"]
+        row["avg_tokens_per_session"] = (
+            total_tokens / row["sessions"] if row["sessions"] else 0.0
+        )
+        caps = {}
+        try:
+            from agent.models_dev import get_model_capabilities
+            mc = get_model_capabilities(provider=provider, model=model_name)
+            if mc is not None:
+                caps = {
+                    "supports_tools": mc.supports_tools,
+                    "supports_vision": mc.supports_vision,
+                    "supports_reasoning": mc.supports_reasoning,
+                    "context_window": mc.context_window,
+                    "max_output_tokens": mc.max_output_tokens,
+                    "model_family": mc.model_family,
+                }
+        except Exception:
+            pass
+        row["capabilities"] = caps
+        models.append(row)
 
-        totals_cur = db._conn.execute("""
-            SELECT COUNT(DISTINCT model) as distinct_models,
-                   SUM(input_tokens) as total_input,
-                   SUM(output_tokens) as total_output,
-                   SUM(cache_read_tokens) as total_cache_read,
-                   SUM(reasoning_tokens) as total_reasoning,
-                   COALESCE(SUM(estimated_cost_usd), 0) as total_estimated_cost,
-                   COALESCE(SUM(actual_cost_usd), 0) as total_actual_cost,
-                   COUNT(*) as total_sessions,
-                   SUM(COALESCE(api_call_count, 0)) as total_api_calls
-            FROM sessions WHERE started_at > ? AND model IS NOT NULL AND model != ''
-        """, (cutoff,))
-        totals = dict(totals_cur.fetchone())
+    models.sort(
+        key=lambda row: (row["input_tokens"] + row["output_tokens"], row["model"], row["provider"]),
+        reverse=True,
+    )
+    totals["distinct_models"] = len(distinct_models)
 
-        return {
-            "models": models,
-            "totals": totals,
-            "period_days": days,
-        }
-    finally:
-        db.close()
+    return {
+        "models": models,
+        "totals": totals,
+        "period_days": days,
+    }
 
 
 # ---------------------------------------------------------------------------

@@ -2232,6 +2232,54 @@ class TestNewEndpoints:
         self.client = TestClient(app)
         self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
 
+    def _write_analytics_session(
+        self,
+        db_path: Path,
+        session_id: str,
+        *,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        billing_provider: str | None = None,
+        api_call_count: int = 0,
+        skill_name: str | None = None,
+        tool_name: str | None = None,
+    ) -> None:
+        from hermes_state import SessionDB
+
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        db = SessionDB(db_path=db_path)
+        try:
+            db.create_session(session_id=session_id, source="cli", model=model, user_id="tester")
+            db.update_token_counts(
+                session_id,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                billing_provider=billing_provider,
+                api_call_count=api_call_count,
+            )
+            if skill_name:
+                db.append_message(
+                    session_id,
+                    role="assistant",
+                    content=f"Load {skill_name}",
+                    tool_calls=[{
+                        "function": {
+                            "name": "skill_view",
+                            "arguments": json.dumps({"name": skill_name}),
+                        },
+                    }],
+                )
+            if tool_name:
+                db.append_message(
+                    session_id,
+                    role="assistant",
+                    content=f"Call {tool_name}",
+                    tool_calls=[{"function": {"name": tool_name}}],
+                )
+        finally:
+            db.close()
+
     def test_get_logs_default(self):
         resp = self.client.get("/api/logs")
         assert resp.status_code == 200
@@ -2294,6 +2342,101 @@ class TestNewEndpoints:
         assert profiles["default"]["provider"] == "openrouter"
         assert profiles["multi-agent"]["has_env"] is True
         assert profiles["multi-agent"]["skill_count"] == 1
+
+    def test_usage_analytics_aggregates_across_profiles(self):
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+        hermes_home.mkdir(parents=True, exist_ok=True)
+
+        self._write_analytics_session(
+            hermes_home / "state.db",
+            "default-usage",
+            model="gpt-4o",
+            input_tokens=100,
+            output_tokens=50,
+            api_call_count=1,
+            skill_name="github-pr-workflow",
+        )
+        self._write_analytics_session(
+            hermes_home / "profiles" / "coder" / "state.db",
+            "coder-usage",
+            model="gpt-4o",
+            input_tokens=200,
+            output_tokens=100,
+            api_call_count=2,
+            skill_name="github-pr-workflow",
+        )
+
+        resp = self.client.get("/api/analytics/usage?days=30")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["totals"]["total_input"] == 300
+        assert data["totals"]["total_output"] == 150
+        assert data["totals"]["total_sessions"] == 2
+        assert data["totals"]["total_api_calls"] == 3
+        assert len(data["daily"]) == 1
+        assert data["daily"][0]["sessions"] == 2
+        assert data["by_model"] == [{
+            "model": "gpt-4o",
+            "input_tokens": 300,
+            "output_tokens": 150,
+            "estimated_cost": 0.0,
+            "sessions": 2,
+            "api_calls": 3,
+        }]
+        assert data["skills"]["summary"]["total_skill_loads"] == 2
+        assert data["skills"]["summary"]["distinct_skills_used"] == 1
+        assert data["skills"]["top_skills"][0]["skill"] == "github-pr-workflow"
+        assert data["skills"]["top_skills"][0]["total_count"] == 2
+
+    def test_models_analytics_aggregates_across_profiles(self):
+        from hermes_constants import get_hermes_home
+
+        hermes_home = get_hermes_home()
+        hermes_home.mkdir(parents=True, exist_ok=True)
+
+        self._write_analytics_session(
+            hermes_home / "state.db",
+            "default-models",
+            model="gpt-4o",
+            input_tokens=100,
+            output_tokens=50,
+            billing_provider="openai",
+            api_call_count=1,
+            tool_name="terminal",
+        )
+        self._write_analytics_session(
+            hermes_home / "profiles" / "coder" / "state.db",
+            "coder-models",
+            model="gpt-4o",
+            input_tokens=200,
+            output_tokens=100,
+            billing_provider="openai",
+            api_call_count=2,
+            tool_name="terminal",
+        )
+
+        resp = self.client.get("/api/analytics/models?days=30")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["totals"]["distinct_models"] == 1
+        assert data["totals"]["total_input"] == 300
+        assert data["totals"]["total_output"] == 150
+        assert data["totals"]["total_sessions"] == 2
+        assert data["totals"]["total_api_calls"] == 3
+        assert len(data["models"]) == 1
+        model = data["models"][0]
+        assert model["model"] == "gpt-4o"
+        assert model["provider"] == "openai"
+        assert model["input_tokens"] == 300
+        assert model["output_tokens"] == 150
+        assert model["sessions"] == 2
+        assert model["api_calls"] == 3
+        assert model["tool_calls"] == 2
+        assert model["avg_tokens_per_session"] == 225.0
 
     def test_profiles_create_rename_delete_round_trip(self, monkeypatch):
         # Stub gateway service teardown so the test doesn't shell out to

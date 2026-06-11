@@ -7171,6 +7171,18 @@ class SlackAdapter(BasePlatformAdapter):
     ) -> str:
         """Download a Slack file using the bot token for auth, with retry."""
         import httpx
+        from gateway.platforms.base import _ssrf_redirect_guard, safe_url_for_log
+        from tools.url_safety import is_safe_url
+
+        # SSRF guard: the download attaches the bot token, so a URL that
+        # resolves to (or 3xx-redirects into) a private/internal address would
+        # both leak the token and let the server reach internal services
+        # (CWE-918). The outbound send_image() path is already guarded; this
+        # is the inbound sibling that was missing the same protection.
+        if not is_safe_url(url):
+            raise ValueError(
+                f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}"
+            )
 
         bot_token = (
             self._team_clients[team_id].token
@@ -7178,7 +7190,11 @@ class SlackAdapter(BasePlatformAdapter):
             else self.config.token
         )
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
             for attempt in range(3):
                 try:
                     response = await client.get(
@@ -7227,6 +7243,16 @@ class SlackAdapter(BasePlatformAdapter):
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
         """Download a Slack file and return raw bytes, with retry."""
         import httpx
+        from gateway.platforms.base import _ssrf_redirect_guard, safe_url_for_log
+        from tools.url_safety import is_safe_url
+
+        # SSRF guard (CWE-918): see _download_slack_file. This sibling path
+        # also attaches the bot token and must validate the destination plus
+        # every redirect hop.
+        if not is_safe_url(url):
+            raise ValueError(
+                f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}"
+            )
 
         bot_token = (
             self._team_clients[team_id].token
@@ -7234,7 +7260,11 @@ class SlackAdapter(BasePlatformAdapter):
             else self.config.token
         )
 
-        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+        async with httpx.AsyncClient(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        ) as client:
             for attempt in range(3):
                 try:
                     response = await client.get(

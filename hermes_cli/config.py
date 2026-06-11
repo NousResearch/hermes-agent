@@ -270,6 +270,11 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    # Deprecated tool-progress env vars — replaced by display.tool_progress in
+    # config.yaml. Kept known here so .env sanitization/reload still handle
+    # them for existing users (gateway reads them as a back-compat fallback),
+    # without surfacing them in user-facing OPTIONAL_ENV_VARS listings.
+    "HERMES_TOOL_PROGRESS", "HERMES_TOOL_PROGRESS_MODE",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -863,6 +868,21 @@ DEFAULT_CONFIG = {
         # identity slot (SOUL.md). Empty by default. The HERMES_ENVIRONMENT_HINT
         # env var overrides this (build-time/container mechanism).
         "environment_hint": "",
+        # Coding posture — on interactive coding surfaces (CLI, TUI, desktop
+        # app, ACP) in a code workspace, Hermes adds a coding operating brief
+        # + a live git/workspace snapshot to the system prompt. See
+        # agent/coding_context.py.
+        #   "auto" (default) — prompt-only posture when the surface is
+        #                      interactive AND cwd is a code workspace.
+        #                      Toolsets are never touched; messaging platforms
+        #                      unaffected.
+        #   "focus"          — auto + collapse the toolset to the lean coding
+        #                      set (+ enabled MCP servers) + demote non-coding
+        #                      skill categories to names-only in the prompt's
+        #                      skill index. Explicit opt-in.
+        #   "on"             — force the prompt posture everywhere.
+        #   "off"            — disable entirely.
+        "coding_context": "auto",
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
@@ -1347,6 +1367,20 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 600,
+            "extra_body": {},
+        },
+        # Monitor — urgency/importance classifier used by the important-mail
+        # monitor catalog automation (cron/scripts/classify_items.py). Scores
+        # candidate items 0-10 against the user's criteria so only above-
+        # threshold items get delivered. "auto" = main chat model; override to
+        # a cheap fast model (e.g. openrouter google/gemini-3-flash-preview,
+        # haiku) since per-item scoring is high-volume and a small model is fine.
+        "monitor": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
             "extra_body": {},
         },
     },
@@ -3544,21 +3578,11 @@ OPTIONAL_ENV_VARS = {
     },
     # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
     # now configured via display.tool_progress in config.yaml (off|new|all|verbose).
-    # Gateway falls back to these env vars for backward compatibility.
-    "HERMES_TOOL_PROGRESS": {
-        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
-        "prompt": "Tool progress (deprecated — use config.yaml)",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
-    "HERMES_TOOL_PROGRESS_MODE": {
-        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
-        "prompt": "Progress mode (deprecated — use config.yaml)",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
+    # The gateway still falls back to these env vars for backward compatibility,
+    # so they live in _EXTRA_ENV_KEYS (known to .env sanitization/reload) but
+    # are intentionally NOT listed here: OPTIONAL_ENV_VARS feeds user-facing
+    # surfaces (dashboard keys page, setup checklists) and deprecated knobs
+    # shouldn't be offered there.
     "HERMES_PREFILL_MESSAGES_FILE": {
         "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
         "prompt": "Prefill messages file path",

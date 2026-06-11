@@ -123,22 +123,29 @@ def test_dev_fixtures_drive_cold_start():
 
 class _FakeAgent:
     """Minimal agent surface for the seed helper: state slots + an emit that runs
-    the real policy against the latch."""
+    the real policy against the latch (mirroring run_agent._emit_credits_notices,
+    including the free-model suppression flag)."""
 
-    def __init__(self, provider="nous"):
-        from agent.credits_tracker import evaluate_credits_notices
+    def __init__(self, provider="nous", model=""):
+        from agent.credits_tracker import evaluate_credits_notices, is_free_tier_model
 
         self.provider = provider
+        self.model = model
         self._credits_state = None
         self._credits_session_start_micros = None
         self._credits_latch = {"active": set(), "seen_below_90": False, "usage_band": None}
         self.emitted: list = []
         self._eval = evaluate_credits_notices
+        self._is_free = is_free_tier_model
 
     def _emit_credits_notices(self):
         if self._credits_state is None:
             return
-        show, clear = self._eval(self._credits_state, self._credits_latch)
+        show, clear = self._eval(
+            self._credits_state,
+            self._credits_latch,
+            model_is_free=self._is_free(self.model),
+        )
         self.emitted.append(([n.key for n in show], clear))
 
 
@@ -167,6 +174,14 @@ def test_seed_fires_depleted_at_session_open():
     a = _FakeAgent()
     assert _seed(a, "depleted") is True
     assert a.emitted == [(["credits.depleted"], [])]
+
+
+def test_seed_depleted_suppressed_on_free_model():
+    """A session that opens depleted but on a Nous ``:free`` model must NOT show
+    the depleted banner — inference works fine on the free tier."""
+    a = _FakeAgent(model="nvidia/nemotron-3-ultra:free")
+    assert _seed(a, "depleted") is True
+    assert a.emitted == [([], [])]
 
 
 def test_seed_healthy_no_notice():

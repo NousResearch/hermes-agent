@@ -679,15 +679,28 @@ def recover_with_credential_pool(
         # long-running TUI sessions stuck on stale tokens until the user
         # exited and reopened.
         is_entitlement = agent._is_entitlement_failure(error_context, status_code)
+        _auth_haystack = " ".join(
+            str(error_context.get(k) or "").lower()
+            for k in ("message", "reason", "code", "error")
+            if isinstance(error_context, dict)
+        )
+        if (
+            not is_entitlement
+            and status_code == 403
+            and "oauth authentication is currently not allowed for this organization" in _auth_haystack
+        ):
+            is_entitlement = True
+        if (
+            not is_entitlement
+            and status_code == 403
+            and (agent.provider or "") == "anthropic"
+            and getattr(agent, "api_mode", "") == "anthropic_messages"
+        ):
+            is_entitlement = True
         if not is_entitlement and status_code == 403 and (agent.provider or "") == "xai-oauth":
-            _disambiguator_haystack = " ".join(
-                str(error_context.get(k) or "").lower()
-                for k in ("message", "reason", "code", "error")
-                if isinstance(error_context, dict)
-            )
             _is_xai_auth_failure = (
-                "[wke=unauthenticated:" in _disambiguator_haystack
-                or "oauth2 access token could not be validated" in _disambiguator_haystack
+                "[wke=unauthenticated:" in _auth_haystack
+                or "oauth2 access token could not be validated" in _auth_haystack
             )
             if not _is_xai_auth_failure:
                 is_entitlement = True

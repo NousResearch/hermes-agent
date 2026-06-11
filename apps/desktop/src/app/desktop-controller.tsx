@@ -11,6 +11,7 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
+import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
@@ -98,6 +99,7 @@ import { RightSidebarPane } from './right-sidebar'
 import { $terminalTakeover } from './right-sidebar/store'
 import { PersistentTerminal, TerminalSlot } from './right-sidebar/terminal/persistent'
 import { CRON_ROUTE, NEW_CHAT_ROUTE, routeSessionId, sessionRoute, SETTINGS_ROUTE } from './routes'
+import { SessionPickerOverlay } from './session-picker-overlay'
 import { SessionSwitcher } from './session-switcher'
 import { useContextSuggestions } from './session/hooks/use-context-suggestions'
 import { useCwdActions } from './session/hooks/use-cwd-actions'
@@ -263,6 +265,31 @@ export function DesktopController() {
       unsubscribe?.()
       stopUpdatePoller()
     }
+  }, [])
+
+  // hermes:// deep links (e.g. a docs "Send to App" button for an automation blueprint).
+  // Build the equivalent /blueprint slash command from the payload and drop
+  // it into the composer — the user reviews/edits, then sends; the agent (or
+  // the shared command handler) creates the job. Signal readiness so a link
+  // that arrived during boot is flushed exactly once.
+  useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onDeepLink?.((payload) => {
+      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
+        return
+      }
+      const slots = Object.entries(payload.params || {})
+        .map(([k, v]) => {
+          const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+          return `${k}=${sval}`
+        })
+        .join(' ')
+      const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
+      requestComposerInsert(command, { mode: 'block', target: 'main' })
+      requestComposerFocus('main')
+    })
+    // Tell the main process the renderer is ready to receive deep links.
+    void window.hermesDesktop?.signalDeepLinkReady?.()
+    return () => unsubscribe?.()
   }, [])
 
   useEffect(() => {
@@ -694,6 +721,7 @@ export function DesktopController() {
     handleSkinCommand,
     refreshSessions,
     requestGateway,
+    resumeStoredSession: resumeSession,
     selectedStoredSessionIdRef,
     startFreshSessionDraft,
     sttEnabled,
@@ -742,6 +770,13 @@ export function DesktopController() {
       document.removeEventListener('visibilitychange', tick)
     }
   }, [gatewayState, refreshCronJobs])
+
+  useEffect(() => {
+    if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
+      void refreshCurrentModel()
+      void refreshHermesConfig()
+    }
+  }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])
 
   useRouteResume({
     activeSessionId,
@@ -822,6 +857,7 @@ export function DesktopController() {
         />
       )}
       <ModelPickerOverlay gateway={gatewayRef.current || undefined} onSelect={selectModel} />
+      <SessionPickerOverlay onResume={resumeSession} />
       <ModelVisibilityOverlay gateway={gatewayRef.current || undefined} onOpenProviders={openProviderSettings} />
       <UpdatesOverlay />
       <GatewayConnectingOverlay />

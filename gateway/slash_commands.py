@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import inspect
 import logging
 import os
@@ -32,7 +33,7 @@ from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
-from gateway.session import build_session_key
+from gateway.session import SessionSource, build_session_key
 from hermes_cli.config import cfg_get
 from utils import (
     atomic_json_write,
@@ -447,12 +448,59 @@ class GatewaySlashCommandsMixin:
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
+        if source.platform == Platform.MATRIX:
+            adapter = self.adapters.get(Platform.MATRIX)
+            scope = getattr(adapter, "_matrix_session_scope", os.getenv("MATRIX_SESSION_SCOPE", "auto"))
+            thread = source.thread_id or "none"
+            lines.extend([
+                "",
+                t("gateway.status.matrix_scope_header"),
+                t("gateway.status.matrix_scope_room", room=source.chat_name or source.chat_id),
+                t("gateway.status.matrix_scope_room_id", room_id=source.chat_id),
+                t("gateway.status.matrix_scope_thread", thread_id=thread),
+                t("gateway.status.matrix_scope_mode", scope=scope),
+                t(
+                    "gateway.status.matrix_scope_key",
+                    session_key=self._redact_matrix_session_key(session_key),
+                ),
+            ])
         lines.extend([
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),
         ])
 
         return "\n".join(lines)
+
+    @staticmethod
+    def _redact_matrix_session_key(session_key: str) -> str:
+        """Return a stable Matrix session-key fingerprint for shared room status."""
+        text = str(session_key or "")
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+        return f"sha256:{digest}"
+
+    def _gateway_session_origin_for_id(self, session_id: str) -> Optional[SessionSource]:
+        """Best-effort origin lookup for gateway session IDs."""
+        lookup = getattr(type(self.session_store), "lookup_by_session_id", None)
+        if callable(lookup):
+            entry = lookup(self.session_store, session_id)
+            return getattr(entry, "origin", None) if entry is not None else None
+
+        # Test doubles and older stores may not expose the public lookup helper.
+        # Keep the Matrix resume guard fail-closed if no origin can be resolved.
+        entries = getattr(self.session_store, "_entries", {}) or {}
+        for entry in entries.values():
+            if getattr(entry, "session_id", None) == session_id:
+                return getattr(entry, "origin", None)
+        return None
+
+    @staticmethod
+    def _same_matrix_room(current: SessionSource, origin: Optional[SessionSource]) -> bool:
+        return (
+            origin is not None
+            and origin.platform == Platform.MATRIX
+            and current.platform == Platform.MATRIX
+            and origin.chat_id == current.chat_id
+        )
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
@@ -2652,7 +2700,14 @@ class GatewaySlashCommandsMixin:
 
         source = event.source
         session_key = self._session_key_for_source(source)
-        name = event.get_command_args().strip()
+        raw_args = event.get_command_args().strip()
+        try:
+            parts = shlex.split(raw_args)
+        except ValueError as exc:
+            return t("gateway.resume.parse_error", error=exc)
+        allow_all = "--all" in parts
+        allow_cross_room = "--cross-room" in parts
+        name = " ".join(p for p in parts if p not in {"--all", "--cross-room"}).strip()
 
         # Strip common outer brackets/quotes users may type literally from the
         # usage hint (e.g. ``/resume <abc123>``). Mirrors the CLI behavior.
@@ -2673,11 +2728,24 @@ class GatewaySlashCommandsMixin:
             # List recent titled sessions for this user/platform
             try:
                 titled = _list_titled_sessions()
+                if source.platform == Platform.MATRIX and not allow_all:
+                    scoped = []
+                    for s in titled:
+                        origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
+                        if self._same_matrix_room(source, origin):
+                            scoped.append(s)
+                    titled = scoped
                 if not titled:
+                    if source.platform == Platform.MATRIX and not allow_all:
+                        return t("gateway.resume.matrix_no_named_sessions")
                     return t("gateway.resume.no_named_sessions")
                 lines = [t("gateway.resume.list_header")]
                 for idx, s in enumerate(titled[:10], start=1):
                     title = s["title"]
+                    if source.platform == Platform.MATRIX and allow_all:
+                        origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
+                        if origin:
+                            title = f"{title} — {origin.chat_name or origin.chat_id}"
                     preview = s.get("preview", "")[:40]
                     preview_part = t("gateway.resume.list_preview_suffix", preview=preview) if preview else ""
                     lines.append(t("gateway.resume.list_item_numbered", index=idx, title=title, preview_part=preview_part))
@@ -2691,6 +2759,13 @@ class GatewaySlashCommandsMixin:
         if name.isdigit():
             try:
                 titled = _list_titled_sessions()
+                if source.platform == Platform.MATRIX and not allow_all:
+                    scoped = []
+                    for s in titled:
+                        origin = self._gateway_session_origin_for_id(str(s.get("id") or ""))
+                        if self._same_matrix_room(source, origin):
+                            scoped.append(s)
+                    titled = scoped
             except Exception as e:
                 logger.debug("Failed to list titled sessions for numeric resume: %s", e)
                 return t("gateway.resume.list_failed", error=e)
@@ -2716,6 +2791,17 @@ class GatewaySlashCommandsMixin:
             target_id = self._session_db.resolve_resume_session_id(target_id)
         except Exception as e:
             logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
+
+        if source.platform == Platform.MATRIX:
+            target_origin = self._gateway_session_origin_for_id(target_id)
+            if not self._same_matrix_room(source, target_origin) and not allow_cross_room:
+                if target_origin is None:
+                    return t("gateway.resume.matrix_blocked_no_origin", name=name)
+                return t(
+                    "gateway.resume.matrix_blocked_other_room",
+                    room=target_origin.chat_name or target_origin.chat_id,
+                    name=name,
+                )
 
         # Check if already on that session
         current_entry = self.session_store.get_or_create_session(source)
@@ -2744,6 +2830,15 @@ class GatewaySlashCommandsMixin:
         # Count messages for context
         history = self.session_store.load_transcript(target_id)
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
+        msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
+
+        if source.platform == Platform.MATRIX and allow_cross_room:
+            return t(
+                "gateway.resume.matrix_cross_room_success",
+                title=title,
+                room=source.chat_name or source.chat_id,
+                msg_part=msg_part,
+            )
         if not msg_count:
             return t("gateway.resume.resumed_no_count", title=title)
         if msg_count == 1:

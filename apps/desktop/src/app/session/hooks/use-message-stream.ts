@@ -64,6 +64,67 @@ interface QueuedStreamDeltas {
   reasoning: string
 }
 
+type SessionRuntimeStatePatch = Partial<
+  Pick<
+    ClientSessionState,
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'serviceTier'
+    | 'yolo'
+  >
+>
+
+function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
+  const patch: SessionRuntimeStatePatch = {}
+
+  if (typeof payload?.model === 'string') {
+    patch.model = payload.model || ''
+  }
+
+  if (typeof payload?.provider === 'string') {
+    patch.provider = payload.provider || ''
+  }
+
+  if (typeof payload?.cwd === 'string') {
+    patch.cwd = payload.cwd
+  }
+
+  if (typeof payload?.branch === 'string') {
+    patch.branch = payload.branch
+  }
+
+  if (typeof payload?.personality === 'string') {
+    patch.personality = normalizePersonalityValue(payload.personality)
+  }
+
+  if (typeof payload?.reasoning_effort === 'string') {
+    patch.reasoningEffort = payload.reasoning_effort
+  }
+
+  if (typeof payload?.service_tier === 'string') {
+    patch.serviceTier = payload.service_tier
+  }
+
+  if (typeof payload?.fast === 'boolean') {
+    patch.fast = payload.fast
+  }
+
+  if (typeof payload?.yolo === 'boolean') {
+    patch.yolo = payload.yolo
+  }
+
+  return patch
+}
+
+function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
+  return Object.keys(patch).length > 0
+}
+
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
 // (rAF only), which at typical LLM token rates of ~30-80 tok/sec meant every
 // token got its own React commit + Streamdown markdown re-parse, scaling
@@ -628,13 +689,13 @@ export function useMessageStream({
         // Apply session-scoped fields when the event targets the active
         // session, OR when it's a global broadcast and we have no session.
         const apply = explicitSid ? isActiveEvent : !activeSessionIdRef.current
+        const statePatch = sessionInfoStatePatch(payload)
+        const hasStatePatch = hasSessionInfoStatePatch(statePatch)
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
 
         if (apply) {
-          const runtimeInfo: { branch?: string; cwd?: string } = {}
-
           if (modelChanged) {
             setCurrentModel(payload!.model || '')
           }
@@ -645,20 +706,10 @@ export function useMessageStream({
 
           if (typeof payload?.cwd === 'string') {
             setCurrentCwd(payload.cwd)
-            runtimeInfo.cwd = payload.cwd
           }
 
           if (typeof payload?.branch === 'string') {
             setCurrentBranch(payload.branch)
-            runtimeInfo.branch = payload.branch
-          }
-
-          if (sessionId && (runtimeInfo.cwd !== undefined || runtimeInfo.branch !== undefined)) {
-            updateSessionState(sessionId, state => ({
-              ...state,
-              branch: runtimeInfo.branch ?? state.branch,
-              cwd: runtimeInfo.cwd ?? state.cwd
-            }))
           }
 
           if (typeof payload?.personality === 'string') {
@@ -680,7 +731,18 @@ export function useMessageStream({
           if (typeof payload?.yolo === 'boolean') {
             setYoloActive(payload.yolo)
           }
+        }
 
+        if (sessionId && hasStatePatch) {
+          updateSessionState(sessionId, state => ({
+            ...state,
+            ...statePatch,
+            branch: statePatch.branch ?? state.branch,
+            cwd: statePatch.cwd ?? state.cwd
+          }))
+        }
+
+        if (apply) {
           if (runningChanged && sessionId) {
             updateSessionState(sessionId, state => {
               const busy = Boolean(payload!.running)

@@ -78,6 +78,7 @@ const sidebars: SidebarsConfig = {
           label: 'Automation',
           items: [
             'user-guide/features/cron',
+            'reference/automation-blueprints-catalog',
             'user-guide/features/delegation',
             'user-guide/features/kanban',
             'user-guide/features/codex-app-server-runtime',
@@ -683,7 +684,7 @@ const sidebars: SidebarsConfig = {
         'guides/build-a-hermes-plugin',
         'guides/automate-with-cron',
         'guides/cron-script-only',
-        'guides/automation-templates',
+        'guides/automation-blueprints',
         'guides/cron-troubleshooting',
         'guides/work-with-skills',
         'guides/delegation-patterns',

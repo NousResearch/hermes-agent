@@ -122,7 +122,7 @@ anthropic = ["anthropic==0.87.0"]  # CVE-2026-34450, CVE-2026-34452
 # search provider (configured via `hermes tools` or config.yaml).
 exa = ["exa-py==2.10.2"]
 firecrawl = ["firecrawl-py==4.17.0"]
-parallel-web = ["parallel-web==0.4.2"]
+parallel-web = ["parallel-web==0.6.0"]
 # Image generation backends
 fal = ["fal-client==0.13.1"]
 # Edge TTS — default TTS provider but still optional (users can pick
@@ -319,7 +319,7 @@ plugins = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
+include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

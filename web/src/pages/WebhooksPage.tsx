@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Webhook, Plus, Trash2, X, Copy, Check, RotateCw } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  Copy,
+  Plus,
+  RotateCw,
+  Trash2,
+  Webhook,
+  X,
+} from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -51,6 +60,11 @@ function CopyButton({ value }: { value: string }) {
 export default function WebhooksPage() {
   const [data, setData] = useState<WebhooksResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [enabling, setEnabling] = useState(false);
+  const [restartNeeded, setRestartNeeded] = useState(false);
+  const [restartMessage, setRestartMessage] = useState<string | null>(null);
+  const [restartError, setRestartError] = useState<string | null>(null);
+  const [restarting, setRestarting] = useState(false);
   const { toast, showToast } = useToast();
   const { setEnd } = usePageHeader();
 
@@ -78,7 +92,7 @@ export default function WebhooksPage() {
   const subscriptions = data?.subscriptions ?? [];
 
   const loadWebhooks = useCallback(() => {
-    api
+    return api
       .getWebhooks()
       .then(setData)
       .catch(() => showToast("Failed to load webhooks", "error"))
@@ -89,37 +103,77 @@ export default function WebhooksPage() {
     loadWebhooks();
   }, [loadWebhooks]);
 
-  const [enabling, setEnabling] = useState(false);
-  const [restartNeeded, setRestartNeeded] = useState(false);
-  const [restarting, setRestarting] = useState(false);
-
-  const handleEnablePlatform = useCallback(async () => {
-    setEnabling(true);
-    try {
-      await api.updateMessagingPlatform("webhook", { enabled: true });
-      showToast("Webhook platform enabled", "success");
-      setRestartNeeded(true);
-      loadWebhooks();
-    } catch (e) {
-      showToast(`Failed to enable: ${e}`, "error");
-    } finally {
-      setEnabling(false);
+  const watchRestartOutcome = useCallback(async () => {
+    for (let i = 0; i < 20; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      try {
+        const st = await api.getActionStatus("gateway-restart", 5);
+        if (st.running) continue;
+        if (st.exit_code !== 0 && st.exit_code !== null) {
+          setRestartMessage(null);
+          setRestartNeeded(true);
+          setRestartError(`Gateway restart failed with exit ${st.exit_code}.`);
+          showToast(
+            `Gateway restart failed (exit ${st.exit_code}) — restart manually`,
+            "error",
+          );
+        } else {
+          setRestartMessage(null);
+          setRestartNeeded(false);
+          setRestartError(null);
+        }
+        return;
+      } catch {
+        // The dashboard may briefly lose its connection while the gateway restarts.
+      }
     }
-  }, [loadWebhooks, showToast]);
+    setRestartMessage(null);
+  }, [showToast]);
 
-  const handleRestartGateway = useCallback(async () => {
+  const handleRestart = useCallback(async () => {
     setRestarting(true);
     try {
       await api.restartGateway();
-      showToast("Gateway restarting…", "success");
       setRestartNeeded(false);
-      window.setTimeout(() => loadWebhooks(), 4000);
+      setRestartError(null);
+      setRestartMessage("Gateway restarting…");
+      showToast("Gateway restarting…", "success");
+      setTimeout(() => void loadWebhooks(), 4000);
+      void watchRestartOutcome();
     } catch (e) {
+      setRestartNeeded(true);
+      setRestartError(String(e));
       showToast(`Failed to restart: ${e}`, "error");
     } finally {
       setRestarting(false);
     }
-  }, [loadWebhooks, showToast]);
+  }, [loadWebhooks, showToast, watchRestartOutcome]);
+
+  const handleEnableWebhooks = useCallback(async () => {
+    setEnabling(true);
+    setRestartNeeded(false);
+    setRestartError(null);
+    try {
+      const result = await api.enableWebhooks();
+      await loadWebhooks();
+      if (result.restart_started) {
+        setRestartMessage("Webhooks enabled; gateway restarting…");
+        showToast("Webhooks enabled; gateway restarting…", "success");
+        setTimeout(() => void loadWebhooks(), 4000);
+        void watchRestartOutcome();
+      } else {
+        const detail = result.restart_error ? `: ${result.restart_error}` : ".";
+        setRestartMessage(null);
+        setRestartNeeded(true);
+        setRestartError(`Gateway restart failed${detail}`);
+        showToast(`Webhooks enabled; gateway restart failed${detail}`, "error");
+      }
+    } catch (e) {
+      showToast(`Failed to enable webhooks: ${e}`, "error");
+    } finally {
+      setEnabling(false);
+    }
+  }, [loadWebhooks, showToast, watchRestartOutcome]);
 
   const resetForm = useCallback(() => {
     setName("");
@@ -203,7 +257,7 @@ export default function WebhooksPage() {
       <Button
         className="uppercase"
         size="sm"
-        disabled={!enabled}
+        disabled={!enabled || enabling}
         prefix={<Plus />}
         onClick={() => {
           setCreated(null);
@@ -216,7 +270,7 @@ export default function WebhooksPage() {
     return () => {
       setEnd(null);
     };
-  }, [setEnd, enabled, loading]);
+  }, [setEnd, enabled, enabling, loading]);
 
   if (loading) {
     return (
@@ -407,61 +461,61 @@ export default function WebhooksPage() {
       )}
 
       {!enabled && (
-        <Card>
-          <CardContent className="py-6 flex items-start gap-3 text-sm">
-            <Webhook className="h-5 w-5 shrink-0 text-warning" />
-            <div className="flex flex-1 flex-col gap-3">
+        <Card className="border-warning/50">
+          <CardContent className="flex flex-col gap-4 py-6 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-3">
+              <Webhook className="h-5 w-5 shrink-0 text-warning" />
               <div className="flex flex-col gap-1">
-                <span className="font-medium">Webhook platform disabled</span>
+                <span className="font-medium">Webhook receiver disabled</span>
                 <span className="text-muted-foreground">
-                  The webhook platform must be enabled before you can create
-                  subscriptions. Enabling it requires a gateway restart before
-                  incoming events are received.
+                  Webhooks are their own gateway platform. Enable them here to
+                  accept incoming HTTP events; chat channels are only needed
+                  when a subscription delivers to Telegram, Discord, Slack, or
+                  another channel.
                 </span>
               </div>
-              <div className="flex justify-start">
-                <Button
-                  className="uppercase"
-                  size="sm"
-                  onClick={handleEnablePlatform}
-                  disabled={enabling}
-                  prefix={enabling ? <Spinner /> : undefined}
-                >
-                  {enabling ? "Enabling…" : "Enable webhook platform"}
-                </Button>
-              </div>
             </div>
+            <Button
+              size="sm"
+              className="uppercase shrink-0"
+              onClick={handleEnableWebhooks}
+              disabled={enabling}
+              prefix={enabling ? <Spinner /> : <Webhook className="h-4 w-4" />}
+            >
+              {enabling ? "Enabling…" : "Enable webhooks"}
+            </Button>
           </CardContent>
         </Card>
       )}
 
-      {enabled && restartNeeded && (
-        <Card>
-          <CardContent className="py-6 flex items-start gap-3 text-sm">
-            <RotateCw className="h-5 w-5 shrink-0 text-warning" />
-            <div className="flex flex-1 flex-col gap-3">
-              <div className="flex flex-col gap-1">
-                <span className="font-medium">Restart required</span>
-                <span className="text-muted-foreground">
-                  Webhook platform enabled. Restart the gateway to start
-                  receiving incoming events. You can create subscriptions now;
-                  they take effect once the gateway is back up.
-                </span>
-              </div>
-              <div className="flex justify-start">
-                <Button
-                  className="uppercase"
-                  size="sm"
-                  onClick={handleRestartGateway}
-                  disabled={restarting}
-                  prefix={
-                    restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />
-                  }
-                >
-                  {restarting ? "Restarting…" : "Restart gateway"}
-                </Button>
-              </div>
+      {restartMessage && !restartNeeded && (
+        <Card className="border-border">
+          <CardContent className="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+            <RotateCw className="h-4 w-4 shrink-0 text-warning" />
+            <span>{restartMessage}</span>
+          </CardContent>
+        </Card>
+      )}
+
+      {restartNeeded && (
+        <Card className="border-warning/50">
+          <CardContent className="flex flex-col gap-3 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex items-start gap-2 text-sm">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning" />
+              <span>
+                {restartError ??
+                  "Webhooks are enabled, but the gateway still needs a restart before the receiver can come online."}
+              </span>
             </div>
+            <Button
+              size="sm"
+              className="uppercase shrink-0"
+              onClick={handleRestart}
+              disabled={restarting}
+              prefix={restarting ? <Spinner /> : <RotateCw className="h-4 w-4" />}
+            >
+              {restarting ? "Restarting…" : "Restart gateway"}
+            </Button>
           </CardContent>
         </Card>
       )}
@@ -476,8 +530,8 @@ export default function WebhooksPage() {
         </H2>
 
         <p className="text-xs text-muted-foreground -mt-1">
-          Disabled webhooks reject incoming events; the gateway hot-reloads
-          changes (no restart needed).
+          Subscription changes hot-reload once the webhook receiver is running.
+          Disabled subscriptions reject incoming events.
         </p>
 
         {subscriptions.length === 0 && (

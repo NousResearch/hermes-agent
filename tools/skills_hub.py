@@ -2992,6 +2992,8 @@ class OptionalSkillSource(SkillSource):
         if not files:
             return None
 
+        self._include_addy_agent_skills_shared_files(skill_dir, files)
+
         # Determine category from directory structure
         name = skill_dir.name
 
@@ -3002,6 +3004,42 @@ class OptionalSkillSource(SkillSource):
             identifier=f"official/{skill_dir.relative_to(self._optional_dir)}",
             trust_level="builtin",
         )
+
+    @staticmethod
+    def _include_addy_agent_skills_shared_files(
+        skill_dir: Path,
+        files: Dict[str, Union[str, bytes]],
+    ) -> None:
+        """Include Addy agent-skills shared references when fetching one skill.
+
+        The upstream pack keeps common reference checklists and reviewer personas at
+        the repository root. Hermes installs one optional skill directory at a time,
+        so include those shared files in the bundle without duplicating them under
+        every vendored skill in the source tree.
+        """
+        parts = skill_dir.parts
+        if "addy-agent-skills" not in parts or skill_dir.parent.name != "skills":
+            return
+
+        pack_root = skill_dir.parent.parent
+        shared_dirs = ("references", "agents")
+        for dirname in shared_dirs:
+            shared_dir = pack_root / dirname
+            if not shared_dir.is_dir():
+                continue
+            for f in shared_dir.rglob("*"):
+                if f.is_file() and not f.name.startswith("."):
+                    try:
+                        files[str(f.relative_to(pack_root))] = f.read_bytes()
+                    except OSError:
+                        continue
+
+        license_file = pack_root / "LICENSE"
+        if license_file.is_file():
+            try:
+                files["LICENSE.agent-skills"] = license_file.read_bytes()
+            except OSError:
+                pass
 
     # -- inspect ----------------------------------------------------------
 

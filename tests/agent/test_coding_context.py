@@ -312,6 +312,10 @@ class TestEditFormatSteering:
         assert "mode='patch'" in brief
         assert "V4A" in brief
         assert "write_file" in brief  # new files authored, not patched
+        # Codex-family harnesses ship apply_patch (V4A) as the ONLY editor and
+        # instruct it even for single-file edits — never nudge replace mode.
+        assert "single-file" in brief
+        assert "mode='replace'" not in brief
 
     def test_anthropic_family_gets_replace_nudge(self, tmp_path):
         _git_init(tmp_path)

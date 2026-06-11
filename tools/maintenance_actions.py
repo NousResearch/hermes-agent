@@ -13,7 +13,6 @@ from typing import Any
 
 
 _SHELL_WRAPPERS = {"sh", "bash", "zsh", "ksh", "fish", "python", "python3", "perl", "ruby"}
-_SHELL_INDIRECTORS = {"env"}
 _SHELL_EVAL_FLAGS = {"-c", "-lc", "-ec", "-e"}
 _UNATTENDED_CONTEXTS = {"cron", "unattended", "background", "scheduler"}
 _UNATTENDED_FORBIDDEN_VALUES = {"", "none", "false", "off", "disabled", "forbidden"}
@@ -70,18 +69,9 @@ def _basename(value: Any) -> str:
 
 
 def _looks_like_shell_wrapping(argv: list[Any]) -> bool:
-    if not argv:
-        return False
-
-    head = _basename(argv[0])
-    if head in _SHELL_WRAPPERS:
-        return any(str(part) in _SHELL_EVAL_FLAGS for part in argv[1:3])
-
-    if head in _SHELL_INDIRECTORS and len(argv) >= 3:
-        indirect_target = _basename(argv[1])
-        if indirect_target in _SHELL_WRAPPERS:
-            return any(str(part) in _SHELL_EVAL_FLAGS for part in argv[2:4])
-
+    for index, part in enumerate(argv):
+        if _basename(part) in _SHELL_WRAPPERS:
+            return any(str(later) in _SHELL_EVAL_FLAGS for later in argv[index + 1 :])
     return False
 
 
@@ -179,7 +169,10 @@ def evaluate_maintenance_action(
     if not _valid_profile_ref(postcheck_profile):
         return _blocked("invalid_postcheck_profile", action_id=action_id, action=action)
 
-    if policy.get("require_interactive_user_approval", True) and not current_user_approved:
+    require_approval = policy.get("require_interactive_user_approval", True)
+    if not isinstance(require_approval, bool):
+        return _blocked("invalid_approval_requirement", action_id=action_id, action=action)
+    if require_approval and not current_user_approved:
         return _requires_approval(action_id, action)
 
     return _approved(action_id, action)

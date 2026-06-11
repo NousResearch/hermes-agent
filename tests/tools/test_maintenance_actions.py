@@ -137,7 +137,9 @@ class TestMaintenanceActionMalformedPolicy:
             [],
             ["ssh", ""],
             ["bash", "-lc", "ssh host command"],
+            ["bash", "--noprofile", "--norc", "-c", "ssh host command"],
             ["/usr/bin/env", "bash", "-lc", "ssh host command"],
+            ["/usr/bin/env", "FOO=bar", "bash", "-lc", "ssh host command"],
         ],
     )
     def test_missing_or_invalid_exact_argv_blocks(self, exact_argv):
@@ -194,6 +196,34 @@ class TestMaintenanceActionContext:
         assert result.allowed is False
         assert result.reason == "unattended_policy_invalid"
         assert result.eligible is False
+
+    @pytest.mark.parametrize(
+        "require_interactive_user_approval",
+        [None, "", [], {}, 0, "false"],
+    )
+    def test_malformed_approval_requirement_blocks(self, require_interactive_user_approval):
+        result = evaluate_maintenance_action(
+            _policy(require_interactive_user_approval=require_interactive_user_approval),
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            current_user_approved=False,
+        )
+
+        assert result.allowed is False
+        assert result.reason == "invalid_approval_requirement"
+        assert result.eligible is False
+
+    def test_explicit_boolean_false_approval_requirement_allows_static_approval(self):
+        result = evaluate_maintenance_action(
+            _policy(require_interactive_user_approval=False),
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            current_user_approved=False,
+        )
+
+        assert result.allowed is True
+        assert result.reason == "approved"
+        assert result.eligible is True
 
     def test_current_user_approval_allows_when_required_gates_pass(self):
         result = evaluate_maintenance_action(

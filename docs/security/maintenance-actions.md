@@ -34,6 +34,7 @@ The validator follows a default-deny contract:
 - malformed preflight metadata blocks;
 - missing postcheck metadata blocks;
 - malformed postcheck metadata blocks;
+- malformed approval-requirement policy values block;
 - current-user approval is required by default even after all static gates pass.
 
 The exact-argv rule is intentionally strict. A maintenance action policy names

@@ -429,6 +429,33 @@ def test_no_replay_when_no_warning(mock_get_client, mock_ctx_len):
     assert len(callback_events) == 0
 
 
+@patch("run_agent.OpenAI")
+def test_codex_gpt55_autoraise_keeps_threshold_but_skips_gateway_replay(mock_openai):
+    """Codex gpt-5.5 uses the 85% threshold without a gateway notice replay."""
+    mock_openai.return_value = MagicMock()
+
+    agent = AIAgent(
+        api_key="test-key",
+        provider="openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        model="gpt-5.5",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert agent.context_compressor.context_length == 272_000
+    assert agent.context_compressor.threshold_tokens == 231_200
+    assert agent._compression_threshold_autoraised == {"from": 0.5, "to": 0.85}
+    assert agent._compression_warning is None
+
+    callback_events = []
+    agent.status_callback = lambda ev, msg: callback_events.append((ev, msg))
+    agent._replay_compression_warning()
+
+    assert callback_events == []
+
+
 def test_replay_without_callback_is_noop():
     """_replay_compression_warning doesn't crash when status_callback is None."""
     agent = _make_agent()

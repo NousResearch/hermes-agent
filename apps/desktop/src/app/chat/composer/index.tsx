@@ -28,8 +28,11 @@ import {
   $composerAttachments,
   clearComposerAttachments,
   clearPersistedComposerDraft,
+  clearStashedComposerAttachments,
   type ComposerAttachment,
   readPersistedComposerDraft,
+  stashComposerAttachments,
+  takeComposerAttachments,
   writePersistedComposerDraft
 } from '@/store/composer'
 import {
@@ -1111,16 +1114,35 @@ export function ChatBar({
     }
   }
 
+  // Restore a scope's draft (persisted text + in-memory attachments) when we
+  // enter it, and stash the attachments back when we leave. Text rides through
+  // localStorage so it survives reloads; attachments carry live blobs/upload
+  // state that can't serialize, so they're retained in memory only — enough to
+  // survive a session switch, which is the case users actually hit.
   useEffect(() => {
     const persisted = readPersistedComposerDraft(draftPersistenceScope)
+    const restoredAttachments = takeComposerAttachments(draftPersistenceScope)
     skipNextDraftPersistScopeRef.current = draftPersistenceScope
-    loadIntoComposer(persisted, [])
+    loadIntoComposer(persisted, restoredAttachments)
+
+    return () => {
+      stashComposerAttachments(draftPersistenceScope, $composerAttachments.get())
+    }
   }, [draftPersistenceScope]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (skipNextDraftPersistScopeRef.current === draftPersistenceScope) {
       skipNextDraftPersistScopeRef.current = null
 
+      return
+    }
+
+    // Don't persist programmatically-loaded text: browsing sent-message
+    // history or editing a queued prompt swaps the composer to recalled text,
+    // and persisting that would clobber the genuine in-progress draft (which
+    // history keeps in its own snapshot and restores on the way back). Leaving
+    // the prior pending write untouched keeps the real draft in storage.
+    if (isBrowsingHistory(sessionId) || queueEdit) {
       return
     }
 
@@ -1137,7 +1159,7 @@ export function ChatBar({
     }, DRAFT_PERSIST_DEBOUNCE_MS)
 
     return () => window.clearTimeout(handle)
-  }, [draft, draftPersistenceScope])
+  }, [draft, draftPersistenceScope, queueEdit, sessionId])
 
   // Flush any pending debounced draft write when leaving a session scope or
   // unmounting, so the departing session's latest text is always persisted.
@@ -1412,6 +1434,7 @@ export function ChatBar({
             writePersistedComposerDraft(draftPersistenceScope, submitted)
           } else {
             clearPersistedComposerDraft(draftPersistenceScope)
+            clearStashedComposerAttachments(draftPersistenceScope)
           }
         }).catch(() => {
           loadIntoComposer(submitted, [])
@@ -1440,6 +1463,7 @@ export function ChatBar({
           writePersistedComposerDraft(draftPersistenceScope, submitted)
         } else {
           clearPersistedComposerDraft(draftPersistenceScope)
+          clearStashedComposerAttachments(draftPersistenceScope)
         }
       }).catch(() => {
         loadIntoComposer(submitted, submittedAttachments)

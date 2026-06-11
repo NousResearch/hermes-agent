@@ -1,0 +1,12 @@
+name: pi_observability
+version: "0.1.0"
+description: "Optional pi-observability event export for Hermes usage, cost, and tool telemetry."
+author: NousResearch
+hooks:
+  - pre_api_request
+  - post_api_request
+  - pre_llm_call
+  - post_llm_call
+  - pre_tool_call
+  - post_tool_call
+  - api_request_error

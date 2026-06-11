@@ -2286,6 +2286,102 @@ class APIServerAdapter(BasePlatformAdapter):
                 except OSError:
                     pass
 
+    # ------------------------------------------------------
+    # POST /api/audio/speak — text-to-speech synthesis
+    # ------------------------------------------------------
+
+    _MAX_SPEAK_TEXT_BYTES = 4096  # 4 KB of UTF-8 text
+
+    async def _handle_audio_speak(self, request: web.Request) -> web.Response:
+        """Synthesize speech from text and return as a base64 data URL.
+
+        Accepts JSON with ``text`` (required).  Delegates to the existing
+        TTS provider chain configured in ``~/.hermes/config.yaml`` under
+        ``tts.`` — Edge TTS (default), OpenAI, ElevenLabs, and others.
+
+        Returns ``{ok: bool, data_url: str, mime_type: str, provider?: str}``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(
+                {"ok": False, "error": "Invalid JSON body"},
+                status=400,
+            )
+
+        text = (body.get("text") or "").strip()
+        if not text:
+            return web.json_response(
+                {"ok": False, "error": "Text is required"},
+                status=400,
+            )
+        if len(text.encode("utf-8")) > self._MAX_SPEAK_TEXT_BYTES:
+            return web.json_response(
+                {"ok": False, "error": "Text is too long"},
+                status=413,
+            )
+
+        try:
+            from tools.tts_tool import text_to_speech_tool
+
+            result_json = await asyncio.to_thread(text_to_speech_tool, text)
+            result = json.loads(result_json) if isinstance(result_json, str) else result_json
+        except ImportError:
+            return web.json_response({
+                "ok": False,
+                "error": "TTS is not available — install TTS dependencies",
+            }, status=500)
+        except Exception as exc:
+            logger.exception("Speech synthesis failed")
+            return web.json_response({
+                "ok": False,
+                "error": f"Speech synthesis error: {exc}",
+            }, status=500)
+
+        if not isinstance(result, dict) or not result.get("success"):
+            return web.json_response({
+                "ok": False,
+                "error": result.get("error") if isinstance(result, dict) else "Speech synthesis failed",
+            }, status=400)
+
+        file_path = result.get("file_path")
+        if not file_path or not os.path.isfile(file_path):
+            return web.json_response({
+                "ok": False,
+                "error": "Audio file not found — synthesis produced no output",
+            }, status=500)
+
+        ext = os.path.splitext(file_path)[1].lower()
+        mime_type = {
+            ".mp3": "audio/mpeg",
+            ".ogg": "audio/ogg",
+            ".opus": "audio/ogg",
+            ".wav": "audio/wav",
+            ".flac": "audio/flac",
+        }.get(ext, "audio/mpeg")
+
+        try:
+            with open(file_path, "rb") as fh:
+                audio_bytes = fh.read()
+        except OSError as exc:
+            return web.json_response({
+                "ok": False,
+                "error": f"Could not read audio file: {exc}",
+            })
+        finally:
+            try:
+                os.unlink(file_path)
+            except OSError:
+                pass
+
+        encoded = base64.b64encode(audio_bytes).decode("ascii")
+        return web.json_response({
+            "ok": True,
+            "data_url": f"data:{mime_type};base64,{encoded}",
+            "mime_type": mime_type,
+            "provider": result.get("provider"),
+        })
+
     # ------------------------------------------------------------------
     # /api/sessions — thin client/session resource API
     # ------------------------------------------------------------------
@@ -5546,6 +5642,8 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Voice dictation
             self._app.router.add_post("/api/audio/transcribe", self._handle_audio_transcribe)
+            # Text-to-speech synthesis
+            self._app.router.add_post("/api/audio/speak", self._handle_audio_speak)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)

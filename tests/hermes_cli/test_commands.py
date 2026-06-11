@@ -1945,7 +1945,7 @@ class TestPluginCommandEnumeration:
             "ar": {"handler": lambda _a: "ok", "description": "AR", "args_hint": "", "plugin": "shopmonkey"},
         })
         names = [name for name, _desc, _hint in slack_native_slashes()]
-        assert names[:5] == ["hermes", "ro", "po", "board", "ar"]
+        assert names[:7] == ["hermes", "btw", "bg", "ro", "po", "board", "ar"]
         manifest_commands = {entry["command"] for entry in slack_app_manifest()["features"]["slash_commands"]}
         assert {"/ro", "/po", "/board", "/ar"}.issubset(manifest_commands)
 

@@ -568,6 +568,40 @@ class TestDiscordPlayTtsSkip:
         # Different channel — should NOT skip, falls through to send_voice (fails)
         assert result.success is False
 
+    def test_stop_voice_playback_stops_current_audio_and_resumes_receiver(self):
+        adapter = self._make_discord_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = True
+        mock_receiver = MagicMock()
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_receivers[111] = mock_receiver
+        adapter._reset_voice_timeout = MagicMock()
+
+        result = adapter.stop_voice_playback(111)
+
+        assert result is True
+        mock_vc.stop.assert_called_once()
+        mock_receiver.resume.assert_called_once()
+        adapter._reset_voice_timeout.assert_called_once_with(111)
+
+    def test_stop_voice_playback_no_active_audio_returns_false_but_resumes_receiver(self):
+        adapter = self._make_discord_adapter()
+        mock_vc = MagicMock()
+        mock_vc.is_connected.return_value = True
+        mock_vc.is_playing.return_value = False
+        mock_receiver = MagicMock()
+        adapter._voice_clients[111] = mock_vc
+        adapter._voice_receivers[111] = mock_receiver
+        adapter._reset_voice_timeout = MagicMock()
+
+        result = adapter.stop_voice_playback(111)
+
+        assert result is False
+        mock_vc.stop.assert_not_called()
+        mock_receiver.resume.assert_called_once()
+        adapter._reset_voice_timeout.assert_not_called()
+
 
 # =====================================================================
 # Web play_tts sends play_audio (not voice bubble)
@@ -899,6 +933,198 @@ class TestVoiceChannelCommands:
         assert "left" in result.lower()
         assert runner._voice_mode["discord:123"] == "off"
         mock_adapter.leave_voice_channel.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_voice_stop_routes_to_adapter_without_leaving(self, runner):
+        """/voice stop stops playback but keeps voice mode/channel state intact."""
+        mock_adapter = MagicMock()
+        mock_adapter.stop_voice_playback = MagicMock(return_value=True)
+        event = self._make_discord_event("/voice stop")
+        runner.adapters[event.source.platform] = mock_adapter
+        runner._voice_mode["discord:123"] = "all"
+
+        result = await runner._handle_voice_command(event)
+
+        assert "stopped voice playback" in result.lower()
+        assert runner._voice_mode["discord:123"] == "all"
+        mock_adapter.stop_voice_playback.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_voice_stop_reports_no_active_playback(self, runner):
+        """/voice stop is safe when connected but no audio is currently playing."""
+        mock_adapter = MagicMock()
+        mock_adapter.stop_voice_playback = MagicMock(return_value=False)
+        event = self._make_discord_event("/voice stop")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "no voice playback" in result.lower()
+        mock_adapter.stop_voice_playback.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_voice_stop_interrupts_realtime_session(self, runner):
+        """/voice stop cancels current realtime output without leaving VC."""
+        fake_session = AsyncMock()
+        runner._realtime_voice_sessions = {111: fake_session}
+        runner._realtime_voice_chat_ids = {111: "123"}
+        mock_adapter = MagicMock()
+        mock_adapter.clear_realtime_audio = MagicMock(return_value=True)
+        event = self._make_discord_event("/voice stop")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "stopped realtime voice playback" in result.lower()
+        fake_session.interrupt.assert_awaited_once()
+        mock_adapter.clear_realtime_audio.assert_called_once_with(111)
+
+    @pytest.mark.asyncio
+    async def test_voice_realtime_status_reports_xai_runtime_config(self, runner):
+        """/voice realtime status exposes the configured realtime backend."""
+        from gateway.config import PlatformConfig
+
+        mock_adapter = SimpleNamespace(
+            config=PlatformConfig(extra={"voice_backend": "realtime"})
+        )
+        event = self._make_discord_event("/voice realtime status")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "realtime voice" in result.lower()
+        assert "backend: realtime" in result.lower()
+        assert "xai" in result.lower()
+        assert "runtime session: not running" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_voice_realtime_join_starts_provider_runtime(self, runner):
+        """/voice realtime join joins Discord VC and starts the realtime provider."""
+        from gateway.config import PlatformConfig
+
+        class FakeRealtimeSession:
+            def __init__(self):
+                self.started = False
+
+            async def start(self):
+                self.started = True
+
+            async def stop(self):
+                pass
+
+        fake_session = FakeRealtimeSession()
+        runner._create_realtime_voice_session = MagicMock(return_value=fake_session)
+        mock_adapter = SimpleNamespace(
+            config=PlatformConfig(extra={"voice_backend": "turn_based"}),
+            get_user_voice_channel=AsyncMock(return_value=SimpleNamespace(name="General")),
+            join_voice_channel=AsyncMock(return_value=True),
+            start_realtime_audio=MagicMock(return_value=object()),
+            stop_realtime_audio=MagicMock(return_value=False),
+            _voice_realtime_audio_callback=None,
+            _voice_input_callback="turn-based-callback",
+            _on_voice_disconnect=None,
+            _voice_text_channels={},
+            _voice_sources={},
+        )
+        event = self._make_discord_event("/voice realtime join")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "joined realtime voice channel" in result.lower()
+        mock_adapter.get_user_voice_channel.assert_awaited_once()
+        mock_adapter.join_voice_channel.assert_awaited_once()
+        mock_adapter.start_realtime_audio.assert_called_once_with(111)
+        assert fake_session.started is True
+        assert mock_adapter._voice_input_callback is None
+        assert callable(mock_adapter._voice_realtime_audio_callback)
+
+    @pytest.mark.asyncio
+    async def test_voice_join_routes_to_realtime_when_backend_configured(self, runner):
+        """discord.voice_backend: realtime makes /voice join start realtime."""
+        from gateway.config import PlatformConfig
+
+        class FakeRealtimeSession:
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+        runner._create_realtime_voice_session = MagicMock(return_value=FakeRealtimeSession())
+        mock_adapter = SimpleNamespace(
+            config=PlatformConfig(extra={"voice_backend": "realtime"}),
+            get_user_voice_channel=AsyncMock(return_value=SimpleNamespace(name="General")),
+            join_voice_channel=AsyncMock(return_value=True),
+            start_realtime_audio=MagicMock(return_value=object()),
+            stop_realtime_audio=MagicMock(return_value=False),
+            _voice_realtime_audio_callback=None,
+            _voice_input_callback=None,
+            _on_voice_disconnect=None,
+            _voice_text_channels={},
+            _voice_sources={},
+        )
+        event = self._make_discord_event("/voice join")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "joined realtime voice channel" in result.lower()
+        mock_adapter.get_user_voice_channel.assert_awaited_once()
+        mock_adapter.join_voice_channel.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_voice_realtime_leave_reports_no_runtime_session(self, runner):
+        """Realtime leave command exists before provider runtime is wired."""
+        from gateway.config import PlatformConfig
+
+        mock_adapter = SimpleNamespace(
+            config=PlatformConfig(extra={"voice_backend": "realtime"})
+        )
+        event = self._make_discord_event("/voice realtime leave")
+        runner.adapters[event.source.platform] = mock_adapter
+
+        result = await runner._handle_voice_command(event)
+
+        assert "no realtime voice session" in result.lower()
+
+    @pytest.mark.asyncio
+    async def test_realtime_provider_events_keep_audio_transcripts_and_bridge_tool_calls(self, runner):
+        """Realtime provider events should preserve audio/transcript routing and execute tools.
+
+        Real failure caught: adding the tool bridge breaks existing audio playback/transcripts,
+        or RealtimeToolCall still only logs instead of returning a provider result.
+        """
+        from gateway.realtime_voice.session import (
+            RealtimeAudioDelta,
+            RealtimeToolCall,
+            RealtimeTranscriptDelta,
+        )
+
+        class FakeRealtimeSession:
+            def __init__(self):
+                self.results = []
+
+            async def submit_tool_result(self, call_id, output):
+                self.results.append((call_id, output))
+
+        fake_session = FakeRealtimeSession()
+        runner._realtime_voice_sessions = {111: fake_session}
+        runner._run_realtime_voice_agent_prompt = AsyncMock(return_value="agent answer")
+        mock_channel = AsyncMock()
+        mock_adapter = SimpleNamespace(
+            enqueue_realtime_audio=MagicMock(),
+            _client=SimpleNamespace(get_channel=MagicMock(return_value=mock_channel)),
+        )
+        handler = runner._make_realtime_voice_event_handler(111, "123", mock_adapter)
+
+        await handler(RealtimeAudioDelta(pcm16=b"audio", sample_rate=24000))
+        await handler(RealtimeTranscriptDelta(role="assistant", text="hello", final=True))
+        await handler(RealtimeToolCall("ask_agent", {"prompt": "help"}, "call_1"))
+
+        mock_adapter.enqueue_realtime_audio.assert_called_once_with(111, b"audio", 24000)
+        mock_channel.send.assert_awaited_once()
+        assert fake_session.results == [("call_1", "agent answer")]
 
     # -- _handle_voice_channel_input --
 
@@ -1879,6 +2105,28 @@ class TestVoiceTimeoutCleansRunnerState:
         assert hasattr(adapter, "_on_voice_disconnect")
         assert adapter._on_voice_disconnect is None
 
+    def test_default_voice_timeout_is_call_friendly(self, adapter, monkeypatch):
+        """Default VC timeout should not eject users after a short pause."""
+        monkeypatch.delenv("HERMES_DISCORD_VOICE_TIMEOUT_SECONDS", raising=False)
+        assert adapter._get_voice_timeout_seconds() >= 3600
+
+    def test_voice_timeout_config_override(self, adapter, monkeypatch):
+        """discord.voice_timeout_seconds overrides the env/default."""
+        monkeypatch.setenv("HERMES_DISCORD_VOICE_TIMEOUT_SECONDS", "120")
+        adapter.config.extra["voice_timeout_seconds"] = 42
+        assert adapter._get_voice_timeout_seconds() == 42
+
+    def test_voice_timeout_can_be_disabled(self, adapter):
+        """A 0 timeout keeps the bot connected until /voice leave/shutdown."""
+        adapter.config.extra["voice_timeout_seconds"] = 0
+        existing_task = MagicMock()
+        adapter._voice_timeout_tasks[111] = existing_task
+
+        adapter._reset_voice_timeout(111)
+
+        existing_task.cancel.assert_called_once()
+        assert 111 not in adapter._voice_timeout_tasks
+
     @pytest.mark.asyncio
     async def test_timeout_calls_disconnect_callback(self, adapter):
         """_voice_timeout_handler calls _on_voice_disconnect with chat_id."""
@@ -2031,6 +2279,55 @@ class TestPlaybackTimeout:
             mock_vc.stop.assert_called()
         finally:
             DiscordAdapter.PLAYBACK_TIMEOUT = original_timeout
+    @pytest.mark.asyncio
+    async def test_realtime_source_is_stopped_before_tts_without_waiting(self):
+        """Realtime's silence-padded source must not make finite TTS wait 120s."""
+        adapter = self._make_discord_adapter()
+
+        class FakeVoiceClient:
+            def __init__(self):
+                self.connected = True
+                self.playing = True
+                self.stop_calls = 0
+                self.play_calls = 0
+
+            def is_connected(self):
+                return self.connected
+
+            def is_playing(self):
+                return self.playing
+
+            def stop(self):
+                self.stop_calls += 1
+                self.playing = False
+
+            def play(self, source, after=None):
+                self.play_calls += 1
+                self.playing = True
+                self.playing = False
+                if after:
+                    after(None)
+
+        fake_vc = FakeVoiceClient()
+        fake_source = MagicMock()
+        fake_receiver = MagicMock()
+        adapter._voice_clients[111] = fake_vc
+        adapter._voice_receivers[111] = fake_receiver
+        adapter._voice_timeout_tasks[111] = MagicMock()
+        adapter._voice_realtime_sources = {111: fake_source}
+        adapter.start_realtime_audio = MagicMock(return_value=MagicMock())
+
+        with patch("discord.FFmpegPCMAudio"), \
+             patch("discord.PCMVolumeTransformer", side_effect=lambda s, **kw: s):
+            result = await adapter.play_in_voice_channel(111, "/tmp/test.mp3")
+
+        assert result is True
+        assert fake_vc.stop_calls == 1
+        assert fake_vc.play_calls == 1
+        fake_source.close.assert_called_once()
+        adapter.start_realtime_audio.assert_called_once_with(111)
+        fake_receiver.pause.assert_called_once()
+        fake_receiver.resume.assert_called_once()
 
 
 # =====================================================================

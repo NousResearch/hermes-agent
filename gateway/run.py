@@ -1866,6 +1866,10 @@ class GatewayRunner:
         # Protects against the same utterance being emitted twice by the voice
         # capture / STT pipeline, which otherwise produces a second delayed reply.
         self._recent_voice_transcripts: Dict[tuple[int, int], List[tuple[float, str]]] = {}
+        # Active realtime voice provider sessions keyed by Discord guild_id.
+        self._realtime_voice_sessions: Dict[int, Any] = {}
+        self._realtime_voice_chat_ids: Dict[int, str] = {}
+        self._realtime_voice_tool_bridges: Dict[int, Any] = {}
 
         # Track background tasks to prevent garbage collection mid-execution
         self._background_tasks: set = set()
@@ -11084,7 +11088,7 @@ class GatewayRunner:
         return None
 
     async def _handle_voice_command(self, event: MessageEvent) -> str:
-        """Handle /voice [on|off|tts|channel|leave|status] command."""
+        """Handle /voice [on|off|tts|channel|leave|stop|status|realtime ...] command."""
         args = event.get_command_args().strip().lower()
         chat_id = event.source.chat_id
         platform = event.source.platform
@@ -11110,10 +11114,20 @@ class GatewayRunner:
             if adapter:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
             return t("gateway.voice.tts_enabled")
+        elif args == "realtime" or args.startswith("realtime "):
+            return await self._handle_voice_realtime_command(event, args)
         elif args in {"channel", "join"}:
+            if self._get_discord_voice_backend(adapter) == "realtime":
+                return await self._handle_voice_realtime_command(event, "realtime join")
             return await self._handle_voice_channel_join(event)
         elif args == "leave":
+            guild_id = self._get_guild_id(event)
+            sessions, _ = self._realtime_voice_state()
+            if guild_id in sessions or self._get_discord_voice_backend(adapter) == "realtime":
+                return await self._handle_voice_realtime_command(event, "realtime leave")
             return await self._handle_voice_channel_leave(event)
+        elif args == "stop":
+            return await self._handle_voice_channel_stop(event)
         elif args == "status":
             mode = self._voice_mode.get(voice_key, "off")
             labels = {
@@ -11152,6 +11166,390 @@ class GatewayRunner:
                 if adapter:
                     self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
                 return t("gateway.voice.disabled_short")
+
+    def _get_discord_voice_backend(self, adapter: Any) -> str:
+        """Return Discord voice backend normalized to ``turn_based`` or ``realtime``."""
+        extra = getattr(getattr(adapter, "config", None), "extra", {})
+        if not isinstance(extra, dict):
+            return "turn_based"
+        raw_backend = extra.get("voice_backend", "turn_based")
+        if not isinstance(raw_backend, str):
+            return "turn_based"
+        backend = raw_backend.strip().lower().replace("-", "_")
+        if backend == "realtime":
+            return "realtime"
+        return "turn_based"
+
+    def _get_realtime_voice_config(self) -> Any:
+        """Return loaded realtime voice config, falling back to defaults for tests."""
+        realtime_voice = getattr(getattr(self, "config", None), "realtime_voice", None)
+        if realtime_voice is not None:
+            return realtime_voice
+        from gateway.realtime_voice.config import RealtimeVoiceConfig
+
+        return RealtimeVoiceConfig()
+
+    def _realtime_voice_state(self) -> tuple[Dict[int, Any], Dict[int, str]]:
+        """Return realtime voice state, creating it for tests that bypass __init__."""
+        sessions = getattr(self, "_realtime_voice_sessions", None)
+        if not isinstance(sessions, dict):
+            sessions = {}
+            self._realtime_voice_sessions = sessions
+        chat_ids = getattr(self, "_realtime_voice_chat_ids", None)
+        if not isinstance(chat_ids, dict):
+            chat_ids = {}
+            self._realtime_voice_chat_ids = chat_ids
+        return sessions, chat_ids
+
+    def _realtime_voice_tool_bridge_state(self) -> Dict[int, Any]:
+        """Return realtime tool bridges, creating the store for tests that bypass __init__."""
+        bridges = getattr(self, "_realtime_voice_tool_bridges", None)
+        if not isinstance(bridges, dict):
+            bridges = {}
+            self._realtime_voice_tool_bridges = bridges
+        return bridges
+
+    def _is_discord_event(self, event: MessageEvent) -> bool:
+        platform = getattr(event.source, "platform", None)
+        value = getattr(platform, "value", platform)
+        return str(value).lower() == Platform.DISCORD.value
+
+    def _format_realtime_voice_status(self, adapter: Any, guild_id: Optional[int] = None) -> str:
+        """Render compact status for the realtime voice surface."""
+        backend = self._get_discord_voice_backend(adapter)
+        config = self._get_realtime_voice_config()
+        tools = ", ".join(getattr(config, "allow_tools", ()) or ())
+        sessions, _ = self._realtime_voice_state()
+        if guild_id is None:
+            runtime = "running" if sessions else "not running"
+        else:
+            runtime = "running" if guild_id in sessions else "not running"
+        return "\n".join(
+            [
+                "Realtime voice: provider-neutral realtime runtime wired.",
+                f"Backend: {backend}",
+                f"Provider: {getattr(config, 'provider', 'xai')}",
+                f"Model: {getattr(config, 'model', 'grok-voice-latest')}",
+                f"Voice: {getattr(config, 'voice', 'ara')}",
+                f"Allowed tools: {tools or 'none'}",
+                f"Runtime session: {runtime}",
+            ]
+        )
+
+    def _realtime_voice_provider_supported(self, config: Any) -> bool:
+        from gateway.realtime_voice.providers import is_realtime_voice_provider_supported
+
+        return is_realtime_voice_provider_supported(config)
+
+    def _build_realtime_voice_instructions(self, event: MessageEvent) -> str:
+        voice_context = ""
+        adapter = self.adapters.get(event.source.platform)
+        guild_id = self._get_guild_id(event)
+        context_fn = getattr(adapter, "get_voice_channel_context", None)
+        if guild_id and callable(context_fn):
+            try:
+                voice_context = str(context_fn(guild_id) or "")
+            except Exception:
+                voice_context = ""
+        parts = [
+            "You are Hazel, Kamell Perry's feminine AI agent, speaking live in a Discord voice channel.",
+            "Be maximally truthful, warm, direct, and concise. This is spoken audio, so keep turns natural and don't monologue unless asked.",
+            "Do not pretend you have used tools or changed files from this realtime voice session unless a separate Hermes tool call actually did it.",
+        ]
+        if voice_context:
+            parts.append(voice_context)
+        return "\n".join(parts)
+
+    def _create_realtime_voice_session(self, config: Any, instructions: str, on_event: Any) -> Any:
+        from gateway.realtime_voice.providers import create_realtime_voice_session
+
+        return create_realtime_voice_session(config, instructions=instructions, on_event=on_event)
+
+    def _make_realtime_voice_event_handler(self, guild_id: int, text_channel_id: str, adapter: Any):
+        async def _on_provider_event(provider_event: Any) -> None:
+            from gateway.realtime_voice.session import (
+                RealtimeAudioDelta,
+                RealtimeToolCall,
+                RealtimeTranscriptDelta,
+            )
+
+            if isinstance(provider_event, RealtimeAudioDelta):
+                enqueue = getattr(adapter, "enqueue_realtime_audio", None)
+                if callable(enqueue):
+                    enqueue(guild_id, provider_event.pcm16, provider_event.sample_rate)
+                return
+
+            if isinstance(provider_event, RealtimeTranscriptDelta):
+                if provider_event.final and getattr(
+                    self._get_realtime_voice_config(),
+                    "transcript_to_text_channel",
+                    True,
+                ):
+                    await self._send_realtime_voice_transcript(
+                        adapter,
+                        text_channel_id,
+                        provider_event.role,
+                        provider_event.text,
+                    )
+                return
+
+            if isinstance(provider_event, RealtimeToolCall):
+                sessions, _ = self._realtime_voice_state()
+                provider_session = sessions.get(guild_id)
+                if provider_session is None:
+                    logger.info(
+                        "Realtime voice tool call ignored because no provider session is active: %s",
+                        provider_event.name,
+                    )
+                    return
+                bridge = self._get_realtime_voice_tool_bridge(guild_id, text_channel_id, adapter)
+                await bridge.handle_tool_call(provider_session, provider_event)
+
+        return _on_provider_event
+
+    def _get_realtime_voice_tool_bridge(self, guild_id: int, text_channel_id: str, adapter: Any) -> Any:
+        bridges = self._realtime_voice_tool_bridge_state()
+        bridge = bridges.get(guild_id)
+        if bridge is not None:
+            return bridge
+        from gateway.realtime_voice.tool_bridge import RealtimeToolBridge
+
+        async def _ask_agent(prompt: str) -> str:
+            return await self._run_realtime_voice_agent_prompt(guild_id, text_channel_id, prompt, adapter)
+
+        bridge = RealtimeToolBridge(self._get_realtime_voice_config(), ask_agent=_ask_agent)
+        bridges[guild_id] = bridge
+        return bridge
+
+    async def _run_realtime_voice_agent_prompt(self, guild_id: int, text_channel_id: str, prompt: str, adapter: Any) -> str:
+        """Run a concise Hermes agent turn for realtime voice tool calls."""
+        from run_agent import AIAgent
+
+        source = None
+        source_data = getattr(adapter, "_voice_sources", {}).get(guild_id) if adapter is not None else None
+        if source_data:
+            try:
+                source = SessionSource.from_dict(source_data)
+            except Exception:
+                source = None
+        if source is None:
+            source = SessionSource(
+                platform=Platform.DISCORD,
+                chat_id=str(text_channel_id),
+                user_id="realtime_voice",
+                user_name="realtime_voice",
+                chat_type="channel",
+            )
+        model, runtime_kwargs = self._resolve_session_agent_runtime(source=source)
+        turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+
+        def _run_sync() -> str:
+            agent = AIAgent(
+                model=turn_route["model"],
+                **turn_route["runtime"],
+                max_iterations=12,
+                quiet_mode=True,
+                platform=Platform.DISCORD.value,
+                session_id=f"realtime-voice:{guild_id}",
+            )
+            try:
+                result = agent.run_conversation(
+                    user_message=prompt,
+                    system_message=(
+                        "You are answering a realtime Discord voice tool call. "
+                        "Be concise and do not claim file/system side effects unless tools actually performed them."
+                    ),
+                    task_id=f"realtime_voice_{guild_id}",
+                )
+            finally:
+                close = getattr(agent, "close", None)
+                if callable(close):
+                    close()
+            if isinstance(result, dict):
+                return str(result.get("final_response") or "")
+            return str(result or "")
+
+        return await asyncio.to_thread(_run_sync)
+
+    async def _send_realtime_voice_transcript(self, adapter: Any, text_channel_id: str, role: str, text: str) -> None:
+        clean = str(text or "").strip()
+        if not clean:
+            return
+        clean = clean.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+        clean = clean[:1800]
+        label = "Hazel" if role == "assistant" else "User"
+        try:
+            channel = adapter._client.get_channel(int(text_channel_id))
+            if channel:
+                await channel.send(f"**[Realtime] {label}:** {clean}")
+        except Exception:
+            logger.debug("Failed to post realtime voice transcript", exc_info=True)
+
+    async def _stop_realtime_voice_session(
+        self,
+        guild_id: int,
+        adapter: Any,
+        *,
+        chat_id: Optional[str] = None,
+        leave_channel: bool = True,
+    ) -> bool:
+        sessions, chat_ids = self._realtime_voice_state()
+        session = sessions.pop(guild_id, None)
+        chat_ids.pop(guild_id, None)
+        bridges = self._realtime_voice_tool_bridge_state()
+        bridge = bridges.pop(guild_id, None)
+        if bridge is not None:
+            try:
+                await bridge.close()
+            except Exception:
+                logger.debug("Realtime voice tool bridge close failed", exc_info=True)
+        stopped = session is not None
+        if session is not None:
+            try:
+                await session.stop()
+            except Exception as exc:
+                logger.warning("Realtime voice provider stop failed: %s", exc)
+        if adapter is not None:
+            stop_audio = getattr(adapter, "stop_realtime_audio", None)
+            if callable(stop_audio):
+                try:
+                    stopped = bool(stop_audio(guild_id)) or stopped
+                except Exception:
+                    logger.debug("Realtime Discord audio stop failed", exc_info=True)
+            if hasattr(adapter, "_voice_realtime_audio_callback"):
+                adapter._voice_realtime_audio_callback = None
+            if leave_channel and hasattr(adapter, "leave_voice_channel"):
+                try:
+                    await adapter.leave_voice_channel(guild_id)
+                    stopped = True
+                except Exception as exc:
+                    logger.warning("Error leaving realtime voice channel: %s", exc)
+        if chat_id:
+            self._voice_mode[self._voice_key(Platform.DISCORD, chat_id)] = "off"
+            self._save_voice_modes()
+            self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
+        return stopped
+
+    async def _handle_voice_realtime_command(self, event: MessageEvent, args: str) -> str:
+        """Handle /voice realtime [join|leave|status] commands."""
+        adapter = self.adapters.get(event.source.platform)
+        parts = args.split()
+        subcommand = parts[1] if len(parts) > 1 else "status"
+
+        if len(parts) > 2 or subcommand not in {"join", "leave", "status"}:
+            return "Usage: /voice realtime [join|leave|status]"
+
+        guild_id = self._get_guild_id(event)
+        if subcommand == "status":
+            return self._format_realtime_voice_status(adapter, guild_id)
+
+        if not guild_id:
+            return "Realtime voice is only available in a Discord server voice channel."
+
+        if subcommand == "leave":
+            stopped = await self._stop_realtime_voice_session(
+                guild_id,
+                adapter,
+                chat_id=event.source.chat_id,
+                leave_channel=True,
+            )
+            return "Left realtime voice channel." if stopped else "No realtime voice session is active."
+
+        if self._is_discord_event(event) is False:
+            return "Realtime voice is only available on Discord right now."
+        get_user_voice_channel = getattr(adapter, "get_user_voice_channel", None)
+        join_voice_channel = getattr(adapter, "join_voice_channel", None)
+        if not callable(join_voice_channel) or not callable(get_user_voice_channel):
+            return "Realtime voice channels are not supported on this platform."
+
+        config = self._get_realtime_voice_config()
+        if not self._realtime_voice_provider_supported(config):
+            provider = getattr(config, "provider", "unknown")
+            return f"Realtime voice provider {provider!r} is not implemented yet; registered provider support is required."
+
+        voice_channel_result = get_user_voice_channel(guild_id, event.source.user_id)
+        voice_channel = await voice_channel_result if inspect.isawaitable(voice_channel_result) else voice_channel_result
+        if not voice_channel:
+            return "You need to be in a voice channel first."
+
+        # Replace an existing realtime session for this guild cleanly before joining.
+        await self._stop_realtime_voice_session(
+            guild_id,
+            adapter,
+            chat_id=event.source.chat_id,
+            leave_channel=False,
+        )
+
+        async def _audio_callback(*, guild_id: int, user_id: int, pcm16: bytes, sample_rate: int):
+            sessions, _ = self._realtime_voice_state()
+            session = sessions.get(guild_id)
+            if session is None:
+                return
+            try:
+                await session.send_audio_pcm16(pcm16, sample_rate)
+            except Exception as exc:
+                logger.debug("Realtime voice input send failed for user=%s: %s", user_id, exc)
+
+        if hasattr(adapter, "_voice_realtime_audio_callback"):
+            setattr(adapter, "_voice_realtime_audio_callback", _audio_callback)
+        if hasattr(adapter, "_voice_input_callback"):
+            setattr(adapter, "_voice_input_callback", None)
+        if hasattr(adapter, "_on_voice_disconnect"):
+            setattr(adapter, "_on_voice_disconnect", self._handle_voice_timeout_cleanup)
+
+        try:
+            success_result = join_voice_channel(voice_channel)
+            success = await success_result if inspect.isawaitable(success_result) else success_result
+        except Exception as e:
+            logger.warning("Failed to join realtime voice channel: %s", e)
+            if hasattr(adapter, "_voice_realtime_audio_callback"):
+                setattr(adapter, "_voice_realtime_audio_callback", None)
+            return f"Failed to join realtime voice channel: {e}"
+        if not success:
+            if hasattr(adapter, "_voice_realtime_audio_callback"):
+                setattr(adapter, "_voice_realtime_audio_callback", None)
+            return "Failed to join realtime voice channel. Check bot permissions (Connect + Speak)."
+
+        voice_text_channels = getattr(adapter, "_voice_text_channels", None)
+        if isinstance(voice_text_channels, dict):
+            voice_text_channels[guild_id] = int(event.source.chat_id)
+        voice_sources = getattr(adapter, "_voice_sources", None)
+        if isinstance(voice_sources, dict):
+            voice_sources[guild_id] = event.source.to_dict()
+
+        start_audio = getattr(adapter, "start_realtime_audio", None)
+        if not callable(start_audio) or start_audio(guild_id) is None:
+            await self._stop_realtime_voice_session(guild_id, adapter, chat_id=event.source.chat_id, leave_channel=True)
+            return "Joined Discord voice, but failed to start realtime audio playback."
+
+        on_provider_event = self._make_realtime_voice_event_handler(guild_id, event.source.chat_id, adapter)
+        session = self._create_realtime_voice_session(
+            config,
+            self._build_realtime_voice_instructions(event),
+            on_provider_event,
+        )
+        sessions, chat_ids = self._realtime_voice_state()
+        sessions[guild_id] = session
+        chat_ids[guild_id] = event.source.chat_id
+        try:
+            await session.start()
+        except Exception as exc:
+            await self._stop_realtime_voice_session(guild_id, adapter, chat_id=event.source.chat_id, leave_channel=True)
+            logger.warning("Realtime voice provider failed to start: %s", exc)
+            return f"Joined Discord voice, but realtime provider failed to start: {exc}"
+
+        self._voice_mode[self._voice_key(event.source.platform, event.source.chat_id)] = "all"
+        self._save_voice_modes()
+        # Realtime has its own queue-backed playback; don't enable turn-based
+        # auto-TTS on this chat or the two voice paths can overlap.
+        self._set_adapter_auto_tts_disabled(adapter, event.source.chat_id, disabled=True)
+        voice_channel_name = str(getattr(voice_channel, "name", "voice channel"))
+        return (
+            f"Joined realtime voice channel **{voice_channel_name}** with "
+            f"{getattr(config, 'provider', 'xai')} / {getattr(config, 'model', 'grok-voice-latest')}.\n"
+            "I am streaming Discord audio through the configured realtime provider and streaming audio back. "
+            "Use /voice realtime leave to disconnect."
+        )
 
     async def _handle_voice_channel_join(self, event: MessageEvent) -> str:
         """Join the user's current Discord voice channel."""
@@ -11227,6 +11625,40 @@ class GatewayRunner:
             adapter._voice_input_callback = None
         return "Left voice channel."
 
+    async def _handle_voice_channel_stop(self, event: MessageEvent) -> str:
+        """Stop current Discord voice-channel playback without leaving VC."""
+        adapter = self.adapters.get(event.source.platform)
+        guild_id = self._get_guild_id(event)
+
+        sessions, _ = self._realtime_voice_state()
+        realtime_session = sessions.get(guild_id) if guild_id else None
+        if realtime_session is not None:
+            try:
+                await realtime_session.interrupt()
+            except Exception as e:
+                logger.debug("Realtime voice interrupt failed: %s", e)
+            clear_audio = getattr(adapter, "clear_realtime_audio", None)
+            if callable(clear_audio):
+                try:
+                    clear_audio(guild_id)
+                except Exception:
+                    logger.debug("Realtime voice audio clear failed", exc_info=True)
+            return "Stopped realtime voice playback."
+
+        stop_playback = getattr(adapter, "stop_voice_playback", None)
+        if not guild_id or not callable(stop_playback):
+            return "Voice playback stop is only available in a Discord server voice channel."
+
+        try:
+            stopped = bool(stop_playback(guild_id))
+        except Exception as e:
+            logger.warning("Error stopping voice playback: %s", e)
+            return f"Failed to stop voice playback: {e}"
+
+        if stopped:
+            return "Stopped voice playback."
+        return "No voice playback is active."
+
     def _handle_voice_timeout_cleanup(self, chat_id: str) -> None:
         """Called by the adapter when a voice channel times out.
 
@@ -11234,6 +11666,27 @@ class GatewayRunner:
         """
         self._voice_mode[self._voice_key(Platform.DISCORD, chat_id)] = "off"
         self._save_voice_modes()
+        sessions, chat_ids = self._realtime_voice_state()
+        for guild_id, mapped_chat_id in list(chat_ids.items()):
+            if str(mapped_chat_id) != str(chat_id):
+                continue
+            session = sessions.pop(guild_id, None)
+            chat_ids.pop(guild_id, None)
+            bridge = self._realtime_voice_tool_bridge_state().pop(guild_id, None)
+            if bridge is not None:
+                try:
+                    task = asyncio.create_task(bridge.close())
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                except Exception:
+                    logger.debug("Failed to schedule realtime voice bridge timeout cleanup", exc_info=True)
+            if session is not None:
+                try:
+                    task = asyncio.create_task(session.stop())
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+                except Exception:
+                    logger.debug("Failed to schedule realtime voice timeout cleanup", exc_info=True)
         adapter = self.adapters.get(Platform.DISCORD)
         self._set_adapter_auto_tts_disabled(adapter, chat_id, disabled=True)
 

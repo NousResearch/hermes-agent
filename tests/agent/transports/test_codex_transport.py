@@ -263,6 +263,72 @@ class TestCodexBuildKwargs:
         # full history.
         assert "reasoning.encrypted_content" in kw.get("include", [])
 
+    def test_xai_injects_native_web_search_tool(self, transport):
+        """xAI path declares xAI's native server-side web_search built-in so
+        grok server-side search runs to completion (otherwise the turn stalls
+        as reasoning-with-no-answer -> false 'incomplete' -> 3 retries -> fail).
+        """
+        messages = [{"role": "user", "content": "Find current prices."}]
+        kw = transport.build_kwargs(
+            model="grok-composer-2.5-fast", messages=messages,
+            tools=[{"type": "function", "function": {
+                "name": "read_file", "description": "Read a file.",
+                "parameters": {"type": "object",
+                               "properties": {"path": {"type": "string"}}}}}],
+            is_xai_responses=True,
+        )
+        tool_types = [t.get("type") for t in kw.get("tools", [])]
+        assert "web_search" in tool_types, kw.get("tools")
+        # Non-conflicting client-side tools are preserved.
+        names = [t.get("name") for t in kw.get("tools", []) if t.get("type") == "function"]
+        assert "read_file" in names
+
+    def test_xai_drops_clientside_web_search_to_avoid_duplicate(self, transport):
+        """When the client registers its own 'web_search' function, the xAI
+        path must drop it and rely on the native built-in — otherwise xAI
+        returns HTTP 400 'Duplicate tool names: web_search'."""
+        messages = [{"role": "user", "content": "Search the web."}]
+        kw = transport.build_kwargs(
+            model="grok-composer-2.5-fast", messages=messages,
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_xai_responses=True,
+        )
+        tools = kw.get("tools", [])
+        # Exactly one tool named/typed web_search, and it is the native built-in.
+        web_search_entries = [
+            t for t in tools
+            if t.get("name") == "web_search" or t.get("type") == "web_search"
+        ]
+        assert len(web_search_entries) == 1
+        assert web_search_entries[0] == {"type": "web_search"}
+        # No client-side function form of web_search survives.
+        assert not any(
+            t.get("type") == "function" and t.get("name") == "web_search"
+            for t in tools
+        )
+
+    def test_non_xai_path_does_not_inject_native_web_search(self, transport):
+        """Native web_search injection is scoped to xAI — Codex/GitHub paths
+        keep the client-side web_search function untouched."""
+        messages = [{"role": "user", "content": "Search."}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages,
+            tools=[{"type": "function", "function": {
+                "name": "web_search", "description": "Search the web.",
+                "parameters": {"type": "object",
+                               "properties": {"query": {"type": "string"}}}}}],
+            is_xai_responses=False,
+        )
+        tools = kw.get("tools", [])
+        assert not any(t.get("type") == "web_search" for t in tools)
+        assert any(
+            t.get("type") == "function" and t.get("name") == "web_search"
+            for t in tools
+        )
+
     def test_xai_reasoning_disabled_no_reasoning_key(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

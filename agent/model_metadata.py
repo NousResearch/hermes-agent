@@ -277,6 +277,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     # matches "grok-4.20-0309-reasoning" / "-non-reasoning" / "-multi-agent-0309".
     "grok-composer": 200000,    # grok-composer-2.5-fast (Grok Build CLI)
     "grok-build": 256000,       # grok-build-0.1
+    # OAuth-only slug; absent from GET /v1/models. Live /v1/responses probe
+    # (2026-03) enforces ~262144 tokens total (input+output), not 131k.
+    "grok-composer": 262144,    # grok-composer-2.5-fast
     "grok-code-fast": 256000,   # grok-code-fast-1
     "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
     "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning, also matches -reasoning

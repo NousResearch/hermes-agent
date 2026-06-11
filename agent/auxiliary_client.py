@@ -4142,6 +4142,7 @@ def resolve_vision_provider_client(
     requested, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         "vision", provider, model, base_url, api_key
     )
+    raw_requested = requested
     requested = _normalize_vision_provider(requested)
 
     def _finalize(resolved_provider: str, sync_client: Any, default_model: Optional[str]):
@@ -4152,6 +4153,27 @@ def resolve_vision_provider_client(
             async_client, async_model = _to_async_client(sync_client, final_model, is_vision=True)
             return resolved_provider, async_client, async_model
         return resolved_provider, sync_client, final_model
+
+    # When the user specifies ``custom:<name>`` (e.g. ``custom:minimax``),
+    # _normalize_aux_provider strips the ``custom:`` prefix, collapsing it to
+    # the bare built-in provider name.  Try the named custom provider lookup
+    # with the raw name *before* falling through to the general dispatch so
+    # the user's custom_providers entry is honoured (#44349).
+    if raw_requested and raw_requested.startswith("custom:"):
+        try:
+            from hermes_cli.runtime_provider import _get_named_custom_provider
+            custom_entry = _get_named_custom_provider(raw_requested)
+        except Exception:
+            custom_entry = None
+        if custom_entry is not None:
+            client, final_model = resolve_provider_client(
+                raw_requested,
+                model=resolved_model or custom_entry.get("model"),
+                async_mode=async_mode,
+                api_mode=resolved_api_mode,
+            )
+            if client is not None:
+                return _finalize(raw_requested, client, final_model)
 
     if resolved_base_url:
         provider_for_base_override = (

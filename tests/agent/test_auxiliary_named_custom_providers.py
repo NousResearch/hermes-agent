@@ -491,3 +491,53 @@ class TestCustomProviderAliasCollision:
         assert isinstance(client, OpenAI)
         assert "override.example.com" in str(client.base_url)
         assert client.api_key == "override-key"
+
+
+class TestResolveVisionProviderClientCustomPrefix:
+    """resolve_vision_provider_client should honour custom:<name> even when
+    <name> matches a built-in provider (#44349)."""
+
+    def test_custom_prefix_resolves_to_named_custom_provider(self, tmp_path):
+        """custom:minimax should use the user's custom_providers entry, not the
+        built-in minimax provider."""
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {"name": "minimax", "base_url": "http://custom-minimax.local/v1", "api_key": "custom-key"},
+            ],
+        })
+        from agent.auxiliary_client import resolve_vision_provider_client
+        provider, client, model = resolve_vision_provider_client("custom:minimax")
+        assert client is not None
+        assert "custom-minimax.local" in str(client.base_url)
+
+    def test_custom_prefix_unknown_provider_returns_none(self, tmp_path):
+        """custom:nonexistent should return None when no custom_providers entry matches."""
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {"name": "beans", "base_url": "http://beans.local/v1", "api_key": "k"},
+            ],
+        })
+        from agent.auxiliary_client import resolve_vision_provider_client
+        provider, client, model = resolve_vision_provider_client("custom:nonexistent")
+        assert client is None
+
+    def test_custom_prefix_with_providers_dict_format(self, tmp_path):
+        """custom:<name> should also match providers: dict entries."""
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "providers": {
+                "minimax": {
+                    "provider": "openai",
+                    "base_url": "http://providers-dict-minimax.local/v1",
+                    "api_key_env": "MINIMAX_CN_API_KEY",
+                },
+            },
+        })
+        import os
+        os.environ["MINIMAX_CN_API_KEY"] = "cn-key"
+        from agent.auxiliary_client import resolve_vision_provider_client
+        provider, client, model = resolve_vision_provider_client("custom:minimax")
+        assert client is not None
+        assert "providers-dict-minimax.local" in str(client.base_url)

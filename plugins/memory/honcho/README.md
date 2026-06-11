@@ -7,7 +7,8 @@ AI-native cross-session user modeling with multi-pass dialectic reasoning, sessi
 ## Requirements
 
 - `pip install honcho-ai`
-- Honcho API key from [app.honcho.dev](https://app.honcho.dev), or a self-hosted instance
+- A Honcho Cloud account — connect via OAuth sign-in or an API key from
+  [app.honcho.dev](https://app.honcho.dev) — or a self-hosted instance
 
 ## Setup
 
@@ -15,6 +16,11 @@ AI-native cross-session user modeling with multi-pass dialectic reasoning, sessi
 hermes memory setup honcho   # configure Honcho directly (works on a fresh install)
 hermes memory setup          # generic picker, choose Honcho from the list
 ```
+
+For cloud, the wizard asks **OAuth or API key**. OAuth opens a browser
+sign-in and stores the grant itself — nothing to copy; tokens refresh
+automatically. The desktop app offers the same flow as a **Connect** link
+next to the memory-provider dropdown.
 
 Or manually:
 ```bash
@@ -123,7 +129,8 @@ For every key, resolution order is: **host block > root > env var > default**.
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `apiKey` | string | — | API key. Falls back to `HONCHO_API_KEY` env var |
+| `apiKey` | string | — | API key. Falls back to `HONCHO_API_KEY` env var. When connected via OAuth, holds the auto-refreshing access token instead |
+| `oauth` | object | — | OAuth grant (refresh token, expiry, client, token endpoint). Written by the Connect/sign-in flows and rotated automatically — not hand-edited. Optional: an API key alone works without it |
 | `baseUrl` | string | — | Base URL for self-hosted Honcho. Local URLs auto-skip API key auth |
 | `environment` | string | `"production"` | SDK environment mapping |
 | `enabled` | bool | auto | Master toggle. Auto-enables when `apiKey` or `baseUrl` present |
@@ -309,6 +316,11 @@ Presets:
 | `HONCHO_BASE_URL` | `baseUrl` |
 | `HONCHO_ENVIRONMENT` | `environment` |
 | `HERMES_HONCHO_HOST` | Host key override |
+| `HONCHO_OAUTH_DASHBOARD` | OAuth authorize origin (default: cloud dashboard; local-dev `localhost:3000`) |
+| `HONCHO_OAUTH_AUTHORIZE_URL` | Full authorize URL (overrides the dashboard origin) |
+| `HONCHO_OAUTH_TOKEN_URL` | Token endpoint (default: cloud API; local-dev `localhost:8000`) |
+| `HONCHO_OAUTH_CLIENT_ID` | OAuth client (default `hermes-desktop`) |
+| `HONCHO_OAUTH_SCOPE` | Requested scope (default `write`) |
 
 ## CLI Commands
 

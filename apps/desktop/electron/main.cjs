@@ -29,7 +29,7 @@ const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
-const { isForeignBackendToken, resolveServedDashboardToken } = require('./dashboard-token.cjs')
+const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { PortPool } = require('./port-pool.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
@@ -4614,25 +4614,11 @@ async function spawnPoolBackend(profile, entry) {
   const baseUrl = `http://127.0.0.1:${port}`
   await Promise.race([waitForHermes(baseUrl, token), startFailed])
   ready = true
-  const authToken = await resolveServedDashboardToken(baseUrl, token, { rememberLog }).catch(error => {
-    rememberLog(`[boot] could not read served dashboard token for profile "${profile}": ${error.message}`)
-    return token
+  const authToken = await adoptServedDashboardToken(baseUrl, token, {
+    childAlive: () => child.exitCode === null && !child.killed,
+    label: `Hermes backend for profile "${profile}"`,
+    rememberLog
   })
-  if (
-    isForeignBackendToken({
-      servedToken: authToken,
-      spawnToken: token,
-      childAlive: child.exitCode === null && !child.killed
-    })
-  ) {
-    // Our child is dead and the port answers with someone else's token:
-    // /api/status readiness was a false positive from a process we did not
-    // spawn. Fail loudly rather than authenticate against a foreign backend.
-    backendPool.delete(profile)
-    throw new Error(
-      `Hermes backend for profile "${profile}" exited and port ${port} is served by a different process; refusing its session token.`
-    )
-  }
   entry.token = authToken
 
   return {
@@ -4870,26 +4856,11 @@ async function startHermes() {
     await advanceBootProgress('backend.wait', 'Waiting for Hermes backend to become ready', 90)
     await Promise.race([waitForHermes(baseUrl, token), backendStartFailed])
     backendReady = true
-    const authToken = await resolveServedDashboardToken(baseUrl, token, { rememberLog }).catch(error => {
-      rememberLog(`[boot] could not read served dashboard token: ${error.message}`)
-      return token
+    const authToken = await adoptServedDashboardToken(baseUrl, token, {
+      // The exit/error handlers null hermesProcess when the child dies.
+      childAlive: () => hermesProcess !== null && hermesProcess.exitCode === null && !hermesProcess.killed,
+      rememberLog
     })
-    // The exit/error handlers null hermesProcess when the child dies, so a
-    // null here already means "child dead".
-    if (
-      isForeignBackendToken({
-        servedToken: authToken,
-        spawnToken: token,
-        childAlive: hermesProcess !== null && hermesProcess.exitCode === null && !hermesProcess.killed
-      })
-    ) {
-      // Our child is dead and the port answers with someone else's token:
-      // /api/status readiness was a false positive from a process we did not
-      // spawn. Fail loudly rather than authenticate against a foreign backend.
-      throw new Error(
-        `Hermes backend exited and port ${port} is served by a different process; refusing its session token.`
-      )
-    }
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',

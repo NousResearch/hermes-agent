@@ -1,3 +1,4 @@
+import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
 import { $connection } from '@/store/session'
 
 export type MediaKind = 'audio' | 'image' | 'video' | 'file'
@@ -109,6 +110,31 @@ export async function gatewayMediaDataUrl(path: string): Promise<string> {
   })
 
   return result.data_url
+}
+
+// Fetch a gateway-side file over the authenticated REST bridge and hand it to
+// the user as a browser download. Remote-mode replacement for the `file://`
+// fallback link: that URL names the gateway's absolute path on the *client*
+// machine, so clicking it silently does nothing. Unlike /api/media this path
+// also serves non-images (PDFs etc.) — /api/fs/read-data-url is the same
+// endpoint the remote file browser preview reads through, with its size cap.
+// Rejects when the gateway refuses the read so callers can show a real error.
+export async function downloadGatewayMediaFile(path: string): Promise<void> {
+  const dataUrl = await readDesktopFileDataUrl(filePathFromMediaPath(path))
+
+  if (!dataUrl) {
+    throw new Error('Gateway returned no file data')
+  }
+
+  const blobUrl = URL.createObjectURL(await (await fetch(dataUrl)).blob())
+  const anchor = document.createElement('a')
+  anchor.href = blobUrl
+  anchor.download = mediaName(path)
+  anchor.rel = 'noopener noreferrer'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000)
 }
 
 export function mediaDisplayLabel(path: string): string {

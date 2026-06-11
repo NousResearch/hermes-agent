@@ -9,7 +9,7 @@ Usage:
     python -m hermes_cli.main web --port 8080
 """
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 import asyncio
 import base64
@@ -20,9 +20,11 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -246,7 +248,31 @@ def _has_valid_session_token(request: Request) -> bool:
 
 
 def _require_token(request: Request) -> None:
-    """Validate the ephemeral session token.  Raises 401 on mismatch."""
+    """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
+
+    Two auth schemes protect the dashboard, exactly one active per bind:
+
+    * **Loopback / ``--insecure`` mode** (``auth_required`` False): the
+      ephemeral ``_SESSION_TOKEN`` is injected into the SPA HTML and echoed
+      back via ``X-Hermes-Session-Token`` (or the legacy ``Bearer`` header).
+      Validate it here.
+    * **Gated / OAuth mode** (``auth_required`` True): ``_SESSION_TOKEN`` is
+      NOT injected (the SPA authenticates with a session cookie), so there is
+      no token to check. The ``gated_auth_middleware`` has already verified the
+      cookie before the request reached this handler — any non-public ``/api/``
+      route it lets through carries a verified ``request.state.session``. The
+      legacy ``auth_middleware`` likewise short-circuits in this mode. Requiring
+      the (absent) token here would 401 every cookie-authenticated request,
+      making plugin install/enable/disable and the other ``_require_token``
+      endpoints permanently unreachable behind the gate. Defer to the gate.
+    """
+    if getattr(request.app.state, "auth_required", False):
+        # Gate is authoritative. It attaches ``request.state.session`` on
+        # success and 401s otherwise, so a request that reached us is already
+        # authenticated. Belt-and-braces: confirm the session is present.
+        if getattr(request.state, "session", None) is not None:
+            return
+        raise HTTPException(status_code=401, detail="Unauthorized")
     if not _has_valid_session_token(request):
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -599,19 +625,23 @@ CONFIG_SCHEMA = _ordered_schema
 
 class ConfigUpdate(BaseModel):
     config: dict
+    profile: Optional[str] = None
 
 
 class EnvVarUpdate(BaseModel):
     key: str
     value: str
+    profile: Optional[str] = None
 
 
 class EnvVarDelete(BaseModel):
     key: str
+    profile: Optional[str] = None
 
 
 class EnvVarReveal(BaseModel):
     key: str
+    profile: Optional[str] = None
 
 
 class MessagingPlatformUpdate(BaseModel):
@@ -633,19 +663,19 @@ class AudioTranscriptionRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
-class ModelAssignment(BaseModel):
-    """Payload for POST /api/model/set — assign a provider/model to a slot.
+class ManagedFileUpload(BaseModel):
+    path: str
+    data_url: str
+    overwrite: bool = True
 
-    scope="main"        → writes model.provider + model.default
-    scope="auxiliary"   → writes auxiliary.<task>.provider + auxiliary.<task>.model
-    scope="auxiliary" with task=""  → applied to every auxiliary.* slot
-    scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
-    """
 
-    scope: str
-    provider: str
-    model: str
-    task: str = ""
+class ManagedDirectoryCreate(BaseModel):
+    path: str
+
+
+class ManagedFileDelete(BaseModel):
+    path: str
+    recursive: bool = False
 
 
 _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
@@ -689,6 +719,75 @@ class ModelAssignment(BaseModel):
     # reads model.base_url from config (it ignores OPENAI_BASE_URL), so this is
     # the path that actually wires a local endpoint into resolution.
     base_url: str = ""
+    confirm_expensive_model: bool = False
+    profile: Optional[str] = None
+
+
+def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, str]:
+    """Normalize a main-slot (provider, model) pair before persisting.
+
+    The Models page has two assignment paths and only one of them was safe:
+
+    - The "Change" picker sends a real Hermes provider slug — fine.
+    - The per-card "Use as → Main model" menu sends ``entry.provider``
+      from the analytics rows, falling back to the model's VENDOR prefix
+      (``modelVendor("anthropic/claude-opus-4.6") == "anthropic"``) when
+      the session row has no ``billing_provider`` (older sessions, NULL
+      rows).  That wrote ``provider: anthropic`` +
+      ``default: anthropic/claude-opus-4.6`` to config — a vendor-prefixed
+      OpenRouter slug on the NATIVE Anthropic provider.  New sessions then
+      400 against api.anthropic.com ("model: anthropic/claude-opus-4.6 not
+      found") and the user reads it as "changing models does nothing".
+
+    Two repairs, both at this single chokepoint so every caller inherits:
+
+    1. Vendor-name → Hermes-provider mapping: when the provider string is
+       not a known Hermes provider/alias (e.g. ``moonshotai``, ``x-ai`` is
+       known but ``poolside`` isn't) but the model is a vendor-prefixed
+       aggregator slug, keep the user's CURRENT aggregator if they're on
+       one, else fall back to openrouter.
+    2. Model-format normalization for the resolved provider via
+       ``normalize_model_for_provider`` (e.g. ``anthropic/claude-opus-4.6``
+       on native anthropic → ``claude-opus-4-6``).
+    """
+    from hermes_cli.models import _KNOWN_PROVIDER_NAMES, normalize_provider
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    prov_in = (provider or "").strip()
+    model_in = (model or "").strip()
+    canonical = normalize_provider(prov_in)
+
+    if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
+        # Vendor prefix posing as a provider (analytics fallback). Resolve
+        # against the user's current provider when it's an aggregator that
+        # serves vendor-prefixed slugs; otherwise default to openrouter.
+        try:
+            cur_cfg = load_config().get("model", {})
+            cur_provider = (
+                str(cur_cfg.get("provider", "") or "").strip().lower()
+                if isinstance(cur_cfg, dict) else ""
+            )
+        except Exception:
+            cur_provider = ""
+        from hermes_cli.models import _AGGREGATOR_PROVIDERS
+        if cur_provider and normalize_provider(cur_provider) in _AGGREGATOR_PROVIDERS:
+            canonical = normalize_provider(cur_provider)
+            prov_in = cur_provider
+        else:
+            canonical = "openrouter"
+            prov_in = "openrouter"
+
+    # Custom/user-config providers keep the model verbatim — the registry
+    # normalizer doesn't know their namespaces.
+    if canonical in _KNOWN_PROVIDER_NAMES and not canonical.startswith("custom"):
+        try:
+            normalized_model = normalize_model_for_provider(model_in, canonical)
+            if normalized_model:
+                model_in = normalized_model
+        except Exception:
+            _log.debug("model normalization failed for %s/%s", prov_in, model_in, exc_info=True)
+
+    return prov_in, model_in
 
 
 def _apply_main_model_assignment(
@@ -809,6 +908,16 @@ _MEDIA_CONTENT_TYPES = {
     ".ico": "image/x-icon",
 }
 _MEDIA_MAX_BYTES = 25 * 1024 * 1024
+_MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
+_MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
+_HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
+
+
+@dataclass(frozen=True)
+class ManagedFilesPolicy:
+    default_path: Path
+    locked_root: Path | None
+    can_change_path: bool
 
 
 def _media_serve_roots() -> list[Path]:
@@ -862,6 +971,297 @@ async def get_media(path: str):
 
     encoded = base64.b64encode(target.read_bytes()).decode("ascii")
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
+
+
+def _canonical_path(path: Path, *, require_exists: bool = False) -> Path:
+    try:
+        return path.expanduser().resolve(strict=require_exists)
+    except FileNotFoundError:
+        if require_exists:
+            raise HTTPException(status_code=404, detail="Path not found")
+        raise
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+
+def _ensure_managed_root(raw_path: str | Path) -> Path:
+    root = Path(raw_path).expanduser()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        resolved = root.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail=f"Managed files root is unavailable: {exc}")
+    if not resolved.is_dir():
+        raise HTTPException(status_code=500, detail="Managed files root is not a directory")
+    return resolved
+
+
+def _path_is_under(root: Path, target: Path) -> bool:
+    return target == root or root in target.parents
+
+
+def _path_text(raw_path: str | None) -> str:
+    text = str(raw_path or "").strip()
+    if "\x00" in text:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    return text
+
+
+def _local_dashboard_request(request: Request) -> bool:
+    if getattr(request.app.state, "auth_required", False):
+        return False
+    host = (request.url.hostname or "").lower()
+    client_host = (request.client.host if request.client else "").lower()
+    local_hosts = {"", "localhost", "127.0.0.1", "::1", "testserver", "testclient"}
+    return host in local_hosts or client_host in local_hosts
+
+
+def _default_hermes_root_is_opt_data() -> bool:
+    raw = os.environ.get("HERMES_HOME", "").strip()
+    if not raw:
+        return False
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root().expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        root = Path(raw).expanduser().resolve(strict=False)
+    return root == _HOSTED_MANAGED_FILES_ROOT
+
+
+def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
+    raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
+    if raw_forced_root:
+        root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
+        return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
+
+    if not _local_dashboard_request(request) or _default_hermes_root_is_opt_data():
+        root = _ensure_managed_root(_HOSTED_MANAGED_FILES_ROOT) if create_root else _HOSTED_MANAGED_FILES_ROOT
+        return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
+
+    home = _canonical_path(Path.home())
+    return ManagedFilesPolicy(default_path=home, locked_root=None, can_change_path=True)
+
+
+def _resolve_managed_path(
+    raw_path: str | None,
+    request: Request,
+    *,
+    for_write: bool = False,
+) -> tuple[ManagedFilesPolicy, Path, str]:
+    policy = _managed_files_policy(request)
+    text = _path_text(raw_path)
+    root = policy.locked_root
+
+    if root is not None and (not text or text in {".", "/"}):
+        candidate = root
+    elif not text:
+        candidate = policy.default_path
+    else:
+        candidate = Path(text).expanduser()
+        if root is not None and not candidate.is_absolute():
+            if any(part == ".." for part in candidate.parts):
+                raise HTTPException(status_code=400, detail="Path cannot contain '..'")
+            candidate = root / candidate
+        elif not candidate.is_absolute():
+            raise HTTPException(status_code=400, detail="Path must be absolute")
+
+    if ".." in candidate.parts:
+        raise HTTPException(status_code=400, detail="Path cannot contain '..'")
+
+    if for_write and not candidate.exists():
+        parent = _canonical_path(candidate.parent)
+        resolved = parent / candidate.name
+    else:
+        resolved = _canonical_path(candidate, require_exists=not for_write)
+
+    if root is not None and not _path_is_under(root, resolved):
+        raise HTTPException(status_code=403, detail="Path outside managed files root")
+
+    return policy, resolved, str(resolved)
+
+
+def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
+    locked_root = str(policy.locked_root) if policy.locked_root is not None else None
+    return {
+        "root": locked_root,
+        "locked_root": locked_root,
+        "can_change_path": policy.can_change_path,
+    }
+
+
+def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
+    try:
+        resolved = target.resolve()
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
+        raise HTTPException(status_code=403, detail="Path outside managed files root")
+
+    try:
+        st = resolved.stat()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+
+    is_dir = resolved.is_dir()
+    mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
+    return {
+        "name": target.name or resolved.name or str(resolved),
+        "path": str(resolved),
+        "is_directory": is_dir,
+        "size": None if is_dir else st.st_size,
+        "mtime": st.st_mtime,
+        "mime_type": mime_type,
+    }
+
+
+def _decode_data_url(data_url: str) -> tuple[bytes, str]:
+    text = (data_url or "").strip()
+    if not text.startswith("data:") or "," not in text:
+        raise HTTPException(status_code=400, detail="Upload payload must be a data URL")
+    header, encoded = text.split(",", 1)
+    mime_type = header[5:].split(";", 1)[0] or "application/octet-stream"
+    if ";base64" not in header:
+        raise HTTPException(status_code=400, detail="Upload payload must be base64 encoded")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Upload payload is not valid base64")
+    if len(data) > _MANAGED_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large")
+    return data, mime_type
+
+
+@app.get("/api/files")
+async def list_managed_files(request: Request, path: Optional[str] = None):
+    policy, target, display_path = _resolve_managed_path(path, request)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+
+    try:
+        entries = [_managed_file_entry(policy, child) for child in target.iterdir()]
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Directory is not readable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read directory: {exc}")
+
+    entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
+    locked_root = policy.locked_root
+    parent = None
+    if target.parent != target and (locked_root is None or target != locked_root):
+        parent = str(target.parent)
+    return {
+        "path": display_path,
+        "parent": parent,
+        "entries": entries,
+        **_managed_response_meta(policy),
+    }
+
+
+@app.get("/api/files/read")
+async def read_managed_file(request: Request, path: str):
+    policy, target, display_path = _resolve_managed_path(path, request)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    try:
+        size = target.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not stat file: {exc}")
+    if size > _MANAGED_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large")
+
+    mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    try:
+        encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not readable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read file: {exc}")
+
+    return {
+        "name": target.name,
+        "path": display_path,
+        "size": size,
+        "mime_type": mime_type,
+        "data_url": f"data:{mime_type};base64,{encoded}",
+        **_managed_response_meta(policy),
+    }
+
+
+@app.post("/api/files/upload")
+async def upload_managed_file(payload: ManagedFileUpload, request: Request):
+    policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    if target.exists() and target.is_dir():
+        raise HTTPException(status_code=409, detail="A directory already exists at that path")
+    if target.exists() and not payload.overwrite:
+        raise HTTPException(status_code=409, detail="File already exists")
+
+    data, _mime_type = _decode_data_url(payload.data_url)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+
+    return {
+        "ok": True,
+        "entry": _managed_file_entry(policy, target),
+        "path": display_path,
+        **_managed_response_meta(policy),
+    }
+
+
+@app.post("/api/files/mkdir")
+async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
+    policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    if target.exists() and not target.is_dir():
+        raise HTTPException(status_code=409, detail="A file already exists at that path")
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Directory is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create directory: {exc}")
+
+    return {
+        "ok": True,
+        "entry": _managed_file_entry(policy, target),
+        "path": display_path,
+        **_managed_response_meta(policy),
+    }
+
+
+@app.delete("/api/files")
+async def delete_managed_file(payload: ManagedFileDelete, request: Request):
+    policy, target, display_path = _resolve_managed_path(payload.path, request)
+    if policy.locked_root is not None and target == policy.locked_root:
+        raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
+    if target.parent == target:
+        raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+
+    try:
+        if target.is_dir():
+            if payload.recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()
+        else:
+            target.unlink()
+    except OSError as exc:
+        status_code = 409 if target.is_dir() and not payload.recursive else 500
+        raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}")
+
+    return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
 
 
 @app.get("/api/status")
@@ -1362,11 +1762,50 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     return lines[-n:] if n > 0 else lines
 
 
+def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
+    """Spawn ``hermes gateway restart``, reusing an in-flight restart.
+
+    Multiple dashboard paths can request a restart in quick succession
+    (restart button double-click, or a stale cached frontend firing its own
+    restart after the server already auto-restarted post-onboarding). Two
+    concurrent ``hermes gateway restart`` children race each other on the
+    manual kill-and-start path, so reuse the live one instead.
+
+    Returns ``(proc, reused)``.
+    """
+    existing = _ACTION_PROCS.get("gateway-restart")
+    if existing is not None and existing.poll() is None:
+        return existing, True
+    return _spawn_hermes_action(["gateway", "restart"], "gateway-restart"), False
+
+
+def _restart_gateway_after_webhook_enable() -> dict[str, Any]:
+    """Best-effort gateway restart after enabling the webhook platform."""
+    try:
+        proc, reused = _spawn_gateway_restart()
+    except Exception as exc:
+        _log.exception("Failed to auto-restart gateway after enabling webhooks")
+        return {
+            "restart_started": False,
+            "restart_error": str(exc),
+        }
+    if reused:
+        _log.info(
+            "Webhook enable: reusing in-flight gateway restart (pid %s)",
+            proc.pid,
+        )
+    return {
+        "restart_started": True,
+        "restart_action": "gateway-restart",
+        "restart_pid": proc.pid,
+    }
+
+
 @app.post("/api/gateway/restart")
 async def restart_gateway():
     """Kick off a ``hermes gateway restart`` in the background."""
     try:
-        proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+        proc, _reused = _spawn_gateway_restart()
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
@@ -2150,8 +2589,9 @@ def _normalize_config_for_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.get("/api/config")
-async def get_config():
-    config = _normalize_config_for_web(load_config())
+async def get_config(profile: Optional[str] = None):
+    with _profile_scope(profile):
+        config = _normalize_config_for_web(load_config())
     # Strip internal keys that the frontend shouldn't see or send back
     return {k: v for k, v in config.items() if not k.startswith("_")}
 
@@ -2177,7 +2617,7 @@ _EMPTY_MODEL_INFO: dict = {
 
 
 @app.get("/api/model/info")
-def get_model_info():
+def get_model_info(profile: Optional[str] = None):
     """Return resolved model metadata for the currently configured model.
 
     Calls the same context-length resolution chain the agent uses, so the
@@ -2185,7 +2625,8 @@ def get_model_info():
     Also returns model capabilities (vision, reasoning, tools) when available.
     """
     try:
-        cfg = load_config()
+        with _profile_scope(profile):
+            cfg = load_config()
         model_cfg = cfg.get("model", "")
 
         # Extract model name and provider from the config
@@ -2248,6 +2689,10 @@ def get_model_info():
             "effective_context_length": effective_ctx,
             "capabilities": caps,
         }
+    except HTTPException:
+        # Unknown/invalid profile must surface as 404, not degrade into a
+        # 200 with empty model info (which would render as "no model set").
+        raise
     except Exception:
         _log.exception("GET /api/model/info failed")
         return dict(_EMPTY_MODEL_INFO)
@@ -2277,13 +2722,17 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 
 
 @app.get("/api/model/options")
-def get_model_options():
+def get_model_options(profile: Optional[str] = None):
     """Return authenticated providers + their curated model lists.
 
     REST equivalent of the ``model.options`` JSON-RPC on tui_gateway, so the
     dashboard Models page can render the picker without a live chat session.
     The response shape matches ``model.options`` 1:1 so ``ModelPickerDialog``
     can share the same types.
+
+    ``profile`` scopes the picker context (current model/provider, custom
+    providers from config, per-profile .env auth state) so the Models page
+    reads the SAME profile /api/model/set writes.
     """
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
@@ -2296,15 +2745,18 @@ def get_model_options():
         # come back as skeleton rows carrying `authenticated=False` +
         # `auth_type`/`key_env`/`warning` so the GUI can render a setup
         # affordance instead of hiding the provider entirely.
-        return build_models_payload(
-            load_picker_context(),
-            max_models=50,
-            include_unconfigured=True,
-            picker_hints=True,
-            canonical_order=True,
-            pricing=True,
-            capabilities=True,
-        )
+        with _profile_scope(profile):
+            return build_models_payload(
+                load_picker_context(),
+                max_models=50,
+                include_unconfigured=True,
+                picker_hints=True,
+                canonical_order=True,
+                pricing=True,
+                capabilities=True,
+            )
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
@@ -2383,7 +2835,7 @@ def get_recommended_default_model(provider: str = ""):
 
 
 @app.get("/api/model/auxiliary")
-def get_auxiliary_models():
+def get_auxiliary_models(profile: Optional[str] = None):
     """Return current auxiliary task assignments.
 
     Shape:
@@ -2394,9 +2846,14 @@ def get_auxiliary_models():
         ],
         "main": {"provider": "openrouter", "model": "anthropic/claude-opus-4.7"},
       }
+
+    ``profile`` scopes the read — without it, the Models page would show
+    the dashboard profile's auxiliary pins while /api/model/set wrote the
+    selected profile's (read/write asymmetry).
     """
     try:
-        cfg = load_config()
+        with _profile_scope(profile):
+            cfg = load_config()
         aux_cfg = cfg.get("auxiliary", {})
         if not isinstance(aux_cfg, dict):
             aux_cfg = {}
@@ -2421,13 +2878,15 @@ def get_auxiliary_models():
             main = {"provider": "", "model": str(model_cfg) if model_cfg else ""}
 
         return {"tasks": tasks, "main": main}
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/model/auxiliary failed")
         raise HTTPException(status_code=500, detail="Failed to read auxiliary config")
 
 
 @app.post("/api/model/set")
-async def set_model_assignment(body: ModelAssignment):
+async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = None):
     """Assign a model to the main slot or an auxiliary task slot.
 
     Writes to ``~/.hermes/config.yaml`` — applies to **new** sessions only.
@@ -2444,132 +2903,179 @@ async def set_model_assignment(body: ModelAssignment):
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
 
     try:
-        cfg = load_config()
+        # Expensive-model warning runs BEFORE the profile scope is entered:
+        # _profile_scope must never be held across an await (the RLock is
+        # reentrant per-thread, so a second coroutine interleaving on the
+        # event-loop thread could cross-restore the module globals).
+        if model and not body.confirm_expensive_model:
+            try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
 
-        if scope == "main":
-            if not provider or not model:
-                raise HTTPException(status_code=400, detail="provider and model required for main")
-            model_cfg = _apply_main_model_assignment(
-                cfg.get("model", {}), provider, model, base_url
-            )
-            cfg["model"] = model_cfg
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                warning = await asyncio.to_thread(
+                    expensive_model_warning,
+                    model,
+                    provider=provider,
+                    base_url=base_url,
+                )
+            except Exception:
+                warning = None
+            if warning is not None:
+                return {
+                    "ok": False,
+                    "scope": scope,
+                    "provider": provider,
+                    "model": model,
+                    "confirm_required": True,
+                    "confirm_message": warning.message,
+                }
 
-            # When switching the main provider to Nous, mirror the CLI's
-            # post-model-selection behaviour (hermes_cli/main.py
-            # prompt_enable_tool_gateway / tools_config apply_nous_managed_defaults):
-            # auto-route any *unconfigured* tools through the Nous Tool Gateway.
-            # This is purely additive — apply_nous_managed_defaults skips every
-            # tool where the user already has a direct key (FIRECRAWL_API_KEY,
-            # FAL_KEY, etc.) or an explicit backend/provider in config, so it
-            # never overwrites a user's own setup. GUI users thus land on the
-            # gateway the same way CLI users do, without a separate prompt.
-            gateway_tools: list[str] = []
-            if provider.strip().lower() == "nous":
-                try:
-                    from hermes_cli.nous_subscription import apply_nous_managed_defaults
-                    from hermes_cli.tools_config import _get_platform_tools
+        def _apply_assignment():
+            with _profile_scope(body.profile or profile):
+                return _apply_model_assignment_sync(
+                    scope, provider, model, task, base_url
+                )
 
-                    enabled = _get_platform_tools(
-                        cfg, "cli", include_default_mcp_servers=False
-                    )
-                    changed = apply_nous_managed_defaults(
-                        cfg,
-                        enabled_toolsets=enabled,
-                        force_fresh=True,
-                    )
-                    gateway_tools = sorted(changed)
-                except Exception:
-                    # Portal lookup hiccups / non-subscriber / non-nous gating
-                    # must never block saving the model assignment.
-                    _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
-
-            save_config(cfg)
-
-            # Surface auxiliary slots still pinned to a *different* provider than
-            # the new main one. Switching the main model does NOT touch aux pins
-            # (they're independent, sticky per-task overrides — see
-            # auxiliary_client._resolve_auto). A user who switches main away from
-            # a now-unpaid provider (e.g. nous with $0 balance) keeps paying 402s
-            # on every background aux call until they reset those pins. We never
-            # auto-clear them — pinning aux to a cheaper/different model is a
-            # legitimate config — but we tell the caller so the UI can offer a
-            # "reset to main" nudge instead of silently burning credits.
-            new_provider = provider.strip().lower()
-            stale_aux: list[dict] = []
-            aux_cfg = cfg.get("auxiliary", {})
-            if isinstance(aux_cfg, dict):
-                for slot in _AUX_TASK_SLOTS:
-                    slot_cfg = aux_cfg.get(slot)
-                    if not isinstance(slot_cfg, dict):
-                        continue
-                    slot_provider = str(slot_cfg.get("provider", "") or "").strip()
-                    if (
-                        slot_provider
-                        and slot_provider.lower() not in {"auto", ""}
-                        and slot_provider.lower() != new_provider
-                    ):
-                        stale_aux.append({
-                            "task": slot,
-                            "provider": slot_provider,
-                            "model": str(slot_cfg.get("model", "") or ""),
-                        })
-
-            return {
-                "ok": True,
-                "scope": "main",
-                "provider": provider,
-                "model": model,
-                "base_url": model_cfg.get("base_url", ""),
-                "gateway_tools": gateway_tools,
-                "stale_aux": stale_aux,
-            }
-
-        # scope == "auxiliary"
-        aux = cfg.get("auxiliary")
-        if not isinstance(aux, dict):
-            aux = {}
-
-        if task == "__reset__":
-            # Reset every slot to provider="auto", model="" — keeps other fields intact.
-            for slot in _AUX_TASK_SLOTS:
-                slot_cfg = aux.get(slot)
-                if not isinstance(slot_cfg, dict):
-                    slot_cfg = {}
-                slot_cfg["provider"] = "auto"
-                slot_cfg["model"] = ""
-                aux[slot] = slot_cfg
-            cfg["auxiliary"] = aux
-            save_config(cfg)
-            return {"ok": True, "scope": "auxiliary", "reset": True}
-
-        if not provider:
-            raise HTTPException(status_code=400, detail="provider required for auxiliary")
-
-        targets = [task] if task else list(_AUX_TASK_SLOTS)
-        for slot in targets:
-            if slot not in _AUX_TASK_SLOTS:
-                raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
-            slot_cfg = aux.get(slot)
-            if not isinstance(slot_cfg, dict):
-                slot_cfg = {}
-            slot_cfg["provider"] = provider
-            slot_cfg["model"] = model
-            aux[slot] = slot_cfg
-
-        cfg["auxiliary"] = aux
-        save_config(cfg)
-        return {
-            "ok": True,
-            "scope": "auxiliary",
-            "tasks": targets,
-            "provider": provider,
-            "model": model,
-        }
+        return await asyncio.to_thread(_apply_assignment)
     except HTTPException:
         raise
     except Exception:
         _log.exception("POST /api/model/set failed")
         raise HTTPException(status_code=500, detail="Failed to save model assignment")
+
+
+def _apply_model_assignment_sync(
+    scope: str, provider: str, model: str, task: str, base_url: str
+):
+    """Synchronous body of POST /api/model/set.
+
+    Runs inside ``_profile_scope`` (in a worker thread) so every
+    load_config/save_config lands in the requested profile.  Raises
+    HTTPException for validation errors — the async wrapper re-raises them.
+    """
+    cfg = load_config()
+
+    if scope == "main":
+        if not provider or not model:
+            raise HTTPException(status_code=400, detail="provider and model required for main")
+        provider, model = _normalize_main_model_assignment(provider, model)
+        model_cfg = _apply_main_model_assignment(
+            cfg.get("model", {}), provider, model, base_url
+        )
+        cfg["model"] = model_cfg
+
+        # When switching the main provider to Nous, mirror the CLI's
+        # post-model-selection behaviour (hermes_cli/main.py
+        # prompt_enable_tool_gateway / tools_config apply_nous_managed_defaults):
+        # auto-route any *unconfigured* tools through the Nous Tool Gateway.
+        # This is purely additive — apply_nous_managed_defaults skips every
+        # tool where the user already has a direct key (FIRECRAWL_API_KEY,
+        # FAL_KEY, etc.) or an explicit backend/provider in config, so it
+        # never overwrites a user's own setup. GUI users thus land on the
+        # gateway the same way CLI users do, without a separate prompt.
+        gateway_tools: list[str] = []
+        if provider.strip().lower() == "nous":
+            try:
+                from hermes_cli.nous_subscription import apply_nous_managed_defaults
+                from hermes_cli.tools_config import _get_platform_tools
+
+                enabled = _get_platform_tools(
+                    cfg, "cli", include_default_mcp_servers=False
+                )
+                changed = apply_nous_managed_defaults(
+                    cfg,
+                    enabled_toolsets=enabled,
+                    force_fresh=True,
+                )
+                gateway_tools = sorted(changed)
+            except Exception:
+                # Portal lookup hiccups / non-subscriber / non-nous gating
+                # must never block saving the model assignment.
+                _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
+
+        save_config(cfg)
+
+        # Surface auxiliary slots still pinned to a *different* provider than
+        # the new main one. Switching the main model does NOT touch aux pins
+        # (they're independent, sticky per-task overrides — see
+        # auxiliary_client._resolve_auto). A user who switches main away from
+        # a now-unpaid provider (e.g. nous with $0 balance) keeps paying 402s
+        # on every background aux call until they reset those pins. We never
+        # auto-clear them — pinning aux to a cheaper/different model is a
+        # legitimate config — but we tell the caller so the UI can offer a
+        # "reset to main" nudge instead of silently burning credits.
+        new_provider = provider.strip().lower()
+        stale_aux: list[dict] = []
+        aux_cfg = cfg.get("auxiliary", {})
+        if isinstance(aux_cfg, dict):
+            for slot in _AUX_TASK_SLOTS:
+                slot_cfg = aux_cfg.get(slot)
+                if not isinstance(slot_cfg, dict):
+                    continue
+                slot_provider = str(slot_cfg.get("provider", "") or "").strip()
+                if (
+                    slot_provider
+                    and slot_provider.lower() not in {"auto", ""}
+                    and slot_provider.lower() != new_provider
+                ):
+                    stale_aux.append({
+                        "task": slot,
+                        "provider": slot_provider,
+                        "model": str(slot_cfg.get("model", "") or ""),
+                    })
+
+        return {
+            "ok": True,
+            "scope": "main",
+            "provider": provider,
+            "model": model,
+            "base_url": model_cfg.get("base_url", ""),
+            "gateway_tools": gateway_tools,
+            "stale_aux": stale_aux,
+        }
+
+    # scope == "auxiliary"
+    aux = cfg.get("auxiliary")
+    if not isinstance(aux, dict):
+        aux = {}
+
+    if task == "__reset__":
+        # Reset every slot to provider="auto", model="" — keeps other fields intact.
+        for slot in _AUX_TASK_SLOTS:
+            slot_cfg = aux.get(slot)
+            if not isinstance(slot_cfg, dict):
+                slot_cfg = {}
+            slot_cfg["provider"] = "auto"
+            slot_cfg["model"] = ""
+            aux[slot] = slot_cfg
+        cfg["auxiliary"] = aux
+        save_config(cfg)
+        return {"ok": True, "scope": "auxiliary", "reset": True}
+
+    if not provider:
+        raise HTTPException(status_code=400, detail="provider required for auxiliary")
+
+    targets = [task] if task else list(_AUX_TASK_SLOTS)
+    for slot in targets:
+        if slot not in _AUX_TASK_SLOTS:
+            raise HTTPException(status_code=400, detail=f"unknown auxiliary task: {slot}")
+        slot_cfg = aux.get(slot)
+        if not isinstance(slot_cfg, dict):
+            slot_cfg = {}
+        slot_cfg["provider"] = provider
+        slot_cfg["model"] = model
+        aux[slot] = slot_cfg
+
+    cfg["auxiliary"] = aux
+    save_config(cfg)
+    return {
+        "ok": True,
+        "scope": "auxiliary",
+        "tasks": targets,
+        "provider": provider,
+        "model": model,
+    }
 
 
 
@@ -2627,18 +3133,22 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.put("/api/config")
-async def update_config(body: ConfigUpdate):
+async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     try:
-        save_config(_denormalize_config_from_web(body.config))
+        with _profile_scope(body.profile or profile):
+            save_config(_denormalize_config_from_web(body.config))
         return {"ok": True}
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("PUT /api/config failed")
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @app.get("/api/env")
-async def get_env_vars():
-    env_on_disk = load_env()
+async def get_env_vars(profile: Optional[str] = None):
+    with _profile_scope(profile):
+        env_on_disk = load_env()
     channel_keys = _channel_managed_env_keys()
     result = {}
     for var_name, info in OPTIONAL_ENV_VARS.items():
@@ -2661,9 +3171,10 @@ async def get_env_vars():
 
 
 @app.put("/api/env")
-async def set_env_var(body: EnvVarUpdate):
+async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
-        save_env_value(body.key, body.value)
+        with _profile_scope(body.profile or profile):
+            save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys
@@ -2774,9 +3285,10 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 
 
 @app.delete("/api/env")
-async def remove_env_var(body: EnvVarDelete):
+async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     try:
-        removed = remove_env_value(body.key)
+        with _profile_scope(body.profile or profile):
+            removed = remove_env_value(body.key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
         return {"ok": True, "key": body.key}
@@ -2793,7 +3305,9 @@ async def remove_env_var(body: EnvVarDelete):
 
 
 @app.post("/api/env/reveal")
-async def reveal_env_var(body: EnvVarReveal, request: Request):
+async def reveal_env_var(
+    body: EnvVarReveal, request: Request, profile: Optional[str] = None
+):
     """Return the real (unredacted) value of a single env var.
 
     Protected by:
@@ -2813,7 +3327,8 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
     _reveal_timestamps.append(now)
 
     # --- Reveal ---
-    env_on_disk = load_env()
+    with _profile_scope(body.profile or profile):
+        env_on_disk = load_env()
     value = env_on_disk.get(body.key)
     if value is None:
         raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
@@ -3714,6 +4229,34 @@ async def get_telegram_onboarding_status(pairing_id: str):
     )
 
 
+def _restart_gateway_after_telegram_onboarding() -> dict[str, Any]:
+    """Best-effort gateway restart after saving Telegram QR onboarding.
+
+    The QR flow naturally pulls users into Telegram on another device. If the
+    saved token waits on a separate dashboard restart click, Hermes appears
+    broken from the chat side. Keep the config save authoritative, but report
+    restart failures so the UI can fall back to the existing manual banner.
+    """
+    try:
+        proc, reused = _spawn_gateway_restart()
+    except Exception as exc:
+        _log.exception("Failed to auto-restart gateway after Telegram onboarding")
+        return {
+            "restart_started": False,
+            "restart_error": str(exc),
+        }
+    if reused:
+        _log.info(
+            "Telegram onboarding: reusing in-flight gateway restart (pid %s)",
+            proc.pid,
+        )
+    return {
+        "restart_started": True,
+        "restart_action": "gateway-restart",
+        "restart_pid": proc.pid,
+    }
+
+
 @app.post("/api/messaging/telegram/onboarding/{pairing_id}/apply")
 async def apply_telegram_onboarding(
     pairing_id: str, body: TelegramOnboardingApply
@@ -3768,11 +4311,14 @@ async def apply_telegram_onboarding(
     with _telegram_onboarding_lock:
         _telegram_onboarding_pairings.pop(pairing_id, None)
 
+    restart_result = _restart_gateway_after_telegram_onboarding()
+
     return {
         "ok": True,
         "platform": "telegram",
         "bot_username": bot_username,
-        "needs_restart": True,
+        "needs_restart": not restart_result["restart_started"],
+        **restart_result,
     }
 
 
@@ -3922,22 +4468,27 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
 
 
 def _anthropic_oauth_status() -> Dict[str, Any]:
-    """Combined status across the three Anthropic credential sources we read.
+    """Status for the "Anthropic API Key" catalog entry.
 
-    Hermes resolves Anthropic creds in this order at runtime:
-    1. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow
-    2. ``~/.claude/.credentials.json`` — Claude Code CLI credentials (auto)
-    3. ``ANTHROPIC_TOKEN`` / ``ANTHROPIC_API_KEY`` env vars
-    The dashboard reports the highest-priority source that's actually present.
+    Two sources, in priority order:
+    1. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow (what
+       this entry's Connect button writes)
+    2. ``ANTHROPIC_API_KEY`` → ``ANTHROPIC_TOKEN`` → ``CLAUDE_CODE_OAUTH_TOKEN``
+       env vars (registry order) — from ``.env``, the shell, or an external
+       secret source like Bitwarden (whose keys are injected into the process
+       env during ``load_hermes_dotenv()``, so the same check covers them)
+
+    Claude Code's ``~/.claude/.credentials.json`` is deliberately NOT read
+    here — it has its own dedicated catalog entry (``claude-code`` →
+    ``_claude_code_only_status``). Reporting it under the API-key entry
+    double-counts the token and shadows a real ANTHROPIC_API_KEY.
     """
     try:
         from agent.anthropic_adapter import (
             read_hermes_oauth_credentials,
-            read_claude_code_credentials,
             _HERMES_OAUTH_FILE,
         )
     except ImportError:
-        read_claude_code_credentials = None  # type: ignore
         read_hermes_oauth_credentials = None  # type: ignore
         _HERMES_OAUTH_FILE = None  # type: ignore
 
@@ -3957,29 +4508,33 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
             "has_refresh_token": bool(hermes_creds.get("refreshToken")),
         }
 
-    cc_creds = None
-    if read_claude_code_credentials:
-        try:
-            cc_creds = read_claude_code_credentials()
-        except Exception:
-            cc_creds = None
-    if cc_creds and cc_creds.get("accessToken"):
-        return {
-            "logged_in": True,
-            "source": "claude_code",
-            "source_label": "Claude Code (~/.claude/.credentials.json)",
-            "token_preview": _truncate_token(cc_creds.get("accessToken")),
-            "expires_at": cc_creds.get("expiresAt"),
-            "has_refresh_token": bool(cc_creds.get("refreshToken")),
-        }
+    # Env-var / secret-source path. ``get_env_value`` checks the process
+    # environment first (where Bitwarden-sourced secrets land) then .env.
+    env_var_order: tuple = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        env_var_order = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
+    except (ImportError, KeyError):
+        pass
+    try:
+        from hermes_cli.config import get_env_value
+    except ImportError:
+        get_env_value = None  # type: ignore
+    try:
+        from hermes_cli.env_loader import format_secret_source_suffix
+    except ImportError:
+        format_secret_source_suffix = None  # type: ignore
 
-    env_token = os.getenv("ANTHROPIC_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
-    if env_token:
+    for var in env_var_order:
+        value = (get_env_value(var) if get_env_value else None) or os.getenv(var)
+        if not value:
+            continue
+        suffix = format_secret_source_suffix(var) if format_secret_source_suffix else ""
         return {
             "logged_in": True,
             "source": "env_var",
-            "source_label": "ANTHROPIC_TOKEN environment variable",
-            "token_preview": _truncate_token(env_token),
+            "source_label": f"{var}{suffix}",
+            "token_preview": _truncate_token(value),
             "expires_at": None,
             "has_refresh_token": False,
         }
@@ -5702,6 +6257,7 @@ class CronJobCreate(BaseModel):
     schedule: str
     name: str = ""
     deliver: str = "local"
+    skills: Optional[List[str]] = None
 
 
 class CronJobUpdate(BaseModel):
@@ -5873,6 +6429,7 @@ async def create_cron_job(body: CronJobCreate, profile: str = "default"):
             schedule=body.schedule,
             name=body.name,
             deliver=body.deliver,
+            skills=body.skills,
         )
     except Exception as e:
         _log.exception("POST /api/cron/jobs failed")
@@ -5987,6 +6544,7 @@ class MCPServerCreate(BaseModel):
     env: Dict[str, str] = {}
     # auth: "oauth" | "header" | None
     auth: Optional[str] = None
+    profile: Optional[str] = None
 
 
 def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
@@ -6017,10 +6575,11 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @app.get("/api/mcp/servers")
-async def list_mcp_servers():
+async def list_mcp_servers(profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers
 
-    servers = _get_mcp_servers()
+    with _profile_scope(profile):
+        servers = _get_mcp_servers()
     return {
         "servers": [
             _mcp_server_summary(name, cfg) for name, cfg in sorted(servers.items())
@@ -6029,13 +6588,15 @@ async def list_mcp_servers():
 
 
 @app.post("/api/mcp/servers")
-async def add_mcp_server(body: MCPServerCreate):
+async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
 
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Server name is required")
-    if name in _get_mcp_servers():
+    with _profile_scope(body.profile or profile):
+        existing = _get_mcp_servers()
+    if name in existing:
         raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
     if not body.url and not body.command:
         raise HTTPException(
@@ -6056,7 +6617,10 @@ async def add_mcp_server(body: MCPServerCreate):
         server_config["auth"] = body.auth
 
     try:
-        _save_mcp_server(name, server_config)
+        with _profile_scope(body.profile or profile):
+            _save_mcp_server(name, server_config)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("POST /api/mcp/servers failed")
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -6065,27 +6629,44 @@ async def add_mcp_server(body: MCPServerCreate):
 
 
 @app.delete("/api/mcp/servers/{name}")
-async def remove_mcp_server(name: str):
+async def remove_mcp_server(name: str, profile: Optional[str] = None):
     from hermes_cli.mcp_config import _remove_mcp_server
 
-    if not _remove_mcp_server(name):
+    with _profile_scope(profile):
+        removed = _remove_mcp_server(name)
+    if not removed:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
     return {"ok": True}
 
 
 @app.post("/api/mcp/servers/{name}/test")
-async def test_mcp_server(name: str):
+async def test_mcp_server(name: str, profile: Optional[str] = None):
     """Connect to the server, list its tools, disconnect.  Returns tool list."""
     from hermes_cli.mcp_config import _get_mcp_servers, _probe_single_server
 
-    servers = _get_mcp_servers()
+    with _profile_scope(profile):
+        servers = _get_mcp_servers()
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+
+    def _probe_scoped():
+        # Re-enter the scope INSIDE the worker thread so call-time
+        # resolution during the probe — env-placeholder expansion in
+        # _resolve_mcp_server_config reading the profile's .env — sees the
+        # selected profile, matching the config the server was saved into.
+        # (asyncio.to_thread copies contextvars, but entering explicitly
+        # keeps the lock-protected SKILLS_DIR swap balanced per-thread.)
+        # The probe's dedicated MCP event-loop thread is covered too:
+        # _run_on_mcp_loop wraps scheduled coroutines with the caller's
+        # HERMES_HOME override (see mcp_tool._wrap_with_home_override), so
+        # OAuth token stores resolve against the selected profile as well.
+        with _profile_scope(profile):
+            return _probe_single_server(name, servers[name])
 
     try:
         # Probe blocks on a dedicated MCP event loop — run in a thread so the
         # FastAPI event loop is never blocked.
-        tools = await asyncio.to_thread(_probe_single_server, name, servers[name])
+        tools = await asyncio.to_thread(_probe_scoped)
     except Exception as exc:
         return {
             "ok": False,
@@ -6100,34 +6681,40 @@ async def test_mcp_server(name: str):
 
 class MCPEnabledToggle(BaseModel):
     enabled: bool
+    profile: Optional[str] = None
 
 
 @app.put("/api/mcp/servers/{name}/enabled")
-async def set_mcp_server_enabled(name: str, body: MCPEnabledToggle):
+async def set_mcp_server_enabled(
+    name: str, body: MCPEnabledToggle, profile: Optional[str] = None
+):
     """Enable or disable an MCP server (takes effect on next session/gateway).
 
     Toggles the ``enabled`` key on the server's config.yaml entry — the same
     flag the agent reads at startup.  Disabled servers stay in config so they
     can be re-enabled without re-entering their settings.
     """
-    cfg = load_config()
-    servers = cfg.get("mcp_servers")
-    if not isinstance(servers, dict) or name not in servers:
-        raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
-    if not isinstance(servers[name], dict):
-        raise HTTPException(status_code=400, detail="Malformed server config")
-    servers[name]["enabled"] = bool(body.enabled)
-    save_config(cfg)
+    with _profile_scope(body.profile or profile):
+        cfg = load_config()
+        servers = cfg.get("mcp_servers")
+        if not isinstance(servers, dict) or name not in servers:
+            raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
+        if not isinstance(servers[name], dict):
+            raise HTTPException(status_code=400, detail="Malformed server config")
+        servers[name]["enabled"] = bool(body.enabled)
+        save_config(cfg)
     return {"ok": True, "name": name, "enabled": bool(body.enabled)}
 
 
 @app.get("/api/mcp/catalog")
-async def list_mcp_catalog():
+async def list_mcp_catalog(profile: Optional[str] = None):
     """Browse the Nous-approved MCP catalog (the optional-mcps/ manifests).
 
     Each entry reports whether it's already installed and enabled so the UI
     can show install / enabled state inline.  This is the same catalog
-    `hermes mcp catalog` / `hermes mcp install` read.
+    `hermes mcp catalog` / `hermes mcp install` read.  ``profile`` scopes
+    the installed/enabled annotations (the catalog itself is repo-shipped
+    and identical for every profile).
     """
     try:
         from hermes_cli import mcp_catalog
@@ -6137,7 +6724,13 @@ async def list_mcp_catalog():
 
     entries = []
     try:
-        for entry in mcp_catalog.list_catalog():
+        with _profile_scope(profile):
+            catalog_entries = list(mcp_catalog.list_catalog())
+            installed_state = {
+                e.name: (mcp_catalog.is_installed(e.name), mcp_catalog.is_enabled(e.name))
+                for e in catalog_entries
+            }
+        for entry in catalog_entries:
             auth = entry.auth
             entries.append({
                 "name": entry.name,
@@ -6151,9 +6744,12 @@ async def list_mcp_catalog():
                     for e in getattr(auth, "env", []) or []
                 ],
                 "needs_install": entry.install is not None,
-                "installed": mcp_catalog.is_installed(entry.name),
-                "enabled": mcp_catalog.is_enabled(entry.name),
+                "installed": installed_state.get(entry.name, (False, False))[0],
+                "enabled": installed_state.get(entry.name, (False, False))[1],
             })
+    except HTTPException:
+        # Unknown/invalid profile → 404, not a silently-empty catalog.
+        raise
     except Exception:
         _log.exception("list_mcp_catalog failed")
 
@@ -6174,10 +6770,11 @@ class MCPCatalogInstall(BaseModel):
     # env: KEY=VALUE map for catalog entries that declare required env vars.
     env: Dict[str, str] = {}
     enable: bool = True
+    profile: Optional[str] = None
 
 
 @app.post("/api/mcp/catalog/install")
-async def install_mcp_catalog_entry(body: MCPCatalogInstall):
+async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[str] = None):
     """Install a catalog MCP into config.yaml.
 
     For HTTP/stdio entries with required env vars, those are written to .env
@@ -6194,23 +6791,42 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall):
 
     # Persist any supplied env vars first (catalog entries declare which names
     # they need; we only write the ones the user provided).
+    effective_profile = body.profile or profile
     if body.env:
-        for k, v in body.env.items():
-            if v:
-                save_env_value(k, v)
+        with _profile_scope(effective_profile):
+            for k, v in body.env.items():
+                if v:
+                    save_env_value(k, v)
 
     # Git-bootstrap entries can take a while to clone — run via the background
     # action path so the request returns immediately and the UI can tail logs.
+    # The -p subprocess rebinds HERMES_HOME-derived paths in the child.
     if entry.install is not None:
         try:
-            proc = _spawn_hermes_action(["mcp", "install", name], "mcp-install")
+            proc = _spawn_hermes_action(
+                _profile_cli_args(effective_profile) + ["mcp", "install", name],
+                "mcp-install",
+            )
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=500, detail=f"Install failed: {exc}")
         return {"ok": True, "name": name, "background": True, "action": "mcp-install"}
 
-    # No git step — install synchronously via the catalog API.
+    # No git step — install synchronously via the catalog API. install_entry
+    # routes through load_config/save_config + save_env_value, all call-time
+    # resolvers, so the context override scopes it. Wrap the to_thread body
+    # in the scope INSIDE the thread (contextvars don't propagate into
+    # to_thread the other way around — asyncio.to_thread copies context, so
+    # setting it here works; keep it explicit for clarity).
+    def _install_scoped():
+        with _profile_scope(effective_profile):
+            mcp_catalog.install_entry(entry, enable=body.enable)
+
     try:
-        await asyncio.to_thread(mcp_catalog.install_entry, entry, enable=body.enable)
+        await asyncio.to_thread(_install_scoped)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("install_mcp_catalog_entry failed")
         raise HTTPException(status_code=400, detail=str(exc))
@@ -6353,6 +6969,27 @@ async def list_webhooks():
     }
 
 
+@app.post("/api/webhooks/enable")
+async def enable_webhooks():
+    try:
+        _write_platform_enabled("webhook", True)
+    except Exception as exc:
+        _log.exception("Failed to enable webhook platform from dashboard")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to enable webhook platform.",
+        ) from exc
+
+    restart_result = _restart_gateway_after_webhook_enable()
+    return {
+        "ok": True,
+        "platform": "webhook",
+        "enabled": True,
+        "needs_restart": not restart_result["restart_started"],
+        **restart_result,
+    }
+
+
 @app.post("/api/webhooks")
 async def create_webhook(body: WebhookCreate):
     import re as _re
@@ -6363,7 +7000,7 @@ async def create_webhook(body: WebhookCreate):
     if not wh._is_webhook_enabled():
         raise HTTPException(
             status_code=400,
-            detail="Webhook platform is not enabled. Enable it in messaging settings first.",
+            detail="Webhook platform is not enabled. Enable it from the Webhooks page first.",
         )
 
     name = (body.name or "").strip().lower().replace(" ", "-")
@@ -6744,6 +7381,14 @@ async def run_backup(body: BackupRequest):
 
 class ImportRequest(BaseModel):
     archive: str
+    # Pass --force to `hermes import`. The spawned action runs with
+    # stdin=DEVNULL, so the CLI's interactive "Continue? [y/N]" overwrite
+    # prompt hits EOF and auto-aborts ("Aborted.", exit 1) whenever the
+    # target already has a config — which it always does when the dashboard
+    # itself is running from it. The dashboard shows its own confirm modal
+    # before calling this endpoint, then sends force=True so the restore
+    # proceeds non-interactively.
+    force: bool = False
 
 
 @app.post("/api/ops/import")
@@ -6753,8 +7398,11 @@ async def run_import(body: ImportRequest):
         raise HTTPException(status_code=400, detail="archive path is required")
     if not os.path.isfile(archive):
         raise HTTPException(status_code=404, detail=f"Archive not found: {archive}")
+    args = ["import", archive]
+    if body.force:
+        args.append("--force")
     try:
-        proc = _spawn_hermes_action(["import", archive], "import")
+        proc = _spawn_hermes_action(args, "import")
     except Exception as exc:
         _log.exception("Failed to spawn import")
         raise HTTPException(status_code=500, detail=f"Failed to run import: {exc}")
@@ -6973,15 +7621,38 @@ async def prune_checkpoints():
 
 class SkillInstallRequest(BaseModel):
     identifier: str
+    profile: Optional[str] = None
+
+
+def _profile_cli_args(profile: Optional[str]) -> List[str]:
+    """Return ``["-p", <name>]`` for a validated non-default profile.
+
+    Hub install/uninstall/update run in a fresh ``hermes`` subprocess, and
+    ``_apply_profile_override()`` reads ``-p`` from argv in the child — the
+    only mechanism that reaches import-time-bound globals like
+    ``skills_hub.SKILLS_DIR``. Empty/"current" means the dashboard's own
+    profile (no args, legacy behavior).
+    """
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        return []
+    from hermes_cli import profiles as profiles_mod
+    _resolve_profile_dir(requested)
+    return ["-p", profiles_mod.normalize_profile_name(requested)]
 
 
 @app.post("/api/skills/hub/install")
-async def install_skill_hub(body: SkillInstallRequest):
+async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = None):
     identifier = (body.identifier or "").strip()
     if not identifier:
         raise HTTPException(status_code=400, detail="identifier is required")
     try:
-        proc = _spawn_hermes_action(["skills", "install", identifier], "skills-install")
+        proc = _spawn_hermes_action(
+            _profile_cli_args(body.profile or profile) + ["skills", "install", identifier],
+            "skills-install",
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn skills install")
         raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}")
@@ -6990,25 +7661,42 @@ async def install_skill_hub(body: SkillInstallRequest):
 
 class SkillUninstallRequest(BaseModel):
     name: str
+    profile: Optional[str] = None
 
 
 @app.post("/api/skills/hub/uninstall")
-async def uninstall_skill_hub(body: SkillUninstallRequest):
+async def uninstall_skill_hub(body: SkillUninstallRequest, profile: Optional[str] = None):
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
     try:
-        proc = _spawn_hermes_action(["skills", "uninstall", name, "--yes"], "skills-uninstall")
+        proc = _spawn_hermes_action(
+            _profile_cli_args(body.profile or profile) + ["skills", "uninstall", name, "--yes"],
+            "skills-uninstall",
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn skills uninstall")
         raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "skills-uninstall"}
 
 
+class SkillsUpdateRequest(BaseModel):
+    profile: Optional[str] = None
+
+
 @app.post("/api/skills/hub/update")
-async def update_skills_hub():
+async def update_skills_hub(
+    body: Optional[SkillsUpdateRequest] = None, profile: Optional[str] = None
+):
     try:
-        proc = _spawn_hermes_action(["skills", "update"], "skills-update")
+        effective = (body.profile if body else None) or profile
+        proc = _spawn_hermes_action(
+            _profile_cli_args(effective) + ["skills", "update"], "skills-update"
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn skills update")
         raise HTTPException(status_code=500, detail=f"Failed to update skills: {exc}")
@@ -7043,17 +7731,25 @@ def _skill_meta_to_payload(m) -> dict:
     }
 
 
-def _installed_hub_identifiers() -> dict:
+def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
     """Map identifier -> installed lock entry for hub-installed skills.
 
-    Lets the UI mark search results that are already installed.  Best-effort:
-    returns an empty dict if the lock file can't be read.
+    Lets the UI mark search results that are already installed.  Scoped to
+    ``profile``'s skills/.hub/lock.json when provided (HubLockFile takes an
+    explicit path, sidestepping the import-time LOCK_FILE binding).
+    Best-effort: returns an empty dict if the lock file can't be read.
     """
     try:
         from tools.skills_hub import HubLockFile
 
+        requested = (profile or "").strip()
+        if requested and requested.lower() != "current":
+            profile_dir = _resolve_profile_dir(requested)
+            lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
+        else:
+            lock = HubLockFile()
         out = {}
-        for entry in HubLockFile().list_installed():
+        for entry in lock.list_installed():
             ident = entry.get("identifier")
             if ident:
                 out[ident] = {
@@ -7067,13 +7763,14 @@ def _installed_hub_identifiers() -> dict:
 
 
 @app.get("/api/skills/hub/sources")
-async def list_skills_hub_sources():
+async def list_skills_hub_sources(profile: Optional[str] = None):
     """List the configured skill-hub sources and installed-skill provenance.
 
     Gives the dashboard something to show BEFORE a search runs — which hubs
     are wired up, their trust tier, and a set of featured skills pulled from
     the centralized index (zero extra API calls).  Without this the Browse-hub
     tab is a blank page with no indication it's even connected to anything.
+    ``profile`` scopes the installed-skill provenance to that profile.
     """
 
     def _run():
@@ -7114,18 +7811,22 @@ async def list_skills_hub_sources():
             "sources": out,
             "index_available": index_available,
             "featured": featured,
-            "installed": _installed_hub_identifiers(),
+            "installed": _installed_hub_identifiers(profile),
         }
 
     try:
         return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("skills hub sources listing failed")
         raise HTTPException(status_code=502, detail=f"Hub sources failed: {exc}")
 
 
 @app.get("/api/skills/hub/search")
-async def search_skills_hub(q: str = "", source: str = "all", limit: int = 20):
+async def search_skills_hub(
+    q: str = "", source: str = "all", limit: int = 20, profile: Optional[str] = None
+):
     """Search the skill hub across all configured sources.
 
     Network-bound (parallel source search); runs in a thread so the FastAPI
@@ -7160,11 +7861,13 @@ async def search_skills_hub(q: str = "", source: str = "all", limit: int = 20):
             "results": [_skill_meta_to_payload(m) for m in deduped],
             "source_counts": source_counts,
             "timed_out": timed_out,
-            "installed": _installed_hub_identifiers(),
+            "installed": _installed_hub_identifiers(profile),
         }
 
     try:
         return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("skills hub search failed")
         raise HTTPException(status_code=502, detail=f"Hub search failed: {exc}")
@@ -7340,6 +8043,21 @@ class ProfileCreate(BaseModel):
     clone_from: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    # Profile-builder additions — all optional, all applied best-effort AFTER
+    # the profile directory exists, so a hiccup in any of them never 500s the
+    # create (the user can fix it from the relevant dashboard page afterward).
+    # MCP servers to write into the new profile's config.yaml.
+    mcp_servers: List["MCPServerCreate"] = []
+    # Built-in / optional skills to KEEP active. When this list is non-empty,
+    # the builder uses "replace" semantics: the bundle is seeded, then every
+    # seeded skill NOT in this list is added to the profile's disabled list.
+    # Empty list = leave the seeded bundle untouched (legacy behaviour).
+    keep_skills: List[str] = []
+    # Skills-hub identifiers to install into the new profile. Installed async
+    # via a subprocess scoped to the profile (`hermes -p <name> skills install`)
+    # because skills_hub.SKILLS_DIR is import-time-bound and the HERMES_HOME
+    # override can't redirect it. Returns spawned PIDs for the UI to poll.
+    hub_skills: List[str] = []
 
 
 class ProfileRename(BaseModel):
@@ -7478,11 +8196,100 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
 
     token = set_hermes_home_override(str(profile_dir))
     try:
+        provider, model = _normalize_main_model_assignment(provider, model)
         cfg = load_config()
         cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), provider, model)
         save_config(cfg)
     finally:
         reset_hermes_home_override(token)
+
+
+def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate"]) -> int:
+    """Write MCP server entries into a specific profile's config.yaml.
+
+    Scopes ``load_config``/``save_config`` to ``profile_dir`` via the
+    context-local HERMES_HOME override (same mechanism as
+    ``_write_profile_model``) so the entries land in the target profile's
+    config rather than the dashboard process's active profile.
+
+    Mirrors the per-server shape the ``POST /api/mcp/servers`` endpoint builds,
+    but batched so the whole profile-create write is a single config save.
+    Returns the number of servers written.
+    """
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    written = 0
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        cfg = load_config()
+        mcp = cfg.setdefault("mcp_servers", {})
+        for server in servers:
+            name = (server.name or "").strip()
+            if not name:
+                continue
+            entry: Dict[str, Any] = {}
+            if server.url:
+                entry["url"] = server.url
+            if server.command:
+                entry["command"] = server.command
+            if server.args:
+                entry["args"] = list(server.args)
+            if server.env:
+                entry["env"] = dict(server.env)
+            if server.auth:
+                entry["auth"] = server.auth
+            if not entry:
+                # Nothing usable to write (neither url nor command) — skip
+                # rather than persist an empty, unusable server stanza.
+                continue
+            mcp[name] = entry
+            written += 1
+        if written:
+            save_config(cfg)
+        elif not mcp:
+            # We created an empty mcp_servers dict but wrote nothing — don't
+            # leave a stray empty key in the new profile's config.
+            cfg.pop("mcp_servers", None)
+            save_config(cfg)
+    finally:
+        reset_hermes_home_override(token)
+    return written
+
+
+def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
+    """Disable every installed skill in ``profile_dir`` not in ``keep``.
+
+    Profiles manage skill activation via a *disabled* list — all installed
+    skills are active by default and users opt out. The builder's skill step
+    uses "replace" semantics: the user picks exactly which seeded built-in /
+    optional skills stay active, and everything else gets added to the disabled
+    list. (Hub skills are installed separately via subprocess and are active on
+    install.) Scoped to the profile via the HERMES_HOME override. Returns the
+    number of skills newly disabled.
+    """
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+
+    keep_set = {s.strip() for s in keep if s and s.strip()}
+    disabled_count = 0
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        installed: List[str] = []
+        skills_root = profile_dir / "skills"
+        if skills_root.is_dir():
+            for md in skills_root.rglob("SKILL.md"):
+                installed.append(md.parent.name)
+        cfg = load_config()
+        disabled = get_disabled_skills(cfg)
+        for name in installed:
+            if name not in keep_set and name not in disabled:
+                disabled.add(name)
+                disabled_count += 1
+        if disabled_count:
+            save_disabled_skills(cfg, disabled)
+    finally:
+        reset_hermes_home_override(token)
+    return disabled_count
 
 
 @app.get("/api/profiles")
@@ -7551,7 +8358,55 @@ async def create_profile_endpoint(body: ProfileCreate):
         except Exception:
             _log.exception("Setting model for new profile %s failed", body.name)
 
-    return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set}
+    # Optional MCP servers. Best-effort, same rationale as model assignment.
+    mcp_written = 0
+    if body.mcp_servers:
+        try:
+            mcp_written = _write_profile_mcp_servers(path, body.mcp_servers)
+        except Exception:
+            _log.exception("Writing MCP servers for new profile %s failed", body.name)
+
+    # Optional "keep" skill selection — replace semantics. When the builder
+    # sends an explicit keep list, disable every seeded skill not in it.
+    # Best-effort. Skipped when keep_skills is empty (legacy: keep the bundle).
+    skills_disabled = 0
+    if body.keep_skills:
+        try:
+            skills_disabled = _disable_unselected_skills(path, body.keep_skills)
+        except Exception:
+            _log.exception("Applying skill selection for new profile %s failed", body.name)
+
+    # Optional skills-hub installs. Spawned async, scoped to the new profile
+    # via `-p <name>` (a fresh subprocess re-binds skills_hub.SKILLS_DIR to the
+    # profile's HERMES_HOME at import). Returns PIDs for the UI to poll.
+    hub_installs: List[Dict[str, Any]] = []
+    for identifier in body.hub_skills:
+        ident = (identifier or "").strip()
+        if not ident:
+            continue
+        try:
+            proc = _spawn_hermes_action(
+                ["-p", body.name, "skills", "install", ident],
+                "skills-install",
+            )
+            hub_installs.append({"identifier": ident, "pid": proc.pid})
+        except Exception:
+            _log.exception(
+                "Spawning hub-skill install %s for new profile %s failed",
+                ident,
+                body.name,
+            )
+            hub_installs.append({"identifier": ident, "pid": None})
+
+    return {
+        "ok": True,
+        "name": body.name,
+        "path": str(path),
+        "model_set": model_set,
+        "mcp_written": mcp_written,
+        "skills_disabled": skills_disabled,
+        "hub_installs": hub_installs,
+    }
 
 
 @app.get("/api/profiles/active")
@@ -7782,41 +8637,193 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 
 # ---------------------------------------------------------------------------
 # Skills & Tools endpoints
+#
+# Every read/write below accepts an optional ``profile`` query param so the
+# dashboard can manage ANY profile's skills/toolsets, not just the profile
+# the dashboard process happens to be running under. Without this, "Set as
+# active" on the Profiles page (which only flips the sticky ``active_profile``
+# file for FUTURE CLI/gateway invocations) misled users into thinking skill
+# toggles would land in the activated profile — they silently wrote into the
+# dashboard's own config instead. See _profile_scope() for the mechanism.
 # ---------------------------------------------------------------------------
+
+
+_SKILLS_PROFILE_LOCK = threading.RLock()
+
+
+@contextmanager
+def _profile_scope(profile: Optional[str]):
+    """Scope config + skill-directory resolution to ``profile`` for one request.
+
+    Two seams must be redirected for skills/toolsets endpoints:
+
+    1. ``load_config``/``save_config`` resolve ``get_hermes_home()`` at call
+       time — the context-local override from ``set_hermes_home_override``
+       reaches them (same pattern as ``_write_profile_model``).
+    2. ``tools.skills_tool`` and ``tools.skill_manager_tool`` bind
+       ``SKILLS_DIR`` at import time, so the override CANNOT reach them.
+       Like ``_call_cron_for_profile`` does for cron's module globals,
+       temporarily retarget both under a lock and restore them
+       immediately after.
+
+    ``profile`` of None/""/"current" means "the dashboard's own profile" —
+    config resolution is untouched, but the skill-module globals are still
+    retargeted to the *current* ``get_hermes_home()`` so writes land in the
+    live home even when the import-time binding is stale (e.g. the process
+    imported the modules before a HERMES_HOME override, or under test
+    isolation).
+    """
+    requested = (profile or "").strip()
+
+    from hermes_constants import (
+        get_hermes_home,
+        set_hermes_home_override,
+        reset_hermes_home_override,
+    )
+    from tools import skills_tool as _skills_tool
+    from tools import skill_manager_tool as _skill_mgr
+
+    token = None
+    if not requested or requested.lower() == "current":
+        profile_dir = get_hermes_home()
+    else:
+        profile_dir = _resolve_profile_dir(requested)
+        token = set_hermes_home_override(str(profile_dir))
+
+    with _SKILLS_PROFILE_LOCK:
+        old_home = _skills_tool.HERMES_HOME
+        old_skills_dir = _skills_tool.SKILLS_DIR
+        old_mgr_home = _skill_mgr.HERMES_HOME
+        old_mgr_skills_dir = _skill_mgr.SKILLS_DIR
+        _skills_tool.HERMES_HOME = profile_dir
+        _skills_tool.SKILLS_DIR = profile_dir / "skills"
+        _skill_mgr.HERMES_HOME = profile_dir
+        _skill_mgr.SKILLS_DIR = profile_dir / "skills"
+        try:
+            yield profile_dir if token is not None else None
+        finally:
+            _skills_tool.HERMES_HOME = old_home
+            _skills_tool.SKILLS_DIR = old_skills_dir
+            _skill_mgr.HERMES_HOME = old_mgr_home
+            _skill_mgr.SKILLS_DIR = old_mgr_skills_dir
+            if token is not None:
+                reset_hermes_home_override(token)
 
 
 class SkillToggle(BaseModel):
     name: str
     enabled: bool
+    profile: Optional[str] = None
 
 
 @app.get("/api/skills")
-async def get_skills():
+async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    skills = _find_all_skills(skip_disabled=True)
+    with _profile_scope(profile):
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        skills = _find_all_skills(skip_disabled=True)
     for s in skills:
         s["enabled"] = s["name"] not in disabled
     return skills
 
 
 @app.put("/api/skills/toggle")
-async def toggle_skill(body: SkillToggle):
+async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    if body.enabled:
-        disabled.discard(body.name)
-    else:
-        disabled.add(body.name)
-    save_disabled_skills(config, disabled)
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        if body.enabled:
+            disabled.discard(body.name)
+        else:
+            disabled.add(body.name)
+        save_disabled_skills(config, disabled)
     return {"ok": True, "name": body.name, "enabled": body.enabled}
 
 
+class SkillCreate(BaseModel):
+    name: str
+    content: str
+    category: Optional[str] = None
+    profile: Optional[str] = None
+
+
+class SkillContentUpdate(BaseModel):
+    name: str
+    content: str
+    profile: Optional[str] = None
+
+
+def _clear_skills_prompt_cache() -> None:
+    """Best-effort: invalidate the skills system-prompt snapshot after a write.
+
+    Mirrors what ``skill_manage`` does so a dashboard-authored skill is picked
+    up by the next session without a manual cache reset.
+    """
+    try:
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+    except Exception:
+        pass
+
+
+@app.get("/api/skills/content")
+async def get_skill_content(name: str, profile: Optional[str] = None):
+    """Return the raw SKILL.md text for a skill, for the dashboard editor."""
+    from tools.skill_manager_tool import _find_skill
+
+    with _profile_scope(profile):
+        found = _find_skill(name)
+        if not found:
+            raise HTTPException(status_code=404, detail=f"Skill '{name}' not found.")
+        skill_md = found["path"] / "SKILL.md"
+        if not skill_md.exists():
+            raise HTTPException(status_code=404, detail=f"Skill '{name}' has no SKILL.md.")
+        try:
+            content = skill_md.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+        return {"name": name, "content": content, "path": str(skill_md)}
+
+
+@app.post("/api/skills")
+async def create_skill(body: SkillCreate):
+    """Create a new custom skill (SKILL.md) from the dashboard editor.
+
+    Calls the same validated write path as the agent's ``skill_manage``
+    tool (frontmatter validation, name/category validation, size limit,
+    optional security scan) — but bypasses the agent write-approval gate:
+    a write from the authenticated dashboard IS the user acting directly.
+    """
+    from tools.skill_manager_tool import _create_skill
+
+    with _profile_scope(body.profile):
+        result = _create_skill(body.name, body.content, body.category or None)
+    if not result.get("success"):
+        raise HTTPException(status_code=400, detail=result.get("error", "Failed to create skill."))
+    _clear_skills_prompt_cache()
+    return result
+
+
+@app.put("/api/skills/content")
+async def update_skill_content(body: SkillContentUpdate):
+    """Replace the SKILL.md of an existing skill (full rewrite) from the editor."""
+    from tools.skill_manager_tool import _edit_skill
+
+    with _profile_scope(body.profile):
+        result = _edit_skill(body.name, body.content)
+    if not result.get("success"):
+        err = result.get("error", "Failed to update skill.")
+        status = 404 if "not found" in str(err).lower() else 400
+        raise HTTPException(status_code=status, detail=err)
+    _clear_skills_prompt_cache()
+    return result
+
+
 @app.get("/api/tools/toolsets")
-async def get_toolsets():
+async def get_toolsets(profile: Optional[str] = None):
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
         _get_platform_tools,
@@ -7825,12 +8832,13 @@ async def get_toolsets():
     )
     from toolsets import resolve_toolset
 
-    config = load_config()
-    enabled_toolsets = _get_platform_tools(
-        config,
-        "cli",
-        include_default_mcp_servers=False,
-    )
+    with _profile_scope(profile):
+        config = load_config()
+        enabled_toolsets = _get_platform_tools(
+            config,
+            "cli",
+            include_default_mcp_servers=False,
+        )
     result = []
     for name, label, desc in _get_effective_configurable_toolsets():
         try:
@@ -7852,15 +8860,17 @@ async def get_toolsets():
 
 class ToolsetToggle(BaseModel):
     enabled: bool
+    profile: Optional[str] = None
 
 
 @app.put("/api/tools/toolsets/{name}")
-async def toggle_toolset(name: str, body: ToolsetToggle):
+async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] = None):
     """Enable/disable a configurable toolset for the desktop (cli) platform.
 
     Persists to ``platform_toolsets.cli`` via the same ``_save_platform_tools``
     helper the CLI ``hermes tools`` picker uses, so the GUI and CLI stay in
-    lockstep. Returns 400 for unknown toolset keys.
+    lockstep. Scoped to ``body.profile`` when provided. Returns 400 for
+    unknown toolset keys.
     """
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
@@ -7872,20 +8882,21 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    enabled = set(
-        _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-    )
-    if body.enabled:
-        enabled.add(name)
-    else:
-        enabled.discard(name)
-    _save_platform_tools(config, "cli", enabled)
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        enabled = set(
+            _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+        )
+        if body.enabled:
+            enabled.add(name)
+        else:
+            enabled.discard(name)
+        _save_platform_tools(config, "cli", enabled)
     return {"ok": True, "name": name, "enabled": body.enabled}
 
 
 @app.get("/api/tools/toolsets/{name}/config")
-async def get_toolset_config(name: str):
+async def get_toolset_config(name: str, profile: Optional[str] = None):
     """Return the provider matrix + key status for a toolset's config panel.
 
     Surfaces the same provider rows the CLI ``hermes tools`` picker shows
@@ -7906,38 +8917,39 @@ async def get_toolset_config(name: str):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    cat = TOOL_CATEGORIES.get(name)
-    providers = []
-    active_provider = None
-    if cat:
-        for prov in _visible_providers(cat, config, force_fresh=True):
-            env_vars = [
-                {
-                    "key": e["key"],
-                    "prompt": e.get("prompt", e["key"]),
-                    "url": e.get("url"),
-                    "default": e.get("default"),
-                    "is_set": bool(get_env_value(e["key"])),
-                }
-                for e in prov.get("env_vars", [])
-            ]
-            # Surface the same active-provider determination the CLI picker
-            # uses (``_is_provider_active``) so the GUI highlights the provider
-            # actually written to config (e.g. web.backend), not just the first
-            # keyless one in the list.
-            is_active = _is_provider_active(prov, config, force_fresh=True)
-            if is_active and active_provider is None:
-                active_provider = prov["name"]
-            providers.append({
-                "name": prov["name"],
-                "badge": prov.get("badge", ""),
-                "tag": prov.get("tag", ""),
-                "env_vars": env_vars,
-                "post_setup": prov.get("post_setup"),
-                "requires_nous_auth": bool(prov.get("requires_nous_auth")),
-                "is_active": is_active,
-            })
+    with _profile_scope(profile):
+        config = load_config()
+        cat = TOOL_CATEGORIES.get(name)
+        providers = []
+        active_provider = None
+        if cat:
+            for prov in _visible_providers(cat, config, force_fresh=True):
+                env_vars = [
+                    {
+                        "key": e["key"],
+                        "prompt": e.get("prompt", e["key"]),
+                        "url": e.get("url"),
+                        "default": e.get("default"),
+                        "is_set": bool(get_env_value(e["key"])),
+                    }
+                    for e in prov.get("env_vars", [])
+                ]
+                # Surface the same active-provider determination the CLI picker
+                # uses (``_is_provider_active``) so the GUI highlights the provider
+                # actually written to config (e.g. web.backend), not just the first
+                # keyless one in the list.
+                is_active = _is_provider_active(prov, config, force_fresh=True)
+                if is_active and active_provider is None:
+                    active_provider = prov["name"]
+                providers.append({
+                    "name": prov["name"],
+                    "badge": prov.get("badge", ""),
+                    "tag": prov.get("tag", ""),
+                    "env_vars": env_vars,
+                    "post_setup": prov.get("post_setup"),
+                    "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+                    "is_active": is_active,
+                })
     return {
         "name": name,
         "has_category": cat is not None,
@@ -7948,10 +8960,13 @@ async def get_toolset_config(name: str):
 
 class ToolsetProviderSelect(BaseModel):
     provider: str
+    profile: Optional[str] = None
 
 
 @app.put("/api/tools/toolsets/{name}/provider")
-async def select_toolset_provider(name: str, body: ToolsetProviderSelect):
+async def select_toolset_provider(
+    name: str, body: ToolsetProviderSelect, profile: Optional[str] = None
+):
     """Persist a provider selection for a toolset (no key prompting).
 
     Delegates to ``apply_provider_selection`` — the shared, non-interactive
@@ -7969,21 +8984,23 @@ async def select_toolset_provider(name: str, body: ToolsetProviderSelect):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    try:
-        apply_provider_selection(name, body.provider, config)
-    except KeyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc).strip('"'))
-    save_config(config)
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        try:
+            apply_provider_selection(name, body.provider, config)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc).strip('"'))
+        save_config(config)
     return {"ok": True, "name": name, "provider": body.provider}
 
 
 class ToolsetEnvUpdate(BaseModel):
     env: Dict[str, str]
+    profile: Optional[str] = None
 
 
 @app.put("/api/tools/toolsets/{name}/env")
-async def save_toolset_env(name: str, body: ToolsetEnvUpdate):
+async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[str] = None):
     """Persist API keys for a toolset's provider env vars.
 
     Writes each ``key: value`` to ``~/.hermes/.env`` via ``save_env_value`` —
@@ -8005,43 +9022,47 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate):
     if name not in valid_ts:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    cat = TOOL_CATEGORIES.get(name)
-    allowed: set[str] = set()
-    if cat:
-        for prov in _visible_providers(cat, config, force_fresh=True):
-            for e in prov.get("env_vars", []):
-                allowed.add(e["key"])
+    with _profile_scope(body.profile or profile):
+        config = load_config()
+        cat = TOOL_CATEGORIES.get(name)
+        allowed: set[str] = set()
+        if cat:
+            for prov in _visible_providers(cat, config, force_fresh=True):
+                for e in prov.get("env_vars", []):
+                    allowed.add(e["key"])
 
-    unknown = [k for k in body.env if k not in allowed]
-    if unknown:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}",
-        )
+        unknown = [k for k in body.env if k not in allowed]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}",
+            )
 
-    saved: List[str] = []
-    skipped: List[str] = []
-    for key, value in body.env.items():
-        if value and value.strip():
-            try:
-                save_env_value(key, value.strip())
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            saved.append(key)
-        else:
-            skipped.append(key)
+        saved: List[str] = []
+        skipped: List[str] = []
+        for key, value in body.env.items():
+            if value and value.strip():
+                try:
+                    save_env_value(key, value.strip())
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
+                saved.append(key)
+            else:
+                skipped.append(key)
 
-    status = {k: bool(get_env_value(k)) for k in allowed}
+        status = {k: bool(get_env_value(k)) for k in allowed}
     return {"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status}
 
 
 class ToolsetPostSetup(BaseModel):
     key: str
+    profile: Optional[str] = None
 
 
 @app.post("/api/tools/toolsets/{name}/post-setup")
-async def run_toolset_post_setup(name: str, body: ToolsetPostSetup):
+async def run_toolset_post_setup(
+    name: str, body: ToolsetPostSetup, profile: Optional[str] = None
+):
     """Spawn a provider's post-setup install hook as a background action.
 
     Post-setup hooks (npm install for browser/Camofox, pip install for
@@ -8051,6 +9072,12 @@ async def run_toolset_post_setup(name: str, body: ToolsetPostSetup):
     ``GET /api/actions/tools-post-setup/status``. The ``key`` is validated
     against the declared post-setup allowlist before spawning. Returns 400
     for unknown toolset or post-setup key.
+
+    ``profile`` spawns the hook as ``hermes -p <profile> tools post-setup``.
+    Most hooks install machine-level artifacts (repo node_modules, shared
+    pip packages) where the scope is inert, but hooks that read config or
+    write per-profile state must see the same HERMES_HOME the rest of the
+    drawer's writes targeted — so the scope is threaded for consistency.
     """
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
@@ -8068,8 +9095,12 @@ async def run_toolset_post_setup(name: str, body: ToolsetPostSetup):
 
     try:
         proc = _spawn_hermes_action(
-            ["tools", "post-setup", body.key], "tools-post-setup"
+            _profile_cli_args(body.profile or profile)
+            + ["tools", "post-setup", body.key],
+            "tools-post-setup",
         )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn tools post-setup")
         raise HTTPException(
@@ -8085,23 +9116,26 @@ async def run_toolset_post_setup(name: str, body: ToolsetPostSetup):
 
 class RawConfigUpdate(BaseModel):
     yaml_text: str
+    profile: Optional[str] = None
 
 
 @app.get("/api/config/raw")
-async def get_config_raw():
-    path = get_config_path()
+async def get_config_raw(profile: Optional[str] = None):
+    with _profile_scope(profile):
+        path = get_config_path()
     if not path.exists():
         return {"yaml": ""}
     return {"yaml": path.read_text(encoding="utf-8")}
 
 
 @app.put("/api/config/raw")
-async def update_config_raw(body: RawConfigUpdate):
+async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None):
     try:
         parsed = yaml.safe_load(body.yaml_text)
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
-        save_config(parsed)
+        with _profile_scope(body.profile or profile):
+            save_config(parsed)
         return {"ok": True}
     except yaml.YAMLError as e:
         raise HTTPException(status_code=400, detail=f"Invalid YAML: {e}")
@@ -8549,6 +9583,7 @@ def _ws_auth_ok(ws: "WebSocket") -> bool:
 def _resolve_chat_argv(
     resume: Optional[str] = None,
     sidecar_url: Optional[str] = None,
+    profile: Optional[str] = None,
 ) -> tuple[list[str], Optional[str], Optional[dict]]:
     """Resolve the argv + cwd + env for the chat PTY.
 
@@ -8568,8 +9603,23 @@ def _resolve_chat_argv(
     `sidecar_url` (when set) is forwarded as ``HERMES_TUI_SIDECAR_URL`` so
     the spawned ``tui_gateway.entry`` can mirror dispatcher emits to the
     dashboard's ``/api/pub`` endpoint (see :func:`pub_ws`).
+
+    `profile` (when set) scopes the ENTIRE chat to that profile by pointing
+    ``HERMES_HOME`` at the profile dir in the child env. Every spawned
+    process (the TUI and the ``tui_gateway.entry`` it launches) resolves
+    ``get_hermes_home()`` from that env var at its own import, so the child
+    binds the profile's config, skills, memory, and state.db from the start
+    — the same propagation ``hermes -p <name>`` performs. The in-process
+    ``HERMES_TUI_GATEWAY_URL`` attach is SKIPPED for scoped chats: the
+    dashboard's in-memory gateway runs under the dashboard's own profile,
+    so a profile-scoped chat must spawn its own gateway subprocess.
     """
     from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
+
+    profile_dir: Optional[Path] = None
+    requested = (profile or "").strip()
+    if requested and requested.lower() != "current":
+        profile_dir = _resolve_profile_dir(requested)
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
     env = os.environ.copy()
@@ -8588,6 +9638,9 @@ def _resolve_chat_argv(
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
     env.setdefault("HERMES_TUI_INLINE", "1")
 
+    if profile_dir is not None:
+        env["HERMES_HOME"] = str(profile_dir)
+
     if resume:
         latest_resume, _latest_path = _session_latest_descendant(resume)
         if latest_resume:
@@ -8597,8 +9650,13 @@ def _resolve_chat_argv(
     if sidecar_url:
         env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
-    if gateway_ws_url := _build_gateway_ws_url():
-        env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
+    # Profile-scoped chats must NOT attach to the dashboard's in-memory
+    # gateway — it runs under the dashboard's own profile. Without the
+    # attach URL, gatewayClient spawns its own `tui_gateway.entry`, which
+    # inherits the profile HERMES_HOME set above.
+    if profile_dir is None:
+        if gateway_ws_url := _build_gateway_ws_url():
+            env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 
     return list(argv), str(cwd) if cwd else None, env
 
@@ -8761,11 +9819,19 @@ async def pty_ws(ws: WebSocket) -> None:
 
     # --- spawn PTY ------------------------------------------------------
     resume = ws.query_params.get("resume") or None
+    profile = ws.query_params.get("profile") or None
     channel = _channel_or_close_code(ws)
     sidecar_url = _build_sidecar_url(channel) if channel else None
 
     try:
-        argv, cwd, env = _resolve_chat_argv(resume=resume, sidecar_url=sidecar_url)
+        argv, cwd, env = _resolve_chat_argv(
+            resume=resume, sidecar_url=sidecar_url, profile=profile
+        )
+    except HTTPException as exc:
+        # Unknown/invalid profile from _resolve_profile_dir.
+        await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc.detail}\x1b[0m\r\n")
+        await ws.close(code=1011)
+        return
     except SystemExit as exc:
         # _make_tui_argv calls sys.exit(1) when node/npm is missing.
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
@@ -10043,8 +11109,15 @@ def start_server(
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
+    initial_profile: str = "",
 ):
-    """Start the web UI server."""
+    """Start the web UI server.
+
+    ``initial_profile`` (when set) is appended to the auto-opened browser
+    URL as ``?profile=<name>`` so the SPA's profile switcher preselects it
+    — used when a profile alias (``<profile> dashboard``) routes to the
+    machine dashboard.
+    """
     import uvicorn
 
     # Phase 0: stash the auth-gate flag on app.state so middleware / SPA-token
@@ -10135,10 +11208,15 @@ def start_server(
         )
 
         if _has_display:
+            _open_url = f"http://{host}:{port}"
+            if initial_profile:
+                from urllib.parse import quote
+                _open_url += f"/?profile={quote(initial_profile)}"
+
             def _open():
                 try:
                     time.sleep(1.0)
-                    webbrowser.open(f"http://{host}:{port}")
+                    webbrowser.open(_open_url)
                 except Exception:
                     pass
 

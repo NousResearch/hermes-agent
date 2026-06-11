@@ -499,6 +499,7 @@ from hermes_cli import __version__, __release_date__
 # (god-file decomposition Phase 2). Re-imported here so select_provider_and_model and
 # existing test monkeypatches (hermes_cli.main._model_flow_*) keep resolving unchanged.
 from hermes_cli.model_setup_flows import (
+    _prompt_auth_credentials_choice,
     _model_flow_openrouter,
     _model_flow_nous,
     _model_flow_openai_codex,
@@ -1622,7 +1623,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         npm_cwd = _workspace_root(tui_dir)
         # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
         # See #38772.
-        npm_workspace_args: tuple[str, ...] = ("--workspace", "ui-tui")
+        # When ui-tui/ has its own package-lock.json (e.g. curl install),
+        # _workspace_root() returns tui_dir itself.  Passing --workspace in
+        # that case fails because npm cannot find a workspace named "ui-tui"
+        # inside ui-tui/.  See #42973.
+        npm_workspace_args: tuple[str, ...] = () if npm_cwd == tui_dir else ("--workspace", "ui-tui")
         if termux_startup:
             npm_cwd, npm_workspace_args = _termux_workspace_install_context(
                 tui_dir,
@@ -2830,7 +2835,12 @@ def select_provider_and_model(args=None):
         member_labels = [
             provider_labels.get(m, m) for m in selected_members
         ]
-        member_idx = _prompt_provider_choice(member_labels, default=member_default)
+        group_label = ordered[provider_idx][1].split(" ▸", 1)[0]
+        member_idx = _prompt_provider_choice(
+            member_labels,
+            default=member_default,
+            title=f"Select {group_label} provider:",
+        )
         if member_idx is None:
             print("No change.")
             return
@@ -2974,6 +2984,7 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("approval", "Approval", "smart command approval"),
     ("mcp", "MCP", "MCP tool reasoning"),
     ("title_generation", "Title generation", "session titles"),
+    ("tts_audio_tags", "TTS audio tags", "Gemini TTS tag insertion"),
     ("skills_hub", "Skills hub", "skills search/install"),
     ("triage_specifier", "Triage specifier", "kanban spec fleshing"),
     ("kanban_decomposer", "Kanban decomposer", "task decomposition"),
@@ -3263,6 +3274,7 @@ def _aux_flow_provider_model(
             model_list,
             current_model=current_model,
             pricing=pricing,
+            confirm_provider=provider_slug,
         )
         if selected is None:
             print("No change.")
@@ -3331,7 +3343,7 @@ def _aux_flow_custom_endpoint(task: str, task_cfg: dict) -> None:
     print(f"{display_name}: custom ({short_url})" + (f" · {model}" if model else ""))
 
 
-def _prompt_provider_choice(choices, *, default=0):
+def _prompt_provider_choice(choices, *, default=0, title="Select provider:"):
     """Show provider selection menu with curses arrow-key navigation.
 
     Falls back to a numbered list when curses is unavailable (e.g. piped
@@ -3341,7 +3353,7 @@ def _prompt_provider_choice(choices, *, default=0):
     try:
         from hermes_cli.setup import _curses_prompt_choice
 
-        idx = _curses_prompt_choice("Select provider:", choices, default)
+        idx = _curses_prompt_choice(title, choices, default)
         if idx >= 0:
             print()
             return idx
@@ -3349,7 +3361,7 @@ def _prompt_provider_choice(choices, *, default=0):
         pass
 
     # Fallback: numbered list
-    print("Select provider:")
+    print(title)
     for i, c in enumerate(choices, 1):
         marker = "→" if i - 1 == default else " "
         print(f"  {marker} {i}. {c}")
@@ -4634,7 +4646,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # graph (including apps/desktop with its Electron + node-pty deps) is never
     # resolved here.  Without --workspace the root package.json's apps/* glob
     # would pull in desktop on every web build. See #38772.
-    npm_workspace_args: tuple[str, ...] = ("--workspace", "web")
+    # When web/ has its own package-lock.json, _workspace_root() returns
+    # web_dir itself and --workspace would fail.  See #42973.
+    npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
     r1 = _run_npm_install_deterministic(
@@ -6383,6 +6397,167 @@ def _load_installable_optional_extras(group: str = "all") -> list[str]:
                 referenced.append(name)
 
     return referenced
+
+
+# Install-scoped breadcrumb dropped right before ``hermes update`` mutates the
+# venv and cleared only after the dependency install verifies clean.  If a user
+# kills the update mid-install (Ctrl-C, terminal close, WSL OOM), the marker
+# survives and the next ``hermes`` launch finishes the install instead of
+# limping along on a half-built venv (e.g. pip wiped, a core dep like Pillow
+# never landed).  Lives next to the venv (not under $HERMES_HOME) because the
+# venv is shared across all profiles, so a single marker covers every profile.
+def _update_marker_path() -> Path:
+    return PROJECT_ROOT / ".update-incomplete"
+
+
+def _write_update_incomplete_marker() -> None:
+    """Drop the interrupted-install breadcrumb. Never raises."""
+    try:
+        _update_marker_path().write_text(
+            f"started={_time.time()}\npid={os.getpid()}\n", encoding="utf-8"
+        )
+    except OSError as exc:
+        logger.debug("Could not write update-incomplete marker: %s", exc)
+
+
+def _clear_update_incomplete_marker() -> None:
+    """Remove the interrupted-install breadcrumb. Never raises."""
+    try:
+        _update_marker_path().unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as exc:
+        logger.debug("Could not clear update-incomplete marker: %s", exc)
+
+
+def _recover_from_interrupted_install() -> None:
+    """Finish a dependency install that a prior ``hermes update`` left half-done.
+
+    Triggered on launch when ``.update-incomplete`` is present — meaning the
+    code was pulled but the dep install was killed before it verified clean.
+    Unconditionally bootstraps pip via ``ensurepip`` (a killed ``pip install``
+    can wipe pip from the venv entirely, which blocks the venv from recovering
+    on its own), then re-runs the editable ``.[all]`` install + core-dependency
+    verification, then clears the marker.
+
+    Never raises: a recovery failure must not block launch.  If it can't
+    self-heal it prints the one-line manual command and leaves the marker so
+    the next launch tries again.
+
+    Concurrency: the marker lives next to the shared venv, so a gateway start
+    plus a CLI launch (or two profiles starting at once) can both see it.  An
+    ``O_EXCL`` lockfile ensures only one process runs the reinstall; the
+    others skip and let the winner clear the marker.
+
+    Output: everything — our status lines AND the streamed pip/uv install
+    (which inherits fd 1) — is routed to stderr.  Launches whose stdout is a
+    protocol stream (``hermes acp`` speaks JSON-RPC on stdout) must never get
+    install noise on stdout.
+    """
+    if not _update_marker_path().exists():
+        return
+
+    # Skip in managed/Docker installs and on PyPI installs with no git checkout:
+    # those don't run the source-tree update path, so a stray marker is not ours
+    # to act on. Just clear it.
+    if not (PROJECT_ROOT / "pyproject.toml").is_file():
+        _clear_update_incomplete_marker()
+        return
+
+    # Single-flight guard: atomically claim the recovery lock. If another
+    # process holds it, skip — it is running the same reinstall into the same
+    # shared venv right now. A crashed holder leaves a stale lock; break it
+    # after an hour (well past any realistic install) so recovery can't be
+    # wedged forever.
+    lock_path = PROJECT_ROOT / ".update-incomplete.lock"
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        os.close(fd)
+    except FileExistsError:
+        try:
+            if _time.time() - lock_path.stat().st_mtime > 3600:
+                lock_path.unlink()
+        except OSError:
+            pass
+        return
+    except OSError as exc:
+        # Couldn't create the lock (read-only fs, perms). Proceed unlocked —
+        # the install itself will surface the real problem.
+        logger.debug("Could not create install-recovery lock: %s", exc)
+
+    saved_stdout_fd = None
+    saved_sys_stdout = sys.stdout
+    try:
+        # Route Python-level prints AND subprocess-inherited fd 1 to stderr
+        # for the duration of recovery (see docstring: ACP stdout safety).
+        try:
+            saved_stdout_fd = os.dup(1)
+            os.dup2(2, 1)
+        except OSError:
+            saved_stdout_fd = None
+        sys.stdout = sys.stderr
+
+        print(
+            "⚠ A previous `hermes update` was interrupted mid-install — "
+            "finishing dependency installation now..."
+        )
+
+        try:
+            from hermes_cli.managed_uv import ensure_uv
+
+            # Always bootstrap pip first: a killed install can leave the venv with
+            # no pip module at all, and uv may also be gone. ensurepip restores a
+            # known-good pip so at least the plain-pip path below can proceed.
+            try:
+                subprocess.run(
+                    [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                )
+            except Exception as exc:
+                logger.debug("ensurepip during install recovery failed: %s", exc)
+
+            uv_bin = ensure_uv()
+            if uv_bin:
+                uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+                if _is_termux_env(uv_env):
+                    uv_env.pop("PYTHONPATH", None)
+                    uv_env.pop("PYTHONHOME", None)
+                _install_python_dependencies_with_optional_fallback(
+                    [uv_bin, "pip"],
+                    env=uv_env,
+                    group="termux-all" if _is_termux_env(uv_env) else "all",
+                )
+            else:
+                _install_python_dependencies_with_optional_fallback(
+                    [sys.executable, "-m", "pip"],
+                    group="termux-all" if _is_termux_env() else "all",
+                )
+
+            _clear_update_incomplete_marker()
+            print("✓ Dependency installation recovered — your install is healthy again.")
+        except Exception as exc:
+            # Leave the marker in place so the next launch retries. Give the user
+            # the exact manual recovery command in the meantime.
+            logger.debug("Interrupted-install recovery failed: %s", exc)
+            print("✗ Could not auto-recover the interrupted install.")
+            print("  Recover manually with:")
+            print(f"    cd {PROJECT_ROOT}")
+            print(f"    {sys.executable} -m ensurepip --upgrade")
+            print(f"    {sys.executable} -m pip install -e '.[all]'")
+    finally:
+        sys.stdout = saved_sys_stdout
+        if saved_stdout_fd is not None:
+            try:
+                os.dup2(saved_stdout_fd, 1)
+                os.close(saved_stdout_fd)
+            except OSError:
+                pass
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
 
 
 def _run_install_with_heartbeat(
@@ -8370,6 +8545,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
         # breaks on this machine, keep base deps and reinstall the remaining extras
         # individually so update does not silently strip working capabilities.
+        #
+        # Drop the interrupted-install breadcrumb BEFORE touching the venv. If
+        # the install is killed mid-flight (Ctrl-C, terminal close, WSL OOM),
+        # the marker survives and the next ``hermes`` launch finishes the
+        # install via ``_recover_from_interrupted_install``. Cleared only after
+        # the install + core-dependency verification completes below.
+        _write_update_incomplete_marker()
         print("→ Updating Python dependencies...")
         from hermes_cli.managed_uv import ensure_uv, update_managed_uv
 
@@ -8422,6 +8604,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
                 _install_psutil_android_compat(pip_cmd)
             _install_python_dependencies_with_optional_fallback(pip_cmd, group=install_group)
+
+        # Core Python deps installed AND verified (the fallback helper runs
+        # _verify_core_dependencies_installed). Clear the interrupted-install
+        # breadcrumb now — the remaining steps (lazy refresh, node deps, web
+        # UI, desktop rebuild) are non-core and can't brick the venv.
+        _clear_update_incomplete_marker()
 
         _refresh_active_lazy_features()
 
@@ -10086,6 +10274,21 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _dashboard_listening(host: str, port: int) -> bool:
+    """True when something is accepting TCP connections at host:port.
+
+    Any listener counts — even a 401 response proves a dashboard is up.
+    Used by the unified profile-launch routing to decide attach-vs-start.
+    """
+    import socket
+
+    try:
+        with socket.create_connection((host or "127.0.0.1", port), timeout=1.5):
+            return True
+    except OSError:
+        return False
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -10105,6 +10308,65 @@ def cmd_dashboard(args):
         # we killed at least one, 1 if they were all unkillable.
         remaining = _find_stale_dashboard_pids()
         sys.exit(1 if remaining else 0)
+
+    # ── Unified profile launch routing ────────────────────────────────
+    # The dashboard is a MACHINE management surface: it can read/write any
+    # profile via the per-request ?profile= scoping. Running one dashboard
+    # per profile just fragments that (port collisions, N processes, and a
+    # "which dashboard am I on?" guessing game). So when a NAMED profile
+    # launches the dashboard (`worker dashboard` → HERMES_HOME points into
+    # profiles/), default to the machine dashboard:
+    #   - already running → open the browser at ?profile=<name> and exit
+    #   - not running     → re-exec as the machine dashboard (pinned to the
+    #     default profile so _apply_profile_override can't re-route through
+    #     the sticky active_profile file) with the launching profile
+    #     preselected in the UI's switcher.
+    # `--isolated` opts out and preserves the old per-profile behavior.
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _launch_profile = get_active_profile_name()
+    except Exception:
+        _launch_profile = "default"
+
+    if (
+        _launch_profile not in ("default", "custom")
+        and not getattr(args, "isolated", False)
+        and not getattr(args, "open_profile", "")
+    ):
+        url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
+        if _dashboard_listening(args.host, args.port):
+            print(f"Machine dashboard already running on port {args.port}.")
+            print(f"  Managing profile '{_launch_profile}': {url}")
+            if not args.no_open:
+                try:
+                    import webbrowser
+                    webbrowser.open(url)
+                except Exception:
+                    pass
+            sys.exit(0)
+
+        print(
+            f"Routing to the machine dashboard (profile '{_launch_profile}' "
+            f"preselected). Use --isolated for a dedicated per-profile server."
+        )
+        reexec_argv = [
+            sys.executable, "-m", "hermes_cli.main",
+            "-p", "default",
+            "dashboard",
+            "--port", str(args.port),
+            "--host", args.host,
+            "--open-profile", _launch_profile,
+        ]
+        if args.no_open:
+            reexec_argv.append("--no-open")
+        if getattr(args, "insecure", False):
+            reexec_argv.append("--insecure")
+        if getattr(args, "skip_build", False):
+            reexec_argv.append("--skip-build")
+        env = os.environ.copy()
+        # Drop the profile HERMES_HOME so the child binds the machine root.
+        env.pop("HERMES_HOME", None)
+        os.execvpe(sys.executable, reexec_argv, env)
 
     # Attach gui.log early so dashboard startup/build failures are captured in
     # the same logs directory as every other Hermes surface.
@@ -10179,6 +10441,7 @@ def cmd_dashboard(args):
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
+        initial_profile=getattr(args, "open_profile", "") or "",
     )
 
 
@@ -10737,6 +11000,22 @@ def main():
     except Exception:
         pass
 
+    # Self-heal a venv left half-built by an interrupted ``hermes update``
+    # (Ctrl-C, terminal close, WSL OOM mid-install). Skip when the user is
+    # *running* update — that flow writes and clears its own marker, and we
+    # don't want a recovery install racing the real one. Never raises.
+    #
+    # The substring match is deliberately loose: argv isn't parsed yet at this
+    # point, and the failure modes are asymmetric. Over-matching (e.g.
+    # ``hermes skills install update``) merely defers recovery one launch;
+    # under-matching (missing ``hermes -p work update``) would race a recovery
+    # install against the real one. Loose wins.
+    try:
+        if "update" not in sys.argv[1:]:
+            _recover_from_interrupted_install()
+    except Exception:
+        pass
+
     if _try_termux_fast_tui_launch():
         return
     if _try_termux_fast_cli_launch():
@@ -11239,6 +11518,27 @@ def main():
         help="Reclaim disk space: merge FTS5 segments + VACUUM (no data change)",
     )
 
+    sessions_repair = sessions_subparsers.add_parser(
+        "repair",
+        help="Repair a malformed state.db schema so hidden sessions reappear",
+        description=(
+            "Recover a state.db whose schema is malformed (e.g. 'table "
+            "messages_fts already exists'), which makes Desktop/Dashboard show "
+            "no sessions. A backup is made first; sessions and messages are "
+            "preserved and the FTS search index is rebuilt if needed."
+        ),
+    )
+    sessions_repair.add_argument(
+        "--check-only",
+        action="store_true",
+        help="Only report whether the database opens cleanly; do not modify it",
+    )
+    sessions_repair.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the timestamped backup copy (not recommended)",
+    )
+
     sessions_subparsers.add_parser("stats", help="Show session store statistics")
 
     sessions_rename = sessions_subparsers.add_parser(
@@ -11268,6 +11568,53 @@ def main():
     def cmd_sessions(args):
         import json as _json
 
+        action = args.sessions_action
+
+        # 'repair' must run BEFORE opening SessionDB(): a malformed schema is
+        # exactly the case where SessionDB() can't open, so it operates on the
+        # raw file path instead.
+        if action == "repair":
+            from hermes_state import (
+                DEFAULT_DB_PATH,
+                _db_opens_cleanly,
+                repair_state_db_schema,
+            )
+
+            db_path = DEFAULT_DB_PATH
+            if not db_path.exists():
+                print(f"No session database at {db_path} (nothing to repair).")
+                return
+            reason = _db_opens_cleanly(db_path)
+            if reason is None:
+                print(f"✓ {db_path} opens cleanly — no repair needed.")
+                return
+            print(f"✗ {db_path} does not open cleanly: {reason}")
+            if getattr(args, "check_only", False):
+                return
+            print("Repairing (a backup copy is made first)…")
+            report = repair_state_db_schema(
+                db_path, backup=not getattr(args, "no_backup", False)
+            )
+            if report.get("repaired"):
+                if report.get("backup_path"):
+                    print(f"  backup: {report['backup_path']}")
+                print(f"  strategy: {report.get('strategy')}")
+                try:
+                    from hermes_state import SessionDB
+
+                    n = SessionDB()._conn.execute(
+                        "SELECT COUNT(*) FROM sessions"
+                    ).fetchone()[0]
+                    print(f"✓ Repaired — {n} sessions recovered.")
+                except Exception:
+                    print("✓ Repaired.")
+            else:
+                print(f"✗ Repair failed: {report.get('error')}")
+                if report.get("backup_path"):
+                    print(f"  A backup is preserved at: {report['backup_path']}")
+                print("  Keep state.db and the backup; do not delete them.")
+            return
+
         try:
             from hermes_state import SessionDB
 
@@ -11275,8 +11622,6 @@ def main():
         except Exception as e:
             print(f"Error: Could not open session database: {e}")
             return
-
-        action = args.sessions_action
 
         # Hide third-party tool sessions by default, but honour explicit --source
         _source = getattr(args, "source", None)

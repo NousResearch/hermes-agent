@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Dict, List, Optional
 
@@ -121,6 +122,53 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
+
+
+def _canonical_github_remote(url: str | None) -> str:
+    """Return ``host/owner/repo`` for common GitHub remote URL forms."""
+    if not url:
+        return ""
+    value = url.strip()
+    if value.startswith("git@github.com:"):
+        value = "github.com/" + value[len("git@github.com:"):]
+    elif value.startswith("ssh://git@github.com/"):
+        value = "github.com/" + value[len("ssh://git@github.com/"):]
+    else:
+        parsed = urlparse(value)
+        if parsed.netloc and parsed.path:
+            value = f"{parsed.netloc}{parsed.path}"
+    value = value.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value.lower()
+
+
+def _is_ssh_remote(url: str | None) -> bool:
+    if not url:
+        return False
+    value = url.strip().lower()
+    return value.startswith("git@") or value.startswith("ssh://")
+
+
+def _is_official_ssh_remote(url: str | None) -> bool:
+    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+
+
+def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip()
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
@@ -143,44 +191,15 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
         return None
     return 0 if upstream_rev == local_rev else UPDATE_AVAILABLE_NO_COUNT
 
+
 def _current_git_branch(repo_dir: Path) -> Optional[str]:
     """Return the current git branch, if HEAD is on a branch."""
-    try:
-        result = subprocess.run(
-            ["git", "branch", "--show-current"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=str(repo_dir),
-        )
-    except Exception:
-        return None
-
-    if result.returncode != 0:
-        return None
-
-    branch = (result.stdout or "").strip()
-    return branch or None
+    return _git_stdout(["branch", "--show-current"], cwd=repo_dir)
 
 
 def _current_exact_tag(repo_dir: Path) -> Optional[str]:
     """Return the exact tag for HEAD, if the checkout is on a release tag."""
-    try:
-        result = subprocess.run(
-            ["git", "describe", "--tags", "--exact-match", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=str(repo_dir),
-        )
-    except Exception:
-        return None
-
-    if result.returncode != 0:
-        return None
-
-    tag = (result.stdout or "").strip()
-    return tag or None
+    return _git_stdout(["describe", "--tags", "--exact-match", "HEAD"], cwd=repo_dir)
 
 
 def _git_update_cache_key(repo_dir: Optional[Path]) -> Optional[str]:
@@ -188,27 +207,9 @@ def _git_update_cache_key(repo_dir: Optional[Path]) -> Optional[str]:
     if repo_dir is None:
         return None
 
-    def _git(args: list[str]) -> Optional[str]:
-        try:
-            result = subprocess.run(
-                ["git", *args],
-                capture_output=True,
-                text=True,
-                timeout=5,
-                cwd=str(repo_dir),
-            )
-        except Exception:
-            return None
-
-        if result.returncode != 0:
-            return None
-
-        value = (result.stdout or "").strip()
-        return value or None
-
-    head = _git(["rev-parse", "HEAD"])
-    branch = _git(["branch", "--show-current"])
-    tag = _git(["describe", "--tags", "--exact-match", "HEAD"])
+    head = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+    branch = _current_git_branch(repo_dir)
+    tag = _current_exact_tag(repo_dir)
 
     if tag:
         return f"tag:{tag}:{head}"
@@ -233,6 +234,11 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     current_branch = _current_git_branch(repo_dir)
     if current_branch != "main":
         return None
+
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    if _is_official_ssh_remote(origin_url):
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        return _check_via_rev(head_rev) if head_rev else None
 
     try:
         subprocess.run(

@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
@@ -18,6 +19,7 @@ import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setClarifyRequest } from '@/store/clarify'
+import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -60,6 +62,67 @@ interface MessageStreamOptions {
 interface QueuedStreamDeltas {
   assistant: string
   reasoning: string
+}
+
+type SessionRuntimeStatePatch = Partial<
+  Pick<
+    ClientSessionState,
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'serviceTier'
+    | 'yolo'
+  >
+>
+
+function sessionInfoStatePatch(payload: GatewayEventPayload | undefined): SessionRuntimeStatePatch {
+  const patch: SessionRuntimeStatePatch = {}
+
+  if (typeof payload?.model === 'string') {
+    patch.model = payload.model || ''
+  }
+
+  if (typeof payload?.provider === 'string') {
+    patch.provider = payload.provider || ''
+  }
+
+  if (typeof payload?.cwd === 'string') {
+    patch.cwd = payload.cwd
+  }
+
+  if (typeof payload?.branch === 'string') {
+    patch.branch = payload.branch
+  }
+
+  if (typeof payload?.personality === 'string') {
+    patch.personality = normalizePersonalityValue(payload.personality)
+  }
+
+  if (typeof payload?.reasoning_effort === 'string') {
+    patch.reasoningEffort = payload.reasoning_effort
+  }
+
+  if (typeof payload?.service_tier === 'string') {
+    patch.serviceTier = payload.service_tier
+  }
+
+  if (typeof payload?.fast === 'boolean') {
+    patch.fast = payload.fast
+  }
+
+  if (typeof payload?.yolo === 'boolean') {
+    patch.yolo = payload.yolo
+  }
+
+  return patch
+}
+
+function hasSessionInfoStatePatch(patch: SessionRuntimeStatePatch): boolean {
+  return Object.keys(patch).length > 0
 }
 
 // Minimum gap between two assistant-text flushes during a stream. Was 16ms
@@ -626,13 +689,13 @@ export function useMessageStream({
         // Apply session-scoped fields when the event targets the active
         // session, OR when it's a global broadcast and we have no session.
         const apply = explicitSid ? isActiveEvent : !activeSessionIdRef.current
+        const statePatch = sessionInfoStatePatch(payload)
+        const hasStatePatch = hasSessionInfoStatePatch(statePatch)
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
 
         if (apply) {
-          const runtimeInfo: { branch?: string; cwd?: string } = {}
-
           if (modelChanged) {
             setCurrentModel(payload!.model || '')
           }
@@ -643,20 +706,10 @@ export function useMessageStream({
 
           if (typeof payload?.cwd === 'string') {
             setCurrentCwd(payload.cwd)
-            runtimeInfo.cwd = payload.cwd
           }
 
           if (typeof payload?.branch === 'string') {
             setCurrentBranch(payload.branch)
-            runtimeInfo.branch = payload.branch
-          }
-
-          if (sessionId && (runtimeInfo.cwd !== undefined || runtimeInfo.branch !== undefined)) {
-            updateSessionState(sessionId, state => ({
-              ...state,
-              branch: runtimeInfo.branch ?? state.branch,
-              cwd: runtimeInfo.cwd ?? state.cwd
-            }))
           }
 
           if (typeof payload?.personality === 'string') {
@@ -678,7 +731,18 @@ export function useMessageStream({
           if (typeof payload?.yolo === 'boolean') {
             setYoloActive(payload.yolo)
           }
+        }
 
+        if (sessionId && hasStatePatch) {
+          updateSessionState(sessionId, state => ({
+            ...state,
+            ...statePatch,
+            branch: statePatch.branch ?? state.branch,
+            cwd: statePatch.cwd ?? state.cwd
+          }))
+        }
+
+        if (apply) {
           if (runningChanged && sessionId) {
             updateSessionState(sessionId, state => {
               const busy = Boolean(payload!.running)
@@ -905,6 +969,21 @@ export function useMessageStream({
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+        }
+      } else if (event.type === 'terminal.read.request') {
+        // read_terminal tool: serialize the renderer's xterm buffer and answer
+        // immediately (Python blocks on the respond). Empty text = no live pane.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const start = typeof payload?.start === 'number' ? payload.start : undefined
+          const count = typeof payload?.count === 'number' ? payload.count : undefined
+          const result = readActiveTerminal({ start, count })
+
+          void $gateway.get()?.request('terminal.read.respond', {
+            request_id: requestId,
+            text: result ? JSON.stringify(result) : ''
+          })
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'

@@ -32,6 +32,7 @@ import logging
 import os
 import re
 import shlex
+import site
 import sys
 import signal
 import tempfile
@@ -133,6 +134,60 @@ _GATEWAY_SECRET_PATTERNS = (
     re.compile(r"\bglpat-[A-Za-z0-9_\-]{20,}\b"),
     re.compile(r"(?i)\b(Bearer\s+)[A-Za-z0-9._\-]{20,}\b"),
 )
+
+
+def _ensure_windows_gateway_venv_imports() -> None:
+    """Make detached Windows gateway runs see the Hermes venv packages.
+
+    Some Windows restart paths run the gateway under uv's base ``pythonw.exe``
+    to avoid the venv launcher respawning a visible console interpreter.  That
+    mode can import the source tree via cwd/PYTHONPATH but still miss optional
+    packages installed only in ``venv/Lib/site-packages`` (notably the MCP SDK).
+    Patch the live process before MCP discovery so tool injection does not
+    depend on every launcher preserving PYTHONPATH perfectly.
+    """
+    if sys.platform != "win32":
+        return
+
+    project_root = Path(__file__).resolve().parent.parent
+    candidates: list[Path] = []
+    if os.environ.get("VIRTUAL_ENV"):
+        candidates.append(Path(os.environ["VIRTUAL_ENV"]))
+    candidates.append(project_root / "venv")
+
+    seen: set[str] = set()
+    for venv_dir in candidates:
+        try:
+            resolved_venv = venv_dir.resolve()
+        except OSError:
+            resolved_venv = venv_dir
+        venv_key = str(resolved_venv).lower()
+        if venv_key in seen:
+            continue
+        seen.add(venv_key)
+
+        site_packages = resolved_venv / "Lib" / "site-packages"
+        if not site_packages.exists():
+            continue
+
+        project_entry = str(project_root)
+        site_entry = str(site_packages)
+        if project_entry not in sys.path:
+            sys.path.insert(0, project_entry)
+        # addsitepackages() semantics matter here: pywin32, used by the MCP
+        # SDK on Windows, relies on .pth processing to expose pywintypes.
+        site.addsitedir(site_entry)
+        if site_entry in sys.path:
+            sys.path.remove(site_entry)
+        insert_at = 1 if sys.path and sys.path[0] == project_entry else 0
+        sys.path.insert(insert_at, site_entry)
+
+        os.environ["VIRTUAL_ENV"] = str(resolved_venv)
+        pythonpath = [project_entry, site_entry]
+        if os.environ.get("PYTHONPATH"):
+            pythonpath.append(os.environ["PYTHONPATH"])
+        os.environ["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
+        return
 
 
 def _gateway_platform_value(platform: Any) -> str:
@@ -1953,6 +2008,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_code: Optional[int] = None
         self._draining = False
         self._restart_requested = False
+        # Set by shutdown_signal_handler when a SIGTERM/SIGINT arrived
+        # WITHOUT a planned-stop / takeover marker — i.e. an unexpected
+        # external signal (container/s6 SIGTERM on `docker restart` or
+        # image upgrade, OOM-killer, bare `kill`). Distinct from an
+        # operator-requested stop, which writes a marker first. Used by
+        # _stop_impl to decide whether to persist gateway_state=stopped
+        # (see issue #42675): an unexpected signal must NOT persist
+        # "stopped", or container_boot refuses to auto-start the gateway
+        # on the next boot.
+        self._signal_initiated_shutdown = False
         self._restart_task_started = False
         self._restart_detached = False
         self._restart_via_service = False
@@ -4245,10 +4310,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 """
             ).strip()
+            watcher_env = os.environ.copy()
+            # This watcher is intentionally outside the running gateway. If it
+            # inherits the gateway marker, `hermes gateway restart` refuses to
+            # run as a self-restart loop guard and the gateway stays stopped.
+            watcher_env.pop("_HERMES_GATEWAY", None)
+            project_root = Path(__file__).resolve().parent.parent
+            venv_dir = Path(watcher_env.get("VIRTUAL_ENV") or project_root / "venv")
+            site_packages = venv_dir / "Lib" / "site-packages"
+            if site_packages.exists():
+                watcher_env["VIRTUAL_ENV"] = str(venv_dir)
+                pythonpath = [str(project_root), str(site_packages)]
+                if watcher_env.get("PYTHONPATH"):
+                    pythonpath.append(watcher_env["PYTHONPATH"])
+                watcher_env["PYTHONPATH"] = os.pathsep.join(dict.fromkeys(pythonpath))
             subprocess.Popen(
                 [sys.executable, "-c", watcher, str(current_pid), *cmd_argv],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=watcher_env,
                 **windows_detach_popen_kwargs(),
             )
             return
@@ -4258,12 +4338,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
             f"{cmd} gateway restart"
         )
+        # Same marker scrub as the Windows watcher above: this watcher runs
+        # `hermes gateway restart` from outside the gateway, but it inherits
+        # _HERMES_GATEWAY=1 from us, and the CLI's self-restart loop guard
+        # refuses to run when that marker is set — silently (DEVNULL), so the
+        # gateway stops and never comes back.
+        watcher_env = os.environ.copy()
+        watcher_env.pop("_HERMES_GATEWAY", None)
         setsid_bin = shutil.which("setsid")
         if setsid_bin:
             subprocess.Popen(
                 [setsid_bin, "bash", "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=watcher_env,
                 start_new_session=True,
             )
         else:
@@ -4271,6 +4359,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ["bash", "-lc", shell_cmd],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=watcher_env,
                 start_new_session=True,
             )
 
@@ -5952,7 +6041,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 
             self._draining = False
-            self._update_runtime_status("stopped", self._exit_reason)
+            # Persist the terminal gateway_state. The default is "stopped",
+            # but when this teardown was triggered by an UNEXPECTED external
+            # signal (container/s6 SIGTERM on `docker restart` or image
+            # upgrade, OOM-killer, bare `kill`) we instead persist "running"
+            # to preserve the operator's run-intent across the restart.
+            #
+            # On Docker (s6-overlay), container_boot.py reads gateway_state
+            # on the next boot and only auto-starts gateways whose last
+            # state was "running" (_AUTOSTART_STATES). Persisting "stopped"
+            # — or leaving the mid-shutdown "draining" marker in place — for
+            # a routine `docker compose up --force-recreate` permanently
+            # suppresses auto-start, so the messaging channels silently stay
+            # dark until the operator manually restarts (issue #42675).
+            #
+            # An operator-initiated stop (`hermes gateway stop`,
+            # systemd/launchd ExecStop, the s6 stop path, Ctrl+C) writes a
+            # planned-stop marker BEFORE signalling, so it is classified as
+            # a planned stop (not signal-initiated) and correctly persists
+            # "stopped" — respecting the explicit intent. A restart also
+            # persists "stopped" here; the restarting process brings the
+            # gateway back up itself.
+            if getattr(self, "_signal_initiated_shutdown", False) and not self._restart_requested:
+                logger.info(
+                    "Gateway stopped by an unexpected signal — persisting "
+                    "gateway_state=running so container_boot auto-starts on "
+                    "the next boot (issue #42675)"
+                )
+                self._update_runtime_status("running", self._exit_reason)
+            else:
+                self._update_runtime_status("stopped", self._exit_reason)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())
@@ -6434,6 +6552,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _tool_approval_live = False
         if _pending_confirm and not _tool_approval_live:
             _raw_reply = (event.text or "").strip()
+            # Accept bang-prefixed replies (`!always`, `!cancel`) verbatim.
+            # Slack/Matrix instruction text shows the `!` prefix (typed `/`
+            # is blocked in Slack threads), but the adapters only rewrite
+            # `!<known-command>` — `always`/`cancel` are confirm keywords,
+            # not registered commands, so the `!` survives to here.
+            _norm_reply = _raw_reply.lstrip("!/").lower()
             _cmd_reply = event.get_command()
             _confirm_choice = None
             if _cmd_reply in {"approve", "yes", "ok", "confirm"}:
@@ -6442,11 +6566,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _confirm_choice = "always"
             elif _cmd_reply in {"cancel", "no", "deny", "nevermind"}:
                 _confirm_choice = "cancel"
-            elif _raw_reply.lower() in {"approve", "approve once", "once"}:
+            elif _norm_reply in {"approve", "approve once", "once"}:
                 _confirm_choice = "once"
-            elif _raw_reply.lower() in {"always", "always approve"}:
+            elif _norm_reply in {"always", "always approve"}:
                 _confirm_choice = "always"
-            elif _raw_reply.lower() in {"cancel", "nevermind", "no"}:
+            elif _norm_reply in {"cancel", "nevermind", "no"}:
                 _confirm_choice = "cancel"
             if _confirm_choice is not None:
                 _resolved = await _slash_confirm_mod.resolve(
@@ -7016,6 +7140,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
+
+        if canonical == "memory":
+            return await self._handle_memory_command(event)
+
+        if canonical == "skills":
+            return await self._handle_skills_command(event)
 
         if canonical == "fast":
             return await self._handle_fast_command(event)
@@ -9325,6 +9455,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter._voice_input_callback = self._handle_voice_channel_input
         if hasattr(adapter, "_on_voice_disconnect"):
             adapter._on_voice_disconnect = self._handle_voice_timeout_cleanup
+        # Let the adapter's inactivity timer see the live voice-reply mode so it
+        # doesn't disconnect a deliberately text-only (/voice off) session.
+        if hasattr(adapter, "_voice_mode_getter"):
+            adapter._voice_mode_getter = lambda chat_id: self._voice_mode.get(
+                self._voice_key(Platform.DISCORD, str(chat_id)), "off"
+            )
 
         try:
             success = await adapter.join_voice_channel(voice_channel)
@@ -10580,6 +10716,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return result
             return result
 
+        _p = self._typed_command_prefix_for(event.source.platform)
         prompt_message = (
             f"⚠️ **Confirm /{command}**\n\n"
             f"{detail}\n\n"
@@ -10587,7 +10724,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "• **Approve Once** — proceed this time only\n"
             "• **Always Approve** — proceed and silence this prompt permanently\n"
             "• **Cancel** — keep current conversation\n\n"
-            "_Text fallback: reply `/approve`, `/always`, or `/cancel`._"
+            f"_Text fallback: reply `{_p}approve`, `{_p}always`, or `{_p}cancel`._"
         )
         return await self._request_slash_confirm(
             event=event,
@@ -10982,11 +11119,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 logger.debug("Button-based update prompt failed: %s", btn_err)
                         if not sent_buttons:
                             default_hint = f" (default: {default})" if default else ""
+                            _p = getattr(adapter, "typed_command_prefix", "/")
                             await adapter.send(
                                 chat_id,
                                 f"⚕ **Update needs your input:**\n\n"
                                 f"{prompt_text}{default_hint}\n\n"
-                                f"Reply `/approve` (yes) or `/deny` (no), "
+                                f"Reply `{_p}approve` (yes) or `{_p}deny` (no), "
                                 f"or type your answer directly.",
                                 metadata=metadata,
                             )
@@ -11496,7 +11634,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # when we successfully transcribed the audio — it's redundant.
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
-                return prefix
+                return prefix, successful_transcripts
             if user_text:
                 return f"{prefix}\n\n{user_text}", successful_transcripts
             return prefix, successful_transcripts
@@ -12873,6 +13011,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        # True when the previously enqueued progress line was a terminal
+        # fenced code block — consecutive terminal calls then drop the
+        # repeated "💻 terminal" header and render back-to-back blocks.
+        last_was_terminal_block = [False]
 
         # ── Discord voice "verbal ack before tool calls" ────────────────
         # When the bot is in a voice channel with the continuous mixer
@@ -13029,7 +13171,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             ):
                 from agent.display import get_tool_preview_max_len
                 _cmd_full = args["command"].rstrip()
-                _code_block_full = f"{emoji} {tool_name}\n```\n{_cmd_full}\n```"
+                # Consecutive terminal calls: drop the repeated
+                # "💻 terminal" header so back-to-back commands render as
+                # adjacent code blocks under a single header.
+                _block_header = (
+                    "" if last_was_terminal_block[0] else f"{emoji} {tool_name}\n"
+                )
+                _code_block_full = f"{_block_header}```\n{_cmd_full}\n```"
                 # Single-line, capped preview for non-verbose modes.
                 _pl = get_tool_preview_max_len()
                 _cap = _pl if _pl > 0 else 40
@@ -13040,13 +13188,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _cmd_short = _cmd_short[:_cap - 3] + "..."
                 elif _multiline:
                     _cmd_short = _cmd_short + " ..."
-                _code_block_short = f"{emoji} {tool_name}\n```\n{_cmd_short}\n```"
+                _code_block_short = f"{_block_header}```\n{_cmd_short}\n```"
 
             # Verbose mode: show detailed arguments, respects tool_preview_length
             if progress_mode == "verbose":
                 if _code_block_full is not None:
+                    last_was_terminal_block[0] = True
                     progress_queue.put(_code_block_full)
                     return
+                last_was_terminal_block[0] = False
                 if args:
                     from agent.display import get_tool_preview_max_len
                     _pl = get_tool_preview_max_len()
@@ -13071,6 +13221,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # fenced block (built above) instead of the truncated preview.
             if _code_block_short is not None:
                 msg = _code_block_short
+                last_was_terminal_block[0] = True
             elif preview:
                 from agent.display import get_tool_preview_max_len
                 _pl = get_tool_preview_max_len()
@@ -13078,8 +13229,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if len(preview) > _cap:
                     preview = preview[:_cap - 3] + "..."
                 msg = f"{emoji} {tool_name}: \"{preview}\""
+                last_was_terminal_block[0] = False
             else:
                 msg = f"{emoji} {tool_name}..."
+                last_was_terminal_block[0] = False
             
             # Dedup: collapse consecutive identical progress messages.
             # Common with execute_code where models iterate with the same
@@ -14053,14 +14206,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             "Button-based approval failed, falling back to text: %s", _e
                         )
 
-                # Fallback: plain text approval prompt
+                # Fallback: plain text approval prompt.  Use the adapter's
+                # typed prefix so Slack/Matrix users are told the form they
+                # can actually type (`!approve`) — typed "/" is blocked in
+                # Slack threads and reserved by Matrix clients.
+                _p = getattr(_status_adapter, "typed_command_prefix", "/")
                 cmd_preview = cmd[:200] + "..." if len(cmd) > 200 else cmd
                 msg = (
                     f"⚠️ **Dangerous command requires approval:**\n"
                     f"```\n{cmd_preview}\n```\n"
                     f"Reason: {desc}\n\n"
-                    f"Reply `/approve` to execute, `/approve session` to approve this pattern "
-                    f"for the session, `/approve always` to approve permanently, or `/deny` to cancel."
+                    f"Reply `{_p}approve` to execute, `{_p}approve session` to approve this pattern "
+                    f"for the session, `{_p}approve always` to approve permanently, or `{_p}deny` to cancel."
                 )
                 try:
                     _approval_send_fut = safe_schedule_threadsafe(
@@ -15711,6 +15868,13 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             )
         else:
             _signal_initiated_shutdown = True
+            # Mirror onto the runner so _stop_impl can suppress the
+            # gateway_state=stopped persist for unexpected signals
+            # (container/s6 SIGTERM on restart, OOM, bare kill) — see
+            # issue #42675. Operator-initiated stops set a planned-stop
+            # marker first, land in the `planned_stop` branch above, and
+            # leave this flag False so they DO persist "stopped".
+            runner._signal_initiated_shutdown = True
             logger.info(
                 "Received %s — initiating shutdown",
                 _shutdown_ctx["signal"] if _shutdown_ctx else "SIGTERM/SIGINT",
@@ -15824,6 +15988,8 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         return False
     atexit.register(remove_pid_file)
     atexit.register(release_gateway_runtime_lock)
+
+    _ensure_windows_gateway_venv_imports()
 
     # MCP tool discovery — run in an executor so the asyncio event loop
     # stays responsive even when a configured MCP server is slow or

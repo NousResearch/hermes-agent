@@ -351,13 +351,29 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         "lobehub": 500, "browse-sh": 500,
     }
 
-    with c.status("[bold]Fetching skills from registries..."):
+    with c.status("[bold]Fetching skills from registries...") as status:
+        # Live progress: tick off each source as it resolves so the wait is
+        # visible instead of a frozen spinner. parallel_search_sources invokes
+        # this callback from the collecting thread as each source completes;
+        # the page itself is still rendered once, after the correctly-merged
+        # and trust-sorted result set is final (browse's ordering contract is
+        # computed over the whole set, so we never render a half-sorted page).
+        _done: List[str] = []
+
+        def _on_source_done(sid: str, count: int) -> None:
+            _done.append(f"{sid} ({count})")
+            status.update(
+                "[bold]Fetching skills from registries...[/]  "
+                f"[dim]done: {', '.join(_done)}[/]"
+            )
+
         all_results, source_counts, timed_out = parallel_search_sources(
             sources,
             query="",
             per_source_limits=_PER_SOURCE_LIMIT,
             source_filter=source,
             overall_timeout=30,
+            on_source_done=_on_source_done,
         )
 
     if not all_results:

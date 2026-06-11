@@ -226,6 +226,212 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         exc,
     )
 
+# ---------------------------------------------------------------------------
+# Malformed-schema recovery
+# ---------------------------------------------------------------------------
+# A distinct, nastier failure class than a malformed FTS *inverted index*:
+# the ``sqlite_master`` schema table itself becomes inconsistent — most
+# commonly a DUPLICATE object definition, e.g. two ``CREATE VIRTUAL TABLE
+# messages_fts`` rows.  SQLite parses the entire schema while preparing the
+# FIRST statement on a connection, so on this class *every* statement raises
+# before it runs — including ``PRAGMA journal_mode`` (which is why this trips
+# in ``apply_wal_with_fallback`` during ``SessionDB.__init__``, long before
+# ``_init_schema`` is reached) and even ``PRAGMA integrity_check`` and a plain
+# ``DROP TABLE``.  The only operations that still work are
+# ``PRAGMA writable_schema=ON`` plus direct ``sqlite_master`` surgery.
+#
+# Symptom users hit (Desktop/Dashboard show "no sessions" while 200+ JSON
+# files sit on disk):
+#   sqlite3.DatabaseError: malformed database schema (messages_fts) -
+#   table messages_fts already exists
+#
+# The canonical ``sessions`` / ``messages`` data is intact in these cases —
+# only the derived schema is broken — so recovery preserves all transcripts
+# and merely rebuilds the FTS layer.
+_MALFORMED_SCHEMA_MARKERS = (
+    "malformed database schema",
+    "database disk image is malformed",
+)
+
+# Process-global guard so auto-repair is attempted at most once per DB path
+# per process (prevents repair loops and serialises concurrent web_server /
+# gateway opens against the same malformed file).
+_repair_attempted_paths: set[str] = set()
+_repair_attempt_lock = threading.Lock()
+
+
+def is_malformed_db_error(exc: BaseException) -> bool:
+    """True if *exc* is a SQLite 'malformed schema / disk image' error.
+
+    These are the corruption classes where the schema fails to parse, so
+    targeted ``sqlite_master`` surgery (not an ordinary FTS rebuild) is the
+    only recovery path.
+    """
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    return any(marker in str(exc).lower() for marker in _MALFORMED_SCHEMA_MARKERS)
+
+
+def _claim_repair_attempt(db_path: Path) -> bool:
+    """Claim the one-shot repair attempt for *db_path* in this process.
+
+    Returns True for the first caller, False afterwards. Keeps a malformed
+    DB from triggering an unbounded repair/reopen loop and stops concurrent
+    callers from racing surgery on the same file.
+    """
+    key = str(db_path)
+    with _repair_attempt_lock:
+        if key in _repair_attempted_paths:
+            return False
+        _repair_attempted_paths.add(key)
+        return True
+
+
+def _backup_db_file(db_path: Path) -> Optional[Path]:
+    """Copy a (possibly malformed) DB file to a timestamped backup beside it.
+
+    Raw file copy on purpose: the DB won't open cleanly, so we preserve the
+    bytes exactly for forensics / manual restore. WAL and SHM sidecars are
+    copied too when present. Returns the backup path, or None on failure.
+    """
+    import datetime
+    import shutil
+
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = db_path.with_name(f"{db_path.name}.malformed-backup-{stamp}")
+    try:
+        shutil.copy2(db_path, backup_path)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            if sidecar.exists():
+                shutil.copy2(sidecar, backup_path.with_name(backup_path.name + suffix))
+        return backup_path
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Could not back up malformed DB %s: %s", db_path, exc)
+        return None
+
+
+def _db_opens_cleanly(db_path: Path) -> Optional[str]:
+    """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
+
+    Runs the same first-statement (``PRAGMA journal_mode``) that trips the
+    malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
+    ``sessions`` read.
+    """
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute("PRAGMA journal_mode").fetchone()
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+        problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
+        if problems:
+            return "; ".join(problems[:3])
+        conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        return None
+    except sqlite3.DatabaseError as exc:
+        return str(exc)
+    finally:
+        conn.close()
+
+
+def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
+    """Repair a state.db whose ``sqlite_master`` schema is malformed.
+
+    Handles the "duplicate object definition" / malformed-schema class where
+    even ``PRAGMA`` statements fail. Tries least-destructive recovery first
+    and escalates:
+
+      1. **De-duplicate** ``sqlite_master`` (keep the lowest rowid per
+         ``type``/``name``). Fixes the canonical "table X already exists"
+         case and PRESERVES the existing FTS index intact.
+      2. **Drop the FTS schema** (every ``messages_fts*`` object) + ``VACUUM``.
+         The next ``SessionDB()`` open rebuilds the FTS indexes from the
+         canonical ``messages`` table.
+
+    Canonical ``sessions`` / ``messages`` rows are never modified. A
+    timestamped raw backup is taken first unless ``backup=False``.
+
+    Returns a report dict: ``{repaired: bool, strategy: str|None,
+    backup_path: str|None, error: str|None}``.
+    """
+    report: Dict[str, Any] = {
+        "repaired": False,
+        "strategy": None,
+        "backup_path": None,
+        "error": None,
+    }
+
+    db_path = Path(db_path)
+    if not db_path.exists():
+        report["error"] = f"{db_path} does not exist"
+        return report
+
+    if backup:
+        bpath = _backup_db_file(db_path)
+        report["backup_path"] = str(bpath) if bpath else None
+
+    # ── Strategy 1: de-duplicate sqlite_master (keeps FTS index) ──
+    try:
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            conn.execute("PRAGMA writable_schema=ON")
+            dupes = conn.execute(
+                "SELECT type, name, COUNT(*) AS c, MIN(rowid) AS keep "
+                "FROM sqlite_master GROUP BY type, name HAVING c > 1"
+            ).fetchall()
+            for type_, name, _count, keep in dupes:
+                conn.execute(
+                    "DELETE FROM sqlite_master "
+                    "WHERE type IS ? AND name IS ? AND rowid <> ?",
+                    (type_, name, keep),
+                )
+            conn.execute("PRAGMA writable_schema=OFF")
+            conn.commit()
+        finally:
+            conn.close()
+        if _db_opens_cleanly(db_path) is None:
+            report["repaired"] = True
+            report["strategy"] = "dedup_schema"
+            logger.warning(
+                "state.db schema repaired by de-duplicating sqlite_master "
+                "(FTS index preserved): %s", db_path
+            )
+            return report
+    except sqlite3.DatabaseError as exc:
+        logger.warning("state.db dedup repair pass failed: %s", exc)
+
+    # ── Strategy 2: drop all FTS schema, VACUUM, rebuild on next open ──
+    try:
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            conn.execute("PRAGMA writable_schema=ON")
+            conn.execute("DELETE FROM sqlite_master WHERE name LIKE 'messages_fts%'")
+            conn.execute("PRAGMA writable_schema=OFF")
+            conn.commit()
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+        reason = _db_opens_cleanly(db_path)
+        if reason is None:
+            report["repaired"] = True
+            report["strategy"] = "drop_fts_rebuild"
+            logger.warning(
+                "state.db schema repaired by dropping FTS schema; indexes "
+                "will rebuild from messages on next open: %s", db_path
+            )
+            return report
+        report["error"] = reason
+    except sqlite3.DatabaseError as exc:
+        report["error"] = str(exc)
+
+    if not report["repaired"]:
+        logger.error(
+            "state.db schema repair could not recover %s automatically "
+            "(backup: %s); manual restore from backup may be required.",
+            db_path, report["backup_path"],
+        )
+    return report
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -405,6 +611,7 @@ class SessionDB:
         self._write_count = 0
         self._fts_enabled = False
         self._fts_unavailable_warned = False
+        self._conn = None
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -426,23 +633,50 @@ class SessionDB:
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(
-                str(self.db_path),
-                check_same_thread=False,
-                # Short timeout — application-level retry with random jitter
-                # handles contention instead of sitting in SQLite's internal
-                # busy handler for up to 30s.
-                timeout=1.0,
-                # auto-starts transactions on DML, which conflicts with our
-                # explicit BEGIN IMMEDIATE.  None = we manage transactions
-                # ourselves.
-                isolation_level=None,
-            )
-            self._conn.row_factory = sqlite3.Row
-            apply_wal_with_fallback(self._conn, db_label="state.db")
-            self._conn.execute("PRAGMA foreign_keys=ON")
 
-            self._init_schema()
+            def _connect_and_init():
+                self._conn = sqlite3.connect(
+                    str(self.db_path),
+                    check_same_thread=False,
+                    # Short timeout — application-level retry with random
+                    # jitter handles contention instead of sitting in
+                    # SQLite's internal busy handler for up to 30s.
+                    timeout=1.0,
+                    # auto-starts transactions on DML, which conflicts with
+                    # our explicit BEGIN IMMEDIATE.  None = we manage
+                    # transactions ourselves.
+                    isolation_level=None,
+                )
+                self._conn.row_factory = sqlite3.Row
+                apply_wal_with_fallback(self._conn, db_label="state.db")
+                self._conn.execute("PRAGMA foreign_keys=ON")
+                self._init_schema()
+
+            try:
+                _connect_and_init()
+            except sqlite3.DatabaseError as exc:
+                # The malformed-schema class (e.g. a duplicate sqlite_master
+                # row for messages_fts) fails on the very first statement —
+                # before _init_schema can run — so it can't be caught at the
+                # FTS-rebuild layer. Recover by repairing sqlite_master in
+                # place (backup first; canonical sessions/messages preserved),
+                # then reopen once. This is what lets Desktop/Dashboard
+                # self-heal instead of silently showing "no sessions".
+                if not is_malformed_db_error(exc) or not _claim_repair_attempt(self.db_path):
+                    raise
+                logger.error(
+                    "state.db schema is malformed (%s) — attempting automatic "
+                    "repair (a backup copy is made first).", exc,
+                )
+                try:
+                    if self._conn is not None:
+                        self._conn.close()
+                except Exception:
+                    pass
+                report = repair_state_db_schema(self.db_path)
+                if not report.get("repaired"):
+                    raise
+                _connect_and_init()
         except Exception as exc:
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database
@@ -1481,15 +1715,51 @@ class SessionDB:
         """Archive or unarchive a session.
 
         Archived sessions are hidden from the default session list but keep all
-        their messages — this is a soft hide, not a delete. Returns True when a
-        row was updated.
+        their messages — this is a soft hide, not a delete. For compression
+        chains, archive the whole logical conversation. Desktop lists compression
+        roots projected forward to their latest continuation; updating only the
+        displayed tip lets the still-unarchived root resurrect it on refresh.
+        Returns True when at least one row was updated.
         """
         def _do(conn):
             cursor = conn.execute(
-                "UPDATE sessions SET archived = ? WHERE id = ?",
-                (1 if archived else 0, session_id),
+                """
+                WITH RECURSIVE
+                  ancestors(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                  ),
+                  descendants(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT child.id
+                    FROM descendants d
+                    JOIN sessions parent ON parent.id = d.id
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                  ),
+                  lineage(id) AS (
+                    SELECT id FROM ancestors
+                    UNION
+                    SELECT id FROM descendants
+                  )
+                UPDATE sessions
+                SET archived = ?
+                WHERE id IN (SELECT id FROM lineage)
+                """,
+                (session_id, session_id, 1 if archived else 0),
             )
-            return cursor.rowcount
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
@@ -3423,6 +3693,48 @@ class SessionDB:
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
+
+    def delete_session_if_empty(
+        self,
+        session_id: str,
+        sessions_dir: Optional[Path] = None,
+    ) -> bool:
+        """Delete *session_id* only when it never gained resumable content.
+
+        A session is considered empty when it has no messages and no
+        user-assigned title. Used by CLI exit / session-rotation paths so
+        immediately-started-and-quit sessions don't pile up in ``/resume``
+        and ``hermes sessions list`` output. (Pattern ported from
+        google-gemini/gemini-cli#27770.)
+
+        The emptiness check and delete run in one transaction, so a message
+        flushed concurrently by another writer can't be lost. Sessions with
+        children (delegate subagent runs) are preserved — a parent that
+        spawned work is not "empty" even if its own transcript never
+        flushed. Returns True if the session was deleted.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                DELETE FROM sessions
+                WHERE id = ?
+                  AND title IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions child
+                      WHERE child.parent_session_id = sessions.id
+                  )
+                """,
+                (session_id,),
+            )
+            return cursor.rowcount > 0
+
+        deleted = self._execute_write(_do)
+        if deleted:
+            self._remove_session_files(sessions_dir, session_id)
+        return bool(deleted)
 
     def delete_sessions(
         self,

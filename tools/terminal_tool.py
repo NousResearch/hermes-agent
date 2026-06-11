@@ -777,7 +777,8 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     the password in the command string themselves; see their execute()
     methods for how they handle the non-None sudo_stdin case.
 
-    If SUDO_PASSWORD is not set and in interactive mode (HERMES_INTERACTIVE=1):
+    If SUDO_PASSWORD is not set and an interactive UI is available
+    (HERMES_INTERACTIVE=1 or a registered sudo password callback):
       Prompts user for password with 45s timeout, caches for session.
 
     If SUDO_PASSWORD is not set and NOT interactive:
@@ -805,7 +806,11 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
         return command, None
 
-    if not has_configured_password and not sudo_password and env_var_enabled("HERMES_INTERACTIVE"):
+    has_sudo_prompt_callback = _get_sudo_password_callback() is not None
+    should_prompt_for_sudo = (
+        env_var_enabled("HERMES_INTERACTIVE") or has_sudo_prompt_callback
+    )
+    if not has_configured_password and not sudo_password and should_prompt_for_sudo:
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
             _set_cached_sudo_password(sudo_password)
@@ -1030,7 +1035,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
 
 # Configuration from environment variables
 
-def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
+def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer"):
     """Parse an environment variable with *converter*, raising a clear error on bad values.
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
@@ -1067,6 +1072,32 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    container_backend = env_type in {"docker", "singularity", "modal", "daytona"}
+    docker_backend = env_type == "docker"
+
+    # Docker/container-only env vars may be bridged from config.yaml even when
+    # the active backend is local/ssh.  Do not parse their JSON/numeric payloads
+    # until a backend that can consume them is selected; a stale or invalid
+    # Docker value should not make local terminal/execute_code unusable.
+    if container_backend:
+        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number")
+        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
+        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+    else:
+        container_cpu = 1.0
+        container_memory = 5120
+        container_disk = 51200
+
+    if docker_backend:
+        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
+        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
+        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
+        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
+    else:
+        docker_forward_env = []
+        docker_volumes = []
+        docker_env = {}
+        docker_extra_args = []
 
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, and everything else starts in the backend's default
@@ -1110,7 +1141,7 @@ def _get_env_config() -> Dict[str, Any]:
         "env_type": env_type,
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
-        "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
+        "docker_forward_env": docker_forward_env,
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
@@ -1134,14 +1165,14 @@ def _get_env_config() -> Dict[str, Any]:
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
         # daytona -- ignored for local/ssh)
-        "container_cpu": _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number"),
-        "container_memory": _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120"),     # MB (default 5GB)
-        "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
+        "container_cpu": container_cpu,
+        "container_memory": container_memory,     # MB (default 5GB)
+        "container_disk": container_disk,        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
-        "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
-        "docker_env": _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON"),
+        "docker_volumes": docker_volumes,
+        "docker_env": docker_env,
         "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_extra_args": _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON"),
+        "docker_extra_args": docker_extra_args,
         # Cross-process container reuse (issue #20561).  The docs claim
         # "ONE long-lived container shared across sessions" — this toggle
         # makes that real by probing for a labeled container at startup and

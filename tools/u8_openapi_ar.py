@@ -1,7 +1,12 @@
 import json
-from typing import Optional,List
+import logging
+from typing import Dict, Any, Optional,List
 from pydantic import BaseModel, Field
 from .u8_openapi_client import U8OpenAPIClient
+
+# ===================== 日志配置 =====================
+logger = logging.getLogger(__name__)
+
 
 # ===================== 收款单通用数据模型 (复用于新增和查询) =====================
 

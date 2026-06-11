@@ -103,6 +103,49 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".webp": "image/webp",
     ".gif": "image/gif",
 }
+_TELEGRAM_AUDIO_EXTENSIONS = {
+    ".mp3",
+    ".m4a",
+    ".ogg",
+    ".opus",
+    ".wav",
+    ".flac",
+    ".aac",
+}
+_TELEGRAM_AUDIO_MIME_TO_EXT = {
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/aac": ".aac",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/flac": ".flac",
+}
+
+
+def _telegram_audio_ext(
+    filename: str = "", mime_type: str = "", fallback: str = ".mp3"
+) -> str:
+    """Best-effort audio cache extension from Telegram filename/MIME metadata."""
+    if filename:
+        _, ext = os.path.splitext(filename)
+        ext = ext.lower()
+        if ext in _TELEGRAM_AUDIO_EXTENSIONS:
+            return ext
+    mime = (mime_type or "").lower()
+    return _TELEGRAM_AUDIO_MIME_TO_EXT.get(mime, fallback)
+
+
+def _telegram_audio_mime(ext: str, mime_type: str = "") -> str:
+    """Return a stable audio MIME for cached Telegram audio."""
+    mime = (mime_type or "").lower()
+    if mime.startswith("audio/"):
+        return mime
+    ext_to_mime = {v: k for k, v in _TELEGRAM_AUDIO_MIME_TO_EXT.items()}
+    return ext_to_mime.get(ext, "audio/mpeg")
 
 
 MAX_COMMANDS_PER_SCOPE = 30
@@ -5614,9 +5657,16 @@ class TelegramAdapter(BasePlatformAdapter):
             try:
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
-                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                audio_name = (
+                    getattr(msg.audio, "file_name", "")
+                    or getattr(file_obj, "file_path", "")
+                    or ""
+                )
+                audio_mime = (getattr(msg.audio, "mime_type", "") or "").lower()
+                ext = _telegram_audio_ext(audio_name, audio_mime)
+                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=ext)
                 event.media_urls = [cached_path]
-                event.media_types = ["audio/mp3"]
+                event.media_types = [_telegram_audio_mime(ext, audio_mime)]
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
@@ -5723,6 +5773,22 @@ class TelegramAdapter(BasePlatformAdapter):
                     event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
                     event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
+                    await self.handle_message(event)
+                    return
+
+                if ext in _TELEGRAM_AUDIO_EXTENSIONS or doc_mime.startswith("audio/"):
+                    file_obj = await doc.get_file()
+                    audio_bytes = await file_obj.download_as_bytearray()
+                    audio_ext = _telegram_audio_ext(
+                        original_filename,
+                        doc_mime,
+                        fallback=ext if ext in _TELEGRAM_AUDIO_EXTENSIONS else ".mp3",
+                    )
+                    cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=audio_ext)
+                    event.media_urls = [cached_path]
+                    event.media_types = [_telegram_audio_mime(audio_ext, doc_mime)]
+                    event.message_type = MessageType.AUDIO
+                    logger.info("[Telegram] Cached user audio document at %s", cached_path)
                     await self.handle_message(event)
                     return
 

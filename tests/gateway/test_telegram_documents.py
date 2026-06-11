@@ -81,8 +81,8 @@ def _make_document(
     return doc
 
 
-def _make_message(document=None, caption=None, media_group_id=None, photo=None):
-    """Build a mock Telegram Message with the given document/photo."""
+def _make_message(document=None, caption=None, media_group_id=None, photo=None, audio=None):
+    """Build a mock Telegram Message with the given document/photo/audio."""
     msg = MagicMock()
     msg.message_id = 42
     msg.text = caption or ""
@@ -91,7 +91,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     # Media flags — all None except explicit payload
     msg.photo = photo
     msg.video = None
-    msg.audio = None
+    msg.audio = audio
     msg.voice = None
     msg.sticker = None
     msg.document = document
@@ -122,6 +122,14 @@ def _make_video(file_obj=None):
     return video
 
 
+def _make_audio(file_name="track.m4a", mime_type="audio/mp4", file_obj=None):
+    audio = MagicMock()
+    audio.file_name = file_name
+    audio.mime_type = mime_type
+    audio.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"audio-bytes"))
+    return audio
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -148,6 +156,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     )
     monkeypatch.setattr(
         "gateway.platforms.base.VIDEO_CACHE_DIR", tmp_path / "video_cache"
+    )
+    monkeypatch.setattr(
+        "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
     )
 
 
@@ -427,6 +438,48 @@ class TestVideoDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+
+class TestAudioDownloadBlock:
+    @pytest.mark.asyncio
+    async def test_native_audio_preserves_m4a_extension_and_type(self, adapter):
+        file_obj = _make_file_obj(b"fake-m4a")
+        file_obj.file_path = "audio/track.m4a"
+        msg = _make_message(
+            audio=_make_audio(
+                file_name="track.m4a", mime_type="audio/mp4", file_obj=file_obj
+            )
+        )
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.AUDIO
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0].endswith(".m4a")
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["audio/mp4"]
+
+    @pytest.mark.asyncio
+    async def test_audio_document_is_treated_as_audio_not_unsupported_document(self, adapter):
+        file_obj = _make_file_obj(b"fake-mp3-doc")
+        doc = _make_document(
+            file_name="song.mp3",
+            mime_type="audio/mpeg",
+            file_size=1024,
+            file_obj=file_obj,
+        )
+        msg = _make_message(document=doc)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.AUDIO
+        assert len(event.media_urls) == 1
+        assert event.media_urls[0].endswith(".mp3")
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == ["audio/mpeg"]
+        assert "Unsupported document type" not in (event.text or "")
 
 
 # ---------------------------------------------------------------------------

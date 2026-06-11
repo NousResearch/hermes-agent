@@ -376,16 +376,26 @@ def _install_sidecar() -> int:
             file=sys.stderr,
         )
         return 1
-    # Always pull the newest published spectrum-ts so every setup runs against
-    # the latest SDK. `spectrum-ts@latest` bumps package.json + package-lock.json
-    # to the current release before installing — a plain `npm install` would
-    # stay pinned to whatever the committed lockfile already resolved.
-    print(f"  $ cd {_SIDECAR_DIR} && {npm} install spectrum-ts@latest")
+    # spectrum-ts is pinned exactly in package.json/package-lock.json because
+    # the SDK ships breaking majors (v2 removed defineFusorPlatform; v3
+    # reworked space construction). Upgrades are deliberate: bump the pin,
+    # migrate sidecar/index.mjs, re-run the photon tests — never `@latest`
+    # (see README "Upgrading spectrum-ts"). `npm ci` installs the committed
+    # lockfile verbatim; fall back to `npm install` when the lockfile is
+    # missing or drifted (e.g. a dev checkout mid-upgrade).
+    print(f"  $ cd {_SIDECAR_DIR} && {npm} ci")
     proc = subprocess.run(  # noqa: S603
-        [npm, "install", "spectrum-ts@latest"],
+        [npm, "ci"],
         cwd=str(_SIDECAR_DIR),
         check=False,
     )
+    if proc.returncode != 0:
+        print(f"  npm ci failed — falling back to:  {npm} install")
+        proc = subprocess.run(  # noqa: S603
+            [npm, "install"],
+            cwd=str(_SIDECAR_DIR),
+            check=False,
+        )
     if proc.returncode != 0:
         print("npm install failed", file=sys.stderr)
     return proc.returncode

@@ -19,17 +19,27 @@
 //                         lines are heartbeats. One consumer at a time.
 //   - POST /healthz     -> {"ok": true}
 //   - POST /send        -> {"ok": true, "messageId": "..."}
-//       body: {"spaceId": "...", "text": "..."}
+//       body: {"spaceId": "...", "text": "...",
+//              "format": "text" | "markdown" (default "text")}
 //   - POST /send-attachment -> {"ok": true, "messageId": "..."}
 //       body: {"spaceId": "...", "path": "...", "name": "..." | null,
 //              "mimeType": "..." | null, "caption": "..." | null,
 //              "kind": "attachment" | "voice"}
+//   - POST /react       -> {"ok": true, "reactionId": "..." | null}
+//       body: {"spaceId": "...", "messageId": "<target msg id>",
+//              "emoji": "👀"}
+//   - POST /unreact     -> {"ok": true} | 400 soft failure
+//       body: {"spaceId": "...", "messageId": "<target msg id>",
+//              "reactionId": "..." | null (restart-recovery fallback)}
 //   - POST /typing      -> {"ok": true}
 //       body: {"spaceId": "...", "state": "start" | "stop"}
 //   - POST /shutdown    -> {"ok": true}; then process exits
 //
 // On SIGINT/SIGTERM the sidecar calls `app.stop()` (3s graceful) before
 // exiting. Logs go to stderr; Python supervises restart.
+//
+// Requires spectrum-ts 3.x — pinned exactly in package.json because the SDK
+// ships breaking majors; see README "Upgrading spectrum-ts".
 //
 // Env vars (required):
 //   PHOTON_PROJECT_ID      (== the project's spectrumProjectId)
@@ -64,6 +74,8 @@ const MAX_INLINE_ATTACHMENT_BYTES =
 const DM_CHAT_GUID_RE = /^any;-;(\+\d{6,})$/;
 const E164_RE = /^\+\d{6,}$/;
 const MAX_KNOWN_SPACES = 2048;
+const MAX_KNOWN_MESSAGES = 1024;
+const MAX_REACTION_HANDLES = 512;
 
 if (!projectId || !projectSecret || !sharedToken) {
   console.error(
@@ -75,13 +87,20 @@ if (!projectId || !projectSecret || !sharedToken) {
 
 // Lazy-load spectrum-ts so a missing install fails with a clear message
 // instead of a cryptic module-resolution error during import.
-let Spectrum, imessage, attachment, voice, spectrumText, spectrumTyping;
+let Spectrum,
+  imessage,
+  attachment,
+  voice,
+  spectrumText,
+  spectrumMarkdown,
+  spectrumTyping;
 try {
   ({
     Spectrum,
     attachment,
     voice,
     text: spectrumText,
+    markdown: spectrumMarkdown,
     typing: spectrumTyping,
   } = await import("spectrum-ts"));
   ({ imessage } = await import("spectrum-ts/providers/imessage"));
@@ -109,15 +128,34 @@ const app = await Spectrum({
 let consumerRes = null;
 let consumerWaiters = [];
 const knownSpaces = new Map();
+// Inbound Message objects by id, so /react can usually skip a
+// `space.getMessage` round trip when tapping back on a recent message.
+const knownMessages = new Map();
+// One reaction handle per reacted-to message (key `${spaceId}\0${messageId}`,
+// value {emoji, handle}) — mirrors iMessage's one-tapback-per-sender
+// semantics; a new /react on the same target overwrites the slot. The handle
+// is the outbound reaction Message returned by `target.react()`, kept so
+// /unreact can `unsend()` it later.
+const reactionHandles = new Map();
+
+function lruSet(map, key, value, cap) {
+  if (map.has(key)) map.delete(key);
+  map.set(key, value);
+  if (map.size > cap) {
+    const oldest = map.keys().next().value;
+    if (oldest !== undefined) map.delete(oldest);
+  }
+}
 
 function rememberKnownSpace(id, space) {
   if (!id || typeof id !== "string" || !space) return;
-  if (knownSpaces.has(id)) knownSpaces.delete(id);
-  knownSpaces.set(id, space);
-  if (knownSpaces.size > MAX_KNOWN_SPACES) {
-    const oldest = knownSpaces.keys().next().value;
-    if (oldest) knownSpaces.delete(oldest);
-  }
+  lruSet(knownSpaces, id, space, MAX_KNOWN_SPACES);
+}
+
+function rememberKnownMessage(message) {
+  const id = message?.id;
+  if (!id || typeof id !== "string") return;
+  lruSet(knownMessages, id, message, MAX_KNOWN_MESSAGES);
 }
 
 function phoneTargetFromSpaceId(spaceId) {
@@ -232,6 +270,17 @@ async function normalizeContent(content) {
   if (content.type === "attachment" || content.type === "voice") {
     return await normalizeBinaryContent(content);
   }
+  if (content.type === "reaction") {
+    return {
+      type: "reaction",
+      emoji: content.emoji || "",
+      targetMessageId: content.target?.id ?? null,
+      // Lets Python gate "is this a reaction to one of MY messages" without
+      // tracking every outbound id. May be null if the provider doesn't
+      // hydrate the target — Python falls back to its own sent-id cache.
+      targetDirection: content.target?.direction ?? null,
+    };
+  }
   return { type: content.type || "unknown" };
 }
 
@@ -276,6 +325,7 @@ async function normalizeEvent(space, message) {
           continue;
         }
         rememberInboundSpace(space, message);
+        rememberKnownMessage(message);
         const event = await normalizeEvent(space, message);
         if (!event) continue;
         await deliver(JSON.stringify(event));
@@ -385,37 +435,44 @@ async function resolveSpace(spaceId) {
   const cached = knownSpaces.get(spaceId);
   if (cached) return cached;
 
+  const im = imessage(app);
   const phoneTarget = phoneTargetFromSpaceId(spaceId);
-  // A bare E.164 phone number addresses a DM. Resolve the user, then the (DM)
-  // space — `imessage(app).user(phone)` -> `im.space(user)` — so callers can
-  // pass just "+1..." (e.g. PHOTON_HOME_CHANNEL for cron delivery) instead of
-  // an opaque inbound space id. Photon also represents DM chat ids as
-  // `any;-;+1...`; normalize those through the same path so replies to inbound
-  // DMs still resolve after Python stores the inbound `space.id`.
-  if (phoneTarget && imessage) {
+  let space = null;
+
+  // A bare E.164 phone number addresses a DM, so callers can pass just
+  // "+1..." (e.g. PHOTON_HOME_CHANNEL for cron delivery) instead of an opaque
+  // inbound space id. Photon also represents DM chat ids as `any;-;+1...`;
+  // normalize those through the same path. `space.create` accepts the raw
+  // phone string directly.
+  if (phoneTarget) {
     try {
-      const im = imessage(app);
-      const user = await im.user(phoneTarget);
-      const space = await im.space(user);
-      rememberKnownSpace(spaceId, space);
-      rememberKnownSpace(phoneTarget, space);
-      rememberKnownSpace(space?.id, space);
-      return space;
+      space = await im.space.create(phoneTarget);
     } catch (e) {
       console.error(
-        "photon-sidecar: phone->DM resolution failed: " +
+        "photon-sidecar: phone->DM space.create failed: " +
           (e && e.stack ? e.stack : String(e))
       );
     }
   }
-  // No cache hit and not a phone/DM target. spectrum-ts exposes no API to
-  // rehydrate an arbitrary opaque space id: a Space is only obtained from the
-  // inbound `[space, message]` stream (cached above in `knownSpaces`) or
-  // reconstructed for a DM from its phone number. So a group space whose cache
-  // entry was lost — e.g. after a sidecar restart with no fresh inbound message
-  // in that group — cannot be resolved here; a new inbound message in the group
-  // re-warms the cache. DMs are unaffected (reconstructed from the phone).
-  throw new Error(`unable to resolve space id ${spaceId}`);
+  // Anything else — typically an opaque group GUID — is rehydrated from the
+  // persisted id via `space.get`, so group spaces stay reachable after a
+  // sidecar restart even before any fresh inbound message in that group.
+  if (!space) {
+    try {
+      space = await im.space.get(spaceId);
+    } catch (e) {
+      console.error(
+        "photon-sidecar: space.get failed: " +
+          (e && e.stack ? e.stack : String(e))
+      );
+    }
+  }
+  if (!space) throw new Error(`unable to resolve space id ${spaceId}`);
+
+  rememberKnownSpace(spaceId, space);
+  if (phoneTarget) rememberKnownSpace(phoneTarget, space);
+  rememberKnownSpace(space?.id, space);
+  return space;
 }
 
 // Constant-time token comparison — don't leak the token via `!==` timing.
@@ -449,12 +506,19 @@ const server = http.createServer(async (req, res) => {
     }
     const body = await readBody(req);
     if (req.url === "/send") {
-      const { spaceId, text } = body || {};
+      const { spaceId, text, format = "text" } = body || {};
       if (!spaceId || typeof text !== "string") {
         return badRequest(res, "spaceId and text are required");
       }
+      if (format !== "text" && format !== "markdown") {
+        return badRequest(res, "format must be text or markdown");
+      }
       const space = await resolveSpace(spaceId);
-      const result = await space.send(spectrumText(text));
+      // iMessage renders markdown natively; spectrum-ts degrades it to
+      // readable plain text on platforms that don't.
+      const builder =
+        format === "markdown" ? spectrumMarkdown(text) : spectrumText(text);
+      const result = await space.send(builder);
       return ok(res, { messageId: result?.id || null });
     }
     if (req.url === "/send-attachment") {
@@ -491,6 +555,64 @@ const server = http.createServer(async (req, res) => {
         }
       }
       return ok(res, { messageId: result?.id || null });
+    }
+    if (req.url === "/react") {
+      const { spaceId, messageId, emoji } = body || {};
+      if (!spaceId || !messageId || typeof emoji !== "string" || !emoji) {
+        return badRequest(res, "spaceId, messageId and emoji are required");
+      }
+      const space = await resolveSpace(spaceId);
+      const target =
+        knownMessages.get(messageId) ?? (await space.getMessage(messageId));
+      if (!target) {
+        return badRequest(res, "message not found");
+      }
+      const handle = await target.react(emoji);
+      if (!handle) {
+        return badRequest(res, "reactions not supported on this platform");
+      }
+      lruSet(
+        reactionHandles,
+        `${spaceId}\u0000${messageId}`,
+        { emoji, handle },
+        MAX_REACTION_HANDLES
+      );
+      return ok(res, { reactionId: handle.id ?? null });
+    }
+    if (req.url === "/unreact") {
+      const { spaceId, messageId, reactionId } = body || {};
+      if (!spaceId || !messageId) {
+        return badRequest(res, "spaceId and messageId are required");
+      }
+      const key = `${spaceId}\u0000${messageId}`;
+      const slot = reactionHandles.get(key);
+      if (slot) {
+        await slot.handle.unsend();
+        reactionHandles.delete(key);
+        return ok(res, {});
+      }
+      // Restart-recovery: the live handle is gone, so try rehydrating the
+      // reaction message by id and retracting it. Only outbound messages can
+      // be unsent — if the provider rehydrates it as inbound (or not at all)
+      // this throws, and that's an expected soft failure, not a sidecar bug:
+      // a stale tapback self-heals when the next /react replaces it.
+      if (reactionId) {
+        try {
+          const space = await resolveSpace(spaceId);
+          const msg = await space.getMessage(reactionId);
+          if (msg) {
+            await space.unsend(msg);
+            return ok(res, {});
+          }
+        } catch (e) {
+          console.error(
+            "photon-sidecar: best-effort unreact failed: " +
+              (e && e.message ? e.message : String(e))
+          );
+        }
+        return badRequest(res, "reaction not removable");
+      }
+      return badRequest(res, "no tracked reaction for message");
     }
     if (req.url === "/typing") {
       const { spaceId, state = "start" } = body || {};

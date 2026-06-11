@@ -58,6 +58,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
 )
 from gateway.platforms.helpers import strip_markdown
@@ -152,6 +153,19 @@ def _env_enablement() -> Optional[dict]:
     return seed
 
 
+def _markdown_enabled() -> bool:
+    """Send agent replies as markdown (spectrum-ts ``markdown()`` builder).
+
+    iMessage renders it natively; other Spectrum platforms degrade to
+    readable plain text. On-device rendering can't be unit-tested, so
+    ``PHOTON_MARKDOWN=false`` is the kill-switch back to stripped plain
+    text without a release.
+    """
+    return os.getenv("PHOTON_MARKDOWN", "true").strip().lower() not in {
+        "false", "0", "no",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Adapter
 
@@ -199,6 +213,10 @@ class PhotonAdapter(BasePlatformAdapter):
         ).lower() not in ("0", "false", "no")
         self._node_bin = os.getenv("PHOTON_NODE_BIN") or shutil.which("node") or "node"
 
+        # With markdown on, format_message preserves fences and the sidecar's
+        # markdown() builder renders them (or degrades them readably).
+        self.supports_code_blocks = _markdown_enabled()
+
         # Runtime state
         self._sidecar_proc: Optional[subprocess.Popen] = None
         self._sidecar_supervisor_task: Optional[asyncio.Task] = None
@@ -208,6 +226,10 @@ class PhotonAdapter(BasePlatformAdapter):
         # Lightweight in-memory dedup. The gRPC stream is at-least-once, so we
         # may see the same messageId more than once (e.g. after a reconnect).
         self._seen_messages: Dict[str, float] = {}
+        # Ids of messages WE sent (bounded, insertion-order eviction). Inbound
+        # reaction events are only routed to the agent when they target one of
+        # these — a tapback on a human↔human message is not addressed to us.
+        self._sent_message_ids: Dict[str, float] = {}
 
         # Group-chat mention gating (parity with BlueBubbles). When enabled,
         # group messages are ignored unless they match a wake word; DMs are
@@ -442,7 +464,10 @@ class PhotonAdapter(BasePlatformAdapter):
               "content": {"type": "text", "text": "..."}
                        | {"type": "attachment"|"voice", "id", "name",
                           "mimeType", "size", "duration"?, "data"?,
-                          "encoding"?},
+                          "encoding"?}
+                       | {"type": "reaction", "emoji": "❤️",
+                          "targetMessageId": "..." | null,
+                          "targetDirection": "inbound"|"outbound" | null},
               "timestamp": "2026-05-14T19:06:32.000Z"
 
         Attachment and voice content carry the bytes inline as base64 ``data``
@@ -480,6 +505,39 @@ class PhotonAdapter(BasePlatformAdapter):
         media_types: List[str] = []
 
         ctype = content.get("type")
+        if ctype == "reaction":
+            # Route only tapbacks on messages WE sent — those are implicitly
+            # addressed to the bot (feishu precedent: synthetic text event).
+            # Reactions on human↔human messages are not for us. Checked before
+            # the mention gate: a tapback never carries a wake word.
+            target_id = content.get("targetMessageId")
+            is_ours = content.get("targetDirection") == "outbound" or (
+                target_id and target_id in self._sent_message_ids
+            )
+            if not is_ours:
+                logger.debug(
+                    "[photon] ignoring reaction on a message we didn't send"
+                )
+                return
+            emoji = content.get("emoji") or ""
+            source = self.build_source(
+                chat_id=space_id,
+                chat_name=space_id,
+                chat_type=chat_type,
+                user_id=sender_id,
+                user_name=sender_id or None,
+            )
+            await self.handle_message(
+                MessageEvent(
+                    text=f"reaction:added:{emoji}",
+                    message_type=MessageType.TEXT,
+                    source=source,
+                    message_id=event.get("messageId"),
+                    raw_message=event,
+                    timestamp=timestamp,
+                )
+            )
+            return
         if ctype == "text":
             text = content.get("text") or ""
             mtype = MessageType.TEXT
@@ -774,6 +832,91 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[photon] stop_typing failed: %s", e)
 
+    # -- Reactions (tapbacks) -----------------------------------------------
+    #
+    # Same lifecycle-hook pattern as Telegram/Discord: 👀 while processing,
+    # swapped for 👍/👎 on completion. Opt-in via PHOTON_REACTIONS — iMessage
+    # is a personal-texting channel, and a tapback on every text is noisy.
+
+    _SENT_IDS_MAX = 1000
+
+    def _record_sent_message(self, message_id: Optional[str]) -> None:
+        if not message_id:
+            return
+        sent = self._sent_message_ids
+        if message_id in sent:
+            del sent[message_id]  # refresh insertion order
+        sent[message_id] = time.time()
+        if len(sent) > self._SENT_IDS_MAX:
+            for old in list(sent.keys())[: len(sent) - self._SENT_IDS_MAX]:
+                del sent[old]
+
+    def _reactions_enabled(self) -> bool:
+        return os.getenv("PHOTON_REACTIONS", "false").strip().lower() in {
+            "true", "1", "yes", "on",
+        }
+
+    async def _add_reaction(
+        self, chat_id: str, message_id: str, emoji: str
+    ) -> bool:
+        """Tapback ``emoji`` onto a message. Soft-fails (False), never raises."""
+        try:
+            await self._sidecar_call(
+                "/react",
+                {"spaceId": chat_id, "messageId": message_id, "emoji": emoji},
+            )
+            return True
+        except Exception as e:
+            logger.debug("[photon] add_reaction failed: %s", e)
+            return False
+
+    async def _remove_reaction(self, chat_id: str, message_id: str) -> bool:
+        """Retract our tapback from a message. Soft-fails (False), never raises.
+
+        The sidecar tracks one reaction handle per target message; after a
+        sidecar restart the handle is gone and removal is best-effort (the
+        stale tapback self-heals when the next reaction replaces it).
+        """
+        try:
+            await self._sidecar_call(
+                "/unreact", {"spaceId": chat_id, "messageId": message_id},
+            )
+            return True
+        except Exception as e:
+            logger.debug("[photon] remove_reaction failed: %s", e)
+            return False
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Tapback 👀 on the triggering message while the agent works."""
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if chat_id and message_id:
+            await self._add_reaction(chat_id, message_id, "\U0001f440")
+
+    async def on_processing_complete(
+        self, event: MessageEvent, outcome: ProcessingOutcome
+    ) -> None:
+        """Swap the 👀 progress tapback for a 👍/👎 result.
+
+        Remove-then-add rather than a bare replace: deterministic whether the
+        platform replaces a sender's previous tapback or stacks them, and it
+        keeps the sidecar's reaction-handle slot coherent.
+        """
+        if not self._reactions_enabled():
+            return
+        chat_id = getattr(event.source, "chat_id", None)
+        message_id = getattr(event, "message_id", None)
+        if not chat_id or not message_id:
+            return
+        await self._remove_reaction(chat_id, message_id)
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._add_reaction(chat_id, message_id, "\U0001f44d")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._add_reaction(chat_id, message_id, "\U0001f44e")
+        # CANCELLED: leave the message unreacted.
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Return whatever we know about a Spectrum space id.
 
@@ -783,6 +926,11 @@ class PhotonAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "dm", "id": chat_id}
 
     def format_message(self, content: str) -> str:
+        # Markdown is passed through verbatim — the sidecar sends it with the
+        # markdown() builder and iMessage renders it. The strip path remains
+        # as the PHOTON_MARKDOWN=false kill-switch.
+        if _markdown_enabled():
+            return content
         return strip_markdown(content)
 
     async def _send_with_retry(
@@ -794,7 +942,12 @@ class PhotonAdapter(BasePlatformAdapter):
         max_retries: int = 2,
         base_delay: float = 2.0,
     ) -> SendResult:
-        """Photon/iMessage is plain text, so never show the generic Markdown banner."""
+        """Retry sends without the generic Markdown banner.
+
+        Photon replies are markdown (rendered by iMessage) or stripped plain
+        text under ``PHOTON_MARKDOWN=false`` — either way the gateway's
+        generic banner never applies.
+        """
         text = self.format_message(content)
         result = await self.send(
             chat_id=chat_id,
@@ -858,10 +1011,15 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             text = text[: self.MAX_MESSAGE_LENGTH]
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
+        # Omit the key when disabled so an older sidecar (pre-`format`)
+        # keeps accepting the body during a half-upgraded restart.
+        if _markdown_enabled():
+            body["format"] = "markdown"
         try:
             data = await self._sidecar_call("/send", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_send_attachment(
@@ -910,6 +1068,7 @@ class PhotonAdapter(BasePlatformAdapter):
             data = await self._sidecar_call("/send-attachment", body)
         except Exception as e:
             return SendResult(success=False, error=str(e))
+        self._record_sent_message(data.get("messageId"))
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_call(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
@@ -1062,10 +1221,14 @@ async def _standalone_send(
         async with httpx.AsyncClient(timeout=30.0) as client:
             # 1. Text body first (if any), so it leads the conversation.
             if message:
+                send_body: Dict[str, Any] = {
+                    "spaceId": chat_id,
+                    "text": message[:_MAX_MESSAGE_LENGTH],
+                }
+                if _markdown_enabled():
+                    send_body["format"] = "markdown"
                 resp = await client.post(
-                    f"{base}/send",
-                    json={"spaceId": chat_id, "text": message[:_MAX_MESSAGE_LENGTH]},
-                    headers=headers,
+                    f"{base}/send", json=send_body, headers=headers,
                 )
                 if resp.status_code != 200:
                     return {"error": f"sidecar returned {resp.status_code}: {resp.text[:200]}"}
@@ -1146,10 +1309,11 @@ def register(ctx) -> None:
         allow_update_command=True,
         platform_hint=(
             "You are communicating via Photon Spectrum (iMessage). "
-            "Treat replies like regular text messages — short, friendly, no "
-            "markdown rendering. Recipient identifiers are E.164 phone "
-            "numbers; never expose them in responses unless the user asked. "
-            "Attachments arrive as metadata only."
+            "Treat replies like regular text messages — short and friendly. "
+            "Markdown is rendered (bold, italics, lists, code), but keep "
+            "formatting light and conversational. Recipient identifiers are "
+            "E.164 phone numbers; never expose them in responses unless the "
+            "user asked. Attachments arrive as metadata only."
         ),
     )
 

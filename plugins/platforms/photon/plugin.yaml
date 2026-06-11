@@ -1,7 +1,7 @@
 name: photon-platform
 label: iMessage via Photon
 kind: platform
-version: 0.2.0
+version: 0.3.0
 description: >
   Photon Spectrum gateway adapter for Hermes Agent.
   Connects to iMessage (and other Spectrum interfaces) through Photon's
@@ -77,4 +77,12 @@ optional_env:
   - name: PHOTON_TELEMETRY
     description: "Enable Spectrum SDK telemetry in the sidecar (true/false, default false; toggle with `hermes photon telemetry on|off`)"
     prompt: "Enable Spectrum telemetry? (true/false)"
+    password: false
+  - name: PHOTON_MARKDOWN
+    description: "Send agent replies as markdown — iMessage renders it natively, other Spectrum platforms degrade to plain text (true/false, default true)"
+    prompt: "Render replies as markdown? (true/false)"
+    password: false
+  - name: PHOTON_REACTIONS
+    description: "Tapback 👀/👍/👎 on messages as processing status and route tapbacks on bot messages to the agent (true/false, default false)"
+    prompt: "Enable reaction tapbacks? (true/false)"
     password: false

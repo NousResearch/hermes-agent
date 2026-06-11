@@ -42,6 +42,7 @@ function sessionInfo(overrides: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 interface HarnessHandle {
+  cancelRun: () => Promise<void>
   steerPrompt: (text: string) => Promise<boolean>
   submitText: (
     text: string,
@@ -102,8 +103,12 @@ function Harness({
   })
 
   useEffect(() => {
-    onReady({ steerPrompt: actions.steerPrompt, submitText: actions.submitText })
-  }, [actions.steerPrompt, actions.submitText, onReady])
+    onReady({
+      cancelRun: actions.cancelRun,
+      steerPrompt: actions.steerPrompt,
+      submitText: actions.submitText
+    })
+  }, [actions.cancelRun, actions.steerPrompt, actions.submitText, onReady])
 
   return null
 }
@@ -629,6 +634,43 @@ describe('usePromptActions sleep/wake session recovery', () => {
     expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID, text: 'message after wake' })
   })
 
+  it('resumes the stored session and retries once when session.interrupt reports "session not found"', async () => {
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    let interruptAttempts = 0
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+      if (method === 'session.interrupt') {
+        interruptAttempts += 1
+        if (interruptAttempts === 1) {
+          throw new Error('session not found')
+        }
+        return {} as never
+      }
+      if (method === 'session.resume') {
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+    await waitFor(() => expect(handle).not.toBeNull())
+
+    await handle!.cancelRun()
+
+    expect(calls.map(c => c.method)).toEqual(['session.interrupt', 'session.resume', 'session.interrupt'])
+    expect(calls[0]?.params).toEqual({ session_id: RUNTIME_SESSION_ID })
+    expect(calls[1]?.params).toEqual({ session_id: STORED_SESSION_ID })
+    expect(calls[2]?.params).toEqual({ session_id: RECOVERED_SESSION_ID })
+  })
+
   it('surfaces the original error (no resume) when the failure is not "session not found"', async () => {
     const calls: string[] = []
     const states: Record<string, unknown>[] = []
@@ -818,4 +860,3 @@ describe('uploadComposerAttachment remote read failures', () => {
     ).rejects.toThrow('ENOENT: no such file')
   })
 })
-

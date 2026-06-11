@@ -113,6 +113,9 @@ language-specific setup where needed.
   and refuse to overwrite an existing install root.
 - Bootstrap installer can use the Rust repository archive path for Windows fresh installs, while existing install roots
   still fall back to the script-backed Git update path.
+- Windows fresh installs now defer the script-backed `git` stage while the Rust repository archive path is available.
+  If the archive path fails before creating the install root, the bootstrapper installs Git through the existing script
+  stage and then falls back to the script-backed repository stage.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` now runs as a native Rust stage while preserving Python `tools/skills_sync.py` when available and
   retaining the existing bundled-skill copy fallback.

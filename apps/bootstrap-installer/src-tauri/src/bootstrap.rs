@@ -534,13 +534,36 @@ async fn run_bootstrap(
             },
         );
 
+        let hermes_home = args
+            .hermes_home
+            .as_ref()
+            .map(PathBuf::from)
+            .unwrap_or_else(crate::paths::hermes_home);
+        let install_root = hermes_home.join("hermes-agent");
+        if should_defer_windows_git_stage(&stage.name, &install_root) {
+            emit_event(
+                &app,
+                BootstrapEvent::Stage {
+                    name: stage.name.clone(),
+                    state: StageState::Skipped,
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                    result: Some(crate::events::StageResultPayload {
+                        stage: stage.name.clone(),
+                        ok: true,
+                        skipped: true,
+                        reason: Some("deferred until repository archive fallback is needed".into()),
+                        data: Some(serde_json::json!({
+                            "installRoot": install_root,
+                            "nativeRepositoryArchive": true,
+                        })),
+                    }),
+                    error: None,
+                },
+            );
+            continue;
+        }
+
         let native_stage_result = {
-            let hermes_home = args
-                .hermes_home
-                .as_ref()
-                .map(PathBuf::from)
-                .unwrap_or_else(crate::paths::hermes_home);
-            let install_root = hermes_home.join("hermes-agent");
             if stage.name.eq_ignore_ascii_case("bootstrap-marker") {
                 Some(crate::orchestrator::write_bootstrap_marker(
                     &install_root,
@@ -597,24 +620,70 @@ async fn run_bootstrap(
                 }
                 Err(err) => {
                     let err = err.to_string();
-                    emit_event(
-                        &app,
-                        BootstrapEvent::Stage {
-                            name: stage.name.clone(),
-                            state: StageState::Failed,
-                            duration_ms: Some(started.elapsed().as_millis() as u64),
-                            result: None,
-                            error: Some(err.clone()),
-                        },
-                    );
-                    emit_event(
-                        &app,
-                        BootstrapEvent::Failed {
-                            stage: Some(stage.name.clone()),
-                            error: err.clone(),
-                        },
-                    );
-                    return Err(anyhow!(err));
+                    if should_fallback_windows_repository_archive(&stage.name, &install_root) {
+                        emit_log(&format!(
+                            "[bootstrap] warning: native repository archive failed; \
+                             installing Git and falling back to install.ps1 repository stage: {err}"
+                        ));
+                        let git_args = stage_script_args("git", &manifest_args, args.include_desktop);
+                        let git_result = run_install_script(
+                            &app,
+                            &script.path,
+                            &git_args,
+                            args.hermes_home.as_deref(),
+                            None,
+                            Some("git".to_string()),
+                        )
+                        .await?;
+                        let git_ok = powershell::parse_stage_result(&git_result.stdout)
+                            .map(|frame| frame.ok)
+                            .unwrap_or(false);
+                        if git_ok && git_result.exit_code == Some(0) {
+                            emit_log("[bootstrap] Git fallback stage succeeded; continuing repository stage");
+                        } else {
+                            let fallback_err = format!(
+                                "native repository archive failed ({err}); fallback Git stage failed with exit {:?}",
+                                git_result.exit_code
+                            );
+                            emit_event(
+                                &app,
+                                BootstrapEvent::Stage {
+                                    name: stage.name.clone(),
+                                    state: StageState::Failed,
+                                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                                    result: None,
+                                    error: Some(fallback_err.clone()),
+                                },
+                            );
+                            emit_event(
+                                &app,
+                                BootstrapEvent::Failed {
+                                    stage: Some(stage.name.clone()),
+                                    error: fallback_err.clone(),
+                                },
+                            );
+                            return Err(anyhow!(fallback_err));
+                        }
+                    } else {
+                        emit_event(
+                            &app,
+                            BootstrapEvent::Stage {
+                                name: stage.name.clone(),
+                                state: StageState::Failed,
+                                duration_ms: Some(started.elapsed().as_millis() as u64),
+                                result: None,
+                                error: Some(err.clone()),
+                            },
+                        );
+                        emit_event(
+                            &app,
+                            BootstrapEvent::Failed {
+                                stage: Some(stage.name.clone()),
+                                error: err.clone(),
+                            },
+                        );
+                        return Err(anyhow!(err));
+                    }
                 }
             }
         }
@@ -805,6 +874,18 @@ fn stage_script_args(stage_name: &str, manifest_args: &[String], include_desktop
         stage_args.push("-SkipDesktopShortcuts".to_string());
     }
     stage_args
+}
+
+fn should_defer_windows_git_stage(stage_name: &str, install_root: &std::path::Path) -> bool {
+    cfg!(target_os = "windows")
+        && stage_name.eq_ignore_ascii_case("git")
+        && !install_root.exists()
+}
+
+fn should_fallback_windows_repository_archive(stage_name: &str, install_root: &std::path::Path) -> bool {
+    cfg!(target_os = "windows")
+        && stage_name.eq_ignore_ascii_case("repository")
+        && !install_root.exists()
 }
 
 fn create_windows_desktop_shortcuts(install_root: &std::path::Path) -> anyhow::Result<()> {
@@ -1129,5 +1210,28 @@ mod tests {
             args.contains(&"-SkipDesktopShortcuts".to_string()),
             cfg!(target_os = "windows")
         );
+    }
+
+    #[test]
+    fn git_stage_deferred_only_for_windows_fresh_install() {
+        let root = unique_tmp_dir("git-defer");
+        let install_root = root.join("hermes-agent");
+
+        assert_eq!(
+            should_defer_windows_git_stage("git", &install_root),
+            cfg!(target_os = "windows")
+        );
+        assert_eq!(
+            should_fallback_windows_repository_archive("repository", &install_root),
+            cfg!(target_os = "windows")
+        );
+        assert!(!should_fallback_windows_repository_archive("git", &install_root));
+
+        std::fs::create_dir_all(&install_root).unwrap();
+        assert!(!should_defer_windows_git_stage("git", &install_root));
+        assert!(!should_defer_windows_git_stage("repository", &install_root));
+        assert!(!should_fallback_windows_repository_archive("repository", &install_root));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

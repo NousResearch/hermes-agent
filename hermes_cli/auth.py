@@ -2965,7 +2965,11 @@ def login_spotify_command(args) -> None:
     if callback.get("error"):
         detail = callback.get("error_description") or callback["error"]
         raise SystemExit(f"Spotify authorization failed: {detail}")
-    if callback.get("state") != state_nonce and not callback.get("_manual_paste"):
+    callback_state = callback.get("state")
+    if callback_state is None and manual_paste:
+        # Bare-code pastes carry no state; PKCE still binds the exchange.
+        callback_state = state_nonce
+    if callback_state != state_nonce:
         raise SystemExit("Spotify authorization failed: state mismatch.")
 
     token_payload = _spotify_exchange_code_for_tokens(

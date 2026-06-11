@@ -412,13 +412,15 @@ export function ChatSidebar({
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.
+  // Include messaging sessions (Telegram, etc.) so pinned gateway chats also
+  // resolve into the Pinned section.
   const sessionByAnyId = useMemo(() => {
     const map = new Map<string, SessionInfo>()
 
     // Cron sessions are listed separately but can still be pinned, so index
     // them too — otherwise a pinned cron job can't resolve into the Pinned
     // section. Recents take precedence on id collisions (set last).
-    for (const s of [...cronSessions, ...visibleSessions]) {
+    for (const s of [...cronSessions, ...messagingSessions, ...visibleSessions]) {
       map.set(s.id, s)
 
       if (s._lineage_root_id && !map.has(s._lineage_root_id)) {

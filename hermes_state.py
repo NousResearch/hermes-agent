@@ -1715,15 +1715,51 @@ class SessionDB:
         """Archive or unarchive a session.
 
         Archived sessions are hidden from the default session list but keep all
-        their messages — this is a soft hide, not a delete. Returns True when a
-        row was updated.
+        their messages — this is a soft hide, not a delete. For compression
+        chains, archive the whole logical conversation. Desktop lists compression
+        roots projected forward to their latest continuation; updating only the
+        displayed tip lets the still-unarchived root resurrect it on refresh.
+        Returns True when at least one row was updated.
         """
         def _do(conn):
             cursor = conn.execute(
-                "UPDATE sessions SET archived = ? WHERE id = ?",
-                (1 if archived else 0, session_id),
+                """
+                WITH RECURSIVE
+                  ancestors(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                  ),
+                  descendants(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT child.id
+                    FROM descendants d
+                    JOIN sessions parent ON parent.id = d.id
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                  ),
+                  lineage(id) AS (
+                    SELECT id FROM ancestors
+                    UNION
+                    SELECT id FROM descendants
+                  )
+                UPDATE sessions
+                SET archived = ?
+                WHERE id IN (SELECT id FROM lineage)
+                """,
+                (session_id, session_id, 1 if archived else 0),
             )
-            return cursor.rowcount
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
@@ -3657,6 +3693,48 @@ class SessionDB:
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
         return deleted
+
+    def delete_session_if_empty(
+        self,
+        session_id: str,
+        sessions_dir: Optional[Path] = None,
+    ) -> bool:
+        """Delete *session_id* only when it never gained resumable content.
+
+        A session is considered empty when it has no messages and no
+        user-assigned title. Used by CLI exit / session-rotation paths so
+        immediately-started-and-quit sessions don't pile up in ``/resume``
+        and ``hermes sessions list`` output. (Pattern ported from
+        google-gemini/gemini-cli#27770.)
+
+        The emptiness check and delete run in one transaction, so a message
+        flushed concurrently by another writer can't be lost. Sessions with
+        children (delegate subagent runs) are preserved — a parent that
+        spawned work is not "empty" even if its own transcript never
+        flushed. Returns True if the session was deleted.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                DELETE FROM sessions
+                WHERE id = ?
+                  AND title IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions child
+                      WHERE child.parent_session_id = sessions.id
+                  )
+                """,
+                (session_id,),
+            )
+            return cursor.rowcount > 0
+
+        deleted = self._execute_write(_do)
+        if deleted:
+            self._remove_session_files(sessions_dir, session_id)
+        return bool(deleted)
 
     def delete_sessions(
         self,

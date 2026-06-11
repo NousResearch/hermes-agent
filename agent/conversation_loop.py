@@ -2221,30 +2221,54 @@ def run_conversation(
                     print(f"{agent.log_prefix}     • Legacy cleanup: hermes config set ANTHROPIC_TOKEN \"\"")
                     print(f"{agent.log_prefix}     • Clear stale keys: hermes config set ANTHROPIC_API_KEY \"\"")
 
-                # ── Thinking block signature recovery ─────────────────
+                # Thinking block signature recovery.
+                #
                 # Anthropic signs thinking blocks against the full turn
-                # content.  Any upstream mutation (context compression,
+                # content. Any upstream mutation (context compression,
                 # session truncation, message merging) invalidates the
-                # signature → HTTP 400.  Recovery: strip reasoning_details
-                # from all messages so the next retry sends no thinking
-                # blocks at all.  One-shot — don't retry infinitely.
+                # signature and the API replies HTTP 400 ("invalid
+                # signature" or "cannot be modified"). Recovery strips
+                # ``reasoning_details`` so the retry sends no thinking
+                # blocks at all. One-shot per outer loop.
+                #
+                # The strip targets ``api_messages``, which is the
+                # API-call-time list that ``_build_api_kwargs`` consumes
+                # on every retry. ``api_messages`` was populated once at
+                # the start of the turn from shallow copies of
+                # ``messages``, so mutating it does not touch the
+                # canonical store. The previous implementation popped
+                # ``reasoning_details`` from ``messages`` instead, which
+                # had two problems: ``api_messages`` carried its own
+                # reference to the field through the shallow copy, so the
+                # retry's wire payload still included thinking blocks and
+                # the recovery never reached the API; and the mutation
+                # persisted into ``state.db`` through any subsequent
+                # ``_persist_session`` call, permanently corrupting the
+                # conversation. Future turns would replay the stripped
+                # state, hit the same 400, and the agent would terminate
+                # with ``max_retries_exhausted``, often spawning
+                # cascading compaction-ended sessions chained off the
+                # corrupted parent.
                 if (
                     classified.reason == FailoverReason.thinking_signature
                     and not _retry.thinking_sig_retry_attempted
                 ):
                     _retry.thinking_sig_retry_attempted = True
-                    for _m in messages:
-                        if isinstance(_m, dict):
+                    _api_stripped = 0
+                    for _m in api_messages:
+                        if isinstance(_m, dict) and "reasoning_details" in _m:
                             _m.pop("reasoning_details", None)
+                            _api_stripped += 1
                     agent._vprint(
-                        f"{agent.log_prefix}⚠️  Thinking block signature invalid — "
-                        f"stripped all thinking blocks, retrying...",
+                        f"{agent.log_prefix}⚠️  Thinking block signature invalid, "
+                        f"stripped reasoning_details from api_messages for retry...",
                         force=True,
                     )
                     logger.warning(
                         "%sThinking block signature recovery: stripped "
-                        "reasoning_details from %d messages",
-                        agent.log_prefix, len(messages),
+                        "reasoning_details from %d api_messages "
+                        "(canonical messages unchanged)",
+                        agent.log_prefix, _api_stripped,
                     )
                     continue
 

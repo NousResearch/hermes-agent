@@ -369,6 +369,16 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Synthetic unit with a non-temp home: the real generator bakes the
+    # hermetic test HERMES_HOME (a tmp dir), which the temp-home write
+    # guard correctly refuses.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
 
     calls = []
     helper_calls = []
@@ -396,6 +406,15 @@ def test_systemd_install_can_skip_enable_on_startup(monkeypatch, tmp_path, capsy
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
     monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    # Non-temp home so the temp-home write guard (which trips on the
+    # hermetic test HERMES_HOME) stays out of the way.
+    monkeypatch.setattr(
+        gateway,
+        "generate_systemd_unit",
+        lambda system=False, run_as_user=None: (
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\n'
+        ),
+    )
 
     calls = []
     helper_calls = []

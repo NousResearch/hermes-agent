@@ -661,6 +661,42 @@ class TestClassifyApiError:
         # Without "thinking" in the message, it shouldn't be thinking_signature
         assert result.reason != FailoverReason.thinking_signature
 
+    def test_anthropic_thinking_blocks_cannot_be_modified(self):
+        """Frozen-block mutation 400 (no 'signature' token) must route to
+        thinking_signature recovery, not hard-abort. Regression for the
+        real-world error: latest-assistant thinking blocks 'cannot be
+        modified' after upstream message mutation."""
+        e = MockAPIError(
+            "messages.73.content.10: `thinking` or `redacted_thinking` blocks "
+            "in the latest assistant message cannot be modified. These blocks "
+            "must remain as they were in the original response.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_anthropic_thinking_cannot_be_modified_via_openrouter(self):
+        """Same frozen-block error proxied through OpenRouter must also be
+        caught (provider is not gated)."""
+        e = MockAPIError(
+            "`thinking` or `redacted_thinking` blocks in the latest assistant "
+            "message cannot be modified.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_400_cannot_be_modified_without_thinking_not_classified(self):
+        """A 400 'cannot be modified' that has nothing to do with thinking
+        blocks must NOT be swept into thinking_signature recovery."""
+        e = MockAPIError(
+            "this field cannot be modified after creation", status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic", approx_tokens=0)
+        assert result.reason != FailoverReason.thinking_signature
+
     def test_invalid_encrypted_content_classified_as_retryable_replay_failure(self):
         body = {
             "error": {

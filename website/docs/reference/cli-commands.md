@@ -1350,6 +1350,7 @@ Launch the web dashboard — a browser-based UI for managing configuration, API 
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts. Exposes dashboard credentials on the network; use only behind trusted network controls. |
+| `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard. |
 | `--stop` | — | Stop running `hermes dashboard` processes and exit. |
 | `--status` | — | List running `hermes dashboard` processes and exit. |
 
@@ -1359,6 +1360,10 @@ hermes dashboard
 
 # Custom port, no browser
 hermes dashboard --port 8080 --no-open
+
+# From a profile alias — routes to the machine dashboard with the
+# profile preselected in the sidebar switcher (attach if running)
+worker dashboard
 ```
 
 ## `hermes profile`

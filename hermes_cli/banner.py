@@ -11,6 +11,7 @@ import subprocess
 import threading
 import time
 from pathlib import Path
+from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
 from typing import TYPE_CHECKING, Dict, List, Optional
 
@@ -121,6 +122,53 @@ _UPDATE_CHECK_CACHE_SECONDS = 6 * 3600
 UPDATE_AVAILABLE_NO_COUNT = -1
 
 _UPSTREAM_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
+_OFFICIAL_REPO_CANONICAL = "github.com/nousresearch/hermes-agent"
+
+
+def _canonical_github_remote(url: str | None) -> str:
+    """Return ``host/owner/repo`` for common GitHub remote URL forms."""
+    if not url:
+        return ""
+    value = url.strip()
+    if value.startswith("git@github.com:"):
+        value = "github.com/" + value[len("git@github.com:"):]
+    elif value.startswith("ssh://git@github.com/"):
+        value = "github.com/" + value[len("ssh://git@github.com/"):]
+    else:
+        parsed = urlparse(value)
+        if parsed.netloc and parsed.path:
+            value = f"{parsed.netloc}{parsed.path}"
+    value = value.strip().rstrip("/")
+    if value.endswith(".git"):
+        value = value[:-4]
+    return value.lower()
+
+
+def _is_ssh_remote(url: str | None) -> bool:
+    if not url:
+        return False
+    value = url.strip().lower()
+    return value.startswith("git@") or value.startswith("ssh://")
+
+
+def _is_official_ssh_remote(url: str | None) -> bool:
+    return _is_ssh_remote(url) and _canonical_github_remote(url) == _OFFICIAL_REPO_CANONICAL
+
+
+def _git_stdout(args: list[str], *, cwd: Path, timeout: int = 5) -> Optional[str]:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=str(cwd),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    return (result.stdout or "").strip()
 
 
 def _check_via_rev(local_rev: str) -> Optional[int]:
@@ -146,6 +194,11 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
 
 def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     """Count commits behind origin/main in a local checkout."""
+    origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
+    if _is_official_ssh_remote(origin_url):
+        head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
+        return _check_via_rev(head_rev) if head_rev else None
+
     try:
         subprocess.run(
             ["git", "fetch", "origin", "--quiet"],

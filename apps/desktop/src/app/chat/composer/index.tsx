@@ -13,17 +13,25 @@ import {
   useState
 } from 'react'
 
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $composerAttachments, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
+import {
+  $composerAttachments,
+  clearComposerAttachments,
+  clearSessionDraft,
+  type ComposerAttachment,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import {
   browseBackward,
   browseForward,
@@ -40,8 +48,9 @@ import {
   shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
-import { $gatewayState, $messages } from '@/store/session'
+import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { useTheme } from '@/themes'
 
 import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
 
@@ -74,9 +83,9 @@ import {
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  slashChipElement
 } from './rich-editor'
-import { SkinSlashPopover } from './skin-slash-popover'
 import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -95,6 +104,30 @@ const COMPOSER_FADE_BACKGROUND =
 
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
+/** Completion items can carry an `action` (set in use-slash-completions) that
+ *  runs a side effect on pick instead of inserting a chip — e.g. the session
+ *  picker's "Browse all…" entry opens the overlay. Table-driven so new action
+ *  items are a registry row, not a composer branch. */
+const COMPLETION_ACTIONS: Record<string, () => void> = {
+  'session-picker': () => setSessionPickerOpen(true)
+}
+
+/** Map a picked `/` completion to its pill accent. Driven by the completion
+ *  group set in use-slash-completions (Skills / Themes / Commands|Options). */
+function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind {
+  const group = (item.metadata as { group?: unknown } | undefined)?.group
+
+  if (group === 'Skills') {
+    return 'skill'
+  }
+
+  if (group === 'Themes') {
+    return 'theme'
+  }
+
+  return 'command'
+}
+
 interface QueueEditState {
   attachments: ComposerAttachment[]
   draft: string
@@ -103,6 +136,10 @@ interface QueueEditState {
 }
 
 const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
+
+// Quiet period after the last keystroke before persisting the draft;
+// unmount/pagehide flushes bypass it.
+const DRAFT_PERSIST_DEBOUNCE_MS = 400
 
 export function ChatBar({
   busy,
@@ -145,6 +182,9 @@ export function ChatBar({
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
+  const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
+  const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
+  activeQueueSessionKeyRef.current = activeQueueSessionKey
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -156,14 +196,17 @@ export function ChatBar({
   const [dragActive, setDragActive] = useState(false)
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
+  const queueEditRef = useRef(queueEdit)
+  queueEditRef.current = queueEdit
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
   const lastSpokenIdRef = useRef<string | null>(null)
 
   const narrow = useMediaQuery('(max-width: 30rem)')
 
+  const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
-  const slash = useSlashCompletions({ gateway: gateway ?? null })
+  const slash = useSlashCompletions({ activeSkin: themeName, gateway: gateway ?? null, skinThemes: availableThemes })
 
   const stacked = expanded || narrow || tight
   const trimmedDraft = draft.trim()
@@ -171,10 +214,12 @@ export function ChatBar({
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+
   // Steer only makes sense mid-turn, text-only (the gateway can't carry images
   // into a tool result) and never for a slash command (those execute inline).
   const canSteer =
     busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
+
   const showHelpHint = draft === '?'
 
   const { t } = useI18n()
@@ -462,12 +507,6 @@ export function ChatBar({
     })
   }, [])
 
-  const selectSkinSlashCommand = (command: string) => {
-    draftRef.current = command
-    aui.composer().setText(command)
-    requestMainFocus()
-  }
-
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
 
@@ -620,16 +659,50 @@ export function ChatBar({
       return
     }
 
+    // Action items (e.g. "Browse all sessions…") run a side effect instead of
+    // inserting a chip: strip the typed trigger token, then fire the action.
+    const completionAction = (item.metadata as { action?: unknown } | undefined)?.action
+    const runAction = typeof completionAction === 'string' ? COMPLETION_ACTIONS[completionAction] : undefined
+
+    if (runAction) {
+      const current = composerPlainText(editor)
+      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+
+      renderComposerContents(editor, prefix)
+      placeCaretEnd(editor)
+      draftRef.current = composerPlainText(editor)
+      aui.composer().setText(draftRef.current)
+      closeTrigger()
+      runAction()
+      requestMainFocus()
+
+      return
+    }
+
     const serialized = hermesDirectiveFormatter.serialize(item)
     const starter = serialized.endsWith(':')
+
+    // Picking a bare arg-taking command (e.g. `/personality`) shouldn't commit
+    // it — expand to its options step so the popover shows the inline list, just
+    // as typing `/personality ` by hand would. A serialized value with a space is
+    // already an arg pick (`/personality alice`), so it commits normally.
+    const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
+
+    const expandsToArgs =
+      trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
+    // No pill while expanding — the bare command stays plain text until an arg
+    // is picked, at which point a single pill is emitted for the full command.
+    const slashKind = !expandsToArgs && trigger.kind === '/' ? slashChipKindForItem(item) : null
+    const keepTriggerOpen = starter || expandsToArgs
 
     const finish = () => {
       draftRef.current = composerPlainText(editor)
       aui.composer().setText(draftRef.current)
       requestMainFocus()
-      starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
+      keepTriggerOpen ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
     }
 
     const sel = window.getSelection()
@@ -639,7 +712,20 @@ export function ChatBar({
 
     if (!sel || !range || node?.nodeType !== Node.TEXT_NODE || offset < trigger.tokenLength) {
       const current = composerPlainText(editor)
-      renderComposerContents(editor, `${current.slice(0, Math.max(0, current.length - trigger.tokenLength))}${text}`)
+      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+
+      if (slashKind) {
+        // Two-step arg picks (e.g. `/handoff` pill already inserted, now picking
+        // the platform) land here because the caret sits past a contenteditable
+        // chip. Rebuild the prefix and re-emit a single pill for the full command.
+        renderComposerContents(editor, prefix)
+        editor.append(slashChipElement(serialized, slashKind), document.createTextNode(' '))
+        placeCaretEnd(editor)
+
+        return finish()
+      }
+
+      renderComposerContents(editor, `${prefix}${text}`)
       placeCaretEnd(editor)
 
       return finish()
@@ -650,8 +736,13 @@ export function ChatBar({
     replaceRange.setEnd(node, offset)
     replaceRange.deleteContents()
 
-    if (directive) {
-      const chip = refChipElement(directive[1], directive[2])
+    const chip = slashKind
+      ? slashChipElement(serialized, slashKind)
+      : directive
+        ? refChipElement(directive[1], directive[2])
+        : null
+
+    if (chip) {
       const space = document.createTextNode(' ')
       const fragment = document.createDocumentFragment()
       fragment.append(chip, space)
@@ -1022,6 +1113,69 @@ export function ChatBar({
     }
   }
 
+  const stashAt = (
+    scope: string | null,
+    text = draftRef.current,
+    attachments = $composerAttachments.get()
+  ) => stashSessionDraft(scope, text, attachments)
+
+  // Per-thread draft swap — the composer's only session coupling. Lifecycle
+  // never clears composer state; this effect alone stashes on leave, restores
+  // on enter. Keyed writes are idempotent, so no skip-sentinel.
+  useEffect(() => {
+    const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
+    loadIntoComposer(text, attachments)
+
+    return () => {
+      const editing = queueEditRef.current
+
+      if (editing?.sessionKey === activeQueueSessionKey) {
+        stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
+      } else if (!isBrowsingHistory(sessionId)) {
+        stashAt(activeQueueSessionKey)
+      }
+    }
+  }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounced stash into the active scope. Skipped while browsing history or
+  // editing a queued prompt — recalled text must not clobber the real draft.
+  useEffect(() => {
+    if (isBrowsingHistory(sessionId) || queueEdit) {
+      return
+    }
+
+    pendingDraftPersistRef.current = { scope: activeQueueSessionKey, text: draft }
+
+    const handle = window.setTimeout(() => {
+      pendingDraftPersistRef.current = null
+      stashAt(activeQueueSessionKey, draft)
+    }, DRAFT_PERSIST_DEBOUNCE_MS)
+
+    return () => window.clearTimeout(handle)
+  }, [activeQueueSessionKey, draft, queueEdit, sessionId])
+
+  // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
+  // inside the debounce window would drop trailing keystrokes without this.
+  useEffect(() => {
+    const flushPendingDraftPersist = () => {
+      const pending = pendingDraftPersistRef.current
+
+      if (!pending) {
+        return
+      }
+
+      pendingDraftPersistRef.current = null
+      stashAt(pending.scope, pending.text)
+    }
+
+    window.addEventListener('pagehide', flushPendingDraftPersist)
+
+    return () => {
+      window.removeEventListener('pagehide', flushPendingDraftPersist)
+      flushPendingDraftPersist()
+    }
+  }, [])
+
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {
       return
@@ -1224,19 +1378,37 @@ export function ChatBar({
     }
   }, [busy, drainNextQueued, queuedPrompts.length])
 
-  // Clean up queue edit when its target disappears (session swap or external delete).
+  // Queue-edit cleanup: on session swap the scope effect already stashed the
+  // edit snapshot; only restore into the composer when still on the same scope.
   useEffect(() => {
     if (!queueEdit) {
       return
     }
 
-    if (queueEdit.sessionKey === activeQueueSessionKey && editingQueuedPrompt) {
-      return
+    if (queueEdit.sessionKey === activeQueueSessionKey) {
+      if (editingQueuedPrompt) {
+        return
+      }
+
+      loadIntoComposer(queueEdit.draft, queueEdit.attachments)
     }
 
-    loadIntoComposer(queueEdit.draft, queueEdit.attachments)
     setQueueEdit(null)
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
+    const submittedScope = activeQueueSessionKeyRef.current
+    const submittedAttachments = attachments ?? []
+
+    const restore = () => {
+      loadIntoComposer(text, submittedAttachments)
+      stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
+    }
+
+    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
+      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
+      .catch(restore)
+  }
 
   const submitDraft = () => {
     // Source the text from the DOM editor, not React state. The AUI composer
@@ -1248,8 +1420,10 @@ export function ChatBar({
     // input event; refresh it from the editor once more to also cover an
     // in-flight keystroke that hasn't fired its input event yet.
     const editor = editorRef.current
+
     if (editor) {
       const domText = composerPlainText(editor)
+
       if (domText !== draftRef.current) {
         draftRef.current = domText
         aui.composer().setText(domText)
@@ -1270,10 +1444,9 @@ export function ChatBar({
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
       if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
-        const submitted = text
         triggerHaptic('submit')
         clearDraft()
-        void onSubmit(submitted)
+        dispatchSubmit(text)
       } else if (payloadPresent) {
         queueCurrentDraft()
       } else {
@@ -1285,12 +1458,12 @@ export function ChatBar({
     } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()
     } else if (payloadPresent) {
-      const submitted = text
+      const submittedAttachments = cloneAttachments(attachments)
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       clearComposerAttachments()
-      void onSubmit(submitted, { attachments })
+      dispatchSubmit(text, submittedAttachments)
     }
 
     focusInput()
@@ -1515,7 +1688,6 @@ export function ChatBar({
               onPick={replaceTriggerWithChip}
             />
           )}
-          <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} />
           {activeQueueSessionKey && queuedPrompts.length > 0 && (
             // Out of flow so the queue never inflates the composer's measured
             // height (that drives thread bottom padding → chat resizes on

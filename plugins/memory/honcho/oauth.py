@@ -240,6 +240,7 @@ def install_grant(
     *,
     client_id: str,
     token_endpoint: str,
+    apply_config: bool = True,
     now: float | None = None,
 ) -> OAuthCredential:
     """Apply a fresh OAuth grant to ``path`` for ``host``.
@@ -248,6 +249,7 @@ def install_grant(
     file root — preserving other hosts and root keys — then writes the host's
     ``apiKey`` and ``oauth`` block. ``grant`` is an OAuthTokenResponse dict
     (access_token, refresh_token, expires_in, scope, config).
+    ``apply_config=False`` skips the config merge and stores tokens only.
     """
     now = time.time() if now is None else now
     access = grant.get("access_token")
@@ -271,7 +273,7 @@ def install_grant(
 
     raw = _read_config(path)
     granted_config = grant.get("config")
-    if isinstance(granted_config, dict):
+    if apply_config and isinstance(granted_config, dict):
         _deep_merge(raw, granted_config)
     hosts = raw.setdefault("hosts", {})
     block = hosts.setdefault(host, {})

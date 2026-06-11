@@ -130,27 +130,33 @@ def begin_authorization(
     endpoints: OAuthEndpoints,
     redirect_uri: str = LOOPBACK_REDIRECT_URI,
     *,
+    source: str | None = None,
     now: float | None = None,
 ) -> tuple[str, str]:
-    """Start an authorization: return ``(authorize_url, state)`` and stash PKCE."""
+    """Start an authorization: return ``(authorize_url, state)`` and stash PKCE.
+
+    ``source`` tags the authorize link with the initiating surface
+    (``hermes-desktop`` / ``hermes-cli``) so the consent side can attribute
+    connects and vary behavior per surface.
+    """
     now = time.time() if now is None else now
     verifier, challenge = _pkce()
     state = secrets.token_urlsafe(32)
     with _pending_lock:
         _prune_pending(now)
         _pending[state] = _Pending(verifier=verifier, redirect_uri=redirect_uri, created_at=now)
-    query = urlencode(
-        {
-            "client_id": endpoints.client_id,
-            "redirect_uri": redirect_uri,
-            "scope": endpoints.scope,
-            "code_challenge": challenge,
-            "code_challenge_method": "S256",
-            "response_type": "code",
-            "state": state,
-        }
-    )
-    return f"{endpoints.authorize_url}?{query}", state
+    params = {
+        "client_id": endpoints.client_id,
+        "redirect_uri": redirect_uri,
+        "scope": endpoints.scope,
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "response_type": "code",
+        "state": state,
+    }
+    if source:
+        params["source"] = source
+    return f"{endpoints.authorize_url}?{urlencode(params)}", state
 
 
 def complete_authorization(
@@ -160,9 +166,14 @@ def complete_authorization(
     *,
     config_path: Path | None = None,
     host: str | None = None,
+    apply_config: bool = True,
     now: float | None = None,
 ) -> oauth.OAuthCredential:
-    """Exchange ``code`` for a grant and persist it. Raises on bad state/exchange."""
+    """Exchange ``code`` for a grant and persist it. Raises on bad state/exchange.
+
+    ``apply_config=False`` stores the tokens only, skipping the grant's config
+    block — the CLI path, where settings stay wizard-owned.
+    """
     with _pending_lock:
         pending = _pending.pop(state, None)
     if pending is None:
@@ -188,6 +199,7 @@ def complete_authorization(
         grant,
         client_id=endpoints.client_id,
         token_endpoint=endpoints.token_url,
+        apply_config=apply_config,
         now=now,
     )
     # Drop the singleton so the next acquisition builds with the new token.
@@ -256,16 +268,20 @@ def authorize_via_loopback(
     *,
     config_path: Path | None = None,
     host: str | None = None,
+    source: str | None = None,
+    apply_config: bool = True,
     open_url: Callable[[str], None] | None = None,
     timeout: float = 300.0,
 ) -> oauth.OAuthCredential:
     """Drive the full loopback flow: open browser → capture code → exchange → persist.
 
     ``open_url`` defaults to the system browser; tests inject a driver that
-    follows the authorize redirect into the loopback callback.
+    follows the authorize redirect into the loopback callback. It always
+    receives the authorize URL, so a CLI caller can also print it for
+    browserless environments.
     """
     endpoints = resolve_endpoints()
-    authorize_url, state = begin_authorization(endpoints, LOOPBACK_REDIRECT_URI)
+    authorize_url, state = begin_authorization(endpoints, LOOPBACK_REDIRECT_URI, source=source)
 
     if open_url is None:
         import webbrowser
@@ -282,7 +298,12 @@ def authorize_via_loopback(
     if returned_state != state:
         raise ValueError("OAuth state mismatch — possible CSRF, aborting")
     return complete_authorization(
-        endpoints, code, returned_state, config_path=config_path, host=host
+        endpoints,
+        code,
+        returned_state,
+        config_path=config_path,
+        host=host,
+        apply_config=apply_config,
     )
 
 
@@ -334,6 +355,7 @@ def start_loopback_flow_background(
     *,
     config_path: Path | None = None,
     host: str | None = None,
+    source: str = "hermes-desktop",
     timeout: float = 300.0,
 ) -> dict[str, str]:
     """Launch the loopback flow in a daemon thread; returns the initial status.
@@ -349,7 +371,7 @@ def start_loopback_flow_background(
 
     def _run() -> None:
         try:
-            authorize_via_loopback(config_path=config_path, host=host, timeout=timeout)
+            authorize_via_loopback(config_path=config_path, host=host, source=source, timeout=timeout)
             _set_status("connected", "Honcho connected")
         except Exception as exc:
             logger.warning("Honcho OAuth loopback flow failed: %s", exc)

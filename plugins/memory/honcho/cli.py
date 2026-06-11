@@ -622,21 +622,29 @@ def cmd_setup(args) -> None:
                 )
             else:
                 print("\n  No local JWT set. Local no-auth ready.")
-    else:
-        # --- Cloud: set default base URL, require API key ---
+    use_oauth = False
+    if not is_local:
+        # --- Cloud: OAuth (browser) or API key ---
         cfg.pop("baseUrl", None)  # cloud uses SDK default
 
-        current_key = cfg.get("apiKey", "")
-        masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
-        print(f"\n  Current API key: {masked}")
-        new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
-        if new_key:
-            cfg["apiKey"] = new_key
+        print("\n  Auth method:")
+        print("    oauth  -- sign in via browser (recommended)")
+        print("    apikey -- paste an API key from https://app.honcho.dev")
+        method = _prompt("OAuth or API key?", default="oauth").strip().lower()
+        use_oauth = method in {"oauth", "o"}
 
-        if not cfg.get("apiKey"):
-            print("\n  No API key configured. Get yours at https://app.honcho.dev")
-            print("  Run 'hermes honcho setup' again once you have a key.\n")
-            return
+        if not use_oauth:
+            current_key = cfg.get("apiKey", "")
+            masked = f"...{current_key[-8:]}" if len(current_key) > 8 else ("set" if current_key else "not set")
+            print(f"\n  Current API key: {masked}")
+            new_key = _prompt("Honcho API key (leave blank to keep current)", secret=True)
+            if new_key:
+                cfg["apiKey"] = new_key
+
+            if not cfg.get("apiKey"):
+                print("\n  No API key configured. Get yours at https://app.honcho.dev")
+                print("  Run 'hermes honcho setup' again once you have a key.\n")
+                return
 
     # --- 3. Identity ---
     current_peer = hermes_host.get("peerName") or cfg.get("peerName", "")
@@ -885,6 +893,33 @@ def cmd_setup(args) -> None:
 
     _write_config(cfg)
     print(f"\n  Config written to {write_path}")
+
+    # --- OAuth sign-in (cloud) ---
+    # Runs after the wizard's save so the token write (atomic re-read/rewrite
+    # of the same file) can't be clobbered by it. apply_config=False: tokens
+    # only — CLI settings stay wizard-owned, never overwritten by the grant.
+    if use_oauth:
+        from plugins.memory.honcho.oauth_flow import authorize_via_loopback
+
+        def _open(url: str) -> None:
+            print(f"\n  Open this link to authorize (waiting up to 5 minutes):\n\n    {url}\n")
+            import webbrowser
+
+            webbrowser.open(url)
+
+        print("\n  Starting browser sign-in…")
+        try:
+            authorize_via_loopback(
+                config_path=write_path,
+                source="hermes-cli",
+                apply_config=False,
+                open_url=_open,
+            )
+            print("  Authorized — token saved.")
+        except Exception as e:
+            print(f"  OAuth sign-in failed: {e}")
+            print("  Re-run 'hermes honcho setup' to retry, or use an API key instead.\n")
+            return
 
     # --- Auto-enable Honcho as memory provider in config.yaml ---
     try:

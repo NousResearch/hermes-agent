@@ -143,3 +143,35 @@ def test_state_mismatch_is_rejected(fake_as, tmp_path):
             endpoints, "code", "not-the-real-state",
             config_path=tmp_path / "honcho.json", host="hermes",
         )
+
+
+def test_source_tags_the_authorize_link(fake_as):
+    endpoints = oauth_flow.resolve_endpoints()
+    url, _ = oauth_flow.begin_authorization(endpoints, source="hermes-cli")
+    assert "source=hermes-cli" in url
+    untagged, _ = oauth_flow.begin_authorization(endpoints)
+    assert "source=" not in untagged
+
+
+def test_cli_flow_stores_tokens_without_applying_config(tmp_path, fake_as):
+    # apply_config=False (the CLI path): grant config must NOT touch settings.
+    config_path = tmp_path / "honcho.json"
+    config_path.write_text(json.dumps({"hosts": {"hermes": {"saveMessages": False}}}))
+
+    cred = oauth_flow.authorize_via_loopback(
+        config_path=config_path,
+        host="hermes",
+        source="hermes-cli",
+        apply_config=False,
+        open_url=lambda url: _browser_driver(url),
+        timeout=10,
+    )
+
+    saved = json.loads(config_path.read_text())
+    host = saved["hosts"]["hermes"]
+    assert host["apiKey"] == cred.access_token
+    assert host["oauth"]["refreshToken"] == cred.refresh_token
+    # Wizard-owned setting untouched; grant config keys absent.
+    assert host["saveMessages"] is False
+    assert "recallMode" not in host
+    assert "environment" not in saved

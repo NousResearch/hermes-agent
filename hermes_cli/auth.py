@@ -2710,6 +2710,14 @@ def _read_ready_stdin_line() -> Optional[str]:
     try:
         if not sys.stdin.isatty():
             return None
+
+        if sys.platform == "win32":
+            import msvcrt
+
+            if not msvcrt.kbhit():
+                return None
+            return sys.stdin.readline()
+
         import select
 
         ready, _, _ = select.select([sys.stdin], [], [], 0)

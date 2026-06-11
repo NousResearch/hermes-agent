@@ -7,6 +7,7 @@ or approval drafts; they do not execute outbound/public/security/financial work.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import mimetypes
 import os
@@ -371,6 +372,131 @@ def jarvis_briefing_payload(paths: AgentsOSPaths) -> dict[str, Any]:
     }
 
 
+def _jarvis_slug_from_time() -> str:
+    return utc_now().replace(":", "").replace("-", "").replace(".", "")[:15]
+
+
+def _decode_optional_audio(data: dict[str, Any]) -> bytes:
+    raw = data.get("audio_base64") or ""
+    if not raw:
+        return b""
+    if "," in raw and raw.split(",", 1)[0].startswith("data:"):
+        raw = raw.split(",", 1)[1]
+    return base64.b64decode(raw)
+
+
+def _jarvis_audio_suffix(mime: str | None) -> str:
+    mime = (mime or "").lower()
+    if "wav" in mime:
+        return ".wav"
+    if "ogg" in mime:
+        return ".ogg"
+    if "mpeg" in mime or "mp3" in mime:
+        return ".mp3"
+    return ".webm"
+
+
+def _jarvis_preview_from_text(transcript_text: str) -> dict[str, Any]:
+    draft = draft_idea(transcript_text)
+    normalized = transcript_text.lower()
+    if any(token in normalized for token in ["prikaži", "prikazi", "show", "status", "stanje", "zadnje", "otvori lokalni", "local status"]):
+        draft["classification"] = "research_intake"
+        draft["risk_class"] = "safe_local"
+        draft["recommended_lane"] = "read-only-status"
+        draft["approval_required"] = False
+        draft["plan_steps"] = [
+            "Dohvatiti lokalni status ili postojeći artefakt.",
+            "Prikazati rezultat u command preview kartici.",
+            "Ne izvršiti nikakvu vanjsku ili rizičnu akciju.",
+        ]
+    if any(token in normalized for token in ["deploy", "deployaj", "push", "pr ", "pull request", "objavi", "pošalji", "posalji", "email"]):
+        draft["classification"] = "public_outbound_gated"
+        draft["risk_class"] = "public_gated"
+        draft["recommended_lane"] = "public-action-approval"
+        draft["approval_required"] = True
+        draft["plan_steps"] = [
+            "Prikazati namjeru i rizičnu radnju u command preview kartici.",
+            "Ne izvršiti javnu, deploy, push ili outbound akciju iz glasa.",
+            "Čekati eksplicitno Goranovo odobrenje prije side-effecta.",
+        ]
+    return draft
+
+
+def jarvis_preview_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[str, Any]:
+    transcript_text = (data.get("transcript_text") or data.get("text") or "").strip()
+    if not transcript_text:
+        raise ValueError("transcript_text is required")
+    draft = _jarvis_preview_from_text(transcript_text)
+    command_card = {
+        "heard": transcript_text,
+        "interpreted_intent": draft["classification"],
+        "risk_class": draft["risk_class"],
+        "proposed_action": draft["recommended_lane"],
+        "approval_required": draft["approval_required"],
+        "expected_output": draft["expected_artifacts"],
+        "execution_created": False,
+        "allowed_now": draft["risk_class"] == "safe_local",
+    }
+    return {
+        "local_only": True,
+        "execution_created": False,
+        "transcript_text": transcript_text,
+        "command_card": command_card,
+        "draft": draft,
+        "audit": {"agents_os_home": str(paths.root), "created_at": utc_now(), "policy": "preview_only"},
+    }
+
+
+def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[str, Any]:
+    """Persist a local push-to-talk artefact and return transcript + intent preview.
+
+    This v0.1 endpoint accepts browser audio plus an optional transcript stub. It
+    deliberately does not execute commands; real STT can replace the transcript
+    stub behind the same payload contract.
+    """
+    transcript_text = (data.get("transcript_text") or data.get("text") or "").strip()
+    if not transcript_text:
+        transcript_text = "[stt_pending] Audio captured; STT backend not connected in this local slice."
+    stamp = _jarvis_slug_from_time()
+    audio_bytes = _decode_optional_audio(data)
+    suffix = _jarvis_audio_suffix(data.get("audio_mime"))
+    audio_dir = paths.artifacts / "jarvis_audio"
+    transcript_dir = paths.artifacts / "jarvis_transcripts"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    audio_path = audio_dir / f"{stamp}-jarvis-command{suffix}"
+    transcript_path = transcript_dir / f"{stamp}-jarvis-transcript.md"
+    audio_path.write_bytes(audio_bytes)
+    preview = jarvis_preview_payload(paths, {"transcript_text": transcript_text})
+    transcript_body = {
+        "local_only": True,
+        "execution_created": False,
+        "transcript": {"text": transcript_text, "source": "browser_push_to_talk", "created_at": utc_now()},
+        "intent_preview": preview["command_card"],
+        "audio_artifact_path": str(audio_path),
+    }
+    transcript_path.write_text(f"# Jarvis transcript\n\n```json\n{json.dumps(transcript_body, ensure_ascii=False, indent=2)}\n```\n", encoding="utf-8")
+    artifact_id = f"artifact-jarvis-transcript-{stamp}"
+    with connect(paths) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO artifacts(id,kind,title,path,task_id,workflow,created_at) VALUES(?,?,?,?,?,?,?)",
+            (artifact_id, "jarvis_transcript", "Jarvis transcript", str(transcript_path), None, "jarvis-push-to-talk", utc_now()),
+        )
+        log_event(conn, "jarvis_transcribed", payload={"artifact_id": artifact_id, "audio_path": str(audio_path), "execution_created": False})
+        conn.commit()
+    return {
+        "status": "transcribed",
+        "local_only": True,
+        "execution_created": False,
+        "audio_artifact_path": str(audio_path),
+        "transcript_artifact_path": str(transcript_path),
+        "transcript": transcript_body["transcript"],
+        "intent_preview": preview["command_card"],
+        "command_card": preview["command_card"],
+        "artifact_id": artifact_id,
+    }
+
+
 def operator_loop_payload(service: AgentsOSService) -> dict[str, Any]:
     dashboard = service.dashboard_payload()
     tasks = dashboard.get("tasks", [])
@@ -488,7 +614,7 @@ main {{ padding:24px 34px 60px; }} section {{ display:none; }} section.active {{
 <section id=\"operator\"><h2>Operator Loop / Judge / Evidence</h2><pre id=\"operatorPayload\"></pre></section>
 <section id=\"media\"><h2>Media Studio Browser v0</h2><div class=\"kv\">Read-only. No generation. No posting.</div><div id=\"mediaList\" class=\"grid\"></div></section>
 <section id=\"manage\"><h2>Manage / Update / Status</h2><pre id=\"managePayload\"></pre></section>
-<section id=\"voice\"><h2>Voice / Jarvis gated panel</h2><div class=\"card\"><h3>Jarvis / Oracle Briefing</h3><div class=\"kv\">wake/show/build/act · dry-run only · no always-on microphone · no computer-control</div><pre id=\"jarvisPayload\"></pre></div><pre id=\"voicePayload\"></pre></section>
+<section id=\"voice\"><h2>Voice / Jarvis gated panel</h2><div class=\"card\"><h3>Jarvis / Oracle Briefing</h3><div class=\"kv\">wake/show/build/act · dry-run only · no always-on microphone · no computer-control</div><pre id=\"jarvisPayload\"></pre></div><div class=\"card\"><h3>Push-to-talk v0.1</h3><div class=\"kv\">Record command captures local browser audio, stores local artefacts, returns transcript + intent preview. No execution.</div><p><button id=\"recordJarvis\">Record command</button> <button id=\"stopJarvis\" disabled>Stop</button> <button id=\"previewJarvis\">Preview typed command</button></p><textarea id=\"jarvisTranscript\">Prikaži zadnje BP24 stanje</textarea><h3>Command Preview</h3><pre id=\"jarvisCommandCard\"></pre></div><pre id=\"voicePayload\"></pre></section>
 </main>
 <script id=\"bootstrap\" type=\"application/json\">{_json_safe(bootstrap)}</script>
 <script>
@@ -512,6 +638,23 @@ async function loadAll() {{
 }}
 $('#draftIdea').addEventListener('click', async () => showPre('#ideaResult', await j('/api/idea-factory/draft', {{method:'POST', body:JSON.stringify({{idea_text:$('#ideaText').value}})}})));
 $('#createIdea').addEventListener('click', async () => showPre('#ideaResult', await j('/api/idea-factory/action', {{method:'POST', body:JSON.stringify({{idea_text:$('#ideaText').value}})}})));
+let jarvisRecorder = null; let jarvisChunks = [];
+async function previewJarvisCommand() {{ showPre('#jarvisCommandCard', await j('/api/jarvis/preview', {{method:'POST', body:JSON.stringify({{transcript_text:$('#jarvisTranscript').value}})}})); }}
+$('#previewJarvis').addEventListener('click', previewJarvisCommand);
+$('#recordJarvis').addEventListener('click', async () => {{
+ if (!navigator.mediaDevices || !window.MediaRecorder) {{ showPre('#jarvisCommandCard', {{status:'browser_audio_unavailable', execution_created:false}}); return; }}
+ const stream = await navigator.mediaDevices.getUserMedia({{audio:true}}); jarvisChunks = []; jarvisRecorder = new MediaRecorder(stream);
+ jarvisRecorder.ondataavailable = e => {{ if (e.data && e.data.size) jarvisChunks.push(e.data); }};
+ jarvisRecorder.onstop = async () => {{
+   stream.getTracks().forEach(t => t.stop());
+   const blob = new Blob(jarvisChunks, {{type: jarvisRecorder.mimeType || 'audio/webm'}});
+   const reader = new FileReader();
+   reader.onloadend = async () => showPre('#jarvisCommandCard', await j('/api/jarvis/transcribe', {{method:'POST', body:JSON.stringify({{audio_base64:String(reader.result), audio_mime:blob.type, transcript_text:$('#jarvisTranscript').value}})}}));
+   reader.readAsDataURL(blob); $('#recordJarvis').disabled = false; $('#stopJarvis').disabled = true;
+ }};
+ jarvisRecorder.start(); $('#recordJarvis').disabled = true; $('#stopJarvis').disabled = false; showPre('#jarvisCommandCard', {{status:'recording', execution_created:false}});
+}});
+$('#stopJarvis').addEventListener('click', () => {{ if (jarvisRecorder && jarvisRecorder.state !== 'inactive') jarvisRecorder.stop(); }});
 loadAll().catch(e => showPre('#queueSummary', {{error:String(e)}}));
 </script>
 </body></html>"""
@@ -569,6 +712,10 @@ class MissionControlHandler(BaseHTTPRequestHandler):
                 _send_json(self, self.service.idea_factory_draft_payload(data))
             elif path == "/api/idea-factory/action":
                 _send_json(self, create_idea_action(self.service, data))
+            elif path == "/api/jarvis/preview":
+                _send_json(self, jarvis_preview_payload(self.service.paths, data))
+            elif path == "/api/jarvis/transcribe":
+                _send_json(self, jarvis_transcribe_payload(self.service.paths, data))
             else:
                 _send_json(self, {"status": "not_found", "path": path}, 404)
         except ValueError as exc:

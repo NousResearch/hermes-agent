@@ -109,7 +109,9 @@ export function RemoteFolderPicker() {
 
   return (
     <Dialog onOpenChange={open => !open && close()} open={Boolean(pending)}>
-      <DialogContent className="max-w-lg gap-0 overflow-hidden p-0">
+      {/* flex-col (vs the base grid) keeps the folder column inside the dialog's
+          85vh cap so the list's overflow-y-auto can scroll long directories. */}
+      <DialogContent className="flex max-w-lg flex-col gap-0 overflow-hidden p-0">
         <div className="border-b border-border/70 px-4 py-3">
           <DialogTitle className="text-sm">{pending?.title || r.remotePickerTitle}</DialogTitle>
           <DialogDescription className="mt-1 text-xs">{r.remotePickerDescription}</DialogDescription>

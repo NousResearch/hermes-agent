@@ -206,10 +206,10 @@ class LSPService:
         if not isinstance(lsp_cfg, dict):
             lsp_cfg = {}
 
-        enabled = bool(lsp_cfg.get("enabled", True))
+        enabled = bool(lsp_cfg.get("enabled", False))
         wait_mode = lsp_cfg.get("wait_mode", "document")
         wait_timeout = float(lsp_cfg.get("wait_timeout", DIAGNOSTICS_DOCUMENT_WAIT))
-        install_strategy = lsp_cfg.get("install_strategy", "auto")
+        install_strategy = lsp_cfg.get("install_strategy", "manual")
         try:
             idle_timeout = float(lsp_cfg.get("idle_timeout", DEFAULT_IDLE_TIMEOUT))
         except (TypeError, ValueError):

@@ -520,13 +520,39 @@ class FactRetriever:
         try:
             rows = conn.execute(sql, params).fetchall()
         except Exception:
-            # FTS5 MATCH can fail on malformed queries — fall back to empty
-            return []
+            # FTS5 MATCH fails on queries containing operators/punctuation
+            # (e.g. "90/180", "gpt-5.5"). Retry with each token quoted as a
+            # phrase, which neutralizes FTS5 syntax while preserving matching.
+            sanitized = " ".join(
+                '"{}"'.format(tok.replace('"', " ").strip())
+                for tok in query.split()
+                if tok.replace('"', " ").strip()
+            )
+            if not sanitized or sanitized == query:
+                return []
+            params[0] = sanitized
+            try:
+                rows = conn.execute(sql, params).fetchall()
+            except Exception:
+                return []
 
         if not rows:
+            # AND semantics found nothing — retry with OR over quoted tokens
+            # so multi-word queries degrade gracefully ("speedtest internet
+            # speed result" still matches docs containing only "speedtest").
+            tokens = [
+                '"{}"'.format(tok.replace('"', " ").strip())
+                for tok in query.split()
+                if tok.replace('"', " ").strip()
+            ]
+            if len(tokens) > 1:
+                params[0] = " OR ".join(tokens)
+                try:
+                    rows = conn.execute(sql, params).fetchall()
+                except Exception:
+                    return []
+        if not rows:
             return []
-
-        # Normalize FTS5 rank: rank is negative, lower = better
         # Convert to positive score in [0, 1] range
         raw_ranks = [abs(row["fts_rank_raw"]) for row in rows]
         max_rank = max(raw_ranks) if raw_ranks else 1.0

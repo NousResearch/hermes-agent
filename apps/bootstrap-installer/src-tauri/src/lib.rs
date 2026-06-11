@@ -8,9 +8,11 @@
 //! here — a crate-level attribute on a lib doesn't propagate to the linker
 //! flags of the executable that consumes it.
 
+pub mod artifact;
 mod bootstrap;
 mod events;
 mod install_script;
+mod orchestrator;
 mod powershell;
 mod paths;
 mod update;

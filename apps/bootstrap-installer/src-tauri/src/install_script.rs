@@ -15,7 +15,6 @@
 
 use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
-use tokio::io::AsyncWriteExt;
 
 use crate::paths;
 
@@ -200,53 +199,16 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
         })?;
     }
 
-    let tmp_path = dest_path.with_extension({
-        let ext = dest_path
-            .extension()
-            .and_then(|s| s.to_str())
-            .unwrap_or("tmp");
-        format!("{ext}.tmp")
-    });
-
-    let response = reqwest::Client::new()
-        .get(&url)
-        .header("User-Agent", "hermes-setup/0.0.1")
-        .send()
-        .await
-        .with_context(|| format!("GET {url}"))?;
-
-    if !response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download {}: HTTP {} from {}",
-            kind.filename(),
-            response.status(),
-            url
-        ));
-    }
-
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("reading body of {url}"))?;
-
-    let mut file = tokio::fs::File::create(&tmp_path)
-        .await
-        .with_context(|| format!("creating temp file {}", tmp_path.display()))?;
-    file.write_all(&bytes)
-        .await
-        .with_context(|| format!("writing temp file {}", tmp_path.display()))?;
-    file.flush().await.context("flushing temp file")?;
-    drop(file);
-
-    tokio::fs::rename(&tmp_path, dest_path)
-        .await
-        .with_context(|| {
-            format!(
-                "renaming {} → {}",
-                tmp_path.display(),
-                dest_path.display()
-            )
-        })?;
+    crate::artifact::download_to_cache(
+        crate::artifact::DownloadSpec {
+            url,
+            user_agent: "hermes-setup/0.0.1",
+            expected_sha256: None,
+        },
+        dest_path,
+    )
+    .await
+    .with_context(|| format!("downloading {}", kind.filename()))?;
 
     Ok(())
 }

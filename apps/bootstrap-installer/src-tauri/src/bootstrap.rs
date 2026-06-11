@@ -458,6 +458,18 @@ async fn run_bootstrap(
         anyhow!(err)
     })?;
 
+    let hermes_home_for_report = args
+        .hermes_home
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(crate::paths::hermes_home);
+    let install_state = crate::orchestrator::probe_install_state(&hermes_home_for_report);
+    let rust_plan = crate::orchestrator::build_stage_plan(&manifest.stages, args.include_desktop);
+    emit_log(&crate::orchestrator::summarize_plan(
+        &install_state,
+        &rust_plan,
+    ));
+
     emit_event(
         &app,
         BootstrapEvent::Manifest {
@@ -508,6 +520,74 @@ async fn run_bootstrap(
                 error: None,
             },
         );
+
+        let native_stage_result = {
+            let hermes_home = args
+                .hermes_home
+                .as_ref()
+                .map(PathBuf::from)
+                .unwrap_or_else(crate::paths::hermes_home);
+            let install_root = hermes_home.join("hermes-agent");
+            if stage.name.eq_ignore_ascii_case("bootstrap-marker") {
+                Some(crate::orchestrator::write_bootstrap_marker(
+                    &install_root,
+                    pin.commit.as_deref(),
+                    pin.branch.as_deref(),
+                ))
+            } else if stage.name.eq_ignore_ascii_case("config-templates") {
+                Some(crate::orchestrator::configure_templates(
+                    &hermes_home,
+                    &install_root,
+                ))
+            } else {
+                None
+            }
+        };
+
+        if let Some(native_stage_result) = native_stage_result {
+            match native_stage_result {
+                Ok(data) => {
+                    emit_event(
+                        &app,
+                        BootstrapEvent::Stage {
+                            name: stage.name.clone(),
+                            state: StageState::Succeeded,
+                            duration_ms: Some(started.elapsed().as_millis() as u64),
+                            result: Some(crate::events::StageResultPayload {
+                                stage: stage.name.clone(),
+                                ok: true,
+                                skipped: false,
+                                reason: None,
+                                data: Some(data),
+                            }),
+                            error: None,
+                        },
+                    );
+                    continue;
+                }
+                Err(err) => {
+                    let err = err.to_string();
+                    emit_event(
+                        &app,
+                        BootstrapEvent::Stage {
+                            name: stage.name.clone(),
+                            state: StageState::Failed,
+                            duration_ms: Some(started.elapsed().as_millis() as u64),
+                            result: None,
+                            error: Some(err.clone()),
+                        },
+                    );
+                    emit_event(
+                        &app,
+                        BootstrapEvent::Failed {
+                            stage: Some(stage.name.clone()),
+                            error: err.clone(),
+                        },
+                    );
+                    return Err(anyhow!(err));
+                }
+            }
+        }
 
         let mut stage_args = vec![
             "-Stage".to_string(),
@@ -656,6 +736,11 @@ async fn run_bootstrap(
         ));
     }
 
+    let hermes_home_path = PathBuf::from(&hermes_home);
+    if !record_manager_install_metadata(&hermes_home_path) {
+        emit_log("[bootstrap] warning: could not record manager install metadata");
+    }
+
     emit_event(
         &app,
         BootstrapEvent::Complete {
@@ -668,6 +753,26 @@ async fn run_bootstrap(
     );
 
     Ok(install_root.to_string_lossy().into_owned())
+}
+
+fn record_manager_install_metadata(hermes_home: &std::path::Path) -> bool {
+    match hermes_manager::commands::install_metadata(hermes_home) {
+        Ok(()) => {
+            tracing::info!(
+                hermes_home = %hermes_home.display(),
+                "manager install metadata recorded"
+            );
+            true
+        }
+        Err(err) => {
+            tracing::warn!(
+                hermes_home = %hermes_home.display(),
+                ?err,
+                "failed to record manager install metadata"
+            );
+            false
+        }
+    }
 }
 
 async fn cancellation_signalled(holder: &Arc<Mutex<Option<mpsc::Receiver<()>>>>) -> bool {
@@ -821,8 +926,8 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use std::path::Path;
+    use std::path::PathBuf;
 
     fn unique_tmp_dir(tag: &str) -> PathBuf {
         let base = std::env::temp_dir().join(format!(
@@ -902,5 +1007,20 @@ mod tests {
             "no resolved app when nothing has been built"
         );
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn record_manager_install_metadata_writes_default_manifest() {
+        let hermes_home = unique_tmp_dir("manager-metadata");
+        let agent_root = hermes_home.join("hermes-agent");
+        std::fs::create_dir_all(&agent_root).unwrap();
+
+        assert!(record_manager_install_metadata(&hermes_home));
+        assert!(hermes_home
+            .join("manager")
+            .join("installed-files.json")
+            .exists());
+
+        let _ = std::fs::remove_dir_all(&hermes_home);
     }
 }

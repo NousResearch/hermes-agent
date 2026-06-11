@@ -5026,13 +5026,25 @@ def read_raw_config() -> Dict[str, Any]:
     single value and don't want the overhead of ``load_config()``'s deep-merge
     + migration pipeline.
 
+    For multi-profile deployments, prefer :func:`_read_raw_config_at` with
+    an explicit path (or :func:`read_raw_config_at` with a Hermes home).
+
     Cached on the config file's (mtime_ns, size) — same strategy as
     ``load_config()``. Returns a deepcopy on every call since some callers
     mutate the result before passing to ``save_config()``.
     """
+    return _read_raw_config_at(get_config_path())
+
+
+def _read_raw_config_at(config_path: Path) -> Dict[str, Any]:
+    """Read a config file at an arbitrary path, without merging defaults.
+
+    See :func:`read_raw_config` for cache semantics.  Exposed for
+    :func:`save_config_at` so the launch profile's cache is not
+    consulted when writing a different profile's config.
+    """
     with _CONFIG_LOCK:
         try:
-            config_path = get_config_path()
             st = config_path.stat()
             cache_key = (st.st_mtime_ns, st.st_size)
         except (FileNotFoundError, OSError):
@@ -5059,6 +5071,9 @@ def read_raw_config() -> Dict[str, Any]:
 def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml.
 
+    For multi-profile deployments, prefer :func:`load_config_at` with an
+    explicit Hermes home directory.
+
     Cached on the config file's (mtime_ns, size). Returns a deepcopy of
     the cached value when unchanged, since most call sites mutate the
     result (e.g. ``cfg["model"]["default"] = ...`` before ``save_config``).
@@ -5070,7 +5085,17 @@ def load_config() -> Dict[str, Any]:
     defensive deepcopy — that path matters in agent-loop hot spots like
     ``get_provider_request_timeout`` which is called once per API turn.
     """
-    return _load_config_impl(want_deepcopy=True)
+    return load_config_at(get_hermes_home(), want_deepcopy=True)
+
+
+def load_config_at(home: Path, want_deepcopy: bool = True) -> Dict[str, Any]:
+    """Load configuration from ``<home>/config.yaml``.
+
+    See :func:`load_config` for cache semantics.  Set ``want_deepcopy``
+    to ``False`` only when the result will not be mutated (read-only
+    fast path; matches :func:`load_config_readonly`).
+    """
+    return _load_config_impl_at(Path(home) / "config.yaml", want_deepcopy=want_deepcopy)
 
 
 def load_config_readonly() -> Dict[str, Any]:
@@ -5097,9 +5122,17 @@ def load_config_readonly() -> Dict[str, Any]:
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    """Backward-compatible wrapper around :func:`_load_config_impl_at`.
+
+    Resolves ``get_config_path()`` at call time so the launch-profile
+    cache continues to be used for callers that have not been migrated
+    to :func:`load_config_at`.
+    """
+    return _load_config_impl_at(get_config_path(), want_deepcopy=want_deepcopy)
+
+
+def _load_config_impl_at(config_path: Path, *, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
-        ensure_hermes_home()
-        config_path = get_config_path()
         path_key = str(config_path)
 
         try:
@@ -5231,18 +5264,36 @@ _COMMENTED_SECTIONS = """
 
 
 def save_config(config: Dict[str, Any]):
-    """Save configuration to ~/.hermes/config.yaml."""
+    """Save configuration to ~/.hermes/config.yaml.
+
+    For multi-profile deployments, prefer :func:`save_config_at` with an
+    explicit Hermes home directory.
+    """
+    return save_config_at(get_hermes_home(), config)
+
+
+def save_config_at(home: Path, config: Dict[str, Any]):
+    """Save configuration to ``<home>/config.yaml``.
+
+    ``home`` is a Hermes home directory.  All caches (``_RAW_CONFIG_CACHE``,
+    ``_LOAD_CONFIG_CACHE``, ``_LAST_EXPANDED_CONFIG_BY_PATH``) are
+    keyed on the absolute config path, so writing to a different
+    profile's ``config.yaml`` does not pollute the launch profile's
+    cache and vice versa.
+    """
     with _CONFIG_LOCK:
         if is_managed():
             managed_error("save configuration")
             return
         from utils import atomic_yaml_write
 
-        ensure_hermes_home()
-        config_path = get_config_path()
+        config_path = Path(home) / "config.yaml"
         current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
         normalized = current_normalized
-        raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
+        # Read the existing file at the same path so _preserve_env_ref_templates
+        # can keep $-style env references intact across the round-trip.
+        raw_existing = _read_raw_config_at(config_path)
+        raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(raw_existing))
         if raw_existing:
             normalized = _preserve_env_ref_templates(
                 normalized,
@@ -5282,6 +5333,9 @@ def load_env() -> Dict[str, str]:
     gracefully instead of producing mangled values such as duplicated
     bot tokens.  See #8908.
 
+    For multi-profile deployments, prefer :func:`load_env_at` with an
+    explicit Hermes home directory.
+
     The parsed dict is memoised keyed on the .env file mtime, because
     ``get_env_value()`` is called dozens-to-hundreds of times per
     interactive menu render (`hermes tools`, `hermes setup`, status
@@ -5290,8 +5344,18 @@ def load_env() -> Dict[str, str]:
     menu paint on top of the OAuth-refresh slowness. The mtime check
     invalidates the cache when the user edits .env mid-process.
     """
+    return load_env_at(get_hermes_home())
+
+
+def load_env_at(home: Path) -> Dict[str, str]:
+    """Load environment variables from ``<home>/.env``.
+
+    See :func:`load_env` for the rationale behind sanitisation and the
+    mtime-keyed cache.  Use this variant when a request needs to read
+    from a profile other than the launch profile.
+    """
     global _env_cache
-    env_path = get_env_path()
+    env_path = Path(home) / ".env"
 
     try:
         mtime = env_path.stat().st_mtime
@@ -5498,7 +5562,24 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
 
 
 def save_env_value(key: str, value: str):
-    """Save or update a value in ~/.hermes/.env."""
+    """Save or update a value in ~/.hermes/.env.
+
+    For multi-profile deployments where the dashboard needs to write to a
+    profile other than the launch profile, prefer
+    :func:`save_env_value_at` with an explicit ``HERMES_HOME`` directory.
+    """
+    return save_env_value_at(get_hermes_home(), key, value)
+
+
+def save_env_value_at(home: Path, key: str, value: str):
+    """Save or update a value in ``<home>/.env``.
+
+    ``home`` is a Hermes home directory (e.g. the result of
+    :func:`hermes_cli.profiles.get_profile_dir`).  Use this variant from
+    the dashboard web server so each request can target the profile the
+    user is currently viewing in the UI rather than the profile the
+    server was launched in.
+    """
     if is_managed():
         managed_error(f"set {key}")
         return
@@ -5508,8 +5589,12 @@ def save_env_value(key: str, value: str):
     value = value.replace("\n", "").replace("\r", "")
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
-    ensure_hermes_home()
-    env_path = get_env_path()
+    env_path = Path(home) / ".env"
+    # Best-effort: ensure the parent directory exists.  In multi-profile
+    # setups the profile directory is created by `hermes profile create`
+    # but a defensive mkdir here keeps the helper safe to call before
+    # the profile has been fully bootstrapped.
+    env_path.parent.mkdir(parents=True, exist_ok=True)
 
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
@@ -5573,13 +5658,24 @@ def remove_env_value(key: str) -> bool:
     """Remove a key from ~/.hermes/.env and os.environ.
 
     Returns True if the key was found and removed, False otherwise.
+
+    For multi-profile deployments, prefer :func:`remove_env_value_at` with
+    an explicit Hermes home directory.
+    """
+    return remove_env_value_at(get_hermes_home(), key)
+
+
+def remove_env_value_at(home: Path, key: str) -> bool:
+    """Remove a key from ``<home>/.env`` and ``os.environ``.
+
+    Returns True if the key was found and removed, False otherwise.
     """
     if is_managed():
         managed_error(f"remove {key}")
         return False
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
-    env_path = get_env_path()
+    env_path = Path(home) / ".env"
     if not env_path.exists():
         os.environ.pop(key, None)
         return False

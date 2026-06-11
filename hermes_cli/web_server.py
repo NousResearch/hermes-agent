@@ -50,10 +50,15 @@ from hermes_cli.config import (
     get_env_path,
     get_hermes_home,
     load_config,
+    load_config_at,
     load_env,
+    load_env_at,
     save_config,
+    save_config_at,
     save_env_value,
+    save_env_value_at,
     remove_env_value,
+    remove_env_value_at,
     check_config_version,
     detect_install_method,
     format_docker_update_message,
@@ -61,6 +66,7 @@ from hermes_cli.config import (
     redact_key,
 )
 from gateway.status import get_running_pid, read_runtime_status
+from hermes_cli.profiles import get_profile_dir, profile_exists
 from utils import env_var_enabled
 
 try:
@@ -551,25 +557,30 @@ CONFIG_SCHEMA = _ordered_schema
 
 class ConfigUpdate(BaseModel):
     config: dict
+    profile: Optional[str] = None
 
 
 class EnvVarUpdate(BaseModel):
     key: str
     value: str
+    profile: Optional[str] = None
 
 
 class EnvVarDelete(BaseModel):
     key: str
+    profile: Optional[str] = None
 
 
 class EnvVarReveal(BaseModel):
     key: str
+    profile: Optional[str] = None
 
 
 class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None
     env: Dict[str, str] = {}
     clear_env: List[str] = []
+    profile: Optional[str] = None
 
 
 class TelegramOnboardingStart(BaseModel):
@@ -2362,8 +2373,9 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 @app.put("/api/config")
 async def update_config(body: ConfigUpdate):
     try:
-        save_config(_denormalize_config_from_web(body.config))
-        return {"ok": True}
+        home = _resolve_target_home(body.profile)
+        save_config_at(home, _denormalize_config_from_web(body.config))
+        return {"ok": True, "profile": body.profile or None}
     except Exception:
         _log.exception("PUT /api/config failed")
         raise HTTPException(status_code=500, detail="Internal server error")
@@ -2396,8 +2408,9 @@ async def get_env_vars():
 @app.put("/api/env")
 async def set_env_var(body: EnvVarUpdate):
     try:
-        save_env_value(body.key, body.value)
-        return {"ok": True, "key": body.key}
+        home = _resolve_target_home(body.profile)
+        save_env_value_at(home, body.key, body.value)
+        return {"ok": True, "key": body.key, "profile": body.profile or None}
     except ValueError as exc:
         # save_env_value raises ValueError for invalid names and for keys
         # on the denylist (LD_PRELOAD, PATH, PYTHONPATH, …). Surface the
@@ -2509,10 +2522,11 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 @app.delete("/api/env")
 async def remove_env_var(body: EnvVarDelete):
     try:
-        removed = remove_env_value(body.key)
+        home = _resolve_target_home(body.profile)
+        removed = remove_env_value_at(home, body.key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
-        return {"ok": True, "key": body.key}
+        return {"ok": True, "key": body.key, "profile": body.profile or None}
     except HTTPException:
         raise
     except ValueError as exc:
@@ -2546,13 +2560,14 @@ async def reveal_env_var(body: EnvVarReveal, request: Request):
     _reveal_timestamps.append(now)
 
     # --- Reveal ---
-    env_on_disk = load_env()
+    home = _resolve_target_home(body.profile)
+    env_on_disk = load_env_at(home)
     value = env_on_disk.get(body.key)
     if value is None:
         raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
 
-    _log.info("env/reveal: %s", body.key)
-    return {"key": body.key, "value": value}
+    _log.info("env/reveal: %s (profile=%s)", body.key, body.profile or "<default>")
+    return {"key": body.key, "value": value, "profile": body.profile or None}
 
 
 # Entries omit fields they don't need to override; the catalog builder fills
@@ -3169,7 +3184,18 @@ def _messaging_platform_payload(
 
 
 def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
-    config = load_config()
+    _write_platform_enabled_at(get_hermes_home(), platform_id, enabled)
+
+
+def _write_platform_enabled_at(home: Path, platform_id: str, enabled: bool) -> None:
+    """Toggle a messaging platform's ``enabled`` flag in ``<home>/config.yaml``.
+
+    The ``enabled`` flag lives in the platform's ``config.yaml`` entry, not
+    the per-platform credential env vars — see :func:`update_messaging_platform`
+    for the full write path.  Use :func:`_write_platform_enabled_at` to
+    target a profile other than the launch profile.
+    """
+    config = load_config_at(home)
     platforms = config.setdefault("platforms", {})
     if not isinstance(platforms, dict):
         platforms = {}
@@ -3179,7 +3205,29 @@ def _write_platform_enabled(platform_id: str, enabled: bool) -> None:
         platform_config = {}
         platforms[platform_id] = platform_config
     platform_config["enabled"] = enabled
-    save_config(config)
+    save_config_at(home, config)
+
+
+def _resolve_target_home(profile: Optional[str]) -> Path:
+    """Resolve a request's ``profile`` field to a Hermes home directory.
+
+    Returns the launch profile's home when ``profile`` is ``None`` or
+    empty (preserves legacy behavior — no break for the existing SPA).
+    Raises ``HTTPException(404)`` when an explicit profile is unknown,
+    so the frontend can show a meaningful error instead of writing to
+    the wrong profile silently.
+    """
+    if not profile:
+        return get_hermes_home()
+    name = profile.strip()
+    if not name:
+        return get_hermes_home()
+    if not profile_exists(name):
+        raise HTTPException(
+            status_code=404,
+            detail=f"Unknown profile: {name!r}. Create it with `hermes profile create {name}`.",
+        )
+    return get_profile_dir(name)
 
 
 _TELEGRAM_ONBOARDING_DEFAULT_URL = "https://setup.hermes-agent.nousresearch.com"
@@ -3525,6 +3573,13 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             status_code=404, detail=f"Unknown messaging platform: {platform_id}"
         )
 
+    # Resolve the target profile's Hermes home at request time so the
+    # dashboard can configure each profile independently.  None / empty
+    # profile falls back to the launch profile (preserves the legacy
+    # behavior used by SPAs that have not yet plumbed the active profile
+    # through to the request body).
+    home = _resolve_target_home(body.profile)
+
     allowed_env = set(entry["env_vars"])
     try:
         for key in body.clear_env:
@@ -3533,7 +3588,7 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                     status_code=400,
                     detail=f"{key} is not configurable for {entry['name']}",
                 )
-            remove_env_value(key)
+            remove_env_value_at(home, key)
 
         for key, value in body.env.items():
             if key not in allowed_env:
@@ -3543,12 +3598,12 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
                 )
             trimmed = value.strip()
             if trimmed:
-                save_env_value(key, trimmed)
+                save_env_value_at(home, key, trimmed)
 
         if body.enabled is not None:
-            _write_platform_enabled(platform_id, body.enabled)
+            _write_platform_enabled_at(home, platform_id, body.enabled)
 
-        return {"ok": True, "platform": platform_id}
+        return {"ok": True, "platform": platform_id, "profile": body.profile or None}
     except HTTPException:
         raise
     except Exception:
@@ -3557,18 +3612,36 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 
 
 @app.post("/api/messaging/platforms/{platform_id}/test")
-async def test_messaging_platform(platform_id: str):
+async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
     entry = _catalog_lookup(platform_id)
     if not entry:
         raise HTTPException(
             status_code=404, detail=f"Unknown messaging platform: {platform_id}"
         )
 
-    env_on_disk = load_env()
-    payload = _messaging_platform_payload(entry, env_on_disk, read_runtime_status())
+    # Profile-scoped reads: env vars and the ``enabled`` flag are stored
+    # per-profile.  Resolve the target Hermes home at request time and
+    # install a ContextVar override so that helpers that resolve their
+    # target via ``get_hermes_home()`` (``load_gateway_config``, the
+    # gateway config cache, the .env cache) all see the same profile
+    # for the duration of this request.  The override is reverted in
+    # ``finally`` so we never leak the wrong home into a later request
+    # handled by the same async task.
+    #
+    # Gateway runtime state (connected / error_message) is process-wide
+    # — a single gateway process serves one profile at a time, so the
+    # runtime signal still matches the requested profile in practice.
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    home = _resolve_target_home(profile)
+    token = set_hermes_home_override(str(home))
+    try:
+        env_on_disk = load_env_at(home)
+        payload = _messaging_platform_payload(entry, env_on_disk, read_runtime_status())
+    finally:
+        reset_hermes_home_override(token)
     if not payload["enabled"]:
         message = f"{entry['name']} is disabled. Enable it, then restart the gateway."
-        return {"ok": False, "state": payload["state"], "message": message}
+        return {"ok": False, "state": payload["state"], "message": message, "profile": profile or None}
     if not payload["configured"]:
         missing = [
             field["key"]
@@ -3580,29 +3653,33 @@ async def test_messaging_platform(platform_id: str):
             if missing
             else "Platform setup is incomplete."
         )
-        return {"ok": False, "state": payload["state"], "message": message}
+        return {"ok": False, "state": payload["state"], "message": message, "profile": profile or None}
     if not payload["gateway_running"]:
         return {
             "ok": False,
             "state": payload["state"],
             "message": "Gateway is not running. Restart the gateway to connect this platform.",
+            "profile": profile or None,
         }
     if payload["state"] == "connected":
         return {
             "ok": True,
             "state": payload["state"],
             "message": f"{entry['name']} is connected.",
+            "profile": profile or None,
         }
     if payload.get("error_message"):
         return {
             "ok": False,
             "state": payload["state"],
             "message": payload["error_message"],
+            "profile": profile or None,
         }
     return {
         "ok": False,
         "state": payload["state"],
         "message": "Setup looks complete, but the gateway has not reported a connection yet. Restart the gateway.",
+        "profile": profile or None,
     }
 
 

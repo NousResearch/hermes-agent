@@ -855,20 +855,29 @@ export default function ModelsPage() {
       });
   }, []);
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    Promise.all([
-      api.getModelsAnalytics(days),
-      api.getAuxiliaryModels().catch(() => null),
-    ])
-      .then(([models, auxData]) => {
-        setData(models);
-        setAux(auxData);
-      })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
-  }, [days]);
+  const load = useCallback(
+    (opts?: { silent?: boolean }) => {
+      if (!opts?.silent) {
+        setLoading(true);
+        setError(null);
+      }
+      Promise.all([
+        api.getModelsAnalytics(days),
+        api.getAuxiliaryModels().catch(() => null),
+      ])
+        .then(([models, auxData]) => {
+          setData(models);
+          setAux(auxData);
+        })
+        .catch((err) => {
+          if (!opts?.silent) setError(String(err));
+        })
+        .finally(() => {
+          if (!opts?.silent) setLoading(false);
+        });
+    },
+    [days],
+  );
 
   const onAssigned = useCallback(() => {
     // Reload aux state after any assignment change.
@@ -903,7 +912,7 @@ export default function ModelsPage() {
           ghost
           size="icon"
           className="text-muted-foreground hover:text-foreground"
-          onClick={load}
+          onClick={() => load()}
           disabled={loading}
           aria-label={t.common.refresh}
         >
@@ -920,6 +929,20 @@ export default function ModelsPage() {
 
   useEffect(() => {
     load();
+  }, [load]);
+
+  // Model assignments can change outside this page (config editor, chat
+  // /model --global, CLI) — refetch silently when the page regains focus.
+  useEffect(() => {
+    const refetch = () => {
+      if (document.visibilityState === "visible") load({ silent: true });
+    };
+    window.addEventListener("focus", refetch);
+    document.addEventListener("visibilitychange", refetch);
+    return () => {
+      window.removeEventListener("focus", refetch);
+      document.removeEventListener("visibilitychange", refetch);
+    };
   }, [load]);
 
   return (

@@ -285,6 +285,29 @@ class TestDetectDangerousSudo:
         assert key is not None
 
 
+class TestDangerousCommandLengthGuard:
+    def test_over_limit_command_fails_closed(self):
+        cmd = "x" * (approval_module._MAX_DANGEROUS_COMMAND_LENGTH + 1)
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is True
+        assert key == "command length limit"
+        assert desc == "command exceeds approval detection length limit"
+
+    def test_at_limit_command_uses_normal_detection(self):
+        cmd = "x" * approval_module._MAX_DANGEROUS_COMMAND_LENGTH
+        is_dangerous, key, desc = detect_dangerous_command(cmd)
+        assert is_dangerous is False
+        assert key is None
+        assert desc is None
+
+    def test_existing_dangerous_pattern_keeps_original_description(self):
+        is_dangerous, key, desc = detect_dangerous_command("bash -lc 'echo pwned'")
+        assert is_dangerous is True
+        assert key == desc
+        assert "shell" in desc.lower()
+        assert "length limit" not in desc
+
+
 class TestDetectSqlPatterns:
     def test_drop_table(self):
         is_dangerous, _, desc = detect_dangerous_command("DROP TABLE users")

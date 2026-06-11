@@ -877,7 +877,9 @@ DEFAULT_CONFIG = {
         #                      Toolsets are never touched; messaging platforms
         #                      unaffected.
         #   "focus"          — auto + collapse the toolset to the lean coding
-        #                      set (+ enabled MCP servers). Explicit opt-in.
+        #                      set (+ enabled MCP servers) + demote non-coding
+        #                      skill categories to names-only in the prompt's
+        #                      skill index. Explicit opt-in.
         #   "on"             — force the prompt posture everywhere.
         #   "off"            — disable entirely.
         "coding_context": "auto",

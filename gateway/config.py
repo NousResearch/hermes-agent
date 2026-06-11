@@ -859,7 +859,15 @@ class GatewayConfig:
 
     # User-defined quick commands (slash commands that bypass the agent loop)
     quick_commands: Dict[str, Any] = field(default_factory=dict)
-    
+
+    # Background services (long-running observers/pollers registered by
+    # plugins via ``PluginContext.register_background_service``). Each entry
+    # mirrors a ``services.<name>`` block from config.yaml verbatim, including
+    # the ``enabled`` flag and arbitrary plugin-defined keys. The gateway
+    # looks each name up in ``gateway.service_registry.service_registry``
+    # at startup.
+    services: Dict[str, Any] = field(default_factory=dict)
+
     # Storage paths
     sessions_dir: Path = field(default_factory=lambda: get_hermes_home() / "sessions")
 
@@ -1081,6 +1089,14 @@ class GatewayConfig:
         if not isinstance(quick_commands, dict):
             quick_commands = {}
 
+        # Background services (see ``GatewayConfig.services`` docstring).
+        # Each entry maps a plugin-registered service name to its config dict.
+        # We preserve the dict verbatim — plugin owners define their own
+        # schema under ``services.<name>.extra`` / ``services.<name>.rules``.
+        services_cfg = data.get("services", {})
+        if not isinstance(services_cfg, dict):
+            services_cfg = {}
+
         stt_enabled = data.get("stt_enabled")
         if stt_enabled is None:
             stt_enabled = data.get("stt", {}).get("enabled") if isinstance(data.get("stt"), dict) else None
@@ -1153,6 +1169,7 @@ class GatewayConfig:
             reset_by_platform=reset_by_platform,
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
+            services=services_cfg,
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
@@ -1341,6 +1358,13 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["reset_triggers"] = yaml_cfg["reset_triggers"]
             elif isinstance(gateway_section, dict) and "reset_triggers" in gateway_section:
                 gw_data["reset_triggers"] = gateway_section["reset_triggers"]
+
+            # ``services:`` mirrors a plugin-registered background-service
+            # block. Each entry is preserved verbatim; plugin owners define
+            # the per-service schema under ``services.<name>.extra``.
+            services_yaml = yaml_cfg.get("services")
+            if isinstance(services_yaml, dict):
+                gw_data["services"] = services_yaml
 
             if "always_log_local" in yaml_cfg:
                 gw_data["always_log_local"] = yaml_cfg["always_log_local"]

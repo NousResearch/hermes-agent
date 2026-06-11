@@ -281,12 +281,9 @@
       `${API}/tasks/${encodeURIComponent(taskId)}/attachments`,
       boardSlug,
     );
-    return fetch(url, {
-      method: "POST",
-      headers: sessionAuthHeaders(),
-      credentials: "same-origin",
-      body: fd,
-    }).then(function (resp) {
+    // SDK.authedFetch handles auth in BOTH modes (loopback token header /
+    // gated cookie) and applies the dashboard base-path prefix.
+    return SDK.authedFetch(url, { method: "POST", body: fd }).then(function (resp) {
       if (!resp.ok) {
         return resp.text().then(function (txt) {
           throw new Error(parseApiErrorMessage(new Error(resp.status + ": " + txt)));
@@ -3375,9 +3372,13 @@
     // auth middleware requires in loopback mode, so fetch with the token
     // and hand the browser a blob URL instead.
     function downloadAttachment(a) {
+      // SDK.authedFetch handles auth in BOTH modes (loopback token header /
+      // gated cookie) and applies the dashboard base-path prefix. The old
+      // hand-rolled Authorization:Bearer + credentials:'same-origin' sent an
+      // empty token and 401'd in gated mode.
       const url = withBoard(`${API}/attachments/${a.id}`, props.boardSlug);
       setDlErr(null);
-      fetch(url, { headers: sessionAuthHeaders(), credentials: "same-origin" })
+      SDK.authedFetch(url)
         .then(function (resp) {
           if (!resp.ok) {
             return resp.text().then(function (txt) {

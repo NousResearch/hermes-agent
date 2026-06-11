@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 
+from contextlib import contextmanager
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
     import fcntl
@@ -37,7 +38,7 @@ from typing import List, Optional
 # the module) fail with ModuleNotFoundError for hermes_time et al.
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.config import load_config, _expand_env_vars
 from hermes_time import now as _hermes_now
@@ -225,6 +226,45 @@ _hermes_home: Path | None = None
 def _get_hermes_home() -> Path:
     """Resolve Hermes home dynamically while preserving test monkeypatch hooks."""
     return _hermes_home or get_hermes_home()
+
+
+@contextmanager
+def _job_profile_context(job: dict):
+    """Scope get_hermes_home() to a stored cron job profile, if valid.
+
+    The override is context-local so in-process agent code can read the
+    profile home without changing the scheduler process' HERMES_HOME.  The
+    dotenv loader still mutates os.environ, so the full environment is restored
+    when the job exits; tick() routes profile jobs through the sequential pool.
+    """
+    raw_profile = str(job.get("profile") or "").strip()
+    if not raw_profile:
+        yield
+        return
+
+    try:
+        from hermes_cli.profiles import normalize_profile_name, resolve_profile_env
+
+        profile_name = normalize_profile_name(raw_profile)
+        profile_home = Path(resolve_profile_env(profile_name)).resolve()
+    except Exception as exc:
+        logger.warning(
+            "Job '%s': profile %r could not be resolved; running with default Hermes home: %s",
+            job.get("id", "?"),
+            raw_profile,
+            exc,
+        )
+        yield
+        return
+
+    prior_env = os.environ.copy()
+    token = set_hermes_home_override(profile_home)
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+        os.environ.clear()
+        os.environ.update(prior_env)
 
 
 def _get_lock_paths() -> tuple[Path, Path]:
@@ -968,12 +1008,15 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
 
     try:
         popen_kwargs = {"creationflags": windows_hide_flags()} if sys.platform == "win32" else {}
+        script_env = os.environ.copy()
+        script_env["HERMES_HOME"] = str(_get_hermes_home())
         result = subprocess.run(
             argv,
             capture_output=True,
             text=True,
             timeout=script_timeout,
             cwd=str(path.parent),
+            env=script_env,
             **popen_kwargs,
         )
         stdout = (result.stdout or "").strip()
@@ -1303,6 +1346,11 @@ def _scan_assembled_cron_prompt(
 
 
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+    with _job_profile_context(job):
+        return _run_job(job)
+
+
+def _run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
     
@@ -2087,12 +2135,20 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Partition due jobs: those with a per-job workdir mutate
+        # Partition due jobs: those with a per-job workdir or profile mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
         # so they MUST run sequentially to avoid corrupting each other.  Jobs
-        # without a workdir leave env untouched and stay parallel-safe.
-        sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
-        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+        # without a workdir/profile leave env untouched and stay parallel-safe.
+        sequential_jobs = [
+            j
+            for j in due_jobs
+            if (j.get("workdir") or "").strip() or (j.get("profile") or "").strip()
+        ]
+        parallel_jobs = [
+            j
+            for j in due_jobs
+            if not ((j.get("workdir") or "").strip() or (j.get("profile") or "").strip())
+        ]
 
         _results: list = []
         _all_futures: list = []

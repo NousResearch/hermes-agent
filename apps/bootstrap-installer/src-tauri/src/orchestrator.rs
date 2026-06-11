@@ -761,6 +761,12 @@ fn unix_manifest_stages(include_desktop: bool) -> Vec<StageInfo> {
         stage_info("path", "Install hermes command", "runtime", false),
         stage_info("config", "Prepare config and skills", "configuration", false),
         stage_info(
+            "platform-sdks",
+            "Install messaging platform SDKs",
+            "configuration",
+            false,
+        ),
+        stage_info(
             "setup",
             "Configure API keys and settings",
             "configuration",
@@ -3137,13 +3143,18 @@ mod tests {
                 "node-deps",
                 "path",
                 "config",
+                "platform-sdks",
                 "setup",
                 "gateway",
                 "complete",
             ]
         );
         assert_eq!(manifest.stages[9].title, "Prepare config and skills");
-        assert!(manifest.stages[10].needs_user_input);
+        assert_eq!(
+            manifest.stages[10].title,
+            "Install messaging platform SDKs"
+        );
+        assert!(manifest.stages[11].needs_user_input);
     }
 
     #[test]

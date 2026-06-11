@@ -282,6 +282,8 @@ emit_manifest() {
         '"needs_user_input":false},' \
         '{"name":"path","title":"Install hermes command","category":"runtime","needs_user_input":false},' \
         '{"name":"config","title":"Prepare config and skills","category":"configuration","needs_user_input":false},' \
+        '{"name":"platform-sdks","title":"Install messaging platform SDKs","category":"configuration",' \
+        '"needs_user_input":false},' \
         '{"name":"setup","title":"Configure API keys and settings","category":"configuration",' \
         '"needs_user_input":true},' \
         '{"name":"gateway","title":"Configure gateway service","category":"configuration","needs_user_input":true},' \
@@ -1774,6 +1776,71 @@ SOUL_EOF
     fi
 }
 
+install_platform_sdks() {
+    local env_file="$HERMES_HOME/.env"
+    local python_path="$INSTALL_DIR/venv/bin/python"
+
+    if [ ! -f "$env_file" ]; then
+        log_info "Skipping messaging platform SDK check (no ~/.hermes/.env)"
+        return 0
+    fi
+    if [ ! -x "$python_path" ]; then
+        log_warn "Skipping messaging platform SDK check (venv Python missing)"
+        return 0
+    fi
+
+    "$python_path" - "$env_file" <<'PY'
+import importlib.util
+import subprocess
+import sys
+from pathlib import Path
+
+SDK_MAP = [
+    ("TELEGRAM_BOT_TOKEN", "telegram", "python-telegram-bot[webhooks]>=22.6,<23"),
+    ("DISCORD_BOT_TOKEN", "discord", "discord.py[voice]>=2.7.1,<3"),
+    ("SLACK_BOT_TOKEN", "slack_sdk", "slack-sdk>=3.27.0,<4"),
+    ("SLACK_APP_TOKEN", "slack_bolt", "slack-bolt>=1.18.0,<2"),
+    ("WHATSAPP_ENABLED", "qrcode", "qrcode>=7.0,<8"),
+]
+
+
+def env_values(path):
+    values = {}
+    for raw_line in Path(path).read_text(encoding="utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip('"').strip("'")
+    return values
+
+
+def configured(value):
+    if not value:
+        return False
+    return value.lower() not in {"0", "false", "no", "off", "none", "null"}
+
+
+values = env_values(sys.argv[1])
+required = [(module, spec) for key, module, spec in SDK_MAP if configured(values.get(key, ""))]
+if not required:
+    print("No messaging platform tokens configured; skipping SDK check.")
+    raise SystemExit(0)
+
+missing = [(module, spec) for module, spec in required if importlib.util.find_spec(module) is None]
+if not missing:
+    print(f"Messaging platform SDKs already available ({len(required)} checked).")
+    raise SystemExit(0)
+
+if subprocess.call([sys.executable, "-m", "pip", "--version"]) != 0:
+    subprocess.check_call([sys.executable, "-m", "ensurepip", "--upgrade"])
+
+for module, spec in missing:
+    print(f"Installing {spec} for missing import {module} ...")
+    subprocess.check_call([sys.executable, "-m", "pip", "install", spec])
+PY
+}
+
 find_system_browser() {
     # Prefer a user-specified browser path, then common Linux/macOS Chrome and
     # Chromium command names.  Arch-family distributions commonly ship plain
@@ -2715,6 +2782,12 @@ run_stage_body() {
             resolve_install_layout
             require_install_dir
             copy_config_templates
+            ;;
+        platform-sdks)
+            detect_os
+            resolve_install_layout
+            require_install_dir
+            install_platform_sdks
             ;;
         setup)
             detect_os

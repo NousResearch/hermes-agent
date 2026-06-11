@@ -86,6 +86,36 @@ async def test_tool_initiate_uses_default_to_number(tmp_path, make_config):
 
 
 @pytest.mark.asyncio
+async def test_admin_call_with_null_to_uses_config_default(tmp_path, make_config):
+    """`hermes voicecall call -m ...` sends {"to": null}; the admin handler
+    must treat JSON null as absent (str(None) regression) and fall back to
+    the configured to_number."""
+    import aiohttp
+
+    from plugins.platforms.voice_call import runtime as runtime_mod
+
+    cfg = make_config()
+    cfg.serve.port = 0
+    cfg.to_number = "+15555550002"
+    runtime = await runtime_mod.ensure_runtime(cfg, store_dir=tmp_path)
+    try:
+        port = runtime.webhook_server.bound_port
+        token = (tmp_path / "admin.token").read_text(encoding="utf-8").strip()
+        async with aiohttp.ClientSession() as client:
+            async with client.post(
+                f"http://127.0.0.1:{port}/voice/admin",
+                json={"command": "call", "to": None, "message": "hi", "mode": None},
+                headers={"x-voice-call-admin-token": token},
+            ) as resp:
+                data = await resp.json()
+        assert data["success"] is True, data
+        record = runtime.manager.get_call(data["call_id"])
+        assert record.to_number == "+15555550002"
+    finally:
+        await runtime_mod.stop_runtime()
+
+
+@pytest.mark.asyncio
 async def test_slash_call_defaults_to_conversation(tmp_path, make_config):
     from plugins.platforms.voice_call import runtime as runtime_mod
     from plugins.platforms.voice_call.tool import slash_handler

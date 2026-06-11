@@ -189,30 +189,31 @@ class VoiceCallRuntime:
                 "public_url": self.public_url,
                 "active_calls": calls,
             }
+        # JSON null values must become "" (str(None) would be "None") so
+        # optional fields fall through to their config defaults.
+        def _field(key: str) -> str:
+            return str(payload.get(key) or "")
+
         if command == "call":
             record = await self.manager.initiate_call(
-                str(payload.get("to", "")),
+                _field("to") or None,
                 message=payload.get("message"),
                 mode=payload.get("mode"),
             )
             return {"success": True, "call_id": record.call_id}
         if command == "speak":
-            await self.manager.speak(
-                str(payload.get("call_id", "")), str(payload.get("message", ""))
-            )
+            await self.manager.speak(_field("call_id"), _field("message"))
             return {"success": True}
         if command == "continue":
             reply = await self.manager.continue_call(
-                str(payload.get("call_id", "")), str(payload.get("message", ""))
+                _field("call_id"), _field("message")
             )
             return {"success": True, "reply": reply}
         if command == "dtmf":
-            await self.manager.send_dtmf(
-                str(payload.get("call_id", "")), str(payload.get("digits", ""))
-            )
+            await self.manager.send_dtmf(_field("call_id"), _field("digits"))
             return {"success": True}
         if command == "end":
-            await self.manager.end_call(str(payload.get("call_id", "")))
+            await self.manager.end_call(_field("call_id"))
             return {"success": True}
         return {"success": False, "error": f"unknown command {command!r}"}
 

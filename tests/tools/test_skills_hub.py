@@ -1162,9 +1162,9 @@ class TestCheckForSkillUpdates:
         )
         skill_dir = tmp_path / "demo-skill"
         skill_dir.mkdir()
-        (skill_dir / "SKILL.md").write_text("same content")
+        (skill_dir / "SKILL.md").write_bytes(b"same content")
         (skill_dir / "references").mkdir()
-        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+        (skill_dir / "references" / "checklist.md").write_bytes(b"- [ ] security\n")
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
 
@@ -1227,9 +1227,70 @@ class TestCheckForSkillUpdates:
         skill_dir.mkdir()
         (skill_dir / "SKILL.md").write_bytes(b"# Demo Skill\n")
         (skill_dir / "references").mkdir()
-        (skill_dir / "references" / "checklist.md").write_text("- [ ] security\n")
+        (skill_dir / "references" / "checklist.md").write_bytes(b"- [ ] security\n")
 
         assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
+    def test_bundle_content_hash_normalizes_windows_style_keys(self, tmp_path):
+        """Windows-style bundle keys must hash like POSIX paths on disk."""
+        from tools.skills_guard import content_hash
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"# Demo Skill\n",
+                "scripts\\tool.py": b"print('ok')\n",
+            },
+            source="official",
+            identifier="official/demo-skill",
+            trust_level="builtin",
+        )
+        skill_dir = tmp_path / "demo-skill"
+        (skill_dir / "scripts").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_bytes(b"# Demo Skill\n")
+        (skill_dir / "scripts" / "tool.py").write_bytes(b"print('ok')\n")
+
+        assert bundle_content_hash(bundle) == content_hash(skill_dir)
+
+    def test_reports_up_to_date_when_disk_matches_remote_despite_stale_lock(self, tmp_path, monkeypatch):
+        from tools.skills_guard import content_hash
+        import tools.skills_hub as hub
+
+        bundle = SkillBundle(
+            name="demo-skill",
+            files={
+                "SKILL.md": b"# Demo Skill\n",
+                "scripts\\tool.py": b"print('ok')\n",
+            },
+            source="official",
+            identifier="official/demo-skill",
+            trust_level="builtin",
+        )
+        installed_root = tmp_path / "skills"
+        skill_dir = installed_root / "demo-skill"
+        (skill_dir / "scripts").mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_bytes(b"# Demo Skill\n")
+        (skill_dir / "scripts" / "tool.py").write_bytes(b"print('ok')\n")
+        monkeypatch.setattr(hub, "SKILLS_DIR", installed_root)
+
+        lock = MagicMock()
+        lock.list_installed.return_value = [{
+            "name": "demo-skill",
+            "source": "official",
+            "identifier": "official/demo-skill",
+            "content_hash": "sha256:stale-lock",
+            "install_path": "demo-skill",
+        }]
+        source = MagicMock()
+        source.source_id.return_value = "official"
+        source.fetch.return_value = bundle
+
+        results = check_for_skill_updates(lock=lock, sources=[source])
+
+        assert results[0]["status"] == "up_to_date"
+        assert results[0]["current_hash"] == content_hash(skill_dir)
+        assert results[0]["latest_hash"] == bundle_content_hash(bundle)
+        assert results[0]["lock_hash"] == "sha256:stale-lock"
 
     def test_reports_update_when_remote_hash_differs(self):
         lock = MagicMock()
@@ -1677,8 +1738,8 @@ class TestOptionalSkillSourceBinaryAssets:
         (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.wav").write_bytes(
             wav_bytes
         )
-        (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.txt").write_text(
-            "hello\n", encoding="utf-8"
+        (skill_dir / "assets" / "neutts-cli" / "samples" / "jo.txt").write_bytes(
+            b"hello\n"
         )
         pycache_dir = skill_dir / "assets" / "neutts-cli" / "src" / "neutts_cli" / "__pycache__"
         pycache_dir.mkdir(parents=True)

@@ -576,13 +576,17 @@ def _parse_status(porcelain: str) -> tuple[dict[str, str], dict[str, int]]:
             branch["upstream"] = line.split(maxsplit=2)[-1]
         elif line.startswith("# branch.ab"):
             parts = line.split()
-            branch["ahead"], branch["behind"] = parts[2].lstrip("+"), parts[3].lstrip("-")
+            if len(parts) >= 4:
+                branch["ahead"], branch["behind"] = parts[2].lstrip("+"), parts[3].lstrip("-")
         elif line.startswith(("1 ", "2 ")):
-            xy = line.split(maxsplit=2)[1]
-            if xy[0] != ".":
-                counts["staged"] += 1
-            if xy[1] != ".":
-                counts["modified"] += 1
+            parts = line.split(maxsplit=2)
+            if len(parts) >= 2:
+                xy = parts[1]
+                if len(xy) >= 2:
+                    if xy[0] != ".":
+                        counts["staged"] += 1
+                    if xy[1] != ".":
+                        counts["modified"] += 1
         elif line.startswith("u "):
             counts["conflicts"] += 1
         elif line.startswith("? "):

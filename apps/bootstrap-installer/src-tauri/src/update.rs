@@ -26,7 +26,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use tauri::{AppHandle, Emitter};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
@@ -138,6 +138,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
         anyhow!(msg)
     })?;
+    let mut finalize_only_update = false;
     if archive_checkout_without_git(&install_root) {
         if needs_archive_git_checkout_prepare(&install_root, &update_branch) {
             emit_log(
@@ -152,8 +153,10 @@ async fn run_update(app: AppHandle) -> Result<()> {
                 &app,
                 Some("update"),
                 LogStream::Stdout,
-                "[update] archive-created checkout is missing .git; using ZIP update path",
+                "[update] archive-created checkout is missing .git; refreshing archive natively",
             );
+            refresh_archive_checkout_from_source(&app, &install_root, &update_branch).await?;
+            finalize_only_update = true;
         }
     }
 
@@ -196,16 +199,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         &format!("[update] updating against branch {update_branch}"),
     );
     let child_env = update_child_env(&install_root);
-    let mut update_args: Vec<String> = vec!["update".into(), "--yes".into(), "--gateway".into()];
-    // --force skips `hermes update`'s Windows running-exe guard (which would
-    // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
-    // already exited and waited for the venv shim to unlock before launching
-    // us, and wait_for_venv_free below force-kills any straggler — so by the
-    // time `hermes update` runs there is no legitimate hermes.exe to protect,
-    // and the guard would only produce a false "Hermes is still running" stop.
-    update_args.push("--force".into());
-    update_args.push("--branch".into());
-    update_args.push(update_branch);
+    let update_args = update_command_args(&update_branch, finalize_only_update);
 
     emit_stage(&app, "update", StageState::Running, None, None);
     let started = Instant::now();
@@ -657,6 +651,74 @@ fn needs_archive_git_checkout_prepare(install_root: &Path, _update_branch: &str)
         return false;
     }
     !cfg!(target_os = "windows")
+}
+
+fn update_command_args(update_branch: &str, finalize_only: bool) -> Vec<String> {
+    let mut args = vec![
+        "update".to_string(),
+        "--yes".to_string(),
+        "--gateway".to_string(),
+        "--force".to_string(),
+        "--branch".to_string(),
+        update_branch.to_string(),
+    ];
+    if finalize_only {
+        args.push("--finalize-only".to_string());
+    }
+    args
+}
+
+fn archive_refresh_spec(
+    marker: &serde_json::Value,
+    update_branch: &str,
+) -> Result<crate::repo_archive::RepoArchiveSpec> {
+    Ok(crate::repo_archive::RepoArchiveSpec {
+        owner: marker_string(marker, "owner")?,
+        repo: marker_string(marker, "repo")?,
+        commit: None,
+        branch: Some(update_branch.to_string()),
+    })
+}
+
+async fn refresh_archive_checkout_from_source(
+    app: &AppHandle,
+    install_root: &Path,
+    update_branch: &str,
+) -> Result<PathBuf> {
+    let marker = crate::repo_archive::read_archive_source_marker(install_root)?
+        .ok_or_else(|| anyhow!("archive source marker is missing"))?;
+    let spec = archive_refresh_spec(&marker, update_branch)?;
+    let cache_dir = crate::paths::bootstrap_cache_dir();
+    let archive_path = crate::repo_archive::archive_cache_path(&cache_dir, &spec)?;
+    emit_log(
+        app,
+        Some("update"),
+        LogStream::Stdout,
+        &format!(
+            "[update] downloading repository archive from {}",
+            spec.github_zip_url()?
+        ),
+    );
+    crate::artifact::download_to_cache(
+        crate::artifact::DownloadSpec {
+            url: spec.github_zip_url()?,
+            user_agent: "hermes-setup/0.0.1",
+            expected_sha256: None,
+        },
+        &archive_path,
+    )
+    .await
+    .context("downloading repository archive for update")?;
+    emit_log(
+        app,
+        Some("update"),
+        LogStream::Stdout,
+        "[update] applying repository archive refresh",
+    );
+    crate::repo_archive::refresh_existing_checkout_from_archive(&archive_path, install_root)
+        .context("refreshing repository from archive")?;
+    crate::repo_archive::write_archive_source_marker(install_root, &spec, &archive_path, false)?;
+    Ok(archive_path)
 }
 
 fn archive_git_prepare_plan(marker: &serde_json::Value) -> Result<ArchiveGitPreparePlan> {
@@ -1287,6 +1349,25 @@ mod tests {
     }
 
     #[test]
+    fn archive_refresh_spec_uses_marker_repo_and_update_branch() {
+        let marker = serde_json::json!({
+            "schemaVersion": 1,
+            "method": "github_archive",
+            "owner": "NiceBlueChai",
+            "repo": "hermes-agent",
+            "ref": "old-commit",
+            "branch": "old-branch",
+        });
+
+        let spec = archive_refresh_spec(&marker, "feature/rust-release").unwrap();
+
+        assert_eq!(spec.owner, "NiceBlueChai");
+        assert_eq!(spec.repo, "hermes-agent");
+        assert_eq!(spec.commit, None);
+        assert_eq!(spec.branch, Some("feature/rust-release".to_string()));
+    }
+
+    #[test]
     fn archive_git_prepare_commands_fetch_and_reset_archive_ref() {
         let plan = ArchiveGitPreparePlan {
             remote_url: "https://github.com/NiceBlueChai/hermes-agent.git".into(),
@@ -1336,6 +1417,22 @@ mod tests {
         } else {
             assert_eq!(candidates, vec![PathBuf::from("git")]);
         }
+    }
+
+    #[test]
+    fn update_command_args_can_request_finalize_only() {
+        assert_eq!(
+            update_command_args("feature/rust-release", true),
+            vec![
+                "update",
+                "--yes",
+                "--gateway",
+                "--force",
+                "--branch",
+                "feature/rust-release",
+                "--finalize-only",
+            ]
+        );
     }
 
     // Helpers for the swap tests: make a throwaway dir tree we can rename.

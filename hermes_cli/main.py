@@ -5666,6 +5666,103 @@ def _kill_stale_dashboard_processes(
 _warn_stale_dashboard_processes = _kill_stale_dashboard_processes
 
 
+def _finalize_updated_checkout(args):
+    """Run dependency, cache, and skill refresh steps after source files changed."""
+    # Clear stale bytecode after the checkout has changed.
+    removed = _clear_bytecode_cache(PROJECT_ROOT)
+    if removed:
+        print(
+            f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
+        )
+
+    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
+    # breaks on this machine, keep base deps and reinstall the remaining extras
+    # individually so update does not silently strip working capabilities.
+    print("→ Updating Python dependencies...")
+
+    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
+
+    # Keep managed uv current — runs `uv self update` if we already have one.
+    update_managed_uv()
+
+    uv_bin = ensure_uv()
+
+    pip_cmd = [sys.executable, "-m", "pip"]
+    if not uv_bin:
+        uv_bin = _ensure_uv_for_termux(pip_cmd)
+    if uv_bin:
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        if _is_termux_env(uv_env):
+            uv_env.pop("PYTHONPATH", None)
+            uv_env.pop("PYTHONHOME", None)
+        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
+    else:
+        # Use sys.executable to explicitly call the venv's pip module,
+        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
+        # Some environments lose pip inside the venv; bootstrap it back with
+        # ensurepip before trying the editable install.
+        try:
+            subprocess.run(
+                pip_cmd + ["--version"],
+                cwd=PROJECT_ROOT,
+                check=True,
+                capture_output=True,
+            )
+        except subprocess.CalledProcessError:
+            subprocess.run(
+                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
+                cwd=PROJECT_ROOT,
+                check=True,
+            )
+        _install_python_dependencies_with_optional_fallback(pip_cmd)
+
+    _update_node_dependencies()
+    _build_web_ui(PROJECT_ROOT / "web")
+
+    # Sync skills.
+    try:
+        from tools.skills_sync import sync_skills
+
+        print("→ Syncing bundled skills...")
+        result = sync_skills(quiet=True)
+        if result["copied"]:
+            print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
+        if result.get("updated"):
+            print(
+                f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
+            )
+        if result.get("user_modified"):
+            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
+        if result.get("cleaned"):
+            print(f"  − {len(result['cleaned'])} removed from manifest")
+        if not result["copied"] and not result.get("updated"):
+            print("  ✓ Skills are up to date")
+    except Exception:
+        pass
+
+    # Seed the model-catalog disk cache from the freshly-updated checkout.
+    # Non-fatal: the normal network refresh still applies later.
+    try:
+        from hermes_cli.model_catalog import seed_cache_from_checkout
+
+        if seed_cache_from_checkout(PROJECT_ROOT):
+            print("  ✓ Model catalog cache refreshed from checkout")
+    except Exception as e:
+        logger.debug("Model catalog seed during update finalization failed: %s", e)
+
+    print()
+    print("✓ Update complete!")
+    try:
+        _print_curator_first_run_notice()
+    except Exception as e:
+        logger.debug("Curator first-run notice failed: %s", e)
+    try:
+        _print_curator_recent_run_notice()
+    except Exception as e:
+        logger.debug("Curator recent-run notice failed: %s", e)
+    _kill_stale_dashboard_processes()
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -5754,99 +5851,7 @@ def _update_via_zip(args):
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
 
-    # Clear stale bytecode after ZIP extraction
-    removed = _clear_bytecode_cache(PROJECT_ROOT)
-    if removed:
-        print(
-            f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
-        )
-
-    # Reinstall Python dependencies. Prefer .[all], but if one optional extra
-    # breaks on this machine, keep base deps and reinstall the remaining extras
-    # individually so update does not silently strip working capabilities.
-    print("→ Updating Python dependencies...")
-
-    from hermes_cli.managed_uv import ensure_uv, update_managed_uv
-
-    # Keep managed uv current — runs `uv self update` if we already have one.
-    update_managed_uv()
-
-    uv_bin = ensure_uv()
-
-    pip_cmd = [sys.executable, "-m", "pip"]
-    if not uv_bin:
-        uv_bin = _ensure_uv_for_termux(pip_cmd)
-    if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
-        if _is_termux_env(uv_env):
-            uv_env.pop("PYTHONPATH", None)
-            uv_env.pop("PYTHONHOME", None)
-        _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
-    else:
-        # Use sys.executable to explicitly call the venv's pip module,
-        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu.
-        # Some environments lose pip inside the venv; bootstrap it back with
-        # ensurepip before trying the editable install.
-        try:
-            subprocess.run(
-                pip_cmd + ["--version"],
-                cwd=PROJECT_ROOT,
-                check=True,
-                capture_output=True,
-            )
-        except subprocess.CalledProcessError:
-            subprocess.run(
-                [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
-                cwd=PROJECT_ROOT,
-                check=True,
-            )
-        _install_python_dependencies_with_optional_fallback(pip_cmd)
-
-    _update_node_dependencies()
-    _build_web_ui(PROJECT_ROOT / "web")
-
-    # Sync skills
-    try:
-        from tools.skills_sync import sync_skills
-
-        print("→ Syncing bundled skills...")
-        result = sync_skills(quiet=True)
-        if result["copied"]:
-            print(f"  + {len(result['copied'])} new: {', '.join(result['copied'])}")
-        if result.get("updated"):
-            print(
-                f"  ↑ {len(result['updated'])} updated: {', '.join(result['updated'])}"
-            )
-        if result.get("user_modified"):
-            print(f"  ~ {len(result['user_modified'])} user-modified (kept)")
-        if result.get("cleaned"):
-            print(f"  − {len(result['cleaned'])} removed from manifest")
-        if not result["copied"] and not result.get("updated"):
-            print("  ✓ Skills are up to date")
-    except Exception:
-        pass
-
-    # Seed the model-catalog disk cache from the freshly-unpacked checkout
-    # (same rationale as the git-pull path in _cmd_update_impl). Non-fatal.
-    try:
-        from hermes_cli.model_catalog import seed_cache_from_checkout
-
-        if seed_cache_from_checkout(PROJECT_ROOT):
-            print("  ✓ Model catalog cache refreshed from checkout")
-    except Exception as e:
-        logger.debug("Model catalog seed during zip update failed: %s", e)
-
-    print()
-    print("✓ Update complete!")
-    try:
-        _print_curator_first_run_notice()
-    except Exception as e:
-        logger.debug("Curator first-run notice failed: %s", e)
-    try:
-        _print_curator_recent_run_notice()
-    except Exception as e:
-        logger.debug("Curator recent-run notice failed: %s", e)
-    _kill_stale_dashboard_processes()
+    _finalize_updated_checkout(args)
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -8112,6 +8117,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     print("⚕ Updating Hermes Agent...")
     print()
+
+    if getattr(args, "finalize_only", False):
+        _finalize_updated_checkout(args)
+        return
 
     # On Windows, abort early if another hermes.exe is holding the venv shim
     # open. Continuing would result in a string of WinError 32 warnings and

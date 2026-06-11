@@ -805,6 +805,32 @@ class TestCmdUpdateZipBranchFallback:
         assert (fake_root / "README.md").read_text() == "branch ok\n"
 
 
+class TestCmdUpdateFinalizeOnly:
+    """Internal update finalization skips code transport after Rust refreshes the checkout."""
+
+    def test_finalize_only_skips_git_and_zip_code_update(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        fake_root = tmp_path / "install_dir"
+        fake_root.mkdir()
+        calls = []
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", fake_root)
+        monkeypatch.setattr(hm, "_is_windows", lambda: False)
+        monkeypatch.setattr(hm, "_run_pre_update_backup", lambda args: calls.append("backup"))
+        monkeypatch.setattr(hm, "_finalize_updated_checkout", lambda args: calls.append("finalize"))
+        monkeypatch.setattr(hm, "_update_via_zip", lambda args: calls.append("zip"))
+        monkeypatch.setattr(
+            hm.subprocess,
+            "run",
+            lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("git should not run")),
+        )
+
+        hm._cmd_update_impl(SimpleNamespace(finalize_only=True, yes=True), gateway_mode=False)
+
+        assert calls == ["finalize"]
+
+
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm
 

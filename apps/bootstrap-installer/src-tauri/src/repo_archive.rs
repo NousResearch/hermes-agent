@@ -155,6 +155,57 @@ pub fn extract_repo_archive_to_install_root(archive_path: &Path, install_root: &
     cleanup
 }
 
+/// Refresh an existing archive-created checkout from a GitHub repository ZIP.
+///
+/// This mirrors the legacy Python ZIP update contract: replace repository
+/// files from the archive, but preserve runtime/user state that does not belong
+/// to the source archive.
+pub fn refresh_existing_checkout_from_archive(archive_path: &Path, install_root: &Path) -> Result<()> {
+    if !install_root.is_dir() {
+        return Err(anyhow!(
+            "install root does not exist: {}",
+            install_root.display()
+        ));
+    }
+
+    let tmp_dir = archive_tmp_dir(install_root);
+    remove_dir_if_exists(&tmp_dir)?;
+    std::fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("creating archive temp dir {}", tmp_dir.display()))?;
+
+    let result: Result<()> = (|| {
+        crate::artifact::extract_zip_archive(archive_path, &tmp_dir)?;
+        let archive_root = single_top_level_dir(&tmp_dir)?;
+        for entry in std::fs::read_dir(&archive_root)
+            .with_context(|| format!("reading archive root {}", archive_root.display()))?
+        {
+            let entry = entry.with_context(|| format!("reading entry under {}", archive_root.display()))?;
+            let name = entry.file_name();
+            if should_preserve_refresh_entry(&name) {
+                continue;
+            }
+            let source = entry.path();
+            let dest = install_root.join(&name);
+            remove_path_if_exists(&dest)?;
+            std::fs::rename(&source, &dest).with_context(|| {
+                format!("moving refreshed repo entry {} to {}", source.display(), dest.display())
+            })?;
+        }
+        Ok(())
+    })();
+
+    let cleanup = remove_dir_if_exists(&tmp_dir);
+    result?;
+    cleanup
+}
+
+fn should_preserve_refresh_entry(name: &std::ffi::OsStr) -> bool {
+    matches!(
+        name.to_str(),
+        Some("venv" | "node_modules" | ".git" | ".env" | SOURCE_MARKER_NAME)
+    )
+}
+
 fn archive_tmp_dir(install_root: &Path) -> PathBuf {
     let name = install_root
         .file_name()
@@ -318,6 +369,66 @@ mod tests {
         let bytes = std::fs::read(install_root.join(SOURCE_MARKER_NAME)).unwrap();
         assert!(!bytes.starts_with(&[0xef, 0xbb, 0xbf]));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn archive_refresh_replaces_repo_files_and_preserves_runtime_state() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-repo-archive-refresh-{}",
+            std::process::id()
+        ));
+        let archive = root.join("repo.zip");
+        let install_root = root.join("hermes-agent");
+        std::fs::create_dir_all(install_root.join("scripts")).unwrap();
+        std::fs::create_dir_all(install_root.join("venv")).unwrap();
+        std::fs::create_dir_all(install_root.join("node_modules")).unwrap();
+        std::fs::write(install_root.join("README.md"), b"old").unwrap();
+        std::fs::write(install_root.join("scripts").join("install.ps1"), b"old script").unwrap();
+        std::fs::write(install_root.join("venv").join("pyvenv.cfg"), b"keep venv").unwrap();
+        std::fs::write(install_root.join("node_modules").join("cache.txt"), b"keep node").unwrap();
+        std::fs::write(install_root.join(".env"), b"keep env").unwrap();
+        std::fs::write(install_root.join(SOURCE_MARKER_NAME), b"keep marker").unwrap();
+        write_test_zip(
+            &archive,
+            &[
+                ("hermes-agent-main/README.md", b"new"),
+                ("hermes-agent-main/scripts/install.ps1", b"new script"),
+                ("hermes-agent-main/venv/pyvenv.cfg", b"archive venv"),
+            ],
+        );
+
+        refresh_existing_checkout_from_archive(&archive, &install_root).unwrap();
+
+        assert_eq!(std::fs::read(install_root.join("README.md")).unwrap(), b"new");
+        assert_eq!(
+            std::fs::read(install_root.join("scripts").join("install.ps1")).unwrap(),
+            b"new script"
+        );
+        assert_eq!(
+            std::fs::read(install_root.join("venv").join("pyvenv.cfg")).unwrap(),
+            b"keep venv"
+        );
+        assert_eq!(
+            std::fs::read(install_root.join("node_modules").join("cache.txt")).unwrap(),
+            b"keep node"
+        );
+        assert_eq!(std::fs::read(install_root.join(".env")).unwrap(), b"keep env");
+        assert_eq!(
+            std::fs::read(install_root.join(SOURCE_MARKER_NAME)).unwrap(),
+            b"keep marker"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<()> {
+    if path.is_dir() {
+        return remove_dir_if_exists(path);
+    }
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(err).with_context(|| format!("removing {}", path.display())),
     }
 }
 

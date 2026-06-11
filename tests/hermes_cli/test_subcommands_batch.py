@@ -93,5 +93,17 @@ def test_dashboard_builder_two_handlers():
     build_dashboard_parser(sub, cmd_dashboard=dash, cmd_dashboard_register=reg)
     # bare dashboard -> launch handler
     assert parser.parse_args(["dashboard"]).func is dash
+
+
+def test_update_parser_accepts_internal_finalize_only_flag():
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    handler = _h("update")
+    build_update_parser(sub, cmd_update=handler)
+
+    ns = parser.parse_args(["update", "--finalize-only"])
+
+    assert ns.func is handler
+    assert ns.finalize_only is True
     # dashboard register -> register handler
     assert parser.parse_args(["dashboard", "register"]).func is reg

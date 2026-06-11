@@ -143,7 +143,7 @@ def _env_enablement() -> Optional[dict]:
     project_id, project_secret = load_project_credentials()
     if not (project_id and project_secret):
         return None
-    seed = {"project_id": project_id, "project_secret": project_secret}
+    seed: dict = {"project_id": project_id, "project_secret": project_secret}
     home = os.getenv("PHOTON_HOME_CHANNEL", "").strip()
     if home:
         seed["home_channel"] = {
@@ -648,7 +648,7 @@ class PhotonAdapter(BasePlatformAdapter):
     @staticmethod
     def _pid_alive(pid: int) -> bool:
         try:
-            os.kill(pid, 0)
+            os.kill(pid, 0)  # windows-footgun: ok — only called from _reap_stale_sidecar which win32-guards early
             return True
         except OSError:
             return False
@@ -698,7 +698,7 @@ class PhotonAdapter(BasePlatformAdapter):
         for pid in stale:
             if self._pid_alive(pid):
                 try:
-                    os.kill(pid, signal.SIGKILL)
+                    os.kill(pid, signal.SIGKILL)  # windows-footgun: ok — unreachable on win32 (early return above)
                 except OSError:
                     pass
         # Give the OS a beat to release the listening socket.

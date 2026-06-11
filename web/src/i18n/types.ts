@@ -110,6 +110,10 @@ export interface Translations {
     statusOverview: string;
     system: string;
     webUi: string;
+    /** Optional — fall back to English literals until translated. */
+    managingProfile?: string;
+    currentProfileOption?: string;
+    managingProfileBanner?: string;
   };
 
   // ── Status page ──

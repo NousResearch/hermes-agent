@@ -75,7 +75,10 @@ AUTHOR_MAP = {
     "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "dirtyren@users.noreply.github.com": "dirtyren",
+    "mvanhorn@MacBook-Pro.local": "mvanhorn",
+    "470766206@qq.com": "youjunxiaji",
     "mharris@parallel.ai": "NormallyGaussian",
+    "roger@roger.local": "mollusk",
     "ted.malone@outlook.com": "temalo",
     "adityamalik2833@gmail.com": "alarcritty",
     "islam666@users.noreply.github.com": "islam666",
@@ -1513,6 +1516,7 @@ AUTHOR_MAP = {
     "josephjohnson.joel@gmail.com": "JoelJJohnson",  # PR #39913 salvage (Windows ConPTY dashboard chat bridge)
     "andreas@schwarz-ketsch.de": "Nea74",  # PR #40022 co-author credit (same Windows ConPTY bridge design)
     "chanhokyim@gmail.com": "joel611",  # PR #33958 salvage (DISCORD_ALLOWED_ROLES role_authorized gateway flag)
+    "desg38@gmail.com": "dschnurbusch",  # PR #42373 salvage (archive compressed conversation lineages)
 }
 
 

@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # Directory names to skip entirely (matched against each path component)
+# ``hermes-agent`` is special-cased to root level only in ``_should_exclude``
+# so that skill directories like ``skills/autonomous-ai-agents/hermes-agent/``
+# are not accidentally excluded.
 _EXCLUDED_DIRS = {
     "hermes-agent",     # the codebase repo — re-clone instead
     "__pycache__",      # bytecode caches — regenerated on import
@@ -69,10 +72,15 @@ def _should_exclude(rel_path: Path) -> bool:
     """Return True if *rel_path* (relative to hermes root) should be skipped."""
     parts = rel_path.parts
 
-    # Any path component matches an excluded dir name
     for part in parts:
-        if part in _EXCLUDED_DIRS:
-            return True
+        if part not in _EXCLUDED_DIRS:
+            continue
+        # ``hermes-agent`` only matches at the root level (first component).
+        # Nested directories with the same name — e.g.
+        # ``skills/autonomous-ai-agents/hermes-agent/`` — must be preserved.
+        if part == "hermes-agent" and part != parts[0]:
+            continue
+        return True
 
     name = rel_path.name
 
@@ -177,10 +185,13 @@ def run_backup(args) -> None:
         rel_dir = dp.relative_to(hermes_root)
 
         # Prune excluded directories in-place so os.walk doesn't descend
+        # ``hermes-agent`` is only pruned at the root level; nested dirs
+        # with the same name (e.g. in skills/) must be preserved.
+        is_root = rel_dir == Path(".")
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS
+            if d not in _EXCLUDED_DIRS or (d == "hermes-agent" and not is_root)
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -211,7 +222,13 @@ def run_backup(args) -> None:
             try:
                 # Safe copy for SQLite databases (handles WAL mode)
                 if abs_path.suffix == ".db":
-                    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                    # Stage the snapshot alongside the output zip so that the
+                    # temp file lives on the same filesystem.  The system
+                    # default (/tmp) may be a small tmpfs that cannot hold
+                    # large databases, causing silent backup incompleteness.
+                    with tempfile.NamedTemporaryFile(
+                        suffix=".db", delete=False, dir=str(out_path.parent)
+                    ) as tmp:
                         tmp_db = Path(tmp.name)
                     if _safe_copy_db(abs_path, tmp_db):
                         zf.write(tmp_db, arcname=str(rel_path))
@@ -853,7 +870,13 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
             for abs_path, rel_path in files_to_add:
                 try:
                     if abs_path.suffix == ".db":
-                        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                        # Stage the snapshot alongside the output zip so that the
+                        # temp file lives on the same filesystem.  The system
+                        # default (/tmp) may be a small tmpfs that cannot hold
+                        # large databases, causing silent backup incompleteness.
+                        with tempfile.NamedTemporaryFile(
+                            suffix=".db", delete=False, dir=str(out_path.parent)
+                        ) as tmp:
                             tmp_db = Path(tmp.name)
                         try:
                             if _safe_copy_db(abs_path, tmp_db):

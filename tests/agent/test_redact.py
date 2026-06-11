@@ -588,6 +588,70 @@ class TestWebUrlsNotRedacted:
         assert "dbpass" not in result
 
 
+class TestDbConnstrDialectDriver:
+    """SQLAlchemy-style dialect+driver connection strings (#43666)."""
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "postgresql+psycopg://postgres:s3cretpw@127.0.0.1:5432/postgres",
+            "postgresql+asyncpg://postgres:s3cretpw@db/app",
+            "mysql+pymysql://root:s3cretpw@db:3306/app",
+            "mariadb+mariadbconnector://u:s3cretpw@h/db",
+            "mssql+pyodbc://sa:s3cretpw@h/db",
+            "mongodb+srv://u:s3cretpw@cluster0.mongodb.net/db",
+            "rediss://default:s3cretpw@h:6380/0",
+            "amqps://guest:s3cretpw@h:5671/",
+        ],
+    )
+    def test_dialect_driver_password_redacted(self, text):
+        result = redact_sensitive_text(text)
+        assert "s3cretpw" not in result
+        assert ":***@" in result
+
+    def test_env_assignment_value_redacted(self):
+        text = "DATABASE_URL=postgresql+psycopg://postgres:s3cretpw@127.0.0.1:5432/postgres"
+        result = redact_sensitive_text(text)
+        assert "s3cretpw" not in result
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "redis://:s3cretpw@h:6379/0",
+            "rediss://:s3cretpw@h:6380/0",
+            "amqp://:s3cretpw@h:5672/",
+            "postgresql://:s3cretpw@h/db",
+        ],
+    )
+    def test_empty_username_password_redacted(self, text):
+        result = redact_sensitive_text(text)
+        assert "s3cretpw" not in result
+        assert "://:***@" in result
+
+    def test_connstr_without_password_unchanged(self):
+        text = "postgresql+psycopg://host.example.com:5432/db"
+        assert redact_sensitive_text(text) == text
+
+    def test_connstr_host_port_no_userinfo_unchanged(self):
+        text = "redis://h:6379/0"
+        assert redact_sensitive_text(text) == text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "postgresql://host:5432/db/user@example.com",
+            "postgresql://host:5432/db?email=user@example.com",
+            "postgresql://host:5432/db#user@example.com",
+        ],
+    )
+    def test_connstr_host_port_with_later_at_unchanged(self, text):
+        assert redact_sensitive_text(text) == text
+
+    def test_https_userinfo_carveout_preserved(self):
+        text = "URL: https://user:opaqueToken@host.example.com/path"
+        assert redact_sensitive_text(text) == text
+
+
 class TestBareTokenUserinfoRedaction:
     """Regression tests for #6396 — a bare credential in URL userinfo
     (``scheme://TOKEN@host``, no ``user:pass`` colon) is redacted. This is the
@@ -854,10 +918,18 @@ class TestDbConnstrCodeOutput:
     def test_literal_connstr_redacted_all_schemes(self):
         for scheme, secret in [
             ("postgres", "pgsecret1234"),
+            ("postgresql+psycopg", "pgdriversecret88"),
             ("mysql", "mysqlsecret99"),
+            ("mysql+pymysql", "mysqldriversecret44"),
+            ("mariadb", "mariadbsecret44"),
+            ("mssql+pyodbc", "mssqlsecret55"),
+            ("oracle", "oraclesecret66"),
+            ("clickhouse", "clickhousesecret77"),
             ("redis", "redissecret77"),
+            ("rediss", "redisssecret88"),
             ("mongodb+srv", "mongosecret55"),
             ("amqp", "amqpsecret33"),
+            ("amqps", "amqpssecret44"),
         ]:
             text = f"{scheme}://user:{secret}@host:1234/db"
             result = redact_sensitive_text(text, code_file=True, force=True)

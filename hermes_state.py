@@ -2744,6 +2744,57 @@ class SessionDB:
                 current = child_id
         return session_id
 
+    def resolve_compression_continuation_session_id(self, session_id: str) -> str:
+        """Follow compression-created descendants to the current live session.
+
+        Compression ends the current session with ``end_reason='compression'``
+        and creates a child continuation session. Stateless API clients may
+        keep resubmitting the original id, so callers that want "continue this
+        conversation" semantics need to walk that chain forward before loading
+        history or appending new messages.
+
+        Only sessions ended by compression are followed. Other lineage shapes
+        such as explicit forks or branches keep their original ids so callers
+        do not silently hop across intentional conversation splits.
+        """
+        if not session_id:
+            return session_id
+
+        with self._lock:
+            current = session_id
+            seen = {current}
+            for _ in range(32):
+                try:
+                    row = self._conn.execute(
+                        "SELECT end_reason FROM sessions WHERE id = ?",
+                        (current,),
+                    ).fetchone()
+                except Exception:
+                    return session_id
+                if row is None:
+                    return session_id
+                end_reason = row["end_reason"] if hasattr(row, "keys") else row[0]
+                if end_reason != "compression":
+                    return current
+                try:
+                    child_row = self._conn.execute(
+                        "SELECT id FROM sessions "
+                        "WHERE parent_session_id = ? "
+                        "ORDER BY started_at DESC, id DESC LIMIT 1",
+                        (current,),
+                    ).fetchone()
+                except Exception:
+                    return session_id
+                if child_row is None:
+                    return current
+                child_id = child_row["id"] if hasattr(child_row, "keys") else child_row[0]
+                if not child_id or child_id in seen:
+                    return current
+                seen.add(child_id)
+                current = child_id
+
+        return session_id
+
     def get_messages_as_conversation(
         self,
         session_id: str,

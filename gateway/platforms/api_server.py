@@ -1353,6 +1353,19 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning("Failed to load session history for %s: %s", session_id, exc)
             return []
 
+    def _resolve_continuation_session_id(self, session_id: Optional[str]) -> Optional[str]:
+        """Map a stale compression parent id to the current continuation session."""
+        if not session_id:
+            return session_id
+        db = self._ensure_session_db()
+        if db is None:
+            return session_id
+        try:
+            return db.resolve_compression_continuation_session_id(session_id)
+        except Exception as exc:
+            logger.warning("Failed to resolve continuation session for %s: %s", session_id, exc)
+            return session_id
+
     async def _handle_list_sessions(self, request: "web.Request") -> "web.Response":
         """GET /api/sessions — list persisted Hermes sessions."""
         auth_err = self._check_auth(request)
@@ -1547,6 +1560,7 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        session_id = self._resolve_continuation_session_id(session_id)
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1591,6 +1605,7 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        session_id = self._resolve_continuation_session_id(session_id)
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1817,6 +1832,7 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 db = self._ensure_session_db()
                 if db is not None:
+                    session_id = self._resolve_continuation_session_id(session_id)
                     history = db.get_messages_as_conversation(session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
@@ -2897,7 +2913,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.
-        session_id = stored_session_id or str(uuid.uuid4())
+        session_id = self._resolve_continuation_session_id(stored_session_id) if stored_session_id else str(uuid.uuid4())
 
         stream = _coerce_request_bool(body.get("stream"), default=False)
         if stream:
@@ -3051,20 +3067,18 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
-        # Store the complete response object for future chaining / GET retrieval
+        effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
         if store:
             self._response_store.put(response_id, {
                 "response": response_data,
                 "conversation_history": full_history,
                 "instructions": instructions,
-                "session_id": session_id,
+                "session_id": effective_session_id,
             })
-            # Update conversation mapping so the next request with the same
-            # conversation name automatically chains to this response
             if conversation:
                 self._response_store.set_conversation(conversation, response_id)
 
-        response_headers = {"X-Hermes-Session-Id": session_id}
+        response_headers = {"X-Hermes-Session-Id": effective_session_id}
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)
@@ -3701,7 +3715,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         run_id = f"run_{uuid.uuid4().hex}"
-        session_id = body.get("session_id") or stored_session_id or run_id
+        requested_session_id = body.get("session_id") or stored_session_id or run_id
+        session_id = self._resolve_continuation_session_id(requested_session_id)
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
@@ -3833,18 +3848,21 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
                     q.put_nowait({
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
                         "usage": usage,
+                        "session_id": effective_session_id,
                     })
                     self._set_run_status(
                         run_id,
                         "completed",
                         output=final_response,
                         usage=usage,
+                        session_id=effective_session_id,
                         last_event="run.completed",
                     )
             except asyncio.CancelledError:

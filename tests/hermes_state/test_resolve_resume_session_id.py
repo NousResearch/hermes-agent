@@ -94,3 +94,29 @@ def test_prefers_most_recent_child_when_fork_exists(db):
     ])
     db.append_message("newer_fork", role="user", content="x")
     assert db.resolve_resume_session_id("parent") == "newer_fork"
+
+
+def test_resolve_compression_continuation_walks_to_live_descendant(db):
+    _make_chain(db, [
+        ("root", None),
+        ("child", "root"),
+        ("grandchild", "child"),
+    ])
+    db.append_message("root", role="user", content="before compression")
+    db.append_message("child", role="assistant", content="compressed summary")
+    db.append_message("grandchild", role="user", content="latest turn")
+    db.end_session("root", "compression")
+    db.end_session("child", "compression")
+
+    assert db.resolve_compression_continuation_session_id("root") == "grandchild"
+    assert db.resolve_compression_continuation_session_id("child") == "grandchild"
+
+
+def test_resolve_compression_continuation_does_not_cross_branch_session(db):
+    _make_chain(db, [
+        ("root", None),
+        ("forked", "root"),
+    ])
+    db.end_session("root", "branched")
+
+    assert db.resolve_compression_continuation_session_id("root") == "root"

@@ -34,6 +34,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from hermes_state import SessionDB
 
 
 # ---------------------------------------------------------------------------
@@ -3306,6 +3307,37 @@ class TestSessionIdHeader:
             # History must come from DB, not from the request body
             assert call_kwargs["conversation_history"] == db_history
             assert call_kwargs["user_message"] == "new question"
+
+    @pytest.mark.asyncio
+    async def test_provided_session_id_resolves_compression_child_before_turn(self, auth_adapter, tmp_path):
+        """A stale compression parent should continue on the live child session."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session("parent", source="api_server")
+        db.append_message("parent", role="user", content="before compression")
+        db.end_session("parent", "compression")
+        db.create_session("child", source="api_server", parent_session_id="parent")
+        db.append_message("child", role="assistant", content="compressed summary")
+
+        auth_adapter._session_db = db
+        mock_result = {"final_response": "Still here", "messages": [], "api_calls": 1, "session_id": "child"}
+        request = MagicMock()
+        request.headers = {"X-Hermes-Session-Id": "parent", "Authorization": "Bearer sk-secret"}
+        request.json = AsyncMock(return_value={
+            "model": "hermes-agent",
+            "messages": [{"role": "user", "content": "Continue"}],
+        })
+
+        with patch.object(auth_adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+            mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+            resp = await auth_adapter._handle_chat_completions(request)
+
+        assert resp.status == 200
+        assert resp.headers.get("X-Hermes-Session-Id") == "child"
+        call_kwargs = mock_run.call_args.kwargs
+        assert call_kwargs["session_id"] == "child"
+        assert call_kwargs["conversation_history"] == [
+            {"role": "assistant", "content": "compressed summary"},
+        ]
 
     @pytest.mark.asyncio
     async def test_db_failure_falls_back_to_empty_history(self, auth_adapter):

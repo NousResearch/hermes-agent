@@ -21,11 +21,10 @@ import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } f
 import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { t } from '@/store/i18n'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
-import { useLocaleSync } from '@/store/use-locale-sync'
 
+import { PendingToolApproval } from './tool-approval'
 import {
   buildToolView,
   cleanVisibleText,
@@ -195,8 +194,8 @@ function useDisclosureOpen(disclosureId: string, fallbackOpen = false): boolean 
 }
 
 function ToolEntry({ part }: ToolEntryProps) {
-  useLocaleSync()
-
+  const { t } = useI18n()
+  const copy = t.assistant.tool
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
@@ -321,6 +320,7 @@ function ToolEntry({ part }: ToolEntryProps) {
           </span>
         </DisclosureRow>
       </div>
+      {isPending && <PendingToolApproval part={part} />}
       {open && (
         <div className="grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
           {!embedded && view.previewTarget && isPreviewableTarget(view.previewTarget) && (
@@ -399,7 +399,7 @@ function ToolEntry({ part }: ToolEntryProps) {
             ))}
           {showRawSearchDrilldown && (
             <details className="max-w-full">
-              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'cursor-pointer mb-0')}>{t('tool.rawResponse')}</summary>
+              <summary className={cn(TOOL_SECTION_LABEL_CLASS, 'mb-0')}>{copy.rawResponse}</summary>
               <pre className={cn(TOOL_SECTION_PRE_CLASS, 'mt-1 whitespace-pre-wrap wrap-anywhere')}>
                 {view.rawResult}
               </pre>
@@ -438,52 +438,7 @@ export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex:
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
-
-  // Pull the visible tool parts in this range. `useShallow` makes this
-  // re-render only when the actual part references change (assistant-ui
-  // gives stable refs for unchanged parts), not on every text/reasoning
-  // delta elsewhere in the message.
-  const visibleParts = useAuiState(
-    useShallow((s: { message: { parts: readonly unknown[] } }) =>
-      s.message.parts.slice(startIndex, endIndex + 1).filter((p): p is ToolPart => {
-        if (!p || typeof p !== 'object') {
-          return false
-        }
-
-        const row = p as { toolName?: unknown; type?: unknown }
-
-        return row.type === 'tool-call' && typeof row.toolName === 'string' && !SPECIAL_TOOL_NAMES.has(row.toolName)
-      })
-    )
-  )
-
-  const isGroup = visibleParts.length > 1
-  const isRunning = messageRunning && visibleParts.some(p => p.result === undefined)
-  // Stable across the group's lifetime (start index doesn't shift when
-  // tools append to the end), so user-driven open/close persists across
-  // streaming.
-  const disclosureId = `tool-group:${messageId}:${startIndex}`
-  const open = useDisclosureOpen(disclosureId)
-  const enterRef = useEnterAnimation(messageRunning, disclosureId)
-
-  const status = groupStatus(visibleParts)
-  const displayStatus = !isRunning && status === 'running' ? 'success' : status
-  const failedStepCount = useMemo(() => groupFailedStepCount(visibleParts), [visibleParts])
-  const totalDurationLabel = useMemo(() => groupTotalDurationLabel(visibleParts), [visibleParts])
-
-  const statusSummary =
-    displayStatus === 'running' || failedStepCount === 0
-      ? ''
-      : displayStatus === 'warning'
-        ? failedStepCount === 1
-          ? 'Recovered after 1 failed step'
-          : `Recovered after ${failedStepCount} failed steps`
-        : failedStepCount === 1
-          ? '1 step failed'
-          : `${failedStepCount} steps failed`
-
-  const groupCopyText = useMemo(() => buildGroupCopyText(visibleParts), [visibleParts])
-  const previewTargets = useMemo(() => groupPreviewTargets(visibleParts), [visibleParts])
+  const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)
 
   return (
     <ToolEmbedContext.Provider value={false}>

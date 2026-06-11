@@ -388,7 +388,7 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
 // duplicating provider UI. Sets manual=true so the overlay shows the picker
 // even though configured===true, and refreshes the provider list.
-export function startManualOnboarding(reason: null | string = 'Add or switch inference provider.') {
+export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONBOARDING_REASON) {
   patch({
     manual: true,
     requested: true,

@@ -6,8 +6,6 @@ import * as React from 'react'
 import { Codicon } from '@/components/ui/codicon'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
-import { t } from '@/store/i18n'
-import { useLocaleSync } from '@/store/use-locale-sync'
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />
@@ -48,7 +46,7 @@ function SheetContent({
   side?: 'top' | 'right' | 'bottom' | 'left'
   showCloseButton?: boolean
 }) {
-  useLocaleSync()
+  const { t } = useI18n()
 
   return (
     <SheetPortal>
@@ -76,7 +74,7 @@ function SheetContent({
             className="absolute top-3 right-3 rounded-md p-1 text-(--ui-text-tertiary) opacity-70 ring-offset-background transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground hover:opacity-100 focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:outline-hidden disabled:pointer-events-none data-[state=open]:bg-secondary"
           >
             <Codicon name="close" size="1rem" />
-            <span className="sr-only">{t('common.close')}</span>
+            <span className="sr-only">{t.common.close}</span>
           </SheetPrimitive.Close>
         )}
       </SheetPrimitive.Content>

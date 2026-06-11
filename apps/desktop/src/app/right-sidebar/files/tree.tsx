@@ -123,7 +123,9 @@ export function ProjectTree({
 }
 
 function TreeSizingState() {
-  return <PageLoader aria-label="Loading files" className="min-h-24 px-3" />
+  const { t } = useI18n()
+
+  return <PageLoader aria-label={t.rightSidebar.loadingFiles} className="min-h-24 px-3" />
 }
 
 function ProjectTreeRow({

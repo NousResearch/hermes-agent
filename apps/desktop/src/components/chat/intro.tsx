@@ -1,8 +1,5 @@
 import { type CSSProperties, useState } from 'react'
 
-import { t } from '@/store/i18n'
-import { useLocaleSync } from '@/store/use-locale-sync'
-
 import introCopyJsonl from './intro-copy.jsonl?raw'
 
 type IntroCopy = {
@@ -145,6 +142,8 @@ function pickCopy(copies: IntroCopy[], seed = 0): IntroCopy {
   return copies[Math.abs(seed) % copies.length] || FALLBACK_COPY[0]
 }
 
+const WORDMARK = 'HERMES AGENT'
+
 function resolveCopy(personality?: string, seed?: number): IntroCopy {
   const personalityKey = normalizeKey(personality)
 
@@ -156,8 +155,6 @@ function resolveCopy(personality?: string, seed?: number): IntroCopy {
 }
 
 export function Intro({ personality, seed }: IntroProps) {
-  useLocaleSync()
-
   const [mountSeed] = useState(() => Math.floor(Math.random() * 100000))
   const copy = resolveCopy(personality, mountSeed + (seed ?? 0))
 
@@ -168,15 +165,14 @@ export function Intro({ personality, seed }: IntroProps) {
     >
       <div className="w-full min-w-0">
         <p
-          className="fit-text mx-auto mb-3 w-4/5 font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
-          style={
-            { '--fit-text-line-height': '0.9', '--fit-text-max': '8rem', '--fit-text-min': '2.75rem' } as CSSProperties
-          }
+          aria-label={WORDMARK}
+          className="fit-text mx-auto mb-1 w-[calc(100%-1rem)] font-['Collapse'] font-bold uppercase leading-[0.9] tracking-[0.08em] text-midground mix-blend-plus-lighter dark:text-foreground/90"
+          style={{ '--fit-min': '2.75rem' } as CSSProperties}
         >
           <span>
-            <span>{t('intro.brand')}</span>
+            <span>{WORDMARK}</span>
           </span>
-          <span aria-hidden="true">{t('intro.brand')}</span>
+          <span aria-hidden="true">{WORDMARK}</span>
         </p>
 
         <p className="m-0 text-center leading-normal tracking-tight">{copy.body}</p>

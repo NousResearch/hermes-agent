@@ -188,6 +188,9 @@ export function AppShell({
 
       {overlays}
 
+      {/* Keybind map dialog (titlebar ⌨ button / ⌘/). */}
+      <KeybindPanel />
+
       {/* Mounted at the shell root (after overlays) so success/error toasts
           surface above every route and overlay — not just the chat view. */}
       <NotificationStack />

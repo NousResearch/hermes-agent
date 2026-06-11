@@ -4,6 +4,7 @@ import { useEffect, useMemo } from 'react'
 import type { SetTitlebarToolGroup } from '@/app/shell/titlebar-controls'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
+import { translateNow, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
   $rightRailActiveTabId,

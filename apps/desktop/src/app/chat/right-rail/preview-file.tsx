@@ -12,6 +12,7 @@ import { Streamdown } from 'streamdown'
 
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
 import { PageLoader } from '@/components/page-loader'
+import { translateNow, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
 
@@ -488,7 +489,7 @@ export function LocalFilePreview({ reloadKey, target }: { reloadKey: number; tar
   }, [blockedByTarget, filePath, forcePreview, isImage, isText, reloadKey, target.dataUrl, target.language])
 
   if (state.loading) {
-    return <PageLoader label="Loading preview" />
+    return <PageLoader label={t.preview.loading} />
   }
 
   if (state.error) {

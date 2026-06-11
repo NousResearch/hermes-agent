@@ -17,13 +17,14 @@ import {
 import { CSS } from '@dnd-kit/utilities'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { KbdGroup } from '@/components/ui/kbd'
+import { SearchField } from '@/components/ui/search-field'
 import {
   Sidebar,
   SidebarContent,
@@ -36,12 +37,14 @@ import {
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
+import { useI18n } from '@/i18n'
+import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { useTranslation } from '@/hooks/use-translation'
-import { t } from '@/store/i18n'
+import { $cronJobs } from '@/store/cron'
 import {
+  $panesFlipped,
   $pinnedSessionIds,
   $sidebarAgentsGrouped,
   $sidebarCronOpen,
@@ -91,6 +94,8 @@ import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '..
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
+import { SidebarCronJobsSection } from './cron-jobs-section'
+import { SidebarLoadMoreRow } from './load-more-row'
 import { ProfileRail } from './profile-switcher'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
@@ -112,20 +117,18 @@ const NEW_SESSION_KBD: readonly string[] =
 const SIDEBAR_NAV: SidebarNavItem[] = [
   {
     id: 'new-session',
-    label: 'New session',
-    labelKey: 'sessions.new',
+    label: '',
     icon: props => <Codicon name="robot" {...props} />,
     action: 'new-session'
   },
   {
     id: 'skills',
-    label: 'Skills & Tools',
-    labelKey: 'skills.tools',
-    icon: props => <Codicon name="tools" {...props} />,
-    route: '/skills'
+    label: '',
+    icon: props => <Codicon name="symbol-misc" {...props} />,
+    route: SKILLS_ROUTE
   },
-  { id: 'messaging', label: 'Messaging', labelKey: 'messaging.title', icon: props => <Codicon name="comment" {...props} />, route: '/messaging' },
-  { id: 'artifacts', label: 'Artifacts', labelKey: 'artifacts', icon: props => <Codicon name="files" {...props} />, route: '/artifacts' },
+  { id: 'messaging', label: '', icon: props => <Codicon name="comment" {...props} />, route: MESSAGING_ROUTE },
+  { id: 'artifacts', label: '', icon: props => <Codicon name="files" {...props} />, route: ARTIFACTS_ROUTE }
 ]
 
 const WORKSPACE_PAGE = 5
@@ -311,8 +314,13 @@ export function ChatSidebar({
   onManageCronJob,
   onTriggerCronJob
 }: ChatSidebarProps) {
-  const { t } = useTranslation()
+  const { t } = useI18n()
+  const s = t.sidebar
   const sidebarOpen = useStore($sidebarOpen)
+  // Collapsed-but-overlay-mounted → render the full sidebar, not just the nav rail.
+  const overlayMounted = useStore($sidebarOverlayMounted)
+  const contentVisible = sidebarOpen || overlayMounted
+  const panesFlipped = useStore($panesFlipped)
   const agentsGrouped = useStore($sidebarAgentsGrouped)
   const pinnedSessionIds = useStore($pinnedSessionIds)
   const pinsOpen = useStore($sidebarPinsOpen)
@@ -342,7 +350,42 @@ export function ChatSidebar({
   const workspaceOrderIds = useStore($sidebarWorkspaceOrderIds)
   const [searchQuery, setSearchQuery] = useState('')
   const [serverMatches, setServerMatches] = useState<SessionSearchResult[]>([])
+  const [newSessionKbdFlash, setNewSessionKbdFlash] = useState(false)
+  const [profileLoadMorePending, setProfileLoadMorePending] = useState<Record<string, boolean>>({})
+  const [messagingLoadMorePending, setMessagingLoadMorePending] = useState<Record<string, boolean>>({})
+  const messagingOpenIds = useStore($sidebarMessagingOpenIds)
+  // Per-platform count of rows currently revealed (starts at NON_SESSION_INITIAL_ROWS).
+  const [messagingVisible, setMessagingVisible] = useState<Record<string, number>>({})
+  const searchInputRef = useRef<HTMLInputElement>(null)
   const trimmedQuery = searchQuery.trim()
+
+  // Hotkey (session.focusSearch) → focus the field once it's mounted.
+  useEffect(() => {
+    const onFocus = () => searchInputRef.current?.focus({ preventScroll: true })
+
+    window.addEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
+
+    return () => window.removeEventListener(SESSION_SEARCH_FOCUS_EVENT, onFocus)
+  }, [])
+
+  // Flash the ⌘N hint full-opacity (no transition) for the press, so hitting
+  // the shortcut visibly pings its affordance in the sidebar.
+  useEffect(() => {
+    let timeout: ReturnType<typeof setTimeout> | undefined
+
+    const onShortcut = () => {
+      setNewSessionKbdFlash(true)
+      clearTimeout(timeout)
+      timeout = setTimeout(() => setNewSessionKbdFlash(false), 140)
+    }
+
+    window.addEventListener('hermes:new-session-shortcut', onShortcut)
+
+    return () => {
+      window.removeEventListener('hermes:new-session-shortcut', onShortcut)
+      clearTimeout(timeout)
+    }
+  }, [])
 
   const activeSidebarSessionId = currentView === 'chat' ? selectedSessionId : null
 
@@ -372,7 +415,10 @@ export function ChatSidebar({
   const sessionByAnyId = useMemo(() => {
     const map = new Map<string, SessionInfo>()
 
-    for (const s of visibleSessions) {
+    // Cron sessions are listed separately but can still be pinned, so index
+    // them too — otherwise a pinned cron job can't resolve into the Pinned
+    // section. Recents take precedence on id collisions (set last).
+    for (const s of [...cronSessions, ...visibleSessions]) {
       map.set(s.id, s)
 
       if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
@@ -381,7 +427,7 @@ export function ChatSidebar({
     }
 
     return map
-  }, [visibleSessions])
+  }, [visibleSessions, cronSessions])
 
   const pinnedSessions = useMemo(() => {
     const seen = new Set<string>()
@@ -720,7 +766,8 @@ export function ChatSidebar({
   return (
     <Sidebar
       className={cn(
-        'relative h-full min-w-0 overflow-hidden border-r border-t-0 border-b-0 border-l-0 text-foreground transition-none',
+        'relative h-full min-w-0 overflow-hidden border-t-0 border-b-0 text-foreground transition-none',
+        panesFlipped ? 'border-l border-r-0' : 'border-r border-l-0',
         sidebarOpen
           ? 'border-(--sidebar-edge-border) bg-(--ui-sidebar-surface-background) opacity-100'
           : 'pointer-events-none border-transparent bg-transparent opacity-0',
@@ -750,22 +797,35 @@ export function ChatSidebar({
                     <SidebarMenuButton
                       aria-disabled={!isInteractive}
                       className={cn(
-                        'flex h-7 w-full cursor-pointer justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
+                        'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
                         active &&
                           'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
                         !isInteractive &&
                           'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
                       )}
-                      onClick={() => onNavigate(item)}
-                      tooltip={t(item.labelKey || item.label)}
+                      onClick={() => {
+                        // A plain new session lands in whatever profile the live
+                        // gateway is on (= the active switcher context). null →
+                        // no swap. The switcher header is the single place to
+                        // change which profile that is.
+                        if (isNewSession) {
+                          $newChatProfile.set(null)
+                        }
+
+                        onNavigate(item)
+                      }}
+                      tooltip={s.nav[item.id] ?? item.label}
                       type="button"
                     >
                       <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
                       {contentVisible && (
                         <>
-                          <span className="min-w-0 flex-1 truncate max-[46.25rem]:hidden">{t(item.labelKey || item.label)}</span>
-                          {item.id === 'new-session' && (
-                            <KbdGroup className="ml-auto max-[46.25rem]:hidden" keys={[...NEW_SESSION_KBD]} />
+                          <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>
+                          {isNewSession && (
+                            <KbdGroup
+                              className={cn('ml-auto', newSessionKbdFlash && 'opacity-100!')}
+                              keys={[...NEW_SESSION_KBD]}
+                            />
                           )}
                         </>
                       )}
@@ -777,146 +837,206 @@ export function ChatSidebar({
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {sidebarOpen && showSessionSections && (
-          <div className="shrink-0 pb-1 pt-1">
-            <div className="flex items-center gap-1.5 rounded-md border border-transparent bg-transparent px-2 transition-colors focus-within:border-(--ui-stroke-tertiary)">
-              <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="search" size="0.75rem" />
-              <input
-                aria-label={t('sessions.search')}
-                className="h-6 min-w-0 flex-1 bg-transparent text-[0.8125rem] text-foreground placeholder:text-(--ui-text-tertiary) focus:outline-none"
-                onChange={event => setSearchQuery(event.target.value)}
-                placeholder={t('sessions.search')}
-                type="text"
-                value={searchQuery}
-              />
-              {searchQuery && (
-                <button
-                  aria-label={t('common.clearSearch')}
-                  className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm text-(--ui-text-tertiary) hover:bg-(--ui-control-active-background) hover:text-foreground"
-                  onClick={() => setSearchQuery('')}
-                  type="button"
-                >
-                  <Codicon name="close" size="0.75rem" />
-                </button>
-              )}
-            </div>
+        {contentVisible && showSessionSections && (
+          <div className="shrink-0 px-2 pb-1 pt-1">
+            <SearchField
+              aria-label={s.searchAria}
+              inputRef={searchInputRef}
+              onChange={setSearchQuery}
+              placeholder={s.searchPlaceholder}
+              value={searchQuery}
+            />
           </div>
         )}
 
-        {contentVisible && showSessionSections && trimmedQuery && (
-          <SidebarSessionsSection
-            activeSessionId={activeSidebarSessionId}
-            contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
-            emptyState={
-              <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
-                {t('sessions.noResults', { query: trimmedQuery })}
-              </div>
-            }
-            label={t('sessions.results')}
-            labelMeta={String(searchResults.length)}
-            onArchiveSession={onArchiveSession}
-            onDeleteSession={onDeleteSession}
-            onResumeSession={onResumeSession}
-            onToggle={() => undefined}
-            onTogglePin={pinSession}
-            open
-            pinned={false}
-            rootClassName="min-h-0 flex-1 p-0"
-            sessions={searchResults}
-            workingSessionIdSet={workingSessionIdSet}
-          />
-        )}
-
-        {contentVisible && showSessionSections && !trimmedQuery && (
-          <SidebarSessionsSection
-            activeSessionId={activeSidebarSessionId}
-            contentClassName="flex min-h-10 shrink-0 flex-col gap-px rounded-lg pb-2 pt-1"
-            dndSensors={dndSensors}
-            emptyState={<SidebarPinnedEmptyState />}
-            label={t('sessions.pinned')}
-            onArchiveSession={onArchiveSession}
-            onDeleteSession={onDeleteSession}
-            onReorder={handlePinnedDragEnd}
-            onResumeSession={onResumeSession}
-            onToggle={() => setSidebarPinsOpen(!pinsOpen)}
-            onTogglePin={unpinSession}
-            open={pinsOpen}
-            pinned
-            rootClassName="shrink-0 p-0 pb-1"
-            sessions={pinnedSessions}
-            sortable={pinnedSessions.length > 1}
-            workingSessionIdSet={workingSessionIdSet}
-          />
-        )}
-
-        {contentVisible && showSessionSections && !trimmedQuery && (
-          <SidebarSessionsSection
-            activeSessionId={activeSidebarSessionId}
-            contentClassName={cn(
-              'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75',
-              // Separate profile sections clearly in the ALL view; rows inside
-              // each group keep their own tight gap-px rhythm.
-              showAllProfiles ? 'gap-3' : 'gap-px'
+        {contentVisible && showSessionSections && (
+          <div className="flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75">
+            {trimmedQuery && (
+              <SidebarSessionsSection
+                activeSessionId={activeSidebarSessionId}
+                contentClassName="flex min-h-0 flex-1 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75"
+                emptyState={
+                  <div className="grid min-h-24 place-items-center rounded-lg px-2 text-center text-xs text-(--ui-text-tertiary)">
+                    {s.noMatch(trimmedQuery)}
+                  </div>
+                }
+                label={s.results}
+                labelMeta={String(searchResults.length)}
+                onArchiveSession={onArchiveSession}
+                onDeleteSession={onDeleteSession}
+                onResumeSession={onResumeSession}
+                onToggle={() => undefined}
+                onTogglePin={pinSession}
+                open
+                pinned={false}
+                rootClassName="min-h-32 flex-1 overflow-hidden p-0"
+                sessions={searchResults}
+                workingSessionIdSet={workingSessionIdSet}
+              />
             )}
-            dndSensors={dndSensors}
-            emptyState={showSessionSkeletons ? <SidebarSessionSkeletons /> : <SidebarAllPinnedState />}
-            footer={
-              // Hide "load more" only when workspace-grouped (those groups page
-              // themselves). ALL-profiles now pages per-profile from each profile
-              // header; the global footer only applies to non-ALL views.
-              !showAllProfiles && !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
-                <SidebarLoadMoreRow
-                  loading={sessionsLoading}
-                  onClick={onLoadMoreSessions}
-                  step={Math.min(SIDEBAR_SESSIONS_PAGE_SIZE, remainingSessionCount)}
-                />
-              ) : null
-            }
-            forceEmptyState={showSessionSkeletons}
-            groups={displayAgentGroups}
-            headerAction={
-              // Grouping operates on unpinned recents; if everything is
-              // pinned the toggle does nothing visible, so hide it to avoid
-              // a phantom click target.
-              agentSessions.length > 0 ? (
-                <Button
-                  aria-label={agentsGrouped ? t('sessions.ungroup') : t('sessions.groupByWorkspace')}
-                  className={cn(
-                    'cursor-pointer text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
-                    agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
-                  )}
-                  onClick={event => {
-                    event.stopPropagation()
-                    setSidebarRecentsOpen(true)
-                    setSidebarAgentsGrouped(!agentsGrouped)
-                  }}
-                  size="icon-xs"
-                  title={agentsGrouped ? t('sessions.ungroup') : t('sessions.groupByWorkspace')}
-                  variant="ghost"
-                >
-                  <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
-                </Button>
-              ) : null
-            }
-            label={t('sessions.title')}
-            labelMeta={countLabel(agentSessions.length, knownSessionTotal)}
-            onArchiveSession={onArchiveSession}
-            onDeleteSession={onDeleteSession}
-            onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
-            onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
-            onResumeSession={onResumeSession}
-            onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
-            onTogglePin={pinSession}
-            open={agentsOpen}
-            pinned={false}
-            rootClassName="min-h-0 flex-1 p-0"
-            sessions={displayAgentSessions}
-            sortable={!showAllProfiles && agentSessions.length > 1}
-            workingSessionIdSet={workingSessionIdSet}
-          />
+
+            {!trimmedQuery && (
+              <SidebarSessionsSection
+                activeSessionId={activeSidebarSessionId}
+                contentClassName={cn('flex max-h-44 flex-col gap-px rounded-lg pb-2 pt-1', GROUP_BODY)}
+                dndSensors={dndSensors}
+                emptyState={<SidebarPinnedEmptyState />}
+                label={s.pinned}
+                onArchiveSession={onArchiveSession}
+                onDeleteSession={onDeleteSession}
+                onReorder={handlePinnedDragEnd}
+                onResumeSession={onResumeSession}
+                onToggle={() => setSidebarPinsOpen(!pinsOpen)}
+                onTogglePin={unpinSession}
+                open={pinsOpen}
+                pinned
+                rootClassName="shrink-0 p-0 pb-1"
+                sessions={pinnedSessions}
+                sortable={pinnedSessions.length > 1}
+                workingSessionIdSet={workingSessionIdSet}
+              />
+            )}
+
+            {!trimmedQuery && (
+              <SidebarSessionsSection
+                activeSessionId={activeSidebarSessionId}
+                contentClassName={cn(
+                  'flex min-h-0 flex-1 flex-col overflow-y-auto overscroll-contain pb-1.75',
+                  // Separate profile sections clearly in the ALL view; rows inside
+                  // each group keep their own tight gap-px rhythm.
+                  showAllProfiles ? 'gap-3' : 'gap-px',
+                  // Flatten into the single scroll when compact — unless this is the
+                  // virtualized long list, which must keep its own scroller.
+                  !recentsVirtualizes && COMPACT_FLAT
+                )}
+                dndSensors={dndSensors}
+                emptyState={showSessionSkeletons ? <SidebarSessionSkeletons /> : <SidebarAllPinnedState />}
+                footer={
+                  // Hide "load more" only when workspace-grouped (those groups page
+                  // themselves). ALL-profiles now pages per-profile from each profile
+                  // header; the global footer only applies to non-ALL views.
+                  !showAllProfiles && !agentsGrouped && !showSessionSkeletons && hasMoreSessions ? (
+                    <SidebarLoadMoreRow
+                      loading={sessionsLoading}
+                      onClick={onLoadMoreSessions}
+                      step={Math.min(SIDEBAR_SESSIONS_PAGE_SIZE, remainingSessionCount)}
+                    />
+                  ) : null
+                }
+                forceEmptyState={showSessionSkeletons}
+                groups={displayAgentGroups}
+                headerAction={
+                  // Always reserve the icon-xs (size-6) slot so the header keeps the
+                  // same height whether or not the toggle renders — otherwise the
+                  // "Sessions" label jumps when switching to the ALL-profiles view.
+                  // Grouping operates on unpinned recents; if everything is pinned
+                  // the toggle does nothing, and it's irrelevant in the ALL-profiles
+                  // view (always grouped by profile), so hide the button (not the slot).
+                  <div className="grid size-6 shrink-0 place-items-center">
+                    {!showAllProfiles && agentSessions.length > 0 ? (
+                      <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
+                        <Button
+                          aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
+                          className={cn(
+                            'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                            agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
+                          )}
+                          onClick={event => {
+                            event.stopPropagation()
+                            setSidebarRecentsOpen(true)
+                            setSidebarAgentsGrouped(!agentsGrouped)
+                          }}
+                          size="icon-xs"
+                          variant="ghost"
+                        >
+                          <Codicon name={agentsGrouped ? 'list-unordered' : 'root-folder'} size="0.75rem" />
+                        </Button>
+                      </Tip>
+                    ) : null}
+                  </div>
+                }
+                label={s.sessions}
+                labelMeta={recentsMeta}
+                onArchiveSession={onArchiveSession}
+                onDeleteSession={onDeleteSession}
+                onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
+                onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
+                onResumeSession={onResumeSession}
+                onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
+                onTogglePin={pinSession}
+                open={agentsOpen}
+                pinned={false}
+                rootClassName={cn(
+                  'min-h-32 flex-1 overflow-hidden p-0',
+                  !recentsVirtualizes && 'compact:min-h-0 compact:flex-none compact:overflow-visible'
+                )}
+                sessions={displayAgentSessions}
+                sortable={!showAllProfiles && agentSessions.length > 1}
+                workingSessionIdSet={workingSessionIdSet}
+              />
+            )}
+
+            {!trimmedQuery &&
+              messagingGroups.map(group => {
+                const visible = messagingVisible[group.sourceId] ?? NON_SESSION_INITIAL_ROWS
+                const shownSessions = group.sessions.slice(0, visible)
+                // More to show if rows are hidden behind the cap, or the backend
+                // still has older threads on disk.
+                const canRevealMore = visible < group.sessions.length || group.hasMore
+
+                return (
+                  <SidebarSessionsSection
+                    activeSessionId={activeSidebarSessionId}
+                    contentClassName={cn('flex max-h-56 flex-col gap-px pb-1.75', GROUP_BODY)}
+                    emptyState={null}
+                    footer={
+                      canRevealMore ? (
+                        <SidebarLoadMoreRow
+                          loading={Boolean(messagingLoadMorePending[group.sourceId])}
+                          onClick={() => revealMoreMessaging(group.sourceId, group.sessions.length, group.hasMore)}
+                          step={Math.min(NON_SESSION_LOAD_STEP, Math.max(0, group.total - shownSessions.length))}
+                        />
+                      ) : null
+                    }
+                    key={group.sourceId}
+                    label={group.label}
+                    labelIcon={
+                      <PlatformAvatar
+                        className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
+                        platformId={group.sourceId}
+                        platformName={group.label}
+                      />
+                    }
+                    labelMeta={countLabel(group.sessions.length, group.total)}
+                    onArchiveSession={onArchiveSession}
+                    onDeleteSession={onDeleteSession}
+                    onResumeSession={onResumeSession}
+                    onToggle={() => toggleSidebarMessagingOpen(group.sourceId)}
+                    onTogglePin={pinSession}
+                    open={messagingOpenIds.includes(group.sourceId)}
+                    pinned={false}
+                    rootClassName="shrink-0 p-0"
+                    sessions={shownSessions}
+                    workingSessionIdSet={workingSessionIdSet}
+                  />
+                )
+              })}
+
+            {!trimmedQuery && cronJobs.length > 0 && (
+              <SidebarCronJobsSection
+                jobs={cronJobs}
+                label={s.cronJobs}
+                onManageJob={onManageCronJob}
+                onOpenRun={onResumeSession}
+                onToggle={() => setSidebarCronOpen(!cronOpen)}
+                onTriggerJob={onTriggerCronJob}
+                open={cronOpen}
+              />
+            )}
+          </div>
         )}
 
-        {sidebarOpen && !showSessionSections && <div className="min-h-0 flex-1" />}
+        {contentVisible && !showSessionSections && <div className="min-h-0 flex-1" />}
 
         {contentVisible && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
@@ -941,7 +1061,7 @@ function SidebarSectionHeader({ label, open, onToggle, action, meta, icon }: Sid
   return (
     <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
       <button
-        className="group/section-label flex w-fit cursor-pointer items-center gap-1 bg-transparent text-left leading-none"
+        className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
         onClick={onToggle}
         type="button"
       >
@@ -971,23 +1091,25 @@ function SidebarSessionSkeletons() {
   )
 }
 
-const SidebarAllPinnedState = () => {
-  const { t } = useTranslation()
+function SidebarAllPinnedState() {
+  const { t } = useI18n()
+
   return (
-  <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
-    {t('sessions.allPinned')}
-  </div>
-)
+    <div className="grid min-h-24 place-items-center rounded-lg text-center text-xs text-(--ui-text-tertiary)">
+      {t.sidebar.allPinned}
+    </div>
+  )
 }
 
 function SidebarPinnedEmptyState() {
-  const { t } = useTranslation()
+  const { t } = useI18n()
+
   return (
     <div className="flex min-h-7 items-center gap-1.5 rounded-lg pl-2 text-[0.75rem] text-(--ui-text-tertiary)">
       <span className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-quaternary)">
         <Codicon name="pin" size="0.75rem" />
       </span>
-      <span>{t('sessions.pinHint')}</span>
+      <span>{t.sidebar.shiftClickHint}</span>
     </div>
   )
 }
@@ -1262,7 +1384,7 @@ function SidebarWorkspaceGroup({
     >
       <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
         <button
-          className="flex min-w-0 cursor-pointer items-center gap-1 bg-transparent text-left hover:text-(--ui-text-secondary)"
+          className="flex min-w-0 items-center gap-1.5 bg-transparent text-left hover:text-(--ui-text-secondary)"
           onClick={() => setOpen(value => !value)}
           type="button"
         >
@@ -1289,16 +1411,20 @@ function SidebarWorkspaceGroup({
             open={open}
           />
         </button>
-        {onNewSession && (
-          <button
-            aria-label={`New session in ${group.label}`}
-            className="grid size-4 shrink-0 cursor-pointer place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
-            onClick={() => onNewSession(group.path)}
-            title={`New session in ${group.label}`}
-            type="button"
-          >
-            <Codicon name="add" size="0.75rem" />
-          </button>
+        {(onNewSession || isProfileGroup) && (
+          <Tip label={s.newSessionIn(group.label)}>
+            <button
+              aria-label={s.newSessionIn(group.label)}
+              className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+              // Profile groups start a fresh session in that profile but keep the
+              // all-profiles browse view (newSessionInProfile leaves the scope
+              // alone); workspace groups seed the new session's cwd from the path.
+              onClick={() => (isProfileGroup ? newSessionInProfile(group.id) : onNewSession?.(group.path))}
+              type="button"
+            >
+              <Codicon name="add" size="0.75rem" />
+            </button>
+          </Tip>
         )}
         {reorderable && (
           <span
@@ -1321,17 +1447,25 @@ function SidebarWorkspaceGroup({
       {open && (
         <>
           {renderRows(visibleSessions)}
-          {hiddenCount > 0 && (
-            <button
-              aria-label={`Show ${nextCount} more in ${group.label}`}
-              className="ml-auto grid size-5 cursor-pointer place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
-              onClick={() => setVisibleCount(count => count + WORKSPACE_PAGE)}
-              title={`Show ${nextCount} more in ${group.label}`}
-              type="button"
-            >
-              <Codicon name="ellipsis" size="0.75rem" />
-            </button>
-          )}
+          {hiddenCount > 0 &&
+            (isProfileGroup ? (
+              <SidebarLoadMoreRow
+                loading={Boolean(group.loadingMore)}
+                onClick={handleProfileLoadMore}
+                step={nextCount}
+              />
+            ) : (
+              <Tip label={s.showMoreIn(nextCount, group.label)}>
+                <button
+                  aria-label={s.showMoreIn(nextCount, group.label)}
+                  className="ml-auto grid size-5 place-items-center rounded-sm bg-transparent text-(--ui-text-tertiary) transition-colors hover:bg-(--ui-control-hover-background) hover:text-foreground"
+                  onClick={() => setVisibleCount(count => count + WORKSPACE_PAGE)}
+                  type="button"
+                >
+                  <Codicon name="ellipsis" size="0.75rem" />
+                </button>
+              </Tip>
+            ))}
         </>
       )}
     </div>
@@ -1365,30 +1499,4 @@ interface SortableSessionRowProps {
 
 function SortableSidebarSessionRow(props: SortableSessionRowProps) {
   return <SidebarSessionRow {...props} {...useSortableBindings(props.session.id)} />
-}
-
-interface SidebarLoadMoreRowProps {
-  loading: boolean
-  onClick: () => void
-  step: number
-}
-
-function SidebarLoadMoreRow({ loading, onClick, step }: SidebarLoadMoreRowProps) {
-  const label = loading ? t('sessions.loading') : step > 0 ? `${t('sessions.loadStep')} ${step} ${t('sessions.moreLabel')}` : t('sessions.loadMore')
-
-  return (
-    <button
-      className="flex min-h-5 cursor-pointer items-center gap-1 self-start bg-transparent pl-2 text-left text-[0.6875rem] text-(--ui-text-tertiary) transition-colors duration-100 ease-out hover:text-foreground hover:transition-none disabled:cursor-default disabled:opacity-60 disabled:hover:text-(--ui-text-tertiary)"
-      disabled={loading}
-      onClick={onClick}
-      type="button"
-    >
-      {/* Seat the icon in the same w-3.5 column session rows use for their dot
-          so the chevron + label line up with the rows above. */}
-      <span className="grid w-3.5 shrink-0 place-items-center">
-        <Codicon className="opacity-70" name={loading ? 'loading' : 'chevron-down'} size="0.75rem" spinning={loading} />
-      </span>
-      <span>{label}</span>
-    </button>
-  )
 }

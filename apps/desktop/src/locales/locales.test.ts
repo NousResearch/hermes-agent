@@ -6,7 +6,7 @@ import en from './en.json'
 import es from './es.json'
 import fr from './fr.json'
 import hi from './hi.json'
-import it from './it.json'
+import itLocale from './it.json'
 import ja from './ja.json'
 import ko from './ko.json'
 import ptBR from './pt-BR.json'
@@ -25,7 +25,7 @@ const catalogs: Record<string, LocaleCatalog> = {
   es,
   fr,
   hi,
-  it,
+  it: itLocale,
   ja,
   ko,
   'pt-BR': ptBR,

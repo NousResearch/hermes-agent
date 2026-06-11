@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { t } from '@/store/i18n'
+import { Tip } from '@/components/ui/tooltip'
 import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
-import { useTranslation } from '@/hooks/use-translation'
 import { triggerHaptic } from '@/lib/haptics'
 import { Archive, ArchiveOff, FolderOpen, Loader2, Trash2 } from '@/lib/icons'
 import { notify, notifyError } from '@/store/notifications'
@@ -13,7 +12,7 @@ import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSession
 import type { SessionInfo } from '@/types/hermes'
 
 import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
-import type { SearchProps } from './types'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 const ARCHIVED_FETCH_LIMIT = 200
 
@@ -33,8 +32,9 @@ function workspaceLabel(cwd: null | string | undefined): string {
   )
 }
 
-export function SessionsSettings({ query }: SearchProps) {
-  const { t } = useTranslation()
+export function SessionsSettings() {
+  const { t } = useI18n()
+  const s = t.settings.sessions
   const [sessions, setLocalSessions] = useState<SessionInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState<string | null>(null)
@@ -46,7 +46,7 @@ export function SessionsSettings({ query }: SearchProps) {
       const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
       setLocalSessions(result.sessions)
     } catch (err) {
-      notifyError(err, t('sessions.loadFailed'))
+      notifyError(err, s.failedLoad)
     } finally {
       setLoading(false)
     }
@@ -65,9 +65,9 @@ export function SessionsSettings({ query }: SearchProps) {
       // Surface it again in the sidebar without waiting for a full refresh.
       setSessions(prev => [{ ...session, archived: false }, ...prev.filter(s => s.id !== session.id)])
       triggerHaptic('selection')
-      notify({ durationMs: 2_000, kind: 'success', message: t('sessions.restored') })
+      notify({ durationMs: 2_000, kind: 'success', message: s.restored })
     } catch (err) {
-      notifyError(err, t('sessions.unarchiveFailed'))
+      notifyError(err, s.unarchiveFailed)
     } finally {
       setBusyId(null)
     }
@@ -85,26 +85,20 @@ export function SessionsSettings({ query }: SearchProps) {
       setLocalSessions(prev => prev.filter(s => s.id !== session.id))
       triggerHaptic('warning')
     } catch (err) {
-      notifyError(err, t('sessions.deleteFailed'))
+      notifyError(err, s.deleteFailed)
     } finally {
       setBusyId(null)
     }
   }, [s])
 
-  const filtered = useMemo(() => {
-    const needle = query.trim().toLowerCase()
-
-    if (!needle) {
-      return sessions
-    }
-
-    return sessions.filter(session =>
-      [sessionTitle(session), session.preview ?? '', session.cwd ?? ''].join(' ').toLowerCase().includes(needle)
-    )
-  }, [query, sessions])
+  useDeepLinkHighlight({
+    elementId: id => `archived-session-${id}`,
+    param: 'session',
+    ready: id => !loading && sessions.some(session => session.id === id)
+  })
 
   if (loading) {
-    return <LoadingState label={t('sessions.loadingArchived')} />
+    return <LoadingState label={s.loading} />
   }
 
   return (
@@ -114,56 +108,55 @@ export function SessionsSettings({ query }: SearchProps) {
       <SectionHeading
         icon={Archive}
         meta={sessions.length ? String(sessions.length) : undefined}
-        title={t('sessions.archivedTitle')}
+        title={s.archivedTitle}
       />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.archivedIntro}
       </p>
 
-      {filtered.length === 0 ? (
-        <EmptyState
-          description={query.trim() ? t('sessions.noSearchMatch') : t('sessions.archiveHint')}
-          title={t('sessions.nothingArchivedTitle')}
-        />
+      {sessions.length === 0 ? (
+        <EmptyState description={s.emptyArchivedDesc} title={s.emptyArchivedTitle} />
       ) : (
-        <div className="divide-y divide-border/30">
-          {filtered.map(session => {
+        <div className="grid gap-1">
+          {sessions.map(session => {
             const label = workspaceLabel(session.cwd)
             const busy = busyId === session.id
 
             return (
-              <ListRow
-                action={
-                  <div className="flex items-center gap-1.5">
-                    <Button
-                      disabled={busy}
-                      onClick={() => void unarchive(session)}
-                      size="sm"
-                      type="button"
-                      variant="outline"
-                    >
-                      {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
-                      <span>{t('sessions.unarchive')}</span>
-                    </Button>
-                    <Button
-                      aria-label={t('sessions.deletePermanentlyTitle')}
-                      className="text-muted-foreground hover:text-destructive"
-                      disabled={busy}
-                      onClick={() => void remove(session)}
-                      size="icon"
-                      title={t('sessions.deletePermanentlyTitle')}
-                      type="button"
-                      variant="ghost"
-                    >
-                      <Trash2 className="size-3.5" />
-                    </Button>
-                  </div>
-                }
-                description={session.preview || undefined}
-                hint={label ? `${label} · ${session.message_count} messages` : `${session.message_count} messages`}
-                key={session.id}
-                title={sessionTitle(session)}
-              />
+              <div className="scroll-mt-6 rounded-lg" id={`archived-session-${session.id}`} key={session.id}>
+                <ListRow
+                  action={
+                    <div className="flex items-center gap-1.5">
+                      <Button
+                        disabled={busy}
+                        onClick={() => void unarchive(session)}
+                        size="sm"
+                        type="button"
+                        variant="textStrong"
+                      >
+                        {busy ? <Loader2 className="size-3.5 animate-spin" /> : <ArchiveOff className="size-3.5" />}
+                        <span>{s.unarchive}</span>
+                      </Button>
+                      <Tip label={s.deletePermanently}>
+                        <Button
+                          aria-label={s.deletePermanently}
+                          className="text-muted-foreground hover:text-destructive"
+                          disabled={busy}
+                          onClick={() => void remove(session)}
+                          size="icon"
+                          type="button"
+                          variant="ghost"
+                        >
+                          <Trash2 className="size-3.5" />
+                        </Button>
+                      </Tip>
+                    </div>
+                  }
+                  description={session.preview || undefined}
+                  hint={label ? `${label} · ${s.messages(session.message_count)}` : s.messages(session.message_count)}
+                  title={sessionTitle(session)}
+                />
+              </div>
             )
           })}
         </div>
@@ -197,7 +190,10 @@ function DefaultProjectDirSetting() {
     let alive = true
 
     void settings.getDefaultProjectDir().then(result => {
-      if (!alive) return
+      if (!alive) {
+        return
+      }
+
       setDir(result.dir)
       setFallback(result.defaultLabel)
       applyConfiguredDefaultProjectDir(result.dir)
@@ -211,7 +207,9 @@ function DefaultProjectDirSetting() {
   const choose = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) return
+    if (!settings) {
+      return
+    }
 
     setBusy(true)
 
@@ -224,9 +222,10 @@ function DefaultProjectDirSetting() {
 
       const result = await settings.setDefaultProjectDir(picked.dir)
       setDir(result.dir)
-      notify({ durationMs: 2_000, kind: 'success', message: t('sessions.projectDirUpdated') })
+      applyConfiguredDefaultProjectDir(result.dir)
+      notify({ durationMs: 4_000, kind: 'success', message: s.defaultDirUpdated })
     } catch (err) {
-      notifyError(err, t('sessions.updateDirFailed'))
+      notifyError(err, s.updateDirFailed)
     } finally {
       setBusy(false)
     }
@@ -235,7 +234,9 @@ function DefaultProjectDirSetting() {
   const clear = useCallback(async () => {
     const settings = window.hermesDesktop?.settings
 
-    if (!settings) return
+    if (!settings) {
+      return
+    }
 
     setBusy(true)
 
@@ -245,7 +246,7 @@ function DefaultProjectDirSetting() {
       applyConfiguredDefaultProjectDir(null)
       await ensureDefaultWorkspaceCwd()
     } catch (err) {
-      notifyError(err, t('sessions.clearDirFailed'))
+      notifyError(err, s.clearDirFailed)
     } finally {
       setBusy(false)
     }
@@ -253,7 +254,7 @@ function DefaultProjectDirSetting() {
 
   return (
     <div className="mb-6">
-      <SectionHeading icon={FolderOpen} title={t('sessions.defaultProjectDirTitle')} />
+      <SectionHeading icon={FolderOpen} title={s.defaultDirTitle} />
       <p className="mb-2 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
         {s.defaultDirDesc}
       </p>
@@ -262,11 +263,11 @@ function DefaultProjectDirSetting() {
           <div className="flex items-center gap-3">
             <Button disabled={busy} onClick={() => void choose()} size="sm" type="button" variant="textStrong">
               <FolderOpen className="size-3.5" />
-              <span>{dir ? t('sessions.change') : t('sessions.choose')}</span>
+              <span>{dir ? s.change : s.choose}</span>
             </Button>
             {dir && (
-              <Button disabled={busy} onClick={() => void clear()} size="sm" type="button" variant="ghost">
-                Clear
+              <Button disabled={busy} onClick={() => void clear()} size="sm" type="button" variant="text">
+                {s.clear}
               </Button>
             )}
           </div>

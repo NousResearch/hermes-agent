@@ -8,8 +8,8 @@ import { HashRouter } from 'react-router-dom'
 import App from './app'
 import { ErrorBoundary } from './components/error-boundary'
 import { HapticsProvider } from './components/haptics-provider'
-import { I18nProvider } from '@/store/i18n'
-import { I18nProvider as NativeI18nProvider } from '@/i18n'
+import { I18nProvider } from './i18n'
+import { I18nProvider as LocaleI18nProvider } from '@/store/i18n'
 import { installClipboardShim } from './lib/clipboard'
 import { queryClient } from './lib/query-client'
 import { ThemeProvider } from './themes/context'
@@ -29,17 +29,17 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <ErrorBoundary label="root">
       <QueryClientProvider client={queryClient}>
-        <ThemeProvider>
-          <NativeI18nProvider>
-          <I18nProvider>
-            <HapticsProvider>
-              <HashRouter>
-                <App />
-              </HashRouter>
-            </HapticsProvider>
-          </I18nProvider>
-          </NativeI18nProvider>
-        </ThemeProvider>
+        <I18nProvider>
+          <LocaleI18nProvider>
+            <ThemeProvider>
+              <HapticsProvider>
+                <HashRouter>
+                  <App />
+                </HashRouter>
+              </HapticsProvider>
+            </ThemeProvider>
+          </LocaleI18nProvider>
+        </I18nProvider>
       </QueryClientProvider>
     </ErrorBoundary>
   </StrictMode>

@@ -16,8 +16,6 @@ import {
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle, ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { useTranslation } from '@/hooks/use-translation'
-import { t } from '@/store/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
@@ -68,141 +66,20 @@ const trimEdits = (edits: Record<string, string>): Record<string, string> =>
       .filter(([, v]) => v)
   )
 
-const FIELD_COPY: Record<string, { advanced?: boolean; help?: string; label: string; placeholder?: string }> = {
-  TELEGRAM_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create a bot with @BotFather, then paste the token it gives you.',
-    placeholder: 'Paste Telegram bot token'
-  },
-  TELEGRAM_ALLOWED_USERS: {
-    label: 'Allowed Telegram user IDs',
-    help: t('messaging.recommendedTelegram')
-  },
-  TELEGRAM_PROXY: {
-    label: 'Proxy URL',
-    help: 'Only needed on networks where Telegram is blocked.',
-    advanced: true
-  },
-  DISCORD_BOT_TOKEN: {
-    label: 'Bot token',
-    help: 'Create an application in the Discord Developer Portal, add a bot, then paste its token.'
-  },
-  DISCORD_ALLOWED_USERS: {
-    label: 'Allowed Discord user IDs',
-    help: t('messaging.recommendedDiscord')
-  },
-  DISCORD_REPLY_TO_MODE: {
-    label: 'Reply style',
-    help: 'first, all, or off.',
-    advanced: true
-  },
-  DISCORD_ALLOW_ALL_USERS: {
-    label: 'Allow all Discord users',
-    help: 'Development only. When true, anyone can DM the bot without an allowlist.',
-    advanced: true
-  },
-  DISCORD_HOME_CHANNEL: {
-    label: 'Home channel ID',
-    help: 'Channel where the bot sends proactive messages (cron output, reminders).',
-    advanced: true
-  },
-  DISCORD_HOME_CHANNEL_NAME: {
-    label: 'Home channel name',
-    help: 'Display name for the home channel in logs and status output.',
-    advanced: true
-  },
-  BLUEBUBBLES_ALLOW_ALL_USERS: {
-    label: 'Allow all iMessage users',
-    help: 'When true, skip the BlueBubbles allowlist.',
-    advanced: true
-  },
-  MATTERMOST_ALLOW_ALL_USERS: {
-    label: 'Allow all Mattermost users',
-    advanced: true
-  },
-  MATTERMOST_HOME_CHANNEL: {
-    label: 'Home channel',
-    advanced: true
-  },
-  QQ_ALLOW_ALL_USERS: {
-    label: 'Allow all QQ users',
-    advanced: true
-  },
-  QQBOT_HOME_CHANNEL: {
-    label: 'QQ home channel',
-    help: 'Default channel or group for cron delivery.',
-    advanced: true
-  },
-  QQBOT_HOME_CHANNEL_NAME: {
-    label: 'QQ home channel name',
-    advanced: true
-  },
-  SLACK_BOT_TOKEN: {
-    label: 'Slack bot token',
-    help: 'Use the bot token from OAuth & Permissions after installing your Slack app.',
-    placeholder: 'Paste Slack bot token'
-  },
-  SLACK_APP_TOKEN: {
-    label: 'Slack app token',
-    help: 'Use the app-level token required for Socket Mode.',
-    placeholder: 'Paste Slack app token'
-  },
-  SLACK_ALLOWED_USERS: {
-    label: 'Allowed Slack user IDs',
-    help: t('messaging.recommendedSlack')
-  },
-  MATTERMOST_URL: {
-    label: 'Server URL',
-    placeholder: 'https://mattermost.example.com'
-  },
-  MATTERMOST_TOKEN: {
-    label: 'Bot token'
-  },
-  MATTERMOST_ALLOWED_USERS: {
-    label: 'Allowed user IDs',
-    help: t('messaging.recommendedMattermost')
-  },
-  MATRIX_HOMESERVER: {
-    label: 'Homeserver URL',
-    placeholder: 'https://matrix.org'
-  },
-  MATRIX_ACCESS_TOKEN: {
-    label: 'Access token'
-  },
-  MATRIX_USER_ID: {
-    label: 'Bot user ID',
-    placeholder: '@hermes:example.org'
-  },
-  MATRIX_ALLOWED_USERS: {
-    label: 'Allowed Matrix user IDs',
-    help: t('messaging.recommendedMatrix')
-  },
-  SIGNAL_HTTP_URL: {
-    label: 'Signal bridge URL',
-    placeholder: 'http://127.0.0.1:8080',
-    help: 'URL of a running signal-cli REST bridge.'
-  },
-  SIGNAL_ACCOUNT: {
-    label: 'Phone number',
-    help: 'The number registered with your signal-cli bridge.'
-  },
-  SIGNAL_ALLOWED_USERS: {
-    label: 'Allowed Signal users',
-    help: t('messaging.recommendedSignal')
-  },
-  WHATSAPP_ENABLED: {
-    label: 'Enable WhatsApp bridge',
-    help: 'Set automatically by the toggle below. Leave alone unless you know you need it.',
-    advanced: true
-  },
-  WHATSAPP_MODE: {
-    label: 'Bridge mode',
-    advanced: true
-  },
-  WHATSAPP_ALLOWED_USERS: {
-    label: 'Allowed WhatsApp users',
-    help: t('messaging.recommendedWhatsApp')
-  }
+const FIELD_COPY: Record<string, { advanced?: boolean }> = {
+  TELEGRAM_PROXY: { advanced: true },
+  DISCORD_REPLY_TO_MODE: { advanced: true },
+  DISCORD_ALLOW_ALL_USERS: { advanced: true },
+  DISCORD_HOME_CHANNEL: { advanced: true },
+  DISCORD_HOME_CHANNEL_NAME: { advanced: true },
+  BLUEBUBBLES_ALLOW_ALL_USERS: { advanced: true },
+  MATTERMOST_ALLOW_ALL_USERS: { advanced: true },
+  MATTERMOST_HOME_CHANNEL: { advanced: true },
+  QQ_ALLOW_ALL_USERS: { advanced: true },
+  QQBOT_HOME_CHANNEL: { advanced: true },
+  QQBOT_HOME_CHANNEL_NAME: { advanced: true },
+  WHATSAPP_ENABLED: { advanced: true },
+  WHATSAPP_MODE: { advanced: true }
 }
 
 function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
@@ -210,15 +87,16 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
   const localized = m.fieldCopy[field.key] || {}
 
   return {
-    label: localized.label || copy.label || field.prompt || field.key,
-    help: localized.help || copy.help || field.description,
-    placeholder: localized.placeholder || copy.placeholder || field.prompt,
+    label: localized.label || field.prompt || field.key,
+    help: localized.help || field.description,
+    placeholder: localized.placeholder || field.prompt,
     advanced: Boolean(copy.advanced || field.advanced)
   }
 }
 
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
-  const { t } = useTranslation()
+  const { t } = useI18n()
+  const m = t.messaging
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
@@ -500,7 +378,7 @@ function PlatformDetail({
                 <SetupPill active={platform.configured}>
                   {platform.configured ? m.credentialsSet : m.needsSetup}
                 </SetupPill>
-                {!platform.gateway_running && <SetupPill active={false}>{t('messaging.gatewayStopped')}</SetupPill>}
+                {!platform.gateway_running && <SetupPill active={false}>{m.gatewayStopped}</SetupPill>}
               </div>
               <PlatformHint platform={platform} />
             </div>
@@ -514,7 +392,7 @@ function PlatformDetail({
           )}
 
           <section>
-            <SectionTitle>{t('messaging.getCredentials')}</SectionTitle>
+            <SectionTitle>{m.getCredentials}</SectionTitle>
             <p className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
               {introCopy(platform, m)}
             </p>
@@ -529,8 +407,8 @@ function PlatformDetail({
           </section>
 
           <section>
-            <SectionTitle>{t('messaging.required')}</SectionTitle>
-            <div className="mt-3 space-y-4">
+            <SectionTitle>{m.required}</SectionTitle>
+            <div className="mt-3 grid gap-1">
               {requiredFields.length > 0 ? (
                 requiredFields.map(field => (
                   <MessagingField
@@ -552,8 +430,8 @@ function PlatformDetail({
 
           {optionalFields.length > 0 && (
             <section>
-              <SectionTitle>{t('messaging.recommended')}</SectionTitle>
-              <div className="mt-3 space-y-4">
+              <SectionTitle>{m.recommended}</SectionTitle>
+              <div className="mt-3 grid gap-1">
                 {optionalFields.map(field => (
                   <MessagingField
                     edits={edits}
@@ -599,20 +477,16 @@ function PlatformDetail({
 
       <footer className="bg-(--ui-chat-surface-background) px-5 py-2.5">
         <div className="mx-auto flex max-w-2xl flex-wrap items-center gap-2">
-          <label className="flex shrink-0 items-center gap-2 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-2.5 py-1.5 text-[length:var(--conversation-text-font-size)]">
-            <Switch
-              aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
-              checked={platform.enabled}
-              disabled={saving === `enabled:${platform.id}`}
-              onCheckedChange={onToggle}
-            />
-            <span className="text-xs font-medium text-muted-foreground">
-              {platform.enabled ? m.enabled : m.disabled}
-            </span>
-          </label>
+          <Switch
+            aria-label={platform.enabled ? m.disableAria(platform.name) : m.enableAria(platform.name)}
+            checked={platform.enabled}
+            disabled={saving === `enabled:${platform.id}`}
+            onCheckedChange={onToggle}
+            size="xs"
+          />
 
           <div className="ml-auto flex items-center gap-2">
-            {hasEdits && <span className="text-xs text-muted-foreground">{t('messaging.unsavedChanges')}</span>}
+            {hasEdits && <span className="text-xs text-muted-foreground">{m.unsavedChanges}</span>}
             <Button disabled={!hasEdits || isSavingEnv} onClick={onSave} size="sm">
               <Save />
               {isSavingEnv ? m.saving : m.saveChanges}
@@ -683,43 +557,45 @@ function MessagingField({
   const fieldId = `messaging-field-${field.key}`
 
   return (
-    <div className="space-y-1.5">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <label className="text-sm font-medium text-foreground" htmlFor={`messaging-field-${field.key}`}>
-          {copy.label}
-        </label>
-        {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{t('messaging.saved')}</span>}
-      </div>
-      <div className="flex items-center gap-2">
-        <Input
-          className="font-mono"
-          id={`messaging-field-${field.key}`}
-          onChange={event => onEdit(field.key, event.target.value)}
-          placeholder={field.is_set ? field.redacted_value || 'Replace current value' : copy.placeholder}
-          type={field.is_password ? 'password' : 'text'}
-          value={edits[field.key] || ''}
-        />
-        {field.url && (
-          <Button asChild size="icon-sm" title="Open docs" variant="ghost">
-            <a href={field.url} rel="noreferrer" target="_blank">
-              <ExternalLink className="size-3.5" />
-            </a>
-          </Button>
-        )}
-        {field.is_set && (
-          <Button
-            disabled={saving === `clear:${field.key}`}
-            onClick={() => onClear(field.key)}
-            size="icon-sm"
-            title={`Clear ${field.key}`}
-            variant="ghost"
-          >
-            <Trash2 className="size-3.5" />
-          </Button>
-        )}
-      </div>
-      {copy.help && <p className="text-xs leading-5 text-muted-foreground">{copy.help}</p>}
-    </div>
+    <ListRow
+      action={
+        <div className="flex items-center gap-2">
+          <Input
+            className={CREDENTIAL_CONTROL_CLASS}
+            id={fieldId}
+            onChange={event => onEdit(field.key, event.target.value)}
+            placeholder={field.is_set ? field.redacted_value || m.replaceValue : copy.placeholder}
+            type={field.is_password ? 'password' : 'text'}
+            value={edits[field.key] || ''}
+          />
+          {field.url && (
+            <Button asChild className="size-8 shrink-0" title={m.openDocs} variant="ghost">
+              <a href={field.url} rel="noreferrer" target="_blank">
+                <ExternalLink className="size-3.5" />
+              </a>
+            </Button>
+          )}
+          {field.is_set && (
+            <Button
+              className="size-8 shrink-0"
+              disabled={saving === `clear:${field.key}`}
+              onClick={() => onClear(field.key)}
+              title={m.clearField(field.key)}
+              variant="ghost"
+            >
+              <Trash2 className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      }
+      description={copy.help}
+      title={
+        <span className="flex flex-wrap items-center gap-2">
+          <label htmlFor={fieldId}>{copy.label}</label>
+          {field.is_set && <span className="text-[0.66rem] font-medium text-primary">{m.saved}</span>}
+        </span>
+      }
+    />
   )
 }
 

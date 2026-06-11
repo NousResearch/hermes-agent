@@ -2,8 +2,6 @@ import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
-import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -15,7 +13,7 @@ import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 
-import { useTranslation } from '@/hooks/use-translation'
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
@@ -75,7 +73,7 @@ interface SkillsViewProps extends React.ComponentProps<'section'> {
 }
 
 export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: SkillsViewProps) {
-  const { t } = useTranslation()
+  const { t } = useI18n()
   const [mode, setMode] = useRouteEnumParam('tab', SKILLS_MODES, 'skills')
 
   const [query, setQuery] = useState('')
@@ -95,11 +93,11 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       setSkills(nextSkills)
       setToolsets(nextToolsets)
     } catch (err) {
-      notifyError(err, 'Skills failed to load')
+      notifyError(err, t.skills.skillsLoadFailed)
     } finally {
       setRefreshing(false)
     }
-  }, [])
+  }, [t])
 
   const refreshToolsets = useCallback(() => {
     getToolsets()
@@ -194,34 +192,34 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     <PageSearchShell
       {...props}
       filters={
-        <>
-          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
-            <TextTab active={mode === 'skills'} onClick={() => setMode('skills')}>
-              {t('skills.title')}
+        mode === 'skills' && categories.length > 0 ? (
+          <>
+            <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
+              {t.skills.all} <TextTabMeta>{totalSkills}</TextTabMeta>
             </TextTab>
-            <TextTab active={mode === 'toolsets'} onClick={() => setMode('toolsets')}>
-              Toolsets
-            </TextTab>
-          </div>
-          {mode === 'skills' && categories.length > 0 && (
-            <div className="flex flex-wrap justify-center gap-x-2 gap-y-1">
-              <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
-                All <TextTabMeta>{totalSkills}</TextTabMeta>
+            {categories.map(category => (
+              <TextTab
+                active={activeCategory === category.key}
+                key={category.key}
+                onClick={() => setActiveCategory(activeCategory === category.key ? null : category.key)}
+              >
+                {prettyName(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
               </TextTab>
             ))}
           </>
         ) : undefined
       }
       onSearchChange={setQuery}
-      searchPlaceholder={mode === 'skills' ? t('skills.search') : 'Search toolsets...'}
+      searchHidden={mode === 'skills' ? (skills?.length ?? 0) === 0 : (toolsets?.length ?? 0) === 0}
+      searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
       searchTrailingAction={
         <Button
-          aria-label={refreshing ? 'Refreshing skills' : 'Refresh skills'}
+          aria-label={refreshing ? t.skills.refreshing : t.skills.refresh}
           className="text-(--ui-text-tertiary) hover:bg-transparent hover:text-foreground"
           disabled={refreshing}
           onClick={() => void refreshCapabilities()}
           size="icon-xs"
-          title={refreshing ? 'Refreshing skills' : 'Refresh skills'}
+          title={refreshing ? t.skills.refreshing : t.skills.refresh}
           type="button"
           variant="ghost"
         >
@@ -245,7 +243,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
       ) : mode === 'skills' ? (
         <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
           {visibleSkills.length === 0 ? (
-            <EmptyState description="Try a broader search or different category." title={t('skills.noResults')} />
+            <EmptyState description={t.skills.noSkillsDesc} title={t.skills.noSkillsTitle} />
           ) : (
             <div className="space-y-4">
               {skillGroups.map(([category, list]) => (

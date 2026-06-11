@@ -3,11 +3,10 @@ import { IconLayoutDashboard } from '@tabler/icons-react'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { Activity, AlertCircle } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { cn } from '@/lib/utils'
-import { t } from '@/store/i18n'
-import { useLocaleSync } from '@/store/use-locale-sync'
 import type { StatusResponse } from '@/types/hermes'
 
 interface GatewayMenuPanelProps {
@@ -42,25 +41,25 @@ export function GatewayMenuPanel({
   onOpenSystem,
   statusSnapshot
 }: GatewayMenuPanelProps) {
-  useLocaleSync()
-
+  const { t } = useI18n()
+  const copy = t.shell.gatewayMenu
   const gatewayOpen = gatewayState === 'open'
   const gatewayConnecting = gatewayState === 'connecting'
   const inferenceReady = gatewayOpen && inferenceStatus?.ready === true
 
   const connectionLabel = gatewayOpen
-    ? t('gateway.connected')
+    ? copy.connected
     : gatewayConnecting
-      ? t('gateway.connecting')
-      : prettyState(gatewayState || 'offline')
+      ? copy.connecting
+      : prettyState(gatewayState || copy.offline)
 
   const inferenceLabel = gatewayOpen
     ? inferenceStatus?.ready
-      ? t('gateway.inferenceReady')
+      ? copy.inferenceReady
       : inferenceStatus
-        ? t('gateway.inferenceNotReady')
-        : t('gateway.checkingInference')
-    : t('gateway.disconnected')
+        ? copy.inferenceNotReady
+        : copy.checkingInference
+    : copy.disconnected
 
   const platforms = Object.entries(statusSnapshot?.gateway_platforms || {}).sort(([l], [r]) => l.localeCompare(r))
   const recentLogs = logLines.slice(-5)
@@ -74,34 +73,35 @@ export function GatewayMenuPanel({
           ) : (
             <AlertCircle className={cn('size-3.5', gatewayOpen ? 'text-amber-600' : 'text-destructive')} />
           )}
-          <span className="font-medium">{t('gateway.title')}</span>
+          <span className="font-medium">{copy.gateway}</span>
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <StatusDot tone={inferenceReady ? 'good' : gatewayOpen ? 'warn' : 'bad'} />
             {inferenceLabel}
           </span>
         </div>
         <div className="flex items-center">
-          <Button
-            aria-label={t('gateway.openSystemPanel')}
-            className="size-7 text-muted-foreground hover:text-foreground"
-            onClick={onOpenSystem}
-            size="icon-sm"
-            title={t('gateway.openSystemPanel')}
-            variant="ghost"
-          >
-            <IconLayoutDashboard />
-          </Button>
+          <Tip label={copy.openSystem}>
+            <Button
+              aria-label={copy.openSystem}
+              className="text-muted-foreground hover:text-foreground"
+              onClick={onOpenSystem}
+              size="icon-sm"
+              variant="ghost"
+            >
+              <IconLayoutDashboard />
+            </Button>
+          </Tip>
         </div>
       </div>
 
       <div className="border-t border-border/50 px-3 py-2 text-xs text-muted-foreground">
-        <div>{t('gateway.connectionLabel')} {connectionLabel}</div>
+        <div>{copy.connection(connectionLabel)}</div>
         {inferenceStatus?.reason && <div className="mt-1 line-clamp-3">{inferenceStatus.reason}</div>}
       </div>
 
       {recentLogs.length > 0 && (
         <div className="border-t border-border/50 px-3 py-2">
-          <SectionLabel>{t('gateway.recentActivity')}</SectionLabel>
+          <SectionLabel>{copy.recentActivity}</SectionLabel>
           <ul className="mt-1.5 space-y-0.5">
             {recentLogs.map((line, index) => (
               <Tip key={`${index}:${line}`} label={line.trim()}>
@@ -118,14 +118,14 @@ export function GatewayMenuPanel({
             type="button"
             variant="text"
           >
-            {t('gateway.viewAllLogs')}
-          </button>
+            {copy.viewAllLogs}
+          </Button>
         </div>
       )}
 
       {platforms.length > 0 && (
         <div className="border-t border-border/50 px-3 py-2">
-          <SectionLabel>{t('gateway.messagingPlatforms')}</SectionLabel>
+          <SectionLabel>{copy.messagingPlatforms}</SectionLabel>
           <ul className="mt-1.5 space-y-1">
             {platforms.map(([name, platform]) => (
               <li className="flex items-center justify-between gap-2 text-xs" key={name}>

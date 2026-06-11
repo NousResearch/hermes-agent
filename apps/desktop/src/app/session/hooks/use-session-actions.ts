@@ -872,7 +872,7 @@ export function useSessionActions({
 
       try {
         await setSessionArchived(storedSessionId, true, archived?.profile)
-        notify({ durationMs: 2_000, kind: 'success', message: 'Archived' })
+        notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {
           setSessions(prev => [archived, ...prev.filter(s => s.id !== storedSessionId)])

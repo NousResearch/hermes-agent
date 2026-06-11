@@ -17,7 +17,7 @@ import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-te
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { useTranslation } from '@/hooks/use-translation'
+import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
@@ -85,8 +85,15 @@ import { VoiceActivity, VoicePlaybackActivity } from './voice-activity'
 
 const COMPOSER_STACK_BREAKPOINT_PX = 320
 
+// A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
+// vertical padding). Anything taller means the text wrapped to a second line,
+// which is when the composer should expand to the stacked layout.
+const COMPOSER_SINGLE_LINE_MAX_PX = 36
+
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
+
+const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
 
 interface QueueEditState {
   attachments: ComposerAttachment[]
@@ -141,8 +148,6 @@ export function ChatBar({
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
-  const { t } = useTranslation()
-
   const [urlOpen, setUrlOpen] = useState(false)
   const [urlValue, setUrlValue] = useState('')
   const [expanded, setExpanded] = useState(false)
@@ -174,14 +179,46 @@ export function ChatBar({
 
   const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
+  const newSessionPlaceholders = t.composer.newSessionPlaceholders
+  const followUpPlaceholders = t.composer.followUpPlaceholders
+
+  // Resting placeholder: a starter for brand-new sessions, a continuation for
+  // existing ones. Picked once and only re-rolled when we genuinely move to a
+  // *different* conversation. Critically, the first id assignment of a freshly
+  // started session (null → id, on the first send) is treated as the same
+  // conversation so the placeholder doesn't visibly flip mid-stream.
+  const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
+    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
+  )
+
+  const prevSessionIdRef = useRef(sessionId)
+
+  useEffect(() => {
+    const prev = prevSessionIdRef.current
+    prevSessionIdRef.current = sessionId
+
+    if (prev === sessionId) {
+      return
+    }
+
+    // null → id: the new session we're already in just got persisted. Keep the
+    // starter we showed instead of swapping to a follow-up under the user.
+    if (prev == null && sessionId) {
+      return
+    }
+
+    resetBrowseState(prev)
+    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
+  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
+
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to
   // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
   const placeholder = disabled
     ? gatewayState === 'closed' || gatewayState === 'error'
-      ? t('chat.reconnecting')
-      : t('composer.startingHermes')
-    : t('composer.sendFollowUp')
+      ? t.composer.placeholderReconnecting
+      : t.composer.placeholderStarting
+    : restingPlaceholder
 
   const focusInput = useCallback(() => {
     focusComposerInput(editorRef.current)
@@ -272,14 +309,13 @@ export function ChatBar({
     }
   }, [urlOpen])
 
-  // Track expansion via cheap heuristics (newline or length threshold) instead
-  // of reading editor.scrollHeight on every keystroke. scrollHeight forces a
-  // synchronous layout flush — measured at 2.27 layouts per character typed
-  // (see scripts/leak-typing.mjs). With ~30 chars before a typical wrap on
-  // composer-default-width, this heuristic flips at roughly the right time
-  // and the user only notices if they type far past the wrap boundary
-  // without a newline; in that case the ResizeObserver below catches it via
-  // a height delta and we still expand.
+  // Expansion (input on its own full-width row, controls below) is driven by
+  // the editor's *actual* rendered height via the ResizeObserver in
+  // syncComposerMetrics — it only fires when the text genuinely wraps to a
+  // second line, so the layout flips exactly at the wrap point rather than at
+  // a guessed character count. We only handle the two cases the observer
+  // can't: an explicit newline (expand before layout settles) and an emptied
+  // draft (collapse back). We never read scrollHeight per keystroke.
   useEffect(() => {
     if (!draft) {
       setExpanded(false)
@@ -291,7 +327,7 @@ export function ChatBar({
       return
     }
 
-    if (draft.includes('\n') || draft.length > 60) {
+    if (draft.includes('\n')) {
       setExpanded(true)
     }
   }, [draft, expanded])
@@ -327,6 +363,18 @@ export function ChatBar({
       }
     }
 
+    // Expand once the input has actually wrapped past a single line. The
+    // observer only fires on real size changes, so this reads scrollHeight at
+    // most once per wrap (not per keystroke). One line ≈ 28px (1.625rem
+    // min-height + padding); a second line clears ~36px. We only ever expand
+    // here — collapse is handled by the emptied-draft effect to avoid
+    // oscillating across the wrap boundary as the input switches widths.
+    const editor = editorRef.current
+
+    if (editor && editor.scrollHeight > COMPOSER_SINGLE_LINE_MAX_PX) {
+      setExpanded(true)
+    }
+
     if (height > 0) {
       const bucket = Math.round(height / 8) * 8
 
@@ -346,7 +394,7 @@ export function ChatBar({
     }
   }, [])
 
-  useResizeObserver(syncComposerMetrics, composerRef, composerSurfaceRef)
+  useResizeObserver(syncComposerMetrics, composerRef, composerSurfaceRef, editorRef)
 
   useEffect(() => {
     return () => {
@@ -437,13 +485,19 @@ export function ChatBar({
       return
     }
 
-    const pastedText = event.clipboardData.getData('text')
+    // Trim surrounding whitespace so a copy that dragged along leading/trailing
+    // blank lines (common when selecting from terminals, code blocks, web pages)
+    // doesn't dump multiline padding into the composer. Internal newlines are
+    // preserved — only the edges are cleaned up.
+    const pastedText = event.clipboardData.getData('text').trim()
 
     if (!pastedText) {
+      event.preventDefault()
+
       return
     }
 
-    if (DATA_IMAGE_URL_RE.test(pastedText.trim())) {
+    if (DATA_IMAGE_URL_RE.test(pastedText)) {
       event.preventDefault()
 
       return
@@ -505,9 +559,10 @@ export function ChatBar({
     }
   }, [trigger])
 
-  const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
-    const editor = event.currentTarget
-
+  // Pull the live contentEditable text into draftRef + the AUI composer state
+  // (which drives `hasComposerPayload` → the send button). Shared by the input
+  // and compositionend paths so committed IME text reaches state through either.
+  const flushEditorToDraft = (editor: HTMLDivElement) => {
     if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
       editor.replaceChildren()
     }
@@ -616,7 +671,18 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'k') {
+    // IME composition: Enter confirms composed text, not a message submission.
+    // We check both composingRef (set by compositionstart/compositionend, robust
+    // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
+    // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
+    // preedit fires submitDraft() and splits the message mid-word.
+    if (composingRef.current || event.nativeEvent.isComposing) {
+      return
+    }
+
+    // Cmd/Ctrl+Shift+K drains the next queued message. Plain Cmd/Ctrl+K is
+    // reserved for the global command palette.
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.shiftKey && event.key.toLowerCase() === 'k') {
       event.preventDefault()
 
       if (!busy) {
@@ -1223,7 +1289,8 @@ export function ChatBar({
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
-      void onSubmit(submitted)
+      clearComposerAttachments()
+      void onSubmit(submitted, { attachments })
     }
 
     focusInput()
@@ -1351,11 +1418,11 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
-        aria-label={t('composer.message')}
-        autoCorrect="off"
+        aria-label={t.composer.message}
         autoCapitalize="off"
+        autoCorrect="off"
         className={cn(
-          'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
+          'min-h-(--composer-input-min-height) max-h-(--composer-input-max-height) overflow-y-auto whitespace-pre-wrap break-words [overflow-wrap:anywhere] bg-transparent pb-1 pr-1 pt-1 leading-normal text-foreground outline-none disabled:cursor-not-allowed',
           'empty:before:content-[attr(data-placeholder)] empty:before:text-muted-foreground/60',
           '**:data-ref-text:cursor-default',
           stacked && 'pl-3',
@@ -1365,6 +1432,21 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onCompositionEnd={event => {
+          composingRef.current = false
+
+          // The input events fired *during* composition were skipped (they
+          // carried uncommitted preedit text), and Chromium does NOT reliably
+          // emit a trailing input event after compositionend on Windows IMEs.
+          // Without flushing here, committed multi-character IME input (e.g.
+          // Chinese "你好", Japanese, Korean) never reaches composer state, so
+          // `hasComposerPayload` stays false and the send button stays hidden
+          // until an unrelated edit forces a sync (#39614).
+          flushEditorToDraft(event.currentTarget)
+        }}
+        onCompositionStart={() => {
+          composingRef.current = true
+        }}
         onDragOver={handleInputDragOver}
         onDrop={handleInputDrop}
         onFocus={() => markActiveComposer('main')}
@@ -1393,7 +1475,7 @@ export function ChatBar({
 
         `asChild` swaps TextareaAutosize for a Radix Slot wrapping our
         plain <textarea>, which carries the binding but skips autosize. */}
-      <ComposerPrimitive.Input asChild tabIndex={-1} unstable_focusOnScrollToBottom={false}>
+      <ComposerPrimitive.Input asChild submitMode="ctrlEnter" tabIndex={-1} unstable_focusOnScrollToBottom={false}>
         <textarea aria-hidden className="sr-only" tabIndex={-1} />
       </ComposerPrimitive.Input>
     </div>
@@ -1523,7 +1605,7 @@ export function ChatBar({
                     'grid w-full',
                     stacked
                       ? 'grid-cols-[auto_1fr] gap-(--composer-row-gap) [grid-template-areas:"input_input"_"menu_controls"]'
-                      : 'grid-cols-[auto_1fr_auto] items-end gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
+                      : 'grid-cols-[auto_1fr_auto] items-center gap-(--composer-control-gap) [grid-template-areas:"menu_input_controls"]'
                   )}
                 >
                   <div className="flex items-center [grid-area:menu]">{contextMenu}</div>

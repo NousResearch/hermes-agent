@@ -2,13 +2,14 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { ErrorIcon } from '@/components/ui/error-state'
+import { LogView } from '@/components/ui/log-view'
 import type { DesktopConnectionConfig } from '@/global'
 import { useI18n } from '@/i18n'
 import { FileText, Loader2, LogIn, RefreshCw, Wrench } from '@/lib/icons'
 import { $desktopBoot } from '@/store/boot'
 import { notify, notifyError } from '@/store/notifications'
 import { $desktopOnboarding } from '@/store/onboarding'
-import { useTranslation } from '@/hooks/use-translation'
 
 import type { RemoteReauth } from './boot-failure-reauth'
 import { deriveProviderShape, isRemoteReauthFailure, signInLabel } from './boot-failure-reauth'
@@ -33,7 +34,7 @@ export function BootFailureOverlay() {
   const [busy, setBusy] = useState<BusyAction>(null)
   const [logs, setLogs] = useState<string[]>([])
   const [showLogs, setShowLogs] = useState(false)
-  const { t } = useTranslation()
+  const [remoteReauth, setRemoteReauth] = useState<RemoteReauth | null>(null)
 
   const visible = Boolean(boot.error) && !boot.running
   // While first-run onboarding owns the picker/flow we let it surface its own
@@ -177,9 +178,11 @@ export function BootFailureOverlay() {
         <div className="flex items-start gap-3 px-5 py-4">
           <ErrorIcon className="mt-0.5" size="1.25rem" />
           <div>
-            <h2 className="text-[0.9375rem] font-semibold tracking-tight">{t('boot.couldNotStart')}</h2>
+            <h2 className="text-[0.9375rem] font-semibold tracking-tight">
+              {remoteReauth ? copy.remoteTitle : copy.title}
+            </h2>
             <p className="mt-1 text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-              {t('boot.recoveryDesc')}
+              {remoteReauth ? copy.remoteDescription : copy.description}
             </p>
           </div>
         </div>
@@ -191,25 +194,34 @@ export function BootFailureOverlay() {
 
           <div className="grid gap-2">
             <div className="flex flex-wrap gap-2">
-              <Button disabled={Boolean(busy)} onClick={() => void retry()}>
-                {busy === 'retry' ? <Loader2 className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
-                {t('boot.retry')}
-              </Button>
-              <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="outline">
-                {busy === 'repair' ? <Loader2 className="size-4 animate-spin" /> : <Wrench className="size-4" />}
-                {t('boot.repairInstall')}
-              </Button>
-              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="outline">
-                {busy === 'local' ? <Loader2 className="size-4 animate-spin" /> : null}
-                {t('boot.useLocalGateway')}
+              {remoteReauth ? (
+                <Button disabled={Boolean(busy)} onClick={() => void signInRemote()}>
+                  {busy === 'signin' ? <Loader2 className="animate-spin" /> : <LogIn />}
+                  {label}
+                </Button>
+              ) : (
+                <Button disabled={Boolean(busy)} onClick={() => void retry()}>
+                  {busy === 'retry' ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+                  {copy.retry}
+                </Button>
+              )}
+              {!remoteReauth ? (
+                <Button disabled={Boolean(busy)} onClick={() => void repair()} variant="secondary">
+                  {busy === 'repair' ? <Loader2 className="animate-spin" /> : <Wrench />}
+                  {copy.repairInstall}
+                </Button>
+              ) : null}
+              <Button disabled={Boolean(busy)} onClick={() => void switchToLocalGateway()} variant="secondary">
+                {busy === 'local' ? <Loader2 className="animate-spin" /> : null}
+                {copy.useLocalGateway}
               </Button>
               <Button onClick={openLogs} variant="ghost">
-                <FileText className="size-4" />
-                {t('boot.openLogs')}
+                <FileText />
+                {copy.openLogs}
               </Button>
             </div>
             <p className="text-xs text-muted-foreground">
-              {t('boot.repairHint')}
+              {remoteReauth ? copy.remoteSignInHint : copy.repairHint}
             </p>
           </div>
 
@@ -222,13 +234,9 @@ export function BootFailureOverlay() {
                 type="button"
                 variant="text"
               >
-                {showLogs ? t('boot.hideLogs') : t('boot.showLogs')}
-              </button>
-              {showLogs ? (
-                <pre className="max-h-48 overflow-auto rounded-2xl border border-border bg-secondary/30 p-3 font-mono text-[0.7rem] leading-4 text-muted-foreground">
-                  {logs.slice(-40).join('')}
-                </pre>
-              ) : null}
+                {showLogs ? copy.hideRecentLogs : copy.showRecentLogs}
+              </Button>
+              {showLogs ? <LogView className="max-h-48">{logs.slice(-40).join('')}</LogView> : null}
             </div>
           ) : null}
         </div>

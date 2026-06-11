@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Loader } from '@/components/ui/loader'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 
 import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import { setTerminalTakeover } from '../store'

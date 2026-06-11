@@ -11,8 +11,7 @@ import {
   DropdownMenuSubContent
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
-import { cn } from '@/lib/utils'
-import { t } from '@/store/i18n'
+import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 import {
   $activeSessionId,
@@ -20,26 +19,16 @@ import {
   setCurrentFastMode,
   setCurrentReasoningEffort
 } from '@/store/session'
-import { useLocaleSync } from '@/store/use-locale-sync'
 
 // Hermes' real reasoning levels (see VALID_REASONING_EFFORTS); `none` is owned
 // by the Thinking toggle, not the radio.
-const EFFORT_VALUES = ['minimal', 'low', 'medium', 'high', 'xhigh'] as const
-
-function effortLabel(value: (typeof EFFORT_VALUES)[number]): string {
-  switch (value) {
-    case 'minimal':
-      return t('model.effortMinimal')
-    case 'low':
-      return t('model.effortLow')
-    case 'medium':
-      return t('model.effortMedium')
-    case 'high':
-      return t('model.effortHigh')
-    case 'xhigh':
-      return t('model.effortMax')
-  }
-}
+const EFFORT_OPTIONS = [
+  { value: 'minimal', labelKey: 'minimal' },
+  { value: 'low', labelKey: 'low' },
+  { value: 'medium', labelKey: 'medium' },
+  { value: 'high', labelKey: 'high' },
+  { value: 'xhigh', labelKey: 'max' }
+] as const
 
 /** How "fast" is achieved for a given model — two different mechanisms:
  *  - `param`: the Anthropic/OpenAI `speed=fast` request parameter.
@@ -109,8 +98,8 @@ export function ModelEditSubmenu({
   reasoning,
   requestGateway
 }: ModelEditSubmenuProps) {
-  useLocaleSync()
-
+  const { t } = useI18n()
+  const copy = t.shell.modelOptions
   // Reactive session state comes straight from the stores rather than being
   // drilled through the panel, so editing it re-renders only this submenu.
   const activeSessionId = useStore($activeSessionId)
@@ -147,7 +136,7 @@ export function ModelEditSubmenu({
       })
     } catch (err) {
       setCurrentReasoningEffort(rollback)
-      notifyError(err, t('model.optionUpdateFailed'))
+      notifyError(err, copy.updateFailed)
     }
   }
 
@@ -177,7 +166,7 @@ export function ModelEditSubmenu({
           })
         } catch (err) {
           setCurrentFastMode(!enabled)
-          notifyError(err, t('model.fastModeUpdateFailed'))
+          notifyError(err, copy.fastFailed)
         }
       })()
     }
@@ -189,13 +178,13 @@ export function ModelEditSubmenu({
   return (
     <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
       {!hasFast && !reasoning ? (
-        <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{t('model.noOptions')}</div>
+        <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
       ) : (
         <>
-          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{t('model.options')}</DropdownMenuLabel>
+          <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.options}</DropdownMenuLabel>
           {reasoning ? (
             <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-              {t('model.thinking')}
+              {copy.thinking}
               <Switch
                 checked={thinkingOn}
                 className="ml-auto"
@@ -208,26 +197,26 @@ export function ModelEditSubmenu({
           ) : null}
           {hasFast ? (
             <DropdownMenuItem className={dropdownMenuRow} onSelect={event => event.preventDefault()}>
-              {t('model.fast')}
+              {copy.fast}
               <Switch checked={fastOn} className="ml-auto" onCheckedChange={toggleFast} size="xs" />
             </DropdownMenuItem>
           ) : null}
           {reasoning ? (
             <>
               <DropdownMenuSeparator className="mx-0" />
-              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{t('model.effort')}</DropdownMenuLabel>
+              <DropdownMenuLabel className={dropdownMenuSectionLabel}>{copy.effort}</DropdownMenuLabel>
               <DropdownMenuRadioGroup
                 onValueChange={value => void patchReasoning(value, currentReasoningEffort)}
                 value={effort}
               >
-                {EFFORT_VALUES.map(value => (
+                {EFFORT_OPTIONS.map(option => (
                   <DropdownMenuRadioItem
-                    className={cn(dropdownMenuRow, 'cursor-pointer')}
-                    key={value}
+                    className={dropdownMenuRow}
+                    key={option.value}
                     onSelect={event => event.preventDefault()}
-                    value={value}
+                    value={option.value}
                   >
-                    {effortLabel(value)}
+                    {copy[option.labelKey]}
                   </DropdownMenuRadioItem>
                 ))}
               </DropdownMenuRadioGroup>
@@ -252,5 +241,5 @@ function normalizeEffort(effort: string): string {
     return ''
   }
 
-  return EFFORT_VALUES.some(option => option === value) ? value : 'medium'
+  return EFFORT_OPTIONS.some(option => option.value === value) ? value : 'medium'
 }

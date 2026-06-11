@@ -14,23 +14,17 @@ import {
   restartGateway,
   updateHermes
 } from '@/hermes'
-import type {
-  ActionStatusResponse,
-  AnalyticsResponse,
-  SessionInfo,
-  SessionSearchResult as SessionSearchApiResult,
-  StatusResponse
-} from '@/hermes'
+import type { ActionStatusResponse, AnalyticsResponse, StatusResponse } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { Activity, AlertCircle, BarChart3, Pin } from '@/lib/icons'
 import { exportSession } from '@/lib/session-export'
 import { cn } from '@/lib/utils'
 import { upsertDesktopActionTask } from '@/store/activity'
-import { t } from '@/store/i18n'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $sessions, sessionPinId } from '@/store/session'
-import { useLocaleSync } from '@/store/use-locale-sync'
 
+import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
 import { OverlayMain, OverlayNavItem, OverlaySidebar, OverlaySplitLayout } from '../overlays/overlay-split-layout'
 import { OverlayView } from '../overlays/overlay-view'
@@ -49,102 +43,6 @@ interface CommandCenterViewProps {
   // Accepted for call-site parity; navigation lives in the global Cmd+K palette.
   onNavigateRoute?: (path: string) => void
   onOpenSession: (sessionId: string) => void
-}
-
-type NavKey = 'newChat' | 'settings' | 'skills' | 'messaging' | 'artifacts'
-
-const NAV_ROUTES: readonly { key: NavKey; route: string }[] = [
-  { key: 'newChat', route: NEW_CHAT_ROUTE },
-  { key: 'settings', route: SETTINGS_ROUTE },
-  { key: 'skills', route: SKILLS_ROUTE },
-  { key: 'messaging', route: MESSAGING_ROUTE },
-  { key: 'artifacts', route: ARTIFACTS_ROUTE }
-]
-
-interface SessionSearchHit {
-  detail?: string
-  kind: 'session'
-  sessionId: string
-  snippet: string
-  title: string
-}
-
-interface RouteSearchHit {
-  detail?: string
-  kind: 'route'
-  route: string
-  title: string
-}
-
-interface NavigationSearchEntry {
-  detail?: string
-  id: string
-  route: string
-  title: string
-}
-
-interface SectionSearchEntry {
-  detail?: string
-  id: string
-  section: CommandCenterSection
-  title: string
-}
-
-const NAVIGATION_SEARCH_ENTRIES: readonly NavigationSearchEntry[] = [
-  { id: 'nav-new-chat', route: NEW_CHAT_ROUTE, title: 'New session', detail: 'Start a fresh session' },
-  { id: 'nav-settings', route: SETTINGS_ROUTE, title: 'Settings', detail: 'Configure Hermes desktop' },
-  { id: 'nav-skills', route: SKILLS_ROUTE, title: 'Skills & Tools', detail: 'Enable skills, toolsets, and providers' },
-  {
-    id: 'nav-messaging',
-    route: MESSAGING_ROUTE,
-    title: 'Messaging',
-    detail: 'Set up Telegram, Slack, Discord, and more'
-  },
-  { id: 'nav-artifacts', route: ARTIFACTS_ROUTE, title: 'Artifacts', detail: 'Browse generated outputs' }
-]
-
-const SECTION_SEARCH_ENTRIES: readonly SectionSearchEntry[] = [
-  { id: 'section-sessions', section: 'sessions', title: 'Sessions panel', detail: 'Search, pin, and manage sessions' },
-  { id: 'section-system', section: 'system', title: 'System panel', detail: 'Gateway status, logs, restart/update' },
-  { id: 'section-usage', section: 'usage', title: 'Usage panel', detail: 'Token, cost, and skill activity' }
-]
-
-interface SessionSearchHit {
-  detail?: string
-  kind: 'session'
-  /** Durable lineage-root id used for pinning so the pin survives compression. */
-  pinId: string
-  sessionId: string
-  snippet: string
-  title: string
-}
-
-interface RouteSearchHit {
-  detail?: string
-  kind: 'route'
-  route: string
-  title: string
-}
-
-interface SectionSearchHit {
-  detail?: string
-  kind: 'section'
-  section: CommandCenterSection
-  title: string
-}
-
-type CommandCenterSearchResult = RouteSearchHit | SectionSearchHit | SessionSearchHit
-
-interface CommandCenterSearchProvider {
-  id: string
-  label: string
-  search: (query: string) => Promise<CommandCenterSearchResult[]>
-}
-
-interface CommandCenterSearchGroup {
-  id: string
-  label: string
-  results: CommandCenterSearchResult[]
 }
 
 function formatTimestamp(value?: number | null): string {
@@ -173,15 +71,51 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
   return debounced
 }
 
-export function CommandCenterView({
-  initialSection,
-  onClose,
-  onDeleteSession,
-  onNavigateRoute,
-  onOpenSession
-}: CommandCenterViewProps) {
-  useLocaleSync()
+function RowIconButton({
+  children,
+  className,
+  onClick,
+  title
+}: {
+  children: ReactNode
+  className?: string
+  onClick: (event: MouseEvent<HTMLButtonElement>) => void
+  title: string
+}) {
+  return (
+    <Button
+      aria-label={title}
+      className={cn('text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground', className)}
+      onClick={onClick}
+      size="icon-xs"
+      title={title}
+      type="button"
+      variant="ghost"
+    >
+      {children}
+    </Button>
+  )
+}
 
+function EmptyPanel({ action, description, title }: { action?: ReactNode; description: string; title?: string }) {
+  return (
+    <div className="grid min-h-48 place-items-center px-6 text-center">
+      <div>
+        {title && (
+          <div className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">{title}</div>
+        )}
+        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+          {description}
+        </div>
+        {action && <div className="mt-3 flex justify-center">{action}</div>}
+      </div>
+    </div>
+  )
+}
+
+export function CommandCenterView({ initialSection, onClose, onDeleteSession, onOpenSession }: CommandCenterViewProps) {
+  const { t } = useI18n()
+  const cc = t.commandCenter
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
@@ -211,56 +145,16 @@ export function CommandCenterView({
 
     const needle = debouncedQuery.toLowerCase()
 
-  const searchProviders = useMemo<readonly CommandCenterSearchProvider[]>(
-    () => [
-      {
-        id: 'navigation',
-        label: 'Navigate',
-        search: async searchQuery => {
-          const routeHits: RouteSearchHit[] = NAVIGATION_SEARCH_ENTRIES.filter(entry =>
-            matchesSearchQuery(searchQuery, entry.title, entry.detail, entry.route)
-          ).map(entry => ({
-            detail: entry.detail,
-            kind: 'route',
-            route: entry.route,
-            title: entry.title
-          }))
+    if (!needle) {
+      return sorted
+    }
 
-          const sectionHits: SectionSearchHit[] = SECTION_SEARCH_ENTRIES.filter(entry =>
-            matchesSearchQuery(searchQuery, entry.title, entry.detail, SECTION_LABELS[entry.section])
-          ).map(entry => ({
-            detail: entry.detail,
-            kind: 'section',
-            section: entry.section,
-            title: entry.title
-          }))
+    return sorted.filter(session => {
+      const haystack = `${sessionTitle(session)} ${session.id}`.toLowerCase()
 
-          return [...routeHits, ...sectionHits]
-        }
-      },
-      {
-        id: 'sessions',
-        label: 'Sessions',
-        search: async searchQuery => {
-          const response = await searchSessions(searchQuery)
-
-          return response.results.map(result => {
-            const { detail, title } = splitSessionSearchResult(result, sessionsById)
-
-            return {
-              detail,
-              kind: 'session',
-              pinId: result.lineage_root || result.session_id,
-              sessionId: result.session_id,
-              snippet: result.snippet || '',
-              title
-            } satisfies SessionSearchHit
-          })
-        }
-      }
-    ],
-    [sessionsById]
-  )
+      return haystack.includes(needle)
+    })
+  }, [debouncedQuery, sessions])
 
   const refreshSystem = useCallback(async () => {
     setSystemLoading(true)
@@ -319,8 +213,14 @@ export function CommandCenterView({
     }
   }, [refreshUsage, section, usagePeriod])
 
-  const showGlobalSearchResults = debouncedQuery.length > 0
-  const hasGlobalSearchResults = searchGroups.length > 0
+  useRefreshHotkey(() => {
+    if (section === 'system') {
+      void refreshSystem()
+    } else if (section === 'usage') {
+      void refreshUsage(usagePeriod)
+    }
+  })
+
   const sessionListHasResults = filteredSessions.length > 0
 
   const runSystemAction = useCallback(
@@ -364,60 +264,8 @@ export function CommandCenterView({
     [cc, refreshSystem]
   )
 
-  const handleSearchSelect = useCallback(
-    (result: CommandCenterSearchResult) => {
-      if (result.kind === 'route') {
-        onNavigateRoute(result.route)
-
-        return
-      }
-
-      if (result.kind === 'section') {
-        setSection(result.section)
-        setQuery('')
-
-        return
-      }
-
-      onOpenSession(result.sessionId)
-    },
-    [onNavigateRoute, onOpenSession, setSection]
-  )
-
-  const handleSearchSelect = useCallback(
-    (result: CommandCenterSearchResult) => {
-      if (result.kind === 'route') {
-        onNavigateRoute(result.route)
-
-        return
-      }
-
-      if (result.kind === 'section') {
-        setSection(result.section)
-        setQuery('')
-
-        return
-      }
-
-      onOpenSession(result.sessionId)
-    },
-    [onNavigateRoute, onOpenSession, setSection]
-  )
-
   return (
-    <OverlayView
-      closeLabel="Close command center"
-      headerContent={
-        <OverlaySearchInput
-          containerClassName="w-[min(36rem,calc(100vw-32rem))] min-w-80"
-          loading={searchLoading}
-          onChange={next => setQuery(next)}
-          placeholder="Search sessions, views, and actions"
-          value={query}
-        />
-      }
-      onClose={onClose}
-    >
+    <OverlayView closeLabel={cc.close} onClose={onClose}>
       <OverlaySplitLayout>
         <OverlaySidebar>
           {SECTIONS.map(value => (
@@ -432,120 +280,30 @@ export function CommandCenterView({
         </OverlaySidebar>
 
         <OverlayMain>
-          <header className="mb-4 flex items-center justify-between gap-2">
-            <div>
-              <h2 className="text-sm font-semibold text-foreground">{SECTION_LABELS[section]}</h2>
-              <p className="text-xs text-muted-foreground">{SECTION_DESCRIPTIONS[section]}</p>
+          <header className="mb-4 flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <h2 className="text-[length:var(--conversation-text-font-size)] font-semibold text-foreground">
+                {cc.sections[section]}
+              </h2>
+              <p className="mt-0.5 text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
+                {cc.sectionDescriptions[section]}
+              </p>
             </div>
-            {section === 'system' && (
-              <OverlayActionButton disabled={systemLoading} onClick={() => void refreshSystem()}>
-                <IconRefresh className={cn('mr-1.5 size-3.5', systemLoading && 'animate-spin')} />
-                {systemLoading ? 'Refreshing...' : 'Refresh'}
-              </OverlayActionButton>
-            )}
-            {section === 'usage' && (
-              <OverlayActionButton disabled={usageLoading} onClick={() => void refreshUsage(usagePeriod)}>
-                <IconRefresh className={cn('mr-1.5 size-3.5', usageLoading && 'animate-spin')} />
-                {usageLoading ? 'Refreshing...' : 'Refresh'}
-              </OverlayActionButton>
-            )}
-          </header>
-
-          {showGlobalSearchResults ? (
-            <div className="min-h-0 flex-1 overflow-y-auto pr-1">
-              {!hasGlobalSearchResults ? (
-                <OverlayCard className="px-3 py-4 text-sm text-muted-foreground">
-                  No matching results found.
-                </OverlayCard>
-              ) : (
-                <div className="grid gap-3">
-                  {searchGroups.map(group => (
-                    <section className="grid gap-1.5" key={group.id}>
-                      <h3 className="px-0.5 text-xs font-semibold tracking-[0.08em] text-muted-foreground/80 uppercase">
-                        {group.label}
-                      </h3>
-                      {group.results.map(result => {
-                        if (result.kind === 'session') {
-                          const pinned = pinnedSessionIds.includes(result.pinId)
-
-                          return (
-                            <OverlayCard className="p-2.5" key={`${group.id}:${result.sessionId}:${result.snippet}`}>
-                              <button
-                                className="w-full text-left"
-                                onClick={() => handleSearchSelect(result)}
-                                type="button"
-                              >
-                                <div className="truncate text-sm font-medium text-foreground">{result.title}</div>
-                                <div className="mt-0.5 text-xs text-muted-foreground">
-                                  {result.detail || result.sessionId}
-                                </div>
-                                {result.snippet && (
-                                  <div className="mt-1 whitespace-pre-wrap text-xs text-muted-foreground/85">
-                                    {result.snippet}
-                                  </div>
-                                )}
-                              </button>
-                              <div className="mt-2 flex gap-1">
-                                <OverlayIconButton
-                                  onClick={event => {
-                                    event.preventDefault()
-                                    event.stopPropagation()
-                                    pinned ? unpinSession(result.pinId) : pinSession(result.pinId)
-                                  }}
-                                  title={pinned ? 'Unpin session' : 'Pin session'}
-                                >
-                                  {pinned ? (
-                                    <IconBookmarkFilled className="size-3.5" />
-                                  ) : (
-                                    <IconBookmark className="size-3.5" />
-                                  )}
-                                </OverlayIconButton>
-                                <OverlayIconButton
-                                  onClick={event => {
-                                    event.preventDefault()
-                                    event.stopPropagation()
-                                    void exportSession(result.sessionId, { title: result.title })
-                                  }}
-                                  title="Export session"
-                                >
-                                  <IconDownload className="size-3.5" />
-                                </OverlayIconButton>
-                                <OverlayIconButton
-                                  className="hover:text-destructive"
-                                  onClick={event => {
-                                    event.preventDefault()
-                                    event.stopPropagation()
-                                    void onDeleteSession(result.sessionId)
-                                  }}
-                                  title="Delete session"
-                                >
-                                  <IconTrash className="size-3.5" />
-                                </OverlayIconButton>
-                              </div>
-                            </OverlayCard>
-                          )
-                        }
-
-                        return (
-                          <button
-                            className={cn(
-                              overlayCardClass,
-                              'w-full px-3 py-2 text-left transition-colors hover:bg-[color-mix(in_srgb,var(--dt-muted)_48%,var(--dt-card))]'
-                            )}
-                            key={`${group.id}:${result.kind}:${result.title}`}
-                            onClick={() => handleSearchSelect(result)}
-                            type="button"
-                          >
-                            <div className="text-sm font-medium text-foreground">{result.title}</div>
-                            {result.detail && (
-                              <div className="mt-0.5 text-xs text-muted-foreground">{result.detail}</div>
-                            )}
-                          </button>
-                        )
-                      })}
-                    </section>
-                  ))}
-                </div>
+            <div className="flex shrink-0 items-center gap-2">
+              {section === 'sessions' && (
+                <SearchField
+                  containerClassName="max-w-[40vw]"
+                  onChange={next => setQuery(next)}
+                  placeholder={cc.searchPlaceholder}
+                  value={query}
+                />
+              )}
+              {section === 'usage' && (
+                <SegmentedControl
+                  onChange={id => setUsagePeriod(Number(id) as UsagePeriod)}
+                  options={USAGE_PERIODS.map(value => ({ id: String(value), label: cc.days(value) }))}
+                  value={String(usagePeriod)}
+                />
               )}
             </div>
           </header>
@@ -553,7 +311,7 @@ export function CommandCenterView({
           {section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
-                <OverlayCard className="px-3 py-4 text-sm text-muted-foreground">{t('commandCenter.noSessionsYet')}</OverlayCard>
+                <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />
               ) : (
                 <ul>
                   {filteredSessions.map(session => {
@@ -574,26 +332,32 @@ export function CommandCenterView({
                             {formatTimestamp(session.last_active || session.started_at)}
                           </div>
                         </button>
-                        <OverlayIconButton
-                          onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
-                          title={pinned ? 'Unpin session' : 'Pin session'}
-                        >
-                          {pinned ? <IconBookmarkFilled className="size-3.5" /> : <IconBookmark className="size-3.5" />}
-                        </OverlayIconButton>
-                        <OverlayIconButton
-                          onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
-                          title="Export session"
-                        >
-                          <IconDownload className="size-3.5" />
-                        </OverlayIconButton>
-                        <OverlayIconButton
-                          className="hover:text-destructive"
-                          onClick={() => void onDeleteSession(session.id)}
-                          title="Delete session"
-                        >
-                          <IconTrash className="size-3.5" />
-                        </OverlayIconButton>
-                      </OverlayCard>
+                        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                          <RowIconButton
+                            onClick={() => (pinned ? unpinSession(pinId) : pinSession(pinId))}
+                            title={pinned ? cc.unpinSession : cc.pinSession}
+                          >
+                            {pinned ? (
+                              <IconBookmarkFilled className="size-3.5" />
+                            ) : (
+                              <IconBookmark className="size-3.5" />
+                            )}
+                          </RowIconButton>
+                          <RowIconButton
+                            onClick={() => void exportSession(session.id, { session, title: sessionTitle(session) })}
+                            title={cc.exportSession}
+                          >
+                            <IconDownload className="size-3.5" />
+                          </RowIconButton>
+                          <RowIconButton
+                            className="hover:text-destructive"
+                            onClick={() => void onDeleteSession(session.id)}
+                            title={cc.deleteSession}
+                          >
+                            <IconTrash className="size-3.5" />
+                          </RowIconButton>
+                        </div>
+                      </li>
                     )
                   })}
                 </ul>
@@ -621,21 +385,21 @@ export function CommandCenterView({
                               status.gateway_running ? 'bg-emerald-500' : 'bg-amber-500'
                             )}
                           />
-                          <span className="font-medium text-foreground">
-                            {status.gateway_running ? 'Messaging gateway running' : 'Messaging gateway stopped'}
+                          <span className="text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+                            {status.gateway_running ? cc.gatewayRunning : cc.gatewayStopped}
                           </span>
                         </div>
-                        <div className="mt-1 text-xs text-muted-foreground">
-                          Hermes {status.version} · Active sessions {status.active_sessions}
+                        <div className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {cc.hermesActiveSessions(status.version, status.active_sessions)}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5 whitespace-nowrap">
-                        <OverlayActionButton className="h-7 px-2.5" onClick={() => void runSystemAction('restart')}>
-                          Restart messaging
-                        </OverlayActionButton>
-                        <OverlayActionButton className="h-7 px-2.5" onClick={() => void runSystemAction('update')}>
-                          Update Hermes
-                        </OverlayActionButton>
+                        <Button onClick={() => void runSystemAction('restart')} size="xs" variant="text">
+                          {cc.restartMessaging}
+                        </Button>
+                        <Button onClick={() => void runSystemAction('update')} size="xs" variant="textStrong">
+                          {cc.updateHermes}
+                        </Button>
                       </div>
                     </div>
                     {systemAction && (
@@ -646,13 +410,15 @@ export function CommandCenterView({
                     )}
                   </div>
                 ) : (
-                  <div className="text-xs text-muted-foreground">{t('commandCenter.loadingStatus')}</div>
+                  <PageLoader className="min-h-32" label={cc.loadingStatus} />
                 )}
               </div>
 
               <div className="flex min-h-0 flex-col">
                 <div className="mb-2 flex items-center justify-between">
-                  <span className="text-xs font-medium text-muted-foreground">{t('commandCenter.recentLogs')}</span>
+                  <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+                    {cc.recentLogs}
+                  </span>
                   {systemError && (
                     <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
                       <AlertCircle className="size-3.5" />
@@ -660,8 +426,8 @@ export function CommandCenterView({
                     </span>
                   )}
                 </div>
-                <pre className="h-full min-h-0 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.65rem] leading-relaxed text-muted-foreground">
-                  {logs.length ? logs.join('\n') : 'No logs loaded yet.'}
+                <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap wrap-break-word rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) p-3 font-mono text-[0.65rem] leading-relaxed text-(--ui-text-tertiary)">
+                  {logs.length ? logs.join('\n') : cc.noLogs}
                 </pre>
               </div>
             </div>
@@ -712,7 +478,9 @@ interface UsagePanelProps {
   usage: AnalyticsResponse | null
 }
 
-function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }: UsagePanelProps) {
+function UsagePanel({ error, loading, onRefresh, period, usage }: UsagePanelProps) {
+  const { t } = useI18n()
+  const cc = t.commandCenter
   const daily = useMemo(() => usage?.daily ?? [], [usage])
   const totals = usage?.totals
   const byModel = usage?.by_model ?? []
@@ -746,71 +514,36 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
   }
 
   return (
-    <div className="grid min-h-0 flex-1 grid-rows-[auto_auto_minmax(0,1fr)] gap-3">
-      <OverlayCard className="flex flex-wrap items-center justify-between gap-2 p-3">
-        <div className="flex items-center gap-1">
-          {USAGE_PERIODS.map(value => (
-            <button
-              className={cn(
-                'h-7 rounded-md px-2.5 text-xs transition-colors',
-                value === period
-                  ? 'bg-foreground text-background'
-                  : 'text-muted-foreground hover:bg-muted/40 hover:text-foreground'
-              )}
-              key={value}
-              onClick={() => onPeriodChange(value)}
-              type="button"
-            >
-              {value}d
-            </button>
-          ))}
-        </div>
-        {error && (
-          <span className="inline-flex items-center gap-1 text-xs text-destructive">
-            <AlertCircle className="size-3.5" />
-            {error}
+    <div className="flex min-h-0 flex-1 flex-col gap-5 overflow-y-auto pb-2">
+      {error && (
+        <span className="inline-flex items-center gap-1 text-[length:var(--conversation-caption-font-size)] text-destructive">
+          <AlertCircle className="size-3.5" />
+          {error}
+        </span>
+      )}
+
+      <div className="grid grid-cols-2 gap-x-4 gap-y-4 border-b border-(--ui-stroke-tertiary) pb-5 sm:grid-cols-4">
+        <UsageStat label={cc.statSessions} value={formatInteger(totals.total_sessions)} />
+        <UsageStat label={cc.statApiCalls} value={formatInteger(totals.total_api_calls)} />
+        <UsageStat
+          label={cc.statTokens}
+          value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
+        />
+        <UsageStat
+          hint={totals.total_actual_cost > 0 ? cc.actualCost(formatCost(totals.total_actual_cost)) : undefined}
+          label={cc.statCost}
+          value={formatCost(totals.total_estimated_cost)}
+        />
+      </div>
+
+      <section>
+        <div className="mb-2 flex items-baseline justify-between">
+          <span className="text-[0.625rem] font-medium uppercase tracking-[0.08em] text-(--ui-text-tertiary)">
+            {cc.dailyTokens}
           </span>
-        )}
-      </OverlayCard>
-
-      <OverlayCard className="p-3">
-        {totals ? (
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-            <UsageStat label="Sessions" value={formatInteger(totals.total_sessions)} />
-            <UsageStat label="API calls" value={formatInteger(totals.total_api_calls)} />
-            <UsageStat
-              label="Tokens in/out"
-              value={`${formatTokens(totals.total_input)} / ${formatTokens(totals.total_output)}`}
-            />
-            <UsageStat
-              hint={totals.total_actual_cost > 0 ? `actual ${formatCost(totals.total_actual_cost)}` : undefined}
-              label="Est. cost"
-              value={formatCost(totals.total_estimated_cost)}
-            />
-          </div>
-        ) : loading ? (
-          <div className="text-xs text-muted-foreground">{t('commandCenter.loadingUsage')}</div>
-        ) : (
-          <div className="text-xs text-muted-foreground">
-            No usage in the last {period} days.{' '}
-            <button className="underline underline-offset-4 decoration-current/20" onClick={onRefresh} type="button">
-              Retry
-            </button>
-          </div>
-        )}
-      </OverlayCard>
-
-      <div className="grid min-h-0 grid-rows-[auto_minmax(0,1fr)] gap-3">
-        <OverlayCard className="p-3">
-          <div className="mb-2 flex items-baseline justify-between">
-            <span className="text-xs font-medium text-muted-foreground">{t('commandCenter.dailyTokens')}</span>
-            <span className="flex items-center gap-3 text-[0.65rem] text-muted-foreground">
-              <span className="inline-flex items-center gap-1">
-                <span className="size-2 bg-[color:var(--dt-primary)]/60" /> input
-              </span>
-              <span className="inline-flex items-center gap-1">
-                <span className="size-2 bg-emerald-500/70" /> output
-              </span>
+          <span className="flex items-center gap-3 text-[0.65rem] text-(--ui-text-tertiary)">
+            <span className="inline-flex items-center gap-1">
+              <span className="size-2 rounded-[1px] bg-[color:var(--dt-primary)]/60" /> {cc.input}
             </span>
             <span className="inline-flex items-center gap-1">
               <span className="size-2 rounded-[1px] bg-emerald-500/70" /> {cc.output}
@@ -821,15 +554,12 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
           <div className="grid h-24 place-items-center text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
             {cc.noDailyActivity}
           </div>
-          {daily.length === 0 ? (
-            <div className="grid h-24 place-items-center text-xs text-muted-foreground">{t('commandCenter.noDailyActivity')}</div>
-          ) : (
-            <>
-              <div className="flex h-24 items-end gap-px">
-                {daily.map(entry => {
-                  const total = (entry.input_tokens || 0) + (entry.output_tokens || 0)
-                  const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
-                  const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
+        ) : (
+          <>
+            <div className="flex h-24 items-end gap-px">
+              {daily.map(entry => {
+                const inputH = Math.round(((entry.input_tokens || 0) / maxTokens) * 96)
+                const outputH = Math.round(((entry.output_tokens || 0) / maxTokens) * 96)
 
                 return (
                   <div
@@ -857,56 +587,25 @@ function UsagePanel({ error, loading, onPeriodChange, onRefresh, period, usage }
         )}
       </section>
 
-        <OverlayCard className="min-h-0 overflow-auto p-2">
-          <div className="grid gap-3 sm:grid-cols-2">
-            <section className="min-w-0">
-              <div className="mb-1.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
-                Top models
-              </div>
-              {byModel.length === 0 ? (
-                <div className="text-xs text-muted-foreground">{t('commandCenter.noModelUsage')}</div>
-              ) : (
-                <ul className="space-y-1">
-                  {byModel.slice(0, 6).map(entry => (
-                    <li
-                      className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/40"
-                      key={entry.model}
-                    >
-                      <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground">{entry.model}</span>
-                      <span className="shrink-0 text-[0.65rem] text-muted-foreground">
-                        {formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} ·{' '}
-                        {formatCost(entry.estimated_cost)}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-
-            <section className="min-w-0">
-              <div className="mb-1.5 text-[0.7rem] font-medium uppercase tracking-wide text-muted-foreground">
-                Top skills
-              </div>
-              {topSkills.length === 0 ? (
-                <div className="text-xs text-muted-foreground">{t('commandCenter.noSkillActivity')}</div>
-              ) : (
-                <ul className="space-y-1">
-                  {topSkills.slice(0, 6).map(entry => (
-                    <li
-                      className="flex items-center justify-between gap-2 rounded px-1.5 py-1 text-xs hover:bg-muted/40"
-                      key={entry.skill}
-                    >
-                      <span className="min-w-0 truncate font-mono text-[0.7rem] text-foreground">{entry.skill}</span>
-                      <span className="shrink-0 text-[0.65rem] text-muted-foreground">
-                        {entry.total_count.toLocaleString()} actions
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          </div>
-        </OverlayCard>
+      <div className="grid min-h-0 gap-x-8 gap-y-5 border-t border-(--ui-stroke-tertiary) pt-5 sm:grid-cols-2">
+        <UsageList
+          emptyLabel={cc.noModelUsage}
+          rows={byModel.slice(0, 6).map(entry => ({
+            key: entry.model,
+            label: entry.model,
+            value: `${formatTokens((entry.input_tokens || 0) + (entry.output_tokens || 0))} · ${formatCost(entry.estimated_cost)}`
+          }))}
+          title={cc.topModels}
+        />
+        <UsageList
+          emptyLabel={cc.noSkillActivity}
+          rows={topSkills.slice(0, 6).map(entry => ({
+            key: entry.skill,
+            label: entry.skill,
+            value: cc.actions(entry.total_count.toLocaleString())
+          }))}
+          title={cc.topSkills}
+        />
       </div>
     </div>
   )

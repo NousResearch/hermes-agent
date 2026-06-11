@@ -83,7 +83,7 @@ export function NotificationStack() {
       {expanded && olderNotifications.map(n => <NotificationItem key={n.id} notification={n} />)}
       {overflowCount > 0 && (
         <div className={cn(STACK_SURFACE, 'flex min-h-8 items-center justify-between rounded-lg px-3 text-xs')}>
-          <button className={cn(GHOST_BTN, 'font-medium')} onClick={() => setExpanded(v => !v)} type="button">
+          <Button className="-ml-2 font-medium" onClick={() => setExpanded(v => !v)} size="xs" type="button" variant="text">
             {expanded ? copy.hide : copy.show} {copy.more(overflowCount)}
           </Button>
           <Button className="-mr-2" onClick={clearNotifications} size="xs" type="button" variant="text">
@@ -134,7 +134,7 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
       </div>
       <Button
         aria-label={copy.dismiss}
-        className="col-start-3 -mr-1 grid size-6 place-items-center rounded-md bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        className="col-start-3 -mr-1 text-muted-foreground"
         onClick={() => dismissNotification(notification.id)}
         size="icon-xs"
         type="button"
@@ -153,7 +153,7 @@ function NotificationDetail({ detail }: { detail: string }) {
   return (
     <details className="mt-2 text-xs text-muted-foreground">
       <summary className="select-none font-medium text-muted-foreground hover:text-foreground">{copy.details}</summary>
-      <div className="mt-1 rounded-md border border-border/70 bg-background/65 p-2">
+      <div className="mt-1 rounded-md bg-background/65 p-2">
         <pre className="max-h-32 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem] leading-relaxed">
           {detail}
         </pre>

@@ -1,22 +1,21 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useState } from 'react'
 
-import { OverlayActionButton, OverlayCard } from '@/app/overlays/overlay-chrome'
+import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { getHermesConfigRecord, type HermesGateway, saveHermesConfig } from '@/hermes'
-import { Package, Wrench } from '@/lib/icons'
-import { t } from '@/store/i18n'
+import { useI18n } from '@/i18n'
+import { Wrench } from '@/lib/icons'
+import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeSessionId } from '@/store/session'
-import { useLocaleSync } from '@/store/use-locale-sync'
 import type { HermesConfigRecord } from '@/types/hermes'
 
-import { includesQuery } from './helpers'
-import { EmptyState, LoadingState, Pill, SectionHeading, SettingsContent } from './primitives'
-import type { SearchProps } from './types'
+import { EmptyState, LoadingState, Pill, SettingsContent } from './primitives'
+import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
-interface McpSettingsProps extends SearchProps {
+interface McpSettingsProps {
   gateway?: HermesGateway | null
   onConfigSaved?: () => void
 }
@@ -44,17 +43,9 @@ const transportLabel = (server: Record<string, unknown>) =>
         ? 'stdio'
         : 'custom'
 
-function serverMatches(name: string, server: Record<string, unknown>, query: string) {
-  if (!query) {
-    return true
-  }
-
-  return includesQuery(name, query) || includesQuery(JSON.stringify(server), query)
-}
-
-export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps) {
-  useLocaleSync()
-
+export function McpSettings({ gateway, onConfigSaved }: McpSettingsProps) {
+  const { t } = useI18n()
+  const m = t.settings.mcp
   const activeSessionId = useStore($activeSessionId)
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
@@ -76,7 +67,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
         const first = Object.keys(getServers(next)).sort()[0] ?? null
         setSelected(first)
       })
-      .catch(err => notifyError(err, t('mcp.failedToLoad')))
+      .catch(err => notifyError(err, m.failedLoad))
 
     return () => void (cancelled = true)
   }, [])
@@ -84,10 +75,13 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
   const servers = useMemo(() => getServers(config), [config])
   const names = useMemo(() => Object.keys(servers).sort(), [servers])
 
-  const filtered = useMemo(
-    () => names.filter(serverName => serverMatches(serverName, servers[serverName], query.trim().toLowerCase())),
-    [names, query, servers]
-  )
+  useDeepLinkHighlight({
+    block: 'nearest',
+    elementId: serverName => `mcp-server-${serverName}`,
+    onResolve: setSelected,
+    param: 'server',
+    ready: serverName => Boolean(config) && serverName in servers
+  })
 
   useEffect(() => {
     const server = selected ? servers[selected] : null
@@ -97,14 +91,14 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
   }, [selected, servers])
 
   if (!config) {
-    return <LoadingState label={t('mcp.loadingServers')} />
+    return <LoadingState label={m.loading} />
   }
 
   const saveServer = async () => {
     const nextName = name.trim()
 
     if (!nextName) {
-      notify({ kind: 'error', title: t('mcp.nameRequired'), message: t('mcp.giveConfigKey') })
+      notify({ kind: 'error', title: m.nameRequiredTitle, message: m.nameRequiredMessage })
 
       return
     }
@@ -115,12 +109,12 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
       const raw = JSON.parse(body)
 
       if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
-        throw new Error(t('mcp.invalidJson'))
+        throw new Error(m.objectRequired)
       }
 
       parsed = raw as Record<string, unknown>
     } catch (err) {
-      notifyError(err, t('mcp.invalidJsonShort'))
+      notifyError(err, m.invalidJson)
 
       return
     }
@@ -141,9 +135,9 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
       setConfig(nextConfig)
       setSelected(nextName)
       onConfigSaved?.()
-      notify({ kind: 'success', title: t('mcp.serverSaved'), message: `${nextName} applies after MCP reload.` })
+      notify({ kind: 'success', title: m.savedTitle, message: m.savedMessage(nextName) })
     } catch (err) {
-      notifyError(err, t('mcp.saveFailed'))
+      notifyError(err, m.saveFailed)
     } finally {
       setSaving(false)
     }
@@ -162,7 +156,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
       setSelected(Object.keys(nextServers).sort()[0] ?? null)
       onConfigSaved?.()
     } catch (err) {
-      notifyError(err, t('mcp.removeFailed'))
+      notifyError(err, m.removeFailed)
     } finally {
       setSaving(false)
     }
@@ -170,7 +164,7 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
 
   const reloadMcp = async () => {
     if (!gateway) {
-      notify({ kind: 'warning', title: t('mcp.gatewayUnavailable'), message: t('mcp.reconnectGateway') })
+      notify({ kind: 'warning', title: m.gatewayUnavailableTitle, message: m.gatewayUnavailableMessage })
 
       return
     }
@@ -182,9 +176,9 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
         confirm: true,
         session_id: activeSessionId ?? undefined
       })
-      notify({ kind: 'success', title: t('mcp.toolsReloaded'), message: t('mcp.newSchemas') })
+      notify({ kind: 'success', title: m.reloadedTitle, message: m.reloadedMessage })
     } catch (err) {
-      notifyError(err, t('mcp.reloadFailed'))
+      notifyError(err, m.reloadFailed)
     } finally {
       setReloading(false)
     }
@@ -192,31 +186,32 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
 
   return (
     <SettingsContent>
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <SectionHeading icon={Package} meta={`${names.length} configured`} title={t('mcp.serversTitle')} />
-        <div className="flex items-center gap-2">
-          <OverlayActionButton onClick={() => setSelected(null)}>{t('mcp.newServer')}</OverlayActionButton>
-          <OverlayActionButton disabled={reloading} onClick={() => void reloadMcp()}>
-            {reloading ? t('mcp.reloading') : t('mcp.reloadMCP')}
-          </OverlayActionButton>
-        </div>
+      <div className="mb-4 flex items-center justify-end gap-4">
+        <Button onClick={() => setSelected(null)} size="xs" variant="text">
+          {m.newServer}
+        </Button>
+        <Button disabled={reloading} onClick={() => void reloadMcp()} size="xs" variant="text">
+          {reloading ? m.reloading : m.reload}
+        </Button>
       </div>
 
-      <div className="grid min-h-0 gap-4 lg:grid-cols-[17rem_minmax(0,1fr)]">
-        <OverlayCard className="min-h-64 overflow-hidden p-2">
-          {filtered.length === 0 ? (
-            <EmptyState description={t('mcp.emptyDesc')} title={t('mcp.noServersTitle')} />
+      <div className="grid min-h-0 gap-6 lg:grid-cols-[16rem_minmax(0,1fr)]">
+        <div className="min-h-64">
+          {names.length === 0 ? (
+            <EmptyState description={m.emptyDesc} title={m.emptyTitle} />
           ) : (
-            <div className="grid gap-1">
-              {filtered.map(serverName => {
+            <div className="grid gap-0.5">
+              {names.map(serverName => {
                 const server = servers[serverName]
                 const active = selected === serverName
 
                 return (
                   <button
-                    className={`rounded-md px-2 py-2 text-left transition-colors hover:bg-(--chrome-action-hover) ${
-                      active ? 'bg-accent/45 text-foreground' : 'text-muted-foreground'
-                    }`}
+                    className={cn(
+                      'scroll-mt-2 rounded-md px-2 py-2 text-left transition-colors hover:bg-(--chrome-action-hover)',
+                      active ? 'bg-(--ui-bg-tertiary) text-foreground' : 'text-muted-foreground'
+                    )}
+                    id={`mcp-server-${serverName}`}
                     key={serverName}
                     onClick={() => setSelected(serverName)}
                     type="button"
@@ -231,19 +226,19 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
               })}
             </div>
           )}
-        </OverlayCard>
+        </div>
 
-        <OverlayCard className="grid gap-3 p-4">
+        <div className="grid content-start gap-3">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Wrench className="size-4 text-muted-foreground" />
-            {selected ? t('mcp.editServer') : t('mcp.newServer')}
+            {selected ? m.editServer : m.newServer}
           </div>
           <label className="grid gap-1.5">
             <span className="text-xs text-muted-foreground">{m.name}</span>
             <Input onChange={event => setName(event.currentTarget.value)} placeholder="filesystem" value={name} />
           </label>
           <label className="grid gap-1.5">
-            <span className="text-xs text-muted-foreground">{t('mcp.serverJSON')}</span>
+            <span className="text-xs text-muted-foreground">{m.serverJson}</span>
             <Textarea
               className="min-h-80 font-mono text-xs"
               onChange={event => setBody(event.currentTarget.value)}
@@ -253,17 +248,23 @@ export function McpSettings({ gateway, onConfigSaved, query }: McpSettingsProps)
           </label>
           <div className="flex items-center justify-between">
             {selected ? (
-              <OverlayActionButton disabled={saving} onClick={() => void removeServer(selected)} tone="danger">
-                Remove
-              </OverlayActionButton>
+              <Button
+                className="text-destructive hover:text-destructive"
+                disabled={saving}
+                onClick={() => void removeServer(selected)}
+                size="xs"
+                variant="text"
+              >
+                {m.remove}
+              </Button>
             ) : (
               <span />
             )}
-            <OverlayActionButton disabled={saving} onClick={() => void saveServer()}>
-              {saving ? t('mcp.saving') : t('mcp.saveServer')}
-            </OverlayActionButton>
+            <Button disabled={saving} onClick={() => void saveServer()} size="sm">
+              {saving ? t.common.saving : m.saveServer}
+            </Button>
           </div>
-        </OverlayCard>
+        </div>
       </div>
     </SettingsContent>
   )

@@ -12,8 +12,6 @@ import {
 import { Input } from '@/components/ui/input'
 import { useI18n } from '@/i18n'
 import { Globe } from '@/lib/icons'
-import { t } from '@/store/i18n'
-import { useLocaleSync } from '@/store/use-locale-sync'
 
 const URL_HINT = /^https?:\/\//i
 
@@ -32,25 +30,17 @@ export function UrlDialog({
   open: boolean
   value: string
 }) {
-  useLocaleSync()
-
+  const { t } = useI18n()
+  const c = t.composer
   const trimmed = value.trim()
   const looksLikeUrl = trimmed.length > 0 && URL_HINT.test(trimmed)
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent className="max-w-md gap-5">
-        <DialogHeader className="flex-row items-center gap-3 sm:items-center">
-          <span
-            aria-hidden
-            className="grid size-9 shrink-0 place-items-center rounded-xl bg-[color-mix(in_srgb,var(--dt-primary)_14%,transparent)] text-primary ring-1 ring-inset ring-primary/15"
-          >
-            <Globe className="size-4" />
-          </span>
-          <div className="grid gap-0.5 text-left">
-            <DialogTitle>{t('urlDialog.title')}</DialogTitle>
-            <DialogDescription>{t('urlDialog.description')}</DialogDescription>
-          </div>
+        <DialogHeader>
+          <DialogTitle icon={Globe}>{c.attachUrlTitle}</DialogTitle>
+          <DialogDescription>{c.attachUrlDesc}</DialogDescription>
         </DialogHeader>
         <form
           className="grid gap-4"
@@ -65,23 +55,24 @@ export function UrlDialog({
               autoCorrect="off"
               inputMode="url"
               onChange={e => onChange(e.target.value)}
-              placeholder={t('urlDialog.placeholder')}
+              placeholder={c.urlPlaceholder}
               ref={inputRef}
               spellCheck={false}
               value={value}
             />
             {trimmed.length > 0 && !looksLikeUrl && (
               <p className="text-xs text-muted-foreground/85">
-                {t('urlDialog.hint')} <span className="font-mono">https://…</span>
+                {c.urlHintPre}
+                <span className="font-mono">https://…</span>
               </p>
             )}
           </div>
           <DialogFooter>
             <Button onClick={() => onOpenChange(false)} type="button" variant="ghost">
-              {t('common.cancel')}
+              {t.common.cancel}
             </Button>
             <Button disabled={!looksLikeUrl} type="submit">
-              {t('urlDialog.attach')}
+              {c.attach}
             </Button>
           </DialogFooter>
         </form>

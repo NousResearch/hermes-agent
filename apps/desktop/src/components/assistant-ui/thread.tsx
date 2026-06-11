@@ -52,8 +52,8 @@ import {
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
-import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
-import { t } from '@/store/i18n'
+import { extractDroppedFiles, HERMES_PATHS_MIME, isImagePath, partitionDroppedFiles } from '@/app/chat/hooks/use-composer-actions'
+import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
@@ -81,7 +81,8 @@ import {
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
-import { useTranslation } from '@/hooks/use-translation'
+import { useI18n } from '@/i18n'
+import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
@@ -148,7 +149,6 @@ export const Thread: FC<{
   sessionId = null,
   sessionKey
 }) => {
-  const { t } = useTranslation()
   const messageComponents = useMemo(
     () => ({
       AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
@@ -191,22 +191,26 @@ function pickPrimaryPreviewTarget(targets: string[]): string[] {
   return [localUrl || targets[targets.length - 1]]
 }
 
-const CenteredThreadSpinner: FC = () => (
-  <div
-    aria-label={t('chat.loadingSession')}
-    className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
-    role="status"
-  >
-    <Loader
-      aria-hidden="true"
-      className="size-12 text-midground/70"
-      pathSteps={220}
-      role="presentation"
-      strokeScale={0.72}
-      type="rose-curve"
-    />
-  </div>
-)
+const CenteredThreadSpinner: FC = () => {
+  const { t } = useI18n()
+
+  return (
+    <div
+      aria-label={t.assistant.thread.loadingSession}
+      className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
+      role="status"
+    >
+      <Loader
+        aria-hidden="true"
+        className="size-12 text-midground/70"
+        pathSteps={220}
+        role="presentation"
+        strokeScale={0.72}
+        type="rose-curve"
+      />
+    </div>
+  )
+}
 
 const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
   const messageId = useAuiState(s => s.message.id)
@@ -290,7 +294,40 @@ const ResponseLoadingIndicator: FC = () => {
   const elapsed = useElapsedSeconds()
 
   return (
-    <StatusRow data-slot="aui_response-loading" label={t('chat.loadingResponse')}>
+    <StatusRow data-slot="aui_response-loading" label={t.assistant.thread.loadingResponse}>
+      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      <ActivityTimerText seconds={elapsed} />
+    </StatusRow>
+  )
+}
+
+// Seconds of no visible output (text or part count) before a still-running turn
+// is treated as stalled and the thinking indicator returns at the tail.
+const STREAM_STALL_S = 2
+
+// Tail "still thinking" indicator: the pre-first-token spinner goes away once
+// text flows, but if the stream then goes quiet mid-turn (tool think-time,
+// provider stall) nothing signals that work continues. Watch a per-render
+// activity signal; when it hasn't changed for STREAM_STALL_S, re-show the
+// dither + a timer counting from the last activity.
+const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
+  const [stalled, setStalled] = useState(false)
+
+  useEffect(() => {
+    setStalled(false)
+    const id = window.setTimeout(() => setStalled(true), STREAM_STALL_S * 1000)
+
+    return () => window.clearTimeout(id)
+  }, [activity])
+
+  const elapsed = useElapsedSeconds(stalled)
+
+  if (!stalled) {
+    return null
+  }
+
+  return (
+    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label="Hermes is thinking">
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
@@ -396,7 +433,7 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            {t('chat.thinking')}
+            {t.assistant.thread.thinking}
           </span>
           {pending && (
             <ActivityTimerText
@@ -841,7 +878,7 @@ const UserMessage: FC<{
               <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
               <BranchPickerPrimitive.Previous
                 className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore previous checkpoint"
+                title={copy.restorePrevious}
               >
                 {copy.restoreCheckpoint}
               </BranchPickerPrimitive.Previous>
@@ -850,7 +887,7 @@ const UserMessage: FC<{
               </span>
               <BranchPickerPrimitive.Next
                 className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore next checkpoint"
+                title={copy.restoreNext}
               >
                 {copy.goForward}
               </BranchPickerPrimitive.Next>

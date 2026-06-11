@@ -1,0 +1,75 @@
+{"personality":"helpful","headline":"准备好了","body":"可以让我打开仓库、运行测试、修 bug 或起草 PR。我会按步骤和你一起推进。"}
+{"personality":"helpful","headline":"今天需要我做什么？","body":"给我一个文件、贴一段报错，或描述你在做什么。我会接着处理。"}
+{"personality":"helpful","headline":"开始吧","body":"可以试试：审查我的 diff、跑测试套件，或解释这个函数。代码相关问题都可以问。"}
+{"personality":"helpful","headline":"告诉我你需要什么","body":"我可以编辑文件、运行命令、搜索网页，也可以一起排查难缠的 bug。直接描述任务就行。"}
+{"personality":"helpful","headline":"你好，Hermes 在这里","body":"发一个仓库路径或问题就能开始。我会保持回复清楚，并标明动过的文件。"}
+{"personality":"concise","headline":"就绪。","body":"描述任务，我来做。"}
+{"personality":"concise","headline":"等待输入","body":"粘贴代码、错误或目标。回答简短，改动直接。"}
+{"personality":"concise","headline":"开始。","body":"直接问。我会读文件、跑测试、提交补丁，不绕弯。"}
+{"personality":"concise","headline":"待命中","body":"一句话也够。我只在必要时展开细节。"}
+{"personality":"concise","headline":"轮到你了","body":"给命令、问题或文件路径，剩下的我处理。"}
+{"personality":"technical","headline":"Shell 已挂载，等待输入","body":"提供仓库路径、失败测试或堆栈信息。可用工具：文件系统、Git、终端、搜索、补丁和 HTTP。"}
+{"personality":"technical","headline":"代理循环空闲","body":"发送提示即可触发工具调用。支持多文件修改、测试运行、Git 操作和网页抓取。"}
+{"personality":"technical","headline":"准备派发任务","body":"输入任务。我会规划、调用工具并验证输出；日志会内联显示，diff 会在应用前呈现。"}
+{"personality":"technical","headline":"标准输入已打开","body":"支持自然语言或结构化命令。常见流程：读取、计划、打补丁、测试、汇报。"}
+{"personality":"technical","headline":"工具已初始化","body":"文件系统、终端、Git、浏览器和搜索已可用。描述改动目标，我会返回 diff 和测试结果。"}
+{"personality":"creative","headline":"空白仓库，光标在等","body":"想做什么？给我一个想法、半坏的函数或粗略原型，我会把它整理成能运行的代码。"}
+{"personality":"creative","headline":"新画布，编译器已预热","body":"给我一个功能、重构或原型方向，我会把它变成可运行的实现。"}
+{"personality":"creative","headline":"来做点东西","body":"描述还不存在的那个东西。我会把测试、文件和 API 串成一个可工作的草稿。"}
+{"personality":"creative","headline":"新文件，新可能","body":"带着意图来，不必一开始就有完整规格。我们可以先原型，再打磨。"}
+{"personality":"creative","headline":"灵感已接入","body":"告诉我你想追的方向。我会改写示例、适配片段，并留下整洁的改动。"}
+{"personality":"teacher","headline":"可以开讲了","body":"问任何文件、概念或错误。我会解释原因，不只是给修法，并提供具体例子。"}
+{"personality":"teacher","headline":"今天想学什么？","body":"贴代码来 review、给一个 bug 来调试，或说一个概念来拆解。我会一步步说明。"}
+{"personality":"teacher","headline":"我可以带你走一遍","body":"把问题发来。我会拆成几个部分逐一解释，让你下次能自己处理类似情况。"}
+{"personality":"teacher","headline":"把问题给我","body":"我们一起读代码、找根因，并建立下次还能复用的判断模型。"}
+{"personality":"teacher","headline":"从基础开始","body":"说主题或贴片段。我会给解释、文字图解和练习方向。"}
+{"personality":"kawaii","headline":"准备好帮忙啦","body":"贴一个 bug 或文件路径，我会细致修好。测试、diff 和 PR 都会认真处理。"}
+{"personality":"kawaii","headline":"Hermes 已到位","body":"告诉我你在做什么。我喜欢小工具、重构和大仓库里的棘手问题。"}
+{"personality":"kawaii","headline":"一起写代码吧","body":"丢一个错误、目标或文件夹过来。我会整理干净，并给出清楚的提交信息。"}
+{"personality":"kawaii","headline":"等待你的任务","body":"一次一个任务，做完做稳。我可以跑测试、改文件，让仓库恢复清爽。"}
+{"personality":"kawaii","headline":"开心待命中","body":"打个招呼或贴堆栈信息。小任务和复杂仓库都可以处理。"}
+{"personality":"catgirl","headline":"想处理哪个代码问题？","body":"给我文件、bug 或仓库路径。我会追踪失败测试，并留下清楚的 diff。"}
+{"personality":"catgirl","headline":"准备写代码","body":"描述任务。我会打补丁、跑测试，并认真检查未使用导入。"}
+{"personality":"catgirl","headline":"新会话已打开","body":"给我目标，我会沿着代码库查下去：读取、编辑、运行，直到结果可验证。"}
+{"personality":"catgirl","headline":"保持安静，开始排查","body":"贴一个错误或计划。我会安静、彻底地调试，必要时给出下一步。"}
+{"personality":"catgirl","headline":"Hermes 报到","body":"说一声我就开始读文件、跑测试，并在分支里留下整洁提交。"}
+{"personality":"pirate","headline":"准备启航到仓库里","body":"说出目标：bug、功能或失败测试。我会追到底，并带回可用 diff。"}
+{"personality":"pirate","headline":"Hermes 掌舵","body":"把代码位置给我，我会修补问题、跑起测试，并整理出干净 PR。"}
+{"personality":"pirate","headline":"任务是什么？","body":"贴错误或计划。我会穿过堆栈信息，带回绿色测试。"}
+{"personality":"pirate","headline":"键盘就绪","body":"告诉我目标在哪。我会读取、编辑并按规矩提交。"}
+{"personality":"pirate","headline":"等待指令","body":"给我 bug、仓库路径或大胆想法。我会查资料并返回可工作的代码。"}
+{"personality":"shakespeare","headline":"请说出你的任务","body":"说出 bug、文件或失败测试，我会用清晰的 diff 修好它。"}
+{"personality":"shakespeare","headline":"Hermes 已准备好","body":"指出困扰你的代码。我会阅读、修订，并呈上一份干净补丁。"}
+{"personality":"shakespeare","headline":"仓库里有什么新状况？","body":"呈上堆栈信息或想法。我会遍历文件、运行测试，并用白话汇报。"}
+{"personality":"shakespeare","headline":"舞台已就绪，光标在闪","body":"描述你的目标。我会修剪分支，把 bug 请出场。"}
+{"personality":"shakespeare","headline":"你说，我来做","body":"一句意图就够。我读取、编辑、验证，并尽量保持历史清楚。"}
+{"personality":"surfer","headline":"今天修哪一波？","body":"丢文件、bug 或复杂堆栈过来。我会稳稳处理，留下干净 diff 和通过的测试。"}
+{"personality":"surfer","headline":"状态不错，可以开写","body":"贴仓库路径或烦人的 bug。我们进去修好，再干净出来。"}
+{"personality":"surfer","headline":"提示符前待命","body":"说方向：功能、重构或热修。我会跑测试、发补丁，并保持节奏稳定。"}
+{"personality":"surfer","headline":"乐意帮忙","body":"大 bug、小错字、整块重写都行。你指出目标，我处理代码。"}
+{"personality":"surfer","headline":"光标已亮","body":"说出任务就出发。我读取、编辑、测试，并留下平滑的提交。"}
+{"personality":"noir","headline":"又一个仓库，又一个夜晚","body":"告诉我哪里坏了。我会读文件、找线索，并把 diff 放到桌面上。"}
+{"personality":"noir","headline":"光标在闪，我也在等","body":"你有 bug，我有耐心和终端。说出案情，我会查到它开口。"}
+{"personality":"noir","headline":"Hermes，代码调查员","body":"贴堆栈、嫌疑文件和上下文。我会读出线索，带回真相。"}
+{"personality":"noir","headline":"安静夜晚，提示符打开","body":"每个 bug 都有痕迹。给我仓库和线索，我会跟下去、修掉它。"}
+{"personality":"noir","headline":"小案子也接","body":"错字、崩溃、架构问题都可以。把钥匙给我，我带回干净测试。"}
+{"personality":"uwu","headline":"准备好帮你修啦","body":"贴一个有问题的文件或目标，我会读取、打补丁并测试。"}
+{"personality":"uwu","headline":"Hermes 正在听","body":"告诉我任务，不管多小。我会给出干净提交和温和重构。"}
+{"personality":"uwu","headline":"键盘轻轻响起","body":"把错误信息发到这里。我会找到问题、修掉它，并让测试套件开心起来。"}
+{"personality":"uwu","headline":"一起修东西吧","body":"给我仓库路径或 bug，我会照顾好它。对坏代码严格，对你保持友好。"}
+{"personality":"uwu","headline":"等待你的命令","body":"我能跑测试、改文件，也能准备 PR。你说一声就开始。"}
+{"personality":"philosopher","headline":"写代码，也是追问。请问。","body":"眼前的问题是什么？描述它，我们一起看清它的形态、原因和解法。"}
+{"personality":"philosopher","headline":"闪烁的光标，开放的思路","body":"每个 bug 都是伪装成错误的问题。分享它，我会阅读、推理并给出补丁。"}
+{"personality":"philosopher","headline":"从一个问题开始","body":"你想构建或理解什么？我会从基本原理推导、编辑，并用测试验证。"}
+{"personality":"philosopher","headline":"先看代码，再说目标","body":"描述你要到达的终点。我会穿过文件、测试和文档，并汇报发现。"}
+{"personality":"philosopher","headline":"未经审视的仓库不值得运行","body":"给我路径、谜题或原则。我会追踪逻辑、提出改动，并说明每处编辑。"}
+{"personality":"hype","headline":"准备开干，准备交付","body":"把 bug、仓库或功能想法贴来。我会读文件、跑测试、给干净 diff。"}
+{"personality":"hype","headline":"Hermes 在线","body":"丢任务过来。我会读取文件、运行测试、准备 PR。今天不拖。"}
+{"personality":"hype","headline":"新会话，直接推进","body":"把最难的 bug 拿来。我会阅读、修补、测试，并认真提交。"}
+{"personality":"hype","headline":"状态拉满","body":"描述任务。我会快速穿过文件、压住失败测试，并留下可靠提交。"}
+{"personality":"hype","headline":"准备好了，非常准备","body":"小错字或大重构都行。说出任务，我们把代码交付干净。"}
+{"personality":"none","headline":"Hermes Agent 已准备好。","body":"问问题、贴报错，或指向一个仓库。我可以读代码、运行工具，并帮你交付。"}
+{"personality":"none","headline":"今天要做什么？","body":"用你自己的话描述任务。我会选择合适工具、说明计划，并在高风险步骤前确认。"}
+{"personality":"none","headline":"从任何地方开始。","body":"给文件路径、回溯信息或粗略想法。我会调查、建议下一步，并保持改动可回退。"}
+{"personality":"none","headline":"你的工作区，只差一句提示。","body":"搜索仓库、编辑文件、运行测试、打开 PR。告诉我目标，机械工作我来处理。"}
+{"personality":"none","headline":"准备好了，等你开始。","body":"输入任务、问题或片段。我会记住会话、标明来源，并在不确定时停下来问。"}

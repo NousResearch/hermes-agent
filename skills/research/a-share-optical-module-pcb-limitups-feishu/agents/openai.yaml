@@ -1,0 +1,4 @@
+interface:
+  display_name: "A-share Optical PCB Limit-ups"
+  short_description: "Daily optical-module and PCB limit-up digest."
+  default_prompt: "Set up a daily 23:30 Feishu report for A-share optical-module and PCB concept limit-up stocks."

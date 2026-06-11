@@ -666,6 +666,41 @@ class TestPrefetch:
         assert call_kwargs["types"] == ["world"]
 
 
+    def test_prefetch_join_timeout_default(self, provider):
+        """Default prefetch_join_timeout should be 5.0."""
+        assert provider._prefetch_join_timeout == 5.0
+
+    def test_prefetch_join_timeout_custom(self, provider_with_config):
+        """Custom prefetch_join_timeout from config."""
+        p = provider_with_config(prefetch_join_timeout=8.0)
+        assert p._prefetch_join_timeout == 8.0
+
+    def test_prefetch_join_timeout_from_config_string(self, provider_with_config):
+        """String value in config should be coerced to float."""
+        p = provider_with_config(prefetch_join_timeout="3.5")
+        assert p._prefetch_join_timeout == 3.5
+
+    def test_prefetch_uses_configured_timeout(self, provider_with_config):
+        """prefetch() should use _prefetch_join_timeout, not hardcoded 3.0."""
+        import threading
+        p = provider_with_config(prefetch_join_timeout=0.1)
+        # Start a prefetch thread that takes a while
+        slow_event = threading.Event()
+        def _slow_prefetch():
+            slow_event.wait(timeout=2.0)
+        p._prefetch_thread = threading.Thread(target=_slow_prefetch, daemon=True)
+        p._prefetch_thread.start()
+        # prefetch() should complete quickly (0.1s timeout) even though thread is slow
+        import time
+        start = time.monotonic()
+        p.prefetch("test")
+        elapsed = time.monotonic() - start
+        assert elapsed < 1.0, f"prefetch took {elapsed:.1f}s, expected <1.0s with 0.1s timeout"
+        # Clean up
+        slow_event.set()
+        p._prefetch_thread.join(timeout=2.0)
+
+
 # ---------------------------------------------------------------------------
 # sync_turn tests
 # ---------------------------------------------------------------------------

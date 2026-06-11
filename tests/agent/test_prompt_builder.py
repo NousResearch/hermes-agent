@@ -2,6 +2,7 @@
 
 import builtins
 import importlib
+import json
 import logging
 import sys
 
@@ -12,6 +13,7 @@ from agent.prompt_builder import (
     _truncate_content,
     _parse_skill_file,
     _skill_should_show,
+    _coerce_collapsed_flag,
     _find_hermes_md,
     _find_git_root,
     _strip_yaml_frontmatter,
@@ -426,6 +428,243 @@ class TestBuildSkillsSystemPrompt:
 
         result = build_skills_system_prompt()
         assert "backend-skill" in result
+
+
+class TestCoerceCollapsedFlag:
+    @pytest.mark.parametrize("value", [True, "true", "True", "yes", "on", "1", 1])
+    def test_truthy_values(self, value):
+        assert _coerce_collapsed_flag(value) is True
+
+    @pytest.mark.parametrize(
+        "value", [False, "false", "no", "off", "0", 0, None, "", "maybe"]
+    )
+    def test_falsy_values(self, value):
+        assert _coerce_collapsed_flag(value) is False
+
+    def test_quoted_string_true(self):
+        assert _coerce_collapsed_flag('"yes"') is True
+
+
+class TestCollapsedCategories:
+    """Category collapse: a DESCRIPTION.md with ``collapsed: true`` folds the
+    whole category to one summary line in the system prompt, while skill_view /
+    skills_list stay completely unaffected.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def _make_category(self, tmp_path, category, skill_names, *, collapsed, cat_desc="Cat desc"):
+        cat_dir = tmp_path / "skills" / category
+        for sname in skill_names:
+            d = cat_dir / sname
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {sname}\ndescription: Does {sname}\n---\n"
+            )
+        flag = "\ncollapsed: true" if collapsed else ""
+        (cat_dir / "DESCRIPTION.md").write_text(
+            f"---\ndescription: {cat_desc}{flag}\n---\n"
+        )
+        return cat_dir
+
+    def test_collapsed_category_folds_to_one_line(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_category(
+            tmp_path, "lark", ["lark-im", "lark-base", "lark-calendar"],
+            collapsed=True, cat_desc="Feishu/Lark tools",
+        )
+        result = build_skills_system_prompt()
+
+        # Category summary line is present with the expand hint and count.
+        assert "lark: Feishu/Lark tools (3 skills hidden" in result
+        assert "use skills_list(category=lark) to list them" in result
+        # Individual skills are NOT listed in the prompt index.
+        assert "lark-im" not in result
+        assert "lark-base" not in result
+        assert "- lark-calendar" not in result
+
+    def test_singular_count_phrasing(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_category(
+            tmp_path, "solo", ["only-one"], collapsed=True,
+        )
+        result = build_skills_system_prompt()
+        assert "1 skill hidden" in result
+        assert "1 skills hidden" not in result
+
+    def test_non_collapsed_category_unchanged(self, monkeypatch, tmp_path):
+        """Default behavior: a DESCRIPTION.md without the flag lists every skill."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_category(
+            tmp_path, "coding", ["py-debug", "go-build"], collapsed=False,
+            cat_desc="Coding tools",
+        )
+        result = build_skills_system_prompt()
+        assert "coding: Coding tools" in result
+        assert "- py-debug: Does py-debug" in result
+        assert "- go-build: Does go-build" in result
+        assert "hidden" not in result
+
+    def test_no_description_md_does_not_collapse(self, monkeypatch, tmp_path):
+        """A category with no DESCRIPTION.md keeps the existing expanded form."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "misc" / "thing"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("---\nname: thing\ndescription: A thing\n---\n")
+        result = build_skills_system_prompt()
+        assert "- thing: A thing" in result
+        assert "hidden" not in result
+
+    def test_collapse_mixes_with_expanded_categories(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_category(
+            tmp_path, "lark", ["lark-im", "lark-base"], collapsed=True,
+            cat_desc="Lark",
+        )
+        self._make_category(
+            tmp_path, "coding", ["py-debug"], collapsed=False, cat_desc="Coding",
+        )
+        result = build_skills_system_prompt()
+        # Collapsed category hidden, expanded category still listed.
+        assert "lark: Lark (2 skills hidden" in result
+        assert "lark-im" not in result
+        assert "- py-debug: Does py-debug" in result
+
+    def test_toggling_collapse_rebuilds_prompt(self, monkeypatch, tmp_path):
+        """Editing DESCRIPTION.md to add the flag invalidates the snapshot
+        (manifest mtime/size mismatch) so the next build reflects the change."""
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cat_dir = self._make_category(
+            tmp_path, "lark", ["lark-im"], collapsed=False, cat_desc="Lark",
+        )
+
+        first = build_skills_system_prompt()
+        assert "- lark-im: Does lark-im" in first
+        assert "hidden" not in first
+
+        # Flip collapse on. Snapshot manifest no longer matches -> cold rebuild.
+        (cat_dir / "DESCRIPTION.md").write_text(
+            "---\ndescription: Lark\ncollapsed: true\n---\n"
+        )
+        # Drop only the in-process LRU (skill-mutation callers do this); the
+        # disk snapshot is intentionally left in place to prove the manifest
+        # check, not snapshot deletion, drives invalidation.
+        clear_skills_system_prompt_cache(clear_snapshot=False)
+
+        second = build_skills_system_prompt()
+        assert "lark-im" not in second
+        assert "use skills_list(category=lark) to list them" in second
+
+    def test_string_true_value_collapses(self, monkeypatch, tmp_path):
+        """Quoted/string boolean forms from the fallback parser still collapse."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cat_dir = tmp_path / "skills" / "lark"
+        d = cat_dir / "lark-im"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text("---\nname: lark-im\ndescription: im\n---\n")
+        (cat_dir / "DESCRIPTION.md").write_text(
+            "---\ndescription: Lark\ncollapsed: \"yes\"\n---\n"
+        )
+        result = build_skills_system_prompt()
+        assert "1 skill hidden" in result
+
+    def test_collapsed_flag_false_is_expanded(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._make_category(
+            tmp_path, "lark", ["lark-im"], collapsed=False, cat_desc="Lark",
+        )
+        # Explicit collapsed: false
+        (tmp_path / "skills" / "lark" / "DESCRIPTION.md").write_text(
+            "---\ndescription: Lark\ncollapsed: false\n---\n"
+        )
+        result = build_skills_system_prompt()
+        assert "- lark-im: Does lark-im" in result
+        assert "hidden" not in result
+
+    def test_collapsed_skill_still_loads_via_skill_view(self, monkeypatch, tmp_path):
+        """Boundary: collapse hides a skill from the prompt index ONLY. Unlike a
+        disabled skill (which skill_view rejects), a collapsed skill loads
+        byte-identically to an uncollapsed one."""
+        from unittest.mock import patch
+        import tools.skills_tool as skills_tool_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        self._make_category(
+            tmp_path, "lark", ["lark-im", "lark-base"], collapsed=True,
+        )
+
+        prompt = build_skills_system_prompt()
+        assert "lark-im" not in prompt  # hidden from index
+
+        with patch.object(skills_tool_module, "SKILLS_DIR", skills_dir):
+            payload = json.loads(skills_tool_module.skill_view("lark-im"))
+        assert payload["success"] is True
+        assert payload["name"] == "lark-im"
+        assert "Does lark-im" in payload["content"]
+
+    def test_collapsed_category_fully_listed_by_skills_list(self, monkeypatch, tmp_path):
+        """skills_list returns the full skill set for a collapsed category."""
+        from unittest.mock import patch
+        import tools.skills_tool as skills_tool_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        self._make_category(
+            tmp_path, "lark", ["lark-im", "lark-base", "lark-calendar"],
+            collapsed=True,
+        )
+
+        with patch.object(skills_tool_module, "SKILLS_DIR", skills_dir):
+            listing = json.loads(skills_tool_module.skills_list(category="lark"))
+        names = sorted(s["name"] for s in listing["skills"])
+        assert names == ["lark-base", "lark-calendar", "lark-im"]
+
+    def test_disabled_vs_collapsed_are_distinct(self, monkeypatch, tmp_path):
+        """A disabled skill is rejected by skill_view; a collapsed skill is not.
+        Both are absent from the prompt index, but for different reasons."""
+        from unittest.mock import patch
+        import tools.skills_tool as skills_tool_module
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills"
+        # collapsed category
+        self._make_category(tmp_path, "lark", ["lark-im"], collapsed=True)
+        # a separate, disabled skill
+        dis = skills_dir / "tools" / "old-tool"
+        dis.mkdir(parents=True)
+        (dis / "SKILL.md").write_text(
+            "---\nname: old-tool\ndescription: Deprecated\n---\n"
+        )
+
+        with patch(
+            "agent.prompt_builder.get_disabled_skill_names",
+            return_value={"old-tool"},
+        ):
+            prompt = build_skills_system_prompt()
+        # Both absent from the prompt index.
+        assert "old-tool" not in prompt
+        assert "lark-im" not in prompt
+
+        with patch.object(skills_tool_module, "SKILLS_DIR", skills_dir):
+            with patch(
+                "tools.skills_tool._is_skill_disabled",
+                side_effect=lambda name, *a, **k: name == "old-tool",
+            ):
+                collapsed_payload = json.loads(skills_tool_module.skill_view("lark-im"))
+                disabled_payload = json.loads(skills_tool_module.skill_view("old-tool"))
+
+        # Collapsed loads; disabled is refused.
+        assert collapsed_payload["success"] is True
+        assert disabled_payload["success"] is False
+        assert "disabled" in disabled_payload["error"].lower()
 
 
 class TestBuildNousSubscriptionPrompt:

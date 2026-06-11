@@ -939,7 +939,10 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+# v2 added ``collapsed_categories`` to the payload. Older snapshots (v1) are
+# treated as a cache miss by the version guard in _load_skills_snapshot, so the
+# field is filled in on the next cold rebuild — no migration needed.
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -993,6 +996,7 @@ def _write_skills_snapshot(
     manifest: dict[str, list[int]],
     skill_entries: list[dict],
     category_descriptions: dict[str, str],
+    collapsed_categories: list[str],
 ) -> None:
     """Persist skill metadata to disk for fast cold-start reuse."""
     payload = {
@@ -1000,6 +1004,7 @@ def _write_skills_snapshot(
         "manifest": manifest,
         "skills": skill_entries,
         "category_descriptions": category_descriptions,
+        "collapsed_categories": sorted(set(collapsed_categories)),
     }
     try:
         atomic_json_write(_skills_prompt_snapshot_path(), payload)
@@ -1035,6 +1040,45 @@ def _build_snapshot_entry(
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
     }
+
+
+# Frontmatter field on a category's DESCRIPTION.md. When truthy, the category
+# is folded to a single summary line in the system prompt and its individual
+# skills are omitted from the index — the model expands it on demand with
+# skills_list(category=...). skill_view / skills_list are unaffected.
+_COLLAPSE_FIELD = "collapsed"
+_COLLAPSE_TRUTHY = frozenset({"true", "yes", "1", "on"})
+
+
+def _coerce_collapsed_flag(value) -> bool:
+    """Interpret a DESCRIPTION.md ``collapsed`` value as a boolean.
+
+    Accepts native YAML booleans as well as the string forms produced by the
+    fallback frontmatter parser (``"true"``, ``"yes"``, ``"1"``, ``"on"``).
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().strip("'\"").lower() in _COLLAPSE_TRUTHY
+    return False
+
+
+def _parse_category_description(desc_file: Path, base_dir: Path) -> tuple[str, str, bool]:
+    """Parse a category ``DESCRIPTION.md`` into ``(category, description, collapsed)``.
+
+    ``description`` is an empty string when the file declares none. ``collapsed``
+    reflects the ``collapsed`` frontmatter flag (default ``False``).
+    """
+    content = desc_file.read_text(encoding="utf-8")
+    fm, _ = parse_frontmatter(content)
+    rel = desc_file.relative_to(base_dir)
+    category = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
+    raw_desc = fm.get("description")
+    description = str(raw_desc).strip().strip("'\"") if raw_desc else ""
+    collapsed = _coerce_collapsed_flag(fm.get(_COLLAPSE_FIELD))
+    return category, description, collapsed
 
 
 # =========================================================================
@@ -1151,6 +1195,9 @@ def build_skills_system_prompt(
 
     skills_by_category: dict[str, list[tuple[str, str]]] = {}
     category_descriptions: dict[str, str] = {}
+    # Categories whose DESCRIPTION.md sets ``collapsed: true`` — folded to a
+    # single summary line in the index (skills still load normally).
+    collapsed_categories: set[str] = set()
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
@@ -1178,6 +1225,9 @@ def build_skills_system_prompt(
             str(k): str(v)
             for k, v in (snapshot.get("category_descriptions") or {}).items()
         }
+        collapsed_categories = {
+            str(c) for c in (snapshot.get("collapsed_categories") or [])
+        }
     else:
         # Cold path: full filesystem scan + write snapshot for next time
         skill_entries: list[dict] = []
@@ -1203,22 +1253,23 @@ def build_skills_system_prompt(
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
             try:
-                content = desc_file.read_text(encoding="utf-8")
-                fm, _ = parse_frontmatter(content)
-                cat_desc = fm.get("description")
-                if not cat_desc:
-                    continue
-                rel = desc_file.relative_to(skills_dir)
-                cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
-                category_descriptions[cat] = str(cat_desc).strip().strip("'\"")
+                cat, cat_desc, collapsed = _parse_category_description(
+                    desc_file, skills_dir
+                )
             except Exception as e:
                 logger.debug("Could not read skill description %s: %s", desc_file, e)
+                continue
+            if cat_desc:
+                category_descriptions[cat] = cat_desc
+            if collapsed:
+                collapsed_categories.add(cat)
 
         _write_skills_snapshot(
             skills_dir,
             _build_skills_manifest(skills_dir),
             skill_entries,
             category_descriptions,
+            sorted(collapsed_categories),
         )
 
     # ── External skill directories ─────────────────────────────────────
@@ -1229,6 +1280,11 @@ def build_skills_system_prompt(
     for cat_skills in skills_by_category.values():
         for name, _desc in cat_skills:
             seen_skill_names.add(name)
+
+    # Categories established by the local dir (snapshot or cold scan). Local
+    # wins: an external DESCRIPTION.md cannot flip the collapse state of a
+    # category the local dir already owns.
+    local_categories = set(skills_by_category.keys()) | set(category_descriptions.keys())
 
     for ext_dir in external_dirs:
         if not ext_dir.exists():
@@ -1261,16 +1317,18 @@ def build_skills_system_prompt(
         # External category descriptions
         for desc_file in iter_skill_index_files(ext_dir, "DESCRIPTION.md"):
             try:
-                content = desc_file.read_text(encoding="utf-8")
-                fm, _ = parse_frontmatter(content)
-                cat_desc = fm.get("description")
-                if not cat_desc:
-                    continue
-                rel = desc_file.relative_to(ext_dir)
-                cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
-                category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
+                cat, cat_desc, collapsed = _parse_category_description(
+                    desc_file, ext_dir
+                )
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
+                continue
+            # Local dirs win: only fill description/collapse the local scan
+            # didn't already establish for this category.
+            if cat_desc:
+                category_descriptions.setdefault(cat, cat_desc)
+            if collapsed and cat not in local_categories:
+                collapsed_categories.add(cat)
 
     if not skills_by_category:
         result = ""
@@ -1278,16 +1336,34 @@ def build_skills_system_prompt(
         index_lines = []
         for category in sorted(skills_by_category.keys()):
             cat_desc = category_descriptions.get(category, "")
-            if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
-            else:
-                index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
+            # Deduplicate skills within the category up front so the collapsed
+            # count matches what an expanded listing would show.
+            unique_skills = []
             seen = set()
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
                 seen.add(name)
+                unique_skills.append((name, desc))
+
+            if category in collapsed_categories:
+                # Fold the whole category to one line; the model expands it on
+                # demand with skills_list(category=...). Skills still load
+                # normally via skill_view — only the index hides them.
+                n = len(unique_skills)
+                summary = f"{cat_desc} " if cat_desc else ""
+                index_lines.append(
+                    f"  {category}: {summary}"
+                    f"({n} skill{'s' if n != 1 else ''} hidden — "
+                    f"use skills_list(category={category}) to list them)"
+                )
+                continue
+
+            if cat_desc:
+                index_lines.append(f"  {category}: {cat_desc}")
+            else:
+                index_lines.append(f"  {category}:")
+            for name, desc in unique_skills:
                 if desc:
                     index_lines.append(f"    - {name}: {desc}")
                 else:

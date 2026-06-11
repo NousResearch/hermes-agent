@@ -542,6 +542,15 @@ def _run_review_in_thread(
             # add late-connecting MCP tools to this fork and break that parity,
             # so opt the review fork out of it.
             review_agent._skip_mcp_refresh = True
+            # Internal review fork must NOT participate in the context-engine
+            # lifecycle: it shares the parent's session_id (set below), so an
+            # observation-capable engine would ingest the review's internal
+            # monologue into the parent conversation's engine store
+            # (duplicate / polluting capture). Zero out the capability
+            # snapshot — the fork keeps compression mechanics untouched but
+            # never fires lifecycle hooks.
+            from agent.context_engine import ContextEngineCapabilities as _CECaps
+            review_agent._context_engine_caps = _CECaps()
             review_agent._memory_store = agent._memory_store
             review_agent._memory_enabled = agent._memory_enabled
             review_agent._user_profile_enabled = agent._user_profile_enabled

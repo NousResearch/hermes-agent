@@ -571,6 +571,10 @@ def run_conversation(
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
+    # Per-turn marker consumed by TurnInfo.compressed_during_turn (set in
+    # run_agent._compress_context, the single chokepoint all compression
+    # call sites go through).
+    agent._turn_compressed = False
 
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
@@ -735,8 +739,73 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
+        # Context engine request assembly (capability-gated).
+        # The engine may provide the SOURCE list for this dispatch's
+        # outbound build. The per-call copy/injection/sanitization/prompt-
+        # caching pipeline below applies to the returned view unchanged, and
+        # nothing is ever written back to ``messages`` — request-only by
+        # construction. ``None`` means "not taking over": the build then
+        # iterates ``messages`` itself and this dispatch is byte-identical
+        # to the legacy path (prompt-cache prefix stays stable).
+        _src_messages = messages
+        _asm_user_idx = current_turn_user_idx
+        _asm_prefetch = _ext_prefetch_cache
+        _asm_plugin_context = _plugin_user_context
+        _ce_caps = getattr(agent, "_context_engine_caps", None)
+        if _ce_caps is not None and _ce_caps.request_assembly:
+            from agent.context_engine import RequestContext, engine_hook
+
+            _ce_engine = agent.context_compressor
+            _asm_budget = (
+                getattr(_ce_engine, "threshold_tokens", 0)
+                or getattr(_ce_engine, "context_length", 0)
+            )
+            _view = engine_hook(
+                _ce_engine,
+                "prepare_request_messages",
+                messages,
+                RequestContext(
+                    incoming_message=(
+                        messages[current_turn_user_idx]
+                        if current_turn_user_idx is not None
+                        and 0 <= current_turn_user_idx < len(messages)
+                        else None
+                    ),
+                    budget_tokens=_asm_budget,
+                    model=agent.model,
+                    provider=getattr(agent, "provider", None),
+                    api_mode=getattr(agent, "api_mode", None),
+                    platform=getattr(agent, "platform", None) or "cli",
+                    session_id=agent.session_id or "",
+                    tools=agent.tools or None,
+                    prefetch_context=_ext_prefetch_cache or None,
+                    plugin_user_context=_plugin_user_context or None,
+                ),
+                default=None,
+                logger=request_logger,
+            )
+            if _view is not None:
+                _src_messages = _view
+                # Prefetch was handed to the engine via RequestContext —
+                # never inject it again below (double-injection guard). Same
+                # for plugin pre_llm_call context: an engine that takes over
+                # request assembly is responsible for placing both sources.
+                _asm_prefetch = None
+                _asm_plugin_context = None
+                # Re-locate the current turn's user message inside the
+                # engine view (the engine may have reshaped the list).
+                _asm_user_idx = next(
+                    (
+                        _i
+                        for _i in range(len(_src_messages) - 1, -1, -1)
+                        if isinstance(_src_messages[_i], dict)
+                        and _src_messages[_i].get("role") == "user"
+                    ),
+                    None,
+                )
+
         api_messages = []
-        for idx, msg in enumerate(messages):
+        for idx, msg in enumerate(_src_messages):
             api_msg = msg.copy()
 
             # Inject ephemeral context into the current turn's user message.
@@ -744,14 +813,14 @@ def run_conversation(
             # with target="user_message" (the default).  Both are
             # API-call-time only — the original message in `messages` is
             # never mutated, so nothing leaks into session persistence.
-            if idx == current_turn_user_idx and msg.get("role") == "user":
+            if idx == _asm_user_idx and msg.get("role") == "user":
                 _injections = []
-                if _ext_prefetch_cache:
-                    _fenced = build_memory_context_block(_ext_prefetch_cache)
+                if _asm_prefetch:
+                    _fenced = build_memory_context_block(_asm_prefetch)
                     if _fenced:
                         _injections.append(_fenced)
-                if _plugin_user_context:
-                    _injections.append(_plugin_user_context)
+                if _asm_plugin_context:
+                    _injections.append(_asm_plugin_context)
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):

@@ -1579,6 +1579,24 @@ def init_agent(
     agent.compression_enabled = compression_enabled
     agent.compression_in_place = compression_in_place
 
+    # Snapshot the engine's capability declaration once at registration.
+    # Hosts gate every lifecycle hook on this snapshot, so engines that don't
+    # declare a capability are never called (zero new calls for legacy
+    # engines / the built-in compressor). Engine reload re-runs this block,
+    # which refreshes the snapshot — no separate invalidation protocol.
+    from agent.context_engine import ContextEngineCapabilities as _CECaps
+    try:
+        _engine_caps = agent.context_compressor.capabilities()
+        if not isinstance(_engine_caps, _CECaps):
+            _engine_caps = _CECaps()
+    except Exception as _caps_err:
+        _ra().logger.warning(
+            "context engine capabilities() failed (fail-open, using defaults): %s",
+            _caps_err,
+        )
+        _engine_caps = _CECaps()
+    agent._context_engine_caps = _engine_caps
+
     # Reject models whose context window is below the minimum required
     # for reliable tool-calling workflows (64K tokens).
     _ctx = getattr(agent.context_compressor, "context_length", 0)

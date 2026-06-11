@@ -410,6 +410,36 @@ def finalize_turn(
         _should_review_skills = True
         agent._iters_since_skill = 0
 
+    # Context engine: read-only turn observation (capability-gated).
+    # Fires every turn — including interrupted ones (flagged in TurnInfo) —
+    # with the same working message list the external-memory sync below
+    # receives. Same-source delivery: the engine and memory providers both
+    # read from the host; they never sync with each other.
+    _ce_caps = getattr(agent, "_context_engine_caps", None)
+    if _ce_caps is not None and _ce_caps.observation:
+        from agent.context_engine import TurnInfo, engine_hook
+
+        _engine = agent.context_compressor
+        engine_hook(
+            _engine,
+            "on_turn_complete",
+            messages,
+            TurnInfo(
+                session_id=agent.session_id or "",
+                turn_id=turn_id,
+                turn_index=getattr(agent, "_user_turn_count", None),
+                usage={
+                    "prompt_tokens": getattr(_engine, "last_prompt_tokens", 0),
+                    "completion_tokens": getattr(_engine, "last_completion_tokens", 0),
+                    "total_tokens": getattr(_engine, "last_total_tokens", 0),
+                },
+                compressed_during_turn=bool(getattr(agent, "_turn_compressed", False)),
+                interrupted=interrupted,
+                completed=completed,
+            ),
+            logger=logger,
+        )
+
     # External memory provider: sync the completed turn + queue next prefetch.
     agent._sync_external_memory_for_turn(
         original_user_message=original_user_message,

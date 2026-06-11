@@ -5139,13 +5139,37 @@ class AIAgent:
         so users can bypass the summary-failure cooldown after an
         auto-compress abort.  Auto-compress callers use the default
         ``force=False``.
+
+        This forwarder is the single chokepoint every compression call site
+        goes through (threshold, overflow recovery, 413, manual /compress),
+        so the context-engine lossless-snapshot hook and the per-turn
+        compression marker live here.
         """
         from agent.conversation_compression import compress_context
-        return compress_context(
+
+        # Lossless snapshot opportunity (capability-gated, fail-open):
+        # engines get the full message list BEFORE compaction mutates it.
+        _caps = getattr(self, "_context_engine_caps", None)
+        if _caps is not None and _caps.lossless_snapshot:
+            from agent.context_engine import engine_hook
+            engine_hook(
+                self.context_compressor, "on_pre_compress", messages, logger=logger
+            )
+
+        result = compress_context(
             self, messages, system_message,
             approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
             force=force,
         )
+
+        # Mark the turn as compressed only when compaction actually replaced
+        # the message list (aborts/cooldowns return the original object).
+        try:
+            if isinstance(result, tuple) and result and result[0] is not messages:
+                self._turn_compressed = True
+        except Exception:
+            pass
+        return result
 
     def _set_tool_guardrail_halt(self, decision: ToolGuardrailDecision) -> None:
         """Record the first guardrail decision that should stop this turn."""

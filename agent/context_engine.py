@@ -26,7 +26,82 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional
+
+
+@dataclass
+class TurnInfo:
+    """Turn-level metadata handed to ``on_turn_complete``.
+
+    All fields are host-owned facts: the host runs the conversation loop,
+    so session id, turn counter, usage, and the compression flag are always
+    producible without new bookkeeping.
+    """
+
+    session_id: str
+    turn_id: Optional[str] = None
+    turn_index: Optional[int] = None
+    usage: Optional[Dict[str, Any]] = None
+    compressed_during_turn: bool = False
+    interrupted: bool = False
+    completed: bool = True
+
+
+@dataclass
+class RequestContext:
+    """Inputs for ``prepare_request_messages`` (all host-held at pre-API time)."""
+
+    incoming_message: Optional[Dict[str, Any]] = None
+    budget_tokens: int = 0
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    api_mode: Optional[str] = None
+    platform: Optional[str] = None
+    session_id: str = ""
+    tools: Optional[List[Dict[str, Any]]] = None
+    #: External-memory prefetch results. When an engine takes over request
+    #: assembly the host hands these over instead of injecting them into the
+    #: current user message itself (avoids double injection).
+    prefetch_context: Optional[str] = None
+    #: Context contributed by plugin ``pre_llm_call`` hooks. A request-assembly
+    #: engine receives it here and becomes responsible for injecting it, so the
+    #: host does not append it a second time.
+    plugin_user_context: Optional[str] = None
+
+
+@dataclass
+class ContextEngineCapabilities:
+    """Engine capability declaration, snapshotted by the host at registration.
+
+    Hooks whose capability is not declared are never invoked (not even as
+    no-ops), so undeclared engines keep the exact legacy call pattern.
+    """
+
+    observation: bool = False
+    request_assembly: bool = False
+    owns_compaction: bool = True
+    lossless_snapshot: bool = False
+    tools: bool = False
+
+
+def engine_hook(engine, hook_name: str, *args, default=None, logger=None, **kwargs):
+    """Invoke an optional engine hook with unified fail-open semantics.
+
+    Mirrors the discipline already used by
+    ``_transition_context_engine_session`` and the plugin ``invoke_hook``:
+    a failing engine hook logs a warning and the host continues with
+    ``default`` — a broken engine must never interrupt the user's turn.
+    """
+    try:
+        return getattr(engine, hook_name)(*args, **kwargs)
+    except Exception as exc:  # noqa: BLE001 — fail-open by design
+        if logger is not None:
+            logger.warning(
+                "context engine %s.%s failed (fail-open): %s",
+                getattr(engine, "name", "?"), hook_name, exc,
+            )
+        return default
 
 
 class ContextEngine(ABC):
@@ -224,3 +299,91 @@ class ContextEngine(ABC):
         """
         self.context_length = context_length
         self.threshold_tokens = int(context_length * self.threshold_percent)
+
+    # -- Optional: lifecycle hooks (capability-gated) ------------------------
+    #
+    # The host only calls these when the corresponding flag in
+    # ``capabilities()`` is declared. Engines that don't override
+    # ``capabilities()`` keep the exact legacy call pattern (zero new calls).
+
+    def on_turn_complete(self, messages: List[Dict[str, Any]], turn: "TurnInfo") -> None:
+        """Read-only observation of a completed turn (best-effort per turn).
+
+        Called once per turn from ``finalize_turn`` (including interrupted
+        turns — see ``turn.interrupted``), right before external-memory
+        ``sync_turn``. ``messages`` is the current working view: in-loop
+        compression may already have happened (``turn.compressed_during_turn``).
+        Engines must not mutate the list; the return value is ignored.
+        Heavy work must be queued for background processing.
+
+        Delivery contract — BEST-EFFORT, SELF-HEALING: error/interrupt paths
+        that exit ``run_conversation`` before ``finalize_turn`` skip this
+        hook for that turn. Because ``messages`` is always the FULL working
+        list, a skipped turn's content arrives with the next invocation (or
+        with ``on_session_end`` at the real session boundary). Ingestion
+        engines must therefore be watermark-idempotent: track what they have
+        already consumed and tolerate both re-delivery and gaps.
+
+        Capability gate: ``capabilities().observation``.
+        """
+        return None
+
+    def prepare_request_messages(
+        self,
+        messages: List[Dict[str, Any]],
+        ctx: "RequestContext",
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Provide the source message list for this dispatch's outbound build.
+
+        Called once per provider dispatch, before the host builds its
+        per-call ``api_messages`` copy. A returned list becomes the input of
+        that build (the host's repair / injection / sanitization / prompt
+        caching pipeline still applies downstream); it is never written back
+        to the working ``messages`` or session persistence.
+
+        Return ``None`` to opt out for this dispatch. Engines MUST return
+        ``None`` (not an equivalent copy) when no change is needed, so the
+        prompt-cache prefix stays byte-stable.
+
+        Shape contract: the host re-locates the current turn's user message
+        inside the returned view as the LAST ``role == "user"`` entry (for
+        its own ephemeral injections). Engines should therefore merge
+        injections into existing messages or keep the current user message
+        last — not append extra user-role entries after it.
+
+        Capability gate: ``capabilities().request_assembly``.
+        """
+        return None
+
+    def on_pre_compress(self, messages: List[Dict[str, Any]]) -> None:
+        """Snapshot opportunity immediately before ``compress()`` runs.
+
+        Lossless engines can salvage the full uncompressed transcript here
+        (whether to persist is the engine's own decision). Return value is
+        ignored; failures never block compression.
+
+        Capability gate: ``capabilities().lossless_snapshot``.
+        """
+        return None
+
+    def carry_over_new_session_context(
+        self, old_session_id: str, new_session_id: str
+    ) -> None:
+        """Link/carry engine state across a host session transition.
+
+        Formalizes the hook that ``_transition_context_engine_session``
+        (run_agent.py) already invokes via duck-typing when
+        ``carry_over_context=True``.
+        """
+        return None
+
+    # -- Optional: capability declaration ------------------------------------
+
+    def capabilities(self) -> "ContextEngineCapabilities":
+        """Declare which lifecycle hooks this engine implements.
+
+        The host snapshots this once at registration (engine reload =
+        re-registration = fresh snapshot) and skips undeclared hooks
+        entirely. Default declares nothing → legacy behavior.
+        """
+        return ContextEngineCapabilities()

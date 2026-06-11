@@ -1,34 +1,36 @@
 ---
 sidebar_position: 15
-title: "自动化模板"
-description: "开箱即用的自动化配方——定时任务、GitHub 事件触发、API webhook 及多技能工作流"
+title: "Automation Recipes"
+description: "Ready-to-use automation recipes — scheduled tasks, GitHub event triggers, API webhooks, and multi-skill workflows"
 ---
 
-# 自动化模板
+# Automation Recipes
 
-常见自动化模式的复制粘贴配方。每个模板使用 Hermes 内置的 [cron 调度器](/user-guide/features/cron) 实现基于时间的触发，使用 [webhook 平台](/user-guide/messaging/webhooks) 实现事件驱动触发。
+Copy-paste recipes for common automation patterns. Each recipe uses Hermes's built-in [cron scheduler](/user-guide/features/cron) for time-based triggers and [webhook platform](/user-guide/messaging/webhooks) for event-driven triggers.
 
-所有模板适用于**任意模型**——不绑定单一提供商。
+Every recipe works with **any model** — not locked to a single provider.
 
-:::tip 三种触发类型
-| 触发方式 | 方式 | 工具 |
+For parameterized, ready-to-run automations with forms instead of cron syntax, see the [Automation Blueprints Catalog](/reference/automation-blueprints-catalog).
+
+:::tip Three Trigger Types
+| Trigger | How | Tool |
 |---------|-----|------|
-| **定时** | 按周期运行（每小时、每晚、每周） | `cronjob` 工具或 `/cron` 斜杠命令 |
-| **GitHub 事件** | PR 开启、推送、issue、CI 结果时触发 | Webhook 平台（`hermes webhook subscribe`） |
-| **API 调用** | 外部服务向你的端点 POST JSON | Webhook 平台（config.yaml 路由或 `hermes webhook subscribe`） |
+| **Schedule** | Runs on a cadence (hourly, nightly, weekly) | `cronjob` tool or `/cron` slash command |
+| **GitHub Event** | Fires on PR opens, pushes, issues, CI results | Webhook platform (`hermes webhook subscribe`) |
+| **API Call** | External service POSTs JSON to your endpoint | Webhook platform (config.yaml routes or `hermes webhook subscribe`) |
 
-三种方式均支持投递到 Telegram、Discord、Slack、SMS、邮件、GitHub 评论或本地文件。
+All three support delivery to Telegram, Discord, Slack, SMS, email, GitHub comments, or local files.
 :::
 
 ---
 
-## 开发工作流
+## Development Workflow
 
-### 每晚待办事项分类
+### Nightly Backlog Triage
 
-每晚自动对新 issue 进行标签分类、优先级排序和摘要汇总，并将摘要投递到团队频道。
+Label, prioritize, and summarize new issues every night. Delivers a digest to your team channel.
 
-**触发方式：** 定时（每晚）
+**Trigger:** Schedule (nightly)
 
 ```bash
 hermes cron create "0 2 * * *" \
@@ -47,13 +49,13 @@ Format as a clean digest. If no new issues, respond with [SILENT]." \
   --deliver telegram
 ```
 
-### 自动 PR 代码审查
+### Automatic PR Code Review
 
-PR 开启时自动进行审查，并直接在 PR 上发布审查评论。
+Review every pull request automatically when it's opened. Posts a review comment directly on the PR.
 
-**触发方式：** GitHub webhook
+**Trigger:** GitHub webhook
 
-**方式 A——动态订阅（CLI）：**
+**Option A — Dynamic subscription (CLI):**
 
 ```bash
 hermes webhook subscribe github-pr-review \
@@ -78,7 +80,7 @@ Post a concise review. If the PR is a trivial docs/typo change, say so briefly."
   --deliver github_comment
 ```
 
-**方式 B——静态路由（config.yaml）：**
+**Option B — Static route (config.yaml):**
 
 ```yaml
 platforms:
@@ -104,13 +106,13 @@ platforms:
             pr_number: "{pull_request.number}"
 ```
 
-然后在 GitHub 中：**Settings → Webhooks → Add webhook** → Payload URL：`http://your-server:8644/webhooks/github-pr-review`，Content type：`application/json`，Secret：`github-webhook-secret`，Events：**Pull requests**。
+Then in GitHub: **Settings → Webhooks → Add webhook** → Payload URL: `http://your-server:8644/webhooks/github-pr-review`, Content type: `application/json`, Secret: `github-webhook-secret`, Events: **Pull requests**.
 
-### 文档偏差检测
+### Docs Drift Detection
 
-每周扫描已合并的 PR，找出需要更新文档的 API 变更。
+Weekly scan of merged PRs to find API changes that need documentation updates.
 
-**触发方式：** 定时（每周）
+**Trigger:** Schedule (weekly)
 
 ```bash
 hermes cron create "0 9 * * 1" \
@@ -130,11 +132,11 @@ Report any gaps where code changed but docs didn't. If everything is in sync, re
   --deliver telegram
 ```
 
-### 依赖安全审计
+### Dependency Security Audit
 
-每日扫描项目依赖中的已知漏洞。
+Daily scan for known vulnerabilities in project dependencies.
 
-**触发方式：** 定时（每日）
+**Trigger:** Schedule (daily)
 
 ```bash
 hermes cron create "0 6 * * *" \
@@ -157,13 +159,13 @@ If no vulnerabilities, respond with [SILENT]." \
 
 ---
 
-## DevOps 与监控
+## DevOps & Monitoring
 
-### 部署验证
+### Deploy Verification
 
-每次部署后触发冒烟测试。CI/CD 流水线在部署完成时向 webhook POST 请求。
+Trigger smoke tests after every deployment. Your CI/CD pipeline POSTs to the webhook when a deploy completes.
 
-**触发方式：** API 调用（webhook）
+**Trigger:** API call (webhook)
 
 ```bash
 hermes webhook subscribe deploy-verify \
@@ -184,7 +186,7 @@ If healthy, keep it brief. If degraded or failed, provide detailed diagnostics."
   --deliver telegram
 ```
 
-你的 CI/CD 流水线触发方式：
+Your CI/CD pipeline triggers it:
 
 ```bash
 curl -X POST http://your-server:8644/webhooks/deploy-verify \
@@ -193,11 +195,11 @@ curl -X POST http://your-server:8644/webhooks/deploy-verify \
   -d '{"service":"api","environment":"prod","version":"2.1.0","deployer":"ci","health_url":"https://api.example.com/health"}'
 ```
 
-### 告警分类
+### Alert Triage
 
-将监控告警与近期变更关联，起草响应方案。适用于 Datadog、PagerDuty、Grafana 或任何能 POST JSON 的告警系统。
+Correlate monitoring alerts with recent changes to draft a response. Works with Datadog, PagerDuty, Grafana, or any alerting system that can POST JSON.
 
-**触发方式：** API 调用（webhook）
+**Trigger:** API call (webhook)
 
 ```bash
 hermes webhook subscribe alert-triage \
@@ -220,11 +222,11 @@ Be concise. This goes to the on-call channel." \
   --deliver slack
 ```
 
-### 可用性监控
+### Uptime Monitor
 
-每 30 分钟检查一次端点，仅在服务宕机时发送通知。
+Check endpoints every 30 minutes. Only notify when something is down.
 
-**触发方式：** 定时（每 30 分钟）
+**Trigger:** Schedule (every 30 min)
 
 ```python title="~/.hermes/scripts/check-uptime.py"
 import urllib.request, json, time
@@ -266,13 +268,13 @@ hermes cron create "every 30m" \
 
 ---
 
-## 研究与情报
+## Research & Intelligence
 
-### 竞品仓库侦察
+### Competitive Repository Scout
 
-监控竞品仓库中有价值的 PR、功能和架构决策。
+Monitor competitor repos for interesting PRs, features, and architectural decisions.
 
-**触发方式：** 定时（每日）
+**Trigger:** Schedule (daily)
 
 ```bash
 hermes cron create "0 8 * * *" \
@@ -301,11 +303,11 @@ If there are findings, organize by repo with brief analysis of each item." \
   --deliver telegram
 ```
 
-### AI 新闻摘要
+### AI News Digest
 
-每周汇总 AI/ML 领域动态。
+Weekly roundup of AI/ML developments.
 
-**触发方式：** 定时（每周）
+**Trigger:** Schedule (weekly)
 
 ```bash
 hermes cron create "0 9 * * 1" \
@@ -326,11 +328,11 @@ Keep each item to 1-2 sentences. Include links. Total under 600 words." \
   --deliver telegram
 ```
 
-### 论文摘要与笔记
+### Paper Digest with Notes
 
-每日扫描 arXiv 并将摘要保存到笔记系统。
+Daily arXiv scan that saves summaries to your note-taking system.
 
-**触发方式：** 定时（每日）
+**Trigger:** Schedule (daily)
 
 ```bash
 hermes cron create "0 8 * * *" \
@@ -342,13 +344,13 @@ hermes cron create "0 8 * * *" \
 
 ---
 
-## GitHub 事件自动化
+## GitHub Event Automations
 
-### Issue 自动打标签
+### Issue Auto-Labeling
 
-自动对新 issue 打标签并回复。
+Automatically label and respond to new issues.
 
-**触发方式：** GitHub webhook
+**Trigger:** GitHub webhook
 
 ```bash
 hermes webhook subscribe github-issues \
@@ -371,11 +373,11 @@ If this is a label or assignment change, respond with [SILENT]." \
   --deliver github_comment
 ```
 
-### CI 失败分析
+### CI Failure Analysis
 
-分析 CI 失败原因并在 PR 上发布诊断信息。
+Analyze CI failures and post diagnostics on the PR.
 
-**触发方式：** GitHub webhook
+**Trigger:** GitHub webhook
 
 ```yaml
 # config.yaml route
@@ -406,11 +408,11 @@ platforms:
             pr_number: "{check_run.pull_requests.0.number}"
 ```
 
-### 跨仓库自动移植变更
+### Auto-Port Changes Across Repos
 
-某仓库 PR 合并后，自动将等效变更移植到另一个仓库。
+When a PR merges in one repo, automatically port the equivalent change to another.
 
-**触发方式：** GitHub webhook
+**Trigger:** GitHub webhook
 
 ```bash
 hermes webhook subscribe auto-port \
@@ -436,13 +438,13 @@ If action is not 'closed' or not merged, respond with [SILENT]." \
 
 ---
 
-## 业务运营
+## Business Operations
 
-### Stripe 支付监控
+### Stripe Payment Monitoring
 
-跟踪支付事件并汇总失败情况。
+Track payment events and get summaries of failures.
 
-**触发方式：** API 调用（webhook）
+**Trigger:** API call (webhook)
 
 ```bash
 hermes webhook subscribe stripe-payments \
@@ -468,11 +470,11 @@ Keep responses concise for the ops channel." \
   --deliver slack
 ```
 
-### 每日营收摘要
+### Daily Revenue Summary
 
-每天早晨汇总关键业务指标。
+Compile key business metrics every morning.
 
-**触发方式：** 定时（每日）
+**Trigger:** Schedule (daily)
 
 ```bash
 hermes cron create "0 8 * * *" \
@@ -491,13 +493,13 @@ Deliver as a clean, scannable message." \
 
 ---
 
-## 多技能工作流
+## Multi-Skill Workflows
 
-### 安全审计流水线
+### Security Audit Pipeline
 
-组合多个技能，每周进行全面安全审查。
+Combine multiple skills for a comprehensive weekly security review.
 
-**触发方式：** 定时（每周）
+**Trigger:** Schedule (weekly)
 
 ```bash
 hermes cron create "0 3 * * 0" \
@@ -519,11 +521,11 @@ If nothing found, report a clean bill of health." \
   --deliver telegram
 ```
 
-### 内容流水线
+### Content Pipeline
 
-按计划研究、起草并准备内容。
+Research, draft, and prepare content on a schedule.
 
-**触发方式：** 定时（每周）
+**Trigger:** Schedule (weekly)
 
 ```bash
 hermes cron create "0 10 * * 3" \
@@ -545,49 +547,49 @@ Keep the outline to ~300 words. This is a starting point, not a finished post." 
 
 ---
 
-## 快速参考
+## Quick Reference
 
-### Cron 调度语法
+### Cron Schedule Syntax
 
-| 表达式 | 含义 |
+| Expression | Meaning |
 |-----------|---------|
-| `every 30m` | 每 30 分钟 |
-| `every 2h` | 每 2 小时 |
-| `0 2 * * *` | 每天凌晨 2:00 |
-| `0 9 * * 1` | 每周一上午 9:00 |
-| `0 9 * * 1-5` | 工作日上午 9:00 |
-| `0 3 * * 0` | 每周日凌晨 3:00 |
-| `0 */6 * * *` | 每 6 小时 |
+| `every 30m` | Every 30 minutes |
+| `every 2h` | Every 2 hours |
+| `0 2 * * *` | Daily at 2:00 AM |
+| `0 9 * * 1` | Every Monday at 9:00 AM |
+| `0 9 * * 1-5` | Weekdays at 9:00 AM |
+| `0 3 * * 0` | Every Sunday at 3:00 AM |
+| `0 */6 * * *` | Every 6 hours |
 
-### 投递目标
+### Delivery Targets
 
-| 目标 | 参数 | 说明 |
+| Target | Flag | Notes |
 |--------|------|-------|
-| 当前会话 | `--deliver origin` | 默认——投递到任务创建所在的位置 |
-| 本地文件 | `--deliver local` | 保存输出，不发送通知 |
-| Telegram | `--deliver telegram` | 主频道，或用 `telegram:CHAT_ID` 指定特定会话 |
-| Discord | `--deliver discord` | 主频道，或用 `discord:CHANNEL_ID` 指定 |
-| Slack | `--deliver slack` | 主频道 |
-| SMS | `--deliver sms:+15551234567` | 直接发送到手机号 |
-| 指定话题 | `--deliver telegram:-100123:456` | Telegram 论坛话题 |
+| Same chat | `--deliver origin` | Default — delivers to where the job was created |
+| Local file | `--deliver local` | Saves output, no notification |
+| Telegram | `--deliver telegram` | Home channel, or `telegram:CHAT_ID` for specific |
+| Discord | `--deliver discord` | Home channel, or `discord:CHANNEL_ID` |
+| Slack | `--deliver slack` | Home channel |
+| SMS | `--deliver sms:+15551234567` | Direct to phone number |
+| Specific thread | `--deliver telegram:-100123:456` | Telegram forum topic |
 
-### Webhook 模板变量
+### Webhook Template Variables
 
-| 变量 | 说明 |
+| Variable | Description |
 |----------|-------------|
-| `{pull_request.title}` | PR 标题 |
-| `{issue.number}` | Issue 编号 |
+| `{pull_request.title}` | PR title |
+| `{issue.number}` | Issue number |
 | `{repository.full_name}` | `owner/repo` |
-| `{action}` | 事件动作（opened、closed 等） |
-| `{__raw__}` | 完整 JSON payload（截断至 4000 字符） |
-| `{sender.login}` | 触发事件的 GitHub 用户 |
+| `{action}` | Event action (opened, closed, etc.) |
+| `{__raw__}` | Full JSON payload (truncated at 4000 chars) |
+| `{sender.login}` | GitHub user who triggered the event |
 
-### [SILENT] 模式
+### The [SILENT] Pattern
 
-当 cron 任务的响应包含 `[SILENT]` 时，投递将被抑制。使用此模式可避免在无事发生时产生通知噪音：
+When a cron job's response contains `[SILENT]`, delivery is suppressed. Use this to avoid notification spam on quiet runs:
 
 ```
 If nothing noteworthy happened, respond with [SILENT].
 ```
 
-这样只有当 Agent 有内容需要汇报时，你才会收到通知。
+This means you only get notified when the agent has something to report.

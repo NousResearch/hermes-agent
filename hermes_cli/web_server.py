@@ -204,7 +204,7 @@ _REVEAL_WINDOW_SECONDS = 30
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1)(:\d+)?$",
+    allow_origin_regex=r"^https?://(localhost|127\.0\.0\.1|100\.\d{1,3}\.\d{1,3}\.\d{1,3}|178\.105\.147\.130)(:\d+)?$",
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -10829,6 +10829,39 @@ async def set_dashboard_font(body: FontSetBody):
 
 
 # ---------------------------------------------------------------------------
+# Dashboard settings (visibility, ordering, fold state)
+# ---------------------------------------------------------------------------
+
+DASHBOARD_SETTINGS_KEY = "dashboard_settings"
+
+class DashboardSettingsBody(BaseModel):
+    settings: Dict[str, Any]
+
+
+@app.get("/api/dashboard/settings")
+async def get_dashboard_settings():
+    """Return persisted dashboard settings (visibility toggles, sidebar order, fold state).
+
+    Stored under ``dashboard.dashboard_settings`` in config.yaml so it
+    survives restarts and is shared across all browsers.
+    """
+    config = load_config()
+    settings = cfg_get(config, "dashboard", DASHBOARD_SETTINGS_KEY, default={})
+    return {"settings": settings}
+
+
+@app.put("/api/dashboard/settings")
+async def set_dashboard_settings(body: DashboardSettingsBody):
+    """Persist dashboard settings to config.yaml."""
+    config = load_config()
+    if "dashboard" not in config:
+        config["dashboard"] = {}
+    config["dashboard"][DASHBOARD_SETTINGS_KEY] = body.settings
+    save_config(config)
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
 # Dashboard plugin system
 # ---------------------------------------------------------------------------
 
@@ -11023,6 +11056,7 @@ def _merged_plugins_hub() -> Dict[str, Any]:
     """Agent discovery + dashboard manifests + optional provider picker metadata."""
     from hermes_cli.plugins_cmd import (
         _discover_all_plugins,
+        _discover_remote_plugins,
         _get_current_context_engine,
         _get_current_memory_provider,
         _discover_context_engines,
@@ -11106,6 +11140,45 @@ def _merged_plugins_hub() -> Dict[str, Any]:
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
         })
+
+    # Merge remote (GitHub-sourced) plugins from plugin-repos.
+    # These are loaded by the plugin loader via the `plugins.remote`
+    # config key but are not returned by _discover_all_plugins().
+    _remote_names = {r["name"] for r in rows}
+    try:
+        for r_name, r_version, r_desc, r_source, r_dir in _discover_remote_plugins():
+            if r_name in _remote_names:
+                continue
+            r_path = Path(r_dir)
+            r_dm = dash_by_name.get(r_name)
+            r_dm_path = r_path / "dashboard" / "manifest.json"
+            r_has_dash = r_dm is not None or r_dm_path.exists()
+
+            # Determine runtime status from enabled/disabled sets.
+            if r_name in disabled_set:
+                r_status = "disabled"
+            elif r_name in enabled_set:
+                r_status = "enabled"
+            else:
+                r_status = "inactive"
+
+            rows.append({
+                "name": r_name,
+                "version": r_version or "",
+                "description": r_desc or "",
+                "source": "github",
+                "runtime_status": r_status,
+                "has_dashboard_manifest": r_has_dash,
+                "dashboard_manifest": _strip_dashboard_manifest(r_dm) if r_dm else None,
+                "path": r_dir,
+                "can_remove": True,
+                "can_update_git": (r_path / ".git").exists(),
+                "auth_required": False,
+                "auth_command": "",
+                "user_hidden": r_name in hidden_plugins,
+            })
+    except Exception:
+        pass
 
     agent_names = {r["name"] for r in rows}
     orphan_dashboard = [
@@ -11208,11 +11281,19 @@ async def post_agent_plugin_disable(request: Request, name: str):
 async def post_agent_plugin_update(request: Request, name: str):
     _require_token(request)
     name = _validate_plugin_name(name)
-    from hermes_cli.plugins_cmd import dashboard_update_user_plugin
+    from hermes_cli.plugins_cmd import (
+        dashboard_update_user_plugin,
+        dashboard_update_remote_plugin,
+    )
 
     result = dashboard_update_user_plugin(name)
     if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
+        # Plugin not found in user plugins — try remote (GitHub-sourced) update.
+        remote_result = dashboard_update_remote_plugin(name)
+        if not remote_result.get("ok"):
+            # Both failed — return the original user-plugin error.
+            raise HTTPException(status_code=400, detail=result.get("error") or "Update failed.")
+        result = remote_result
     _get_dashboard_plugins(force_rescan=True)
     return result
 

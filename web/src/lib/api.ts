@@ -1110,6 +1110,16 @@ export const api = {
     fetchJSON<SkillHubScan>(
       `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
+
+  // Dashboard settings (visibility, ordering, fold state)
+  getDashboardSettings: () =>
+    fetchJSON<{ settings: Record<string, unknown> }>("/api/dashboard/settings"),
+  saveDashboardSettings: (settings: unknown) =>
+    fetchJSON<{ ok: boolean }>("/api/dashboard/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ settings }),
+    }),
 };
 
 /** Identity payload returned by ``GET /api/auth/me`` (Phase 7).

@@ -27,12 +27,15 @@ function renderSection(onCreateOnDevice = vi.fn(), onResumeSession = vi.fn()) {
 
 describe('SidebarRemoteSessionsSection', () => {
   beforeEach(() => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-11T00:00:00Z'))
     $sessions.set([])
     $sessionPresence.set([])
   })
 
   afterEach(() => {
     cleanup()
+    vi.useRealTimers()
     $sessions.set([])
     $sessionPresence.set([])
   })
@@ -61,6 +64,41 @@ describe('SidebarRemoteSessionsSection', () => {
     fireEvent.click(getByText('Remote work'))
 
     expect(onResume).toHaveBeenCalledWith('r1')
+  })
+
+  it('renders existing remote sessions as one-line rows with a right-aligned next-action label', () => {
+    $sessionPresence.set([presence({ session_id: 'r1', status: 'idle', title: 'Remote work', updated_at: 1000 })])
+
+    const { container } = renderSection()
+    const row = container.querySelector('[data-remote-session-row]') as HTMLElement
+
+    expect(row.textContent).toContain('Remote work')
+    expect(row.textContent).toContain('Next')
+    expect(row.textContent).not.toContain('ko-win11')
+    expect(row.querySelector('[data-remote-session-status]')?.textContent).toBe('Next')
+  })
+
+  it('uses timestamps for remote sessions waiting on the user', () => {
+    $sessionPresence.set([
+      presence({
+        session_id: 'r1',
+        status: 'waiting',
+        title: 'Clarify work',
+        updated_at: Date.now() / 1000 - 120
+      })
+    ])
+
+    const { container } = renderSection()
+
+    expect(container.querySelector('[data-remote-session-status]')?.textContent).toBe('2m')
+  })
+
+  it('hides remote row metadata while the session is actively working', () => {
+    $sessionPresence.set([presence({ session_id: 'r1', status: 'working', title: 'Live work' })])
+
+    const { container } = renderSection()
+
+    expect(container.querySelector('[data-remote-session-status]')).toBeNull()
   })
 
   it('falls back to the endpoint host when a peer has no name', () => {

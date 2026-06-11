@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { readSessionDrag } from '@/app/chat/composer/inline-refs'
+import { $attentionSessionIds } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { SidebarSessionRow, type SidebarSessionRowProps } from './session-row'
@@ -81,7 +82,10 @@ function fakeTransfer(data: Record<string, string> = {}) {
   } as unknown as DataTransfer
 }
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  $attentionSessionIds.set([])
+})
 
 describe('SidebarSessionRow gestures', () => {
   it('plain click resumes when no selection is active', () => {
@@ -257,6 +261,22 @@ describe('SidebarSessionRow gestures', () => {
 
     fireEvent.pointerDown(actionsButton, { button: 0, ctrlKey: false })
     expect(chrome.getAttribute('data-actions-visible')).toBeNull()
+  })
+
+  it('hides active timestamps but keeps waiting-user timestamps visible', () => {
+    const active = renderRow({ isWorking: true })
+    let timestamp = active.container.querySelector('[data-session-row-age]') as HTMLElement
+
+    expect(timestamp.className).toContain('opacity-0')
+
+    cleanup()
+    $attentionSessionIds.set(['s1'])
+
+    const waiting = renderRow({ isWorking: true })
+    timestamp = waiting.container.querySelector('[data-session-row-age]') as HTMLElement
+
+    expect(timestamp.className).not.toContain('opacity-0')
+    expect(waiting.container.querySelector('[aria-label="Needs your input"]')).toBeTruthy()
   })
 
   it('starts a session drag from the row body without rendering a separate reorder handle', () => {

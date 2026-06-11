@@ -61,7 +61,7 @@ const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
   [60_000, 'ageMin']
 ]
 
-function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
+export function formatSidebarRowAge(seconds: number, r: Translations['sidebar']['row']): string {
   const delta = Math.max(0, Date.now() - seconds * 1000)
 
   for (const [ms, key] of AGE_TICKS) {
@@ -108,7 +108,7 @@ export function SidebarSessionRow({
   const { t } = useI18n()
   const r = t.sidebar.row
   const title = sessionTitle(session)
-  const age = formatAge(session.last_active || session.started_at, r)
+  const age = formatSidebarRowAge(session.last_active || session.started_at, r)
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
   const [actionsKeyboardFocus, setActionsKeyboardFocus] = useState(false)
   const actionsVisible = actionsMenuOpen || actionsKeyboardFocus
@@ -311,7 +311,9 @@ export function SidebarSessionRow({
                 'group-hover:-translate-x-6 group-data-[actions-visible=true]:-translate-x-6',
                 // Active sessions: the orange dot is the status cue; hide the
                 // timestamp (keep its reserved width) for the whole active run.
-                isWorking && 'opacity-0'
+                // A clarify-blocked run keeps the timestamp visible because
+                // the actionable state is "waiting on user", not live motion.
+                isWorking && !needsInput && 'opacity-0'
               )}
               data-session-row-age
             >

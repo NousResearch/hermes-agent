@@ -952,6 +952,9 @@ export interface Translations {
       actionsFor: (title: string) => string
       sessionActions: string
       sessionRunning: string
+      sessionStarting: string
+      nextAction: string
+      waitingForNextAction: string
       needsInput: string
       waitingForAnswer: string
       handoffOrigin: (platform: string) => string

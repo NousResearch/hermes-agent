@@ -1,0 +1,3 @@
+# Non-Reddit source URLs to scrape via Firecrawl, one per line.
+# Lines starting with # are ignored.
+https://news.ycombinator.com/

@@ -103,6 +103,43 @@ class GatewayKanbanWatchersMixin:
             notifier_profile = self._active_profile_name()
             self._kanban_notifier_profile = notifier_profile
 
+        def _parse_notification_sources(raw) -> set[str]:
+            if raw in (None, "", False):
+                return set()
+            if raw is True:
+                return {"*"}
+            if isinstance(raw, str):
+                return {p.strip() for p in raw.split(",") if p.strip()}
+            if isinstance(raw, (list, tuple, set)):
+                return {str(p).strip() for p in raw if str(p).strip()}
+            return set()
+
+        def _allowed_notification_sources() -> set[str]:
+            cached = getattr(self, "_kanban_notification_sources", None)
+            if cached is not None:
+                return _parse_notification_sources(cached)
+            try:
+                from hermes_cli.config import load_config as _load_config
+
+                cfg = _load_config()
+                kanban_cfg = cfg.get("kanban") if isinstance(cfg, dict) else {}
+                raw = (
+                    kanban_cfg.get("notification_sources")
+                    if isinstance(kanban_cfg, dict)
+                    else None
+                )
+            except Exception:
+                raw = None
+            parsed = _parse_notification_sources(raw)
+            setattr(self, "_kanban_notification_sources", parsed)
+            return parsed
+
+        def _notification_source_allowed(owner_profile: str | None) -> bool:
+            if not owner_profile or owner_profile == notifier_profile:
+                return True
+            allowed = _allowed_notification_sources()
+            return "*" in allowed or owner_profile in allowed
+
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
@@ -165,10 +202,11 @@ class GatewayKanbanWatchersMixin:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
                                 owner_profile = sub.get("notifier_profile") or None
-                                if owner_profile and owner_profile != notifier_profile:
+                                if not _notification_source_allowed(owner_profile):
                                     logger.debug(
-                                        "kanban notifier: subscription for %s owned by profile %s; current profile %s skipping",
-                                        sub.get("task_id"), owner_profile, notifier_profile,
+                                        "kanban notifier: subscription for %s owned by profile %s; current profile %s not allowed",
+                                        sub.get("task_id"), owner_profile,
+                                        notifier_profile,
                                     )
                                     continue
                                 platform = (sub.get("platform") or "").lower()

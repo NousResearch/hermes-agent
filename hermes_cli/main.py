@@ -5678,6 +5678,7 @@ def _finalize_updated_checkout(args):
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra
     # breaks on this machine, keep base deps and reinstall the remaining extras
     # individually so update does not silently strip working capabilities.
+    _write_update_incomplete_marker()
     print("→ Updating Python dependencies...")
 
     from hermes_cli.managed_uv import ensure_uv, update_managed_uv
@@ -5716,6 +5717,7 @@ def _finalize_updated_checkout(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
+    _clear_update_incomplete_marker()
     _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 

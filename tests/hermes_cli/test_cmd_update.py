@@ -830,6 +830,46 @@ class TestCmdUpdateFinalizeOnly:
 
         assert calls == ["finalize"]
 
+    def test_finalize_helper_marks_dependency_install_recoverable(self, tmp_path, monkeypatch):
+        from hermes_cli import main as hm
+
+        fake_root = tmp_path / "install_dir"
+        fake_root.mkdir()
+        calls = []
+
+        monkeypatch.setattr(hm, "PROJECT_ROOT", fake_root)
+        monkeypatch.setattr(hm, "_clear_bytecode_cache", lambda root: 0)
+        monkeypatch.setattr(hm, "_write_update_incomplete_marker", lambda: calls.append("write"))
+        monkeypatch.setattr(hm, "_clear_update_incomplete_marker", lambda: calls.append("clear"))
+        monkeypatch.setattr("hermes_cli.managed_uv.update_managed_uv", lambda: None)
+        monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
+        monkeypatch.setattr(hm, "_ensure_uv_for_termux", lambda pip_cmd: None)
+        monkeypatch.setattr(hm, "_is_termux_env", lambda *args, **kwargs: False)
+        monkeypatch.setattr(
+            hm,
+            "_install_python_dependencies_with_optional_fallback",
+            lambda *args, **kwargs: calls.append("install"),
+        )
+        monkeypatch.setattr(hm, "_update_node_dependencies", lambda: None)
+        monkeypatch.setattr(hm, "_build_web_ui", lambda *args, **kwargs: None)
+        monkeypatch.setattr(hm, "_kill_stale_dashboard_processes", lambda: None)
+        monkeypatch.setattr(hm, "_print_curator_first_run_notice", lambda: None)
+        monkeypatch.setattr(hm, "_print_curator_recent_run_notice", lambda: None)
+        monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: {"copied": []})
+        monkeypatch.setattr(
+            "hermes_cli.model_catalog.seed_cache_from_checkout",
+            lambda root: False,
+        )
+        monkeypatch.setattr(
+            hm.subprocess,
+            "run",
+            lambda *args, **kwargs: type("R", (), {"returncode": 0})(),
+        )
+
+        hm._finalize_updated_checkout(SimpleNamespace())
+
+        assert calls == ["write", "install", "clear"]
+
 
 def test_is_termux_env_true_for_termux_prefix():
     from hermes_cli import main as hm

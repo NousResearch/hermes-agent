@@ -396,17 +396,17 @@ function useThreadScrollAnchor({
   // flag — during streaming, tokens arrive rapidly and getTotalSize()
   // changes with each one. Without coalescing this would fire pinToBottom()
   // on every render, causing excessive scrollTop writes and layout work.
-  const prevTotalSizeRef = useRef(0)
+  // Use null as sentinel so the first effect run never treats existing
+  // content as "grew" — auto-follow only triggers on subsequent growth.
+  const prevTotalSizeRef = useRef<number | null>(null)
   const pinPendingRef = useRef(false)
   const rafIdRef = useRef(0)
   const totalSize = virtualizer.getTotalSize()
   useLayoutEffect(() => {
     if (!enabled) return
 
-    const grew = totalSize > prevTotalSizeRef.current
-    // Always track the latest size so a subsequent decrease (e.g. from
-    // re-measurement) doesn't leave prevTotalSizeRef permanently ahead
-    // of reality — which would break auto-follow when parked at bottom.
+    const prevSize = prevTotalSizeRef.current
+    const grew = prevSize !== null && totalSize > prevSize
     prevTotalSizeRef.current = totalSize
 
     if (grew && stickyBottomRef.current) {
@@ -414,8 +414,6 @@ function useThreadScrollAnchor({
         pinPendingRef.current = true
         rafIdRef.current = requestAnimationFrame(() => {
           pinPendingRef.current = false
-          // Re-check both guards — the component may have unmounted or
-          // the user may have scrolled up since the render.
           if (enabled && stickyBottomRef.current) {
             pinToBottom()
           }
@@ -424,8 +422,10 @@ function useThreadScrollAnchor({
     }
 
     return () => {
-      cancelAnimationFrame(rafIdRef.current)
-      pinPendingRef.current = false
+      if (rafIdRef.current) {
+        cancelAnimationFrame(rafIdRef.current)
+        pinPendingRef.current = false
+      }
     }
   }, [totalSize, enabled, pinToBottom])
 

@@ -1119,7 +1119,7 @@ class MCPServerTask:
     """
 
     __slots__ = (
-        "name", "session", "tool_timeout",
+        "name", "session", "tool_timeout", "max_result_bytes",
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
@@ -1131,6 +1131,7 @@ class MCPServerTask:
         self.name = name
         self.session: Optional[Any] = None
         self.tool_timeout: float = _DEFAULT_TOOL_TIMEOUT
+        self.max_result_bytes: int = 0
         self._task: Optional[asyncio.Task] = None
         self._ready = asyncio.Event()
         self._shutdown_event = asyncio.Event()
@@ -1761,6 +1762,7 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        self.max_result_bytes = int(config.get("max_result_bytes", 0) or 0)
         self._auth_type = (config.get("auth") or "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available
@@ -2592,7 +2594,7 @@ async def _connect_server(name: str, config: dict) -> MCPServerTask:
 # Handler / check-fn factories
 # ---------------------------------------------------------------------------
 
-def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
+def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float, max_result_bytes: int = 0):
     """Return a sync handler that calls an MCP tool via the background loop.
 
     The handler conforms to the registry's dispatch interface:
@@ -2669,6 +2671,20 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                 if image_tag:
                     parts.append(image_tag)
             text_result = "\n".join(parts) if parts else ""
+
+            # Truncate oversized results to protect the conversation context.
+            # An 88KB MCP result injected mid-turn degrades the model's
+            # ability to reason; cap at max_result_bytes (0 = no limit).
+            if max_result_bytes > 0 and len(text_result.encode("utf-8")) > max_result_bytes:
+                truncated = text_result.encode("utf-8")[:max_result_bytes].decode("utf-8", errors="ignore")
+                text_result = (
+                    truncated
+                    + "\n\n[truncated: result exceeded "
+                    + str(max_result_bytes)
+                    + " bytes -- original was "
+                    + str(len(text_result.encode("utf-8")))
+                    + " bytes]"
+                )
 
             # Combine content + structuredContent when both are present.
             # MCP spec: content is model-oriented (text), structuredContent
@@ -3411,7 +3427,7 @@ def _register_server_tools(name: str, server: MCPServerTask, config: dict) -> Li
             name=tool_name_prefixed,
             toolset=toolset_name,
             schema=schema,
-            handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout),
+            handler=_make_tool_handler(name, mcp_tool.name, server.tool_timeout, server.max_result_bytes),
             check_fn=_make_check_fn(name),
             is_async=False,
             description=schema["description"],

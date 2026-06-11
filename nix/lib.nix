@@ -65,11 +65,7 @@ in
       npmRoot = ".";
       npmDepsFetcherVersion = 2;
 
-      # --ignore-scripts: the workspace includes electron (apps/desktop)
-      # which has a postinstall that tries to download from github.com.
-      # nix builds are offline, so all scripts must be skipped.  Each
-      # package sets up its own build commands in buildPhase instead.
-      npmFlags = [ "--ignore-scripts" ];
+      ELECTRON_SKIP_BINARY_DOWNLOAD = 1;
 
       patchPhase = ''
         runHook prePatch

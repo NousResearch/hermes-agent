@@ -46,31 +46,44 @@ class OpenAIRealtimeSession(RealtimeVoiceSession):
         # Tool-call argument accumulation: call_id → {"name", "args"}
         self._pending_tools: Dict[str, Dict[str, str]] = {}
 
+    def _session_update(self) -> Dict[str, Any]:
+        """GA realtime session shape (no OpenAI-Beta header, nested audio
+        config). Accounts on the GA API reject the 2024 beta shape with
+        ``beta_api_shape_disabled``."""
+        return {
+            "type": "session.update",
+            "session": {
+                "type": "realtime",
+                "model": self.model,
+                "output_modalities": ["audio"],
+                "instructions": self.instructions,
+                "audio": {
+                    "input": {
+                        "format": {"type": "audio/pcm", "rate": self.input_sample_rate},
+                        "turn_detection": {"type": "server_vad"},
+                        "transcription": {"model": "whisper-1"},
+                    },
+                    "output": {
+                        "format": {
+                            "type": "audio/pcm", "rate": self.output_sample_rate,
+                        },
+                        "voice": self.voice,
+                    },
+                },
+                "tools": [{"type": "function", **AGENT_CONSULT_TOOL}],
+                "tool_choice": "auto",
+            },
+        }
+
     async def connect(self) -> None:
         import websockets
 
         self._ws = await websockets.connect(
             f"{REALTIME_URL}?model={self.model}",
-            additional_headers={
-                "Authorization": f"Bearer {self.api_key}",
-                "OpenAI-Beta": "realtime=v1",
-            },
+            additional_headers={"Authorization": f"Bearer {self.api_key}"},
             max_size=16 * 1024 * 1024,
         )
-        await self._send({
-            "type": "session.update",
-            "session": {
-                "modalities": ["audio", "text"],
-                "voice": self.voice,
-                "instructions": self.instructions,
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "input_audio_transcription": {"model": "whisper-1"},
-                "turn_detection": {"type": "server_vad"},
-                "tools": [{"type": "function", **AGENT_CONSULT_TOOL}],
-                "tool_choice": "auto",
-            },
-        })
+        await self._send(self._session_update())
 
     async def _send(self, message: Dict[str, Any]) -> None:
         if self._ws is None or self._closed:

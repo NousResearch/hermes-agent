@@ -389,6 +389,29 @@ async def test_stream_upgrade_rejects_bad_and_reused_tokens(tmp_path, make_confi
         await runtime_mod.stop_runtime()
 
 
+def test_openai_session_update_uses_ga_shape(monkeypatch):
+    """Accounts on the GA realtime API reject the 2024 beta shape with
+    beta_api_shape_disabled — the session.update must be GA-shaped."""
+    from plugins.platforms.voice_call.config import RealtimeConfig
+    from plugins.platforms.voice_call.realtime.openai_realtime import (
+        OpenAIRealtimeSession,
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    session = OpenAIRealtimeSession(RealtimeConfig(enabled=True, provider="openai"))
+    update = session._session_update()
+    s = update["session"]
+    assert s["type"] == "realtime" and s["model"] == "gpt-realtime"
+    assert s["output_modalities"] == ["audio"]
+    assert s["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
+    assert s["audio"]["output"]["voice"] == "marin"
+    # Beta-era keys must be absent.
+    for beta_key in ("modalities", "voice", "input_audio_format",
+                     "output_audio_format", "input_audio_transcription"):
+        assert beta_key not in s, beta_key
+    assert s["tools"][0]["name"] == "agent_consult"
+
+
 @pytest.mark.asyncio
 async def test_manager_skips_carrier_tts_for_realtime_calls(
     vc_config, provider, store

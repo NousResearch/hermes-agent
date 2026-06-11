@@ -618,6 +618,68 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
+def _normalize_dist_name(name: str) -> str:
+    """PEP 503 name normalisation: ``Discord.py`` / ``discord_py`` → ``discord-py``."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _broken_imports(specs: tuple[str, ...]) -> list[str]:
+    """Smoke-test that just-installed dists expose importable modules.
+
+    Correct metadata does not guarantee working files: a native extension
+    can be left half-overwritten on Windows while the gateway holds it
+    open, or an interrupted install can leave ``RECORD`` pointing at files
+    that don't exist on disk. Ask the import system whether each dist's
+    declared top-level modules can be found at all.
+
+    Import names come from the installed dist's own metadata
+    (``packages_distributions()``), never from the dist name — the two
+    routinely differ (``Pillow`` → ``PIL``, ``discord.py`` → ``discord``,
+    ``google-api-python-client`` → ``googleapiclient``). A dist counts as
+    broken only when it declares importable modules and *none* of them can
+    be found; a dist with no usable top-level metadata is skipped rather
+    than guessed at. This is a coarse check by design — it catches a fully
+    broken package, not a missing submodule deep inside an importable one.
+
+    Returns the dist names that failed the check.
+    """
+    import importlib
+    import importlib.util
+
+    # Fresh installs aren't visible to already-cached path finders.
+    importlib.invalidate_caches()
+    try:
+        from importlib.metadata import packages_distributions
+        dist_modules: dict[str, list[str]] = {}
+        for module, dists in packages_distributions().items():
+            for dist in dists:
+                dist_modules.setdefault(_normalize_dist_name(dist), []).append(module)
+    except Exception:
+        # No metadata view to verify against — don't guess.
+        return []
+
+    broken: list[str] = []
+    for spec in specs:
+        pkg = _pkg_name_from_spec(spec)
+        # Some build backends leak path-like entries ("pkg/subdir") into
+        # the top-level list; only valid identifiers are importable.
+        modules = [
+            m for m in dist_modules.get(_normalize_dist_name(pkg), [])
+            if m.isidentifier()
+        ]
+        if not modules:
+            continue
+        for module in modules:
+            try:
+                if importlib.util.find_spec(module) is not None:
+                    break
+            except Exception:
+                continue
+        else:
+            broken.append(pkg)
+    return broken
+
+
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
     """Install ``specs`` using the uv → pip → ensurepip ladder.
 
@@ -835,6 +897,19 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             feature, still_missing,
             "install reported success but packages still not importable "
             "(may require Python restart)"
+        )
+
+    # Metadata being correct doesn't prove the files are: catch installs
+    # where the version check passes but nothing is actually importable
+    # (partial install, native extension clobbered while loaded).
+    broken = _broken_imports(missing)
+    if broken:
+        raise FeatureUnavailable(
+            feature, tuple(missing),
+            "install reported success and metadata checks pass, but "
+            f"import check failed for: {', '.join(broken)} "
+            "(files may be missing or corrupted — try reinstalling, or "
+            "restart and retry)"
         )
 
     logger.info("Lazy install complete for feature %r", feature)

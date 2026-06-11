@@ -213,6 +213,7 @@ const CenteredThreadSpinner: FC = () => {
 }
 
 const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
+  const { t } = useI18n()
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -243,9 +244,21 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       ref={enterRef}
     >
       <div
-        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
+        className="relative wrap-anywhere min-w-0 max-w-full overflow-visible text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
+        {messageText.trim().length > 0 && messageStatus !== 'running' && (
+          <div className="absolute -top-0.5 right-0 z-10 opacity-60 transition-opacity hover:opacity-100">
+            <CopyButton
+              appearance="icon"
+              buttonSize="icon"
+              className="size-6 text-muted-foreground/70 hover:text-foreground"
+              iconClassName="size-3"
+              label={t.common.copy}
+              text={messageText}
+            />
+          </div>
+        )}
         {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
         {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}

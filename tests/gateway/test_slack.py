@@ -505,6 +505,37 @@ class TestSlackSocketWatchdog:
             assert len(instances) == 1, "watchdog kept reconnecting after disconnect"
 
     @pytest.mark.asyncio
+    async def test_stop_socket_mode_cancels_task_before_closing_handler(self):
+        """Regression: closing the Slack handler first closes aiohttp's session
+        while start_async is still reconnecting, producing repeated
+        "Session is closed" errors.  The task must observe cancellation before
+        close_async runs.
+        """
+        adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))
+        events: list[str] = []
+
+        class FakeHandler:
+            async def start_async(self):
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    events.append("task_cancelled")
+                    raise
+
+            async def close_async(self):
+                events.append("handler_closed")
+
+        adapter._handler = FakeHandler()
+        adapter._socket_mode_task = asyncio.create_task(adapter._handler.start_async())
+        await asyncio.sleep(0)
+
+        await adapter._stop_socket_mode_handler()
+
+        assert adapter._handler is None
+        assert adapter._socket_mode_task is None
+        assert events == ["task_cancelled", "handler_closed"]
+
+    @pytest.mark.asyncio
     async def test_watchdog_cancellation_does_not_respawn(self):
         """Cancellation is the intentional-shutdown signal — no respawn allowed."""
         adapter = SlackAdapter(PlatformConfig(enabled=True, token="xoxb-fake"))

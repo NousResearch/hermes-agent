@@ -397,16 +397,12 @@ class SlackAdapter(BasePlatformAdapter):
         self._handler = None
         self._socket_mode_task = None
 
-        if handler is not None:
-            try:
-                await handler.close_async()
-            except Exception as e:  # pragma: no cover - defensive logging
-                logger.warning(
-                    "[Slack] Error while closing Socket Mode handler: %s",
-                    e,
-                    exc_info=True,
-                )
-
+        # Cancel the long-running start_async task before closing the handler.
+        # Slack's aiohttp Socket Mode client closes its ClientSession during
+        # close_async(); if the start_async reconnect loop is still alive, it
+        # keeps retrying with that closed session and spams
+        # "Failed to connect (error: Session is closed); Retrying..." during
+        # reconnect/shutdown.
         if task is not None and not task.done():
             task.cancel()
             try:
@@ -416,6 +412,16 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception:  # pragma: no cover - defensive logging
                 logger.debug(
                     "[Slack] Socket Mode task failed while stopping", exc_info=True
+                )
+
+        if handler is not None:
+            try:
+                await handler.close_async()
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "[Slack] Error while closing Socket Mode handler: %s",
+                    e,
+                    exc_info=True,
                 )
 
     async def _socket_transport_connected(self) -> Optional[bool]:

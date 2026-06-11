@@ -230,6 +230,10 @@ class PhotonAdapter(BasePlatformAdapter):
         # reaction events are only routed to the agent when they target one of
         # these — a tapback on a human↔human message is not addressed to us.
         self._sent_message_ids: Dict[str, float] = {}
+        # Latest inbound message id per chat (bounded). Lets the agent-facing
+        # react action default to "the message that triggered me" without
+        # requiring the model to thread message ids through tool calls.
+        self._last_inbound_by_chat: Dict[str, str] = {}
 
         # Group-chat mention gating (parity with BlueBubbles). When enabled,
         # group messages are ignored unless they match a wake word; DMs are
@@ -538,6 +542,11 @@ class PhotonAdapter(BasePlatformAdapter):
                 )
             )
             return
+        # Anything past here is a real (reactable) message — remember it as
+        # the chat's latest inbound so `add_reaction` can target it when the
+        # caller doesn't pass an explicit message id. Recorded before the
+        # mention gate: a reaction to a non-wake-word group message is valid.
+        self._record_last_inbound(space_id, event.get("messageId"))
         if ctype == "text":
             text = content.get("text") or ""
             mtype = MessageType.TEXT
@@ -944,6 +953,7 @@ class PhotonAdapter(BasePlatformAdapter):
     # is a personal-texting channel, and a tapback on every text is noisy.
 
     _SENT_IDS_MAX = 1000
+    _LAST_INBOUND_CHATS_MAX = 200
 
     def _record_sent_message(self, message_id: Optional[str]) -> None:
         if not message_id:
@@ -955,6 +965,21 @@ class PhotonAdapter(BasePlatformAdapter):
         if len(sent) > self._SENT_IDS_MAX:
             for old in list(sent.keys())[: len(sent) - self._SENT_IDS_MAX]:
                 del sent[old]
+
+    def _record_last_inbound(
+        self, chat_id: Optional[str], message_id: Optional[str]
+    ) -> None:
+        if not chat_id or not message_id:
+            return
+        last = self._last_inbound_by_chat
+        if chat_id in last:
+            del last[chat_id]  # refresh insertion order
+        last[chat_id] = message_id
+        if len(last) > self._LAST_INBOUND_CHATS_MAX:
+            for old in list(last.keys())[
+                : len(last) - self._LAST_INBOUND_CHATS_MAX
+            ]:
+                del last[old]
 
     def _reactions_enabled(self) -> bool:
         return os.getenv("PHOTON_REACTIONS", "false").strip().lower() in {
@@ -990,6 +1015,58 @@ class PhotonAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[photon] remove_reaction failed: %s", e)
             return False
+
+    # -- Agent-facing reactions (send_message action="react") ---------------
+    #
+    # Unlike the lifecycle hooks below, these are deliberate agent intents,
+    # so they are NOT gated by PHOTON_REACTIONS (that env var exists to mute
+    # the automatic per-message tapback noise, not explicit requests).
+
+    async def add_reaction(
+        self,
+        chat_id: str,
+        emoji: str,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Tapback ``emoji`` onto a message in ``chat_id``.
+
+        Without ``message_id``, targets the chat's most recent inbound
+        message (typically the one the agent is responding to). iMessage
+        maps ❤️👍👎😂‼️❓ to native tapbacks; anything else uses Apple's
+        custom-emoji reaction.
+        """
+        target = message_id or self._last_inbound_by_chat.get(chat_id)
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to react to — pass message_id (no "
+                "inbound message seen in this chat since the gateway started)",
+            }
+        ok = await self._add_reaction(chat_id, target, emoji)
+        if not ok:
+            return {
+                "success": False,
+                "error": "reaction failed (see gateway debug log)",
+            }
+        return {"success": True, "message_id": target}
+
+    async def remove_reaction(
+        self, chat_id: str, message_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Retract our tapback from a message (best-effort)."""
+        target = message_id or self._last_inbound_by_chat.get(chat_id)
+        if not target:
+            return {
+                "success": False,
+                "error": "no message to unreact — pass message_id",
+            }
+        ok = await self._remove_reaction(chat_id, target)
+        if not ok:
+            return {
+                "success": False,
+                "error": "unreact failed (see gateway debug log)",
+            }
+        return {"success": True, "message_id": target}
 
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Tapback 👀 on the triggering message while the agent works."""

@@ -101,10 +101,13 @@ class GatewayStreamConsumer:
     _OPEN_THINK_TAGS = (
         "<REASONING_SCRATCHPAD>", "<think>", "<reasoning>",
         "<THINKING>", "<thinking>", "<thought>",
+        # Chinese reasoning tokens used by MiniMax M3 (#43827)
+        "思考", "反思", "推理", "推敲",
     )
     _CLOSE_THINK_TAGS = (
         "</REASONING_SCRATCHPAD>", "</think>", "</reasoning>",
         "</THINKING>", "</thinking>", "</thought>",
+        "思考", "反思", "推理", "推敲",
     )
 
     # Class-wide monotonic counter for native-streaming draft ids.  Telegram

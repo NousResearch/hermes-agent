@@ -487,6 +487,11 @@ def strip_think_blocks(agent, content: str) -> str:
     content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
     content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+    # 1a. Chinese reasoning tokens used by MiniMax M3 (#43827).
+    #     These are plain-text markers (no angle brackets) used alongside
+    #     or instead of the English <think> family.
+    for _cn_tag in ("思考", "反思", "推理", "推敲"):
+        content = content.replace(_cn_tag, "")
     # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
     #     generic tag names first — they have no attribute gating since
     #     a literal <tool_call> in prose is already vanishingly rare.

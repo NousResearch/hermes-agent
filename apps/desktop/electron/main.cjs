@@ -32,6 +32,10 @@ const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const {
+  OFFICIAL_REPO_HTTPS_URL,
+  isOfficialSshRemote
+} = require('./update-remote.cjs')
+const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
@@ -278,8 +282,6 @@ const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
 // tracks main. User can also override at runtime via
 // hermesDesktop.updates.setBranch().
 const DEFAULT_UPDATE_BRANCH = 'main'
-const OFFICIAL_REPO_HTTPS_URL = 'https://github.com/NousResearch/hermes-agent.git'
-const OFFICIAL_REPO_CANONICAL = 'github.com/nousresearch/hermes-agent'
 // desktop.log lives under HERMES_HOME/logs/ so it sits next to agent.log,
 // errors.log, gateway.log produced by hermes_logging.setup_logging — one log
 // directory per user, regardless of which UI surface produced the line.
@@ -1313,35 +1315,6 @@ function runGit(args, options = {}) {
 }
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
-
-function canonicalGitHubRemote(url) {
-  if (!url) return ''
-  let value = String(url).trim()
-  if (value.startsWith('git@github.com:')) {
-    value = `github.com/${value.slice('git@github.com:'.length)}`
-  } else if (value.startsWith('ssh://git@github.com/')) {
-    value = `github.com/${value.slice('ssh://git@github.com/'.length)}`
-  } else {
-    try {
-      const parsed = new URL(value)
-      if (parsed.hostname && parsed.pathname) value = `${parsed.hostname}${parsed.pathname}`
-    } catch {
-      // Leave non-URL forms unchanged.
-    }
-  }
-  value = value.trim().replace(/\/+$/, '')
-  if (value.endsWith('.git')) value = value.slice(0, -4)
-  return value.toLowerCase()
-}
-
-function isSshRemote(url) {
-  const value = String(url || '').trim().toLowerCase()
-  return value.startsWith('git@') || value.startsWith('ssh://')
-}
-
-function isOfficialSshRemote(url) {
-  return isSshRemote(url) && canonicalGitHubRemote(url) === OFFICIAL_REPO_CANONICAL
-}
 
 async function getOriginUrl(updateRoot) {
   const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })

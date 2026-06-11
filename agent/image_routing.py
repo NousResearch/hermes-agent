@@ -337,12 +337,16 @@ def decide_image_input_mode(
         return "text"
 
     # auto
-    if _explicit_aux_vision_override(cfg):
-        return "text"
-
+    # Check native vision support first — if the main model can see images,
+    # use native mode directly rather than routing through an auxiliary vision
+    # LLM (which adds latency and may fail for providers that reject
+    # multimodal tool_result messages, e.g. Xiaomi MiMo).
     supports = _lookup_supports_vision(provider, model, cfg)
     if supports is True:
         return "native"
+
+    if _explicit_aux_vision_override(cfg):
+        return "text"
     return "text"
 
 

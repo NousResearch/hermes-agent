@@ -3200,6 +3200,64 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         cfg = _load_gateway_runtime_config()
         return str(cfg_get(cfg, "agent", "system_prompt", default="") or "").strip()
 
+    def _db_tail_id(self, session_id: str) -> int | None:
+        """Return the current last SQLite message id for a gateway session."""
+        try:
+            if self._session_db is None:
+                return None
+            messages = self._session_db.get_messages(session_id)
+            if not messages:
+                return None
+            return int(messages[-1].get("id") or 0)
+        except Exception:
+            return None
+
+    def _ensure_visible_response_persisted(
+        self,
+        *,
+        session_id: str,
+        response: str | None,
+        tail_id_before_turn: int | None,
+    ) -> None:
+        """Backfill the visible assistant response if agent DB flush missed it.
+
+        Gateway transcript fallback skips SQLite writes when a SessionDB exists,
+        because the agent usually persists its own messages.  Early user-message
+        persistence can make that assumption false: the inbound user row may be
+        in SQLite while the final visible assistant response is not.  If that
+        happens, next-turn replay looks like a user-only backlog and the agent
+        treats already answered messages as unresolved.
+        """
+        if not response or self._session_db is None:
+            return
+        try:
+            messages = self._session_db.get_messages(session_id)
+            new_messages = []
+            for message in messages:
+                try:
+                    message_id = int(message.get("id") or 0)
+                except Exception:
+                    message_id = 0
+                if tail_id_before_turn is None or message_id > tail_id_before_turn:
+                    new_messages.append(message)
+            if any(message.get("role") == "assistant" for message in new_messages):
+                return
+            self._session_db.append_message(
+                session_id=session_id,
+                role="assistant",
+                content=response,
+            )
+            logger.warning(
+                "Backfilled missing assistant transcript row for gateway session %s",
+                session_id,
+            )
+        except Exception as exc:
+            logger.debug(
+                "assistant transcript persistence guard failed for %s: %s",
+                session_id,
+                exc,
+            )
+
     @staticmethod
     def _load_reasoning_config() -> dict | None:
         """Load reasoning effort from config.yaml.
@@ -8387,6 +8445,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
 
         try:
+            db_tail_id_before_turn = self._db_tail_id(session_entry.session_id)
+
             # Emit agent:start hook
             hook_ctx = {
                 "platform": source.platform.value if source.platform else "",
@@ -8744,6 +8804,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
+
+            self._ensure_visible_response_persisted(
+                session_id=session_entry.session_id,
+                response=response,
+                tail_id_before_turn=db_tail_id_before_turn,
+            )
             
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and

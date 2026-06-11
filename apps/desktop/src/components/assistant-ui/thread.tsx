@@ -1528,6 +1528,8 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
           >
             <div
               aria-label={copy.editMessage}
+              autoCapitalize="off"
+              autoCorrect="off"
               autoFocus
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
@@ -1549,9 +1551,26 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               onPaste={handlePaste}
               ref={editorRef}
               role="textbox"
+              spellCheck={false}
               suppressContentEditableWarning
             />
-            <ComposerPrimitive.Input className="sr-only" tabIndex={-1} unstable_focusOnScrollToBottom={false} />
+            <ComposerPrimitive.Input
+              asChild
+              className="sr-only"
+              submitMode="ctrlEnter"
+              tabIndex={-1}
+              unstable_focusOnScrollToBottom={false}
+            >
+              <textarea
+                aria-hidden
+                autoCapitalize="off"
+                autoComplete="off"
+                autoCorrect="off"
+                className="sr-only"
+                spellCheck={false}
+                tabIndex={-1}
+              />
+            </ComposerPrimitive.Input>
             {staging && (
               <span
                 className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-background/80 px-1.5 py-0.5 text-[0.62rem] text-muted-foreground backdrop-blur-[1px]"

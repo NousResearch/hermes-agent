@@ -136,9 +136,24 @@ export function ComposerTriggerPopover({
               >
                 {isSlash ? (
                   <>
-                    <span className="truncate text-[0.8125rem] font-medium leading-snug text-foreground">{display}</span>
+                    {/* Active row (keyboard nav or hover) un-truncates inline so
+                        long command names / descriptions stay readable without a
+                        floating tooltip. */}
+                    <span
+                      className={cn(
+                        'text-[0.8125rem] font-medium leading-snug text-foreground',
+                        active ? 'whitespace-normal break-words' : 'truncate'
+                      )}
+                    >
+                      {display}
+                    </span>
                     {description && (
-                      <span className="truncate text-[0.6875rem] leading-snug text-(--ui-text-tertiary)">
+                      <span
+                        className={cn(
+                          'text-[0.6875rem] leading-snug text-(--ui-text-tertiary)',
+                          active ? 'whitespace-normal break-words' : 'truncate'
+                        )}
+                      >
                         {description}
                       </span>
                     )}

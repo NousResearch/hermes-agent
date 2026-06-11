@@ -742,6 +742,39 @@ class HonchoClientConfig:
 _honcho_client_slot: SingletonSlot = SingletonSlot()
 
 
+def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
+    """Refresh a near-expiry OAuth grant and point ``config.api_key`` at it.
+
+    No-op for static API keys or when refresh fails (fail-open: the stale token
+    is left in place and the existing 401 handling degrades gracefully).
+    """
+    try:
+        from plugins.memory.honcho import oauth
+
+        token, _ = oauth.ensure_fresh_token(resolve_config_path(), config.host)
+        if token:
+            config.api_key = token
+    except Exception:
+        logger.debug("Honcho OAuth pre-build refresh skipped", exc_info=True)
+
+
+def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -> None:
+    """Rotate the cached client's Bearer in place when its OAuth token is stale.
+
+    If the SDK shape changed and the in-place rotation can't apply, the slot is
+    reset so the next acquisition rebuilds with the fresh token.
+    """
+    try:
+        from plugins.memory.honcho import oauth
+
+        host = config.host if config is not None else resolve_active_host()
+        token, refreshed = oauth.ensure_fresh_token(resolve_config_path(), host)
+        if refreshed and token and not oauth.apply_token_to_client(client, token):
+            _honcho_client_slot.reset()
+    except Exception:
+        logger.debug("Honcho OAuth cached refresh skipped", exc_info=True)
+
+
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     """Get or create the Honcho client singleton.
 
@@ -754,10 +787,15 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     """
     cached = _honcho_client_slot.peek()
     if cached is not None:
+        _refresh_cached_oauth(cached, config)
         return cached
 
     if config is None:
         config = HonchoClientConfig.from_global_config()
+
+    # Refresh a near-expiry OAuth grant before the first build so the client
+    # starts with a live access token rather than 401ing an hour in.
+    _apply_fresh_oauth_token(config)
 
     if not config.api_key and not config.base_url:
         raise ValueError(

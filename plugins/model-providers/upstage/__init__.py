@@ -6,10 +6,12 @@ from providers import register_provider
 from providers.base import ProviderProfile
 
 
-# Model-name markers for Solar families that accept ``reasoning_effort``.
-# Substring match (not startswith) so dated variants like
-# ``solar-pro3-250127`` and ``solar-open-...`` are covered too.
-_REASONING_MODEL_MARKERS = ("solar-pro", "solar-open")
+# Model-name markers for Solar families that do NOT accept ``reasoning_effort``.
+# Deny-list on purpose: newly released Solar models are assumed
+# reasoning-capable by default, so only the known non-reasoning families are
+# listed here. Substring match (not startswith) so dated variants like
+# ``solar-mini-250127`` are covered too.
+_NON_REASONING_MODEL_MARKERS = ("solar-mini", "syn-pro")
 
 # When the user hasn't picked a reasoning effort, Hermes passes
 # reasoning_config=None. Solar's own server default is "minimal" (reasoning
@@ -22,15 +24,20 @@ _DEFAULT_REASONING_EFFORT = "medium"
 
 
 def _model_supports_reasoning(model: str | None) -> bool:
-    """Solar reasoning-capable models.
+    """Solar reasoning-capable models — True unless the model is deny-listed.
 
     The Solar Pro family (``solar-pro``, ``solar-pro2``, ``solar-pro3`` and
     dated variants like ``solar-pro3-250127``) and the Solar Open family
-    (``solar-open*``) accept ``reasoning_effort``. ``solar-mini`` / ``syn-pro``
-    ignore the parameter, so we don't send it.
+    (``solar-open*``) accept ``reasoning_effort``; only ``solar-mini`` /
+    ``syn-pro`` ignore the parameter, so we deny-list those and treat every
+    other (incl. future) Solar model as reasoning-capable.
+
+    ``None``/empty model → True: the provider default (``fallback_models[0]``,
+    the ``solar-pro`` rolling alias) is reasoning-capable, so an unset model
+    gets the same default-on behaviour.
     """
     m = (model or "").strip().lower()
-    return any(marker in m for marker in _REASONING_MODEL_MARKERS)
+    return not any(marker in m for marker in _NON_REASONING_MODEL_MARKERS)
 
 
 class UpstageProfile(ProviderProfile):
@@ -54,7 +61,8 @@ class UpstageProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         top_level: dict[str, Any] = {}
 
-        # solar-mini / syn-pro ignore reasoning_effort — send nothing.
+        # solar-mini / syn-pro (the deny-list) ignore reasoning_effort — send
+        # nothing. Everything else, including future Solar models, gets it.
         if not _model_supports_reasoning(model):
             return {}, top_level
 

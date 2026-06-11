@@ -38,6 +38,7 @@ from typing import Optional, Dict, Any
 from urllib.parse import urljoin
 
 from utils import is_truthy_value
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import (
     managed_nous_tools_enabled,
@@ -491,6 +492,7 @@ def _terminate_command_stt_process_tree(proc: subprocess.Popen) -> None:
                 stderr=subprocess.DEVNULL,
                 timeout=5,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
         except Exception:
             proc.kill()

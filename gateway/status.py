@@ -22,6 +22,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Optional
 from utils import atomic_json_write
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 if sys.platform == "win32":
     import msvcrt
@@ -86,6 +87,7 @@ def terminate_pid(pid: int, *, force: bool = False) -> None:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                creationflags=windows_hide_flags(),
             )
         except FileNotFoundError:
             os.kill(pid, signal.SIGTERM)

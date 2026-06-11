@@ -27,6 +27,11 @@ provisioning (by hand) is proven; self-serve (HTTP) is the next build.
    custom start command. A Railway startCommand OVERRIDES the ENTRYPOINT, bypassing
    /init (s6) and failing with "executable `gateway` could not be found". The image
    must run its own ENTRYPOINT (/init -> main-wrapper.sh -> `hermes gateway run`).
+4. provision-in-container.sh: chowns written config to hermes when run as root
+   (railway ssh lands as root); OPENROUTER_API_KEY now optional (shared-key beta).
+5. hermes_cli/container_boot.py: auto-start ALL registered profiles on container
+   boot unless a `.paused` marker exists (upstream only revives state "running",
+   which leaves every bot down after any redeploy — see Validation #4).
 
 ## How it runs (architecture)
 - /init (s6-overlay) is PID 1. It runs cont-init hooks, starts s6-rc services,
@@ -74,16 +79,32 @@ Idempotent. On success the gateway registers a dynamic s6 service slot at
 /run/service/gateway-<slug>, so it's supervised and survives container restarts.
 
 ## Validation checklist (Part C)
-1. Bot replies on Telegram from the customer's account.
+1. Bot replies on Telegram from the customer's account. ✅ proven (pilot-1)
 2. Image generates to the customer's Avocado account (their credits drop, not yours).
 3. A different Telegram account is ignored (allowlist holds).
-4. Survives a service restart/redeploy (volume + s6 reconcile brings the bot back).
-5. (Optional) A $0.10 test-capped OpenRouter key, once exhausted, hard-stops the
-   agent with an error instead of continuing to spend.
+4. Survives a service restart/redeploy. ❌ FAILED 2026-06-12 on stock upstream, then
+   FIXED by fork patch: a redeploy SIGTERMs every profile gateway → gateway_state.json
+   records "stopped" → upstream's 02-reconcile-profiles only auto-starts state
+   "running" → ALL customer bots stay down after EVERY redeploy. Fork patch in
+   hermes_cli/container_boot.py: auto-start every registered profile unless a
+   ``.paused`` marker file exists in the profile dir. Pause SOP:
+   ``hermes -p <slug> gateway stop && touch /opt/data/profiles/<slug>/.paused``;
+   unpause: remove the marker + ``gateway start``. RE-VERIFY after upstream syncs.
+5. (Optional, paid model only) A $0.10 test-capped OpenRouter key, once exhausted,
+   hard-stops the agent instead of continuing to spend. N/A under the shared-key beta.
 
 ## Keys / cost model (IMPORTANT for the Avocado integration)
-- OpenRouter key is PER CUSTOMER, written to that profile's .env. Hard spend cap is
-  set on the key itself in OpenRouter ($10/mo). No fleet-wide OpenRouter key.
+- BETA MODEL (since 2026-06-12): ONE SHARED OpenRouter key for the whole fleet, set as
+  the Railway service variable OPENROUTER_API_KEY (with a monthly credit limit set on
+  the key itself in OpenRouter — that limit is the global blast-radius cap). Profiles
+  inherit it via s6 with-contenv; the provisioner no longer requires OPENROUTER_API_KEY.
+  Consequences: no per-customer spend ceiling (one heavy user can drain the shared
+  budget; mitigations: agent.max_turns=40, cheap model, trusted beta users only) and
+  no per-customer cost attribution at OpenRouter (recover later from per-profile
+  state.db usage if needed).
+- PAID/SELF-SERVE MODEL (deferred): per-customer OpenRouter key with a ~$10/mo hard
+  cap, passed explicitly to the provisioner (still supported — a key passed via
+  OPENROUTER_API_KEY is written to the profile .env and overrides the shared one).
 - Reasoning model default: xiaomi/mimo-v2.5-pro (verified live OpenRouter slug,
   1M ctx, ~$0.44/$0.87 per M tok in/out). Override per customer with MODEL=.
 - Image/video/audio generation goes through the customer's Avocado MCP key

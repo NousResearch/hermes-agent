@@ -27,7 +27,11 @@ fi
 : "${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN}"
 : "${TELEGRAM_USER_ID:?set TELEGRAM_USER_ID}"
 : "${AVOCADO_MCP_KEY:?set AVOCADO_MCP_KEY}"
-: "${OPENROUTER_API_KEY:?set OPENROUTER_API_KEY}"
+# OPENROUTER_API_KEY is OPTIONAL (beta model, 2026-06-12): when omitted, no
+# key is written to the profile .env and the gateway inherits the shared
+# fleet key from the Railway service variable (per-profile s6 run scripts use
+# with-contenv, and a key absent from the profile .env falls through to the
+# container env). Pass it explicitly to give a customer their own capped key.
 MODEL="${MODEL:-xiaomi/mimo-v2.5-pro}"
 MAX_ITER="${MAX_ITER:-40}"
 HOME_DIR="${HERMES_HOME:-/opt/data}"
@@ -76,14 +80,17 @@ cron:
   wrap_response: true
 YAML
 
-echo "→ writing .env (OpenRouter key + Telegram bot + allowlist)"
+echo "→ writing .env (Telegram bot + allowlist${OPENROUTER_API_KEY:+ + per-customer OpenRouter key})"
 cat > "$PROFILE_DIR/.env" <<ENV
-OPENROUTER_API_KEY=$OPENROUTER_API_KEY
+${OPENROUTER_API_KEY:+OPENROUTER_API_KEY=$OPENROUTER_API_KEY}
 TELEGRAM_BOT_TOKEN=$TELEGRAM_BOT_TOKEN
 TELEGRAM_ALLOWED_USERS=$TELEGRAM_USER_ID
 HERMES_MAX_ITERATIONS=$MAX_ITER
 AUTO_UPDATE=false
 ENV
+if [ -z "${OPENROUTER_API_KEY:-}" ]; then
+  echo "  (no per-customer OpenRouter key — inheriting the shared fleet key from the service env)"
+fi
 chmod 600 "$PROFILE_DIR/.env"
 
 # When this script runs as root (e.g. via `railway ssh`, which lands you in the

@@ -140,7 +140,18 @@ def reconcile_profile_gateways(
                 continue
 
             prior_state = _read_prior_state(entry)
-            should_start = prior_state in _AUTOSTART_STATES
+            # AVOCADO FORK DIVERGENCE (re-check on upstream sync): upstream
+            # only auto-starts profiles whose last recorded state was
+            # "running". But a container redeploy SIGTERMs every profile
+            # gateway, which persists gateway_state "stopped" — so after ANY
+            # redeploy upstream's rule leaves every customer bot down (the
+            # exact incident that took pilot-1 offline on 2026-06-12). In the
+            # Avocado fleet every provisioned profile is a paying customer's
+            # bot and must come back on boot. Auto-start every registered
+            # profile unless it was deliberately paused via a
+            # ``.paused`` marker file in the profile dir (our pause SOP:
+            # ``hermes -p <slug> gateway stop && touch .../<slug>/.paused``).
+            should_start = not (entry / ".paused").exists()
 
             if not dry_run:
                 _cleanup_stale_runtime_files(entry)

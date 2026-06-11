@@ -1,15 +1,10 @@
-"""Zero-CLI OAuth authorization flow for the Honcho memory provider.
+"""Browser sign-in flow for the Honcho memory provider — no CLI step.
 
-The user clicks "Connect to Honcho" in the desktop app; this module runs the
-RFC 8252 native-app authorization-code + PKCE flow and writes the resulting
-grant to honcho.json — no terminal step. ``begin_authorization`` /
-``complete_authorization`` are the transport-agnostic core: the code can arrive
-via the loopback listener here or (later) an Electron ``hermes://`` handler;
-both funnel into ``complete_authorization``.
-
-Endpoints are config-driven (env first, local-dev defaults) because the
-dashboard hosts ``/authorize`` while the API hosts ``/oauth/token`` — two
-different origins. Production deployments set the env overrides.
+``begin_authorization`` / ``complete_authorization`` are the transport-agnostic
+core: the code can arrive via the loopback listener here or a future
+``hermes://`` handler. Endpoints are env-overridable with local-dev defaults
+because ``/authorize`` (dashboard) and ``/oauth/token`` (API) live on
+different origins.
 """
 
 from __future__ import annotations

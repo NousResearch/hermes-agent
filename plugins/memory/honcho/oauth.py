@@ -1,18 +1,13 @@
-"""OAuth 2.1 credential storage and refresh for the Honcho memory provider.
+"""OAuth credential storage and refresh for the Honcho memory provider.
 
-Honcho's OAuth 2.1 authorization server issues opaque ``hch-at-`` access tokens
-and ``hch-rt-`` refresh tokens; an access token authenticates the Honcho API
-*exactly like a scoped API key*, so it is stored as the host's ``apiKey`` and
-sent as the Bearer. Access tokens live one hour, so this module keeps the
-stored token fresh by exchanging the refresh token before expiry.
+An access token authenticates exactly like a scoped API key, so it is stored
+as the host's ``apiKey``; this module exchanges the refresh token before
+expiry to keep it live.
 
-Refresh uses rotation with single-use reuse detection: each refresh returns a
-new refresh token and replaying a superseded one revokes the whole grant. So
-two invariants matter here — every refresh must (1) persist the rotated refresh
-token atomically and (2) be serialized, or concurrent refreshes would replay
-the same token and self-revoke. A failed refresh never raises into the agent;
-the stale token is left in place and the existing fail-open path handles the
-eventual 401.
+Refresh tokens rotate with single-use reuse detection: a replayed stale token
+revokes the whole grant. So every refresh must persist the rotated token
+atomically and be serialized — and a failed refresh never raises into the
+agent (stale token stays; the fail-open path absorbs the eventual 401).
 """
 
 from __future__ import annotations

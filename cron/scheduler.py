@@ -1049,6 +1049,7 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
             argv,
             capture_output=True,
             text=True,
+            encoding="utf-8",
             timeout=script_timeout,
             cwd=str(path.parent),
             env=run_env,

@@ -35,6 +35,7 @@
     "typescript": "~5.6.2"
   },
   "overrides": {
+    "joi": "18.2.1",
     "serialize-javascript": "^7.0.5",
     "uuid": "^14.0.0"
   },

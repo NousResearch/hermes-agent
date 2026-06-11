@@ -66,6 +66,12 @@ function remoteSenderParams(target: RuntimeTarget): { sender_device?: string } {
   return target.endpoint && name ? { sender_device: name } : {}
 }
 
+function isSessionBusyError(reason: unknown): boolean {
+  const message = reason instanceof Error ? reason.message : String(reason)
+
+  return /session busy/i.test(message)
+}
+
 async function resumeRuntimeSession(target: RuntimeTarget): Promise<string> {
   const resumed = await requestTarget<SessionResumeResponse>(target, 'session.resume', {
     session_id: target.sessionId,
@@ -139,11 +145,21 @@ export function promptStoredSessions(sessionIds: readonly string[], rawText: str
   return runBulkRuntime('prompt', sessionIds, async target => {
     const runtimeId = await resumeRuntimeSession(target)
 
-    await requestTarget(target, 'prompt.submit', {
+    const params = {
       session_id: runtimeId,
       text,
       ...remoteSenderParams(target)
-    })
+    }
+
+    try {
+      await requestTarget(target, 'prompt.submit', params)
+    } catch (reason) {
+      if (!isSessionBusyError(reason)) {
+        throw reason
+      }
+
+      await requestTarget(target, 'prompt.queue', params)
+    }
   })
 }
 

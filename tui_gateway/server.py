@@ -3386,6 +3386,98 @@ def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
 
 
+def _prompt_queue(session: dict) -> list[dict]:
+    queue = session.get("prompt_queue")
+
+    if not isinstance(queue, list):
+        queue = []
+        session["prompt_queue"] = queue
+
+    return queue
+
+
+def _queued_prompt_depth(session: dict) -> int:
+    return len(_prompt_queue(session))
+
+
+def _enqueue_prompt(session: dict, text: Any, sender_device: str = "") -> int:
+    body = str(text or "").strip()
+
+    if not body:
+        return _queued_prompt_depth(session)
+
+    _prompt_queue(session).append(
+        {
+            "queued_at": time.time(),
+            "sender_device": sender_device,
+            "text": body,
+        }
+    )
+
+    return _queued_prompt_depth(session)
+
+
+def _pop_queued_prompt(session: dict) -> dict | None:
+    queue = _prompt_queue(session)
+
+    if not queue:
+        return None
+
+    return queue.pop(0)
+
+
+def _drain_next_queued_prompt(rid, sid: str, session: dict) -> bool:
+    """Start exactly one queued prompt turn if the session is idle."""
+
+    with session["history_lock"]:
+        if session.get("running"):
+            return False
+
+        entry = _pop_queued_prompt(session)
+
+        if not entry:
+            return False
+
+        text = str(entry.get("text") or "").strip()
+
+        if not text:
+            return False
+
+        sender_device = str(entry.get("sender_device") or "").strip()
+
+        if sender_device:
+            session["pending_sender_device"] = sender_device
+
+        session["running"] = True
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, text)
+
+    _ensure_session_db_row(session)
+    _start_agent_build(sid, session)
+
+    def run_after_agent_ready() -> None:
+        err = _wait_agent(session, rid)
+        if err:
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "agent initialization failed"
+                    )
+                },
+            )
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            return
+        _run_prompt_submit(rid, sid, session, text)
+
+    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+
+    return True
+
+
 def _inflight_snapshot(session: dict) -> dict | None:
     turn = session.get("inflight_turn")
     if not isinstance(turn, dict):
@@ -5271,6 +5363,42 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "streaming"})
 
 
+@method("prompt.queue")
+def _(rid, params: dict) -> dict:
+    sid, text = params.get("session_id", ""), params.get("text", "")
+    sender_device = _sanitize_sender_device(params.get("sender_device"))
+    body = str(text or "").strip()
+
+    if not body:
+        return _err(rid, 4002, "text is required")
+
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+
+    if (t := current_transport()) is not None:
+        _attach_session_transport(session, t)
+        _record_session_participant(sid, session, t, sender_device)
+
+    with session["history_lock"]:
+        depth = _enqueue_prompt(session, body, sender_device)
+        running = bool(session.get("running"))
+
+    started = False
+
+    if not running:
+        started = _drain_next_queued_prompt(rid, sid, session)
+        depth = _queued_prompt_depth(session)
+
+    return _ok(
+        rid,
+        {
+            "depth": depth,
+            "status": "streaming" if started else "queued",
+        },
+    )
+
+
 def _notification_event_belongs_elsewhere(session: dict, evt: dict) -> bool:
     """True if ``evt`` is owned by a *different* live session.
 
@@ -5829,6 +5957,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 session["last_active"] = time.time()
                 _clear_inflight_turn(session)
             _emit("session.info", sid, _session_info(agent, session))
+
+        if _drain_next_queued_prompt(rid, sid, session):
+            return
 
         # Chain a goal-continuation turn if the judge said so. We do
         # this AFTER the finally releases session["running"], so the

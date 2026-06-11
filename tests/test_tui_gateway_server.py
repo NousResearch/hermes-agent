@@ -1692,6 +1692,117 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_prompt_queue_enqueues_while_session_is_running():
+    session = _session(running=True)
+    server._sessions["sid"] = session
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.queue",
+                "params": {
+                    "session_id": "sid",
+                    "sender_device": " ko-mac\n",
+                    "text": "  follow up  ",
+                },
+            }
+        )
+
+        assert resp["result"] == {"depth": 1, "status": "queued"}
+        assert session["prompt_queue"][0]["text"] == "follow up"
+        assert session["prompt_queue"][0]["sender_device"] == "ko-mac"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_queue_drains_fifo_when_session_becomes_idle(monkeypatch):
+    calls: list[str] = []
+    session = _session(running=True)
+    server._sessions["sid"] = session
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **kw):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    def fake_run_prompt_submit(_rid, _sid, sess, text):
+        calls.append(text)
+        with sess["history_lock"]:
+            sess["running"] = False
+
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda _session, _rid: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", fake_run_prompt_submit)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    try:
+        for text in ("first queued", "second queued"):
+            resp = server.handle_request(
+                {
+                    "id": text,
+                    "method": "prompt.queue",
+                    "params": {"session_id": "sid", "text": text},
+                }
+            )
+            assert resp["result"]["status"] == "queued"
+
+        with session["history_lock"]:
+            session["running"] = False
+
+        assert server._drain_next_queued_prompt("drain-1", "sid", session) is True
+        assert calls == ["first queued"]
+        assert server._queued_prompt_depth(session) == 1
+
+        assert server._drain_next_queued_prompt("drain-2", "sid", session) is True
+        assert calls == ["first queued", "second queued"]
+        assert server._queued_prompt_depth(session) == 0
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_queue_idle_session_starts_streaming_immediately(monkeypatch):
+    calls: list[str] = []
+    session = _session(running=False)
+    server._sessions["sid"] = session
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **kw):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    def fake_run_prompt_submit(_rid, _sid, sess, text):
+        calls.append(text)
+        with sess["history_lock"]:
+            sess["running"] = False
+
+    monkeypatch.setattr(server, "_ensure_session_db_row", lambda _session: None)
+    monkeypatch.setattr(server, "_start_agent_build", lambda _sid, _session: None)
+    monkeypatch.setattr(server, "_wait_agent", lambda _session, _rid: None)
+    monkeypatch.setattr(server, "_run_prompt_submit", fake_run_prompt_submit)
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.queue",
+                "params": {"session_id": "sid", "text": "send now"},
+            }
+        )
+
+        assert resp["result"] == {"depth": 0, "status": "streaming"}
+        assert calls == ["send now"]
+        assert session["running"] is False
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
     writes = []
     emits = []
@@ -6429,5 +6540,4 @@ def test_file_attach_quotes_ref_with_spaces(monkeypatch, tmp_path):
         assert resp["result"]["ref_text"] == "@file:`.hermes/desktop-attachments/my exam schedule.csv`"
     finally:
         server._sessions.pop("sid", None)
-
 

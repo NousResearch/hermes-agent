@@ -846,14 +846,17 @@ def _run_post_setup(post_setup_key: str):
             # batch shims).  On POSIX npm_bin is the plain path — same
             # behaviour as before.
             result = subprocess.run(
-                [npm_bin, "install", "--silent"],
+                # --workspaces=false restricts the install to the repo root
+                # only, avoiding the apps/* glob which would pull in
+                # apps/desktop (Electron + node-pty) unnecessarily. See #38772.
+                [npm_bin, "install", "--silent", "--workspaces=false"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
                 _print_success("    Node.js dependencies installed")
             else:
                 from hermes_constants import display_hermes_home
-                _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install")
+                _print_warning(f"    npm install failed - run manually: cd {display_hermes_home()}/hermes-agent && npm install --workspaces=false")
                 if result.stderr:
                     _print_info(f"      {result.stderr.strip()[:200]}")
         elif not node_modules.exists():
@@ -951,13 +954,14 @@ def _run_post_setup(post_setup_key: str):
             import subprocess
             # Absolute npm path so .cmd shim executes on Windows.
             result = subprocess.run(
-                [_npm_bin, "install", "--silent"],
+                # --workspaces=false avoids resolving apps/desktop. See #38772.
+                [_npm_bin, "install", "--silent", "--workspaces=false"],
                 capture_output=True, text=True, cwd=str(PROJECT_ROOT)
             )
             if result.returncode == 0:
                 _print_success("    Camofox installed")
             else:
-                _print_warning("    npm install failed - run manually: npm install")
+                _print_warning("    npm install failed - run manually: npm install --workspaces=false")
         if camofox_dir.exists():
             _print_info("    Start the Camofox server:")
             _print_info("      npx @askjo/camofox-browser")
@@ -1168,6 +1172,68 @@ def _run_post_setup(post_setup_key: str):
             _print_info("    xAI will remain inactive until credentials are configured.")
 
 
+def valid_post_setup_keys() -> Set[str]:
+    """Return the set of post-setup keys declared by any visible provider.
+
+    Collected from ``TOOL_CATEGORIES`` plus the plugin-registered web /
+    image-gen / video-gen / browser providers (which can also carry a
+    ``post_setup``). This is the allowlist the ``hermes tools post-setup``
+    command and the dashboard post-setup endpoint validate against, so a
+    caller can't drive ``_run_post_setup`` with an arbitrary key.
+    """
+    keys: Set[str] = set()
+    for cat in TOOL_CATEGORIES.values():
+        for prov in cat.get("providers", []):
+            ps = prov.get("post_setup")
+            if ps:
+                keys.add(ps)
+    # Plugin-registered providers can declare their own post_setup hooks.
+    for builder in (
+        _plugin_web_search_providers,
+        _plugin_image_gen_providers,
+        _plugin_video_gen_providers,
+        _plugin_browser_providers,
+    ):
+        try:
+            for prov in builder():
+                ps = prov.get("post_setup")
+                if ps:
+                    keys.add(ps)
+        except Exception:  # pragma: no cover — defensive; plugins optional
+            continue
+    return keys
+
+
+def run_post_setup_command(args) -> int:
+    """``hermes tools post-setup <key>`` — non-interactive post-setup runner.
+
+    Runs the install/bootstrap hook a provider declares (npm install for
+    browser/Camofox, pip install for kittentts/piper/ddgs, cua-driver fetch,
+    etc.). This is the stable, scriptable target the dashboard spawns so the
+    GUI can drive backend setup without re-implementing the install logic.
+    Returns a process exit code (0 ok, 2 unknown key).
+    """
+    key = getattr(args, "post_setup_key", None)
+    if not key:
+        _print_error("Usage: hermes tools post-setup <key>")
+        return 2
+    valid = valid_post_setup_keys()
+    if key not in valid:
+        _print_error(
+            f"Unknown post-setup key: {key!r}. "
+            f"Valid keys: {', '.join(sorted(valid)) or '(none)'}"
+        )
+        return 2
+    _print_info(f"Running post-setup hook: {key}")
+    try:
+        _run_post_setup(key)
+    except Exception as exc:  # pragma: no cover — defensive
+        _print_error(f"Post-setup failed: {exc}")
+        return 1
+    _print_success(f"Post-setup '{key}' complete")
+    return 0
+
+
 # ─── Platform / Toolset Helpers ───────────────────────────────────────────────
 
 def _get_enabled_platforms() -> List[str]:
@@ -1370,6 +1436,10 @@ def _get_platform_tools(
         if ts_key in skip:
             continue
         if ts_def.get("includes"):
+            continue
+        # Posture toolsets (e.g. ``coding``) are session-level selections made
+        # by agent/coding_context.py — not per-platform capabilities to recover.
+        if ts_def.get("posture"):
             continue
         ts_tools = set(resolve_toolset(ts_key))
         if not ts_tools or not ts_tools.issubset(platform_tool_universe):
@@ -2112,8 +2182,13 @@ def _toolset_needs_configuration_prompt(
         tts_cfg = config.get("tts", {})
         return not isinstance(tts_cfg, dict) or "provider" not in tts_cfg
     if ts_key == "web":
-        web_cfg = config.get("web", {})
-        return not isinstance(web_cfg, dict) or "backend" not in web_cfg
+        # Web works out of the box via Parallel's free Search MCP (no key), so
+        # don't force setup just because ``web.backend`` is unset — only prompt
+        # when web isn't actually usable (e.g. an explicit backend configured
+        # without its credentials). Lazy import: web_tools is heavy and most
+        # tools_config callers don't need it.
+        from tools.web_tools import check_web_api_key
+        return not check_web_api_key()
     if ts_key == "browser":
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg

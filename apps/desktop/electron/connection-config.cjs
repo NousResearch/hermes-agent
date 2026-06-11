@@ -131,6 +131,41 @@ async function resolveTestWsUrl(baseUrl, authMode, token, deps = {}) {
   return buildGatewayWsUrl(baseUrl, token)
 }
 
+// Normalize a profile name to a connection scope key, or null for the global
+// (default) connection. Shared by the resolver and the IPC layer.
+function connectionScopeKey(profile) {
+  return String(profile ?? '').trim() || null
+}
+
+// Coerce a remote auth mode to one of the two supported values ('token' default).
+function normAuthMode(mode) {
+  return mode === 'oauth' ? 'oauth' : 'token'
+}
+
+/**
+ * Select a profile's explicit remote override from a connection config, or null
+ * when it has none (so the caller falls back to env → global remote → local).
+ *
+ * The config may carry a `profiles` map keyed by name; an entry counts as an
+ * override only with `mode === 'remote'` and a non-empty `url`. Pure: `token`
+ * is the raw stored secret; main.cjs decrypts it. Returns
+ * `{ url, authMode, token } | null`.
+ */
+function profileRemoteOverride(config, profile) {
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
+  if (!entry || typeof entry !== 'object' || entry.mode !== 'remote') {
+    return null
+  }
+
+  const url = String(entry.url || '').trim()
+  if (!url) {
+    return null
+  }
+
+  return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
+}
+
 function tokenPreview(value) {
   const raw = String(value || '')
 
@@ -207,9 +242,12 @@ module.exports = {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  normAuthMode,
   normalizeRemoteBaseUrl,
+  profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview

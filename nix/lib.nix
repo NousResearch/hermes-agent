@@ -21,7 +21,7 @@ let
 
   # Single npm deps fetch from the workspace root lockfile.
   # All workspace packages share this derivation.
-  npmDepsHash = "sha256-cY+gM1FnTBjmld/uqt7RsqRtW9uQGs8LGokCcxu7bjQ=";
+  npmDepsHash = "sha256-mVWPJLIYa4EA0iNPiSVLAPzjjnWdky2HbG5mwApy1lo=";
 
   npmDeps = pkgs.fetchNpmDeps {
     inherit src;
@@ -53,7 +53,7 @@ in
     {
       folder, # repo-relative folder with package.json, e.g. "ui-tui"
       attr, # flake package attr, e.g. "tui"
-      pname, # e.g. "hermes-tui"
+      ...
     }:
     let
       # No sourceRoot — the workspace root (with the single package-lock.json)
@@ -152,14 +152,12 @@ in
       fi
 
       # Check if lockfile changed (either from the npm i above or from an
-      # external edit).  Runs npm ci + fix-lockfiles if so.
+      # external edit).  Runs npm ci if so.
       LOCK_STAMP="$STAMP_DIR/root-lockfile"
       LOCK_STAMP_VALUE=$(sha256sum "$REPO_ROOT/package-lock.json" 2>/dev/null | awk '{print $1}')
       if [ ! -f "$LOCK_STAMP" ] || [ "$(cat "$LOCK_STAMP")" != "$LOCK_STAMP_VALUE" ]; then
         echo "npm: package-lock.json changed, running npm ci..."
         ( cd "$REPO_ROOT" && CI=true ${pkgs.lib.getExe' nodejs "npm"} ci --silent --no-fund --no-audit 2>/dev/null )
-        echo "npm: updating nix hash..."
-        ${fixLockfilesExe} || echo "npm: warning: fix-lockfiles failed, run it manually" >&2
         mkdir -p "$STAMP_DIR"
         echo "$LOCK_STAMP_VALUE" > "$LOCK_STAMP"
       fi
@@ -233,9 +231,45 @@ in
       OLD_HASH=$(grep -oE 'npmDepsHash = "sha256-[^"]+"' "$LIB_FILE" | head -1 \
         | sed -E 's/npmDepsHash = "(.*)"/\1/')
 
+      # prefetch-npm-deps says the hash already matches — but it only hashes the
+      # lockfile *contents* and can disagree with fetchNpmDeps + npmConfigHook,
+      # which validate the full source lockfile against the realized deps cache.
+      # Trusting prefetch alone produced false "ok" results while the actual
+      # build was broken (e.g. lockfile engines/os/cpu fields the pinned nixpkgs
+      # strips from the deps cache, tripping npmConfigHook). So when prefetch
+      # claims the hash is current, confirm with a real consumer build before
+      # believing it.
       if [ "$NEW_HASH" = "$OLD_HASH" ]; then
-        echo "ok"
-        exit 0
+        if VERIFY_OUT=$(nix build ".#${attr}" --no-link --print-build-logs 2>&1); then
+          echo "ok"
+          if [ -n "''${GITHUB_OUTPUT:-}" ]; then
+            { echo "stale=false"; echo "changed=false"; } >> "$GITHUB_OUTPUT"
+          fi
+          exit 0
+        fi
+        # Build failed despite a matching hash. A fixed-output 'got:' means
+        # prefetch genuinely disagreed with fetchNpmDeps — adopt the real hash
+        # and fall through to the stale-handling path below.
+        CORRECT_HASH=$(echo "$VERIFY_OUT" | awk '/got:/ {print $2; exit}')
+        if [ -n "$CORRECT_HASH" ]; then
+          echo "prefetch-npm-deps reported current ($OLD_HASH) but fetchNpmDeps wants $CORRECT_HASH" >&2
+          NEW_HASH="$CORRECT_HASH"
+        elif echo "$VERIFY_OUT" | grep -qE "throttled|HTTP error 418|substituter .* is disabled|some outputs of .* are not valid"; then
+          echo "skipped (transient cache failure — see primary nix build for real status)" >&2
+          echo "$VERIFY_OUT" | tail -8 >&2
+          exit 0
+        else
+          # Not a stale-hash problem — surface it honestly instead of "ok".
+          echo "::error::nix build .#${attr} failed and it is NOT a stale npmDepsHash (no 'got:' hash in output)." >&2
+          echo "The committed lockfile may be incompatible with the pinned nixpkgs" >&2
+          echo "(e.g. engines/os/cpu fields that prefetch-npm-deps strips from the" >&2
+          echo "deps cache, tripping npmConfigHook). fix-lockfiles cannot repair this." >&2
+          echo "$VERIFY_OUT" | tail -40 >&2
+          if [ -n "''${GITHUB_OUTPUT:-}" ]; then
+            { echo "stale=false"; echo "changed=false"; } >> "$GITHUB_OUTPUT"
+          fi
+          exit 1
+        fi
       fi
 
       HASH_LINE=$(grep -n 'npmDepsHash = "sha256-' "$LIB_FILE" | head -1 | cut -d: -f1)

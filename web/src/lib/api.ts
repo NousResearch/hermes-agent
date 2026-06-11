@@ -249,6 +249,14 @@ export async function buildWsUrl(
   return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
 }
 
+/** Build a ``?profile=<name>`` query suffix, or "" when unset.
+ *
+ * Used by the skills/toolsets endpoints so the dashboard can manage a
+ * profile other than the one the server process runs under. */
+function profileQuery(profile?: string): string {
+  return profile ? `?profile=${encodeURIComponent(profile)}` : "";
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
@@ -325,6 +333,32 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ older_than_days, source }),
     }),
+  listFiles: (path?: string) => {
+    const query = path ? `?path=${encodeURIComponent(path)}` : "";
+    return fetchJSON<ManagedFilesResponse>(`/api/files${query}`);
+  },
+  readFile: (path: string) =>
+    fetchJSON<ManagedFileReadResponse>(
+      `/api/files/read?path=${encodeURIComponent(path)}`,
+    ),
+  uploadFile: (path: string, dataUrl: string, overwrite = true) =>
+    fetchJSON<ManagedFileWriteResponse>("/api/files/upload", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, data_url: dataUrl, overwrite }),
+    }),
+  createDirectory: (path: string) =>
+    fetchJSON<ManagedFileWriteResponse>("/api/files/mkdir", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path }),
+    }),
+  deleteFile: (path: string, recursive = false) =>
+    fetchJSON<{ ok: boolean; path: string }>("/api/files", {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path, recursive }),
+    }),
   getLogs: (params: { file?: string; lines?: number; level?: string; component?: string }) => {
     const qs = new URLSearchParams();
     if (params.file) qs.set("file", params.file);
@@ -390,6 +424,8 @@ export const api = {
   // Cron jobs
   getCronJobs: (profile = "all") =>
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
+  getCronDeliveryTargets: () =>
+    fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
   createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
@@ -437,8 +473,19 @@ export const api = {
     description?: string;
     provider?: string;
     model?: string;
+    mcp_servers?: McpServerCreate[];
+    keep_skills?: string[];
+    hub_skills?: string[];
   }) =>
-    fetchJSON<{ ok: boolean; name: string; path: string; model_set?: boolean }>("/api/profiles", {
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      path: string;
+      model_set?: boolean;
+      mcp_written?: number;
+      skills_disabled?: number;
+      hub_installs?: Array<{ identifier: string; pid: number | null }>;
+    }>("/api/profiles", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -503,14 +550,60 @@ export const api = {
     ),
 
   // Skills & Toolsets
-  getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
-  toggleSkill: (name: string, enabled: boolean) =>
+  //
+  // All calls accept an optional ``profile`` so the Skills page can manage
+  // any profile's skills/toolsets — not just the one the dashboard process
+  // runs under. Omitted/empty profile = the dashboard's own profile.
+  getSkills: (profile?: string) =>
+    fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
+  toggleSkill: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, enabled }),
+      body: JSON.stringify({ name, enabled, profile: profile || undefined }),
     }),
-  getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
+  getToolsets: (profile?: string) =>
+    fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
+  toggleToolset: (name: string, enabled: boolean, profile?: string) =>
+    fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled, profile: profile || undefined }),
+      },
+    ),
+  getToolsetConfig: (name: string, profile?: string) =>
+    fetchJSON<ToolsetConfig>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/config${profileQuery(profile)}`,
+    ),
+  selectToolsetProvider: (name: string, provider: string, profile?: string) =>
+    fetchJSON<{ ok: boolean; name: string; provider: string }>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, profile: profile || undefined }),
+      },
+    ),
+  saveToolsetEnv: (name: string, env: Record<string, string>, profile?: string) =>
+    fetchJSON<ToolsetEnvResult>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/env`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ env, profile: profile || undefined }),
+      },
+    ),
+  runToolsetPostSetup: (name: string, key: string) =>
+    fetchJSON<ActionResponse & { key: string }>(
+      `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key }),
+      },
+    ),
 
   // Session search (FTS5)
   searchSessions: (q: string) =>
@@ -699,6 +792,14 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name }),
     }),
+  getFontPref: () =>
+    fetchJSON<DashboardFontResponse>("/api/dashboard/font"),
+  setFontPref: (font: string) =>
+    fetchJSON<{ ok: boolean; font: string }>("/api/dashboard/font", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ font }),
+    }),
 
   // ── Admin: MCP servers ──────────────────────────────────────────────
   getMcpServers: () => fetchJSON<{ servers: McpServer[] }>("/api/mcp/servers"),
@@ -765,6 +866,8 @@ export const api = {
 
   // ── Admin: Webhooks ─────────────────────────────────────────────────
   getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+  enableWebhooks: () =>
+    fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
   createWebhook: (body: WebhookCreate) =>
     fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
       method: "POST",
@@ -899,23 +1002,41 @@ export const api = {
     fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
 
   // ── Admin: Skills hub ───────────────────────────────────────────────
-  installSkillFromHub: (identifier: string) =>
+  // ``profile`` scopes install/uninstall/update and the installed-state
+  // annotations to that profile (omitted = the dashboard's own profile).
+  installSkillFromHub: (identifier: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/install", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier }),
+      body: JSON.stringify({ identifier, profile: profile || undefined }),
     }),
-  uninstallSkillFromHub: (name: string) =>
+  uninstallSkillFromHub: (name: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/uninstall", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, profile: profile || undefined }),
     }),
-  updateSkillsFromHub: () =>
-    fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
-  searchSkillsHub: (q: string, source = "all", limit = 20) =>
-    fetchJSON<{ results: SkillHubResult[] }>(
-      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}`,
+  updateSkillsFromHub: (profile?: string) =>
+    fetchJSON<ActionResponse>("/api/skills/hub/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: profile || undefined }),
+    }),
+  searchSkillsHub: (q: string, source = "all", limit = 20, profile?: string) =>
+    fetchJSON<SkillHubSearchResponse>(
+      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
+    ),
+  getSkillHubSources: (profile?: string) =>
+    fetchJSON<SkillHubSourcesResponse>(
+      `/api/skills/hub/sources${profileQuery(profile)}`,
+    ),
+  previewSkillFromHub: (identifier: string) =>
+    fetchJSON<SkillHubPreview>(
+      `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
+    ),
+  scanSkillFromHub: (identifier: string) =>
+    fetchJSON<SkillHubScan>(
+      `/api/skills/hub/scan?identifier=${encodeURIComponent(identifier)}`,
     ),
 };
 
@@ -971,6 +1092,77 @@ export interface SkillHubResult {
   trust_level: string;
   repo: string | null;
   tags: string[];
+}
+
+/** Lock-entry summary for an already-installed hub skill (keyed by identifier). */
+export interface SkillHubInstalledEntry {
+  name: string | null;
+  trust_level: string | null;
+  scan_verdict: string | null;
+}
+
+export interface SkillHubSearchResponse {
+  results: SkillHubResult[];
+  /** source_id -> number of results returned by that source. */
+  source_counts: Record<string, number>;
+  /** source ids that didn't return within the parallel-search timeout. */
+  timed_out: string[];
+  /** identifier -> installed lock entry (for "already installed" badges). */
+  installed: Record<string, SkillHubInstalledEntry>;
+}
+
+export interface SkillHubSource {
+  id: string;
+  label: string;
+  /** GitHub only: whether the API is currently rate-limited. */
+  rate_limited?: boolean;
+  /** hermes-index only: whether the centralized index loaded. */
+  available?: boolean;
+}
+
+export interface SkillHubSourcesResponse {
+  sources: SkillHubSource[];
+  index_available: boolean;
+  /** Featured/popular skills from the centralized index (zero extra API calls). */
+  featured: SkillHubResult[];
+  installed: Record<string, SkillHubInstalledEntry>;
+}
+
+export interface SkillHubPreview {
+  name: string;
+  description: string;
+  source: string;
+  identifier: string;
+  trust_level: string;
+  repo: string | null;
+  tags: string[];
+  /** Rendered SKILL.md content (the actual skill text). */
+  skill_md: string;
+  /** Relative paths of every file in the bundle. */
+  files: string[];
+}
+
+export interface SkillHubScanFinding {
+  severity: string;
+  category: string;
+  file: string;
+  line: number;
+  description: string;
+}
+
+export interface SkillHubScan {
+  name: string;
+  identifier: string;
+  source: string;
+  trust_level: string;
+  /** "safe" | "caution" | "dangerous". */
+  verdict: string;
+  summary: string;
+  /** Install-policy decision for this trust+verdict combo. */
+  policy: "allow" | "ask" | "block";
+  policy_reason: string;
+  findings: SkillHubScanFinding[];
+  severity_counts: Record<string, number>;
 }
 
 // ── Admin types ───────────────────────────────────────────────────────
@@ -1096,6 +1288,17 @@ export interface WebhooksResponse {
   enabled: boolean;
   base_url: string;
   subscriptions: WebhookRoute[];
+}
+
+export interface WebhookEnableResponse {
+  ok: boolean;
+  platform: "webhook";
+  enabled: true;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
 }
 
 export interface WebhookCreate {
@@ -1344,7 +1547,11 @@ export interface TelegramOnboardingApplyResponse {
   ok: boolean;
   platform: "telegram";
   bot_username?: string;
-  needs_restart: true;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
 }
 
 export interface SessionMessage {
@@ -1367,6 +1574,44 @@ export interface SessionMessagesResponse {
 export interface LogsResponse {
   file: string;
   lines: string[];
+}
+
+export interface ManagedFileEntry {
+  name: string;
+  path: string;
+  is_directory: boolean;
+  size: number | null;
+  mtime: number;
+  mime_type: string | null;
+}
+
+export interface ManagedFilesResponse {
+  root: string | null;
+  path: string;
+  parent: string | null;
+  locked_root: string | null;
+  can_change_path: boolean;
+  entries: ManagedFileEntry[];
+}
+
+export interface ManagedFileReadResponse {
+  name: string;
+  path: string;
+  size: number;
+  mime_type: string;
+  data_url: string;
+  root: string | null;
+  locked_root: string | null;
+  can_change_path: boolean;
+}
+
+export interface ManagedFileWriteResponse {
+  ok: boolean;
+  path: string;
+  entry: ManagedFileEntry;
+  root: string | null;
+  locked_root: string | null;
+  can_change_path: boolean;
 }
 
 export interface AnalyticsDailyEntry {
@@ -1513,6 +1758,13 @@ export interface CronJob {
   last_error?: string | null;
 }
 
+export interface CronDeliveryTarget {
+  id: string;
+  name: string;
+  home_target_set: boolean;
+  home_env_var: string | null;
+}
+
 export interface SkillInfo {
   name: string;
   description: string;
@@ -1527,6 +1779,39 @@ export interface ToolsetInfo {
   enabled: boolean;
   configured: boolean;
   tools: string[];
+}
+
+export interface ToolsetProviderEnvVar {
+  key: string;
+  prompt: string;
+  url: string | null;
+  default: string | null;
+  is_set: boolean;
+}
+
+export interface ToolsetProvider {
+  name: string;
+  badge: string;
+  tag: string;
+  env_vars: ToolsetProviderEnvVar[];
+  post_setup: string | null;
+  requires_nous_auth: boolean;
+  is_active: boolean;
+}
+
+export interface ToolsetConfig {
+  name: string;
+  has_category: boolean;
+  providers: ToolsetProvider[];
+  active_provider: string | null;
+}
+
+export interface ToolsetEnvResult {
+  ok: boolean;
+  name: string;
+  saved: string[];
+  skipped: string[];
+  is_set: Record<string, boolean>;
 }
 
 export interface SessionSearchResult {
@@ -1592,20 +1877,37 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  confirm_expensive_model?: boolean;
   scope: "main" | "auxiliary";
   provider: string;
   model: string;
+  /** Optional OpenAI-compatible endpoint URL for custom/local main providers. */
+  base_url?: string;
   /** For auxiliary: task slot name, "" for all, "__reset__" to reset all. */
   task?: string;
 }
 
+/** An auxiliary task still pinned to a provider that differs from the
+ *  newly-selected main provider after a main-model switch. */
+export interface StaleAuxAssignment {
+  task: string;
+  provider: string;
+  model: string;
+}
+
 export interface ModelAssignmentResponse {
+  confirm_message?: string;
+  confirm_required?: boolean;
   ok: boolean;
   scope?: string;
   provider?: string;
   model?: string;
   tasks?: string[];
   reset?: boolean;
+  /** Auxiliary slots still pinned to a different provider than the new main.
+   *  Switching main never clears aux pins; this lets the UI warn the user
+   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
+  stale_aux?: StaleAuxAssignment[];
 }
 
 // ── OAuth provider types ────────────────────────────────────────────────
@@ -1680,6 +1982,11 @@ export interface DashboardThemeSummary {
 export interface DashboardThemesResponse {
   active: string;
   themes: DashboardThemeSummary[];
+}
+
+export interface DashboardFontResponse {
+  /** Active font-override id, or "theme" when no override is set. */
+  font: string;
 }
 
 // ── Dashboard plugin types ─────────────────────────────────────────────

@@ -19,7 +19,6 @@ import { setThreadScrolledUp } from '@/store/thread-scroll'
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
 const AT_BOTTOM_THRESHOLD = 4
-const POST_RUN_BOTTOM_LOCK_MS = 1_200
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -265,8 +264,27 @@ function useThreadScrollAnchor({
       return
     }
 
+    // Already parked at the bottom: writing `scrollTop` is a no-op and the
+    // browser fires NO scroll event, so arming the programmatic gate here would
+    // leave it permanently set. Repeated pins (streaming heartbeats, the
+    // post-run lock loop) then accumulate the gate, and the next genuine user
+    // scroll-up is misread as one of our programmatic scrolls — re-arming
+    // sticky-bottom and yanking the viewport back down. Refresh trackers, bail.
+    const distFromBottom = el.scrollHeight - (el.scrollTop + el.clientHeight)
+
+    if (distFromBottom <= AT_BOTTOM_THRESHOLD) {
+      lastTopRef.current = el.scrollTop
+      lastHeightRef.current = el.scrollHeight
+      lastClientHeightRef.current = el.clientHeight
+
+      return
+    }
+
     // Hold the disarm gate across the scroll event the next line will fire.
-    programmaticScrollPendingRef.current += 1
+    // Set to 1 rather than incrementing: coalesced writes within a frame fire a
+    // single scroll event, so a counter > 1 can never drain and would swallow a
+    // later real user scroll.
+    programmaticScrollPendingRef.current = 1
     scrollElementToBottom(el)
     lastTopRef.current = el.scrollTop
     lastHeightRef.current = el.scrollHeight
@@ -369,51 +387,15 @@ function useThreadScrollAnchor({
     }
   }, [scrollerRef, stickyBottomRef])
 
-  // Follow content growth (streaming, item measurements, loading indicator)
-  // while armed. During fast streaming the ResizeObserver can fire many
-  // times per frame as Streamdown re-tokenizes; coalesce to one pin per
-  // animation frame so we don't run the scroll-event/re-pin chain
-  // (~20+ ms self in `Virtualizer.getMaxScrollOffset`) several times per
-  // token.
-  useEffect(() => {
-    if (!enabled || !isRunning) {
-      return undefined
-    }
-
-    const el = scrollerRef.current
-
-    if (!el) {
-      return undefined
-    }
-
-    let pinRafScheduled = false
-
-    const schedulePin = () => {
-      if (pinRafScheduled || !stickyBottomRef.current) {
-        return
-      }
-
-      pinRafScheduled = true
-      requestAnimationFrame(() => {
-        pinRafScheduled = false
-
-        if (stickyBottomRef.current) {
-          pinToBottom()
-        }
-      })
-    }
-
-    const observer = new ResizeObserver(schedulePin)
-
-    // Observe ONLY the content (firstElementChild), not the scroller `el`
-    // itself. Resizes of the viewport/scroller (window resize, devtools
-    // panel toggle) shouldn't trigger a pin — only content growth should.
-    if (el.firstElementChild) {
-      observer.observe(el.firstElementChild)
-    }
-
-    return () => observer.disconnect()
-  }, [enabled, isRunning, pinToBottom, scrollerRef, stickyBottomRef])
+  // Intentionally NO streaming auto-follow. Earlier builds ran a
+  // ResizeObserver here that re-pinned the viewport to the bottom on every
+  // content growth while a turn was running, so the chat tracked tokens as
+  // they streamed. That behavior is removed by request: once a turn is in
+  // flight the viewport stays exactly where the user left it. The viewport
+  // is still moved to the bottom ONCE per user submit / new turn / session
+  // change (see the layout effect and the session-change effect below) so a
+  // freshly submitted message lands in view — but it does not chase the
+  // stream afterward.
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.
@@ -429,22 +411,21 @@ function useThreadScrollAnchor({
     }
   }, [enabled, groupCount, jumpToBottom, sessionKey])
 
-  // Pre-paint pin: when groupCount increases while armed (optimistic user
-  // message insert, streaming assistant turn arriving, etc.), pin BEFORE
-  // the browser commits the layout to screen. Using useLayoutEffect rather
-  // than useEffect so this runs synchronously after React commits the DOM
-  // mutation but before the browser paints. Without this, there's a ~50ms
-  // visual window where the new message sits below the fold while we wait
-  // for the ResizeObserver / scroll event chain to fire and re-pin.
+  // Pre-paint pin: when groupCount increases while armed (a new turn arriving
+  // from the user submit or assistant turn start), pin BEFORE the browser
+  // commits the layout to screen. Using useLayoutEffect rather than useEffect
+  // so this runs synchronously after React commits the DOM mutation but before
+  // the browser paints. Without this, there's a ~50ms visual window where the
+  // new message sits below the fold.
   //
   // We pin TWICE in this critical path — once synchronously, then once on
   // the next rAF. The second pin catches the case where React mounts the
   // new message in the second commit (after our layout effect ran), which
   // grows scrollHeight again; without the rAF pin the user briefly sees a
-  // ~15 px gap below the new message until the RO catches up. Streaming
-  // tokens use the rate-limited RO path only; only the group-count change
-  // (which fires once per user submit / new turn arrival) pays for the
-  // extra pin.
+  // ~15 px gap below the new message. This fires once per user submit / new
+  // turn arrival — it is NOT streaming-token follow (that path is removed
+  // above), so a turn that streams a long response after this initial jump
+  // will not chase the bottom.
   const prevGroupCountForLayoutRef = useRef(groupCount)
   useLayoutEffect(() => {
     if (!enabled) {
@@ -468,45 +449,17 @@ function useThreadScrollAnchor({
     prevGroupCountForLayoutRef.current = groupCount
   }, [enabled, groupCount, pinToBottom, stickyBottomRef])
 
-  // Completion swaps streaming placeholders/plain code for final rendered DOM
-  // (notably Shiki-highlighted code). Keep following the bottom briefly after
-  // `isRunning` flips false so that final measurement pass cannot strand the
-  // viewport near the top of a large code block.
+  // Intentionally NO post-run bottom lock. Earlier builds kept pinning to
+  // the bottom for POST_RUN_BOTTOM_LOCK_MS after `isRunning` flipped false to
+  // chase final Shiki re-highlight measurement. With streaming follow gone,
+  // re-pinning at completion would yank the viewport back to the bottom even
+  // though the user is reading earlier content — the opposite of what's
+  // wanted. The one-time submit / new-turn jump already covers landing a
+  // fresh message in view.
   const prevIsRunningForLayoutRef = useRef(isRunning)
   useLayoutEffect(() => {
-    const finishedRun = prevIsRunningForLayoutRef.current && !isRunning
     prevIsRunningForLayoutRef.current = isRunning
-
-    if (!enabled || !finishedRun || !stickyBottomRef.current) {
-      return undefined
-    }
-
-    const lockUntil = performance.now() + POST_RUN_BOTTOM_LOCK_MS
-    let lockRaf: number | null = null
-
-    const lockFrame = () => {
-      lockRaf = null
-
-      if (!stickyBottomRef.current) {
-        return
-      }
-
-      pinToBottom()
-
-      if (performance.now() < lockUntil) {
-        lockRaf = requestAnimationFrame(lockFrame)
-      }
-    }
-
-    pinToBottom()
-    lockRaf = requestAnimationFrame(lockFrame)
-
-    return () => {
-      if (lockRaf !== null) {
-        cancelAnimationFrame(lockRaf)
-      }
-    }
-  }, [enabled, isRunning, pinToBottom, stickyBottomRef])
+  }, [isRunning])
 
   useAuiEvent('thread.runStart', jumpToBottom)
 }

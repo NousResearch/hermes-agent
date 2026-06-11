@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useMemo } from "react";
+import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
 import {
   Package,
   Search,
@@ -7,6 +7,9 @@ import {
   Cpu,
   Globe,
   Shield,
+  ShieldCheck,
+  ShieldAlert,
+  ShieldQuestion,
   Eye,
   Paintbrush,
   Brain,
@@ -16,9 +19,27 @@ import {
   Filter,
   Download,
   RefreshCw,
+  FileText,
+  ExternalLink,
+  CheckCircle2,
+  AlertTriangle,
+  Sparkles,
+  Loader2,
+  Users,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { SkillInfo, ToolsetInfo, SkillHubResult } from "@/lib/api";
+import type {
+  SkillInfo,
+  ToolsetInfo,
+  SkillHubResult,
+  SkillHubSource,
+  SkillHubInstalledEntry,
+  SkillHubPreview,
+  SkillHubScan,
+  ProfileInfo,
+} from "@/lib/api";
+import { useSearchParams } from "react-router-dom";
+import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -27,6 +48,13 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Switch } from "@nous-research/ui/ui/components/switch";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@nous-research/ui/ui/components/dialog";
 import { cn } from "@/lib/utils";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { useI18n } from "@/i18n";
@@ -103,25 +131,84 @@ export default function SkillsPage() {
   const [view, setView] = useState<"skills" | "toolsets" | "hub">("skills");
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
+  const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
+  // ── Profile scoping ──
+  // The dashboard process runs under ONE profile, but skills/toolsets are
+  // per-profile state. Without an explicit selector, users who "activated"
+  // a profile on the Profiles page (which only affects FUTURE CLI/gateway
+  // runs) toggled skills here and silently wrote into the dashboard's own
+  // profile. The selector makes the write target explicit and deep-linkable
+  // via /skills?profile=<name>.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
+  const [currentProfile, setCurrentProfile] = useState<string>("");
+  const urlProfile = searchParams.get("profile") ?? "";
+  // "" = the dashboard's own profile (legacy behavior).
+  const selectedProfile = urlProfile;
+
+  const setSelectedProfile = useCallback(
+    (name: string) => {
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          if (name) next.set("profile", name);
+          else next.delete("profile");
+          return next;
+        },
+        { replace: true },
+      );
+    },
+    [setSearchParams],
+  );
+
+  // The profile actually being managed, for display purposes.
+  const managedProfile = selectedProfile || currentProfile || "default";
+  const managingOtherProfile =
+    !!selectedProfile && selectedProfile !== currentProfile;
+
   useEffect(() => {
-    Promise.all([api.getSkills(), api.getToolsets()])
+    // Profile list + the dashboard's own profile, for the selector. Failure
+    // leaves the selector hidden — the page still works profile-unscoped.
+    api
+      .getProfiles()
+      .then((res) => setProfiles(res.profiles))
+      .catch(() => {});
+    api
+      .getActiveProfile()
+      .then((info) => setCurrentProfile(info.current || "default"))
+      .catch(() => setCurrentProfile("default"));
+  }, []);
+
+  useEffect(() => {
+    // Promise-chain shape: setState fires only inside async callbacks so the
+    // effect body stays lint-clean (react-hooks/set-state-in-effect). On a
+    // profile switch the old list stays visible until the new one arrives.
+    let cancelled = false;
+    Promise.all([
+      api.getSkills(selectedProfile || undefined),
+      api.getToolsets(selectedProfile || undefined),
+    ])
       .then(([s, tsets]) => {
+        if (cancelled) return;
         setSkills(s);
         setToolsets(tsets);
       })
-      .catch(() => showToast(t.common.loading, "error"))
-      .finally(() => setLoading(false));
-  }, []);
+      .catch(() => !cancelled && showToast(t.common.loading, "error"))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedProfile]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {
     setTogglingSkills((prev) => new Set(prev).add(skill.name));
     try {
-      await api.toggleSkill(skill.name, !skill.enabled);
+      await api.toggleSkill(skill.name, !skill.enabled, selectedProfile || undefined);
       setSkills((prev) =>
         prev.map((s) =>
           s.name === skill.name ? { ...s, enabled: !s.enabled } : s,
@@ -139,6 +226,16 @@ export default function SkillsPage() {
         next.delete(skill.name);
         return next;
       });
+    }
+  };
+
+  /* ---- Refresh toolsets after a config change ---- */
+  const refreshToolsets = async () => {
+    try {
+      const tsets = await api.getToolsets();
+      setToolsets(tsets);
+    } catch {
+      /* non-fatal: the drawer already toasted on the failing write */
     }
   };
 
@@ -197,10 +294,37 @@ export default function SkillsPage() {
       return;
     }
     setAfterTitle(
-      <span className="whitespace-nowrap text-xs text-muted-foreground">
+      <span className="flex items-center gap-2 whitespace-nowrap text-xs text-muted-foreground">
         {t.skills.enabledOf
           .replace("{enabled}", String(enabledCount))
           .replace("{total}", String(skills.length))}
+        {profiles.length > 1 && (
+          <span className="flex items-center gap-1">
+            <Users className="h-3 w-3" />
+            <select
+              aria-label={t.skills.profileSelector ?? "Profile"}
+              className="h-6 rounded-none border border-border bg-background px-1 text-xs text-foreground"
+              value={selectedProfile}
+              onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
+                setSelectedProfile(e.target.value)
+              }
+            >
+              <option value="">
+                {(t.skills.currentProfile ?? "current ({name})").replace(
+                  "{name}",
+                  currentProfile || "default",
+                )}
+              </option>
+              {profiles
+                .filter((p) => p.name !== currentProfile)
+                .map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+            </select>
+          </span>
+        )}
       </span>,
     );
     setEnd(
@@ -229,7 +353,19 @@ export default function SkillsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [enabledCount, loading, search, setAfterTitle, setEnd, skills.length, t]);
+  }, [
+    enabledCount,
+    loading,
+    search,
+    setAfterTitle,
+    setEnd,
+    skills.length,
+    t,
+    profiles,
+    selectedProfile,
+    currentProfile,
+    setSelectedProfile,
+  ]);
 
   const filteredToolsets = useMemo(() => {
     return toolsets.filter(
@@ -254,6 +390,18 @@ export default function SkillsPage() {
     <div className="flex flex-col gap-4">
       <PluginSlot name="skills:top" />
       <Toast toast={toast} />
+
+      {managingOtherProfile && (
+        <div className="flex items-center gap-2 border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
+          <Users className="h-3.5 w-3.5 shrink-0" />
+          <span>
+            {(
+              t.skills.managingProfile ??
+              "Managing profile “{name}” — toggles apply to that profile, not this dashboard’s."
+            ).replace("{name}", managedProfile)}
+          </span>
+        </div>
+      )}
 
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
@@ -484,6 +632,16 @@ export default function SkillsPage() {
                                     : t.skills.disabledForCli}
                                 </span>
                               )}
+                              <div className="mt-3">
+                                <Button
+                                  size="xs"
+                                  outlined
+                                  onClick={() => setConfigToolset(ts)}
+                                >
+                                  <Wrench className="h-3 w-3 mr-1" />
+                                  Configure
+                                </Button>
+                              </div>
                             </div>
                           </div>
                         </CardContent>
@@ -494,10 +652,18 @@ export default function SkillsPage() {
               )}
             </>
           ) : (
-            <HubBrowser showToast={showToast} />
+            <HubBrowser showToast={showToast} profile={selectedProfile || undefined} />
           )}
         </div>
       </div>
+      {configToolset && (
+        <ToolsetConfigDrawer
+          toolset={configToolset}
+          profile={selectedProfile || undefined}
+          onClose={() => setConfigToolset(null)}
+          onChanged={() => void refreshToolsets()}
+        />
+      )}
       <PluginSlot name="skills:bottom" />
     </div>
   );
@@ -568,40 +734,130 @@ interface SkillRowProps {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Hub browser — search the skill hub, install by identifier         */
+/*  Hub browser — search the skill hub, preview, scan, install         */
 /* ------------------------------------------------------------------ */
+
+/** Map a trust level to a Badge tone + label + icon. */
+function trustVisual(level: string): {
+  tone: "success" | "secondary" | "warning" | "outline";
+  label: string;
+} {
+  switch (level) {
+    case "trusted":
+      return { tone: "success", label: "trusted" };
+    case "builtin":
+      return { tone: "secondary", label: "builtin" };
+    case "community":
+      return { tone: "warning", label: "community" };
+    default:
+      return { tone: "outline", label: level || "unknown" };
+  }
+}
+
+/** Map a scan verdict to tone + icon. */
+function verdictVisual(verdict: string): {
+  tone: "success" | "warning" | "destructive";
+  Icon: React.ComponentType<{ className?: string }>;
+  label: string;
+} {
+  switch (verdict) {
+    case "safe":
+      return { tone: "success", Icon: ShieldCheck, label: "Safe" };
+    case "caution":
+      return { tone: "warning", Icon: ShieldAlert, label: "Caution" };
+    case "dangerous":
+      return { tone: "destructive", Icon: ShieldAlert, label: "Dangerous" };
+    default:
+      return { tone: "warning", Icon: ShieldQuestion, label: verdict };
+  }
+}
+
+const SEVERITY_TONE: Record<string, "destructive" | "warning" | "secondary" | "outline"> = {
+  critical: "destructive",
+  high: "destructive",
+  medium: "warning",
+  low: "secondary",
+};
 
 function HubBrowser({
   showToast,
+  profile,
 }: {
   showToast: (msg: string, kind: "success" | "error") => void;
+  /** Optional profile scoping installs + installed-state badges. */
+  profile?: string;
 }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SkillHubResult[]>([]);
   const [searching, setSearching] = useState(false);
   const [searched, setSearched] = useState(false);
-  // Live action log for the most recent install/update (tailed via action status).
+  const [sourceCounts, setSourceCounts] = useState<Record<string, number>>({});
+  const [timedOut, setTimedOut] = useState<string[]>([]);
+  const [searchMs, setSearchMs] = useState<number | null>(null);
+
+  // Landing state: which hubs are wired up + featured skills.
+  const [sources, setSources] = useState<SkillHubSource[]>([]);
+  const [featured, setFeatured] = useState<SkillHubResult[]>([]);
+  const [sourcesLoading, setSourcesLoading] = useState(true);
+
+  // identifier -> installed entry (drives "Installed" badges).
+  const [installed, setInstalled] = useState<Record<string, SkillHubInstalledEntry>>({});
+
+  // Live action log for the most recent install/update.
   const [action, setAction] = useState<string | null>(null);
   const [actionLog, setActionLog] = useState<string[]>([]);
   const [actionRunning, setActionRunning] = useState(false);
 
-  const runSearch = async () => {
+  // Detail dialog (preview + scan for a single skill).
+  const [detail, setDetail] = useState<SkillHubResult | null>(null);
+
+  /* ---- Load connected hubs + featured skills on mount ---- */
+  useEffect(() => {
+    let cancelled = false;
+    api
+      .getSkillHubSources(profile)
+      .then((r) => {
+        if (cancelled) return;
+        setSources(r.sources);
+        setFeatured(r.featured);
+        setInstalled(r.installed);
+      })
+      .catch(() => {
+        /* leave landing minimal on failure */
+      })
+      .finally(() => {
+        if (!cancelled) setSourcesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [profile]);
+
+  /* ---- Search ---- */
+  const runSearch = useCallback(async () => {
     const q = query.trim();
     if (!q) return;
     setSearching(true);
     setSearched(true);
+    const t0 = performance.now();
     try {
-      const r = await api.searchSkillsHub(q);
+      const r = await api.searchSkillsHub(q, "all", 20, profile);
       setResults(r.results);
+      setSourceCounts(r.source_counts || {});
+      setTimedOut(r.timed_out || []);
+      setInstalled((prev) => ({ ...prev, ...(r.installed || {}) }));
     } catch (e) {
       showToast(`Hub search failed: ${e}`, "error");
       setResults([]);
+      setSourceCounts({});
+      setTimedOut([]);
     } finally {
+      setSearchMs(Math.round(performance.now() - t0));
       setSearching(false);
     }
-  };
+  }, [query, showToast, profile]);
 
-  // Poll a spawned action's log until it exits.
+  /* ---- Poll a spawned action's log until it exits ---- */
   useEffect(() => {
     if (!action) return;
     let cancelled = false;
@@ -612,7 +868,15 @@ function HubBrowser({
         if (cancelled) return;
         setActionLog(st.lines);
         setActionRunning(st.running);
-        if (st.running) timer = setTimeout(poll, 1200);
+        if (st.running) {
+          timer = setTimeout(poll, 1200);
+        } else {
+          // Install finished — refresh installed-state so badges update.
+          api
+            .getSkillHubSources(profile)
+            .then((r) => !cancelled && setInstalled(r.installed))
+            .catch(() => {});
+        }
       } catch {
         if (!cancelled) setActionRunning(false);
       }
@@ -622,23 +886,27 @@ function HubBrowser({
       cancelled = true;
       if (timer) clearTimeout(timer);
     };
-  }, [action]);
+  }, [action, profile]);
 
-  const install = async (identifier: string) => {
-    try {
-      const res = await api.installSkillFromHub(identifier);
-      showToast(`Installing ${identifier}…`, "success");
-      setActionLog([]);
-      setActionRunning(true);
-      setAction(res.name);
-    } catch (e) {
-      showToast(`Install failed: ${e}`, "error");
-    }
-  };
+  const install = useCallback(
+    async (identifier: string) => {
+      try {
+        const res = await api.installSkillFromHub(identifier, profile);
+        showToast(`Installing ${identifier}…`, "success");
+        setActionLog([]);
+        setActionRunning(true);
+        setAction(res.name);
+        setDetail(null);
+      } catch (e) {
+        showToast(`Install failed: ${e}`, "error");
+      }
+    },
+    [showToast, profile],
+  );
 
-  const updateAll = async () => {
+  const updateAll = useCallback(async () => {
     try {
-      const res = await api.updateSkillsFromHub();
+      const res = await api.updateSkillsFromHub(profile);
       showToast("Updating installed skills…", "success");
       setActionLog([]);
       setActionRunning(true);
@@ -646,10 +914,18 @@ function HubBrowser({
     } catch (e) {
       showToast(`Update failed: ${e}`, "error");
     }
-  };
+  }, [showToast, profile]);
+
+  const isInstalled = useCallback(
+    (identifier: string) => Boolean(installed[identifier]),
+    [installed],
+  );
+
+  const showLanding = !searched && !searching;
 
   return (
     <div className="flex flex-col gap-3">
+      {/* ── Search bar ── */}
       <Card className="rounded-none">
         <CardContent className="py-4 flex flex-col gap-3">
           <div className="flex items-center gap-2">
@@ -682,13 +958,13 @@ function HubBrowser({
               Update all
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Results come from the same sources as <span className="font-mono">hermes skills search</span>.
-            Installs run in the background; the log streams below.
-          </p>
+
+          {/* Connected hubs strip — proves the tab is wired up. */}
+          <ConnectedHubs sources={sources} loading={sourcesLoading} />
         </CardContent>
       </Card>
 
+      {/* ── Install/update action log ── */}
       {action && (
         <Card className="rounded-none">
           <CardContent className="py-3">
@@ -700,6 +976,17 @@ function HubBrowser({
               ) : (
                 <Badge tone="success">done</Badge>
               )}
+              {!actionRunning && (
+                <Button
+                  ghost
+                  size="xs"
+                  className="ml-auto text-muted-foreground"
+                  onClick={() => setAction(null)}
+                  aria-label="Dismiss"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              )}
             </div>
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-2 text-xs font-mono text-muted-foreground">
               {actionLog.length ? actionLog.join("\n") : "Starting…"}
@@ -708,46 +995,564 @@ function HubBrowser({
         </Card>
       )}
 
+      {/* ── Landing: featured skills (before any search) ── */}
+      {showLanding && (
+        <>
+          {sourcesLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Spinner className="text-xl text-primary" />
+            </div>
+          ) : featured.length > 0 ? (
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2 px-1">
+                <Sparkles className="h-3.5 w-3.5 text-primary" />
+                <span className="font-mondwest text-display text-xs tracking-[0.12em] text-text-secondary uppercase">
+                  Featured skills
+                </span>
+                <span className="text-xs text-text-tertiary">
+                  from the Hermes index — search above for thousands more
+                </span>
+              </div>
+              {featured.map((r) => (
+                <HubResultCard
+                  key={r.identifier}
+                  result={r}
+                  installed={isInstalled(r.identifier)}
+                  onOpen={() => setDetail(r)}
+                  onInstall={() => void install(r.identifier)}
+                />
+              ))}
+            </div>
+          ) : (
+            <Card className="rounded-none">
+              <CardContent className="py-10 text-center text-sm text-muted-foreground">
+                Search the hub above to browse installable skills from the
+                connected sources.
+              </CardContent>
+            </Card>
+          )}
+        </>
+      )}
+
+      {/* ── Searching spinner ── */}
       {searching && (
         <div className="flex items-center justify-center py-8">
           <Spinner className="text-xl text-primary" />
         </div>
       )}
 
-      {!searching && searched && results.length === 0 && (
-        <Card className="rounded-none">
-          <CardContent className="py-8 text-center text-sm text-muted-foreground">
-            No matching skills found in the hub.
-          </CardContent>
-        </Card>
+      {/* ── Search results ── */}
+      {!searching && searched && (
+        <>
+          <SearchMeta
+            count={results.length}
+            sourceCounts={sourceCounts}
+            timedOut={timedOut}
+            ms={searchMs}
+          />
+          {results.length === 0 ? (
+            <Card className="rounded-none">
+              <CardContent className="py-8 text-center text-sm text-muted-foreground">
+                No matching skills found in the hub.
+              </CardContent>
+            </Card>
+          ) : (
+            results.map((r) => (
+              <HubResultCard
+                key={r.identifier}
+                result={r}
+                installed={isInstalled(r.identifier)}
+                onOpen={() => setDetail(r)}
+                onInstall={() => void install(r.identifier)}
+              />
+            ))
+          )}
+        </>
       )}
 
-      {results.map((r) => (
-        <Card key={r.identifier} className="rounded-none">
-          <CardContent className="py-3 flex items-start gap-3">
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-0.5">
-                <span className="font-mono-ui text-sm">{r.name}</span>
-                <Badge tone="secondary" className="text-xs">{r.source}</Badge>
-                <Badge tone="outline" className="text-xs">{r.trust_level}</Badge>
-              </div>
-              <p className="text-xs text-text-secondary">{r.description}</p>
-              <p className="text-xs font-mono text-text-tertiary truncate mt-0.5">
-                {r.identifier}
-              </p>
-            </div>
+      {/* ── Detail dialog: preview + scan ── */}
+      {detail && (
+        <SkillDetailDialog
+          result={detail}
+          installed={isInstalled(detail.identifier)}
+          onClose={() => setDetail(null)}
+          onInstall={() => void install(detail.identifier)}
+          showToast={showToast}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---- Connected hubs strip ---- */
+function ConnectedHubs({
+  sources,
+  loading,
+}: {
+  sources: SkillHubSource[];
+  loading: boolean;
+}) {
+  if (loading) {
+    return (
+      <p className="text-xs text-muted-foreground">Connecting to skill hubs…</p>
+    );
+  }
+  if (sources.length === 0) {
+    return (
+      <p className="text-xs text-muted-foreground">
+        Results come from the same sources as{" "}
+        <span className="font-mono">hermes skills search</span>.
+      </p>
+    );
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="flex items-center gap-1 text-xs text-text-tertiary">
+        <Globe className="h-3 w-3" />
+        Connected hubs:
+      </span>
+      {sources.map((s) => {
+        const down =
+          (s.id === "hermes-index" && s.available === false) ||
+          (s.id === "github" && s.rate_limited === true);
+        return (
+          <Badge
+            key={s.id}
+            tone={down ? "outline" : "secondary"}
+            className={cn("text-xs", down && "opacity-60")}
+            title={
+              s.id === "github" && s.rate_limited
+                ? "GitHub API rate-limited — set GITHUB_TOKEN to raise the limit"
+                : s.id === "hermes-index" && s.available === false
+                  ? "Centralized index unavailable — falling back to live sources"
+                  : undefined
+            }
+          >
+            {s.label}
+            {s.id === "github" && s.rate_limited ? " (rate-limited)" : ""}
+          </Badge>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ---- Search result-count + per-source breakdown ---- */
+function SearchMeta({
+  count,
+  sourceCounts,
+  timedOut,
+  ms,
+}: {
+  count: number;
+  sourceCounts: Record<string, number>;
+  timedOut: string[];
+  ms: number | null;
+}) {
+  const entries = Object.entries(sourceCounts).filter(([, n]) => n > 0);
+  return (
+    <div className="flex flex-wrap items-center gap-2 px-1 text-xs text-text-tertiary">
+      <Badge tone="secondary" className="text-xs">
+        {count} result{count !== 1 ? "s" : ""}
+      </Badge>
+      {ms != null && <span>{(ms / 1000).toFixed(1)}s</span>}
+      {entries.length > 0 && (
+        <span className="flex flex-wrap items-center gap-1.5">
+          {entries.map(([sid, n]) => (
+            <span key={sid} className="font-mono">
+              {sid}:{n}
+            </span>
+          ))}
+        </span>
+      )}
+      {timedOut.length > 0 && (
+        <span className="flex items-center gap-1 text-amber-400">
+          <AlertTriangle className="h-3 w-3" />
+          {timedOut.join(", ")} timed out
+        </span>
+      )}
+    </div>
+  );
+}
+
+/* ---- One result card ---- */
+function HubResultCard({
+  result,
+  installed,
+  onOpen,
+  onInstall,
+}: {
+  result: SkillHubResult;
+  installed: boolean;
+  onOpen: () => void;
+  onInstall: () => void;
+}) {
+  const trust = trustVisual(result.trust_level);
+  return (
+    <Card className="rounded-none transition-colors hover:bg-muted/30">
+      <CardContent className="py-3 flex items-start gap-3">
+        <button
+          type="button"
+          className="flex-1 min-w-0 text-left"
+          onClick={onOpen}
+          aria-label={`Open ${result.name}`}
+        >
+          <div className="flex flex-wrap items-center gap-2 mb-0.5">
+            <span className="font-mono-ui text-sm hover:underline">
+              {result.name}
+            </span>
+            <Badge tone={trust.tone} className="text-xs">
+              {trust.label}
+            </Badge>
+            <Badge tone="secondary" className="text-xs">
+              {result.source}
+            </Badge>
+            {installed && (
+              <Badge tone="success" className="text-xs">
+                installed
+              </Badge>
+            )}
+          </div>
+          <p className="text-xs text-text-secondary line-clamp-2">
+            {result.description}
+          </p>
+          <div className="flex flex-wrap items-center gap-1 mt-1">
+            {result.tags.slice(0, 5).map((tag) => (
+              <span
+                key={tag}
+                className="text-[0.65rem] font-mono text-text-tertiary border border-border px-1 py-px"
+              >
+                {tag}
+              </span>
+            ))}
+          </div>
+          <p className="text-xs font-mono text-text-tertiary truncate mt-1">
+            {result.identifier}
+          </p>
+        </button>
+        <div className="flex shrink-0 flex-col gap-1.5">
+          <Button
+            size="sm"
+            outlined
+            onClick={onOpen}
+            prefix={<FileText className="h-3.5 w-3.5" />}
+          >
+            Details
+          </Button>
+          {installed ? (
+            <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
+              Installed
+            </Button>
+          ) : (
             <Button
               size="sm"
-              outlined
-              className="shrink-0"
-              onClick={() => void install(r.identifier)}
+              onClick={onInstall}
               prefix={<Download className="h-3.5 w-3.5" />}
             >
               Install
             </Button>
-          </CardContent>
-        </Card>
-      ))}
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/* ---- Detail dialog: SKILL.md preview + on-demand security scan ---- */
+function SkillDetailDialog({
+  result,
+  installed,
+  onClose,
+  onInstall,
+  showToast,
+}: {
+  result: SkillHubResult;
+  installed: boolean;
+  onClose: () => void;
+  onInstall: () => void;
+  showToast: (msg: string, kind: "success" | "error") => void;
+}) {
+  const [tab, setTab] = useState<"readme" | "scan">("readme");
+  const [preview, setPreview] = useState<SkillHubPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(true);
+  const [scan, setScan] = useState<SkillHubScan | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const trust = trustVisual(result.trust_level);
+
+  useEffect(() => {
+    let cancelled = false;
+    setPreviewLoading(true);
+    api
+      .previewSkillFromHub(result.identifier)
+      .then((p) => !cancelled && setPreview(p))
+      .catch((e) => {
+        if (!cancelled) showToast(`Preview failed: ${e}`, "error");
+      })
+      .finally(() => !cancelled && setPreviewLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [result.identifier, showToast]);
+
+  const runScan = useCallback(async () => {
+    setScanning(true);
+    setTab("scan");
+    try {
+      const s = await api.scanSkillFromHub(result.identifier);
+      setScan(s);
+    } catch (e) {
+      showToast(`Scan failed: ${e}`, "error");
+    } finally {
+      setScanning(false);
+    }
+  }, [result.identifier, showToast]);
+
+  return (
+    <Dialog open onOpenChange={(o: boolean) => !o && onClose()}>
+      <DialogContent className="max-w-3xl rounded-none">
+        <DialogHeader>
+          <DialogTitle className="flex flex-wrap items-center gap-2 text-sm">
+            <Package className="h-4 w-4" />
+            {result.name}
+            <Badge tone={trust.tone} className="text-xs">
+              {trust.label}
+            </Badge>
+            <Badge tone="secondary" className="text-xs">
+              {result.source}
+            </Badge>
+            {installed && (
+              <Badge tone="success" className="text-xs">
+                installed
+              </Badge>
+            )}
+          </DialogTitle>
+          <DialogDescription className="sr-only">
+            Preview the SKILL.md source and run a security scan for {result.name}{" "}
+            before installing.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="mt-1 flex flex-col gap-1">
+          <p className="text-xs text-text-secondary">{result.description}</p>
+          <p className="text-xs font-mono text-text-tertiary truncate">
+            {result.identifier}
+          </p>
+        </div>
+
+        {/* Action row */}
+        <div className="mt-3 flex flex-wrap items-center gap-2 border-y border-border py-2.5">
+          <Button
+            size="sm"
+            outlined={tab !== "readme"}
+            onClick={() => setTab("readme")}
+            prefix={<FileText className="h-3.5 w-3.5" />}
+          >
+            Read SKILL.md
+          </Button>
+          <Button
+            size="sm"
+            outlined={tab !== "scan"}
+            onClick={() => void runScan()}
+            disabled={scanning}
+            prefix={
+              scanning ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Shield className="h-3.5 w-3.5" />
+              )
+            }
+          >
+            {scan ? "Re-scan" : "Security scan"}
+          </Button>
+          <div className="ml-auto flex items-center gap-3">
+            {result.repo && (
+              <a
+                href={`https://github.com/${result.repo}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-xs text-primary hover:underline"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+                {result.repo}
+              </a>
+            )}
+            {installed ? (
+              <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
+                Installed
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                onClick={onInstall}
+                prefix={<Download className="h-3.5 w-3.5" />}
+              >
+                Install
+              </Button>
+            )}
+          </div>
+        </div>
+
+        {/* Body */}
+        <div className="mt-3 max-h-[55vh] overflow-auto">
+          {tab === "readme" ? (
+            previewLoading ? (
+              <div className="flex items-center justify-center py-12">
+                <Spinner className="text-xl text-primary" />
+              </div>
+            ) : preview ? (
+              <div className="flex flex-col gap-2.5">
+                {preview.tags.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1">
+                    {preview.tags.map((tag) => (
+                      <span
+                        key={tag}
+                        className="text-[0.65rem] font-mono text-text-tertiary border border-border px-1 py-px"
+                      >
+                        {tag}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {preview.files.length > 0 && (
+                  <div className="text-xs text-text-tertiary">
+                    <span className="font-mondwest tracking-[0.1em] uppercase">
+                      Files:{" "}
+                    </span>
+                    <span className="font-mono">{preview.files.join("  ")}</span>
+                  </div>
+                )}
+                <pre className="whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-text-secondary leading-relaxed">
+                  {(preview.skill_md || "").trim() || "(SKILL.md is empty)"}
+                </pre>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground text-center py-10">
+                Couldn't load the skill source.
+              </p>
+            )
+          ) : (
+            <ScanPanel scan={scan} scanning={scanning} />
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/* ---- Visual security-scan result ---- */
+function ScanPanel({
+  scan,
+  scanning,
+}: {
+  scan: SkillHubScan | null;
+  scanning: boolean;
+}) {
+  if (scanning && !scan) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 py-12">
+        <Loader2 className="h-6 w-6 animate-spin text-primary" />
+        <span className="text-xs text-muted-foreground">
+          Fetching, quarantining, and scanning…
+        </span>
+      </div>
+    );
+  }
+  if (!scan) {
+    return (
+      <p className="text-sm text-muted-foreground text-center py-10">
+        Run a security scan to inspect this skill for risky patterns before
+        installing.
+      </p>
+    );
+  }
+
+  const v = verdictVisual(scan.verdict);
+  const policyTone =
+    scan.policy === "allow"
+      ? "success"
+      : scan.policy === "ask"
+        ? "warning"
+        : "destructive";
+  const policyLabel =
+    scan.policy === "allow"
+      ? "Install allowed"
+      : scan.policy === "ask"
+        ? "Needs confirmation"
+        : "Install blocked";
+
+  return (
+    <div className="flex flex-col gap-3">
+      {/* Verdict header */}
+      <div className="flex flex-wrap items-center gap-2 border border-border p-3">
+        <v.Icon
+          className={cn(
+            "h-6 w-6",
+            scan.verdict === "safe"
+              ? "text-emerald-400"
+              : scan.verdict === "dangerous"
+                ? "text-red-400"
+                : "text-amber-400",
+          )}
+        />
+        <div className="flex flex-col">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">Verdict: {v.label}</span>
+            <Badge tone={v.tone} className="text-xs">
+              {scan.verdict}
+            </Badge>
+          </div>
+          <span className="text-xs text-text-tertiary">
+            {scan.trust_level} source · {scan.findings.length} finding
+            {scan.findings.length !== 1 ? "s" : ""}
+          </span>
+        </div>
+        <Badge tone={policyTone} className="ml-auto text-xs">
+          {policyLabel}
+        </Badge>
+      </div>
+
+      {/* Severity tally */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {(["critical", "high", "medium", "low"] as const).map((sev) => {
+          const n = scan.severity_counts[sev] || 0;
+          if (n === 0) return null;
+          return (
+            <Badge key={sev} tone={SEVERITY_TONE[sev]} className="text-xs">
+              {n} {sev}
+            </Badge>
+          );
+        })}
+        {scan.findings.length === 0 && (
+          <span className="flex items-center gap-1 text-xs text-emerald-400">
+            <CheckCircle2 className="h-3.5 w-3.5" />
+            No risky patterns detected
+          </span>
+        )}
+      </div>
+
+      <p className="text-xs text-text-tertiary">{scan.policy_reason}</p>
+
+      {/* Findings */}
+      {scan.findings.length > 0 && (
+        <div className="flex flex-col border border-border divide-y divide-border">
+          {scan.findings.map((f, i) => (
+            <div key={i} className="flex items-start gap-2 p-2">
+              <Badge tone={SEVERITY_TONE[f.severity] || "outline"} className="text-xs shrink-0">
+                {f.severity}
+              </Badge>
+              <div className="flex-1 min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-medium">{f.category}</span>
+                  <span className="text-xs font-mono text-text-tertiary truncate">
+                    {f.file}:{f.line}
+                  </span>
+                </div>
+                <p className="text-xs text-text-secondary">{f.description}</p>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

@@ -19,13 +19,76 @@ const {
   authModeFromStatus,
   buildGatewayWsUrl,
   buildGatewayWsUrlWithTicket,
+  connectionScopeKey,
   cookiesHaveSession,
   cookiesHaveLiveSession,
+  normAuthMode,
   normalizeRemoteBaseUrl,
+  profileRemoteOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   tokenPreview
 } = require('./connection-config.cjs')
+
+// --- connectionScopeKey / normAuthMode ---
+
+test('connectionScopeKey trims to a name or null for the global scope', () => {
+  assert.equal(connectionScopeKey('  coder '), 'coder')
+  assert.equal(connectionScopeKey(''), null)
+  assert.equal(connectionScopeKey(null), null)
+  assert.equal(connectionScopeKey(undefined), null)
+})
+
+test('normAuthMode coerces to token unless explicitly oauth', () => {
+  assert.equal(normAuthMode('oauth'), 'oauth')
+  assert.equal(normAuthMode('token'), 'token')
+  assert.equal(normAuthMode(undefined), 'token')
+  assert.equal(normAuthMode('weird'), 'token')
+})
+
+// --- profileRemoteOverride ---
+
+test('profileRemoteOverride returns null when no profile is given', () => {
+  const config = { profiles: { coder: { mode: 'remote', url: 'https://x' } } }
+  assert.equal(profileRemoteOverride(config, ''), null)
+  assert.equal(profileRemoteOverride(config, null), null)
+  assert.equal(profileRemoteOverride(config, undefined), null)
+})
+
+test('profileRemoteOverride returns null when the profile has no entry', () => {
+  const config = { profiles: { coder: { mode: 'remote', url: 'https://x' } } }
+  assert.equal(profileRemoteOverride(config, 'writer'), null)
+})
+
+test('profileRemoteOverride ignores local or url-less profile entries', () => {
+  assert.equal(profileRemoteOverride({ profiles: { p: { mode: 'local', url: 'https://x' } } }, 'p'), null)
+  assert.equal(profileRemoteOverride({ profiles: { p: { mode: 'remote', url: '' } } }, 'p'), null)
+  assert.equal(profileRemoteOverride({ profiles: { p: { mode: 'remote' } } }, 'p'), null)
+})
+
+test('profileRemoteOverride returns the per-profile remote with defaulted auth mode', () => {
+  const config = {
+    profiles: {
+      coder: { mode: 'remote', url: '  https://coder.example.com/hermes  ', token: { value: 'sek' } }
+    }
+  }
+  assert.deepEqual(profileRemoteOverride(config, 'coder'), {
+    url: 'https://coder.example.com/hermes',
+    authMode: 'token',
+    token: { value: 'sek' }
+  })
+})
+
+test('profileRemoteOverride preserves an explicit oauth auth mode', () => {
+  const config = { profiles: { coder: { mode: 'remote', url: 'https://x', authMode: 'oauth' } } }
+  assert.equal(profileRemoteOverride(config, 'coder').authMode, 'oauth')
+})
+
+test('profileRemoteOverride tolerates a missing/!object profiles map', () => {
+  assert.equal(profileRemoteOverride({}, 'coder'), null)
+  assert.equal(profileRemoteOverride({ profiles: null }, 'coder'), null)
+  assert.equal(profileRemoteOverride(null, 'coder'), null)
+})
 
 // --- normalizeRemoteBaseUrl ---
 

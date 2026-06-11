@@ -7,6 +7,7 @@ import type {
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
+  BackendUpdateCheckResponse,
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
@@ -29,8 +30,10 @@ import type {
   OAuthSubmitResponse,
   PaginatedSessions,
   ProfileCreatePayload,
+  ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillInfo,
@@ -40,6 +43,7 @@ import type {
 } from '@/types/hermes'
 
 const DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS = 30_000
+const SESSION_LIST_REQUEST_TIMEOUT_MS = 60_000
 
 export type {
   ActionResponse,
@@ -50,6 +54,7 @@ export type {
   AnalyticsSkillEntry,
   AnalyticsSkillsSummary,
   AnalyticsTotals,
+  BackendUpdateCheckResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
@@ -80,6 +85,7 @@ export type {
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileInfo,
+  ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
   RpcEvent,
@@ -92,6 +98,7 @@ export type {
   SessionSearchResponse,
   SessionSearchResult,
   SkillInfo,
+  StaleAuxAssignment,
   StatusResponse,
   ToolsetConfig,
   ToolsetInfo
@@ -132,7 +139,8 @@ export async function listSessions(
   order: 'created' | 'recent' = 'recent'
 ): Promise<PaginatedSessions> {
   const result = await window.hermesDesktop.api<PaginatedSessions>({
-    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`
+    path: `/api/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}&archived=${archived}&order=${order}`,
+    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 
   return {
@@ -146,17 +154,34 @@ export async function listSessions(
 // primary backend straight off each profile's state.db — no per-profile backend
 // is spawned. Single-profile users get the same rows as listSessions(), tagged
 // profile="default".
+// Source scoping lets callers split the unified list into independent slices:
+// recents pass `excludeSources: ['cron']`, the cron-jobs section passes
+// `source: 'cron'`. Without this a burst of (always-newest) cron sessions
+// consumes the whole recents page and starves real conversations.
+export interface SessionSourceFilter {
+  source?: string
+  excludeSources?: string[]
+}
+
 export async function listAllProfileSessions(
   limit = 40,
   minMessages = 0,
   archived: 'exclude' | 'include' | 'only' = 'exclude',
   order: 'created' | 'recent' = 'recent',
-  profile: 'all' | (string & {}) = 'all'
+  profile: 'all' | (string & {}) = 'all',
+  filter: SessionSourceFilter = {}
 ): Promise<PaginatedSessions> {
+  const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
+
+  const excludeParam = filter.excludeSources?.length
+    ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
+    : ''
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}`
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
+    timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 
   return {
@@ -166,8 +191,13 @@ export async function listAllProfileSessions(
   }
 }
 
-export function setSessionArchived(id: string, archived: boolean): Promise<{ ok: boolean }> {
+// Mutations take the owning `profile` so Electron routes them to that profile's
+// backend (remote pool or local primary) via request.profile — matching the
+// read path. A remote session's row lives only on its remote host, so a mutation
+// that hit the local primary would no-op or 404. Omit for the current/default.
+export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
     body: { archived }
@@ -180,8 +210,10 @@ export function searchSessions(query: string): Promise<SessionSearchResponse> {
   })
 }
 
-// `profile` reads another profile's transcript straight off its state.db via the
-// primary backend (no spawn). Omit for the current/default profile.
+// Reads another profile's transcript. For a remote profile Electron reroutes
+// this GET to the remote backend (which serves its own state.db); for a local
+// profile the primary opens that profile's state.db via ?profile=. Omit for
+// the current/default profile.
 export function getSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
   const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
 
@@ -190,8 +222,9 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
   })
 }
 
-export function deleteSession(id: string): Promise<{ ok: boolean }> {
+export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'DELETE'
   })
@@ -203,6 +236,7 @@ export function renameSession(
   profile?: string | null
 ): Promise<{ ok: boolean; title: string }> {
   return window.hermesDesktop.api<{ ok: boolean; title: string }>({
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
     body: { title, ...(profile ? { profile } : {}) }
@@ -431,6 +465,15 @@ export function selectToolsetProvider(
   })
 }
 
+export function runToolsetPostSetup(name: string, key: string): Promise<ActionResponse & { key: string }> {
+  return window.hermesDesktop.api<ActionResponse & { key: string }>({
+    ...profileScoped(),
+    path: `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
+    method: 'POST',
+    body: { key }
+  })
+}
+
 export function getMessagingPlatforms(): Promise<MessagingPlatformsResponse> {
   return window.hermesDesktop.api<MessagingPlatformsResponse>({
     path: '/api/messaging/platforms'
@@ -465,6 +508,14 @@ export function getCronJob(jobId: string): Promise<CronJob> {
   return window.hermesDesktop.api<CronJob>({
     path: `/api/cron/jobs/${encodeURIComponent(jobId)}`
   })
+}
+
+export async function getCronJobRuns(jobId: string, limit = 20): Promise<SessionInfo[]> {
+  const { runs } = await window.hermesDesktop.api<{ runs: SessionInfo[] }>({
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/runs?limit=${limit}`
+  })
+
+  return runs ?? []
 }
 
 export function createCronJob(body: CronJobCreatePayload): Promise<CronJob> {
@@ -554,6 +605,12 @@ export function updateProfileSoul(name: string, content: string): Promise<{ ok: 
   })
 }
 
+export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
+  return window.hermesDesktop.api<ProfileSetupCommand>({
+    path: `/api/profiles/${encodeURIComponent(name)}/setup-command`
+  })
+}
+
 export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
   return window.hermesDesktop.api<AnalyticsResponse>({
     ...profileScoped(),
@@ -628,6 +685,15 @@ export function updateHermes(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
     path: '/api/hermes/update',
     method: 'POST'
+  })
+}
+
+/** Query the connected backend's own update state. In remote mode this is the
+ *  authoritative source for the backend's behind-count + "what's changed",
+ *  distinct from the Electron client clone's git state. */
+export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResponse> {
+  return window.hermesDesktop.api<BackendUpdateCheckResponse>({
+    path: `/api/hermes/update/check${force ? '?force=true' : ''}`
   })
 }
 

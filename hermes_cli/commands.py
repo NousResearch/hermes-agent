@@ -167,7 +167,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True),
     CommandDef("skills", "Search, install, inspect, or manage skills",
                "Tools & Skills", cli_only=True,
-               subcommands=("search", "browse", "inspect", "install", "audit")),
+               gateway_config_gate="skills.write_approval",
+               subcommands=("search", "browse", "inspect", "install", "audit",
+                            "pending", "approve", "reject", "diff", "approval")),
+    CommandDef("memory", "Review pending memory writes / toggle the approval gate",
+               "Tools & Skills",
+               args_hint="[pending|approve|reject|approval] [id|on|off]",
+               subcommands=("pending", "approve", "reject", "approval")),
     CommandDef("bundles", "List skill bundles (aliases /<name> for multiple skills)",
                "Tools & Skills"),
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
@@ -216,6 +222,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("image", "Attach a local image file for your next prompt", "Info",
                cli_only=True, args_hint="<path>"),
     CommandDef("update", "Update Hermes Agent to the latest version", "Info"),
+    CommandDef("version", "Show Hermes Agent version", "Info", aliases=("v",)),
     CommandDef("debug", "Upload debug report (system info + logs) and get shareable links", "Info"),
 
     # Exit
@@ -349,6 +356,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "steer",
         "stop",
         "update",
+        "version",
     }
 )
 
@@ -1148,41 +1156,6 @@ def slack_subcommand_map() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-# Per-process cache for /model<space> LM Studio autocomplete. Probing on
-# every keystroke would block the UI; a short TTL keeps it live without
-# hammering the server.
-_LMSTUDIO_COMPLETION_CACHE: tuple[float, list[str]] | None = None
-
-
-def _lmstudio_completion_models() -> list[str]:
-    """Locally-loaded LM Studio models for /model autocomplete (cached, gated)."""
-    global _LMSTUDIO_COMPLETION_CACHE
-    # Gate: don't probe 127.0.0.1 on every keystroke for users who don't use LM Studio.
-    if not (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL")):
-        try:
-            from hermes_cli.auth import _load_auth_store
-            store = _load_auth_store() or {}
-            if "lmstudio" not in (store.get("providers") or {}) \
-               and "lmstudio" not in (store.get("credential_pool") or {}):
-                return []
-        except Exception:
-            return []
-    now = time.time()
-    if _LMSTUDIO_COMPLETION_CACHE and (now - _LMSTUDIO_COMPLETION_CACHE[0]) < 30.0:
-        return _LMSTUDIO_COMPLETION_CACHE[1]
-    try:
-        from hermes_cli.models import fetch_lmstudio_models
-        models = fetch_lmstudio_models(
-            api_key=os.environ.get("LM_API_KEY", ""),
-            base_url=os.environ.get("LM_BASE_URL") or "http://127.0.0.1:1234/v1",
-            timeout=0.8,
-        )
-    except Exception:
-        models = []
-    _LMSTUDIO_COMPLETION_CACHE = (now, models)
-    return models
-
-
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands, subcommands, and skill commands."""
 
@@ -1572,11 +1545,139 @@ class SlashCommandCompleter(Completer):
             pass
 
     @staticmethod
+    def _tools_completions(sub_text: str, sub_lower: str):
+        """Yield completions for /tools — subcommand + toolset/MCP-server name.
+
+        Handles both ``/tools <tab>`` (suggesting ``list|disable|enable``) and
+        ``/tools enable <tab>`` / ``/tools disable <tab>`` (suggesting toolset
+        keys and MCP server prefixes, filtered by current enable state so the
+        user only sees actionable options).
+        """
+        SUBS = ("list", "disable", "enable")
+        parts = sub_text.split()
+        trailing_space = sub_text.endswith(" ")
+
+        # Subcommand stage: zero words typed, or completing the first word.
+        if len(parts) == 0 or (len(parts) == 1 and not trailing_space):
+            partial = sub_text if not trailing_space else ""
+            for sub in SUBS:
+                if sub.startswith(partial.lower()) and sub != partial.lower():
+                    yield Completion(sub, start_position=-len(partial), display=sub)
+            return
+
+        subcommand = parts[0].lower()
+        if subcommand not in ("enable", "disable"):
+            return
+
+        partial = "" if trailing_space else parts[-1]
+        partial_lower = partial.lower()
+        already = set(parts[1:] if trailing_space else parts[1:-1])
+
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.tools_config import (
+                CONFIGURABLE_TOOLSETS,
+                _get_platform_tools,
+                _get_plugin_toolset_keys,
+            )
+
+            config = load_config()
+            enabled = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+
+            for ts_key, label, _desc in CONFIGURABLE_TOOLSETS:
+                if ts_key in already or not ts_key.startswith(partial_lower):
+                    continue
+                is_on = ts_key in enabled
+                if subcommand == "enable" and is_on:
+                    continue
+                if subcommand == "disable" and not is_on:
+                    continue
+                yield Completion(
+                    ts_key,
+                    start_position=-len(partial),
+                    display=ts_key,
+                    display_meta=label,
+                )
+
+            for ts_key in sorted(_get_plugin_toolset_keys()):
+                if ts_key in already or not ts_key.startswith(partial_lower):
+                    continue
+                is_on = ts_key in enabled
+                if subcommand == "enable" and is_on:
+                    continue
+                if subcommand == "disable" and not is_on:
+                    continue
+                yield Completion(
+                    ts_key,
+                    start_position=-len(partial),
+                    display=ts_key,
+                    display_meta="plugin toolset",
+                )
+
+            mcp_servers = config.get("mcp_servers") or {}
+            if isinstance(mcp_servers, dict):
+                for server in sorted(mcp_servers):
+                    prefix = f"{server}:"
+                    if prefix in already or not prefix.startswith(partial_lower):
+                        continue
+                    yield Completion(
+                        prefix,
+                        start_position=-len(partial),
+                        display=prefix,
+                        display_meta=f"MCP server '{server}'",
+                    )
+        except Exception:
+            return
+
+    @staticmethod
+    def _handoff_completions(sub_text: str, sub_lower: str):
+        """Yield platform completions for /handoff.
+
+        Offers connected (enabled + configured) gateway platforms. A recorded
+        home channel is NOT required to list a platform — it's often learned at
+        runtime — so the meta hints whether one is set yet. Completes only the
+        first arg (the platform); once one is chosen, stop.
+        """
+        parts = sub_text.split()
+        trailing_space = sub_text.endswith(" ")
+        if len(parts) > 1 or (len(parts) == 1 and trailing_space):
+            return
+        partial = "" if (not parts or trailing_space) else parts[-1]
+        partial_lower = partial.lower()
+        try:
+            from gateway.config import load_gateway_config
+
+            gw = load_gateway_config()
+            platforms = gw.get_connected_platforms()
+        except Exception:
+            return
+        for platform in platforms:
+            name = platform.value
+            if not name.startswith(partial_lower):
+                continue
+            try:
+                home = gw.get_home_channel(platform)
+            except Exception:
+                home = None
+            meta = f"→ {home.name}" if home and getattr(home, "name", None) else "send this session here"
+            yield Completion(
+                name,
+                start_position=-len(partial),
+                display=name,
+                display_meta=meta,
+            )
+
+    @staticmethod
     def _personality_completions(sub_text: str, sub_lower: str):
         """Yield completions for /personality from configured personalities."""
         try:
-            from hermes_cli.config import load_config
-            personalities = load_config().get("agent", {}).get("personalities", {})
+            # Resolve from the same source the runtime applies personalities —
+            # agent.personalities via the CLI config (which ships the built-ins).
+            # load_config()'s schema has no agent.personalities, so the completer
+            # used to come back empty even with personalities available.
+            from cli import load_cli_config
+
+            personalities = (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
             if "none".startswith(sub_lower) and "none" != sub_lower:
                 yield Completion(
                     "none",
@@ -1598,52 +1699,6 @@ class SlashCommandCompleter(Completer):
                     )
         except Exception:
             pass
-
-    def _model_completions(self, sub_text: str, sub_lower: str):
-        """Yield completions for /model from config aliases + built-in aliases."""
-        seen = set()
-        # Config-based direct aliases (preferred — include provider info)
-        try:
-            from hermes_cli.model_switch import (
-                _ensure_direct_aliases, DIRECT_ALIASES, MODEL_ALIASES,
-            )
-            _ensure_direct_aliases()
-            for name, da in DIRECT_ALIASES.items():
-                if name.startswith(sub_lower) and name != sub_lower:
-                    seen.add(name)
-                    yield Completion(
-                        name,
-                        start_position=-len(sub_text),
-                        display=name,
-                        display_meta=f"{da.model} ({da.provider})",
-                    )
-            # Built-in catalog aliases not already covered
-            for name in sorted(MODEL_ALIASES.keys()):
-                if name in seen:
-                    continue
-                if name.startswith(sub_lower) and name != sub_lower:
-                    identity = MODEL_ALIASES[name]
-                    yield Completion(
-                        name,
-                        start_position=-len(sub_text),
-                        display=name,
-                        display_meta=f"{identity.vendor}/{identity.family}",
-                    )
-        except Exception:
-            pass
-        # LM Studio: surface locally-loaded models. Gated on the user actually
-        # having LM Studio configured (env var or auth-store entry) so we
-        # don't probe 127.0.0.1 on every keystroke for users who don't use it.
-        for name in _lmstudio_completion_models():
-            if name in seen:
-                continue
-            if name.startswith(sub_lower) and name != sub_lower:
-                yield Completion(
-                    name,
-                    start_position=-len(sub_text),
-                    display=name,
-                    display_meta="LM Studio",
-                )
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -1668,15 +1723,23 @@ class SlashCommandCompleter(Completer):
 
             # Dynamic completions for commands with runtime lists
             if " " not in sub_text:
-                if base_cmd == "/model":
-                    yield from self._model_completions(sub_text, sub_lower)
-                    return
                 if base_cmd == "/skin":
                     yield from self._skin_completions(sub_text, sub_lower)
                     return
                 if base_cmd == "/personality":
                     yield from self._personality_completions(sub_text, sub_lower)
                     return
+
+            # /tools needs multi-word completion (subcommand + toolset name)
+            # so it handles both stages itself, bypassing the single-word
+            # SUBCOMMANDS branch below.
+            if base_cmd == "/tools":
+                yield from self._tools_completions(sub_text, sub_lower)
+                return
+
+            if base_cmd == "/handoff":
+                yield from self._handoff_completions(sub_text, sub_lower)
+                return
 
             # Static subcommand completions
             if " " not in sub_text and base_cmd in SUBCOMMANDS and self._command_allowed(base_cmd):
@@ -1806,7 +1869,7 @@ class SlashCommandAutoSuggest(AutoSuggest):
                     return Suggestion(cmd_name[len(word):])
             return None
 
-        # Command is complete — suggest subcommands or model names
+        # Command is complete — suggest subcommands
         sub_text = parts[1] if len(parts) > 1 else ""
         sub_lower = sub_text.lower()
 

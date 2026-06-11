@@ -23,6 +23,22 @@ if (!process.stdin.isTTY) {
 // terminal tab can still have mouse/focus/paste modes enabled.
 resetTerminalModes()
 
+// Final backstop for terminal cleanup. setupGracefulExit() resets modes on
+// signals/uncaught errors, and die()/dieWithCode() call process.exit() after
+// Ink's unmount specifically so this handler can fire (see useMainApp.ts and
+// #19194). But that handler was never actually installed — so /quit, Ctrl+C,
+// Ctrl+D, and any process.exit() path left DEC mouse tracking (?1000/1002/
+// 1003/1006) armed in the parent shell. The terminal then keeps emitting mouse
+// reports into whatever reads stdin next — the shell or a freshly relaunched
+// TUI mid-init — which surface as `102;71M5;104;62M`-style garbage in the input
+// box (#28419). 'exit' fires exactly once on real termination and only runs
+// synchronous code; resetTerminalModes() writes via writeSync, so it completes
+// before the process is gone. Idempotent and cheap, so layering it under the
+// graceful-exit cleanups is safe.
+process.on('exit', () => {
+  resetTerminalModes()
+})
+
 // Desktop terminals benefit from a clean startup slate because the TUI usually
 // runs in AlternateScreen. On Termux we keep prior output intact so users can
 // review/copy earlier assistant replies after reopening the app.
@@ -37,7 +53,7 @@ const gw = new GatewayClient()
 gw.start()
 
 const dumpNotice = (snap: MemorySnapshot, dump: HeapDumpResult | null) =>
-  `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? '(failed)'}\n`
+  `hermes-tui: ${snap.level} memory (${formatBytes(snap.heapUsed)}) — auto heap dump → ${dump?.heapPath ?? dump?.diagPath ?? '(failed)'}\n`
 
 setupGracefulExit({
   cleanups: [

@@ -83,7 +83,8 @@ const CONFIGURED_CACHE_KEY = 'hermes-desktop-onboarded-v1'
 const SKIP_CACHE_KEY = 'hermes-onboarding-skipped-v1'
 const POLL_MS = 2000
 const COPY_FLASH_MS = 1500
-const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
+export const DEFAULT_ONBOARDING_REASON = 'No inference provider is configured.'
+export const DEFAULT_MANUAL_ONBOARDING_REASON = 'Add or switch inference provider.'
 
 function readCachedConfigured(): boolean | null {
   if (typeof window === 'undefined') {
@@ -387,7 +388,7 @@ export function requestDesktopOnboarding(reason = DEFAULT_ONBOARDING_REASON) {
 // onboarding flow (OAuth rows, API-key form, model-confirm) instead of
 // duplicating provider UI. Sets manual=true so the overlay shows the picker
 // even though configured===true, and refreshes the provider list.
-export function startManualOnboarding(reason: null | string = 'Add or switch inference provider.') {
+export function startManualOnboarding(reason: null | string = DEFAULT_MANUAL_ONBOARDING_REASON) {
   patch({
     manual: true,
     requested: true,
@@ -857,7 +858,9 @@ export function confirmOnboardingModel(ctx: OnboardingContext) {
     return
   }
 
-  notifyReady(flow.label)
+  // No success toast here: the confirm-model screen already showed "<provider>
+  // connected." notifyReady is reserved for completion paths that SKIP this
+  // screen (no-default fallthrough, local endpoint) so feedback isn't lost.
   completeDesktopOnboarding()
   ctx.onCompleted?.()
 }

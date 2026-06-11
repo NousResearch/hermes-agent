@@ -63,6 +63,44 @@ def _wait_until(predicate, timeout: float = 5.0, interval: float = 0.05) -> bool
     return False
 
 
+def test_write_stdin_uses_str_for_windows_pty(monkeypatch, registry):
+    """pywinpty expects str input; bytes raises a PyString conversion error."""
+    written = []
+
+    class _FakePty:
+        def write(self, value):
+            written.append(value)
+
+    session = _make_session(sid="pty-win")
+    session._pty = _FakePty()
+    registry._running[session.id] = session
+    monkeypatch.setattr("tools.process_registry._IS_WINDOWS", True)
+
+    result = registry.write_stdin(session.id, "hello\n")
+
+    assert result == {"status": "ok", "bytes_written": 6}
+    assert written == ["hello\n"]
+    assert isinstance(written[0], str)
+
+
+def test_write_stdin_uses_bytes_for_posix_pty(monkeypatch, registry):
+    written = []
+
+    class _FakePty:
+        def write(self, value):
+            written.append(value)
+
+    session = _make_session(sid="pty-posix")
+    session._pty = _FakePty()
+    registry._running[session.id] = session
+    monkeypatch.setattr("tools.process_registry._IS_WINDOWS", False)
+
+    result = registry.write_stdin(session.id, "hello\n")
+
+    assert result == {"status": "ok", "bytes_written": 6}
+    assert written == [b"hello\n"]
+
+
 # =========================================================================
 # Get / Poll
 # =========================================================================

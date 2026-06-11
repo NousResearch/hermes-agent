@@ -315,7 +315,7 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
             ]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
@@ -366,7 +366,7 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
             return [multimodal_user, text_only_assistant]
 
     monkeypatch.setattr(server, "_get_db", lambda: _DB())
-    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: object())
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None, session_db=None: object())
     monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
     monkeypatch.setattr(server, "_session_info", lambda _agent, _session=None: {"model": "test/model"})
 
@@ -432,7 +432,7 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
         def close(self):
             closed_sids.append(self.sid)
 
-    def make_agent(sid, key, session_id=None):
+    def make_agent(sid, key, session_id=None, session_db=None):
         created_sids.append(sid)
         first_agent_started.set()
         assert agent_can_finish.wait(timeout=1)
@@ -547,7 +547,7 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
     monkeypatch.setattr(
         server,
         "_make_agent",
-        lambda _sid, key, session_id=None: types.SimpleNamespace(
+        lambda _sid, key, session_id=None, session_db=None: types.SimpleNamespace(
             model="test/model", session_id=session_id or key
         ),
     )
@@ -613,6 +613,44 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
     ]
 
 
+def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(server, monkeypatch):
+    """Reconnect + activate must reattach a parked live session before orphan reap."""
+
+    class _Transport:
+        def write(self, _obj):
+            return True
+
+    sid = "runtime01"
+    old_transport = server._stdio_transport
+    new_transport = _Transport()
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="test/model"),
+        "created_at": 123.0,
+        "history": [],
+        "history_lock": threading.RLock(),
+        "last_active": 123.0,
+        "running": False,
+        "session_key": "20260409_010101_abc123",
+        "transport": old_transport,
+    }
+    monkeypatch.setattr(server, "current_transport", lambda: new_transport)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    resp = server.handle_request(
+        {"id": "activate", "method": "session.activate", "params": {"session_id": sid}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["session_id"] == sid
+    assert server._sessions[sid]["transport"] is new_transport
+    assert not server._ws_session_is_orphaned(server._sessions[sid])
+
+
 def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     """TUI /branch must persist a _branched_from marker so the branch stays
     visible in /resume and /sessions.
@@ -647,7 +685,7 @@ def test_session_branch_persists_branched_from_marker(server, monkeypatch):
     monkeypatch.setattr(
         server,
         "_make_agent",
-        lambda _sid, key, session_id=None: types.SimpleNamespace(
+        lambda _sid, key, session_id=None, session_db=None: types.SimpleNamespace(
             model="test/model", session_id=session_id or key
         ),
     )

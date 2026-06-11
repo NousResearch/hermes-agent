@@ -24,12 +24,6 @@
 
 ### Install with Hermes (recommended)
 
-Add `--include-desktop` to the [one-line installer](../../README.md#quick-install) and it sets up the agent and builds the desktop app in one go:
-
-```bash
-curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash -s -- --include-desktop
-```
-
 Already have the Hermes CLI? Just run:
 
 ```bash
@@ -99,7 +93,7 @@ Run before opening a PR (lint may surface pre-existing warnings but must exit cl
 
 ```bash
 npm run fix
-npm run type-check
+npm run typecheck
 npm run lint
 npm run test:desktop:all
 ```

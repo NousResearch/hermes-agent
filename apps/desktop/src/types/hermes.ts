@@ -213,6 +213,18 @@ export interface ModelOptionProvider {
   slug: string
   total_models?: number
   warning?: string
+  /** True when the provider has usable credentials. False for canonical
+   *  providers surfaced by `include_unconfigured` that the user hasn't set up
+   *  yet — render these with a setup affordance instead of hiding them. */
+  authenticated?: boolean
+  /** Auth flow for an unconfigured provider: "api_key" can be activated inline
+   *  by pasting `key_env`; anything else (oauth_*, external, aws_sdk, …) needs
+   *  the `hermes model` CLI / onboarding OAuth flow. */
+  auth_type?: string
+  /** Env var to paste an API key into, for unconfigured `api_key` providers. */
+  key_env?: string
+  /** True for providers defined via the user's `providers:` config block. */
+  is_user_defined?: boolean
   /** Per-model pricing keyed by model id (present when the picker requested
    *  pricing and the provider supports live pricing). */
   pricing?: Record<string, ModelPricing>
@@ -285,6 +297,14 @@ export interface SessionInfo {
   started_at: number
   title: null | string
   tool_call_count: number
+  /** Origin platform when this session was handed off from a messaging
+   *  platform (e.g. a Telegram thread continued in the desktop app). The live
+   *  {@link source} becomes local (tui/desktop) after a handoff, so the origin
+   *  is preserved here to surface the platform badge on the row. */
+  handoff_platform?: null | string
+  /** Handoff lifecycle: 'pending' | 'in_progress' | 'completed' | 'failed'. */
+  handoff_state?: null | string
+  handoff_error?: null | string
   /** Owning profile name, set by the cross-profile aggregator
    *  (`/api/profiles/sessions`). Absent on legacy single-profile responses,
    *  which the UI treats as the default profile. */
@@ -466,6 +486,10 @@ export interface ProfileInfo {
   skill_count: number
 }
 
+export interface ProfileSetupCommand {
+  command: string
+}
+
 export interface ProfileSoul {
   content: string
   exists: boolean
@@ -580,6 +604,27 @@ export interface ActionStatusResponse {
   running: boolean
 }
 
+export interface BackendUpdateCommit {
+  sha: string
+  summary: string
+  author: string
+  at: number
+}
+
+/** Shape of `GET /api/hermes/update/check` — the backend's own update state.
+ *  Used by the desktop's remote update overlay so the backend version (not the
+ *  Electron client clone) drives "what's changed + Install" in remote mode. */
+export interface BackendUpdateCheckResponse {
+  install_method: string
+  current_version: string
+  behind: number | null
+  update_available: boolean
+  can_apply: boolean
+  update_command: string | null
+  message: string | null
+  commits?: BackendUpdateCommit[]
+}
+
 export interface AuxiliaryTaskAssignment {
   base_url: string
   model: string
@@ -602,6 +647,14 @@ export interface ModelAssignmentRequest {
   task?: string
 }
 
+/** An auxiliary task still pinned to a provider that differs from the
+ *  newly-selected main provider after a main-model switch. */
+export interface StaleAuxAssignment {
+  task: string
+  provider: string
+  model: string
+}
+
 export interface ModelAssignmentResponse {
   /** Persisted endpoint URL for custom/local providers (echoed back). */
   base_url?: string
@@ -614,5 +667,9 @@ export interface ModelAssignmentResponse {
   provider?: string
   reset?: boolean
   scope?: string
+  /** Auxiliary slots still pinned to a different provider than the new main.
+   *  Switching main never clears aux pins; this lets the UI warn the user
+   *  their helper tasks aren't following the switch. Only set on scope:'main'. */
+  stale_aux?: StaleAuxAssignment[]
   tasks?: string[]
 }

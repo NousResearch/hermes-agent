@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -20,21 +20,23 @@ import { $sidebarSelection, clearSidebarSelection } from '@/store/sidebar-select
 import type { SessionInfo } from '@/types/hermes'
 
 interface SelectionActionBarProps {
-  /** Resolve selected ids to loaded rows (pin ids, profiles). */
-  sessionsById: ReadonlyMap<string, SessionInfo>
-  onArchiveSessions: (sessionIds: string[]) => Promise<unknown> | void
-  onRestoreSessions: (sessionIds: string[]) => Promise<unknown> | void
-  onDeleteSessions: (sessionIds: string[]) => Promise<unknown> | void
+  /** The owning section's rows — resolves selected ids to pin ids/profiles. */
+  sessions: SessionInfo[]
+  onArchiveSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onRestoreSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onDeleteSessions?: (sessionIds: string[]) => Promise<unknown> | void
 }
 
 type PendingAction = 'archive' | 'delete' | 'pin' | 'restore' | null
 
-/** Floating footer bar for the sidebar's multi-select: shows the live count
- * and the bulk verbs that make sense for the section the selection lives in
- * (Archived rows restore, pinned rows unpin, everything else pins). Mounted
- * only while a selection exists, so it also owns the Esc-to-clear binding. */
+/** Selection-mode header for a sidebar section: while rows in the section are
+ * selected, this REPLACES the section's own header row — the live count and
+ * the bulk verbs sit directly above the checked rows, where the user is
+ * already looking (the earlier bottom-of-sidebar placement was undiscoverable).
+ * Mounted only while a selection exists, so it also owns the Esc-to-clear
+ * binding. */
 export function SelectionActionBar({
-  sessionsById,
+  sessions,
   onArchiveSessions,
   onRestoreSessions,
   onDeleteSessions
@@ -47,6 +49,8 @@ export function SelectionActionBar({
 
   const count = selection.ids.length
   const active = selection.section !== null && count > 0
+
+  const sessionsById = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions])
 
   useEffect(() => {
     if (!active) {
@@ -112,18 +116,18 @@ export function SelectionActionBar({
 
   const archiveSelected = () => {
     triggerHaptic('selection')
-    void runBulk('archive', () => onArchiveSessions([...selection.ids]))
+    void runBulk('archive', () => onArchiveSessions?.([...selection.ids]))
   }
 
   const restoreSelected = () => {
     triggerHaptic('selection')
-    void runBulk('restore', () => onRestoreSessions([...selection.ids]))
+    void runBulk('restore', () => onRestoreSessions?.([...selection.ids]))
   }
 
   const deleteSelected = () => {
     triggerHaptic('warning')
     setConfirmDeleteOpen(false)
-    void runBulk('delete', () => onDeleteSessions([...selection.ids]))
+    void runBulk('delete', () => onDeleteSessions?.([...selection.ids]))
   }
 
   const actionButton = (
@@ -133,7 +137,7 @@ export function SelectionActionBar({
     action: Exclude<PendingAction, null>,
     destructive = false
   ) => (
-    <Tip label={label}>
+    <Tip key={label} label={label}>
       <Button
         aria-label={label}
         className={
@@ -156,14 +160,12 @@ export function SelectionActionBar({
   )
 
   return (
-    <div
-      className="mx-0.5 mb-1 flex shrink-0 items-center gap-0.5 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-background) py-0.5 pl-2 pr-1 shadow-sm"
-      data-selection-bar
-    >
-      <span className="min-w-0 flex-1 truncate text-[0.6875rem] font-medium text-(--ui-text-secondary)">
+    <div className="flex shrink-0 items-center gap-0.5 pb-1 pt-1.5" data-selection-bar>
+      <span className="min-w-0 flex-1 truncate text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-secondary)">
         {s.selectedCount(count)}
       </span>
-      {!isArchivedSection && actionButton(isPinnedSection ? s.unpin : s.pin, isPinnedSection ? 'pinned' : 'pin', togglePins, 'pin')}
+      {!isArchivedSection &&
+        actionButton(isPinnedSection ? s.unpin : s.pin, isPinnedSection ? 'pinned' : 'pin', togglePins, 'pin')}
       {!isArchivedSection && actionButton(s.archive, 'archive', archiveSelected, 'archive')}
       {isArchivedSection && actionButton(s.restore, 'history', restoreSelected, 'restore')}
       {actionButton(s.delete, 'trash', () => setConfirmDeleteOpen(true), 'delete', true)}

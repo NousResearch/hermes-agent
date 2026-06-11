@@ -153,20 +153,22 @@ export function SidebarSessionRow({
         <button
           className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-2 text-left"
           onClick={event => {
-            // While this section has an active selection, the row is a
-            // checklist entry: plain/⌘ click toggles membership, shift-click
-            // extends the range, double-click still resumes. Existing gestures
-            // (shift=pin, ⌘=new window) come back the moment selection clears.
-            if (selectionActive && onToggleSelect) {
-              event.preventDefault()
-              event.stopPropagation()
-              toggleSelect(event.shiftKey ? 'range' : 'single')
+            const canSelect = Boolean(selectable && onToggleSelect)
 
-              return
-            }
-
-            // ⌥-click starts a selection from a clean slate.
-            if (event.altKey && selectable && onToggleSelect) {
+            // Desktop-convention selection on every selectable row:
+            //   ⌘/⌃-click  — toggle THIS row in or out (non-contiguous sets,
+            //                gaps welcome; also how a selection starts).
+            //                Takes the binding over from open-in-new-window,
+            //                which stays in the row's ⋯ / right-click menus.
+            //   ⌥-click    — same toggle (legacy alias from the first cut).
+            //   shift-click — contiguous range from the anchor; a cold
+            //                shift-click seeds the anchor from the OPEN row
+            //                so the run includes where the user started.
+            //   plain click — resume normally; while a selection is active it
+            //                toggles instead, and double-click still resumes.
+            // Every gesture toggles, so re-clicking a selected row deselects
+            // it regardless of modifier.
+            if (canSelect && (event.metaKey || event.ctrlKey || event.altKey)) {
               event.preventDefault()
               event.stopPropagation()
               toggleSelect('single')
@@ -174,23 +176,27 @@ export function SidebarSessionRow({
               return
             }
 
+            if (canSelect && event.shiftKey) {
+              event.preventDefault()
+              event.stopPropagation()
+              toggleSelect('range')
+
+              return
+            }
+
+            if (canSelect && selectionActive) {
+              event.preventDefault()
+              event.stopPropagation()
+              toggleSelect('single')
+
+              return
+            }
+
+            // Rows outside any selectable section keep the legacy bindings.
             if (event.shiftKey) {
               event.preventDefault()
               event.stopPropagation()
 
-              // Shift-click is the multi-select gesture everywhere selection
-              // exists: the first one starts the selection with this row, the
-              // next one range-extends (handled by the selectionActive branch
-              // above). Pin used to own this binding — it shadowed selection
-              // and made multi-select undiscoverable, so pin now lives in
-              // drag-to-Pinned, the row menus, and the bulk bar instead.
-              if (selectable && onToggleSelect) {
-                toggleSelect('single')
-
-                return
-              }
-
-              // Rows outside any selectable section keep the legacy binding.
               if (!archived) {
                 triggerHaptic('selection')
                 onPin()
@@ -200,9 +206,8 @@ export function SidebarSessionRow({
             }
 
             // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
-            // window — the universal "open in a new window" gesture. Archive
-            // lives in the row's ⋯ and right-click menus. Falls through to a
-            // normal resume when standalone windows aren't available (web embed).
+            // window on non-selectable rows. Falls through to a normal resume
+            // when standalone windows aren't available (web embed).
             if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
               event.preventDefault()
               event.stopPropagation()

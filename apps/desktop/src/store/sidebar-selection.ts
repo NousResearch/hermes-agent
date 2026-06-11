@@ -44,12 +44,25 @@ export function toggleSessionSelected(section: SidebarSectionKey, sessionId: str
 }
 
 /** Shift-click: select the contiguous run between the current anchor (last
- * selected id) and `sessionId`, in the section's rendered order. Falls back to
- * a plain toggle when there is no usable anchor (fresh section, or the anchor
- * row left the list). The clicked id becomes the new anchor. */
-export function rangeSelectSessions(section: SidebarSectionKey, sessionId: string, orderedIds: readonly string[]) {
+ * selected id) and `sessionId`, in the section's rendered order. A cold
+ * shift-click (no selection yet) anchors from `seedAnchorId` — the section's
+ * active/open row — so the run includes the row the user started from,
+ * Finder-style, instead of beginning a one-row selection that reads as
+ * "deselected my starting point". Falls back to a plain toggle when no anchor
+ * is usable. The clicked id becomes the new anchor. */
+export function rangeSelectSessions(
+  section: SidebarSectionKey,
+  sessionId: string,
+  orderedIds: readonly string[],
+  seedAnchorId?: null | string
+) {
   const current = $sidebarSelection.get()
-  const anchor = current.section === section ? current.ids[current.ids.length - 1] : undefined
+  let anchor = current.section === section ? current.ids[current.ids.length - 1] : undefined
+
+  if (anchor === undefined && seedAnchorId && seedAnchorId !== sessionId) {
+    anchor = seedAnchorId
+  }
+
   const anchorIndex = anchor ? orderedIds.indexOf(anchor) : -1
   const targetIndex = orderedIds.indexOf(sessionId)
 
@@ -70,18 +83,59 @@ export function rangeSelectSessions(section: SidebarSectionKey, sessionId: strin
   $sidebarSelection.set({ ids: [...merged.filter(id => id !== sessionId), sessionId], section })
 }
 
-/** Drop selected ids that no longer exist in their section (archived away,
- * deleted elsewhere, paged out). Keeps the bar's count honest. */
-export function pruneSidebarSelection(section: SidebarSectionKey, validIds: ReadonlySet<string>) {
+interface PrunableRow {
+  id: string
+  _lineage_root_id?: null | string
+}
+
+/** Reconcile the selection against its section's CURRENT rows. The sidebar
+ * refreshes constantly in the background (every turn-end triggers one), so
+ * this has to survive two kinds of churn without nuking an in-progress
+ * selection:
+ *
+ *  - Auto-compression rotates a conversation's live id (root → tip) between
+ *    clicks. A selected id that now matches a row's lineage root is REMAPPED
+ *    to the new tip instead of dropped — otherwise one background compaction
+ *    silently deselects the row while its checkbox is on screen.
+ *  - A transient refresh can hand the section an EMPTY row list for a beat
+ *    (slice swap mid-flight). Dropping everything then would reset the
+ *    selection, so the next shift-click "starts over" with one row — the
+ *    deselects-everything-but-the-last bug. An empty list keeps the selection
+ *    untouched; real removals always come from a populated list.
+ *
+ * Ids that genuinely left a populated list (archived/deleted elsewhere, paged
+ * out) are still dropped so the count stays honest. */
+export function pruneSidebarSelection(section: SidebarSectionKey, rows: readonly PrunableRow[]) {
   const current = $sidebarSelection.get()
 
-  if (current.section !== section) {
+  if (current.section !== section || rows.length === 0) {
     return
   }
 
-  const ids = current.ids.filter(id => validIds.has(id))
+  const liveIds = new Set<string>()
+  const tipByRoot = new Map<string, string>()
 
-  if (ids.length === current.ids.length) {
+  for (const row of rows) {
+    liveIds.add(row.id)
+
+    if (row._lineage_root_id) {
+      tipByRoot.set(row._lineage_root_id, row.id)
+    }
+  }
+
+  const seen = new Set<string>()
+  const ids: string[] = []
+
+  for (const id of current.ids) {
+    const live = liveIds.has(id) ? id : tipByRoot.get(id)
+
+    if (live && !seen.has(live)) {
+      seen.add(live)
+      ids.push(live)
+    }
+  }
+
+  if (ids.length === current.ids.length && ids.every((id, index) => id === current.ids[index])) {
     return
   }
 

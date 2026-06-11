@@ -537,6 +537,10 @@ def create_job(
     enabled_toolsets: Optional[List[str]] = None,
     workdir: Optional[str] = None,
     no_agent: bool = False,
+    loop: bool = False,
+    loop_dynamic: bool = False,
+    loop_verify: Optional[str] = None,
+    loop_no_progress_threshold: int = 3,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -581,6 +585,17 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        loop: When True, create a persistent scheduled loop with self-evaluation.
+                After each run, a judge evaluates progress; 3 consecutive
+                no-progress detections auto-pause the job.
+        loop_dynamic: When True, the loop adapts its interval based on output.
+                Output changes → interval halves (watch closer). Output stable
+                → interval doubles (back off). Clamped to [1m, 24h].
+        loop_verify: Optional shell command to run after each agent tick to
+                verify the agent's actions. Failure context is injected into
+                the next tick's prompt.
+        loop_no_progress_threshold: Number of consecutive no-progress detections
+                before auto-pausing (default 3).
 
     Returns:
         The created job dict
@@ -615,6 +630,11 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_loop = bool(loop)
+    normalized_loop_dynamic = bool(loop_dynamic)
+    normalized_loop_verify = str(loop_verify).strip() if isinstance(loop_verify, str) else None
+    normalized_loop_verify = normalized_loop_verify or None
+    normalized_loop_threshold = max(1, int(loop_no_progress_threshold)) if loop_no_progress_threshold else 3
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -668,6 +688,16 @@ def create_job(
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
+        # Loop self-evaluation fields
+        "loop": normalized_loop,
+        "loop_dynamic": normalized_loop_dynamic,
+        "loop_verify": normalized_loop_verify,
+        "loop_no_progress_threshold": normalized_loop_threshold,
+        "loop_no_progress_count": 0,
+        "loop_last_output_hash": None,
+        "loop_last_response": None,
+        "loop_last_delivered_hash": None,
+        "loop_last_verify_error": None,
     }
 
     jobs = load_jobs()
@@ -700,28 +730,39 @@ class AmbiguousJobReference(LookupError):
 
 
 def resolve_job_ref(ref: str) -> Optional[Dict[str, Any]]:
-    """Resolve a job reference (ID or name) to a job record.
+    """Resolve a job reference (ID, name, or partial ID prefix) to a job record.
 
     - Exact ID match wins (works even if a different job's name equals this ID).
-    - Otherwise, case-insensitive name match.
-    - If a name matches more than one job, raises AmbiguousJobReference so the
-      caller can surface the matching IDs rather than silently picking one.
+    - Exact case-insensitive name match.
+    - Prefix ID match (if ref is a prefix of exactly one job's ID).
+    - If multiple jobs match, raises AmbiguousJobReference so the caller can
+      surface the matching IDs rather than silently picking one.
     """
     if not ref:
         return None
     jobs = load_jobs()
+    # 1. Exact ID match
     for job in jobs:
         if job["id"] == ref:
             return _normalize_job_record(job)
+    # 2. Exact case-insensitive name match
     ref_lower = ref.lower()
     name_matches = [j for j in jobs if (j.get("name") or "").lower() == ref_lower]
-    if not name_matches:
-        return None
+    if len(name_matches) == 1:
+        return _normalize_job_record(name_matches[0])
     if len(name_matches) > 1:
         raise AmbiguousJobReference(
             ref, [_normalize_job_record(j) for j in name_matches]
         )
-    return _normalize_job_record(name_matches[0])
+    # 3. Prefix ID match (partial ID)
+    prefix_matches = [j for j in jobs if j["id"].startswith(ref)]
+    if len(prefix_matches) == 1:
+        return _normalize_job_record(prefix_matches[0])
+    if len(prefix_matches) > 1:
+        raise AmbiguousJobReference(
+            ref, [_normalize_job_record(j) for j in prefix_matches]
+        )
+    return None
 
 
 def list_jobs(include_disabled: bool = False) -> List[Dict[str, Any]]:
@@ -743,49 +784,50 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             f"Cron job field(s) cannot be updated: {', '.join(sorted(bad_fields))}"
         )
 
-    jobs = load_jobs()
-    for i, job in enumerate(jobs):
-        if job["id"] != job_id:
-            continue
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for i, job in enumerate(jobs):
+            if job["id"] != job_id:
+                continue
 
-        # Validate / normalize workdir if present in updates.  Empty string or
-        # None both mean "clear the field" (restore old behaviour).
-        if "workdir" in updates:
-            _wd = updates["workdir"]
-            if _wd in {None, "", False}:
-                updates["workdir"] = None
-            else:
-                updates["workdir"] = _normalize_workdir(_wd)
+            # Validate / normalize workdir if present in updates.  Empty string or
+            # None both mean "clear the field" (restore old behaviour).
+            if "workdir" in updates:
+                _wd = updates["workdir"]
+                if _wd in {None, "", False}:
+                    updates["workdir"] = None
+                else:
+                    updates["workdir"] = _normalize_workdir(_wd)
 
-        updated = _apply_skill_fields({**job, **updates})
-        schedule_changed = "schedule" in updates
+            updated = _apply_skill_fields({**job, **updates})
+            schedule_changed = "schedule" in updates
 
-        if "skills" in updates or "skill" in updates:
-            normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
-            updated["skills"] = normalized_skills
-            updated["skill"] = normalized_skills[0] if normalized_skills else None
+            if "skills" in updates or "skill" in updates:
+                normalized_skills = _normalize_skill_list(updated.get("skill"), updated.get("skills"))
+                updated["skills"] = normalized_skills
+                updated["skill"] = normalized_skills[0] if normalized_skills else None
 
-        if schedule_changed:
-            updated_schedule = updated["schedule"]
-            # The API may pass schedule as a raw string (e.g. "every 10m")
-            # instead of a pre-parsed dict.  Normalize it the same way
-            # create_job() does so downstream code can call .get() safely.
-            if isinstance(updated_schedule, str):
-                updated_schedule = parse_schedule(updated_schedule)
-                updated["schedule"] = updated_schedule
-            updated["schedule_display"] = updates.get(
-                "schedule_display",
-                updated_schedule.get("display", updated.get("schedule_display")),
-            )
-            if updated.get("state") != "paused":
-                updated["next_run_at"] = compute_next_run(updated_schedule)
+            if schedule_changed:
+                updated_schedule = updated["schedule"]
+                # The API may pass schedule as a raw string (e.g. "every 10m")
+                # instead of a pre-parsed dict.  Normalize it the same way
+                # create_job() does so downstream code can call .get() safely.
+                if isinstance(updated_schedule, str):
+                    updated_schedule = parse_schedule(updated_schedule)
+                    updated["schedule"] = updated_schedule
+                updated["schedule_display"] = updates.get(
+                    "schedule_display",
+                    updated_schedule.get("display", updated.get("schedule_display")),
+                )
+                if updated.get("state") != "paused":
+                    updated["next_run_at"] = compute_next_run(updated_schedule)
 
-        if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
-            updated["next_run_at"] = compute_next_run(updated["schedule"])
+            if updated.get("enabled", True) and updated.get("state") != "paused" and not updated.get("next_run_at"):
+                updated["next_run_at"] = compute_next_run(updated["schedule"])
 
-        jobs[i] = updated
-        save_jobs(jobs)
-        return _normalize_job_record(jobs[i])
+            jobs[i] = updated
+            save_jobs(jobs)
+            return _normalize_job_record(jobs[i])
     return None
 
 

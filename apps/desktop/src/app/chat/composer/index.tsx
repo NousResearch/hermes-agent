@@ -1630,7 +1630,7 @@ export function ChatBar({
         onPaste={handlePaste}
         ref={editorRef}
         role="textbox"
-        spellCheck="true"
+        spellCheck={false}
         suppressContentEditableWarning
       />
       {/* assistant-ui requires ComposerPrimitive.Input somewhere in the tree
@@ -1649,7 +1649,15 @@ export function ChatBar({
         `asChild` swaps TextareaAutosize for a Radix Slot wrapping our
         plain <textarea>, which carries the binding but skips autosize. */}
       <ComposerPrimitive.Input asChild submitMode="ctrlEnter" tabIndex={-1} unstable_focusOnScrollToBottom={false}>
-        <textarea aria-hidden className="sr-only" tabIndex={-1} />
+        <textarea
+          aria-hidden
+          autoCapitalize="off"
+          autoComplete="off"
+          autoCorrect="off"
+          className="sr-only"
+          spellCheck={false}
+          tabIndex={-1}
+        />
       </ComposerPrimitive.Input>
     </div>
   )

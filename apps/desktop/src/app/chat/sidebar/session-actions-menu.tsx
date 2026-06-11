@@ -24,6 +24,7 @@ import {
   type CloudChannelPermission,
   type CloudMembersResult,
   copyCloudChannelId,
+  deleteCloudChannel,
   inviteCloudChannelMember,
   loadCloudChannelMembers,
   removeCloudChannelMember,
@@ -80,6 +81,7 @@ function useSessionActions({
   const [renameOpen, setRenameOpen] = useState(false)
   const [inviteOpen, setInviteOpen] = useState(false)
   const [membersOpen, setMembersOpen] = useState(false)
+  const [deleteCloudOpen, setDeleteCloudOpen] = useState(false)
 
   const selectItem: ItemSpec[] = onSelect
     ? [
@@ -158,6 +160,18 @@ function useSessionActions({
     }
   }
 
+  const deleteCloudItem: ItemSpec = {
+    className: 'text-destructive focus:text-destructive',
+    disabled: !sessionId,
+    icon: 'trash',
+    label: r.deleteCloudChannel,
+    onSelect: () => {
+      triggerHaptic('warning')
+      setDeleteCloudOpen(true)
+    },
+    variant: 'destructive'
+  }
+
   const exportItem: ItemSpec = {
     disabled: !sessionId,
     icon: 'cloud-download',
@@ -195,7 +209,17 @@ function useSessionActions({
             onPin?.()
           }
         },
+        {
+          disabled: !sessionId,
+          icon: 'edit',
+          label: r.rename,
+          onSelect: () => {
+            triggerHaptic('selection')
+            setRenameOpen(true)
+          }
+        },
         copyIdItem,
+        copyCloudIdItem,
         ...(canOpenSessionWindow()
           ? [
               {
@@ -209,20 +233,11 @@ function useSessionActions({
               }
             ]
           : []),
+        exportItem,
         shareToCloudItem,
-        copyCloudIdItem,
         inviteToCloudItem,
         cloudMembersItem,
-        exportItem,
-        {
-          disabled: !sessionId,
-          icon: 'edit',
-          label: r.rename,
-          onSelect: () => {
-            triggerHaptic('selection')
-            setRenameOpen(true)
-          }
-        },
+        deleteCloudItem,
         {
           disabled: !onArchive,
           icon: 'archive',
@@ -261,7 +276,11 @@ function useSessionActions({
     <CloudMembersDialog onOpenChange={setMembersOpen} open={membersOpen} sessionId={sessionId} />
   )
 
-  return { inviteDialog, membersDialog, renameDialog, renderItems }
+  const deleteCloudDialog = (
+    <DeleteCloudChannelDialog onOpenChange={setDeleteCloudOpen} open={deleteCloudOpen} sessionId={sessionId} />
+  )
+
+  return { deleteCloudDialog, inviteDialog, membersDialog, renameDialog, renderItems }
 }
 
 interface SessionActionsMenuProps
@@ -271,7 +290,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { inviteDialog, membersDialog, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteCloudDialog, inviteDialog, membersDialog, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -280,12 +299,13 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
         <DropdownMenuContent
           align={align}
           aria-label={t.sidebar.row.actionsFor(actions.title)}
-          className="w-40"
+          className="w-48"
           sideOffset={sideOffset}
         >
           {renderItems(DropdownMenuItem)}
         </DropdownMenuContent>
       </DropdownMenu>
+      {deleteCloudDialog}
       {inviteDialog}
       {membersDialog}
       {renameDialog}
@@ -299,20 +319,68 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { inviteDialog, membersDialog, renameDialog, renderItems } = useSessionActions(actions)
+  const { deleteCloudDialog, inviteDialog, membersDialog, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
       <ContextMenu>
         <ContextMenuTrigger asChild>{children}</ContextMenuTrigger>
-        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-40">
+        <ContextMenuContent aria-label={t.sidebar.row.actionsFor(actions.title)} className="w-48">
           {renderItems(ContextMenuItem)}
         </ContextMenuContent>
       </ContextMenu>
+      {deleteCloudDialog}
       {inviteDialog}
       {membersDialog}
       {renameDialog}
     </>
+  )
+}
+
+interface DeleteCloudChannelDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  sessionId: string
+}
+
+function DeleteCloudChannelDialog({ open, onOpenChange, sessionId }: DeleteCloudChannelDialogProps) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+  const [deleting, setDeleting] = useState(false)
+
+  const confirmDelete = async () => {
+    if (deleting) {
+      return
+    }
+
+    setDeleting(true)
+
+    try {
+      if (await deleteCloudChannel(sessionId)) {
+        onOpenChange(false)
+      }
+    } finally {
+      setDeleting(false)
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{r.deleteCloudTitle}</DialogTitle>
+          <DialogDescription>{r.deleteCloudDesc}</DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <Button disabled={deleting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
+            {t.common.cancel}
+          </Button>
+          <Button disabled={deleting} onClick={() => void confirmDelete()} type="button" variant="destructive">
+            {deleting ? r.deleteCloudDeleting : r.deleteCloudConfirm}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

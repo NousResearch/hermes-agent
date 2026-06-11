@@ -4194,6 +4194,29 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, result)
 
 
+@method("session.cloud_delete")
+def _(rid, params: dict) -> dict:
+    """Hard-delete an already-shared cloud channel and stop local pushing."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    if not status or not status.get("channel_id"):
+        return _err(rid, 4008, "session is not shared to cloud")
+
+    channel_id = str(status["channel_id"])
+    try:
+        result = cloud_channels.delete_channel(channel_id)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud channel delete failed: {e}")
+
+    stopped = cloud_channels.unshare_session(key)
+    return _ok(rid, {**result, "stopped": stopped})
+
+
 @method("session.cloud_unshare")
 def _(rid, params: dict) -> dict:
     """Stop pushing this session to the cloud (the cloud log is kept;

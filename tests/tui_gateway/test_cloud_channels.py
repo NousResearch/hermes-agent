@@ -133,6 +133,21 @@ def test_remove_member_deletes_member(monkeypatch):
     assert sent == [("DELETE", "/v1/channels/chan%2F1/members/acct%2F1", None)]
 
 
+def test_delete_channel_deletes_channel(monkeypatch):
+    sent = []
+
+    def fake_request(method, path, body=None, timeout=15.0):
+        sent.append((method, path, body))
+        return {"ok": True, "deleted": "chan/1"}
+
+    monkeypatch.setattr(cloud_channels, "_request", fake_request)
+
+    result = cloud_channels.delete_channel("chan/1")
+
+    assert result["ok"] is True
+    assert sent == [("DELETE", "/v1/channels/chan%2F1", None)]
+
+
 def test_accept_invite_posts_token_to_accept_endpoint(monkeypatch):
     sent = []
 

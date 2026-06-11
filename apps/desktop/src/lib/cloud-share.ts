@@ -124,6 +124,12 @@ interface CloudMemberMutationResult {
   removed?: string
 }
 
+interface CloudDeleteResult {
+  deleted?: string
+  ok?: boolean
+  stopped?: boolean
+}
+
 // "Share to cloud" (channels slice 4.0): promote the session to a cloud
 // channel and start the gateway's background pusher. Self-contained like
 // exportSession so the actions menu can call it without threading a handler
@@ -396,6 +402,50 @@ export async function removeCloudChannelMember(sessionId: string, accountId: str
     return true
   } catch (err) {
     notifyError(err, 'Could not remove cloud member')
+
+    return false
+  }
+}
+
+export async function deleteCloudChannel(sessionId: string): Promise<boolean> {
+  const gateway = activeGateway()
+
+  if (!gateway) {
+    notify({ kind: 'error', title: 'Delete cloud channel', message: 'Not connected yet — try again in a moment.' })
+
+    return false
+  }
+
+  try {
+    await gateway.request<CloudDeleteResult>('session.cloud_delete', { session_id: sessionId })
+
+    notify({
+      kind: 'success',
+      title: 'Cloud channel deleted',
+      message: 'Cloud history and sharing were removed.'
+    })
+
+    return true
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+
+    if (/not configured/i.test(message)) {
+      notify({
+        kind: 'error',
+        title: "Cloud sharing isn't set up",
+        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
+      })
+
+      return false
+    }
+
+    if (/not shared/i.test(message)) {
+      notify({ kind: 'error', title: 'Delete cloud channel', message: 'Share this chat to the cloud first.' })
+
+      return false
+    }
+
+    notifyError(err, 'Could not delete cloud channel')
 
     return false
   }

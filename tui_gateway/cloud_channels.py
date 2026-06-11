@@ -127,6 +127,12 @@ def remove_member(channel_id: str, account_id: str) -> dict:
     return _request("DELETE", f"/v1/channels/{channel}/members/{account}")
 
 
+def delete_channel(channel_id: str) -> dict:
+    """Hard-delete a cloud channel and its cloud-side message projection."""
+    channel = urllib.parse.quote(str(channel_id), safe="")
+    return _request("DELETE", f"/v1/channels/{channel}")
+
+
 def accept_invite(token: str) -> dict:
     """Redeem a cloud-channel invite token for the configured account."""
     invite_token = str(token or "").strip()

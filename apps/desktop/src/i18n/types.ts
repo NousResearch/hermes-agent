@@ -919,6 +919,7 @@ export interface Translations {
       copyCloudId: string
       inviteToCloud: string
       cloudMembers: string
+      deleteCloudChannel: string
       rename: string
       archive: string
       restore: string
@@ -948,6 +949,10 @@ export interface Translations {
       cloudMembersRevoke: string
       cloudMembersRevokeConfirm: (member: string) => string
       cloudMembersSaving: string
+      deleteCloudTitle: string
+      deleteCloudDesc: string
+      deleteCloudConfirm: string
+      deleteCloudDeleting: string
       untitledPlaceholder: string
       ageNow: string
       ageDay: string

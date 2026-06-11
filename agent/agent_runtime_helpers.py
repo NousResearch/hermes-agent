@@ -1016,6 +1016,35 @@ def drop_thinking_only_and_merge_users(
 
 
 
+def _check_and_rotate_exhausted_pool_key(agent) -> None:
+    if not agent.provider:
+        return
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(agent.provider)
+        if pool and pool.has_credentials():
+            current_key = getattr(agent, "api_key", None)
+            if current_key:
+                current_entry = next((e for e in pool.entries() if e.runtime_api_key == current_key), None)
+                if current_entry:
+                    available = pool._available_entries(clear_expired=True, refresh=True)
+                    if not any(e.id == current_entry.id for e in available):
+                        new_entry = pool.select()
+                        if new_entry:
+                            logger.info(
+                                "restore_primary_runtime: current key %s is exhausted/dead in pool, rotating to %s",
+                                current_entry.label or current_entry.id,
+                                new_entry.label or new_entry.id
+                            )
+                            agent._swap_credential(new_entry)
+                            if hasattr(agent, "_primary_runtime") and isinstance(agent._primary_runtime, dict):
+                                agent._primary_runtime["api_key"] = new_entry.runtime_api_key
+                                if "client_kwargs" in agent._primary_runtime:
+                                    agent._primary_runtime["client_kwargs"]["api_key"] = new_entry.runtime_api_key
+    except Exception as pe:
+        logger.debug("Failed to check/rotate exhausted key in pool: %s", pe)
+
+
 def restore_primary_runtime(agent) -> bool:
     """Restore the primary runtime at the start of a new turn.
 
@@ -1036,6 +1065,7 @@ def restore_primary_runtime(agent) -> bool:
         # entirely, stranding the index and silently blocking all future
         # fallback attempts for the session.  Fixes #20465.
         agent._fallback_index = 0
+        _check_and_rotate_exhausted_pool_key(agent)
         return False
 
     if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
@@ -1097,6 +1127,8 @@ def restore_primary_runtime(agent) -> bool:
         # byte-identical to the stored copy again (prefix cache match).
         from agent.chat_completion_helpers import rewrite_prompt_model_identity
         rewrite_prompt_model_identity(agent, rt["model"], rt["provider"])
+
+        _check_and_rotate_exhausted_pool_key(agent)
 
         logger.info(
             "Primary runtime restored for new turn: %s (%s)",

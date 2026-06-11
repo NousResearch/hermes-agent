@@ -540,18 +540,24 @@ def feature_install_command(feature: str) -> Optional[str]:
 
 
 def active_features() -> list[str]:
-    """Return the list of features the user has ever lazy-installed.
+    """Return the list of features whose pinned specs are currently satisfied.
 
-    A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
+    A feature counts as "active" if at least one of its declared package
+    specs is satisfied (installed version within the spec's range).
     Features the user has never enabled stay quiet.
 
     Used by ``hermes update`` to figure out which lazy backends need a
     refresh pass when pins move in :data:`LAZY_DEPS`.
+
+    .. versionchanged:: 0.16.1
+        Changed from presence-only check (``_is_present``) to version-aware
+        satisfaction check (``_is_satisfied``).  This prevents
+        ``refresh_active_features`` from *downgrading* a working newer
+        version to the pinned version (e.g. aiohttp 3.14 → 3.13).
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        if any(_is_satisfied(s) for s in specs):
             active.append(feature)
     return active
 

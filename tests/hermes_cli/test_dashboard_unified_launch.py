@@ -82,6 +82,29 @@ class TestUnifiedDashboardRouting:
         # Profile HERMES_HOME dropped so the child binds the machine root.
         assert "HERMES_HOME" not in env
 
+    def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
+        """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT
+        reroute into the machine dashboard. The reroute re-execs as the default
+        profile and exits, so the desktop never sees a ready backend → boot
+        loop. The guard keeps desktop pool backends per-profile."""
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        listening_calls = []
+        monkeypatch.setattr(
+            main_mod, "_dashboard_listening",
+            lambda host, port: listening_calls.append(1) or False,
+        )
+        execs = []
+        monkeypatch.setattr(main_mod.os, "execvpe", lambda *a, **k: execs.append(a))
+        monkeypatch.setitem(sys.modules, "fastapi", None)
+
+        with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
+            main_mod.cmd_dashboard(_args())
+        assert listening_calls == []
+        assert execs == []
+
     def test_isolated_flag_skips_routing(self, main_mod, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"

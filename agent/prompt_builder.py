@@ -372,6 +372,32 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "</missing_context>"
 )
 
+# Qwen3-Coder / Qwen-coder tool-call wrapper reminder. These models (served via
+# Ollama/llama.cpp text tool-calling) frequently OMIT the opening <tool_call>
+# tag — especially when a tool call follows a textual response — so the call
+# lands in assistant content and the local parser silently drops it. The fix is
+# an explicit anti-omission reminder (QwenLM/Qwen3-Coder#475, building on
+# Unsloth's corrected template). Wrapper-only (no inner XML-vs-JSON prescription)
+# so it's correct for both qwen3-coder (XML inner) and qwen2.5-coder (JSON inner).
+# Reduces leak FREQUENCY at the source; the server-side
+# recover_tool_calls_from_text countermeasure still catches what slips through —
+# Qwen's own docs note generation "is not guaranteed... even with proper
+# prompting", so a countermeasure remains required.
+QWEN_CODER_TOOLCALL_GUIDANCE = (
+    "# Tool-call format (CRITICAL)\n"
+    "<IMPORTANT>\n"
+    "Every tool call you make MUST be wrapped in <tool_call> and </tool_call> tags.\n"
+    "- Do NOT omit the opening <tool_call> tag. This is the single most common "
+    "mistake; without it the call is treated as plain text and is silently "
+    "dropped, so the action never runs.\n"
+    "- Put any reasoning or explanation BEFORE the <tool_call>, never after the "
+    "</tool_call>.\n"
+    "- Emit one <tool_call>...</tool_call> block per call and always close it.\n"
+    "This applies on EVERY turn, including a tool call that follows a textual "
+    "response.\n"
+    "</IMPORTANT>"
+)
+
 # Gemini/Gemma-specific operational guidance, adapted from OpenCode's gemini.txt.
 # Injected alongside TOOL_USE_ENFORCEMENT_GUIDANCE when the model is Gemini or Gemma.
 GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (

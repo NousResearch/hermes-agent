@@ -129,6 +129,14 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
         anyhow!(msg)
     })?;
+    if needs_archive_git_checkout_prepare(&install_root) {
+        emit_log(
+            &app,
+            Some("update"),
+            LogStream::Stdout,
+            "[update] archive-created checkout is missing .git; Git checkout preparation is required",
+        );
+    }
 
     // Synthetic manifest so the existing progress UI renders our two stages.
     let mut stages = vec![
@@ -589,6 +597,14 @@ fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
     None
 }
 
+fn needs_archive_git_checkout_prepare(install_root: &Path) -> bool {
+    !install_root.join(".git").exists()
+        && matches!(
+            crate::repo_archive::read_archive_source_marker(install_root),
+            Ok(Some(_))
+        )
+}
+
 fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
     let hermes_home = crate::paths::hermes_home();
     let mut envs = vec![(
@@ -911,6 +927,27 @@ mod tests {
             Some(PathBuf::from("/Applications/Hermes.app"))
         );
         assert_eq!(target_app_from_args(["--target-app", "/tmp/not-an-app"]), None);
+    }
+
+    #[test]
+    fn archive_checkout_without_git_needs_update_prepare() {
+        let root = unique_tmp_dir("archive-update-plan");
+        let install_root = root.join("hermes-agent");
+        std::fs::create_dir_all(&install_root).unwrap();
+
+        assert!(!needs_archive_git_checkout_prepare(&install_root));
+
+        std::fs::write(
+            install_root.join(crate::repo_archive::SOURCE_MARKER_NAME),
+            r#"{"schemaVersion":1,"method":"github_archive","ref":"main"}"#,
+        )
+        .unwrap();
+        assert!(needs_archive_git_checkout_prepare(&install_root));
+
+        std::fs::create_dir_all(install_root.join(".git")).unwrap();
+        assert!(!needs_archive_git_checkout_prepare(&install_root));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     // Helpers for the swap tests: make a throwaway dir tree we can rename.

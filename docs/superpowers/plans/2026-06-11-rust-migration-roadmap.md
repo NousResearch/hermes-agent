@@ -119,6 +119,8 @@ language-specific setup where needed.
 - Archive-created checkouts write `.hermes-source.json` with the GitHub archive owner, repo, ref, branch/commit,
   cached archive path, and best-effort Git initialization status, giving the update path an explicit source marker for
   future no-Git refresh support.
+- The Tauri updater now detects archive-created checkouts that are missing `.git` and logs the need for Git checkout
+  preparation before handing off to the existing `hermes update` flow.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` now runs as a native Rust stage while preserving Python `tools/skills_sync.py` when available and
   retaining the existing bundled-skill copy fallback.

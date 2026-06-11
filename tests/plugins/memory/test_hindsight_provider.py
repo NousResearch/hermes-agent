@@ -10,6 +10,7 @@ import os
 import re
 import stat
 import sys
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -76,6 +77,7 @@ def _make_mock_client():
         return_value=SimpleNamespace(text="Synthesized answer")
     )
     client.aretain_batch = AsyncMock()
+    client.acreate_bank = AsyncMock()
     client.aclose = AsyncMock()
     return client
 
@@ -592,6 +594,79 @@ class TestToolHandlers:
         assert provider._client is second_client
         first_client.arecall.assert_called_once()
         second_client.arecall.assert_called_once()
+
+    def test_configured_bank_missions_applied_once_before_first_operation(self, provider_with_config):
+        p = provider_with_config(
+            bank_mission="Answer as Hermes, not generic Hindsight.",
+            bank_retain_mission="Extract durable Hermes-specific facts.",
+        )
+        events = []
+
+        async def _acreate_bank(**kwargs):
+            events.append(("config", kwargs))
+            return SimpleNamespace(ok=True)
+
+        async def _aretain(**kwargs):
+            events.append(("retain", kwargs))
+            return SimpleNamespace(ok=True)
+
+        async def _arecall(**kwargs):
+            events.append(("recall", kwargs))
+            return SimpleNamespace(results=[])
+
+        p._client.acreate_bank = AsyncMock(side_effect=_acreate_bank)
+        p._client.aretain = AsyncMock(side_effect=_aretain)
+        p._client.arecall = AsyncMock(side_effect=_arecall)
+        p._run_sync = lambda coro: asyncio.run(coro)
+
+        p.handle_tool_call("hindsight_retain", {"content": "user prefers concise replies"})
+        p.handle_tool_call("hindsight_recall", {"query": "reply style"})
+
+        p._client.acreate_bank.assert_awaited_once()
+        config_kwargs = p._client.acreate_bank.await_args.kwargs
+        assert config_kwargs["bank_id"] == "test-bank"
+        assert config_kwargs["mission"] == "Answer as Hermes, not generic Hindsight."
+        assert config_kwargs["retain_mission"] == "Extract durable Hermes-specific facts."
+        assert [event[0] for event in events] == ["config", "retain", "recall"]
+
+    def test_local_embedded_retry_closes_stale_client_before_replacement(self, provider, monkeypatch):
+        events = []
+        first_client = _make_mock_client()
+        second_client = _make_mock_client()
+
+        async def _failing_recall(**kwargs):
+            raise RuntimeError("Cannot connect to host 127.0.0.1:8888")
+
+        async def _close():
+            events.append("close")
+
+        async def _recovered_recall(**kwargs):
+            events.append("second-call")
+            return SimpleNamespace(results=[SimpleNamespace(text="Recovered memory")])
+
+        first_client.arecall = AsyncMock(side_effect=_failing_recall)
+        first_client.aclose = AsyncMock(side_effect=_close)
+        second_client.arecall = AsyncMock(side_effect=_recovered_recall)
+        clients = iter([first_client, second_client])
+
+        def _get_client():
+            client = next(clients)
+            if client is second_client:
+                events.append("replace")
+            return client
+
+        provider._mode = "local_embedded"
+        provider._client = first_client
+        provider._run_sync = lambda coro: asyncio.run(coro)
+        monkeypatch.setattr(provider, "_get_client", _get_client)
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+
+        assert result["result"] == "1. Recovered memory"
+        first_client.aclose.assert_awaited_once()
+        assert events[:2] == ["close", "replace"]
 
 
 # ---------------------------------------------------------------------------

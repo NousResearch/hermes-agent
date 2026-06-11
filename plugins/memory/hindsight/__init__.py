@@ -31,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import importlib
+import inspect
 import json
 import logging
 import os
@@ -598,7 +599,10 @@ class HindsightMemoryProvider(MemoryProvider):
         # Bank
         self._bank_mission = ""
         self._bank_retain_mission: str | None = None
+        self._bank_reflect_mission: str | None = None
+        self._bank_observations_mission: str | None = None
         self._bank_id_template = ""
+        self._configured_bank_cache: set[tuple[str, str | None, str | None, str | None, str | None]] = set()
 
     @property
     def name(self) -> str:
@@ -954,6 +958,61 @@ class HindsightMemoryProvider(MemoryProvider):
             )
         )
 
+    def _bank_config_cache_key(self) -> tuple[str, str | None, str | None, str | None, str | None]:
+        return (
+            self._bank_id,
+            self._bank_mission or None,
+            self._bank_retain_mission,
+            self._bank_reflect_mission,
+            self._bank_observations_mission,
+        )
+
+    def _ensure_bank_config(self, client) -> None:
+        """Apply configured Hindsight bank missions once per bank/config."""
+        if not (
+            self._bank_mission
+            or self._bank_retain_mission
+            or self._bank_reflect_mission
+            or self._bank_observations_mission
+        ):
+            return
+        cache_key = self._bank_config_cache_key()
+        if cache_key in self._configured_bank_cache:
+            return
+        acreate_bank = getattr(client, "acreate_bank", None)
+        if not callable(acreate_bank):
+            logger.warning(
+                "Hindsight client does not expose acreate_bank; configured bank missions were not applied"
+            )
+            self._configured_bank_cache.add(cache_key)
+            return
+        kwargs: dict[str, Any] = {"bank_id": self._bank_id}
+        if self._bank_mission:
+            kwargs["mission"] = self._bank_mission
+        if self._bank_retain_mission:
+            kwargs["retain_mission"] = self._bank_retain_mission
+        if self._bank_reflect_mission:
+            kwargs["reflect_mission"] = self._bank_reflect_mission
+        if self._bank_observations_mission:
+            kwargs["observations_mission"] = self._bank_observations_mission
+        logger.debug("Applying Hindsight bank config: bank=%s", self._bank_id)
+        self._run_sync(acreate_bank(**kwargs))
+        self._configured_bank_cache.add(cache_key)
+
+    def _close_client_for_retry(self, client) -> None:
+        """Best-effort client close before replacing a stale embedded client."""
+        close = getattr(client, "aclose", None)
+        if not callable(close):
+            close = getattr(client, "close", None)
+        if not callable(close):
+            return
+        try:
+            result = close()
+            if inspect.isawaitable(result):
+                self._run_sync(result)
+        except Exception as exc:
+            logger.debug("Hindsight stale client close failed before retry: %s", exc)
+
     def _ensure_writer(self) -> None:
         """Lazy-start the single retain-writer thread.
 
@@ -1025,6 +1084,7 @@ class HindsightMemoryProvider(MemoryProvider):
         """Run an async Hindsight client operation, retrying once after idle shutdown."""
         client = self._get_client()
         try:
+            self._ensure_bank_config(client)
             return self._run_sync(operation(client))
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
@@ -1033,9 +1093,11 @@ class HindsightMemoryProvider(MemoryProvider):
                 "Hindsight embedded daemon appears unreachable; recreating client and retrying once: %s",
                 exc,
             )
+            self._close_client_for_retry(client)
             self._client = None
             client = self._get_client()
             self._client = client
+            self._ensure_bank_config(client)
             return self._run_sync(operation(client))
 
     def _probe_url(self) -> str:
@@ -1177,6 +1239,8 @@ class HindsightMemoryProvider(MemoryProvider):
         # Bank options
         self._bank_mission = self._config.get("bank_mission", "")
         self._bank_retain_mission = self._config.get("bank_retain_mission") or None
+        self._bank_reflect_mission = self._config.get("bank_reflect_mission") or None
+        self._bank_observations_mission = self._config.get("bank_observations_mission") or None
 
         # Tags
         self._retain_tags = _normalize_retain_tags(

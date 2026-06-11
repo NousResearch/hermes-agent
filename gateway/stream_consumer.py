@@ -1386,11 +1386,13 @@ class GatewayStreamConsumer:
             else:
                 # First message — send new, threaded to the original user message
                 # so it lands in the correct topic/thread.
+                meta = dict(self.metadata) if self.metadata else {}
+                meta["streaming_card"] = True
                 result = await self.adapter.send(
                     chat_id=self.chat_id,
                     content=text,
                     reply_to=self._initial_reply_to_id,
-                    metadata=self.metadata,
+                    metadata=meta,
                 )
                 if result.success:
                     if result.message_id:

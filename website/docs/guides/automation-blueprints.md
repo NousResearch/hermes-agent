@@ -1,16 +1,16 @@
 ---
 sidebar_position: 15
-title: "Automation Blueprint Examples"
-description: "Copy-paste automation blueprint examples — scheduled tasks, GitHub event triggers, API webhooks, and multi-skill workflows"
+title: "Automation Blueprints"
+description: "Ready-to-use automation blueprints — scheduled tasks, GitHub event triggers, API webhooks, and multi-skill workflows"
 ---
 
-# Automation Blueprint Examples
+# Automation Blueprints
 
-Copy-paste blueprint examples for common automation patterns. Each blueprint uses Hermes's built-in [cron scheduler](/user-guide/features/cron) for time-based triggers and [webhook platform](/user-guide/messaging/webhooks) for event-driven triggers.
+Copy-paste blueprints for common automation patterns. Each blueprint uses Hermes's built-in [cron scheduler](/user-guide/features/cron) for time-based triggers and [webhook platform](/user-guide/messaging/webhooks) for event-driven triggers.
 
 Every blueprint works with **any model** — not locked to a single provider.
 
-For parameterized blueprints with forms instead of cron syntax, see [Automation Blueprints](/reference/automation-blueprints).
+For parameterized blueprints with forms instead of cron syntax, see the [Automation Blueprints Catalog](/reference/automation-blueprints-catalog).
 
 :::tip Three Trigger Types
 | Trigger | How | Tool |

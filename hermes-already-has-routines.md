@@ -149,7 +149,7 @@ hermes webhook subscribe pr-review \
   --deliver github_comment
 ```
 
-Full automation blueprints gallery: [hermes-agent.nousresearch.com/docs/reference/automation-blueprints](https://hermes-agent.nousresearch.com/docs/reference/automation-blueprints)
+Full automation blueprints gallery: [hermes-agent.nousresearch.com/docs/reference/automation-blueprints-catalog](https://hermes-agent.nousresearch.com/docs/reference/automation-blueprints-catalog)
 
 Documentation: [hermes-agent.nousresearch.com](https://hermes-agent.nousresearch.com)
 

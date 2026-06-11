@@ -1551,12 +1551,13 @@ class HindsightMemoryProvider(MemoryProvider):
                     content,
                     context=context,
                     tags=args.get("tags"),
+                    retain_async=self._retain_async,
                 )
-                logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s",
-                             self._bank_id, len(content), context)
+                logger.debug("Tool hindsight_retain: bank=%s, content_len=%d, context=%s, async=%s",
+                             self._bank_id, len(content), context, self._retain_async)
                 self._run_hindsight_operation(lambda client: client.aretain(**retain_kwargs))
-                logger.debug("Tool hindsight_retain: success")
-                return json.dumps({"result": "Memory stored successfully."})
+                logger.debug("Tool hindsight_retain: queued for async processing")
+                return json.dumps({"result": "Memory queued for storage (async)."})
             except Exception as e:
                 logger.warning("hindsight_retain failed: %s", e, exc_info=True)
                 return tool_error(f"Failed to store memory: {e}")

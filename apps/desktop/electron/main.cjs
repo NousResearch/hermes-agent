@@ -32,10 +32,14 @@ const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const {
+  buildInstallMetadataCommand,
+  buildManagerCommandForMode,
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
+  modeRequiresPythonUninstaller,
   modeRemovesAgent,
   modeRemovesUserData,
+  resolveHermesManagerPath,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
   uninstallArgsForMode
@@ -1923,6 +1927,30 @@ function writeBootstrapMarker(payload) {
   return merged
 }
 
+function runManagerCommandBestEffort(managerCommand, label) {
+  if (!managerCommand) return false
+  try {
+    execFileSync(managerCommand.command, managerCommand.args, hiddenWindowsChildOptions({
+      cwd: HERMES_HOME,
+      stdio: 'ignore'
+    }))
+    rememberLog(`[manager] ${label}: ok`)
+    return true
+  } catch (error) {
+    rememberLog(`[manager] ${label}: skipped (${error.message})`)
+    return false
+  }
+}
+
+function recordInstallMetadataBestEffort() {
+  const managerPath = resolveHermesManagerPath(process.resourcesPath, process.platform)
+  const managerCommand = buildInstallMetadataCommand({
+    managerPath,
+    hermesHome: HERMES_HOME
+  })
+  return runManagerCommandBestEffort(managerCommand, 'install-metadata')
+}
+
 function resolveWebDist() {
   const override = process.env.HERMES_DESKTOP_WEB_DIST
   if (override && directoryExists(path.resolve(override))) return path.resolve(override)
@@ -2332,6 +2360,7 @@ async function ensureRuntime(backend) {
       throw bootstrapError
     }
 
+    recordInstallMetadataBestEffort()
     rememberLog('[bootstrap] bootstrap complete; marker written. Re-resolving backend.')
     // Re-resolve now that the install exists. The new resolution lands in
     // step 3 (bootstrap-complete marker) and we recurse to wire venvPython.
@@ -6031,8 +6060,15 @@ async function runDesktopUninstall(mode) {
     return { ok: false, error: 'invalid-mode', message: error.message }
   }
 
+  const managerPath = resolveHermesManagerPath(process.resourcesPath, process.platform)
+  const managerCommand = buildManagerCommandForMode({
+    mode,
+    managerPath,
+    hermesHome: HERMES_HOME
+  })
   const venvPy = uninstallVenvPython()
-  if (!fileExists(venvPy)) {
+  const hasVenvPython = fileExists(venvPy)
+  if (!hasVenvPython && modeRequiresPythonUninstaller(mode, managerCommand)) {
     return {
       ok: false,
       error: 'agent-missing',
@@ -6048,24 +6084,27 @@ async function runDesktopUninstall(mode) {
   // venv python is fine there. If no system Python exists (the Windows edge
   // case), fall back to the venv python — gui-only is unaffected; lite/full may
   // leave venv remnants the user can delete, which we log.
-  let py = venvPy
+  let py = hasVenvPython ? venvPy : null
   let pythonPath = null
   if (modeRemovesAgent(mode)) {
     const sysPy = findSystemPython()
     if (sysPy) {
       py = sysPy
       pythonPath = ACTIVE_HERMES_ROOT
-    } else if (IS_WINDOWS) {
+    } else if (IS_WINDOWS && hasVenvPython) {
       rememberLog(
         '[uninstall] no system Python found for lite/full on Windows; falling back ' +
           'to the venv python — venv files locked by the running interpreter may ' +
           'remain and need manual deletion.'
       )
+    } else if (IS_WINDOWS && managerCommand) {
+      rememberLog('[uninstall] no Python fallback found; running packaged Rust manager only.')
     }
   }
 
   const appPath = resolveRemovableAppPath(process.execPath, process.platform, process.env)
   const removeBundle = shouldRemoveAppBundle(IS_PACKAGED, appPath) ? appPath : null
+  const cleanupCwd = app.getPath('temp')
 
   // CRITICAL (Windows): tear down every backend the desktop owns and wait for
   // the venv shim to unlock BEFORE the cleanup script runs. lite/full delete
@@ -6086,7 +6125,9 @@ async function runDesktopUninstall(mode) {
     agentRoot: ACTIVE_HERMES_ROOT,
     uninstallArgs,
     appPath: removeBundle,
-    hermesHome: HERMES_HOME
+    hermesHome: HERMES_HOME,
+    safeCwd: cleanupCwd,
+    managerCommand
   }
 
   let scriptPath
@@ -6110,6 +6151,7 @@ async function runDesktopUninstall(mode) {
 
   try {
     const child = spawn(runner, runnerArgs, {
+      cwd: cleanupCwd,
       detached: true,
       stdio: 'ignore',
       windowsHide: true

@@ -26,6 +26,7 @@
  * shape as the self-update swap-and-relaunch flow already in main.cjs.
  */
 
+const fs = require('node:fs')
 const path = require('node:path')
 
 const UNINSTALL_MODES = ['gui', 'lite', 'full']
@@ -42,6 +43,53 @@ function uninstallArgsForMode(mode) {
     throw new Error(`Unknown uninstall mode: ${mode}`)
   }
   return ['-m', 'hermes_cli.uninstall', '--mode', mode]
+}
+
+/**
+ * Resolve the Rust install manager shipped in electron-builder extraResources.
+ */
+function resolveHermesManagerPath(resourcesPath, platform = process.platform) {
+  const root = String(resourcesPath || '')
+  if (!root) return null
+  const p = platform === 'win32' ? path.win32 : path.posix
+  const exe = platform === 'win32' ? 'hermes-manager.exe' : 'hermes-manager'
+  return p.join(root, 'hermes-manager', exe)
+}
+
+/**
+ * Build a Rust manager command for modes the manager can safely replace.
+ *
+ * Returns null for unsupported modes or when the packaged manager is absent,
+ * preserving the Python uninstaller as the complete fallback path.
+ */
+function buildManagerCommandForMode({ mode, managerPath, hermesHome, managerExists = fs.existsSync }) {
+  if (mode !== 'lite' || !managerPath || !managerExists(managerPath)) {
+    return null
+  }
+  return {
+    command: managerPath,
+    args: ['--hermes-home', hermesHome, 'uninstall-lite']
+  }
+}
+
+/**
+ * Build the manager command that records install metadata after bootstrap.
+ */
+function buildInstallMetadataCommand({ managerPath, hermesHome, managerExists = fs.existsSync }) {
+  if (!managerPath || !managerExists(managerPath)) {
+    return null
+  }
+  return {
+    command: managerPath,
+    args: ['--hermes-home', hermesHome, 'install-metadata']
+  }
+}
+
+/**
+ * True when a mode still needs the Python uninstaller before cleanup can run.
+ */
+function modeRequiresPythonUninstaller(mode, managerCommand = null) {
+  return mode !== 'lite' || !managerCommand
 }
 
 /** True when `mode` removes the agent (lite/full), false for gui-only. */
@@ -119,7 +167,17 @@ function shouldRemoveAppBundle(isPackaged, appPath) {
  * resolves from the agent source. `q()` single-quote-escapes for the shell
  * (closes-escapes-reopens any embedded apostrophe), defending against spaces.
  */
-function buildPosixCleanupScript({ desktopPid, pythonExe, pythonPath, agentRoot, uninstallArgs, appPath, hermesHome }) {
+function buildPosixCleanupScript({
+  desktopPid,
+  pythonExe,
+  pythonPath,
+  agentRoot,
+  uninstallArgs,
+  appPath,
+  hermesHome,
+  safeCwd = hermesHome,
+  managerCommand = null
+}) {
   const q = s => `'${String(s).replace(/'/g, `'\\''`)}'`
   const lines = [
     '#!/bin/bash',
@@ -138,10 +196,21 @@ function buildPosixCleanupScript({ desktopPid, pythonExe, pythonPath, agentRoot,
   if (pythonPath) {
     lines.push(`export PYTHONPATH=${q(pythonPath)}\${PYTHONPATH:+:$PYTHONPATH}`)
   }
-  lines.push(
-    `cd ${q(agentRoot)} 2>/dev/null || true`,
-    `${q(pythonExe)} ${uninstallArgs.map(q).join(' ')} || true`
-  )
+  const cdSafe = () => `cd ${q(safeCwd || hermesHome)} 2>/dev/null || cd ${q(hermesHome)} 2>/dev/null || true`
+  const managerCommandLine = managerCommand
+    ? `${q(managerCommand.command)} ${managerCommand.args.map(q).join(' ')}`
+    : null
+  const pythonCommand = pythonExe ? `${q(pythonExe)} ${uninstallArgs.map(q).join(' ')}` : null
+  if (pythonCommand) {
+    lines.push(pythonPath ? cdSafe() : `cd ${q(agentRoot)} 2>/dev/null || true`)
+    lines.push(`${pythonCommand} || true`)
+  }
+  if (managerCommandLine) {
+    lines.push(cdSafe())
+    lines.push(`${managerCommandLine} || true`)
+  } else if (!pythonCommand) {
+    lines.push(':')
+  }
   if (appPath) {
     lines.push(`rm -rf ${q(appPath)} || true`)
   }
@@ -169,7 +238,17 @@ function buildPosixCleanupScript({ desktopPid, pythonExe, pythonPath, agentRoot,
  * Removal: even after the desktop PID is gone, Windows releases directory
  * handles lazily, so a single `rmdir /s /q` can half-fail — retry up to 10x.
  */
-function buildWindowsCleanupScript({ desktopPid, pythonExe, pythonPath, agentRoot, uninstallArgs, appPath, hermesHome }) {
+function buildWindowsCleanupScript({
+  desktopPid,
+  pythonExe,
+  pythonPath,
+  agentRoot,
+  uninstallArgs,
+  appPath,
+  hermesHome,
+  safeCwd = hermesHome,
+  managerCommand = null
+}) {
   const pid = Number(desktopPid) || 0
   // cmd.exe has no string escaping inside quotes; strip embedded quotes (paths
   // under %LOCALAPPDATA% never contain them). `&`/`^` in a path would still be
@@ -184,6 +263,12 @@ function buildWindowsCleanupScript({ desktopPid, pythonExe, pythonPath, agentRoo
   if (pythonPath) {
     lines.push(`set "PYTHONPATH=${String(pythonPath).replace(/"/g, '')};%PYTHONPATH%"`)
   }
+  const cdSafe = () =>
+    `cd /d ${q(safeCwd || hermesHome)} 2>nul || cd /d ${q(hermesHome)} 2>nul`
+  const managerCommandLine = managerCommand
+    ? `${q(managerCommand.command)} ${managerCommand.args.map(q).join(' ')}`
+    : null
+  const pythonCommand = pythonExe ? `${q(pythonExe)} ${uninstallArgs.map(q).join(' ')}` : null
   lines.push(
     'set /a waited=0',
     ':waitloop',
@@ -197,10 +282,18 @@ function buildWindowsCleanupScript({ desktopPid, pythonExe, pythonPath, agentRoo
     'if %waited% geq 60 goto waited_done',
     'timeout /t 1 /nobreak >nul',
     'goto waitloop',
-    ':waited_done',
-    `cd /d ${q(agentRoot)}`,
-    `${q(pythonExe)} ${uninstallArgs.map(q).join(' ')}`
+    ':waited_done'
   )
+  if (pythonCommand) {
+    lines.push(pythonPath ? cdSafe() : `cd /d ${q(agentRoot)}`)
+    lines.push(pythonCommand)
+  }
+  if (managerCommandLine) {
+    lines.push(cdSafe())
+    lines.push(`${managerCommandLine} || rem hermes-manager failed; continuing`)
+  } else if (!pythonCommand) {
+    lines.push('rem no uninstall command available')
+  }
   if (appPath) {
     lines.push(
       'set /a tries=0',
@@ -222,10 +315,14 @@ function buildWindowsCleanupScript({ desktopPid, pythonExe, pythonPath, agentRoo
 
 module.exports = {
   UNINSTALL_MODES,
+  buildInstallMetadataCommand,
+  buildManagerCommandForMode,
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
+  modeRequiresPythonUninstaller,
   modeRemovesAgent,
   modeRemovesUserData,
+  resolveHermesManagerPath,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
   uninstallArgsForMode

@@ -14,10 +14,14 @@ const assert = require('node:assert/strict')
 
 const {
   UNINSTALL_MODES,
+  buildInstallMetadataCommand,
+  buildManagerCommandForMode,
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
+  modeRequiresPythonUninstaller,
   modeRemovesAgent,
   modeRemovesUserData,
+  resolveHermesManagerPath,
   resolveRemovableAppPath,
   shouldRemoveAppBundle,
   uninstallArgsForMode
@@ -38,6 +42,90 @@ test('uninstallArgsForMode throws on an unknown mode (no silent full wipe)', () 
 
 test('UNINSTALL_MODES lists exactly the three supported modes', () => {
   assert.deepEqual([...UNINSTALL_MODES].sort(), ['full', 'gui', 'lite'])
+})
+
+// --- resolveHermesManagerPath / buildManagerCommandForMode ---
+
+test('resolveHermesManagerPath finds the packaged Rust manager per platform', () => {
+  assert.equal(
+    resolveHermesManagerPath('C:\\Hermes\\resources', 'win32'),
+    'C:\\Hermes\\resources\\hermes-manager\\hermes-manager.exe'
+  )
+  assert.equal(
+    resolveHermesManagerPath('/Applications/Hermes.app/Contents/Resources', 'darwin'),
+    '/Applications/Hermes.app/Contents/Resources/hermes-manager/hermes-manager'
+  )
+  assert.equal(resolveHermesManagerPath('', 'linux'), null)
+})
+
+test('buildManagerCommandForMode only enables the Rust manager for available lite uninstall', () => {
+  const managerPath = '/opt/hermes/resources/hermes-manager/hermes-manager'
+  const exists = file => file === managerPath
+
+  assert.deepEqual(
+    buildManagerCommandForMode({
+      mode: 'lite',
+      managerPath,
+      hermesHome: '/home/x/.hermes',
+      managerExists: exists
+    }),
+    {
+      command: managerPath,
+      args: ['--hermes-home', '/home/x/.hermes', 'uninstall-lite']
+    }
+  )
+  assert.equal(
+    buildManagerCommandForMode({
+      mode: 'full',
+      managerPath,
+      hermesHome: '/home/x/.hermes',
+      managerExists: exists
+    }),
+    null
+  )
+  assert.equal(
+    buildManagerCommandForMode({
+      mode: 'lite',
+      managerPath: '/missing/hermes-manager',
+      hermesHome: '/home/x/.hermes',
+      managerExists: exists
+    }),
+    null
+  )
+})
+
+test('buildInstallMetadataCommand enables metadata recording when the manager exists', () => {
+  const managerPath = '/opt/hermes/resources/hermes-manager/hermes-manager'
+  const exists = file => file === managerPath
+
+  assert.deepEqual(
+    buildInstallMetadataCommand({
+      managerPath,
+      hermesHome: '/home/x/.hermes',
+      managerExists: exists
+    }),
+    {
+      command: managerPath,
+      args: ['--hermes-home', '/home/x/.hermes', 'install-metadata']
+    }
+  )
+  assert.equal(
+    buildInstallMetadataCommand({
+      managerPath: '/missing/hermes-manager',
+      hermesHome: '/home/x/.hermes',
+      managerExists: exists
+    }),
+    null
+  )
+})
+
+test('modeRequiresPythonUninstaller allows lite uninstall to run with only the Rust manager', () => {
+  const managerCommand = { command: '/resources/hermes-manager/hermes-manager', args: ['uninstall-lite'] }
+
+  assert.equal(modeRequiresPythonUninstaller('lite', managerCommand), false)
+  assert.equal(modeRequiresPythonUninstaller('lite', null), true)
+  assert.equal(modeRequiresPythonUninstaller('gui', managerCommand), true)
+  assert.equal(modeRequiresPythonUninstaller('full', managerCommand), true)
 })
 
 // --- modeRemovesAgent / modeRemovesUserData ---
@@ -161,6 +249,49 @@ test('buildPosixCleanupScript exports PYTHONPATH when pythonPath is set (lite/fu
   assert.match(script, /'\/usr\/bin\/python3' '-m' 'hermes_cli\.uninstall' '--mode' 'full'/)
 })
 
+test('buildPosixCleanupScript runs complete Python cleanup before Rust residual cleanup', () => {
+  const script = buildPosixCleanupScript({
+    desktopPid: 1,
+    pythonExe: '/usr/bin/python3',
+    pythonPath: '/home/x/.hermes/hermes-agent',
+    agentRoot: '/home/x/.hermes/hermes-agent',
+    uninstallArgs: ['-m', 'hermes_cli.uninstall', '--mode', 'lite'],
+    appPath: null,
+    hermesHome: '/home/x/.hermes',
+    safeCwd: '/tmp',
+    managerCommand: {
+      command: '/Applications/Hermes.app/Contents/Resources/hermes-manager/hermes-manager',
+      args: ['--hermes-home', '/home/x/.hermes', 'uninstall-lite']
+    }
+  })
+  assert.match(
+    script,
+    /'\/Applications\/Hermes\.app\/Contents\/Resources\/hermes-manager\/hermes-manager'/
+  )
+  assert.match(script, /'--hermes-home' '\/home\/x\/\.hermes' 'uninstall-lite' \|\| true/)
+  assert.match(script, /'\/usr\/bin\/python3' '-m' 'hermes_cli\.uninstall' '--mode' 'lite' \|\| true/)
+  assert.match(script, /cd '\/tmp'/)
+  assert.ok(script.indexOf('hermes_cli.uninstall') < script.indexOf('uninstall-lite'))
+})
+
+test('buildPosixCleanupScript can run Rust manager without a Python fallback', () => {
+  const script = buildPosixCleanupScript({
+    desktopPid: 1,
+    pythonExe: null,
+    pythonPath: null,
+    agentRoot: '/home/x/.hermes/hermes-agent',
+    uninstallArgs: ['-m', 'hermes_cli.uninstall', '--mode', 'lite'],
+    appPath: null,
+    hermesHome: '/home/x/.hermes',
+    managerCommand: {
+      command: '/Applications/Hermes.app/Contents/Resources/hermes-manager/hermes-manager',
+      args: ['--hermes-home', '/home/x/.hermes', 'uninstall-lite']
+    }
+  })
+  assert.match(script, /'--hermes-home' '\/home\/x\/\.hermes' 'uninstall-lite' \|\| true/)
+  assert.doesNotMatch(script, /hermes_cli\.uninstall/)
+})
+
 test('buildPosixCleanupScript omits PYTHONPATH when pythonPath is null (gui)', () => {
   const script = buildPosixCleanupScript({
     desktopPid: 1,
@@ -243,4 +374,48 @@ test('buildWindowsCleanupScript omits PYTHONPATH + rmdir when not needed (gui, n
   })
   assert.doesNotMatch(script, /rmdir/)
   assert.doesNotMatch(script, /set "PYTHONPATH=/)
+})
+
+test('buildWindowsCleanupScript runs complete Python cleanup before Rust residual cleanup', () => {
+  const script = buildWindowsCleanupScript({
+    desktopPid: 2,
+    pythonExe: 'C:\\Python313\\python.exe',
+    pythonPath: 'C:\\Users\\x\\.hermes\\hermes-agent',
+    agentRoot: 'C:\\Users\\x\\.hermes\\hermes-agent',
+    uninstallArgs: ['-m', 'hermes_cli.uninstall', '--mode', 'lite'],
+    appPath: null,
+    hermesHome: 'C:\\Users\\x\\.hermes',
+    safeCwd: 'C:\\Temp',
+    managerCommand: {
+      command: 'C:\\Hermes\\resources\\hermes-manager\\hermes-manager.exe',
+      args: ['--hermes-home', 'C:\\Users\\x\\.hermes', 'uninstall-lite']
+    }
+  })
+  assert.match(
+    script,
+    /"C:\\Hermes\\resources\\hermes-manager\\hermes-manager\.exe" "--hermes-home"/
+  )
+  assert.match(script, /"C:\\Users\\x\\.hermes" "uninstall-lite" \|\| rem hermes-manager failed; continuing/)
+  assert.match(script, /"C:\\Python313\\python\.exe" "-m" "hermes_cli\.uninstall" "--mode" "lite"/)
+  assert.match(script, /cd \/d "C:\\Temp"/)
+  assert.ok(script.indexOf('hermes_cli.uninstall') < script.indexOf('hermes-manager.exe'))
+  assert.doesNotMatch(script, /cd \/d "C:\\Users\\x\\.hermes\\hermes-agent"/)
+})
+
+test('buildWindowsCleanupScript can run Rust manager without a Python fallback', () => {
+  const script = buildWindowsCleanupScript({
+    desktopPid: 2,
+    pythonExe: null,
+    pythonPath: null,
+    agentRoot: 'C:\\Users\\x\\.hermes\\hermes-agent',
+    uninstallArgs: ['-m', 'hermes_cli.uninstall', '--mode', 'lite'],
+    appPath: null,
+    hermesHome: 'C:\\Users\\x\\.hermes',
+    managerCommand: {
+      command: 'C:\\Hermes\\resources\\hermes-manager\\hermes-manager.exe',
+      args: ['--hermes-home', 'C:\\Users\\x\\.hermes', 'uninstall-lite']
+    }
+  })
+  assert.match(script, /"C:\\Hermes\\resources\\hermes-manager\\hermes-manager\.exe" "--hermes-home"/)
+  assert.doesNotMatch(script, /hermes_cli\.uninstall/)
 })

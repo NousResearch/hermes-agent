@@ -5552,6 +5552,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     f"{_escape(desc)} [dim]({skill_count} skills)[/]"
                 )
 
+        quick_commands = self.config.get("quick_commands", {})
+        if quick_commands:
+            _cprint(f"\n  ⚡ {_BOLD}Quick Commands{_RST} ({len(quick_commands)} configured):")
+            for name, qcmd in sorted(quick_commands.items()):
+                desc = qcmd.get("description", qcmd.get("type", ""))
+                ChatConsole().print(
+                    f"    [bold {_accent_hex()}]{('/' + name):<22}[/] [dim]-[/] {_escape(desc)}"
+                )
+
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
@@ -5821,6 +5830,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             pass
 
+    def _discard_session_if_empty(self, session_id: Optional[str]) -> bool:
+        """Drop a just-ended session row when it never gained content.
+
+        Starting the CLI and immediately quitting (or rotating with /new,
+        /clear) used to leave an empty untitled row behind that clutters
+        ``/resume`` and ``hermes sessions list``. Delegates the
+        check-and-delete to ``SessionDB.delete_session_if_empty``, which
+        only removes rows with no messages, no title, and no child
+        sessions. Ported from google-gemini/gemini-cli#27770.
+        """
+        if not self._session_db or not session_id:
+            return False
+        # In-memory transcript is authoritative: if this CLI object holds
+        # conversation messages (flushed to the DB or not), the session is
+        # not empty. Protects against pruning a real conversation whose DB
+        # flush failed or hasn't happened yet.
+        if getattr(self, "conversation_history", None):
+            return False
+        try:
+            from hermes_constants import get_hermes_home as _ghh
+            return self._session_db.delete_session_if_empty(
+                session_id, sessions_dir=_ghh() / "sessions"
+            )
+        except Exception:
+            logger.debug(
+                "Could not prune empty session %s", session_id, exc_info=True
+            )
+            return False
+
     def new_session(self, silent=False, title=None):
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
@@ -5837,6 +5875,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 self._session_db.end_session(old_session_id, "new_session")
             except Exception:
                 pass
+            # Don't let immediately-rotated empty sessions pile up in
+            # /resume and `hermes sessions list` (gemini-cli#27770 port).
+            self._discard_session_if_empty(old_session_id)
 
         self.session_start = datetime.now()
         timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
@@ -13074,6 +13115,15 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._session_db.end_session(self.agent.session_id, "cli_close")
                 except (Exception, KeyboardInterrupt) as e:
                     logger.debug("Could not close session in DB: %s", e)
+                # Started-and-immediately-quit sessions never gained content;
+                # drop the empty row so /resume and `hermes sessions list`
+                # stay clean (gemini-cli#27770 port). No-op for resumed or
+                # titled sessions and anything with messages or children.
+                if not getattr(self, '_delete_session_on_exit', False):
+                    try:
+                        self._discard_session_if_empty(self.agent.session_id)
+                    except (Exception, KeyboardInterrupt) as e:
+                        logger.debug("Could not prune empty session: %s", e)
                 # /exit --delete: also remove the current session's transcripts
                 # and SQLite history. Ported from google-gemini/gemini-cli#19332.
                 if getattr(self, '_delete_session_on_exit', False):

@@ -4909,3 +4909,98 @@ class TestDesktopCronTicker:
 
         with self._client():
             assert not called.wait(0.5), "ticker must not run outside the desktop app"
+
+
+class TestSkillHubInstallYesFlag:
+    """Tests for the --yes flag on spawned skills install commands.
+
+    The dashboard spawns 'hermes skills install' as a background process.
+    Without --yes, the CLI prompts 'Confirm [y/N]:' and the process has no
+    stdin, so it immediately defaults to N and cancels the install.
+
+    Regression test for #43829.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db")
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def test_hub_install_includes_yes_flag(self, monkeypatch):
+        """POST /api/skills/hub/install must spawn with --yes."""
+        import hermes_cli.web_server as web_server
+
+        calls = []
+
+        class _Proc:
+            pid = 12345
+
+        def fake_spawn(subcommand, name):
+            calls.append((subcommand, name))
+            return _Proc()
+
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+
+        resp = self.client.post("/api/skills/hub/install", json={"identifier": "my-skill"})
+        assert resp.status_code == 200
+        assert len(calls) == 1
+        assert calls[0][0] == ["skills", "install", "my-skill", "--yes"]
+
+    def test_hub_uninstall_already_has_yes_flag(self, monkeypatch):
+        """POST /api/skills/hub/uninstall already uses --yes (no regression)."""
+        import hermes_cli.web_server as web_server
+
+        calls = []
+
+        class _Proc:
+            pid = 12346
+
+        def fake_spawn(subcommand, name):
+            calls.append((subcommand, name))
+            return _Proc()
+
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+
+        resp = self.client.post("/api/skills/hub/uninstall", json={"name": "my-skill"})
+        assert resp.status_code == 200
+        assert len(calls) == 1
+        assert calls[0][0] == ["skills", "uninstall", "my-skill", "--yes"]
+
+    def test_profile_create_hub_skills_includes_yes_flag(self, monkeypatch):
+        """POST /api/profiles/create with hub_skills must spawn install with --yes."""
+        import hermes_cli.web_server as web_server
+        import hermes_cli.profiles as profiles_mod
+
+        calls = []
+
+        class _Proc:
+            pid = 12347
+
+        def fake_spawn(subcommand, name):
+            calls.append((subcommand, name))
+            return _Proc()
+
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", fake_spawn)
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        resp = self.client.post("/api/profiles", json={
+            "name": "test-prof-hub",
+            "hub_skills": ["skill-a", "skill-b"],
+        })
+        assert resp.status_code == 200
+        # Should have 2 install calls, each with --yes
+        install_calls = [c for c in calls if "install" in c[0]]
+        assert len(install_calls) == 2
+        for subcommand, _ in install_calls:
+            assert "--yes" in subcommand, f"Missing --yes in {subcommand}"
+            assert "-p" in subcommand, f"Missing -p (profile) in {subcommand}"

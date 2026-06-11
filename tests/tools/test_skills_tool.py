@@ -1243,6 +1243,35 @@ class TestSkillViewCollisionDetection:
         assert result["success"] is True
         assert "EXTERNAL BODY" in result["content"]
 
+    def test_support_reference_with_same_basename_does_not_collide(self, tmp_path):
+        """Linked reference docs are not standalone legacy skills.
+
+        A support file like ``other-skill/references/homeassistant-control.md``
+        must not make ``skill_view("homeassistant-control")`` ambiguous when a
+        real ``homeassistant-control/SKILL.md`` exists.
+        """
+        local_dir = tmp_path / "local"
+        local_dir.mkdir()
+
+        _make_skill(local_dir, "homeassistant-control", body="REAL SKILL")
+        other = local_dir / "devops" / "home-nas-operations"
+        refs = other / "references"
+        refs.mkdir(parents=True)
+        (other / "SKILL.md").write_text(
+            "---\nname: home-nas-operations\ndescription: NAS ops\n---\nBODY",
+            encoding="utf-8",
+        )
+        (refs / "homeassistant-control.md").write_text("REFERENCE ONLY", encoding="utf-8")
+
+        p1, p2 = self._patch_dirs(local_dir, [])
+        with p1, p2:
+            raw = skill_view("homeassistant-control")
+
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert "REAL SKILL" in result["content"]
+        assert "REFERENCE ONLY" not in result["content"]
+
     def test_two_externals_same_name_also_refuse(self, tmp_path):
         """Collision detection is symmetric — two external dirs with
         same-name skills also trigger the refusal."""

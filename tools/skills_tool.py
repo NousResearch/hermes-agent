@@ -93,6 +93,7 @@ SKILLS_DIR = HERMES_HOME / "skills"
 # Anthropic-recommended limits for progressive disclosure efficiency
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
+_SKILL_SUPPORT_DIR_NAMES = frozenset({"references", "templates", "assets", "scripts", "examples"})
 
 # Platform identifiers for the 'platforms' frontmatter field.
 # Maps user-friendly names to sys.platform prefixes.
@@ -513,6 +514,22 @@ def _get_category_from_path(skill_path: Path) -> Optional[str]:
         except ValueError:
             continue
     return None
+
+
+def _is_legacy_flat_skill_file(path: Path, root: Path) -> bool:
+    """Return True when ``path`` is a legacy ``<skill-name>.md`` skill file.
+
+    Legacy flat skills are supported for backwards compatibility, but linked
+    support documents under ``references/`` / ``templates/`` / etc. are not
+    standalone skills and must not collide with a real ``SKILL.md`` directory.
+    """
+    if path.name == "SKILL.md" or path.suffix != ".md":
+        return False
+    try:
+        rel = path.relative_to(root)
+    except ValueError:
+        return False
+    return not any(part in _SKILL_SUPPORT_DIR_NAMES for part in rel.parts[:-1])
 
 
 def _parse_tags(tags_value) -> List[str]:
@@ -1018,7 +1035,7 @@ def skill_view(
             direct_path = search_dir / name
             if direct_path.is_dir() and (direct_path / "SKILL.md").exists():
                 _record(direct_path, direct_path / "SKILL.md")
-            elif direct_path.with_suffix(".md").exists():
+            elif direct_path.with_suffix(".md").exists() and _is_legacy_flat_skill_file(direct_path.with_suffix(".md"), search_dir):
                 _record(None, direct_path.with_suffix(".md"))
 
             # Strategy 1b: categorized form for plugin namespace fall-through
@@ -1028,7 +1045,7 @@ def skill_view(
                 categorized_path = search_dir / local_category_name
                 if categorized_path.is_dir() and (categorized_path / "SKILL.md").exists():
                     _record(categorized_path, categorized_path / "SKILL.md")
-                elif categorized_path.with_suffix(".md").exists():
+                elif categorized_path.with_suffix(".md").exists() and _is_legacy_flat_skill_file(categorized_path.with_suffix(".md"), search_dir):
                     _record(None, categorized_path.with_suffix(".md"))
 
             # Strategy 2: recursive by directory name (catches nested skills
@@ -1050,11 +1067,25 @@ def skill_view(
 
             # Strategy 3: legacy flat <name>.md files anywhere under the dir.
             for found_md in search_dir.rglob(f"{name}.md"):
-                if found_md.name != "SKILL.md":
+                if _is_legacy_flat_skill_file(found_md, search_dir):
                     _record(None, found_md)
 
         if len(candidates) > 1:
             paths = [str(smd) for _, smd in candidates]
+            load_names: List[str] = []
+            for _sd, smd in candidates:
+                load_name: Optional[str] = None
+                for root in all_dirs:
+                    try:
+                        rel = smd.relative_to(root)
+                    except ValueError:
+                        continue
+                    if rel.name == "SKILL.md":
+                        load_name = "/".join(rel.parts[:-1])
+                    elif rel.suffix == ".md":
+                        load_name = str(rel.with_suffix(""))
+                    break
+                load_names.append(load_name or str(smd))
             logging.getLogger(__name__).warning(
                 "Skill name collision for '%s': %d candidates — %s",
                 name, len(candidates), "; ".join(paths),
@@ -1068,6 +1099,7 @@ def skill_view(
                         "Refusing to guess — load one explicitly by its categorized path."
                     ),
                     "matches": paths,
+                    "load_names": load_names,
                     "hint": (
                         "Pass the full relative path instead of the bare name "
                         "(e.g., 'category/skill-name'), or rename one of the "

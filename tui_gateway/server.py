@@ -1514,6 +1514,16 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
+    # Session-scoped persistence: always persist to session DB so resume
+    # restores the last-used model (parity with message gateway behavior).
+    try:
+        _session_db = _get_db()
+        if _session_db is not None:
+            _db_key = session.get("session_key") or sid
+            if _db_key:
+                _session_db.update_session_model(_db_key, result.new_model)
+    except Exception:
+        pass
     return {"value": result.new_model, "warning": result.warning_message or ""}
 
 
@@ -2578,6 +2588,22 @@ def _make_agent(sid: str, key: str, session_id: str | None = None, session_db=No
                 part for part in (system_prompt, skills_prompt) if part
             ).strip()
     model, requested_provider = _resolve_startup_runtime()
+
+    # [PATCH] If resuming a session, prioritize the model stored in the session DB
+    # over the global default. This ensures that a session started with Model A
+    # resumes with Model A, even if the config default is Model B.
+    if session_id and session_db is not None:
+        try:
+            _s_meta = session_db.get_session(session_id)
+            if _s_meta and _s_meta.get("model"):
+                model = _s_meta["model"]
+                # Reset provider to None so resolve_runtime_provider can
+                # auto-detect the correct provider for the restored model string.
+                requested_provider = None
+                logger.info("[Resume] Overriding startup model with session stored model: %s", model)
+        except Exception as e:
+            logger.debug("Failed to restore session model from DB: %s", e)
+
     runtime = resolve_runtime_provider(
         requested=requested_provider,
         target_model=model or None,

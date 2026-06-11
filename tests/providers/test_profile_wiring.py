@@ -294,3 +294,13 @@ class TestRequestOverridesParity:
             request_overrides={"top_p": 0.9},
         )
         assert kw["top_p"] == 0.9
+
+
+def test_coreweave_profile_resolves():
+    """CoreWeave Serverless Inference fast-path plugin resolves by id and aliases."""
+    p = get_provider_profile("coreweave")
+    assert p is not None
+    assert p.base_url == "https://api.inference.wandb.ai/v1"
+    assert "COREWEAVE_API_KEY" in p.env_vars
+    for alias in ("coreweave-inference", "coreweave-serverless"):
+        assert get_provider_profile(alias) is p

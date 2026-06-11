@@ -26,6 +26,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **CoreWeave Serverless Inference** | `COREWEAVE_API_KEY` in `~/.hermes/.env` (provider: `coreweave`; aliases: `coreweave-inference`, `coreweave-serverless`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
@@ -257,6 +258,10 @@ hermes chat --provider arcee --model trinity-large-thinking
 # Use the exact model ID returned by GMI's /v1/models endpoint.
 hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Requires: GMI_API_KEY in ~/.hermes/.env
+
+# CoreWeave Serverless Inference
+hermes chat --provider coreweave --model meta-llama/Llama-3.3-70B-Instruct
+# Requires: COREWEAVE_API_KEY in ~/.hermes/.env
 ```
 
 Or set the provider permanently in `config.yaml`:
@@ -266,7 +271,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, `COREWEAVE_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
 
 :::note Z.AI Endpoint Auto-Detection
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
@@ -486,6 +491,36 @@ model:
 ```
 
 The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-serving.com/v1`).
+
+### CoreWeave Serverless Inference
+
+Open models served via [CoreWeave Serverless Inference](https://www.coreweave.com/solutions/ai-inference) (formerly W&B Inference) — OpenAI-compatible API, API key authentication. The model catalog is fetched live from `/v1/models`.
+
+```bash
+# CoreWeave Serverless Inference
+hermes chat --provider coreweave --model meta-llama/Llama-3.3-70B-Instruct
+# Requires: COREWEAVE_API_KEY in ~/.hermes/.env
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "coreweave"
+  default: "meta-llama/Llama-3.3-70B-Instruct"
+```
+
+Get your API key at [wandb.ai/settings](https://wandb.ai/settings) (CoreWeave Inference keys are still issued there). The base URL can be overridden with `COREWEAVE_BASE_URL` (default: `https://api.inference.wandb.ai/v1`).
+
+:::note Project attribution header
+Most accounts work as-is. Accounts whose default project lacks Inference access must supply the `openai-project` header (`team/project`) — add it under `model.default_headers` in `config.yaml`:
+
+```yaml
+model:
+  provider: "coreweave"
+  default_headers:
+    openai-project: "your-team/your-project"
+```
+:::
 
 ### StepFun
 

@@ -1,0 +1,5 @@
+name: coreweave-provider
+kind: model-provider
+version: 1.0.0
+description: CoreWeave Serverless Inference (open models on CoreWeave)
+author: Juan-Lee Pang (juan-lee), CoreWeave

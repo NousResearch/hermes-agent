@@ -658,6 +658,17 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('does not fetch config while constructing the gateway event handler', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+
+    ctx.gateway.rpc = vi.fn(async () => null)
+
+    createGatewayEventHandler(ctx)
+
+    expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
   it('on gateway.ready with no STARTUP_RESUME_ID and auto_resume off, forges a new session', async () => {
     const appended: Msg[] = []
     const newSession = vi.fn()
@@ -1020,8 +1031,9 @@ describe('createGatewayEventHandler', () => {
     )
     const onEvent = createGatewayEventHandler(ctx)
 
-    // Eager config fetch fires at creation; let it resolve before any spawn
-    // (mirrors real usage — config lands well before the first delegation).
+    // Config fetch starts once the gateway is ready; let it resolve before any
+    // spawn (mirrors real usage — config lands well before first delegation).
+    onEvent({ payload: {}, type: 'gateway.ready' } as any)
     await Promise.resolve()
     await Promise.resolve()
 

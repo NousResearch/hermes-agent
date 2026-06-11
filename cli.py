@@ -13336,9 +13336,21 @@ def main(
                 else:
                     toolsets_list.append(str(t))
     else:
-        # Use the shared resolver so MCP servers are included at runtime
-        from hermes_cli.tools_config import _get_platform_tools
-        toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
+        # Coding posture (base Hermes): with no explicit --toolsets, collapse
+        # to the coding toolset (+ enabled MCP servers) when sitting in a code
+        # workspace. See agent/coding_context.py.
+        _coding = None
+        try:
+            from agent.coding_context import coding_selection
+            _coding = coding_selection(platform="cli", config=CLI_CONFIG)
+        except Exception:
+            _coding = None
+        if _coding is not None:
+            toolsets_list = _coding
+        else:
+            # Use the shared resolver so MCP servers are included at runtime
+            from hermes_cli.tools_config import _get_platform_tools
+            toolsets_list = sorted(_get_platform_tools(CLI_CONFIG, "cli"))
     
     parsed_skills = _parse_skills_argument(skills)
 

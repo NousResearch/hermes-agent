@@ -65,6 +65,52 @@ class TestAnthropicMessagesDetection:
         assert _detect_api_mode_for_url("https://api.example.com/anthropic/v1") is None
 
 
+class TestBedrockConverseDetection:
+    """AWS Bedrock runtime endpoints speak the native Converse protocol.
+
+    Without this detection a delegated subagent routed to a Bedrock base_url
+    falls through to the chat_completions default and POSTs an OpenAI-shaped
+    body to bedrock-runtime/.../chat/completions with ``Bearer None``, which
+    Bedrock cannot process — surfacing as a persistent internalServerException
+    400 across all retries.
+    """
+
+    def test_bedrock_us_east_1_returns_converse(self):
+        assert (
+            _detect_api_mode_for_url("https://bedrock-runtime.us-east-1.amazonaws.com")
+            == "bedrock_converse"
+        )
+
+    def test_bedrock_other_region_returns_converse(self):
+        assert (
+            _detect_api_mode_for_url("https://bedrock-runtime.eu-west-1.amazonaws.com/")
+            == "bedrock_converse"
+        )
+
+    def test_bedrock_uppercase_tolerated(self):
+        assert (
+            _detect_api_mode_for_url("https://BEDROCK-RUNTIME.US-EAST-1.AMAZONAWS.COM")
+            == "bedrock_converse"
+        )
+
+    def test_bedrock_lookalike_host_does_not_match(self):
+        # A suffix-spoofing host must NOT be treated as Bedrock.
+        assert (
+            _detect_api_mode_for_url(
+                "https://bedrock-runtime.us-east-1.amazonaws.com.evil.test"
+            )
+            is None
+        )
+
+    def test_bedrock_path_segment_does_not_match(self):
+        assert (
+            _detect_api_mode_for_url(
+                "https://proxy.example.test/bedrock-runtime.us-east-1.amazonaws.com"
+            )
+            is None
+        )
+
+
 class TestDefaultCase:
     def test_generic_url_returns_none(self):
         assert _detect_api_mode_for_url("https://api.together.xyz/v1") is None

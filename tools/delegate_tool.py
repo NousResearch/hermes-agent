@@ -2517,7 +2517,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
         # Explicit delegation.api_mode in config always wins. Lets users force
         # a transport for non-standard endpoints the URL heuristic can't detect.
-        if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages"}:
+        if configured_api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             api_mode = configured_api_mode
 
         return {

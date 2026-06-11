@@ -93,6 +93,17 @@ def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
         return "codex_responses"
     if hostname == "api.openai.com":
         return "codex_responses"
+    # AWS Bedrock — bedrock-runtime.<region>.amazonaws.com speaks the native
+    # Converse protocol, NOT chat/completions. Without this, a delegated
+    # subagent routed to a Bedrock base_url falls through to the
+    # ``chat_completions`` default and POSTs an OpenAI-shaped body to
+    # ``bedrock-runtime/.../chat/completions`` with ``Bearer None`` — which
+    # Bedrock cannot process, surfacing as a persistent ``internalServerException``
+    # 400. Mirror the main agent's auto-detection in agent/agent_init.py.
+    if hostname.startswith("bedrock-runtime.") and base_url_host_matches(
+        normalized, "amazonaws.com"
+    ):
+        return "bedrock_converse"
     if normalized.endswith("/anthropic"):
         return "anthropic_messages"
     if hostname == "api.kimi.com" and "/coding" in normalized:

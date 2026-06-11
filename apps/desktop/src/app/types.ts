@@ -129,6 +129,7 @@ export interface ClientSessionState {
   serviceTier: string
   fast: boolean
   yolo: boolean
+  personality: string
   busy: boolean
   awaitingResponse: boolean
   streamId: string | null

@@ -45,6 +45,50 @@ from utils import (
 logger = logging.getLogger("gateway.run")
 
 
+def _gateway_supervised_by_launchd() -> bool:
+    """Return True when launchd is supervising *this* gateway process.
+
+    macOS launchd does not set INVOCATION_ID (that is systemd-only), so the
+    env check in ``_handle_restart_command`` never detects launchd
+    supervision and ``/restart`` historically took the detached path: the
+    launchd child exited 0, ``KeepAlive.SuccessfulExit=false`` treated that
+    as a deliberate stop, and the detached replacement ran as an
+    unsupervised orphan that nothing revived once it died (#incident
+    2026-06-11).
+
+    The reliable test is to ask launchd which pid it holds for the gateway
+    label and compare against our own — a label match alone is not enough
+    because a previously-orphaned gateway can still be running while launchd
+    supervises nothing.  Any failure (non-darwin, launchctl missing, service
+    not loaded, pid mismatch) returns False, which falls back to the
+    pre-existing detached-restart behavior.
+    """
+    if sys.platform != "darwin":
+        return False
+    try:
+        from hermes_cli.gateway import get_launchd_plist_path
+
+        label = get_launchd_plist_path().stem
+        import subprocess
+
+        proc = subprocess.run(
+            ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if proc.returncode != 0:
+            return False
+        for line in proc.stdout.splitlines():
+            text = line.strip()
+            if text.startswith("pid ="):
+                return text.split("=", 1)[1].strip() == str(os.getpid())
+        return False
+    except Exception as e:  # noqa: BLE001 - supervision probe must never break /restart
+        logger.debug("launchd supervision probe failed: %s", e)
+        return False
+
+
 class GatewaySlashCommandsMixin:
     """In-session slash-command handlers for GatewayRunner."""
 
@@ -836,6 +880,11 @@ class GatewaySlashCommandsMixin:
         # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
         # exits when the gateway dies, taking the detached helper with it).
         _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        if not _under_service:
+            # launchd never sets INVOCATION_ID — probe it directly so macOS
+            # restarts exit 75 and get relaunched instead of orphaning the
+            # replacement (see _gateway_supervised_by_launchd docstring).
+            _under_service = await asyncio.to_thread(_gateway_supervised_by_launchd)
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)

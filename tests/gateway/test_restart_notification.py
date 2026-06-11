@@ -101,8 +101,12 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
 @pytest.mark.asyncio
 async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypatch):
     """Without systemd, /restart uses the detached subprocess approach."""
+    import gateway.slash_commands as slash_commands
+
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
+    # Hermetic: the launchd probe would query the real launchctl on macOS.
+    monkeypatch.setattr(slash_commands, "_gateway_supervised_by_launchd", lambda: False)
 
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)

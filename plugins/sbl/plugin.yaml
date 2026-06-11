@@ -1,0 +1,7 @@
+name: sbl
+version: 0.1.0
+description: "System Boundary Layer — FHS path classification, pre-write dependency check, snapshot"
+author: "Nikolay Gusev"
+hooks:
+  - pre_tool_call
+  - transform_tool_result

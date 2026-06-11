@@ -59,6 +59,13 @@ from gateway.platforms.base import (
     is_network_accessible,
 )
 
+# Input sanitization — zero-dependency injection defense
+try:
+    from core.sanitize import sanitize_input as _sanitize_input
+    _API_SANITIZE_OK = True
+except ImportError:
+    _API_SANITIZE_OK = False
+
 logger = logging.getLogger(__name__)
 
 
@@ -1763,12 +1770,38 @@ class APIServerAdapter(BasePlatformAdapter):
                     return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
                 conversation_messages.append({"role": role, "content": content})
 
+        # Sanitize system prompt (role injection vector)
+        if _API_SANITIZE_OK and system_prompt:
+            _sp_result = _sanitize_input(
+                system_prompt, channel="api", is_data=False, enable_semantic=False,
+            )
+            if _sp_result.blocked:
+                return web.json_response(
+                    _openai_error("Message blocked by content safety filter"),
+                    status=400,
+                )
+            system_prompt = _sp_result.text
+
         # Extract the last user message as the primary input
         user_message: Any = ""
         history = []
         if conversation_messages:
             user_message = conversation_messages[-1].get("content", "")
             history = conversation_messages[:-1]
+
+        # Sanitize user message
+        if _API_SANITIZE_OK and user_message:
+            _um_result = _sanitize_input(
+                user_message, channel="api", is_data=False, enable_semantic=True,
+            )
+            if _um_result.blocked:
+                return web.json_response(
+                    _openai_error("Message blocked by content safety filter"),
+                    status=400,
+                )
+            if _um_result.text != user_message:
+                user_message = _um_result.text
+                conversation_messages[-1]["content"] = _um_result.text
 
         if not _content_has_visible_payload(user_message):
             return web.json_response(

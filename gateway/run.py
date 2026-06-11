@@ -57,6 +57,15 @@ from agent.i18n import t
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
 
+# --- Input sanitization ---------------------------------------------------
+# Apply to all incoming messages before they reach the LLM context.
+# See core/sanitize.py for the full pipeline documentation.
+try:
+    from core.sanitize import sanitize_input as _sanitize_input
+    _SANITIZE_AVAILABLE = True
+except ImportError:
+    _SANITIZE_AVAILABLE = False
+
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
 # long-lived gateways (each AIAgent holds LLM clients, tool schemas,
@@ -420,6 +429,16 @@ def _telegramize_command_mentions(text: str, platform: Any) -> str:
         return f"/{sanitized}" if sanitized else match.group(0)
 
     return _TELEGRAM_COMMAND_MENTION_RE.sub(_replace, text)
+
+
+def _blocked_message_reply(event, source) -> str:
+    """Return a generic silent acknowledgment for blocked/sanitized messages.
+
+    Does NOT reveal that the message was blocked — attacker should not learn
+    whether their injection pattern was detected or not.
+    """
+    _ = source  # unused — reserved for future platform-specific handling
+    return ""  # Silent drop: blocked messages get no response
 
 
 # Only auto-continue interrupted gateway turns while the interruption is fresh.
@@ -6332,6 +6351,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+
+        # === SANITIZE INPUT ===
+        # Apply input sanitization to all user-originated messages before
+        # they reach the LLM context.  Internal events (background-process
+        # notifications, synthetic signals) are trusted and bypass this.
+        if _SANITIZE_AVAILABLE and event.text:
+            _san_result = _sanitize_input(
+                event.text,
+                channel=source.platform.value if source.platform else "unknown",
+                is_data=False,
+                enable_semantic=True,
+            )
+            if _san_result.blocked:
+                logger.info(
+                    "[%s] Blocked message from %s: trust=%.1f redact=%d semantic=%d",
+                    source.platform.value if source.platform else "?",
+                    source.chat_id,
+                    _san_result.trust_score,
+                    len(_san_result.redacted_patterns),
+                    len(_san_result.semantic_flags),
+                )
+                return _blocked_message_reply(event, source)
+            if _san_result.text != event.text:
+                event = dataclasses.replace(event, text=_san_result.text)
+                logger.debug(
+                    "[%s] Sanitized message from %s (redacted %d patterns)",
+                    source.platform.value if source.platform else "?",
+                    source.chat_id,
+                    len(_san_result.redacted_patterns),
+                )
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.

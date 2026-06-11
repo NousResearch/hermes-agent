@@ -3218,9 +3218,26 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     safe_tool_name = sanitize_mcp_name_component(mcp_tool.name)
     safe_server_name = sanitize_mcp_name_component(server_name)
     prefixed_name = f"mcp_{safe_server_name}_{safe_tool_name}"
+
+    # ── Supply chain scan: sanitize MCP tool description ──
+    description = mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}"
+    try:
+        from core.supply_chain import scan_mcp_description, infer_mcp_server_type
+
+        # We don't have the full config here, use mcp_remote for safety
+        _sc_desc = scan_mcp_description(description, server_type="mcp_remote")
+        if _sc_desc.blocked:
+            description = "[MCP DESCRIPTION BLOCKED: content safety scan failed]"
+        elif _sc_desc.text != description:
+            description = _sc_desc.text  # sanitized version
+    except ImportError:
+        pass  # core.supply_chain not available
+    except Exception:
+        logger.exception("Supply chain MCP description scan error")
+
     return {
         "name": prefixed_name,
-        "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
+        "description": description,
         "parameters": _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None)),
     }
 

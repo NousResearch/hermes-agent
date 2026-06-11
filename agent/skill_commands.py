@@ -180,6 +180,21 @@ def _build_skill_message(
         timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
         content = _expand_inline_shell(content, skill_dir, timeout)
 
+    # ── Supply chain scan: sanitize skill content for injection ──
+    try:
+        from core.supply_chain import scan_skill_content, infer_skill_source
+
+        src = infer_skill_source(skill_dir)
+        _sc_result = scan_skill_content(content, source_type=src)
+        if _sc_result.blocked:
+            content = "[SKILL CONTENT BLOCKED: content safety scan failed]"
+        elif _sc_result.text != content:
+            content = _sc_result.text  # sanitized version
+    except ImportError:
+        pass  # core.supply_chain not available — skip
+    except Exception:
+        logger.exception("Supply chain skill scan error")
+
     parts = [activation_note, "", content.strip()]
 
     # ── Inject the absolute skill directory so the agent can reference

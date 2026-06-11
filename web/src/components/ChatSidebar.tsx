@@ -31,7 +31,15 @@ import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
+import { TaskRow } from "@/components/TaskRow";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
+import {
+  mergeSeed,
+  pruneTasks,
+  upsertTask,
+  type TaskEntry,
+  type TaskSnapshot,
+} from "@/lib/taskRows";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 
@@ -52,6 +60,9 @@ interface RpcEnvelope {
 }
 
 const TOOL_LIMIT = 20;
+
+/** How often expired terminal task rows are swept out of the tasks card. */
+const TASK_PRUNE_TICK_MS = 5_000;
 
 const STATE_LABEL: Record<ConnectionState, string> = {
   idle: "idle",
@@ -90,6 +101,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [info, setInfo] = useState<SessionInfo>({});
   const [tools, setTools] = useState<ToolEntry[]>([]);
+  const [tasks, setTasks] = useState<TaskEntry[]>([]);
   const [modelOpen, setModelOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Toast for non-blocking model-switch advisories (a successful switch can
@@ -137,6 +149,20 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           return;
         }
         setSessionId(created.session_id);
+
+        // Seed the tasks card now that the sidecar is live. Merge (don't
+        // replace): the events socket opens in parallel, so a terminal
+        // task.* frame may already have landed and must win over the
+        // seed's stale RUNNING snapshot. Best-effort like everything
+        // else here — a gateway without task.list just leaves the card
+        // empty, no banner.
+        gw.request<{ tasks?: TaskSnapshot[] }>("task.list")
+          .then((res) => {
+            if (!cancelled && res?.tasks?.length) {
+              setTasks((prev) => mergeSeed(prev, res.tasks!, Date.now()));
+            }
+          })
+          .catch(() => {});
       })
       .catch((e: Error) => {
         if (!cancelled) {
@@ -282,6 +308,18 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
               : t,
           ),
         );
+      } else if (type === "task.started" || type === "task.completed") {
+        // Payload is the AgentTaskRegistry snapshot itself (see
+        // _registry_task_event in tui_gateway/server.py) — both event
+        // types upsert by task_id, so a completed frame for a task we
+        // never saw start still renders (and lingers) correctly.
+        const snap = payload as TaskSnapshot | undefined;
+
+        if (!snap?.task_id) {
+          return;
+        }
+
+        setTasks((prev) => upsertTask(prev, snap, Date.now()));
       }
       });
     })();
@@ -292,9 +330,26 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     };
   }, [channel, version]);
 
+  // Sweep terminal task rows once their linger window elapses. The
+  // interval only runs while a terminal row exists; pruneTasks returns
+  // the same array reference when nothing expired, so idle ticks don't
+  // re-render.
+  const hasLingeringTasks = tasks.some((t) => t.doneAtMs !== undefined);
+  useEffect(() => {
+    if (!hasLingeringTasks) {
+      return;
+    }
+    const id = window.setInterval(
+      () => setTasks((prev) => pruneTasks(prev, Date.now())),
+      TASK_PRUNE_TICK_MS,
+    );
+    return () => window.clearInterval(id);
+  }, [hasLingeringTasks]);
+
   const reconnect = useCallback(() => {
     setError(null);
     setTools([]);
+    setTasks([]);
     setVersion((v) => v + 1);
   }, []);
 
@@ -353,6 +408,24 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
                 reconnect
               </Button>
             )}
+          </div>
+        </Card>
+      )}
+
+      {/* Background agent tasks (task.list seed + task.started/completed
+          frames). Renders nothing when empty by design — unlike tools,
+          most sessions never spawn a task, so a permanent empty card
+          would just be noise. */}
+      {tasks.length > 0 && (
+        <Card className="flex min-h-0 flex-none flex-col px-2 py-2">
+          <div className="text-display px-1 pb-2 text-xs tracking-wider text-text-tertiary">
+            tasks
+          </div>
+
+          <div className="flex min-h-0 flex-col gap-1.5">
+            {tasks.map((t) => (
+              <TaskRow key={t.task_id} task={t} />
+            ))}
           </div>
         </Card>
       )}

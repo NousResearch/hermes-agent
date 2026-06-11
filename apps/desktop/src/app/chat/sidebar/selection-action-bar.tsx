@@ -185,52 +185,63 @@ export function SelectionActionBar({
     // gap-1.5 lead, min-h-[1.875rem], pr-0.5 trailing) so swapping the header
     // for this bar moves nothing: the count sits on the section-label edge and
     // the verbs land where the header actions were.
-    <div className="flex min-h-[1.875rem] shrink-0 items-center gap-0.5 pb-1 pr-0.5 pt-1.5" data-selection-bar>
-      <span className="flex min-w-0 flex-1 items-center gap-1.5 pl-2">
+    <div
+      className="flex min-h-[1.875rem] shrink-0 items-center gap-0.5 overflow-hidden pb-1 pr-0.5 pt-1.5"
+      data-selection-bar
+    >
+      <span className="flex shrink-0 items-center gap-1.5 pl-2" data-selection-count>
         <span aria-hidden="true" className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-secondary)">
           <Codicon name="check" size="0.75rem" />
         </span>
-        <span className="min-w-0 truncate text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-secondary)">
+        <span
+          className="whitespace-nowrap text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-secondary)"
+          data-selection-count-label
+        >
           {s.selectedCount(count)}
         </span>
       </span>
-      {!isArchivedSection &&
-        actionButton(
-          s.promptCount(count),
-          'arrow-up',
-          () => setRuntimeTextMode('prompt'),
-          'prompt',
-          false,
-          !onPromptSessions
-        )}
-      {!isArchivedSection &&
-        actionButton(
-          s.steerCount(count),
-          'comment-discussion',
-          () => setRuntimeTextMode('steer'),
-          'steer',
-          false,
-          !onSteerSessions
-        )}
-      {!isArchivedSection &&
-        actionButton(s.haltCount(count), 'debug-stop', haltSelected, 'halt', true, !onHaltSessions)}
-      {!isArchivedSection &&
-        actionButton(isPinnedSection ? s.unpin : s.pin, isPinnedSection ? 'pinned' : 'pin', togglePins, 'pin')}
-      {!isArchivedSection && actionButton(s.archive, 'archive', archiveSelected, 'archive')}
-      {isArchivedSection && actionButton(s.restore, 'history', restoreSelected, 'restore')}
-      {actionButton(s.delete, 'trash', () => setConfirmDeleteOpen(true), 'delete', true)}
-      <Tip label={s.clearSelection}>
-        <Button
-          aria-label={s.clearSelection}
-          className="size-5 text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
-          disabled={pending !== null}
-          onClick={() => clearSidebarSelection()}
-          size="icon-xs"
-          variant="ghost"
-        >
-          <Codicon name="close" size="0.8125rem" />
-        </Button>
-      </Tip>
+      <div
+        className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-0.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        data-selection-actions
+      >
+        {!isArchivedSection &&
+          actionButton(
+            s.promptCount(count),
+            'arrow-up',
+            () => setRuntimeTextMode('prompt'),
+            'prompt',
+            false,
+            !onPromptSessions
+          )}
+        {!isArchivedSection &&
+          actionButton(
+            s.steerCount(count),
+            'comment-discussion',
+            () => setRuntimeTextMode('steer'),
+            'steer',
+            false,
+            !onSteerSessions
+          )}
+        {!isArchivedSection &&
+          actionButton(s.haltCount(count), 'debug-stop', haltSelected, 'halt', true, !onHaltSessions)}
+        {!isArchivedSection &&
+          actionButton(isPinnedSection ? s.unpin : s.pin, isPinnedSection ? 'pinned' : 'pin', togglePins, 'pin')}
+        {!isArchivedSection && actionButton(s.archive, 'archive', archiveSelected, 'archive')}
+        {isArchivedSection && actionButton(s.restore, 'history', restoreSelected, 'restore')}
+        {actionButton(s.delete, 'trash', () => setConfirmDeleteOpen(true), 'delete', true)}
+        <Tip label={s.clearSelection}>
+          <Button
+            aria-label={s.clearSelection}
+            className="size-5 text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+            disabled={pending !== null}
+            onClick={() => clearSidebarSelection()}
+            size="icon-xs"
+            variant="ghost"
+          >
+            <Codicon name="close" size="0.8125rem" />
+          </Button>
+        </Tip>
+      </div>
       <Dialog onOpenChange={setConfirmDeleteOpen} open={confirmDeleteOpen}>
         <DialogContent className="max-w-md">
           <DialogHeader>

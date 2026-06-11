@@ -2499,6 +2499,83 @@ class TestReactions:
 
 
 # ---------------------------------------------------------------------------
+# TestReactionAdded — inbound reaction_added → approval flow
+# ---------------------------------------------------------------------------
+
+
+class TestReactionAdded:
+    """Test the inbound reaction_added handler that drives the approval flow."""
+
+    def _reaction_event(self, reaction="white_check_mark", user="U_USER",
+                        channel="C123", item_ts="111.222"):
+        return {
+            "type": "reaction_added",
+            "user": user,
+            "reaction": reaction,
+            "item": {"type": "message", "channel": channel, "ts": item_ts},
+            "event_ts": "999.888",
+            "team": "T_TEAM",
+        }
+
+    @pytest.mark.asyncio
+    async def test_approval_reaction_dispatches_synthetic_message(self, adapter):
+        adapter._handle_slack_message = AsyncMock()
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="Draft: hello world")
+
+        await adapter._handle_reaction_added(self._reaction_event())
+
+        adapter._handle_slack_message.assert_awaited_once()
+        synthetic = adapter._handle_slack_message.call_args.args[0]
+        # Routes as a normal channel message, threaded under the reacted draft.
+        assert synthetic["channel"] == "C123"
+        assert synthetic["thread_ts"] == "111.222"
+        # Unique ts (reaction event_ts) so dedup doesn't drop it as the draft.
+        assert synthetic["ts"] == "999.888"
+        assert synthetic["ts"] != "111.222"
+        # Embeds the bot mention so require_mention gate passes.
+        assert "<@U_BOT>" in synthetic["text"]
+        # Carries the reacted draft text for agent context.
+        assert "hello world" in synthetic["text"]
+
+    @pytest.mark.asyncio
+    async def test_non_approval_reaction_ignored(self, adapter):
+        adapter._handle_slack_message = AsyncMock()
+        await adapter._handle_reaction_added(self._reaction_event(reaction="thumbsup"))
+        adapter._handle_slack_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bot_own_reaction_ignored(self, adapter):
+        adapter._handle_slack_message = AsyncMock()
+        await adapter._handle_reaction_added(self._reaction_event(user="U_BOT"))
+        adapter._handle_slack_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_non_message_item_ignored(self, adapter):
+        adapter._handle_slack_message = AsyncMock()
+        ev = self._reaction_event()
+        ev["item"] = {"type": "file", "file": "F123"}
+        await adapter._handle_reaction_added(ev)
+        adapter._handle_slack_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reaction_in_non_allowed_channel_ignored(self, adapter):
+        adapter._handle_slack_message = AsyncMock()
+        adapter._fetch_thread_parent_text = AsyncMock(return_value="")
+        # Whitelist a different channel than the reaction lands in.
+        adapter._slack_allowed_channels = lambda: {"C_OTHER"}
+        await adapter._handle_reaction_added(self._reaction_event(channel="C123"))
+        adapter._handle_slack_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reaction_survives_thread_text_fetch_failure(self, adapter):
+        adapter._handle_slack_message = AsyncMock()
+        adapter._fetch_thread_parent_text = AsyncMock(side_effect=Exception("boom"))
+        await adapter._handle_reaction_added(self._reaction_event())
+        # Still dispatches even when fetching the reacted text fails.
+        adapter._handle_slack_message.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # TestThreadReplyHandling
 # ---------------------------------------------------------------------------
 

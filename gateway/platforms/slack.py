@@ -870,6 +870,21 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_app_mention(event, say):
                 await self._handle_slack_message(event)
 
+            # Inbound emoji reactions (e.g. a teammate reacting :white_check_mark:
+            # on a draft card to approve it). Slack delivers reaction_added over
+            # the Socket Mode connection; without this handler Bolt logs an
+            # "unhandled request" and the event is dropped. We route approval
+            # reactions into the normal message pipeline as a synthetic mention.
+            @self._app.event("reaction_added")
+            async def handle_reaction_added(event, say):
+                await self._handle_reaction_added(event)
+
+            # Acknowledge reaction_removed so Bolt doesn't log unhandled-request
+            # warnings; we don't act on un-reacting.
+            @self._app.event("reaction_removed")
+            async def handle_reaction_removed(event, say):
+                pass
+
             # File lifecycle events can arrive around snippet uploads even when
             # the actual user message is what we care about. Ack them so Slack
             # doesn't log noisy 404 "unhandled request" warnings.
@@ -2102,6 +2117,122 @@ class SlackAdapter(BasePlatformAdapter):
         metadata = self._extract_assistant_thread_metadata(event)
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
+
+    # Emoji names treated as an "approve" signal on a draft card.
+    _APPROVAL_REACTIONS = {"white_check_mark", "heavy_check_mark", "ballot_box_with_check"}
+
+    async def _handle_reaction_added(self, event: dict) -> None:
+        """Handle an inbound ``reaction_added`` event.
+
+        Slack delivers this over Socket Mode when a user reacts to a message.
+        We only act on an approval emoji placed on a *message* item, and we
+        ignore the bot's own reactions (the 👀/✅/❌ processing lifecycle would
+        otherwise loop). When it matches, we synthesize a mention-style message
+        event for the reacted message and feed it through the normal
+        ``_handle_slack_message`` pipeline so it inherits allowed-channel
+        gating, channel_prompt injection, session keying, and the reaction
+        lifecycle — no duplicated routing logic.
+        """
+        try:
+            reaction = (event.get("reaction") or "").lower()
+            item = event.get("item") or {}
+
+            # Only approval emojis on a message item.
+            if item.get("type") != "message":
+                return
+            if reaction not in self._APPROVAL_REACTIONS:
+                return
+
+            reactor = event.get("user") or ""
+            # Ignore our own reactions to prevent self-trigger loops.
+            if reactor and self._bot_user_id and reactor == self._bot_user_id:
+                return
+
+            channel_id = item.get("channel") or ""
+            message_ts = item.get("ts") or ""
+            if not channel_id or not message_ts:
+                return
+
+            team_id = (
+                event.get("team")
+                or event.get("item_user_team")
+                or event.get("user_team")
+                or self._channel_team.get(channel_id, "")
+            )
+
+            # Respect the allowed-channels whitelist up front so we don't even
+            # fetch context for channels we never act in.
+            allowed_channels = self._slack_allowed_channels()
+            if allowed_channels and channel_id not in allowed_channels:
+                logger.debug(
+                    "[Slack] Ignoring reaction in non-allowed channel: %s", channel_id
+                )
+                return
+
+            bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+            if not bot_uid:
+                bot_uid = self._bot_user_id or ""
+
+            # Pull the reacted message's text so the agent has context about
+            # which draft was approved. Best-effort — proceed even if it fails.
+            reacted_text = ""
+            try:
+                reacted_text = (
+                    await self._fetch_thread_parent_text(
+                        channel_id=channel_id,
+                        thread_ts=message_ts,
+                        team_id=team_id,
+                    )
+                    or ""
+                )
+            except Exception:  # pragma: no cover - defensive
+                reacted_text = ""
+
+            # Build a synthetic message instructing the agent to run its
+            # channel-defined approval flow on the reacted draft. Embedding the
+            # real bot mention token makes the existing require_mention gate in
+            # _handle_slack_message pass naturally (is_mentioned == True) without
+            # special-casing reactions there.
+            mention_token = f"<@{bot_uid}>" if bot_uid else ""
+            instruction = (
+                f"{mention_token} [APPROVAL REACTION] A teammate reacted "
+                f":{reaction}: on the draft card at message ts {message_ts}. "
+                f"Treat this as an APPROVE on that draft and run the approval "
+                f"flow defined in your channel instructions (post the approved "
+                f"draft to X, then confirm in-thread). Reacted message content:\n"
+                f"{reacted_text}".strip()
+            )
+
+            # Give the synthetic event a UNIQUE ts (the reaction's event_ts) so
+            # the MessageDeduplicator in _handle_slack_message does not mistake
+            # it for the already-seen draft message (whose ts == message_ts).
+            # Thread the reply under the reacted draft via thread_ts.
+            synthetic_event = {
+                "type": "message",
+                "text": instruction,
+                "user": reactor,
+                "channel": channel_id,
+                "channel_type": "channel",
+                "ts": event.get("event_ts") or f"{message_ts}-reaction",
+                "thread_ts": message_ts,
+                "team": team_id,
+                # Mark provenance so downstream/debugging can tell this came
+                # from a reaction rather than a typed message.
+                "_hermes_synthetic_reaction": reaction,
+            }
+
+            logger.info(
+                "[Slack] Approval reaction :%s: by %s on %s/%s → dispatching approval flow",
+                reaction,
+                reactor,
+                channel_id,
+                message_ts,
+            )
+            await self._handle_slack_message(synthetic_event)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(
+                "[Slack] _handle_reaction_added failed: %s", e, exc_info=True
+            )
 
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""

@@ -2342,9 +2342,11 @@ class FeishuAdapter(BasePlatformAdapter):
             "text_tag_list": tags,
             "template": template,
             "ud_icon": {"token": "larkcommunity_colorful", "style": {"color": icon_color}},
+            # Always include subtitle — explicitly clears the "正在思考..."
+            # placeholder from the streaming header.  Omitting the field
+            # causes the Feishu PUT to preserve the old subtitle value.
+            "subtitle": subtitle if subtitle else {"tag": "plain_text", "content": ""},
         }
-        if subtitle:
-            header["subtitle"] = subtitle
 
         card: Dict[str, Any] = {
             "schema": "2.0",

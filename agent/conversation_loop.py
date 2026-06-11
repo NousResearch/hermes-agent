@@ -2925,6 +2925,35 @@ def run_conversation(
                         and "nonetype" in str(api_error).lower()
                         and "not iterable" in str(api_error).lower()
                     )
+                    # Anthropic Bedrock SDK's event-stream decoder
+                    # (anthropic/lib/bedrock/_stream_decoder.py) raises a bare
+                    # ``ValueError("Bad response code, expected 200: {...}")``
+                    # when a streamed event frame carries a non-200 status.
+                    # The embedded ``:exception-type`` is frequently a TRANSIENT
+                    # server fault (internalServerException, modelStreamError,
+                    # throttling, serviceUnavailable, modelTimeout) that AWS
+                    # explicitly tells callers to retry ("Try your request
+                    # again") — but the bare ValueError loses the HTTP status,
+                    # so without this carve-out it falls into the local-bug
+                    # bucket and aborts the turn non-retryably.  Treat the
+                    # transient exception types as retryable so the classifier's
+                    # unknown→retry path runs.  A genuine validationException
+                    # (real client bug) is intentionally NOT excluded and still
+                    # aborts.
+                    and not (
+                        isinstance(api_error, ValueError)
+                        and "bad response code, expected 200" in str(api_error).lower()
+                        and any(
+                            _t in str(api_error).lower()
+                            for _t in (
+                                "internalserverexception",
+                                "modelstreamerrorexception",
+                                "throttlingexception",
+                                "serviceunavailableexception",
+                                "modeltimeoutexception",
+                            )
+                        )
+                    )
                 )
                 # ``FailoverReason.billing`` (HTTP 402) is NOT in this
                 # exclusion set.  By the time we reach this block:

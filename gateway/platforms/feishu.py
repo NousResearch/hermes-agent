@@ -1889,8 +1889,11 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         # --- Streaming card path (cardkit v1, schema 2.0) --------------------
-        # Only used when enabled AND we have the cardkit SDK available.
-        if self._streaming_card_enabled and HAS_CARDKIT:
+        # Only used when enabled AND the caller explicitly requests it via
+        # metadata["streaming_card"] == True.  This gate prevents auto-sent
+        # messages (runtime footer, commentary, tool progress, etc.) from
+        # creating orphaned streaming cards that never get closed.
+        if self._streaming_card_enabled and HAS_CARDKIT and metadata and metadata.get("streaming_card"):
             result = await self._send_streaming_card(
                 chat_id=chat_id,
                 content=content,

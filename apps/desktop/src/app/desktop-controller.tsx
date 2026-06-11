@@ -929,6 +929,15 @@ export function DesktopController() {
       <BootFailureOverlay />
       <CommandPalette />
       <SessionSwitcher />
+      {browserFeedbackOpen && (
+        <BrowserFeedbackWindow
+          minimized={browserFeedbackMinimized}
+          onClose={closeBrowserFeedback}
+          onInsertPrompt={composer.addTextToDraft}
+          onMinimizedChange={setBrowserFeedbackMinimized}
+          open={browserFeedbackOpen}
+        />
+      )}
 
       {settingsOpen && (
         <Suspense fallback={null}>
@@ -1081,8 +1090,7 @@ export function DesktopController() {
   )
 
   return (
-    <>
-      <AppShell
+    <AppShell
       browserFeedbackMinimized={browserFeedbackMinimized}
       leftStatusbarItems={leftStatusbarItems}
       leftTitlebarTools={titlebarToolGroups.flat.left}
@@ -1157,17 +1165,7 @@ export function DesktopController() {
       {panesFlipped ? fileBrowserPane : terminalPane}
       {previewPane}
       {panesFlipped ? terminalPane : fileBrowserPane}
-      </AppShell>
-      {browserFeedbackOpen && (
-        <BrowserFeedbackWindow
-          minimized={browserFeedbackMinimized}
-          onClose={closeBrowserFeedback}
-          onInsertPrompt={composer.addTextToDraft}
-          onMinimizedChange={setBrowserFeedbackMinimized}
-          open={browserFeedbackOpen}
-        />
-      )}
-    </>
+    </AppShell>
   )
 }
 

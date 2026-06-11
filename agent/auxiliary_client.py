@@ -2501,7 +2501,22 @@ def _is_auth_error(exc: Exception) -> bool:
     if status == 401:
         return True
     err_lower = str(exc).lower()
-    if "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower():
+    err_type = type(exc).__name__.lower()
+    if "error code: 401" in err_lower or "authenticationerror" in err_type:
+        return True
+    # AWS Identity Center / SSO failures usually surface through botocore as
+    # TokenRetrievalError / InvalidGrantException, often before an HTTP status
+    # reaches the Anthropic Bedrock adapter. Treat those as auth failures so
+    # auxiliary calls can recover through configured fallbacks instead of
+    # bubbling a provider-specific refresh-token error to watchdog users.
+    if "tokenretrievalerror" in err_type or "invalidgrantexception" in err_type:
+        return True
+    if any(marker in err_lower for marker in (
+        "error when retrieving token from sso",
+        "token has expired and refresh failed",
+        "invalid refresh token",
+        "invalidgrant",
+    )):
         return True
     # xAI returns HTTP 403 with "unauthenticated:bad-credentials" when an OAuth2
     # access token has expired or is invalid — semantically a 401 auth failure,
@@ -2511,6 +2526,28 @@ def _is_auth_error(exc: Exception) -> bool:
     if "unauthenticated" in err_lower and "bad-credentials" in err_lower:
         return True
     return False
+
+
+def _should_fallback_on_auth_error(
+    task: Optional[str],
+    provider: Optional[str],
+    base_url: str,
+    exc: Exception,
+) -> bool:
+    """Return True when an auth failure should try fallback providers.
+
+    Most explicit auth failures should stay explicit: if a user asks for a
+    provider with bad credentials, surfacing that error is usually correct.
+    Vision watchdogs are different: ``auxiliary.vision.provider: auto`` first
+    tries the main provider, and a stale AWS SSO token for Bedrock should not
+    make screenshot analysis fail when the user has a configured fallback
+    provider such as OpenAI Codex.
+    """
+    if task != "vision" or not _is_auth_error(exc):
+        return False
+    provider_l = (provider or "").strip().lower()
+    base_l = (base_url or "").strip().lower()
+    return provider_l == "bedrock" or "bedrock-runtime." in base_l
 
 
 def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
@@ -3051,11 +3088,15 @@ def _try_configured_fallback_chain(
     failed_provider: str,
     reason: str = "error",
 ) -> Tuple[Optional[Any], Optional[str], str]:
-    """Try user-configured fallback_chain for a specific auxiliary task.
+    """Try user-configured fallback providers for an auxiliary task.
 
-    Reads auxiliary.<task>.fallback_chain from config.yaml and tries each
-    entry in order.  Each entry must have at least ``provider``; ``model``,
-    ``base_url``, and ``api_key`` are optional.
+    Reads ``auxiliary.<task>.fallback_chain`` first, then appends the global
+    main-agent fallback chain (``fallback_providers`` / ``fallback_model``).
+    This keeps per-task overrides first while letting auxiliary calls share the
+    same Codex/OpenRouter/etc. fallback configured for normal chat.
+
+    Each entry must have at least ``provider``; ``model``, ``base_url``, and
+    ``api_key`` are optional.
 
     Returns:
         (client, model, provider_label) or (None, None, "") if no fallback.
@@ -3064,11 +3105,39 @@ def _try_configured_fallback_chain(
         return None, None, ""
 
     task_config = _get_auxiliary_task_config(task)
-    chain = task_config.get("fallback_chain")
-    if not chain or not isinstance(chain, list):
+    task_chain = task_config.get("fallback_chain")
+    chain: List[Dict[str, Any]] = list(task_chain) if isinstance(task_chain, list) else []
+
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.fallback_config import get_fallback_chain
+
+        global_chain = get_fallback_chain(load_config())
+    except Exception:
+        global_chain = []
+
+    # Merge global fallbacks after task-specific ones, preserving order while
+    # avoiding duplicate provider/model/base_url routes.
+    seen: set = set()
+    merged: List[Dict[str, Any]] = []
+    for entry in chain + global_chain:
+        if not isinstance(entry, dict):
+            continue
+        identity = (
+            str(entry.get("provider") or "").strip().lower(),
+            str(entry.get("model") or "").strip().lower(),
+            str(entry.get("base_url") or "").strip().rstrip("/").lower(),
+        )
+        if identity in seen:
+            continue
+        seen.add(identity)
+        merged.append(entry)
+    chain = merged
+
+    if not chain:
         return None, None, ""
 
-    skip = failed_provider.lower().strip()
+    skip = (failed_provider or "").lower().strip()
     tried = []
 
     for i, entry in enumerate(chain):
@@ -3084,17 +3153,18 @@ def _try_configured_fallback_chain(
         label = f"fallback_chain[{i}]({fb_provider})"
 
         try:
-            fb_client = _resolve_single_provider(
+            fb_client, fb_resolved_model = _resolve_single_provider(
                 fb_provider, fb_model, fb_base_url, fb_api_key)
         except Exception:
-            fb_client = None
+            fb_client, fb_resolved_model = None, None
 
         if fb_client is not None:
             logger.info(
                 "Auxiliary %s: %s on %s — configured fallback to %s (%s)",
-                task, reason, failed_provider, label, fb_model or "default",
+                task, reason, failed_provider, label,
+                fb_resolved_model or fb_model or "default",
             )
-            return fb_client, fb_model, label
+            return fb_client, fb_resolved_model or fb_model, label
         tried.append(label)
 
     if tried:
@@ -3110,7 +3180,7 @@ def _resolve_single_provider(
     model: Optional[str] = None,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
-) -> Optional[Any]:
+) -> Tuple[Optional[Any], Optional[str]]:
     """Resolve a single provider entry from fallback_chain to an OpenAI client.
 
     Uses the existing provider resolution infrastructure where possible.
@@ -3119,10 +3189,10 @@ def _resolve_single_provider(
     client, resolved_model = resolve_provider_client(
         provider=provider,
         model=model,
-        base_url=base_url,
-        api_key=api_key,
+        explicit_base_url=base_url,
+        explicit_api_key=api_key,
     )
-    return client
+    return client, resolved_model
 
 def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Optional[OpenAI], Optional[str]]:
     """Full auto-detection chain.
@@ -5243,9 +5313,14 @@ def call_llm(
                 return _validate_llm_response(
                     client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
+                # If the max_tokens retry also hits a recoverable provider
                 # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
+                if not (
+                    _is_payment_error(retry_err)
+                    or _is_connection_error(retry_err)
+                    or _is_rate_limit_error(retry_err)
+                    or _is_auth_error(retry_err)
+                ):
                     raise
                 first_err = retry_err
 
@@ -5431,21 +5506,28 @@ def call_llm(
         # When the provider returns a 429 rate-limit (not billing), fall
         # back to an alternative provider instead of exhausting retries
         # against the same rate-limited endpoint.
+        auth_fallback_allowed = _should_fallback_on_auth_error(
+            task, resolved_provider, _base_info, first_err)
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or auth_fallback_allowed
         )
         # Respect explicit provider choice for transient errors (auth, request
         # validation, etc.) but allow fallback when the provider clearly cannot
-        # serve the request due to capacity: payment/quota exhaustion and
-        # connection failures are capacity problems, not request constraints.
+        # serve the request due to capacity: payment/quota exhaustion,
+        # connection failures, and Bedrock SSO auth failures for vision.
         # See #26803: daily token quota (429 + "too many tokens per day") must
         # fall back just like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
         # Capacity errors bypass the explicit-provider gate: the provider
         # literally cannot serve this request regardless of user intent.
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or auth_fallback_allowed
+        )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
@@ -5458,6 +5540,8 @@ def call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif auth_fallback_allowed:
+                reason = "auth error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s: %s on %s (%s), trying fallback",
@@ -5720,9 +5804,14 @@ async def async_call_llm(
                 return _validate_llm_response(
                     await client.chat.completions.create(**kwargs), task)
             except Exception as retry_err:
-                # If the max_tokens retry also hits a payment or connection
+                # If the max_tokens retry also hits a recoverable provider
                 # error, fall through to the fallback chain below.
-                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err) or _is_rate_limit_error(retry_err)):
+                if not (
+                    _is_payment_error(retry_err)
+                    or _is_connection_error(retry_err)
+                    or _is_rate_limit_error(retry_err)
+                    or _is_auth_error(retry_err)
+                ):
                     raise
                 first_err = retry_err
 
@@ -5878,16 +5967,24 @@ async def async_call_llm(
                         raise
 
         # ── Payment / connection / rate-limit fallback (mirrors sync call_llm) ──
+        auth_fallback_allowed = _should_fallback_on_auth_error(
+            task, resolved_provider, _client_base, first_err)
         should_fallback = (
             _is_payment_error(first_err)
             or _is_connection_error(first_err)
             or _is_rate_limit_error(first_err)
+            or auth_fallback_allowed
         )
-        # Capacity errors (payment/quota/connection) bypass the explicit-provider
-        # gate — the provider cannot serve the request regardless of user intent.
+        # Capacity errors (payment/quota/connection and Bedrock SSO auth for
+        # vision) bypass the explicit-provider gate: the provider cannot serve
+        # the request regardless of user intent.
         # See #26803: daily token quota must fall back like a 402 credit error.
         is_auto = resolved_provider in {"auto", "", None}
-        is_capacity_error = _is_payment_error(first_err) or _is_connection_error(first_err)
+        is_capacity_error = (
+            _is_payment_error(first_err)
+            or _is_connection_error(first_err)
+            or auth_fallback_allowed
+        )
         if should_fallback and (is_auto or is_capacity_error):
             if _is_payment_error(first_err):
                 reason = "payment error"
@@ -5896,6 +5993,8 @@ async def async_call_llm(
                 )
             elif _is_rate_limit_error(first_err):
                 reason = "rate limit"
+            elif auth_fallback_allowed:
+                reason = "auth error"
             else:
                 reason = "connection error"
             logger.info("Auxiliary %s (async): %s on %s (%s), trying fallback",

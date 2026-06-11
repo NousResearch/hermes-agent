@@ -22,10 +22,12 @@ from agent.auxiliary_client import (
     _get_provider_chain,
     _is_payment_error,
     _is_rate_limit_error,
+    _is_auth_error,
     _is_model_not_found_error,
     _refresh_nous_recommended_model,
     _normalize_aux_provider,
     _try_payment_fallback,
+    _try_configured_fallback_chain,
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
@@ -2346,6 +2348,61 @@ class _AuxAuth401(Exception):
 class _DummyResponse:
     def __init__(self, text="ok"):
         self.choices = [MagicMock(message=MagicMock(content=text))]
+
+
+class TestVisionBedrockAuthFallback:
+    def test_aws_sso_refresh_failure_is_auth_error(self):
+        exc = Exception("Error when retrieving token from sso: Token has expired and refresh failed")
+        assert _is_auth_error(exc)
+
+    def test_global_fallback_chain_available_to_auxiliary_vision(self):
+        fallback_client = MagicMock()
+
+        with (
+            patch("agent.auxiliary_client._get_auxiliary_task_config", return_value={}),
+            patch("hermes_cli.config.load_config", return_value={
+                "fallback_providers": [
+                    {"provider": "openai-codex", "model": "gpt-5.5"},
+                ]
+            }),
+            patch("agent.auxiliary_client.resolve_provider_client",
+                  return_value=(fallback_client, "gpt-5.5")),
+        ):
+            client, model, label = _try_configured_fallback_chain(
+                "vision", "bedrock", reason="auth error")
+
+        assert client is fallback_client
+        assert model == "gpt-5.5"
+        assert label == "fallback_chain[0](openai-codex)"
+
+    def test_vision_bedrock_auth_error_falls_back_to_codex(self):
+        primary_client = MagicMock()
+        primary_client.base_url = "https://bedrock-runtime.ca-central-1.amazonaws.com"
+        primary_client.chat.completions.create.side_effect = Exception(
+            "Error when retrieving token from sso: Token has expired and refresh failed"
+        )
+
+        fallback_client = MagicMock()
+        fallback_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fallback_client.chat.completions.create.return_value = _DummyResponse("codex vision ok")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model",
+                  return_value=("auto", None, None, None, None)),
+            patch("agent.auxiliary_client.resolve_vision_provider_client",
+                  return_value=("bedrock", primary_client, "us.anthropic.claude-opus-4-8")),
+            patch("agent.auxiliary_client._try_configured_fallback_chain",
+                  return_value=(fallback_client, "gpt-5.5", "fallback_chain[0](openai-codex)")),
+            patch("agent.auxiliary_client._try_main_agent_model_fallback") as main_fallback,
+        ):
+            resp = call_llm(
+                task="vision",
+                messages=[{"role": "user", "content": "describe this screenshot"}],
+            )
+
+        assert resp.choices[0].message.content == "codex vision ok"
+        fallback_client.chat.completions.create.assert_called_once()
+        main_fallback.assert_not_called()
 
 
 class _FailingThenSuccessCompletions:

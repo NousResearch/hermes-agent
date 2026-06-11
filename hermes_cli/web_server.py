@@ -9,7 +9,7 @@ Usage:
     python -m hermes_cli.main web --port 8080
 """
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 import asyncio
 import base64
@@ -1705,6 +1705,28 @@ def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
     if existing is not None and existing.poll() is None:
         return existing, True
     return _spawn_hermes_action(["gateway", "restart"], "gateway-restart"), False
+
+
+def _restart_gateway_after_webhook_enable() -> dict[str, Any]:
+    """Best-effort gateway restart after enabling the webhook platform."""
+    try:
+        proc, reused = _spawn_gateway_restart()
+    except Exception as exc:
+        _log.exception("Failed to auto-restart gateway after enabling webhooks")
+        return {
+            "restart_started": False,
+            "restart_error": str(exc),
+        }
+    if reused:
+        _log.info(
+            "Webhook enable: reusing in-flight gateway restart (pid %s)",
+            proc.pid,
+        )
+    return {
+        "restart_started": True,
+        "restart_action": "gateway-restart",
+        "restart_pid": proc.pid,
+    }
 
 
 @app.post("/api/gateway/restart")
@@ -6753,6 +6775,27 @@ async def list_webhooks():
     }
 
 
+@app.post("/api/webhooks/enable")
+async def enable_webhooks():
+    try:
+        _write_platform_enabled("webhook", True)
+    except Exception as exc:
+        _log.exception("Failed to enable webhook platform from dashboard")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to enable webhook platform.",
+        ) from exc
+
+    restart_result = _restart_gateway_after_webhook_enable()
+    return {
+        "ok": True,
+        "platform": "webhook",
+        "enabled": True,
+        "needs_restart": not restart_result["restart_started"],
+        **restart_result,
+    }
+
+
 @app.post("/api/webhooks")
 async def create_webhook(body: WebhookCreate):
     import re as _re
@@ -6763,7 +6806,7 @@ async def create_webhook(body: WebhookCreate):
     if not wh._is_webhook_enabled():
         raise HTTPException(
             status_code=400,
-            detail="Webhook platform is not enabled. Enable it in messaging settings first.",
+            detail="Webhook platform is not enabled. Enable it from the Webhooks page first.",
         )
 
     name = (body.name or "").strip().lower().replace(" ", "-")
@@ -7373,6 +7416,24 @@ async def prune_checkpoints():
 
 class SkillInstallRequest(BaseModel):
     identifier: str
+    profile: Optional[str] = None
+
+
+def _profile_cli_args(profile: Optional[str]) -> List[str]:
+    """Return ``["-p", <name>]`` for a validated non-default profile.
+
+    Hub install/uninstall/update run in a fresh ``hermes`` subprocess, and
+    ``_apply_profile_override()`` reads ``-p`` from argv in the child — the
+    only mechanism that reaches import-time-bound globals like
+    ``skills_hub.SKILLS_DIR``. Empty/"current" means the dashboard's own
+    profile (no args, legacy behavior).
+    """
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        return []
+    from hermes_cli import profiles as profiles_mod
+    _resolve_profile_dir(requested)
+    return ["-p", profiles_mod.normalize_profile_name(requested)]
 
 
 @app.post("/api/skills/hub/install")
@@ -7381,7 +7442,12 @@ async def install_skill_hub(body: SkillInstallRequest):
     if not identifier:
         raise HTTPException(status_code=400, detail="identifier is required")
     try:
-        proc = _spawn_hermes_action(["skills", "install", identifier], "skills-install")
+        proc = _spawn_hermes_action(
+            _profile_cli_args(body.profile) + ["skills", "install", identifier],
+            "skills-install",
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn skills install")
         raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}")
@@ -7390,6 +7456,7 @@ async def install_skill_hub(body: SkillInstallRequest):
 
 class SkillUninstallRequest(BaseModel):
     name: str
+    profile: Optional[str] = None
 
 
 @app.post("/api/skills/hub/uninstall")
@@ -7398,17 +7465,31 @@ async def uninstall_skill_hub(body: SkillUninstallRequest):
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
     try:
-        proc = _spawn_hermes_action(["skills", "uninstall", name, "--yes"], "skills-uninstall")
+        proc = _spawn_hermes_action(
+            _profile_cli_args(body.profile) + ["skills", "uninstall", name, "--yes"],
+            "skills-uninstall",
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn skills uninstall")
         raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "skills-uninstall"}
 
 
+class SkillsUpdateRequest(BaseModel):
+    profile: Optional[str] = None
+
+
 @app.post("/api/skills/hub/update")
-async def update_skills_hub():
+async def update_skills_hub(body: Optional[SkillsUpdateRequest] = None):
     try:
-        proc = _spawn_hermes_action(["skills", "update"], "skills-update")
+        profile = body.profile if body else None
+        proc = _spawn_hermes_action(
+            _profile_cli_args(profile) + ["skills", "update"], "skills-update"
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn skills update")
         raise HTTPException(status_code=500, detail=f"Failed to update skills: {exc}")
@@ -7443,17 +7524,25 @@ def _skill_meta_to_payload(m) -> dict:
     }
 
 
-def _installed_hub_identifiers() -> dict:
+def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
     """Map identifier -> installed lock entry for hub-installed skills.
 
-    Lets the UI mark search results that are already installed.  Best-effort:
-    returns an empty dict if the lock file can't be read.
+    Lets the UI mark search results that are already installed.  Scoped to
+    ``profile``'s skills/.hub/lock.json when provided (HubLockFile takes an
+    explicit path, sidestepping the import-time LOCK_FILE binding).
+    Best-effort: returns an empty dict if the lock file can't be read.
     """
     try:
         from tools.skills_hub import HubLockFile
 
+        requested = (profile or "").strip()
+        if requested and requested.lower() != "current":
+            profile_dir = _resolve_profile_dir(requested)
+            lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
+        else:
+            lock = HubLockFile()
         out = {}
-        for entry in HubLockFile().list_installed():
+        for entry in lock.list_installed():
             ident = entry.get("identifier")
             if ident:
                 out[ident] = {
@@ -7467,13 +7556,14 @@ def _installed_hub_identifiers() -> dict:
 
 
 @app.get("/api/skills/hub/sources")
-async def list_skills_hub_sources():
+async def list_skills_hub_sources(profile: Optional[str] = None):
     """List the configured skill-hub sources and installed-skill provenance.
 
     Gives the dashboard something to show BEFORE a search runs — which hubs
     are wired up, their trust tier, and a set of featured skills pulled from
     the centralized index (zero extra API calls).  Without this the Browse-hub
     tab is a blank page with no indication it's even connected to anything.
+    ``profile`` scopes the installed-skill provenance to that profile.
     """
 
     def _run():
@@ -7514,18 +7604,22 @@ async def list_skills_hub_sources():
             "sources": out,
             "index_available": index_available,
             "featured": featured,
-            "installed": _installed_hub_identifiers(),
+            "installed": _installed_hub_identifiers(profile),
         }
 
     try:
         return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("skills hub sources listing failed")
         raise HTTPException(status_code=502, detail=f"Hub sources failed: {exc}")
 
 
 @app.get("/api/skills/hub/search")
-async def search_skills_hub(q: str = "", source: str = "all", limit: int = 20):
+async def search_skills_hub(
+    q: str = "", source: str = "all", limit: int = 20, profile: Optional[str] = None
+):
     """Search the skill hub across all configured sources.
 
     Network-bound (parallel source search); runs in a thread so the FastAPI
@@ -7560,11 +7654,13 @@ async def search_skills_hub(q: str = "", source: str = "all", limit: int = 20):
             "results": [_skill_meta_to_payload(m) for m in deduped],
             "source_counts": source_counts,
             "timed_out": timed_out,
-            "installed": _installed_hub_identifiers(),
+            "installed": _installed_hub_identifiers(profile),
         }
 
     try:
         return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("skills hub search failed")
         raise HTTPException(status_code=502, detail=f"Hub search failed: {exc}")
@@ -8333,21 +8429,75 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 
 # ---------------------------------------------------------------------------
 # Skills & Tools endpoints
+#
+# Every read/write below accepts an optional ``profile`` query param so the
+# dashboard can manage ANY profile's skills/toolsets, not just the profile
+# the dashboard process happens to be running under. Without this, "Set as
+# active" on the Profiles page (which only flips the sticky ``active_profile``
+# file for FUTURE CLI/gateway invocations) misled users into thinking skill
+# toggles would land in the activated profile — they silently wrote into the
+# dashboard's own config instead. See _profile_scope() for the mechanism.
 # ---------------------------------------------------------------------------
+
+
+_SKILLS_PROFILE_LOCK = threading.RLock()
+
+
+@contextmanager
+def _profile_scope(profile: Optional[str]):
+    """Scope config + skill-directory resolution to ``profile`` for one request.
+
+    Two seams must be redirected for skills/toolsets endpoints:
+
+    1. ``load_config``/``save_config`` resolve ``get_hermes_home()`` at call
+       time — the context-local override from ``set_hermes_home_override``
+       reaches them (same pattern as ``_write_profile_model``).
+    2. ``tools.skills_tool`` binds ``SKILLS_DIR`` at import time, so the
+       override CANNOT reach it. Like ``_call_cron_for_profile`` does for
+       cron's module globals, temporarily retarget it under a lock and
+       restore it immediately after.
+
+    ``profile`` of None/""/"current" means "the dashboard's own profile" —
+    a no-op scope, preserving existing behavior for old clients.
+    """
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        yield None
+        return
+
+    profile_dir = _resolve_profile_dir(requested)
+
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools import skills_tool as _skills_tool
+
+    token = set_hermes_home_override(str(profile_dir))
+    with _SKILLS_PROFILE_LOCK:
+        old_home = _skills_tool.HERMES_HOME
+        old_skills_dir = _skills_tool.SKILLS_DIR
+        _skills_tool.HERMES_HOME = profile_dir
+        _skills_tool.SKILLS_DIR = profile_dir / "skills"
+        try:
+            yield profile_dir
+        finally:
+            _skills_tool.HERMES_HOME = old_home
+            _skills_tool.SKILLS_DIR = old_skills_dir
+            reset_hermes_home_override(token)
 
 
 class SkillToggle(BaseModel):
     name: str
     enabled: bool
+    profile: Optional[str] = None
 
 
 @app.get("/api/skills")
-async def get_skills():
+async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    skills = _find_all_skills(skip_disabled=True)
+    with _profile_scope(profile):
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        skills = _find_all_skills(skip_disabled=True)
     for s in skills:
         s["enabled"] = s["name"] not in disabled
     return skills
@@ -8356,18 +8506,19 @@ async def get_skills():
 @app.put("/api/skills/toggle")
 async def toggle_skill(body: SkillToggle):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    if body.enabled:
-        disabled.discard(body.name)
-    else:
-        disabled.add(body.name)
-    save_disabled_skills(config, disabled)
+    with _profile_scope(body.profile):
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        if body.enabled:
+            disabled.discard(body.name)
+        else:
+            disabled.add(body.name)
+        save_disabled_skills(config, disabled)
     return {"ok": True, "name": body.name, "enabled": body.enabled}
 
 
 @app.get("/api/tools/toolsets")
-async def get_toolsets():
+async def get_toolsets(profile: Optional[str] = None):
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
         _get_platform_tools,
@@ -8376,12 +8527,13 @@ async def get_toolsets():
     )
     from toolsets import resolve_toolset
 
-    config = load_config()
-    enabled_toolsets = _get_platform_tools(
-        config,
-        "cli",
-        include_default_mcp_servers=False,
-    )
+    with _profile_scope(profile):
+        config = load_config()
+        enabled_toolsets = _get_platform_tools(
+            config,
+            "cli",
+            include_default_mcp_servers=False,
+        )
     result = []
     for name, label, desc in _get_effective_configurable_toolsets():
         try:
@@ -8403,6 +8555,7 @@ async def get_toolsets():
 
 class ToolsetToggle(BaseModel):
     enabled: bool
+    profile: Optional[str] = None
 
 
 @app.put("/api/tools/toolsets/{name}")
@@ -8411,7 +8564,8 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
 
     Persists to ``platform_toolsets.cli`` via the same ``_save_platform_tools``
     helper the CLI ``hermes tools`` picker uses, so the GUI and CLI stay in
-    lockstep. Returns 400 for unknown toolset keys.
+    lockstep. Scoped to ``body.profile`` when provided. Returns 400 for
+    unknown toolset keys.
     """
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
@@ -8423,20 +8577,21 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    enabled = set(
-        _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-    )
-    if body.enabled:
-        enabled.add(name)
-    else:
-        enabled.discard(name)
-    _save_platform_tools(config, "cli", enabled)
+    with _profile_scope(body.profile):
+        config = load_config()
+        enabled = set(
+            _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+        )
+        if body.enabled:
+            enabled.add(name)
+        else:
+            enabled.discard(name)
+        _save_platform_tools(config, "cli", enabled)
     return {"ok": True, "name": name, "enabled": body.enabled}
 
 
 @app.get("/api/tools/toolsets/{name}/config")
-async def get_toolset_config(name: str):
+async def get_toolset_config(name: str, profile: Optional[str] = None):
     """Return the provider matrix + key status for a toolset's config panel.
 
     Surfaces the same provider rows the CLI ``hermes tools`` picker shows
@@ -8457,38 +8612,39 @@ async def get_toolset_config(name: str):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    cat = TOOL_CATEGORIES.get(name)
-    providers = []
-    active_provider = None
-    if cat:
-        for prov in _visible_providers(cat, config, force_fresh=True):
-            env_vars = [
-                {
-                    "key": e["key"],
-                    "prompt": e.get("prompt", e["key"]),
-                    "url": e.get("url"),
-                    "default": e.get("default"),
-                    "is_set": bool(get_env_value(e["key"])),
-                }
-                for e in prov.get("env_vars", [])
-            ]
-            # Surface the same active-provider determination the CLI picker
-            # uses (``_is_provider_active``) so the GUI highlights the provider
-            # actually written to config (e.g. web.backend), not just the first
-            # keyless one in the list.
-            is_active = _is_provider_active(prov, config, force_fresh=True)
-            if is_active and active_provider is None:
-                active_provider = prov["name"]
-            providers.append({
-                "name": prov["name"],
-                "badge": prov.get("badge", ""),
-                "tag": prov.get("tag", ""),
-                "env_vars": env_vars,
-                "post_setup": prov.get("post_setup"),
-                "requires_nous_auth": bool(prov.get("requires_nous_auth")),
-                "is_active": is_active,
-            })
+    with _profile_scope(profile):
+        config = load_config()
+        cat = TOOL_CATEGORIES.get(name)
+        providers = []
+        active_provider = None
+        if cat:
+            for prov in _visible_providers(cat, config, force_fresh=True):
+                env_vars = [
+                    {
+                        "key": e["key"],
+                        "prompt": e.get("prompt", e["key"]),
+                        "url": e.get("url"),
+                        "default": e.get("default"),
+                        "is_set": bool(get_env_value(e["key"])),
+                    }
+                    for e in prov.get("env_vars", [])
+                ]
+                # Surface the same active-provider determination the CLI picker
+                # uses (``_is_provider_active``) so the GUI highlights the provider
+                # actually written to config (e.g. web.backend), not just the first
+                # keyless one in the list.
+                is_active = _is_provider_active(prov, config, force_fresh=True)
+                if is_active and active_provider is None:
+                    active_provider = prov["name"]
+                providers.append({
+                    "name": prov["name"],
+                    "badge": prov.get("badge", ""),
+                    "tag": prov.get("tag", ""),
+                    "env_vars": env_vars,
+                    "post_setup": prov.get("post_setup"),
+                    "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+                    "is_active": is_active,
+                })
     return {
         "name": name,
         "has_category": cat is not None,
@@ -8499,6 +8655,7 @@ async def get_toolset_config(name: str):
 
 class ToolsetProviderSelect(BaseModel):
     provider: str
+    profile: Optional[str] = None
 
 
 @app.put("/api/tools/toolsets/{name}/provider")
@@ -8520,17 +8677,19 @@ async def select_toolset_provider(name: str, body: ToolsetProviderSelect):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    try:
-        apply_provider_selection(name, body.provider, config)
-    except KeyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc).strip('"'))
-    save_config(config)
+    with _profile_scope(body.profile):
+        config = load_config()
+        try:
+            apply_provider_selection(name, body.provider, config)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc).strip('"'))
+        save_config(config)
     return {"ok": True, "name": name, "provider": body.provider}
 
 
 class ToolsetEnvUpdate(BaseModel):
     env: Dict[str, str]
+    profile: Optional[str] = None
 
 
 @app.put("/api/tools/toolsets/{name}/env")
@@ -8556,34 +8715,35 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate):
     if name not in valid_ts:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    cat = TOOL_CATEGORIES.get(name)
-    allowed: set[str] = set()
-    if cat:
-        for prov in _visible_providers(cat, config, force_fresh=True):
-            for e in prov.get("env_vars", []):
-                allowed.add(e["key"])
+    with _profile_scope(body.profile):
+        config = load_config()
+        cat = TOOL_CATEGORIES.get(name)
+        allowed: set[str] = set()
+        if cat:
+            for prov in _visible_providers(cat, config, force_fresh=True):
+                for e in prov.get("env_vars", []):
+                    allowed.add(e["key"])
 
-    unknown = [k for k in body.env if k not in allowed]
-    if unknown:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}",
-        )
+        unknown = [k for k in body.env if k not in allowed]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}",
+            )
 
-    saved: List[str] = []
-    skipped: List[str] = []
-    for key, value in body.env.items():
-        if value and value.strip():
-            try:
-                save_env_value(key, value.strip())
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            saved.append(key)
-        else:
-            skipped.append(key)
+        saved: List[str] = []
+        skipped: List[str] = []
+        for key, value in body.env.items():
+            if value and value.strip():
+                try:
+                    save_env_value(key, value.strip())
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
+                saved.append(key)
+            else:
+                skipped.append(key)
 
-    status = {k: bool(get_env_value(k)) for k in allowed}
+        status = {k: bool(get_env_value(k)) for k in allowed}
     return {"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status}
 
 

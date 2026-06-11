@@ -1488,3 +1488,72 @@ async def test_terminal_progress_no_bash_block_in_verbose_mode(monkeypatch, tmp_
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
     assert "```bash" not in all_content
+
+class MultiTerminalCommandAgent:
+    """Emits several consecutive terminal tool.started events, then a
+    different tool, then terminal again — to exercise header collapsing."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        cb("tool.started", "terminal", "echo one", {"command": "echo one"})
+        cb("tool.started", "terminal", "echo two", {"command": "echo two"})
+        cb("tool.started", "terminal", "echo three", {"command": "echo three"})
+        cb("tool.started", "web_search", "query stuff", {"query": "query stuff"})
+        cb("tool.started", "terminal", "echo four", {"command": "echo four"})
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+@pytest.mark.asyncio
+async def test_consecutive_terminal_progress_collapses_headers(monkeypatch, tmp_path):
+    """Back-to-back terminal calls render ONE "terminal" header followed by
+    adjacent code blocks; a different tool in between resets the header so the
+    next terminal call gets a fresh one."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = MultiTerminalCommandAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-consecutive",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    contents = [call["content"] for call in adapter.sent] + [
+        call["content"] for call in adapter.edits
+    ]
+    final = max(contents, key=len) if contents else ""
+    # All four commands present as code blocks.
+    for cmd in ("echo one", "echo two", "echo three", "echo four"):
+        assert cmd in final
+    # Exactly TWO terminal headers: one for the first run of three calls,
+    # one for the terminal call after web_search broke the streak.
+    assert final.count("terminal\n```") == 2

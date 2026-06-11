@@ -249,6 +249,14 @@ export async function buildWsUrl(
   return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
 }
 
+/** Build a ``?profile=<name>`` query suffix, or "" when unset.
+ *
+ * Used by the skills/toolsets endpoints so the dashboard can manage a
+ * profile other than the one the server process runs under. */
+function profileQuery(profile?: string): string {
+  return profile ? `?profile=${encodeURIComponent(profile)}` : "";
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
@@ -542,43 +550,49 @@ export const api = {
     ),
 
   // Skills & Toolsets
-  getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
-  toggleSkill: (name: string, enabled: boolean) =>
+  //
+  // All calls accept an optional ``profile`` so the Skills page can manage
+  // any profile's skills/toolsets — not just the one the dashboard process
+  // runs under. Omitted/empty profile = the dashboard's own profile.
+  getSkills: (profile?: string) =>
+    fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
+  toggleSkill: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, enabled }),
+      body: JSON.stringify({ name, enabled, profile: profile || undefined }),
     }),
-  getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
-  toggleToolset: (name: string, enabled: boolean) =>
+  getToolsets: (profile?: string) =>
+    fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
+  toggleToolset: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
+        body: JSON.stringify({ enabled, profile: profile || undefined }),
       },
     ),
-  getToolsetConfig: (name: string) =>
+  getToolsetConfig: (name: string, profile?: string) =>
     fetchJSON<ToolsetConfig>(
-      `/api/tools/toolsets/${encodeURIComponent(name)}/config`,
+      `/api/tools/toolsets/${encodeURIComponent(name)}/config${profileQuery(profile)}`,
     ),
-  selectToolsetProvider: (name: string, provider: string) =>
+  selectToolsetProvider: (name: string, provider: string, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; provider: string }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider }),
+        body: JSON.stringify({ provider, profile: profile || undefined }),
       },
     ),
-  saveToolsetEnv: (name: string, env: Record<string, string>) =>
+  saveToolsetEnv: (name: string, env: Record<string, string>, profile?: string) =>
     fetchJSON<ToolsetEnvResult>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/env`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ env }),
+        body: JSON.stringify({ env, profile: profile || undefined }),
       },
     ),
   runToolsetPostSetup: (name: string, key: string) =>
@@ -852,6 +866,8 @@ export const api = {
 
   // ── Admin: Webhooks ─────────────────────────────────────────────────
   getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+  enableWebhooks: () =>
+    fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
   createWebhook: (body: WebhookCreate) =>
     fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
       method: "POST",
@@ -986,26 +1002,34 @@ export const api = {
     fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
 
   // ── Admin: Skills hub ───────────────────────────────────────────────
-  installSkillFromHub: (identifier: string) =>
+  // ``profile`` scopes install/uninstall/update and the installed-state
+  // annotations to that profile (omitted = the dashboard's own profile).
+  installSkillFromHub: (identifier: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/install", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier }),
+      body: JSON.stringify({ identifier, profile: profile || undefined }),
     }),
-  uninstallSkillFromHub: (name: string) =>
+  uninstallSkillFromHub: (name: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/uninstall", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, profile: profile || undefined }),
     }),
-  updateSkillsFromHub: () =>
-    fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
-  searchSkillsHub: (q: string, source = "all", limit = 20) =>
+  updateSkillsFromHub: (profile?: string) =>
+    fetchJSON<ActionResponse>("/api/skills/hub/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: profile || undefined }),
+    }),
+  searchSkillsHub: (q: string, source = "all", limit = 20, profile?: string) =>
     fetchJSON<SkillHubSearchResponse>(
-      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}`,
+      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
     ),
-  getSkillHubSources: () =>
-    fetchJSON<SkillHubSourcesResponse>("/api/skills/hub/sources"),
+  getSkillHubSources: (profile?: string) =>
+    fetchJSON<SkillHubSourcesResponse>(
+      `/api/skills/hub/sources${profileQuery(profile)}`,
+    ),
   previewSkillFromHub: (identifier: string) =>
     fetchJSON<SkillHubPreview>(
       `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
@@ -1264,6 +1288,17 @@ export interface WebhooksResponse {
   enabled: boolean;
   base_url: string;
   subscriptions: WebhookRoute[];
+}
+
+export interface WebhookEnableResponse {
+  ok: boolean;
+  platform: "webhook";
+  enabled: true;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
 }
 
 export interface WebhookCreate {

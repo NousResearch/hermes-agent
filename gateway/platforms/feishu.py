@@ -2141,6 +2141,7 @@ class FeishuAdapter(BasePlatformAdapter):
             self._streaming_cards.setdefault(chat_id, {})[card_id] = {
                 "sequence": 1,
                 "message_id": self._extract_response_field(msg_response, "message_id"),
+                "last_content": truncated,
             }
 
             logger.info("[Feishu] Streaming card created: card_id=%s msg_id=%s", card_id, self._extract_response_field(msg_response, "message_id"))
@@ -2246,7 +2247,7 @@ class FeishuAdapter(BasePlatformAdapter):
         card: Dict[str, Any] = {
             "schema": "2.0",
             "header": header,
-            "config": {"streaming_mode": True},
+            "config": {"streaming_mode": False},
             "body": {
                 "elements": [
                     {
@@ -2296,7 +2297,7 @@ class FeishuAdapter(BasePlatformAdapter):
             )
             card_state["sequence"] = seq
         except Exception as exc:
-            logger.debug("[Feishu] Card header update failed (non-fatal): %s", exc)
+            logger.warning("[Feishu] Card header update failed (non-fatal): %s", exc)
 
     async def _close_streaming_card(
         self,
@@ -2316,16 +2317,13 @@ class FeishuAdapter(BasePlatformAdapter):
         """
         if HAS_CARDKIT:
             try:
-                # Get the current sequence for this card (need strict increment)
                 if card_state is None:
                     card_state = self._streaming_cards.get(chat_id, {}).get(card_id, {})
-                # Update header to reflect completion/error status
-                await self._update_card_header(
-                    card_id, card_state,
-                    bot_name=self._bot_name, status=status, error_summary=error_summary,
-                )
-                seq = card_state.get("sequence", 0) + 1
 
+                # Step 1: Close streaming mode FIRST (settings API).
+                # This freezes the card body so no more element-content
+                # updates can race with the header update below.
+                seq = card_state.get("sequence", 0) + 1
                 config = Config.builder() \
                     .streaming_mode(False) \
                     .build()
@@ -2344,9 +2342,26 @@ class FeishuAdapter(BasePlatformAdapter):
                 await asyncio.to_thread(
                     self._client.cardkit.v1.card.settings, settings_request,
                 )
+                card_state["sequence"] = seq
+
+                # Step 2: Update header (card.update PUT).
+                # Only attempt if we have content to preserve — otherwise
+                # skip to avoid wiping the card body with empty content.
+                last_content = card_state.get("last_content", "")
+                if last_content:
+                    await self._update_card_header(
+                        card_id, card_state,
+                        bot_name=self._bot_name, status=status,
+                        error_summary=error_summary,
+                    )
+                else:
+                    logger.debug(
+                        "[Feishu] Skipping header update for card %s: no last_content",
+                        card_id,
+                    )
             except Exception as exc:
-                logger.debug(
-                    "[Feishu] Streaming card close failed (non-fatal): %s", exc,
+                logger.warning(
+                    "[Feishu] Streaming card close failed: %s", exc,
                 )
         # Remove from tracking and record as closed
         self._streaming_cards.get(chat_id, {}).pop(card_id, None)

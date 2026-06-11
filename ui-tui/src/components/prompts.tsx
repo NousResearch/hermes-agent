@@ -8,10 +8,8 @@ import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 import { TextInput } from './textInput.js'
 
 const APPROVAL_OPTS = ['once', 'session', 'always', 'deny'] as const
-// When the backend disallows a permanent allow (tirith content-security
-// warning present) the "always" option is dropped — picking it would only
-// be silently downgraded to session scope, so don't offer it.
-const APPROVAL_OPTS_NO_ALWAYS = ['once', 'session', 'deny'] as const
+// tirith warning present → backend downgrades "always" to session scope, so drop it.
+const APPROVAL_OPTS_NO_ALWAYS = APPROVAL_OPTS.filter(o => o !== 'always')
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
 const CMD_PREVIEW_LINES = 10
 
@@ -34,7 +32,7 @@ type ApprovalAction = { kind: 'choose'; choice: ApprovalChoice } | { kind: 'move
  *
  * Esc and number keys both terminate the prompt; Esc maps to deny (parity
  * with the global Ctrl+C handler that already calls cancelOverlayFromCtrlC
- * for approvals).  Numbers 1..OPTS.length pick the labelled choice.  Enter
+ * for approvals).  Numbers 1..opts.length pick the labelled choice.  Enter
  * confirms the current selection.  ↑/↓ moves the selection within bounds.
  */
 export function approvalAction(

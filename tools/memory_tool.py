@@ -681,27 +681,29 @@ def memory_tool(
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
-    # Write gate: off blocks the write; approve stages it (background) or
-    # prompts inline (foreground). on (default) passes straight through.
+    # Validate required params BEFORE the gate so an invalid write is rejected
+    # immediately instead of being staged and only failing at approve time.
+    if action == "add" and not content:
+        return tool_error("Content is required for 'add' action.", success=False)
+    if action == "replace" and (not old_text or not content):
+        missing = "old_text" if not old_text else "content"
+        return tool_error(f"{missing} is required for 'replace' action.", success=False)
+    if action == "remove" and not old_text:
+        return tool_error("old_text is required for 'remove' action.", success=False)
+
+    # Approval gate: when on, stages the write (background/gateway) or prompts
+    # inline (interactive CLI); when off (default) passes straight through.
     gate_result = _apply_write_gate(action, target, content, old_text)
     if gate_result is not None:
         return gate_result
 
     if action == "add":
-        if not content:
-            return tool_error("Content is required for 'add' action.", success=False)
         result = store.add(target, content)
 
     elif action == "replace":
-        if not old_text:
-            return tool_error("old_text is required for 'replace' action.", success=False)
-        if not content:
-            return tool_error("content is required for 'replace' action.", success=False)
         result = store.replace(target, old_text, content)
 
     elif action == "remove":
-        if not old_text:
-            return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
     else:

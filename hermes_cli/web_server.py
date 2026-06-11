@@ -9,7 +9,7 @@ Usage:
     python -m hermes_cli.main web --port 8080
 """
 
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 import asyncio
 import base64
@@ -20,9 +20,11 @@ import hmac
 import importlib.util
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import sys
@@ -657,19 +659,19 @@ class AudioTranscriptionRequest(BaseModel):
     mime_type: Optional[str] = None
 
 
-class ModelAssignment(BaseModel):
-    """Payload for POST /api/model/set — assign a provider/model to a slot.
+class ManagedFileUpload(BaseModel):
+    path: str
+    data_url: str
+    overwrite: bool = True
 
-    scope="main"        → writes model.provider + model.default
-    scope="auxiliary"   → writes auxiliary.<task>.provider + auxiliary.<task>.model
-    scope="auxiliary" with task=""  → applied to every auxiliary.* slot
-    scope="auxiliary" with task="__reset__"  → resets every slot to provider="auto"
-    """
 
-    scope: str
-    provider: str
-    model: str
-    task: str = ""
+class ManagedDirectoryCreate(BaseModel):
+    path: str
+
+
+class ManagedFileDelete(BaseModel):
+    path: str
+    recursive: bool = False
 
 
 _AUDIO_MIME_EXTENSIONS: Dict[str, str] = {
@@ -713,6 +715,7 @@ class ModelAssignment(BaseModel):
     # reads model.base_url from config (it ignores OPENAI_BASE_URL), so this is
     # the path that actually wires a local endpoint into resolution.
     base_url: str = ""
+    confirm_expensive_model: bool = False
 
 
 def _apply_main_model_assignment(
@@ -833,6 +836,16 @@ _MEDIA_CONTENT_TYPES = {
     ".ico": "image/x-icon",
 }
 _MEDIA_MAX_BYTES = 25 * 1024 * 1024
+_MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
+_MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
+_HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
+
+
+@dataclass(frozen=True)
+class ManagedFilesPolicy:
+    default_path: Path
+    locked_root: Path | None
+    can_change_path: bool
 
 
 def _media_serve_roots() -> list[Path]:
@@ -886,6 +899,297 @@ async def get_media(path: str):
 
     encoded = base64.b64encode(target.read_bytes()).decode("ascii")
     return {"data_url": f"data:{_MEDIA_CONTENT_TYPES[target.suffix.lower()]};base64,{encoded}"}
+
+
+def _canonical_path(path: Path, *, require_exists: bool = False) -> Path:
+    try:
+        return path.expanduser().resolve(strict=require_exists)
+    except FileNotFoundError:
+        if require_exists:
+            raise HTTPException(status_code=404, detail="Path not found")
+        raise
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid path")
+
+
+def _ensure_managed_root(raw_path: str | Path) -> Path:
+    root = Path(raw_path).expanduser()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        resolved = root.resolve()
+    except (OSError, RuntimeError) as exc:
+        raise HTTPException(status_code=500, detail=f"Managed files root is unavailable: {exc}")
+    if not resolved.is_dir():
+        raise HTTPException(status_code=500, detail="Managed files root is not a directory")
+    return resolved
+
+
+def _path_is_under(root: Path, target: Path) -> bool:
+    return target == root or root in target.parents
+
+
+def _path_text(raw_path: str | None) -> str:
+    text = str(raw_path or "").strip()
+    if "\x00" in text:
+        raise HTTPException(status_code=400, detail="Invalid path")
+    return text
+
+
+def _local_dashboard_request(request: Request) -> bool:
+    if getattr(request.app.state, "auth_required", False):
+        return False
+    host = (request.url.hostname or "").lower()
+    client_host = (request.client.host if request.client else "").lower()
+    local_hosts = {"", "localhost", "127.0.0.1", "::1", "testserver", "testclient"}
+    return host in local_hosts or client_host in local_hosts
+
+
+def _default_hermes_root_is_opt_data() -> bool:
+    raw = os.environ.get("HERMES_HOME", "").strip()
+    if not raw:
+        return False
+    try:
+        from hermes_constants import get_default_hermes_root
+
+        root = get_default_hermes_root().expanduser().resolve(strict=False)
+    except (OSError, RuntimeError):
+        root = Path(raw).expanduser().resolve(strict=False)
+    return root == _HOSTED_MANAGED_FILES_ROOT
+
+
+def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
+    raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
+    if raw_forced_root:
+        root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
+        return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
+
+    if not _local_dashboard_request(request) or _default_hermes_root_is_opt_data():
+        root = _ensure_managed_root(_HOSTED_MANAGED_FILES_ROOT) if create_root else _HOSTED_MANAGED_FILES_ROOT
+        return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
+
+    home = _canonical_path(Path.home())
+    return ManagedFilesPolicy(default_path=home, locked_root=None, can_change_path=True)
+
+
+def _resolve_managed_path(
+    raw_path: str | None,
+    request: Request,
+    *,
+    for_write: bool = False,
+) -> tuple[ManagedFilesPolicy, Path, str]:
+    policy = _managed_files_policy(request)
+    text = _path_text(raw_path)
+    root = policy.locked_root
+
+    if root is not None and (not text or text in {".", "/"}):
+        candidate = root
+    elif not text:
+        candidate = policy.default_path
+    else:
+        candidate = Path(text).expanduser()
+        if root is not None and not candidate.is_absolute():
+            if any(part == ".." for part in candidate.parts):
+                raise HTTPException(status_code=400, detail="Path cannot contain '..'")
+            candidate = root / candidate
+        elif not candidate.is_absolute():
+            raise HTTPException(status_code=400, detail="Path must be absolute")
+
+    if ".." in candidate.parts:
+        raise HTTPException(status_code=400, detail="Path cannot contain '..'")
+
+    if for_write and not candidate.exists():
+        parent = _canonical_path(candidate.parent)
+        resolved = parent / candidate.name
+    else:
+        resolved = _canonical_path(candidate, require_exists=not for_write)
+
+    if root is not None and not _path_is_under(root, resolved):
+        raise HTTPException(status_code=403, detail="Path outside managed files root")
+
+    return policy, resolved, str(resolved)
+
+
+def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
+    locked_root = str(policy.locked_root) if policy.locked_root is not None else None
+    return {
+        "root": locked_root,
+        "locked_root": locked_root,
+        "can_change_path": policy.can_change_path,
+    }
+
+
+def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, Any]:
+    try:
+        resolved = target.resolve()
+    except (OSError, RuntimeError):
+        raise HTTPException(status_code=400, detail="Invalid path")
+    if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
+        raise HTTPException(status_code=403, detail="Path outside managed files root")
+
+    try:
+        st = resolved.stat()
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not stat path: {exc}")
+
+    is_dir = resolved.is_dir()
+    mime_type = None if is_dir else (mimetypes.guess_type(resolved.name)[0] or "application/octet-stream")
+    return {
+        "name": target.name or resolved.name or str(resolved),
+        "path": str(resolved),
+        "is_directory": is_dir,
+        "size": None if is_dir else st.st_size,
+        "mtime": st.st_mtime,
+        "mime_type": mime_type,
+    }
+
+
+def _decode_data_url(data_url: str) -> tuple[bytes, str]:
+    text = (data_url or "").strip()
+    if not text.startswith("data:") or "," not in text:
+        raise HTTPException(status_code=400, detail="Upload payload must be a data URL")
+    header, encoded = text.split(",", 1)
+    mime_type = header[5:].split(";", 1)[0] or "application/octet-stream"
+    if ";base64" not in header:
+        raise HTTPException(status_code=400, detail="Upload payload must be base64 encoded")
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError):
+        raise HTTPException(status_code=400, detail="Upload payload is not valid base64")
+    if len(data) > _MANAGED_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large")
+    return data, mime_type
+
+
+@app.get("/api/files")
+async def list_managed_files(request: Request, path: Optional[str] = None):
+    policy, target, display_path = _resolve_managed_path(path, request)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="Path is not a directory")
+
+    try:
+        entries = [_managed_file_entry(policy, child) for child in target.iterdir()]
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Directory is not readable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read directory: {exc}")
+
+    entries.sort(key=lambda item: (not item["is_directory"], str(item["name"]).lower()))
+    locked_root = policy.locked_root
+    parent = None
+    if target.parent != target and (locked_root is None or target != locked_root):
+        parent = str(target.parent)
+    return {
+        "path": display_path,
+        "parent": parent,
+        "entries": entries,
+        **_managed_response_meta(policy),
+    }
+
+
+@app.get("/api/files/read")
+async def read_managed_file(request: Request, path: str):
+    policy, target, display_path = _resolve_managed_path(path, request)
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+
+    try:
+        size = target.stat().st_size
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not stat file: {exc}")
+    if size > _MANAGED_FILE_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="File is too large")
+
+    mime_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    try:
+        encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not readable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not read file: {exc}")
+
+    return {
+        "name": target.name,
+        "path": display_path,
+        "size": size,
+        "mime_type": mime_type,
+        "data_url": f"data:{mime_type};base64,{encoded}",
+        **_managed_response_meta(policy),
+    }
+
+
+@app.post("/api/files/upload")
+async def upload_managed_file(payload: ManagedFileUpload, request: Request):
+    policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    if target.exists() and target.is_dir():
+        raise HTTPException(status_code=409, detail="A directory already exists at that path")
+    if target.exists() and not payload.overwrite:
+        raise HTTPException(status_code=409, detail="File already exists")
+
+    data, _mime_type = _decode_data_url(payload.data_url)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(data)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="File is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not write file: {exc}")
+
+    return {
+        "ok": True,
+        "entry": _managed_file_entry(policy, target),
+        "path": display_path,
+        **_managed_response_meta(policy),
+    }
+
+
+@app.post("/api/files/mkdir")
+async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
+    policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    if target.exists() and not target.is_dir():
+        raise HTTPException(status_code=409, detail="A file already exists at that path")
+
+    try:
+        target.mkdir(parents=True, exist_ok=True)
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Directory is not writable")
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"Could not create directory: {exc}")
+
+    return {
+        "ok": True,
+        "entry": _managed_file_entry(policy, target),
+        "path": display_path,
+        **_managed_response_meta(policy),
+    }
+
+
+@app.delete("/api/files")
+async def delete_managed_file(payload: ManagedFileDelete, request: Request):
+    policy, target, display_path = _resolve_managed_path(payload.path, request)
+    if policy.locked_root is not None and target == policy.locked_root:
+        raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
+    if target.parent == target:
+        raise HTTPException(status_code=400, detail="Cannot delete the filesystem root")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+
+    try:
+        if target.is_dir():
+            if payload.recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()
+        else:
+            target.unlink()
+    except OSError as exc:
+        status_code = 409 if target.is_dir() and not payload.recursive else 500
+        raise HTTPException(status_code=status_code, detail=f"Could not delete path: {exc}")
+
+    return {"ok": True, "path": display_path, **_managed_response_meta(policy)}
 
 
 @app.get("/api/status")
@@ -1386,11 +1690,28 @@ def _tail_lines(path: Path, n: int) -> List[str]:
     return lines[-n:] if n > 0 else lines
 
 
+def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
+    """Spawn ``hermes gateway restart``, reusing an in-flight restart.
+
+    Multiple dashboard paths can request a restart in quick succession
+    (restart button double-click, or a stale cached frontend firing its own
+    restart after the server already auto-restarted post-onboarding). Two
+    concurrent ``hermes gateway restart`` children race each other on the
+    manual kill-and-start path, so reuse the live one instead.
+
+    Returns ``(proc, reused)``.
+    """
+    existing = _ACTION_PROCS.get("gateway-restart")
+    if existing is not None and existing.poll() is None:
+        return existing, True
+    return _spawn_hermes_action(["gateway", "restart"], "gateway-restart"), False
+
+
 @app.post("/api/gateway/restart")
 async def restart_gateway():
     """Kick off a ``hermes gateway restart`` in the background."""
     try:
-        proc = _spawn_hermes_action(["gateway", "restart"], "gateway-restart")
+        proc, _reused = _spawn_gateway_restart()
     except Exception as exc:
         _log.exception("Failed to spawn gateway restart")
         raise HTTPException(status_code=500, detail=f"Failed to restart gateway: {exc}")
@@ -2469,6 +2790,30 @@ async def set_model_assignment(body: ModelAssignment):
 
     try:
         cfg = load_config()
+
+        if model and not body.confirm_expensive_model:
+            try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
+
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                warning = await asyncio.to_thread(
+                    expensive_model_warning,
+                    model,
+                    provider=provider,
+                    base_url=base_url,
+                )
+            except Exception:
+                warning = None
+            if warning is not None:
+                return {
+                    "ok": False,
+                    "scope": scope,
+                    "provider": provider,
+                    "model": model,
+                    "confirm_required": True,
+                    "confirm_message": warning.message,
+                }
 
         if scope == "main":
             if not provider or not model:
@@ -3738,6 +4083,34 @@ async def get_telegram_onboarding_status(pairing_id: str):
     )
 
 
+def _restart_gateway_after_telegram_onboarding() -> dict[str, Any]:
+    """Best-effort gateway restart after saving Telegram QR onboarding.
+
+    The QR flow naturally pulls users into Telegram on another device. If the
+    saved token waits on a separate dashboard restart click, Hermes appears
+    broken from the chat side. Keep the config save authoritative, but report
+    restart failures so the UI can fall back to the existing manual banner.
+    """
+    try:
+        proc, reused = _spawn_gateway_restart()
+    except Exception as exc:
+        _log.exception("Failed to auto-restart gateway after Telegram onboarding")
+        return {
+            "restart_started": False,
+            "restart_error": str(exc),
+        }
+    if reused:
+        _log.info(
+            "Telegram onboarding: reusing in-flight gateway restart (pid %s)",
+            proc.pid,
+        )
+    return {
+        "restart_started": True,
+        "restart_action": "gateway-restart",
+        "restart_pid": proc.pid,
+    }
+
+
 @app.post("/api/messaging/telegram/onboarding/{pairing_id}/apply")
 async def apply_telegram_onboarding(
     pairing_id: str, body: TelegramOnboardingApply
@@ -3792,11 +4165,14 @@ async def apply_telegram_onboarding(
     with _telegram_onboarding_lock:
         _telegram_onboarding_pairings.pop(pairing_id, None)
 
+    restart_result = _restart_gateway_after_telegram_onboarding()
+
     return {
         "ok": True,
         "platform": "telegram",
         "bot_username": bot_username,
-        "needs_restart": True,
+        "needs_restart": not restart_result["restart_started"],
+        **restart_result,
     }
 
 
@@ -6997,6 +7373,24 @@ async def prune_checkpoints():
 
 class SkillInstallRequest(BaseModel):
     identifier: str
+    profile: Optional[str] = None
+
+
+def _profile_cli_args(profile: Optional[str]) -> List[str]:
+    """Return ``["-p", <name>]`` for a validated non-default profile.
+
+    Hub install/uninstall/update run in a fresh ``hermes`` subprocess, and
+    ``_apply_profile_override()`` reads ``-p`` from argv in the child — the
+    only mechanism that reaches import-time-bound globals like
+    ``skills_hub.SKILLS_DIR``. Empty/"current" means the dashboard's own
+    profile (no args, legacy behavior).
+    """
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        return []
+    from hermes_cli import profiles as profiles_mod
+    _resolve_profile_dir(requested)
+    return ["-p", profiles_mod.normalize_profile_name(requested)]
 
 
 @app.post("/api/skills/hub/install")
@@ -7005,7 +7399,12 @@ async def install_skill_hub(body: SkillInstallRequest):
     if not identifier:
         raise HTTPException(status_code=400, detail="identifier is required")
     try:
-        proc = _spawn_hermes_action(["skills", "install", identifier], "skills-install")
+        proc = _spawn_hermes_action(
+            _profile_cli_args(body.profile) + ["skills", "install", identifier],
+            "skills-install",
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn skills install")
         raise HTTPException(status_code=500, detail=f"Failed to install skill: {exc}")
@@ -7014,6 +7413,7 @@ async def install_skill_hub(body: SkillInstallRequest):
 
 class SkillUninstallRequest(BaseModel):
     name: str
+    profile: Optional[str] = None
 
 
 @app.post("/api/skills/hub/uninstall")
@@ -7022,17 +7422,31 @@ async def uninstall_skill_hub(body: SkillUninstallRequest):
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
     try:
-        proc = _spawn_hermes_action(["skills", "uninstall", name, "--yes"], "skills-uninstall")
+        proc = _spawn_hermes_action(
+            _profile_cli_args(body.profile) + ["skills", "uninstall", name, "--yes"],
+            "skills-uninstall",
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn skills uninstall")
         raise HTTPException(status_code=500, detail=f"Failed to uninstall skill: {exc}")
     return {"ok": True, "pid": proc.pid, "name": "skills-uninstall"}
 
 
+class SkillsUpdateRequest(BaseModel):
+    profile: Optional[str] = None
+
+
 @app.post("/api/skills/hub/update")
-async def update_skills_hub():
+async def update_skills_hub(body: Optional[SkillsUpdateRequest] = None):
     try:
-        proc = _spawn_hermes_action(["skills", "update"], "skills-update")
+        profile = body.profile if body else None
+        proc = _spawn_hermes_action(
+            _profile_cli_args(profile) + ["skills", "update"], "skills-update"
+        )
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("Failed to spawn skills update")
         raise HTTPException(status_code=500, detail=f"Failed to update skills: {exc}")
@@ -7067,17 +7481,25 @@ def _skill_meta_to_payload(m) -> dict:
     }
 
 
-def _installed_hub_identifiers() -> dict:
+def _installed_hub_identifiers(profile: Optional[str] = None) -> dict:
     """Map identifier -> installed lock entry for hub-installed skills.
 
-    Lets the UI mark search results that are already installed.  Best-effort:
-    returns an empty dict if the lock file can't be read.
+    Lets the UI mark search results that are already installed.  Scoped to
+    ``profile``'s skills/.hub/lock.json when provided (HubLockFile takes an
+    explicit path, sidestepping the import-time LOCK_FILE binding).
+    Best-effort: returns an empty dict if the lock file can't be read.
     """
     try:
         from tools.skills_hub import HubLockFile
 
+        requested = (profile or "").strip()
+        if requested and requested.lower() != "current":
+            profile_dir = _resolve_profile_dir(requested)
+            lock = HubLockFile(profile_dir / "skills" / ".hub" / "lock.json")
+        else:
+            lock = HubLockFile()
         out = {}
-        for entry in HubLockFile().list_installed():
+        for entry in lock.list_installed():
             ident = entry.get("identifier")
             if ident:
                 out[ident] = {
@@ -7091,13 +7513,14 @@ def _installed_hub_identifiers() -> dict:
 
 
 @app.get("/api/skills/hub/sources")
-async def list_skills_hub_sources():
+async def list_skills_hub_sources(profile: Optional[str] = None):
     """List the configured skill-hub sources and installed-skill provenance.
 
     Gives the dashboard something to show BEFORE a search runs — which hubs
     are wired up, their trust tier, and a set of featured skills pulled from
     the centralized index (zero extra API calls).  Without this the Browse-hub
     tab is a blank page with no indication it's even connected to anything.
+    ``profile`` scopes the installed-skill provenance to that profile.
     """
 
     def _run():
@@ -7138,18 +7561,22 @@ async def list_skills_hub_sources():
             "sources": out,
             "index_available": index_available,
             "featured": featured,
-            "installed": _installed_hub_identifiers(),
+            "installed": _installed_hub_identifiers(profile),
         }
 
     try:
         return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("skills hub sources listing failed")
         raise HTTPException(status_code=502, detail=f"Hub sources failed: {exc}")
 
 
 @app.get("/api/skills/hub/search")
-async def search_skills_hub(q: str = "", source: str = "all", limit: int = 20):
+async def search_skills_hub(
+    q: str = "", source: str = "all", limit: int = 20, profile: Optional[str] = None
+):
     """Search the skill hub across all configured sources.
 
     Network-bound (parallel source search); runs in a thread so the FastAPI
@@ -7184,11 +7611,13 @@ async def search_skills_hub(q: str = "", source: str = "all", limit: int = 20):
             "results": [_skill_meta_to_payload(m) for m in deduped],
             "source_counts": source_counts,
             "timed_out": timed_out,
-            "installed": _installed_hub_identifiers(),
+            "installed": _installed_hub_identifiers(profile),
         }
 
     try:
         return await asyncio.to_thread(_run)
+    except HTTPException:
+        raise
     except Exception as exc:
         _log.exception("skills hub search failed")
         raise HTTPException(status_code=502, detail=f"Hub search failed: {exc}")
@@ -7364,6 +7793,21 @@ class ProfileCreate(BaseModel):
     clone_from: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
+    # Profile-builder additions — all optional, all applied best-effort AFTER
+    # the profile directory exists, so a hiccup in any of them never 500s the
+    # create (the user can fix it from the relevant dashboard page afterward).
+    # MCP servers to write into the new profile's config.yaml.
+    mcp_servers: List["MCPServerCreate"] = []
+    # Built-in / optional skills to KEEP active. When this list is non-empty,
+    # the builder uses "replace" semantics: the bundle is seeded, then every
+    # seeded skill NOT in this list is added to the profile's disabled list.
+    # Empty list = leave the seeded bundle untouched (legacy behaviour).
+    keep_skills: List[str] = []
+    # Skills-hub identifiers to install into the new profile. Installed async
+    # via a subprocess scoped to the profile (`hermes -p <name> skills install`)
+    # because skills_hub.SKILLS_DIR is import-time-bound and the HERMES_HOME
+    # override can't redirect it. Returns spawned PIDs for the UI to poll.
+    hub_skills: List[str] = []
 
 
 class ProfileRename(BaseModel):
@@ -7509,6 +7953,94 @@ def _write_profile_model(profile_dir: Path, provider: str, model: str) -> None:
         reset_hermes_home_override(token)
 
 
+def _write_profile_mcp_servers(profile_dir: Path, servers: List["MCPServerCreate"]) -> int:
+    """Write MCP server entries into a specific profile's config.yaml.
+
+    Scopes ``load_config``/``save_config`` to ``profile_dir`` via the
+    context-local HERMES_HOME override (same mechanism as
+    ``_write_profile_model``) so the entries land in the target profile's
+    config rather than the dashboard process's active profile.
+
+    Mirrors the per-server shape the ``POST /api/mcp/servers`` endpoint builds,
+    but batched so the whole profile-create write is a single config save.
+    Returns the number of servers written.
+    """
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    written = 0
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        cfg = load_config()
+        mcp = cfg.setdefault("mcp_servers", {})
+        for server in servers:
+            name = (server.name or "").strip()
+            if not name:
+                continue
+            entry: Dict[str, Any] = {}
+            if server.url:
+                entry["url"] = server.url
+            if server.command:
+                entry["command"] = server.command
+            if server.args:
+                entry["args"] = list(server.args)
+            if server.env:
+                entry["env"] = dict(server.env)
+            if server.auth:
+                entry["auth"] = server.auth
+            if not entry:
+                # Nothing usable to write (neither url nor command) — skip
+                # rather than persist an empty, unusable server stanza.
+                continue
+            mcp[name] = entry
+            written += 1
+        if written:
+            save_config(cfg)
+        elif not mcp:
+            # We created an empty mcp_servers dict but wrote nothing — don't
+            # leave a stray empty key in the new profile's config.
+            cfg.pop("mcp_servers", None)
+            save_config(cfg)
+    finally:
+        reset_hermes_home_override(token)
+    return written
+
+
+def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
+    """Disable every installed skill in ``profile_dir`` not in ``keep``.
+
+    Profiles manage skill activation via a *disabled* list — all installed
+    skills are active by default and users opt out. The builder's skill step
+    uses "replace" semantics: the user picks exactly which seeded built-in /
+    optional skills stay active, and everything else gets added to the disabled
+    list. (Hub skills are installed separately via subprocess and are active on
+    install.) Scoped to the profile via the HERMES_HOME override. Returns the
+    number of skills newly disabled.
+    """
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+
+    keep_set = {s.strip() for s in keep if s and s.strip()}
+    disabled_count = 0
+    token = set_hermes_home_override(str(profile_dir))
+    try:
+        installed: List[str] = []
+        skills_root = profile_dir / "skills"
+        if skills_root.is_dir():
+            for md in skills_root.rglob("SKILL.md"):
+                installed.append(md.parent.name)
+        cfg = load_config()
+        disabled = get_disabled_skills(cfg)
+        for name in installed:
+            if name not in keep_set and name not in disabled:
+                disabled.add(name)
+                disabled_count += 1
+        if disabled_count:
+            save_disabled_skills(cfg, disabled)
+    finally:
+        reset_hermes_home_override(token)
+    return disabled_count
+
+
 @app.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
@@ -7575,7 +8107,55 @@ async def create_profile_endpoint(body: ProfileCreate):
         except Exception:
             _log.exception("Setting model for new profile %s failed", body.name)
 
-    return {"ok": True, "name": body.name, "path": str(path), "model_set": model_set}
+    # Optional MCP servers. Best-effort, same rationale as model assignment.
+    mcp_written = 0
+    if body.mcp_servers:
+        try:
+            mcp_written = _write_profile_mcp_servers(path, body.mcp_servers)
+        except Exception:
+            _log.exception("Writing MCP servers for new profile %s failed", body.name)
+
+    # Optional "keep" skill selection — replace semantics. When the builder
+    # sends an explicit keep list, disable every seeded skill not in it.
+    # Best-effort. Skipped when keep_skills is empty (legacy: keep the bundle).
+    skills_disabled = 0
+    if body.keep_skills:
+        try:
+            skills_disabled = _disable_unselected_skills(path, body.keep_skills)
+        except Exception:
+            _log.exception("Applying skill selection for new profile %s failed", body.name)
+
+    # Optional skills-hub installs. Spawned async, scoped to the new profile
+    # via `-p <name>` (a fresh subprocess re-binds skills_hub.SKILLS_DIR to the
+    # profile's HERMES_HOME at import). Returns PIDs for the UI to poll.
+    hub_installs: List[Dict[str, Any]] = []
+    for identifier in body.hub_skills:
+        ident = (identifier or "").strip()
+        if not ident:
+            continue
+        try:
+            proc = _spawn_hermes_action(
+                ["-p", body.name, "skills", "install", ident],
+                "skills-install",
+            )
+            hub_installs.append({"identifier": ident, "pid": proc.pid})
+        except Exception:
+            _log.exception(
+                "Spawning hub-skill install %s for new profile %s failed",
+                ident,
+                body.name,
+            )
+            hub_installs.append({"identifier": ident, "pid": None})
+
+    return {
+        "ok": True,
+        "name": body.name,
+        "path": str(path),
+        "model_set": model_set,
+        "mcp_written": mcp_written,
+        "skills_disabled": skills_disabled,
+        "hub_installs": hub_installs,
+    }
 
 
 @app.get("/api/profiles/active")
@@ -7806,21 +8386,75 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
 
 # ---------------------------------------------------------------------------
 # Skills & Tools endpoints
+#
+# Every read/write below accepts an optional ``profile`` query param so the
+# dashboard can manage ANY profile's skills/toolsets, not just the profile
+# the dashboard process happens to be running under. Without this, "Set as
+# active" on the Profiles page (which only flips the sticky ``active_profile``
+# file for FUTURE CLI/gateway invocations) misled users into thinking skill
+# toggles would land in the activated profile — they silently wrote into the
+# dashboard's own config instead. See _profile_scope() for the mechanism.
 # ---------------------------------------------------------------------------
+
+
+_SKILLS_PROFILE_LOCK = threading.RLock()
+
+
+@contextmanager
+def _profile_scope(profile: Optional[str]):
+    """Scope config + skill-directory resolution to ``profile`` for one request.
+
+    Two seams must be redirected for skills/toolsets endpoints:
+
+    1. ``load_config``/``save_config`` resolve ``get_hermes_home()`` at call
+       time — the context-local override from ``set_hermes_home_override``
+       reaches them (same pattern as ``_write_profile_model``).
+    2. ``tools.skills_tool`` binds ``SKILLS_DIR`` at import time, so the
+       override CANNOT reach it. Like ``_call_cron_for_profile`` does for
+       cron's module globals, temporarily retarget it under a lock and
+       restore it immediately after.
+
+    ``profile`` of None/""/"current" means "the dashboard's own profile" —
+    a no-op scope, preserving existing behavior for old clients.
+    """
+    requested = (profile or "").strip()
+    if not requested or requested.lower() == "current":
+        yield None
+        return
+
+    profile_dir = _resolve_profile_dir(requested)
+
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools import skills_tool as _skills_tool
+
+    token = set_hermes_home_override(str(profile_dir))
+    with _SKILLS_PROFILE_LOCK:
+        old_home = _skills_tool.HERMES_HOME
+        old_skills_dir = _skills_tool.SKILLS_DIR
+        _skills_tool.HERMES_HOME = profile_dir
+        _skills_tool.SKILLS_DIR = profile_dir / "skills"
+        try:
+            yield profile_dir
+        finally:
+            _skills_tool.HERMES_HOME = old_home
+            _skills_tool.SKILLS_DIR = old_skills_dir
+            reset_hermes_home_override(token)
 
 
 class SkillToggle(BaseModel):
     name: str
     enabled: bool
+    profile: Optional[str] = None
 
 
 @app.get("/api/skills")
-async def get_skills():
+async def get_skills(profile: Optional[str] = None):
     from tools.skills_tool import _find_all_skills
     from hermes_cli.skills_config import get_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    skills = _find_all_skills(skip_disabled=True)
+    with _profile_scope(profile):
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        skills = _find_all_skills(skip_disabled=True)
     for s in skills:
         s["enabled"] = s["name"] not in disabled
     return skills
@@ -7829,18 +8463,19 @@ async def get_skills():
 @app.put("/api/skills/toggle")
 async def toggle_skill(body: SkillToggle):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
-    config = load_config()
-    disabled = get_disabled_skills(config)
-    if body.enabled:
-        disabled.discard(body.name)
-    else:
-        disabled.add(body.name)
-    save_disabled_skills(config, disabled)
+    with _profile_scope(body.profile):
+        config = load_config()
+        disabled = get_disabled_skills(config)
+        if body.enabled:
+            disabled.discard(body.name)
+        else:
+            disabled.add(body.name)
+        save_disabled_skills(config, disabled)
     return {"ok": True, "name": body.name, "enabled": body.enabled}
 
 
 @app.get("/api/tools/toolsets")
-async def get_toolsets():
+async def get_toolsets(profile: Optional[str] = None):
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
         _get_platform_tools,
@@ -7849,12 +8484,13 @@ async def get_toolsets():
     )
     from toolsets import resolve_toolset
 
-    config = load_config()
-    enabled_toolsets = _get_platform_tools(
-        config,
-        "cli",
-        include_default_mcp_servers=False,
-    )
+    with _profile_scope(profile):
+        config = load_config()
+        enabled_toolsets = _get_platform_tools(
+            config,
+            "cli",
+            include_default_mcp_servers=False,
+        )
     result = []
     for name, label, desc in _get_effective_configurable_toolsets():
         try:
@@ -7876,6 +8512,7 @@ async def get_toolsets():
 
 class ToolsetToggle(BaseModel):
     enabled: bool
+    profile: Optional[str] = None
 
 
 @app.put("/api/tools/toolsets/{name}")
@@ -7884,7 +8521,8 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
 
     Persists to ``platform_toolsets.cli`` via the same ``_save_platform_tools``
     helper the CLI ``hermes tools`` picker uses, so the GUI and CLI stay in
-    lockstep. Returns 400 for unknown toolset keys.
+    lockstep. Scoped to ``body.profile`` when provided. Returns 400 for
+    unknown toolset keys.
     """
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
@@ -7896,20 +8534,21 @@ async def toggle_toolset(name: str, body: ToolsetToggle):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    enabled = set(
-        _get_platform_tools(config, "cli", include_default_mcp_servers=False)
-    )
-    if body.enabled:
-        enabled.add(name)
-    else:
-        enabled.discard(name)
-    _save_platform_tools(config, "cli", enabled)
+    with _profile_scope(body.profile):
+        config = load_config()
+        enabled = set(
+            _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+        )
+        if body.enabled:
+            enabled.add(name)
+        else:
+            enabled.discard(name)
+        _save_platform_tools(config, "cli", enabled)
     return {"ok": True, "name": name, "enabled": body.enabled}
 
 
 @app.get("/api/tools/toolsets/{name}/config")
-async def get_toolset_config(name: str):
+async def get_toolset_config(name: str, profile: Optional[str] = None):
     """Return the provider matrix + key status for a toolset's config panel.
 
     Surfaces the same provider rows the CLI ``hermes tools`` picker shows
@@ -7930,38 +8569,39 @@ async def get_toolset_config(name: str):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    cat = TOOL_CATEGORIES.get(name)
-    providers = []
-    active_provider = None
-    if cat:
-        for prov in _visible_providers(cat, config, force_fresh=True):
-            env_vars = [
-                {
-                    "key": e["key"],
-                    "prompt": e.get("prompt", e["key"]),
-                    "url": e.get("url"),
-                    "default": e.get("default"),
-                    "is_set": bool(get_env_value(e["key"])),
-                }
-                for e in prov.get("env_vars", [])
-            ]
-            # Surface the same active-provider determination the CLI picker
-            # uses (``_is_provider_active``) so the GUI highlights the provider
-            # actually written to config (e.g. web.backend), not just the first
-            # keyless one in the list.
-            is_active = _is_provider_active(prov, config, force_fresh=True)
-            if is_active and active_provider is None:
-                active_provider = prov["name"]
-            providers.append({
-                "name": prov["name"],
-                "badge": prov.get("badge", ""),
-                "tag": prov.get("tag", ""),
-                "env_vars": env_vars,
-                "post_setup": prov.get("post_setup"),
-                "requires_nous_auth": bool(prov.get("requires_nous_auth")),
-                "is_active": is_active,
-            })
+    with _profile_scope(profile):
+        config = load_config()
+        cat = TOOL_CATEGORIES.get(name)
+        providers = []
+        active_provider = None
+        if cat:
+            for prov in _visible_providers(cat, config, force_fresh=True):
+                env_vars = [
+                    {
+                        "key": e["key"],
+                        "prompt": e.get("prompt", e["key"]),
+                        "url": e.get("url"),
+                        "default": e.get("default"),
+                        "is_set": bool(get_env_value(e["key"])),
+                    }
+                    for e in prov.get("env_vars", [])
+                ]
+                # Surface the same active-provider determination the CLI picker
+                # uses (``_is_provider_active``) so the GUI highlights the provider
+                # actually written to config (e.g. web.backend), not just the first
+                # keyless one in the list.
+                is_active = _is_provider_active(prov, config, force_fresh=True)
+                if is_active and active_provider is None:
+                    active_provider = prov["name"]
+                providers.append({
+                    "name": prov["name"],
+                    "badge": prov.get("badge", ""),
+                    "tag": prov.get("tag", ""),
+                    "env_vars": env_vars,
+                    "post_setup": prov.get("post_setup"),
+                    "requires_nous_auth": bool(prov.get("requires_nous_auth")),
+                    "is_active": is_active,
+                })
     return {
         "name": name,
         "has_category": cat is not None,
@@ -7972,6 +8612,7 @@ async def get_toolset_config(name: str):
 
 class ToolsetProviderSelect(BaseModel):
     provider: str
+    profile: Optional[str] = None
 
 
 @app.put("/api/tools/toolsets/{name}/provider")
@@ -7993,17 +8634,19 @@ async def select_toolset_provider(name: str, body: ToolsetProviderSelect):
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    try:
-        apply_provider_selection(name, body.provider, config)
-    except KeyError as exc:
-        raise HTTPException(status_code=400, detail=str(exc).strip('"'))
-    save_config(config)
+    with _profile_scope(body.profile):
+        config = load_config()
+        try:
+            apply_provider_selection(name, body.provider, config)
+        except KeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc).strip('"'))
+        save_config(config)
     return {"ok": True, "name": name, "provider": body.provider}
 
 
 class ToolsetEnvUpdate(BaseModel):
     env: Dict[str, str]
+    profile: Optional[str] = None
 
 
 @app.put("/api/tools/toolsets/{name}/env")
@@ -8029,34 +8672,35 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate):
     if name not in valid_ts:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    config = load_config()
-    cat = TOOL_CATEGORIES.get(name)
-    allowed: set[str] = set()
-    if cat:
-        for prov in _visible_providers(cat, config, force_fresh=True):
-            for e in prov.get("env_vars", []):
-                allowed.add(e["key"])
+    with _profile_scope(body.profile):
+        config = load_config()
+        cat = TOOL_CATEGORIES.get(name)
+        allowed: set[str] = set()
+        if cat:
+            for prov in _visible_providers(cat, config, force_fresh=True):
+                for e in prov.get("env_vars", []):
+                    allowed.add(e["key"])
 
-    unknown = [k for k in body.env if k not in allowed]
-    if unknown:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}",
-        )
+        unknown = [k for k in body.env if k not in allowed]
+        if unknown:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown env var(s) for toolset {name}: {', '.join(sorted(unknown))}",
+            )
 
-    saved: List[str] = []
-    skipped: List[str] = []
-    for key, value in body.env.items():
-        if value and value.strip():
-            try:
-                save_env_value(key, value.strip())
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc))
-            saved.append(key)
-        else:
-            skipped.append(key)
+        saved: List[str] = []
+        skipped: List[str] = []
+        for key, value in body.env.items():
+            if value and value.strip():
+                try:
+                    save_env_value(key, value.strip())
+                except ValueError as exc:
+                    raise HTTPException(status_code=400, detail=str(exc))
+                saved.append(key)
+            else:
+                skipped.append(key)
 
-    status = {k: bool(get_env_value(k)) for k in allowed}
+        status = {k: bool(get_env_value(k)) for k in allowed}
     return {"ok": True, "name": name, "saved": saved, "skipped": skipped, "is_set": status}
 
 

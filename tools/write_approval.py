@@ -15,24 +15,25 @@ Both stores are written from two origins:
     turn and autonomously decides what to save (the source of the
     "wrong assumptions" users complained about)
 
-This module lets the user gate those writes per-subsystem with a tri-state
-``write_mode``:
+This module lets the user gate those writes per-subsystem with a boolean
+``write_approval``:
 
-  * ``on``      — write freely (current behaviour, default)
-  * ``off``     — never write; the tool returns a clean "disabled" result
-  * ``approve`` — do not commit the write; **stage** it to a pending store and
-    surface it for the user to approve or reject out-of-band
+  * ``false`` (default) — write freely (the pre-gate behaviour)
+  * ``true``            — require approval: do not commit the write; either
+    prompt inline (memory, interactive CLI only) or **stage** it to a pending
+    store and surface it for the user to approve or reject out-of-band
 
 The size asymmetry between memory and skills is real and unavoidable: a memory
 entry can be reviewed inline in a chat bubble; a 100 KB SKILL.md cannot. So
-``approve`` mode stages BOTH to disk, but review affordances differ by subsystem
+the gate stages BOTH to disk, but review affordances differ by subsystem
 (see ``hermes_cli`` slash handlers): memory shows full content, skills show
 metadata + a one-line gist + a ``diff`` escape hatch (CLI/dashboard/file).
 
-Staging is mandatory for background-origin writes under ``approve`` (a daemon
-thread cannot block on an interactive prompt). Foreground memory writes may
-additionally block inline via the dangerous-command approval gate; foreground
-skill writes always stage (too big to eyeball mid-loop).
+Staging is mandatory for background-origin writes (a daemon thread cannot
+block on an interactive prompt) and for gateway sessions (no inline prompt
+channel — review happens via ``/memory pending``). Foreground CLI memory
+writes prompt inline via the dangerous-command approval callback; skill
+writes always stage (too big to eyeball mid-loop).
 
 Pending records live under ``<HERMES_HOME>/pending/{memory,skills}/<id>.json``
 so they survive process restarts and can be reviewed from CLI, gateway, or the
@@ -58,48 +59,48 @@ MEMORY = "memory"
 SKILLS = "skills"
 _SUBSYSTEMS = (MEMORY, SKILLS)
 
-# Tri-state write modes
-MODE_ON = "on"
-MODE_OFF = "off"
-MODE_APPROVE = "approve"
-_VALID_MODES = (MODE_ON, MODE_OFF, MODE_APPROVE)
+# Config key (per subsystem). A single boolean: the approval gate is OFF by
+# default (writes flow freely, the pre-gate behaviour), and ON means stage /
+# prompt every write for the user's approval. There is intentionally no third
+# "block all writes" state — to disable a subsystem entirely use its own
+# enable flag (e.g. ``memory.memory_enabled: false``).
+CONFIG_KEY = "write_approval"
 
 
 # ---------------------------------------------------------------------------
 # Config resolution
 # ---------------------------------------------------------------------------
 
-def get_write_mode(subsystem: str) -> str:
-    """Return the configured write_mode for ``subsystem`` (memory|skills).
+def write_approval_enabled(subsystem: str) -> bool:
+    """Return whether the approval gate is enabled for ``subsystem``.
 
-    Reads ``<subsystem>.write_mode`` from config.yaml. Falls back to ``on``
-    (current behaviour) for any unset / invalid value so existing installs are
-    unaffected until the user opts in.
+    Reads ``<subsystem>.write_approval`` from config.yaml. Defaults to
+    ``False`` (gate off — writes flow freely) for any unset / invalid value so
+    existing installs keep their current behaviour until the user opts in.
     """
     if subsystem not in _SUBSYSTEMS:
-        return MODE_ON
+        return False
     try:
         from hermes_cli.config import load_config, cfg_get
         cfg = load_config()
-        raw = cfg_get(cfg, subsystem, "write_mode", default=MODE_ON)
+        raw = cfg_get(cfg, subsystem, CONFIG_KEY, default=False)
     except Exception:
-        return MODE_ON
-    return _normalize_mode(raw)
+        return False
+    return _normalize_enabled(raw)
 
 
-def _normalize_mode(value: Any) -> str:
-    """Coerce a config value to a valid mode string.
+def _normalize_enabled(value: Any) -> bool:
+    """Coerce a config value to a bool. Default (unknown) is False (gate off).
 
-    YAML 1.1 parses bare ``off`` / ``on`` as booleans, so handle bools the way
-    the approval-mode normalizer does.
+    Accepts real bools and the usual truthy/falsey strings. YAML 1.1 parses
+    bare ``on``/``off``/``yes``/``no`` as bools already, so the string branch
+    is mostly for hand-edited configs.
     """
     if isinstance(value, bool):
-        return MODE_OFF if value is False else MODE_ON
+        return value
     if isinstance(value, str):
-        v = value.strip().lower()
-        if v in _VALID_MODES:
-            return v
-    return MODE_ON
+        return value.strip().lower() in {"on", "true", "yes", "1", "approve", "enabled"}
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -230,14 +231,14 @@ class GateDecision:
     """Result of evaluating the write gate for a single write attempt.
 
     Exactly one of the boolean flags is True:
-      * ``allow``  — proceed with the real write (mode ``on``, or an inline
+      * ``allow``  — proceed with the real write (gate off, or an inline
         approval was granted).
-      * ``blocked`` — refuse the write (mode ``off``, or an inline approval was
-        denied). ``message`` explains why; surface it to the agent.
+      * ``blocked`` — refuse the write (the user denied an inline approval
+        prompt). ``message`` explains why; surface it to the agent.
       * ``stage``  — do not write; the caller should stage the payload via
-        ``stage_write`` (mode ``approve`` for a background write, or a
-        foreground write with no interactive prompt available). ``message`` is
-        the user-facing "staged for approval" note.
+        ``stage_write`` (gate on, and no inline prompt is available — gateway,
+        background review, script, or any skill write). ``message`` is the
+        user-facing "staged for approval" note.
     """
 
     __slots__ = ("allow", "blocked", "stage", "message")
@@ -260,29 +261,19 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
         inline_detail: full content shown in the inline prompt (memory entries
             are small; skills never take the inline path).
 
-    Mode matrix:
-        on       → allow
-        off      → blocked
-        approve  → memory + foreground   → inline approve/deny prompt
-                   memory + background    → stage
-                   skills (any origin)    → stage (too big to review inline)
-    """
-    mode = get_write_mode(subsystem)
+    Decision matrix:
+        gate off (default)                    → allow (writes flow freely)
+        gate on, memory + interactive CLI     → inline approve/deny prompt
+        gate on, memory + gateway/script/bg   → stage
+        gate on, skills (any origin)          → stage (too big to review inline)
 
-    if mode == MODE_ON:
+    Note: there is no config-driven "blocked" outcome — the gate only ever
+    delays a write for approval, never silently refuses it. ``blocked`` is
+    still produced when the user *actively denies* an inline prompt.
+    """
+    if not write_approval_enabled(subsystem):
         return GateDecision(allow=True)
 
-    if mode == MODE_OFF:
-        return GateDecision(
-            blocked=True,
-            message=(
-                f"{subsystem.capitalize()} writes are disabled "
-                f"({subsystem}.write_mode = off). The change was not saved. "
-                f"Set {subsystem}.write_mode to 'on' or 'approve' to allow writes."
-            ),
-        )
-
-    # mode == approve
     background = is_background()
 
     # Skills always stage — a SKILL.md is too large to review inline, and a
@@ -292,15 +283,15 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
         return GateDecision(
             stage=True,
             message=(
-                f"Staged for approval ({subsystem}.write_mode = approve). "
+                f"Staged for approval ({subsystem}.write_approval is on). "
                 f"Not yet saved — review with {where}."
             ),
         )
 
-    # Memory + foreground: if an interactive approval channel exists (CLI
-    # prompt_toolkit callback, or a gateway approve/deny round-trip), prompt
-    # inline — entries are small enough to show in full. Otherwise (script,
-    # batch, no listener) stage instead of forcing a blind deny.
+    # Memory + foreground: if an interactive approval channel exists (a CLI
+    # approval callback registered on this thread), prompt inline — entries
+    # are small enough to show in full. Otherwise (gateway, script, batch,
+    # no listener) stage instead of forcing a blind deny.
     if _interactive_approval_available():
         granted = _prompt_inline_memory_approval(inline_summary, inline_detail)
         if granted is True:
@@ -315,7 +306,7 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
     return GateDecision(
         stage=True,
         message=(
-            "Staged for approval (memory.write_mode = approve). "
+            "Staged for approval (memory.write_approval is on). "
             "Not yet saved — review with /memory pending."
         ),
     )
@@ -324,19 +315,21 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
 def _interactive_approval_available() -> bool:
     """True when a foreground memory write can be approved inline.
 
-    Either a per-thread approval callback is registered (interactive CLI), or
-    the call is inside a gateway/API session that supports the /approve //deny
-    round-trip. Scripts, cron, and background threads have neither → stage.
+    Inline prompting requires a per-thread approval callback registered by the
+    interactive CLI (``tools.terminal_tool.set_approval_callback``). Every
+    other surface stages instead:
+
+    * **Gateway/API sessions** — the dangerous-command ``/approve`` round-trip
+      lives in the pending-approval queue (``submit_pending`` +
+      ``_await_gateway_decision``), which ``prompt_dangerous_approval`` never
+      reaches; trying to prompt from a gateway session would hit the
+      ``input()`` fallback and silently deny. Staging gives the user a real
+      review affordance (``/memory pending``) instead.
+    * Scripts, cron, and background threads — no user present.
     """
     try:
         from tools.terminal_tool import _get_approval_callback
-        if _get_approval_callback() is not None:
-            return True
-    except Exception:
-        pass
-    try:
-        from tools.approval import _is_gateway_approval_context
-        return bool(_is_gateway_approval_context())
+        return _get_approval_callback() is not None
     except Exception:
         return False
 
@@ -345,28 +338,37 @@ def _prompt_inline_memory_approval(summary: str, detail: str) -> Optional[bool]:
     """Prompt the user inline to approve a memory write.
 
     Returns True (approved), False (denied), or None (no interactive prompt
-    available on this thread → caller should stage instead).
+    available / prompt failed → caller should stage instead).
 
-    Reuses the dangerous-command approval machinery so the CLI prompt_toolkit
-    callback and the gateway ``/approve`` ``/deny`` round-trip both work without
-    duplicating that plumbing.
+    Reuses the per-thread CLI approval callback registered for dangerous
+    commands (``tools.terminal_tool.set_approval_callback``). The callback is
+    invoked directly — NOT via ``prompt_dangerous_approval`` — because that
+    wrapper falls back to ``input()`` (deadlock-prone under prompt_toolkit,
+    see #15216) and converts callback errors into a silent deny; here a
+    failed prompt must stage the write instead.
     """
     try:
-        from tools.approval import prompt_dangerous_approval
+        from tools.terminal_tool import _get_approval_callback
     except Exception:
+        return None
+
+    callback = _get_approval_callback()
+    if callback is None:
+        # No interactive channel on this thread — stage rather than risk the
+        # input() fallback (deadlock under prompt_toolkit, EOF-deny in tests).
         return None
 
     header = summary.strip() or "Save to memory?"
     body = detail.strip()
     description = f"Save to memory: {header}"
     command = body if body else header
+    # Invoke the callback directly instead of via prompt_dangerous_approval:
+    # that wrapper swallows callback exceptions into "deny", which would
+    # silently refuse the write. Direct invocation lets a crashed prompt fall
+    # back to staging (the gate only ever delays a write, never drops it).
     try:
-        choice = prompt_dangerous_approval(
-            command,
-            description,
-            allow_permanent=False,
-        )
-    except Exception as e:  # pragma: no cover
+        choice = callback(command, description, allow_permanent=False)
+    except Exception as e:
         logger.error("Inline memory approval prompt failed: %s", e)
         return None
 

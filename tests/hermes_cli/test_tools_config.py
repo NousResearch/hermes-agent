@@ -975,6 +975,19 @@ def test_toolset_has_keys_treats_no_key_providers_as_configured():
     assert _toolset_has_keys("computer_use", config) is True
 
 
+def test_web_no_prompt_when_usable_keyless():
+    """Fresh install: web works via the free Parallel MCP, so enabling the web
+    toolset should not force provider setup."""
+    with patch("tools.web_tools.check_web_api_key", return_value=True):
+        assert _toolset_needs_configuration_prompt("web", {}) is False
+
+
+def test_web_no_prompt_when_extract_backend_is_extract_capable():
+    with patch("tools.web_tools.check_web_api_key", return_value=True):
+        cfg = {"web": {"extract_backend": "parallel"}}
+        assert _toolset_needs_configuration_prompt("web", cfg) is False
+
+
 def test_computer_use_needs_configuration_when_cua_driver_post_setup_pending():
     """No-key providers can still need setup when their post_setup is unsatisfied.
 

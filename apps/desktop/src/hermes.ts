@@ -54,10 +54,10 @@ export type {
   AnalyticsSkillEntry,
   AnalyticsSkillsSummary,
   AnalyticsTotals,
-  BackendUpdateCheckResponse,
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
+  BackendUpdateCheckResponse,
   ConfigFieldSchema,
   ConfigSchemaResponse,
   CronJob,
@@ -218,6 +218,7 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
   const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
   })
 }

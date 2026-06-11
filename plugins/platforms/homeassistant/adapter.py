@@ -34,6 +34,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    resolve_ws_proxy,
 )
 
 logger = logging.getLogger(__name__)
@@ -142,10 +143,15 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         ws_url = self._hass_url.replace("https://", "wss://").replace("http://", "ws://")
         ws_url = f"{ws_url}/api/websocket"
 
+        ws_proxy = resolve_ws_proxy(platform_env_var="HASS_WS_PROXY")
         self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
+            timeout=aiohttp.ClientTimeout(total=30),
+            trust_env=not bool(ws_proxy),
         )
-        self._ws = await self._session.ws_connect(ws_url, heartbeat=30, timeout=30)
+        self._ws = await self._session.ws_connect(
+            ws_url, heartbeat=30, timeout=30,
+            **(ws_proxy or {}),
+        )
 
         # Step 1: Receive auth_required
         msg = await self._ws.receive_json()

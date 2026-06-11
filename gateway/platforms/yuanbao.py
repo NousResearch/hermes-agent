@@ -59,6 +59,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
     cache_video_from_bytes,
+    resolve_ws_proxy,
 )
 from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.yuanbao_media import (
@@ -3311,12 +3312,14 @@ class ConnectionManager:
 
             # Step 2: Open WebSocket connection (disable built-in ping/pong)
             logger.info("[%s] Connecting to %s", adapter.name, adapter._ws_url)
+            ws_kwargs = resolve_ws_proxy(platform_env_var="YUANBAO_WS_PROXY")
             self._ws = await asyncio.wait_for(
                 websockets.connect(  # type: ignore[attr-defined]
                     adapter._ws_url,
                     ping_interval=None,
                     ping_timeout=None,
                     close_timeout=5,
+                    **ws_kwargs,
                 ),
                 timeout=CONNECT_TIMEOUT_SECONDS,
             )
@@ -3798,12 +3801,14 @@ class ConnectionManager:
                 if token_data.get("bot_id"):
                     adapter._bot_id = str(token_data["bot_id"])
 
+                ws_kwargs = resolve_ws_proxy(platform_env_var="YUANBAO_WS_PROXY")
                 self._ws = await asyncio.wait_for(
                     websockets.connect(  # type: ignore[attr-defined]
                         adapter._ws_url,
                         ping_interval=None,
                         ping_timeout=None,
                         close_timeout=5,
+                        **ws_kwargs,
                     ),
                     timeout=CONNECT_TIMEOUT_SECONDS,
                 )

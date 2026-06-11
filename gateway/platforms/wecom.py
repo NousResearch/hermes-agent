@@ -67,6 +67,7 @@ from gateway.platforms.base import (
     SendResult,
     cache_document_from_bytes,
     cache_image_from_bytes,
+    resolve_ws_proxy,
 )
 
 logger = logging.getLogger(__name__)
@@ -281,11 +282,13 @@ class WeComAdapter(BasePlatformAdapter):
     async def _open_connection(self) -> None:
         """Open and authenticate a websocket connection."""
         await self._cleanup_ws()
-        self._session = aiohttp.ClientSession(trust_env=True)
+        ws_proxy = resolve_ws_proxy(platform_env_var="WECOM_WS_PROXY")
+        self._session = aiohttp.ClientSession(trust_env=not bool(ws_proxy))
         self._ws = await self._session.ws_connect(
             self._ws_url,
             heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2,
             timeout=CONNECT_TIMEOUT_SECONDS,
+            **(ws_proxy or {}),
         )
 
         req_id = self._new_req_id("subscribe")

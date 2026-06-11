@@ -372,6 +372,67 @@ def resolve_proxy_url(
     return detected
 
 
+def resolve_ws_proxy(
+    *,
+    platform_env_var: str | None = None,
+    target_host: str | None = None,
+) -> dict:
+    """Resolve proxy config for a ``websockets`` or ``aiohttp`` WebSocket connection.
+
+    On macOS, system-level proxies (Surge, ClashX, V2RayU, ShadowsocksX, etc.)
+    often break WebSocket ``CONNECT`` tunnels because the proxy software returns
+    non-standard or incomplete responses.  When a system proxy is detected but
+    the user has *not* explicitly configured a platform-specific WS proxy env
+    var, we force ``proxy=None`` (direct connect) rather than letting the
+    ``websockets`` library auto-detect and tunnel through the system proxy.
+
+    Check order:
+      0. ``platform_env_var`` (e.g. ``FEISHU_WS_PROXY``) — highest priority.
+         When set, the given proxy URL is used as-is.
+      1. The generic HTTPS_PROXY / HTTP_PROXY env vars.
+      2. macOS system proxy via ``scutil --proxy``.
+      3. If 2 returns something (system proxy active), we return
+         ``{"proxy": None}`` to force a direct connection, bypassing
+         the broken CONNECT tunnel.
+
+    ``target_host`` is passed to ``should_bypass_proxy`` for NO_PROXY matching.
+
+    Returns:
+      - ``{"proxy": "http://host:port"}`` — explicit proxy from platform env var
+      - ``{"proxy": None}`` — macOS system proxy detected; force direct connect
+      - ``{}`` — no proxy detected anywhere; let library decide
+    """
+    # 0. Platform-specific env var → use it explicitly
+    if platform_env_var:
+        value = (os.environ.get(platform_env_var) or "").strip()
+        if value:
+            if target_host and should_bypass_proxy(target_host):
+                return {}
+            return {"proxy": normalize_proxy_url(value)}
+
+    # 1. Generic proxy env vars → use them explicitly
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                "https_proxy", "http_proxy", "all_proxy"):
+        value = (os.environ.get(key) or "").strip()
+        if value:
+            if target_host and should_bypass_proxy(target_host):
+                return {}
+            return {"proxy": normalize_proxy_url(value)}
+
+    # 2. macOS system proxy → bypass for WebSocket
+    detected = _detect_macos_system_proxy()
+    if detected:
+        if target_host and should_bypass_proxy(target_host):
+            return {}
+        logger.info(
+            "System proxy detected (%s) — bypassing for WebSocket direct connect",
+            detected,
+        )
+        return {"proxy": None}
+
+    return {}
+
+
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
     """Build kwargs for ``commands.Bot()`` / ``discord.Client()`` with proxy.
 

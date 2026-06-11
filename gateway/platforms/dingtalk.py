@@ -23,7 +23,9 @@ Configuration in config.yaml:
         #   - "manager1234"
         extra:
           client_id: "your-app-key"      # or DINGTALK_CLIENT_ID env var
-          client_secret: "your-secret"   # or DINGTALK_CLIENT_SECRET env var
+          client_secret: "your-secret"    # or DINGTALK_CLIENT_SECRET env var
+          block_dm: false                 # block DMs (env: DINGTALK_BLOCK_DM)
+          block_dm_reply: "..."           # auto-reply when DM is blocked (env: DINGTALK_BLOCK_DM_REPLY)
 """
 
 import asyncio
@@ -416,6 +418,25 @@ class DingTalkAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _dingtalk_block_dm(self) -> bool:
+        """Return whether direct messages should be silently blocked."""
+        configured = self.config.extra.get("block_dm") if self.config.extra else None
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("DINGTALK_BLOCK_DM", "false").lower() in {"true", "1", "yes", "on"}
+
+    def _dingtalk_block_dm_reply(self) -> str:
+        """Return the auto-reply text sent when a DM is blocked.
+
+        Empty string means no reply (silent drop).
+        """
+        reply = self.config.extra.get("block_dm_reply") if self.config.extra else None
+        if reply is None:
+            reply = os.getenv("DINGTALK_BLOCK_DM_REPLY", "")
+        return str(reply).strip() if reply else ""
+
     def _compile_mention_patterns(self) -> List[re.Pattern]:
         """Compile optional regex wake-word patterns for group triggers."""
         patterns = self.config.extra.get("mention_patterns") if self.config.extra else None
@@ -611,6 +632,30 @@ class DingTalkAdapter(BasePlatformAdapter):
                 "[%s] Dropping message from non-allowlisted user staff_id=%s sender_id=%s",
                 self.name, sender_staff_id, sender_id,
             )
+            return
+
+        # DM block gate — when block_dm is enabled, reject DMs and optionally
+        # send a configurable auto-reply so the sender isn't left hanging.
+        if not is_group and self._dingtalk_block_dm():
+            reply_text = self._dingtalk_block_dm_reply()
+            logger.debug(
+                "[%s] Blocking DM from sender_id=%s reply=%r",
+                self.name, sender_id, reply_text[:50] if reply_text else None,
+            )
+            if reply_text:
+                session_webhook = getattr(message, "session_webhook", None) or ""
+                if session_webhook:
+                    try:
+                        await self.send(
+                            chat_id,
+                            reply_text,
+                            metadata={"session_webhook": session_webhook},
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] Failed to send block_dm_reply: %s",
+                            self.name, exc,
+                        )
             return
 
         # Group mention/pattern gate.  DMs pass through unconditionally.

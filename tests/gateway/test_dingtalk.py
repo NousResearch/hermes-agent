@@ -777,6 +777,124 @@ class TestShouldProcessMessage:
         assert adapter._should_process_message(msg, "hi", is_group=True, chat_id="grp2") is False
 
 
+class TestBlockDm:
+    """Verify block_dm config reading and DM blocking behavior."""
+
+    def test_block_dm_defaults_false(self, monkeypatch):
+        monkeypatch.delenv("DINGTALK_BLOCK_DM", raising=False)
+        adapter = _make_gating_adapter(monkeypatch)
+        assert adapter._dingtalk_block_dm() is False
+
+    def test_block_dm_from_config_extra(self, monkeypatch):
+        adapter = _make_gating_adapter(monkeypatch, extra={"block_dm": True})
+        assert adapter._dingtalk_block_dm() is True
+
+    def test_block_dm_from_env_var(self, monkeypatch):
+        adapter = _make_gating_adapter(monkeypatch, env={"DINGTALK_BLOCK_DM": "true"})
+        assert adapter._dingtalk_block_dm() is True
+
+    def test_block_dm_string_true(self, monkeypatch):
+        adapter = _make_gating_adapter(monkeypatch, extra={"block_dm": "yes"})
+        assert adapter._dingtalk_block_dm() is True
+
+    def test_block_dm_reply_defaults_empty(self, monkeypatch):
+        monkeypatch.delenv("DINGTALK_BLOCK_DM_REPLY", raising=False)
+        adapter = _make_gating_adapter(monkeypatch)
+        assert adapter._dingtalk_block_dm_reply() == ""
+
+    def test_block_dm_reply_from_config(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"block_dm_reply": "DMs are disabled. Please use a group chat."},
+        )
+        assert adapter._dingtalk_block_dm_reply() == "DMs are disabled. Please use a group chat."
+
+    def test_block_dm_reply_from_env(self, monkeypatch):
+        adapter = _make_gating_adapter(
+            monkeypatch, env={"DINGTALK_BLOCK_DM_REPLY": "Use group chat."},
+        )
+        assert adapter._dingtalk_block_dm_reply() == "Use group chat."
+
+    @pytest.mark.asyncio
+    async def test_dm_blocked_when_enabled(self, monkeypatch):
+        """DMs are silently dropped when block_dm is True."""
+        adapter = _make_gating_adapter(monkeypatch, extra={"block_dm": True})
+        msg = _FakeChatbotMessage.from_dict({
+            "msgId": "msg1",
+            "conversationType": "1",  # DM
+            "conversationId": "",
+            "senderId": "user1",
+            "senderNick": "User",
+            "text": "hello",
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?token=abc",
+        })
+        with patch.object(adapter, "handle_message", new_callable=AsyncMock) as mock_handle:
+            await adapter._on_message(msg)
+        mock_handle.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_dm_blocked_with_auto_reply(self, monkeypatch):
+        """When block_dm_reply is set, the adapter sends the reply before returning."""
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"block_dm": True, "block_dm_reply": "Please use a group."},
+        )
+        msg = _FakeChatbotMessage.from_dict({
+            "msgId": "msg2",
+            "conversationType": "1",
+            "conversationId": "",
+            "senderId": "user1",
+            "senderNick": "User",
+            "text": "hello",
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?token=abc",
+        })
+        with patch.object(adapter, "send", new_callable=AsyncMock) as mock_send, \
+             patch.object(adapter, "handle_message", new_callable=AsyncMock) as mock_handle:
+            await adapter._on_message(msg)
+        mock_send.assert_called_once()
+        call_args = mock_send.call_args
+        assert call_args[0][1] == "Please use a group."
+        assert call_args[1]["metadata"]["session_webhook"] == "https://oapi.dingtalk.com/robot/sendBySession?token=abc"
+        mock_handle.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_messages_unaffected_by_block_dm(self, monkeypatch):
+        """Group messages are processed normally even when block_dm is True."""
+        adapter = _make_gating_adapter(
+            monkeypatch,
+            extra={"block_dm": True, "require_mention": False},
+        )
+        msg = _FakeChatbotMessage.from_dict({
+            "msgId": "msg3",
+            "conversationType": "2",  # group
+            "conversationId": "grp1",
+            "senderId": "user1",
+            "senderNick": "User",
+            "text": "hello",
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?token=abc",
+        })
+        with patch.object(adapter, "handle_message", new_callable=AsyncMock) as mock_handle:
+            await adapter._on_message(msg)
+        mock_handle.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_dm_passes_through_when_block_dm_disabled(self, monkeypatch):
+        """DMs are processed normally when block_dm is False (default)."""
+        adapter = _make_gating_adapter(monkeypatch)
+        msg = _FakeChatbotMessage.from_dict({
+            "msgId": "msg4",
+            "conversationType": "1",
+            "conversationId": "",
+            "senderId": "user1",
+            "senderNick": "User",
+            "text": "hello",
+            "sessionWebhook": "https://oapi.dingtalk.com/robot/sendBySession?token=abc",
+        })
+        with patch.object(adapter, "handle_message", new_callable=AsyncMock) as mock_handle:
+            await adapter._on_message(msg)
+        mock_handle.assert_called_once()
+
+
 # ---------------------------------------------------------------------------
 # _IncomingHandler.process — session_webhook extraction & fire-and-forget
 # ---------------------------------------------------------------------------

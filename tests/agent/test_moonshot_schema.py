@@ -397,3 +397,68 @@ class TestEnumNullStripping:
         assert db_type["type"] == "string"
         assert db_type["enum"] == ["mysql", "postgresql"], \
             "null/empty enum values must be stripped after anyOf collapse"
+
+
+class TestUnionTypeList:
+    """Regression for #28291: JSON Schema union type lists must not crash."""
+
+    def test_fill_missing_type_preserves_list_type(self):
+        """_fill_missing_type returns nodes unchanged when type is a list."""
+        from agent.moonshot_schema import _fill_missing_type
+
+        node = {"type": ["number", "string"], "description": "timestamp or string"}
+        result = _fill_missing_type(node)
+
+        assert result is node
+        assert result["type"] == ["number", "string"]
+
+    def test_fill_missing_type_still_infers_for_missing_type(self):
+        """_fill_missing_type still infers type when absent."""
+        from agent.moonshot_schema import _fill_missing_type
+
+        node = {"properties": {"x": {"type": "integer"}}}
+        result = _fill_missing_type(node)
+
+        assert result["type"] == "object"
+
+    def test_repair_schema_does_not_crash_on_ref_list_type_with_enum(self):
+        """_repair_schema enum cleanup skips list-typed $ref schemas."""
+        params = {
+            "type": "object",
+            "properties": {
+                "payload": {
+                    "$ref": "#/$defs/Payload",
+                    "type": ["string", "integer"],
+                    "enum": ["a", None, ""],
+                },
+            },
+            "$defs": {"Payload": {"type": "object", "properties": {}}},
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+        payload = out["properties"]["payload"]
+
+        assert payload["$ref"] == "#/$defs/Payload"
+        assert payload["type"] == ["string", "integer"]
+        assert payload["enum"] == ["a", None, ""]
+
+    def test_end_to_end_union_type_tool_parameter(self):
+        """Full sanitize pipeline does not crash on union-type parameters."""
+        params = {
+            "type": "object",
+            "properties": {
+                "time_from": {
+                    "type": ["number", "string"],
+                    "description": "Optional timestamp or string",
+                },
+                "name": {
+                    "type": "string",
+                    "description": "A name",
+                },
+            },
+        }
+
+        out = sanitize_moonshot_tool_parameters(params)
+
+        assert out["properties"]["time_from"]["type"] == ["number", "string"]
+        assert out["properties"]["name"]["type"] == "string"

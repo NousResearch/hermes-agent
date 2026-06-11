@@ -547,7 +547,9 @@ export function DesktopController() {
         return
       }
 
-      const storedProfile = $sessions.get().find(session => session.id === storedSessionId)?.profile
+      const storedProfile = $sessions
+        .get()
+        .find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)?.profile
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {

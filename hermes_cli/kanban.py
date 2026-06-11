@@ -495,6 +495,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
     p_link.add_argument("child_id")
+    p_link.add_argument(
+        "--kind", choices=("blocking", "tracking"), default="blocking",
+        help="'blocking' (default) gates the child until the parent is done; "
+             "'tracking' is organizational only (tracking epics) and never "
+             "gates. On an EXISTING edge, --kind converts it in place and "
+             "re-evaluates the child's readiness. (t_a3bebeea)",
+    )
     p_unlink = sub.add_parser("unlink", help="Remove a parent->child dependency")
     p_unlink.add_argument("parent_id")
     p_unlink.add_argument("child_id")
@@ -1797,9 +1804,27 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
 
 
 def _cmd_link(args: argparse.Namespace) -> int:
+    kind = getattr(args, "kind", "blocking")
     with kb.connect_closing() as conn:
-        kb.link_tasks(conn, args.parent_id, args.child_id)
-    print(f"Linked {args.parent_id} -> {args.child_id}")
+        existing = conn.execute(
+            "SELECT link_kind FROM task_links "
+            "WHERE parent_id = ? AND child_id = ?",
+            (args.parent_id, args.child_id),
+        ).fetchone()
+        if existing is not None:
+            # Edge already exists: --kind converts it in place (INSERT OR
+            # IGNORE in link_tasks would silently keep the old kind).
+            if existing["link_kind"] == kind:
+                print(f"Already linked {args.parent_id} -> {args.child_id} ({kind})")
+                return 0
+            kb.set_link_kind(conn, args.parent_id, args.child_id, kind)
+            print(
+                f"Converted link {args.parent_id} -> {args.child_id} "
+                f"to {kind} (child readiness re-evaluated)"
+            )
+            return 0
+        kb.link_tasks(conn, args.parent_id, args.child_id, kind=kind)
+    print(f"Linked {args.parent_id} -> {args.child_id} ({kind})")
     return 0
 
 

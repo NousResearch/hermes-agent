@@ -1043,6 +1043,10 @@ CREATE TABLE IF NOT EXISTS tasks (
 CREATE TABLE IF NOT EXISTS task_links (
     parent_id  TEXT NOT NULL,
     child_id   TEXT NOT NULL,
+    -- 'blocking' (default): parent must be done/archived before the child can
+    -- be claimed (the classic dependency edge). 'tracking': organizational
+    -- membership only (e.g. a tracking epic) — never gates the child.
+    link_kind  TEXT NOT NULL DEFAULT 'blocking',
     PRIMARY KEY (parent_id, child_id)
 );
 
@@ -1578,6 +1582,23 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
 
     Called by ``init_db`` so opening an old DB is always safe.
     """
+    # task_links.link_kind ('blocking' | 'tracking') — added 2026-06-09
+    # (t_a3bebeea). NOT NULL DEFAULT backfills every legacy row as 'blocking',
+    # so existing links keep their gating semantics unchanged. Skip when the
+    # table itself doesn't exist yet (pre-task_links legacy DBs): the schema
+    # CREATE TABLE that follows creates it with the column already in place.
+    if conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_links'"
+    ).fetchone():
+        link_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(task_links)")
+        }
+        if "link_kind" not in link_cols:
+            _add_column_if_missing(
+                conn, "task_links", "link_kind",
+                "link_kind TEXT NOT NULL DEFAULT 'blocking'",
+            )
+
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(tasks)")}
     if "tenant" not in cols:
         _add_column_if_missing(conn, "tasks", "tenant", "tenant TEXT")
@@ -2410,9 +2431,17 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
 # Links
 # ---------------------------------------------------------------------------
 
-def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
+LINK_KINDS = ("blocking", "tracking")
+
+
+def link_tasks(
+    conn: sqlite3.Connection, parent_id: str, child_id: str,
+    kind: str = "blocking",
+) -> None:
     if parent_id == child_id:
         raise ValueError("a task cannot depend on itself")
+    if kind not in LINK_KINDS:
+        raise ValueError(f"unknown link kind {kind!r} (expected one of {LINK_KINDS})")
     with write_txn(conn):
         missing = _find_missing_parents(conn, [parent_id, child_id])
         if missing:
@@ -2422,22 +2451,54 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
         conn.execute(
-            "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
-            (parent_id, child_id),
+            "INSERT OR IGNORE INTO task_links (parent_id, child_id, link_kind) "
+            "VALUES (?, ?, ?)",
+            (parent_id, child_id, kind),
         )
         # If child was ready but parent is not yet done, demote child to todo.
-        parent_status = conn.execute(
-            "SELECT status FROM tasks WHERE id = ?", (parent_id,)
-        ).fetchone()["status"]
-        if parent_status != "done":
-            conn.execute(
-                "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
-                (child_id,),
-            )
+        # Tracking links are organizational only — they never demote.
+        if kind == "blocking":
+            parent_status = conn.execute(
+                "SELECT status FROM tasks WHERE id = ?", (parent_id,)
+            ).fetchone()["status"]
+            if parent_status != "done":
+                conn.execute(
+                    "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
+                    (child_id,),
+                )
         _append_event(
             conn, child_id, "linked",
-            {"parent": parent_id, "child": child_id},
+            {"parent": parent_id, "child": child_id, "kind": kind},
         )
+
+
+def set_link_kind(
+    conn: sqlite3.Connection, parent_id: str, child_id: str, kind: str,
+) -> bool:
+    """Convert an existing parent->child edge between 'blocking' and 'tracking'.
+
+    The operator affordance for a wedged tracking epic: flip the edge to
+    'tracking' and the child stops being gated. Runs ``recompute_ready`` so a
+    todo child whose only gate was this edge promotes immediately. Returns
+    ``False`` when the edge does not exist. (t_a3bebeea)
+    """
+    if kind not in LINK_KINDS:
+        raise ValueError(f"unknown link kind {kind!r} (expected one of {LINK_KINDS})")
+    with write_txn(conn):
+        cur = conn.execute(
+            "UPDATE task_links SET link_kind = ? "
+            "WHERE parent_id = ? AND child_id = ?",
+            (kind, parent_id, child_id),
+        )
+        if cur.rowcount != 1:
+            return False
+        _append_event(
+            conn, child_id, "link_kind_changed",
+            {"parent": parent_id, "child": child_id, "kind": kind},
+        )
+    # Outside the write txn: re-evaluate gating now that the edge changed.
+    recompute_ready(conn)
+    return True
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -2929,7 +2990,7 @@ def recompute_ready(
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
-                "WHERE l.child_id = ?",
+                "WHERE l.child_id = ? AND l.link_kind = 'blocking'",
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
@@ -2996,7 +3057,8 @@ def claim_task(
         undone = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            "WHERE l.child_id = ? AND l.link_kind = 'blocking' "
+            "AND p.status NOT IN ('done', 'archived') LIMIT 1",
             (task_id,),
         ).fetchone()
         if undone:
@@ -4201,7 +4263,7 @@ def promote_task(
         parents = conn.execute(
             "SELECT t.id, t.status FROM tasks t "
             "JOIN task_links l ON l.parent_id = t.id "
-            "WHERE l.child_id = ?",
+            "WHERE l.child_id = ? AND l.link_kind = 'blocking'",
             (task_id,),
         ).fetchall()
         unsatisfied = [
@@ -4272,7 +4334,8 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         undone_parents = conn.execute(
             "SELECT 1 FROM task_links l "
             "JOIN tasks p ON p.id = l.parent_id "
-            "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
+            "WHERE l.child_id = ? AND l.link_kind = 'blocking' "
+            "AND p.status != 'done' LIMIT 1",
             (task_id,),
         ).fetchone()
         new_status = "todo" if undone_parents else "ready"

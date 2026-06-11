@@ -316,6 +316,8 @@ language-specific setup where needed.
   reject user config and data paths.
 - `hermes-manager repair-clean` now removes the same Hermes-managed runtime roots as repairable install state, so
   broken managed Node/uv/Git directories are recreated by the next bootstrap while user config and data stay intact.
+- `hermes-manager` now has a CLI smoke test that runs `install-metadata`, `uninstall-lite`, and `repair-clean` against
+  an isolated Hermes home, proving the command surface preserves user config while cleaning managed runtime state.
 
 **Exit Criteria:**
 - Rust manager can perform platform cleanup with parity to Python/shell uninstall.

@@ -260,3 +260,71 @@ describe('StatusRule credits notice render priority', () => {
     expect(textContent(element)).toContain('opus 4.8')
   })
 })
+
+describe('StatusRule idle-since read-out', () => {
+  // The IdleSince component uses hooks, so it can't be invoked outside a
+  // renderer — assert on the element tree instead (same reason the duration
+  // tests don't check SessionDuration's text).
+  const findComponentByName = (node: ReactNodeLike, name: string): React.ReactElement | null => {
+    if (node === null || node === undefined || typeof node === 'boolean') {
+      return null
+    }
+
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const found = findComponentByName(child, name)
+
+        if (found) {
+          return found
+        }
+      }
+
+      return null
+    }
+
+    if (!React.isValidElement(node)) {
+      return null
+    }
+
+    if (typeof node.type === 'function' && node.type.name === name) {
+      return node
+    }
+
+    return findComponentByName(node.props.children, name)
+  }
+
+  it('shows time since the last final agent response when idle', () => {
+    const endedAt = Date.now() - 42_000
+    const element = StatusRule({
+      ...baseProps,
+      lastTurnEndedAt: endedAt,
+      sessionStartedAt: Date.now() - 60_000
+    })
+
+    const idle = findComponentByName(element, 'IdleSince')
+
+    expect(idle).not.toBeNull()
+    expect(idle!.props.endedAt).toBe(endedAt)
+  })
+
+  it('is hidden while a turn is busy', () => {
+    const element = StatusRule({
+      ...baseProps,
+      busy: true,
+      lastTurnEndedAt: Date.now() - 42_000,
+      turnStartedAt: Date.now()
+    })
+
+    expect(findComponentByName(element, 'IdleSince')).toBeNull()
+  })
+
+  it('is hidden before the first turn completes', () => {
+    const element = StatusRule({
+      ...baseProps,
+      lastTurnEndedAt: null,
+      sessionStartedAt: Date.now() - 60_000
+    })
+
+    expect(findComponentByName(element, 'IdleSince')).toBeNull()
+  })
+})

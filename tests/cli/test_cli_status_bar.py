@@ -676,3 +676,54 @@ class TestStatusBarWidthSource:
         mock_get_app.assert_not_called()
         mock_shutil.assert_not_called()
         assert len(text) > 0
+
+
+class TestIdleSinceLastTurn:
+    """Time-since-last-final-agent-response read-out on the status bar."""
+
+    def test_hidden_before_first_turn(self):
+        assert HermesCLI._format_idle_since(None, turn_live=False) == ""
+
+    def test_hidden_while_turn_is_live(self):
+        assert HermesCLI._format_idle_since(time.time() - 30, turn_live=True) == ""
+
+    def test_shows_compact_idle_time_after_turn(self):
+        label = HermesCLI._format_idle_since(time.time() - 42, turn_live=False)
+        assert label.startswith("✓ ")
+        assert label == "✓ 42s"
+
+    def test_scales_to_minutes(self):
+        label = HermesCLI._format_idle_since(time.time() - 3 * 60, turn_live=False)
+        assert label == "✓ 3m"
+
+    def test_snapshot_carries_idle_since(self):
+        cli_obj = _make_cli()
+        cli_obj._last_turn_finished_at = time.time() - 10
+        cli_obj._prompt_start_time = None
+        cli_obj._prompt_duration = 5.0
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["idle_since"].startswith("✓ ")
+
+    def test_snapshot_idle_empty_during_live_turn(self):
+        cli_obj = _make_cli()
+        cli_obj._last_turn_finished_at = time.time() - 10
+        cli_obj._prompt_start_time = time.time()
+        cli_obj._prompt_duration = 0.0
+        snapshot = cli_obj._get_status_bar_snapshot()
+        assert snapshot["idle_since"] == ""
+
+    def test_wide_status_bar_text_includes_idle(self):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._last_turn_finished_at = time.time() - 42
+        cli_obj._prompt_start_time = None
+        cli_obj._prompt_duration = 7.0
+        text = cli_obj._build_status_bar_text(width=160)
+        assert "✓ 42s" in text

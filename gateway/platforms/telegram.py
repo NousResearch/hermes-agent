@@ -86,6 +86,11 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
+from gateway.video_analysis import (
+    VideoAnalysisLimits,
+    analyze_video_local,
+    format_video_analysis_context,
+)
 from utils import atomic_replace
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -470,6 +475,32 @@ class TelegramAdapter(BasePlatformAdapter):
             2 * 1024 * 1024 * 1024
             if self.config.extra.get("base_url")
             else 20 * 1024 * 1024
+        )
+        self._video_analysis_enabled = self._coerce_bool_extra(
+            "video_analysis_enabled",
+            os.getenv("HERMES_TELEGRAM_VIDEO_ANALYSIS_ENABLED", "").lower() in {"1", "true", "yes", "on"},
+        )
+        self._video_analysis_limits = VideoAnalysisLimits(
+            max_bytes=self._coerce_int_extra(
+                "video_analysis_max_bytes",
+                self._env_int("HERMES_TELEGRAM_VIDEO_ANALYSIS_MAX_BYTES", 20 * 1024 * 1024),
+            ),
+            max_seconds=self._coerce_float_extra(
+                "video_analysis_max_seconds",
+                self._env_float("HERMES_TELEGRAM_VIDEO_ANALYSIS_MAX_SECONDS", 120.0),
+            ),
+            frames=self._coerce_int_extra(
+                "video_analysis_frames",
+                self._env_int("HERMES_TELEGRAM_VIDEO_ANALYSIS_FRAMES", 4),
+            ),
+            timeout_seconds=self._coerce_float_extra(
+                "video_analysis_timeout_seconds",
+                self._env_float("HERMES_TELEGRAM_VIDEO_ANALYSIS_TIMEOUT_SECONDS", 45.0),
+            ),
+            transcribe=self._coerce_bool_extra(
+                "video_analysis_transcribe",
+                os.getenv("HERMES_TELEGRAM_VIDEO_ANALYSIS_TRANSCRIBE", "").lower() in {"1", "true", "yes", "on"},
+            ),
         )
         # Interactive model picker state per chat
         self._model_picker_state: Dict[str, dict] = {}
@@ -895,12 +926,75 @@ class TelegramAdapter(BasePlatformAdapter):
             return default
         return bool(value)
 
+    def _coerce_int_extra(self, key: str, default: int) -> int:
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _coerce_float_extra(self, key: str, default: float) -> float:
+        value = self.config.extra.get(key) if getattr(self.config, "extra", None) else None
+        if value is None:
+            return default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _env_int(key: str, default: int) -> int:
+        try:
+            return int(os.getenv(key, str(default)))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _env_float(key: str, default: float) -> float:
+        try:
+            return float(os.getenv(key, str(default)))
+        except (TypeError, ValueError):
+            return default
+
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
             return {}
         if LinkPreviewOptions is not None:
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
+
+    async def _maybe_enrich_video_event(self, event: MessageEvent, cached_path: str) -> None:
+        """Attach local-only video analysis context to an inbound Telegram event."""
+        if not getattr(self, "_video_analysis_enabled", False):
+            return
+        try:
+            result = await asyncio.to_thread(
+                analyze_video_local,
+                cached_path,
+                self._video_analysis_limits,
+            )
+        except Exception as exc:
+            logger.warning("[Telegram] Local video analysis failed: %s", exc, exc_info=True)
+            return
+
+        context = format_video_analysis_context(result)
+        event.text = f"{event.text}\n\n{context}".strip() if event.text else context
+        if result.get("status") != "ok":
+            logger.info("[Telegram] Local video analysis %s: %s", result.get("status"), result.get("reason"))
+            return
+
+        frame_paths = [str(path) for path in result.get("frames") or []]
+        if frame_paths:
+            event.media_urls.extend(frame_paths)
+            event.media_types.extend(["image/jpeg"] * len(frame_paths))
+        logger.info(
+            "[Telegram] Local video analysis ready: frames=%d transcript=%s outdir=%s",
+            len(frame_paths),
+            bool(result.get("transcript")),
+            result.get("outdir"),
+        )
 
     async def _drain_polling_connections(self) -> None:
         """Reset the httpx connection pool used for getUpdates polling.
@@ -5635,6 +5729,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_urls = [cached_path]
                 event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
                 logger.info("[Telegram] Cached user video at %s", cached_path)
+                await self._maybe_enrich_video_event(event, cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
 
@@ -5723,6 +5818,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
                     event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
+                    await self._maybe_enrich_video_event(event, cached_path)
                     await self.handle_message(event)
                     return
 
@@ -6175,13 +6271,18 @@ class TelegramAdapter(BasePlatformAdapter):
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
-        """Add an in-progress reaction when message processing begins."""
+        """Acknowledge that an addressed message was read and accepted.
+
+        Telegram only allows this bot to keep one reaction on a message.  Use
+        👍 immediately at processing start so users get the explicit read/ack
+        signal they expect, instead of waiting until the response finishes.
+        """
         if not self._reactions_enabled():
             return
         chat_id = getattr(event.source, "chat_id", None)
         message_id = getattr(event, "message_id", None)
         if chat_id and message_id:
-            await self._set_reaction(chat_id, message_id, "\U0001f440")
+            await self._set_reaction(chat_id, message_id, "\U0001f44d")
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
         """Swap the in-progress reaction for a final success/failure reaction.
@@ -6190,11 +6291,8 @@ class TelegramAdapter(BasePlatformAdapter):
         replaces all existing reactions in one call — no remove step needed.
 
         On CANCELLED outcomes (e.g. the user runs ``/stop``, or a session is
-        interrupted mid-flight), we explicitly clear the 👀 in-progress
-        reaction so it doesn't linger on the user's message indefinitely.
-        Without this clear, the only way to remove the 👀 was to wait for
-        another agent run to swap it to 👍/👎 — which never happens if the
-        cancellation was the last activity in the chat.
+        interrupted mid-flight), keep the initial 👍 read/ack reaction in place:
+        the message was read and accepted even if the run was superseded.
         """
         if not self._reactions_enabled():
             return
@@ -6203,10 +6301,9 @@ class TelegramAdapter(BasePlatformAdapter):
         if not (chat_id and message_id):
             return
         if outcome == ProcessingOutcome.CANCELLED:
-            await self._clear_reactions(chat_id, message_id)
-        else:
-            await self._set_reaction(
-                chat_id,
-                message_id,
-                "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
-            )
+            return
+        await self._set_reaction(
+            chat_id,
+            message_id,
+            "\U0001f44d" if outcome == ProcessingOutcome.SUCCESS else "\U0001f44e",
+        )

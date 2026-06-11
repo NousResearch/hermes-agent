@@ -126,8 +126,8 @@ async def test_set_reaction_handles_api_error_gracefully(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_on_processing_start_adds_eyes_reaction(monkeypatch):
-    """Processing start should add eyes reaction when enabled."""
+async def test_on_processing_start_adds_thumbs_up_reaction(monkeypatch):
+    """Processing start should immediately add a thumbs-up read acknowledgement."""
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
     event = _make_event()
@@ -137,7 +137,7 @@ async def test_on_processing_start_adds_eyes_reaction(monkeypatch):
     adapter._bot.set_message_reaction.assert_awaited_once_with(
         chat_id=123,
         message_id=456,
-        reaction="\U0001f440",
+        reaction="\U0001f44d",
     )
 
 
@@ -218,12 +218,11 @@ async def test_on_processing_complete_skipped_when_disabled(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_on_processing_complete_cancelled_clears_reaction(monkeypatch):
-    """Cancelled processing should clear the in-progress reaction.
+async def test_on_processing_complete_cancelled_keeps_ack(monkeypatch):
+    """Cancelled processing should keep the initial read acknowledgement.
 
-    Without this clear, the 👀 reaction lingers on the user's message
-    indefinitely (until another agent run swaps it for 👍/👎). On a
-    ``/stop`` that ends a session, that reaction never gets cleaned up.
+    The start hook already put 👍 on the addressed message.  If the run is
+    superseded or stopped, the read/ack signal should remain visible.
     """
     monkeypatch.setenv("TELEGRAM_REACTIONS", "true")
     adapter = _make_adapter()
@@ -231,14 +230,7 @@ async def test_on_processing_complete_cancelled_clears_reaction(monkeypatch):
 
     await adapter.on_processing_complete(event, ProcessingOutcome.CANCELLED)
 
-    # set_message_reaction with reaction=None clears all reactions on the
-    # message (Bot API documented semantics; equivalent to Bot API 10.0's
-    # deleteMessageReaction but works on PTB 22.6 already).
-    adapter._bot.set_message_reaction.assert_awaited_once_with(
-        chat_id=123,
-        message_id=456,
-        reaction=None,
-    )
+    adapter._bot.set_message_reaction.assert_not_awaited()
 
 
 @pytest.mark.asyncio

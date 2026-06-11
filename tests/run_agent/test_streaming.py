@@ -883,6 +883,48 @@ class TestCodexStreamCallbacks:
         # 1 initial + 1 retry = 2 calls
         assert call_count["n"] == 2
 
+    def test_codex_stream_recovers_when_sdk_parser_raises_on_empty_output(self):
+        from run_agent import AIAgent
+
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="recovered from output item")],
+        )
+
+        class _ParserCrashStream:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return False
+
+            def __iter__(self_inner):
+                yield SimpleNamespace(type="response.output_item.done", item=message_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def get_final_response(self_inner):
+                raise AssertionError("parser crash should recover before final response")
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = _ParserCrashStream()
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://chatgpt.com/backend-api/codex",
+            provider="openai-codex",
+            model="gpt-5.5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._interrupt_requested = False
+
+        response = agent._run_codex_stream({}, client=mock_client)
+
+        assert response.output[0].content[0].text == "recovered from output item"
+        mock_client.responses.create.assert_called_once_with(stream=True)
+
     def test_codex_create_stream_fallback_refreshes_activity_on_every_event(self):
         from run_agent import AIAgent
 
@@ -931,6 +973,44 @@ class TestCodexStreamCallbacks:
         )
 
         assert touch_calls.count("receiving stream response") == len(events)
+
+    def test_codex_create_stream_fallback_recovers_when_sdk_parser_raises_on_empty_output(self):
+        from run_agent import AIAgent
+
+        message_item = SimpleNamespace(
+            type="message",
+            content=[SimpleNamespace(type="output_text", text="fallback recovered")],
+        )
+
+        class _ParserCrashCreateStream:
+            def __iter__(self_inner):
+                yield SimpleNamespace(type="response.output_item.done", item=message_item)
+                raise TypeError("'NoneType' object is not iterable")
+
+            def close(self_inner):
+                return None
+
+        mock_client = MagicMock()
+        mock_client.responses.create.return_value = _ParserCrashCreateStream()
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://chatgpt.com/backend-api/codex",
+            provider="openai-codex",
+            model="gpt-5.5",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "codex_responses"
+        agent._touch_activity = lambda desc: None
+
+        response = agent._run_codex_create_stream_fallback(
+            {"model": "gpt-5.5", "instructions": "hi", "input": []},
+            client=mock_client,
+        )
+
+        assert response.output[0].content[0].text == "fallback recovered"
 
 
 class TestAnthropicStreamCallbacks:

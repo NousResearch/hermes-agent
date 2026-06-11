@@ -2755,9 +2755,8 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     ) {
         return StageExecutionMode::NativeWithScriptFallback;
     }
-    if (cfg!(target_os = "windows") || cfg!(target_os = "macos"))
-        && name.eq_ignore_ascii_case("node-deps")
-    {
+    if node_deps_stage_is_native_first_for_target(std::env::consts::OS)
+        && name.eq_ignore_ascii_case("node-deps") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if (cfg!(target_os = "windows") || cfg!(target_os = "macos"))
@@ -2790,6 +2789,10 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
         return StageExecutionMode::ProbeThenScript;
     }
     StageExecutionMode::Script
+}
+
+fn node_deps_stage_is_native_first_for_target(target_os: &str) -> bool {
+    matches!(target_os, "windows" | "macos" | "linux")
 }
 
 fn find_executable_on_path<P>(name: &str, path_env: P, pathext: &str) -> Option<PathBuf>
@@ -2909,7 +2912,7 @@ mod tests {
         assert_eq!(plan[6].name, "platform-sdks");
         assert_eq!(plan[6].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[6].script_fallback, true);
-        let node_deps_native = cfg!(target_os = "windows") || cfg!(target_os = "macos");
+        let node_deps_native = node_deps_stage_is_native_first_for_target(std::env::consts::OS);
         let node_deps_execution = if node_deps_native {
             StageExecutionMode::NativeWithScriptFallback
         } else {
@@ -2938,6 +2941,17 @@ mod tests {
         assert_eq!(plan[11].name, "python-deps");
         assert_eq!(plan[11].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[11].script_fallback, true);
+    }
+
+    #[test]
+    fn node_deps_stage_is_native_first_on_desktop_platforms() {
+        for target_os in ["windows", "macos", "linux"] {
+            assert!(
+                node_deps_stage_is_native_first_for_target(target_os),
+                "{target_os} should run node-deps natively before script fallback"
+            );
+        }
+        assert!(!node_deps_stage_is_native_first_for_target("freebsd"));
     }
 
     #[test]

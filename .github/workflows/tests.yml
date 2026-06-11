@@ -21,6 +21,75 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  rust-manager:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+
+      - name: Cache Rust targets
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          workspaces: apps/hermes-manager
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path apps/hermes-manager/Cargo.toml -- --check
+
+      - name: Run Rust manager tests
+        run: cargo test --manifest-path apps/hermes-manager/Cargo.toml
+
+  desktop-platforms:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Run desktop platform tests
+        run: npm --workspace apps/desktop run test:desktop:platforms
+
+  bootstrap-installer-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+
+      - name: Install Tauri build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Cache Rust targets
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          workspaces: |
+            apps/bootstrap-installer/src-tauri
+            apps/hermes-manager
+
+      - name: Run bootstrap installer Rust tests
+        run: cargo test --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30

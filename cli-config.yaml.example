@@ -719,6 +719,16 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#       # callback_text_routes: maps inline-keyboard callback_data (exact match,
+#       # <=64 bytes per Telegram's limit) to the text injected into the
+#       # conversation when an authorized user taps the button — handled exactly
+#       # as if the user typed it. Useful for buttons sent by skills/cron jobs
+#       # through the raw Bot API. Routes are consulted only after every
+#       # built-in callback handler has declined the query, so built-in
+#       # callbacks always take precedence.
+#       # callback_text_routes:
+#       #   "log:breakfast:default": "Yes, had the usual ✅"
+#       #   "log:breakfast:custom": "Had something different ✏️"
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

@@ -412,6 +412,10 @@ class TelegramAdapter(BasePlatformAdapter):
         self._mention_patterns = self._compile_mention_patterns()
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._disable_link_previews: bool = self._coerce_bool_extra("disable_link_previews", False)
+        # Config-driven callback→text routes (extra.callback_text_routes):
+        # maps exact inline-keyboard callback_data strings to the text that is
+        # injected into the conversation as if the tapping user typed it.
+        self._callback_text_routes: Dict[str, str] = self._parse_callback_text_routes()
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
         self._media_batch_delay_seconds = float(os.getenv("HERMES_TELEGRAM_MEDIA_BATCH_DELAY_SECONDS", "0.8"))
@@ -894,6 +898,131 @@ class TelegramAdapter(BasePlatformAdapter):
                 return False
             return default
         return bool(value)
+
+    def _parse_callback_text_routes(self) -> Dict[str, str]:
+        """Parse ``extra.callback_text_routes`` into an exact-match dict.
+
+        Each entry maps an inline-keyboard ``callback_data`` string to the
+        text injected into the conversation when an authorized user taps the
+        button.  Invalid entries — non-string key/value, empty text, or keys
+        over Telegram's 64-byte callback_data limit — are dropped with a
+        warning so a config typo cannot break button handling.  Routes are
+        only consulted after every built-in callback handler has declined the
+        query (see ``_handle_callback_text_route``), so they can never shadow
+        built-in callbacks.
+
+        Note: a route key that matches a built-in callback prefix (e.g.
+        ``mp:``, ``mb``, ``mx``, ``gt:``, ``ea:``, ``sc:``, ``cl:``,
+        ``update_prompt:``) never fires — the built-in handler claims the
+        query first and the route entry is dead config.  Pick a dedicated
+        prefix for routed buttons (e.g. ``log:``).
+        """
+        raw = self.config.extra.get("callback_text_routes") or {}
+        if not isinstance(raw, dict):
+            logger.warning(
+                "[%s] callback_text_routes must be a mapping, got %s; ignoring",
+                self.name, type(raw).__name__,
+            )
+            return {}
+        routes: Dict[str, str] = {}
+        for key, text in raw.items():
+            if not isinstance(key, str) or not key or not isinstance(text, str) or not text.strip():
+                logger.warning("[%s] Ignoring invalid callback_text_routes entry: %r", self.name, key)
+                continue
+            if len(key.encode("utf-8")) > 64:
+                logger.warning(
+                    "[%s] Ignoring callback_text_routes key over Telegram's 64-byte callback_data limit: %r",
+                    self.name, key,
+                )
+                continue
+            routes[key] = text
+        return routes
+
+    async def _handle_callback_text_route(
+        self,
+        query,
+        data: str,
+        query_chat_id,
+        query_chat_type,
+        query_thread_id,
+        query_user_name,
+    ) -> None:
+        """Handle a callback query via config-driven callback→text routes.
+
+        Called as the FINAL step of ``_handle_callback_query``, after every
+        built-in prefix handler has declined the query — chain position alone
+        guarantees built-in callbacks always win over config routes.  On an
+        exact ``callback_data`` match the mapped text is re-injected as a
+        normal ``MessageEvent``, so session routing, skills, and logging treat
+        it exactly as if the tapping user had typed it.  Lets deployments wire
+        inline-keyboard buttons sent outside the agent's own toolchain (e.g.
+        by skills or cron jobs through the raw Bot API) back into the normal
+        conversation flow.  No-op when the data matches no route.
+        """
+        resolved_text = self._callback_text_routes.get(data)
+        if resolved_text is None:
+            return
+
+        caller_id = str(getattr(query.from_user, "id", ""))
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to use this button.")
+            return
+
+        await query.answer()
+        if not query.message:
+            logger.warning("[%s] Callback route %r has no source message; dropping", self.name, data)
+            return
+
+        user_display = getattr(query.from_user, "first_name", None) or "User"
+        # Append the tapped choice to the prompt message and strip the
+        # keyboard so the button cannot be tapped twice.  Best-effort: a
+        # failed edit must not prevent the text from being routed.
+        try:
+            original_text = query.message.text or ""
+            await query.edit_message_text(
+                text=(
+                    f"{_html.escape(original_text)}\n\n"
+                    f"<b>{_html.escape(user_display)}:</b> {_html.escape(resolved_text)}"
+                ),
+                parse_mode="HTML",
+                reply_markup=None,
+            )
+        except Exception as exc:
+            logger.debug("[%s] Callback route message edit failed (non-fatal): %s", self.name, exc)
+
+        # Re-inject the mapped text as a normal MessageEvent so existing
+        # session routing, skills, and logging treat it exactly like a
+        # typed message — full chat/user/thread context preserved.
+        # Dispatched directly through handle_message rather than the typed-text
+        # batching path (_enqueue_text_event): a button tap is a discrete,
+        # complete user action — never a client-side split fragment — so
+        # buffering it would only add latency.
+        try:
+            from types import SimpleNamespace
+
+            callback_message = SimpleNamespace(
+                chat=query.message.chat,
+                from_user=query.from_user,
+                text=resolved_text,
+                message_id=getattr(query.message, "message_id", None),
+                message_thread_id=getattr(query.message, "message_thread_id", None),
+                is_topic_message=getattr(query.message, "is_topic_message", False),
+                reply_to_message=None,
+                quote=None,
+                date=datetime.now(timezone.utc),
+                forum_topic_created=None,
+            )
+            event = self._build_message_event(callback_message, MessageType.TEXT)
+            event = self._apply_telegram_group_observe_attribution(event)
+            await self.handle_message(event)
+        except Exception as exc:
+            logger.error("[%s] Callback text route failed: %s", self.name, exc, exc_info=True)
 
     def _link_preview_kwargs(self) -> Dict[str, Any]:
         if not getattr(self, "_disable_link_previews", False):
@@ -3672,6 +3801,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
+            # No built-in handler claimed this query — as the final step,
+            # consult the config-driven callback→text routes
+            # (extra.callback_text_routes).  Chain position guarantees config
+            # routes can never shadow built-in callbacks.
+            await self._handle_callback_text_route(
+                query, data, query_chat_id, query_chat_type, query_thread_id, query_user_name,
+            )
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
         caller_id = str(getattr(query.from_user, "id", ""))

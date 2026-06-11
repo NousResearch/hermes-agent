@@ -134,8 +134,11 @@ class GeminiLiveSession(RealtimeVoiceSession):
         events = []
         content = frame.get("serverContent") or frame.get("server_content") or {}
         if content.get("interrupted"):
+            self.response_active = False
             events.append(RealtimeEvent(type="speech_started"))
         model_turn = content.get("modelTurn") or content.get("model_turn") or {}
+        if model_turn.get("parts"):
+            self.response_active = True
         for part in model_turn.get("parts", []):
             inline = part.get("inlineData") or part.get("inline_data") or {}
             data = inline.get("data")
@@ -153,6 +156,7 @@ class GeminiLiveSession(RealtimeVoiceSession):
                     )
                 )
         if content.get("turnComplete") or content.get("turn_complete"):
+            self.response_active = False
             events.append(RealtimeEvent(type="response_done"))
 
         tool_call = frame.get("toolCall") or frame.get("tool_call") or {}

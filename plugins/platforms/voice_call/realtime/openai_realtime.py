@@ -151,8 +151,12 @@ class OpenAIRealtimeSession(RealtimeVoiceSession):
 
     def _translate(self, frame: Dict[str, Any]) -> list:
         ftype = str(frame.get("type", ""))
+        if ftype == "response.created":
+            self.response_active = True
+            return []
         # Audio deltas (the API renamed response.audio.* → response.output_audio.*).
         if ftype in ("response.audio.delta", "response.output_audio.delta"):
+            self.response_active = True
             try:
                 audio = base64.b64decode(frame.get("delta") or "")
             except Exception:  # noqa: BLE001
@@ -180,6 +184,7 @@ class OpenAIRealtimeSession(RealtimeVoiceSession):
             )
             return [event] if event else []
         if ftype in ("response.done", "response.completed", "response.cancelled"):
+            self.response_active = False
             # GA delivers function calls as response.done output items (the
             # standalone arguments.done event is not guaranteed) — scan and
             # dedupe against ones already surfaced.

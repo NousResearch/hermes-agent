@@ -258,6 +258,7 @@ async def test_bridge_sends_model_audio_as_paced_media_frames(fake_runtime):
 async def test_bridge_barge_in_clears_carrier_queue(fake_runtime):
     ws = FakeCarrierWs([])
     session = FakeSession()
+    session.response_active = True  # the bot is mid-utterance
     record = _record()
     bridge = _bridge(fake_runtime, record, session)
     bridge._greeting_until = 0.0
@@ -275,6 +276,27 @@ async def test_bridge_barge_in_clears_carrier_queue(fake_runtime):
 
     assert any(m.get("event") == "clear" for m in ws.sent)
     assert session.cancelled == 1
+
+
+@pytest.mark.asyncio
+async def test_bridge_ignores_caller_speech_when_bot_is_silent(fake_runtime):
+    """Caller speaking while the bot is idle is a normal turn — clearing or
+    cancelling here used to dump already-generated answers from the pacer
+    and spam 'no active response found' errors."""
+    ws = FakeCarrierWs([])
+    session = FakeSession()  # response_active stays False, pacer empty
+    bridge = _bridge(fake_runtime, _record(), session)
+    bridge._greeting_until = 0.0
+
+    run = asyncio.create_task(bridge.run(ws))
+    await asyncio.sleep(0.02)
+    session.push(RealtimeEvent(type="speech_started"))
+    await asyncio.sleep(0.05)
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
+
+    assert not any(m.get("event") == "clear" for m in ws.sent)
+    assert session.cancelled == 0
 
 
 @pytest.mark.asyncio
@@ -323,6 +345,43 @@ async def test_bridge_consult_tool_roundtrip(fake_runtime, monkeypatch):
     assert session.tool_results == [
         ("call-1", "Your next meeting is at three PM.")
     ]
+    # The caller heard a filler while the consult ran.
+    assert fake_runtime.config.responder.thinking_phrase in session.injected_text
+
+
+@pytest.mark.asyncio
+async def test_tool_result_deferred_while_response_active(fake_runtime, monkeypatch):
+    """A consult result arriving mid-filler waits for response_done —
+    response.create during an active response is rejected by the API."""
+
+    class FakeLlm:
+        def complete(self, messages, **kwargs):
+            class R:
+                text = "deferred answer"
+            return R()
+
+    monkeypatch.setattr(bridge_mod, "_plugin_llm_factory", lambda: FakeLlm())
+    ws = FakeCarrierWs([])
+    session = FakeSession()
+    session.response_active = True  # filler/utterance still playing
+    bridge = _bridge(fake_runtime, _record(), session)
+
+    run = asyncio.create_task(bridge.run(ws))
+    await asyncio.sleep(0.02)
+    session.push(RealtimeEvent(
+        type="tool_call", tool_call_id="call-9", tool_name="agent_consult",
+        tool_args={"question": "anything"},
+    ))
+    await asyncio.sleep(0.1)
+    assert session.tool_results == []  # held back
+
+    session.response_active = False
+    session.push(RealtimeEvent(type="response_done"))
+    await asyncio.sleep(0.05)
+    assert session.tool_results == [("call-9", "deferred answer")]
+
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
 
 
 @pytest.mark.asyncio

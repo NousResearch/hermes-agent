@@ -64,6 +64,11 @@ class RealtimeVoiceSession(abc.ABC):
     # "ulaw": the model speaks G.711 µ-law @ 8 kHz natively (OpenAI
     # audio/pcmu) and the bridge passes carrier frames straight through.
     audio_wire_format: str = "pcm16"
+    # True while the model has a response in flight (set from
+    # response.created/turn events). The bridge uses this to decide whether
+    # caller speech is barge-in (interrupt) or just a normal turn, and to
+    # defer tool results until the current utterance finishes.
+    response_active: bool = False
 
     @abc.abstractmethod
     async def connect(self) -> None:

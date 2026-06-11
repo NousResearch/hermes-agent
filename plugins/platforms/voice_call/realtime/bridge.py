@@ -201,6 +201,12 @@ class RealtimeCallBridge:
         self.session = session
         self._ws = None
         self._greeting_until = 0.0
+        self._pacer: Optional[AudioPacer] = None
+        # Tool results that arrived while the model was mid-utterance (e.g.
+        # speaking the "let me check" filler) — sending response.create then
+        # would collide with the active response, so they flush on
+        # response_done instead.
+        self._deferred_tool_results: list = []
 
     async def run(self, ws) -> None:
         self._ws = ws
@@ -222,6 +228,7 @@ class RealtimeCallBridge:
                 self._greeting_until = time.time() + 3.0
 
         pacer = AudioPacer(self._send_media_frame)
+        self._pacer = pacer
         tasks = [
             asyncio.create_task(self._inbound_pump(ws), name="vc-rt-inbound"),
             asyncio.create_task(self._outbound_pump(pacer), name="vc-rt-outbound"),
@@ -303,6 +310,8 @@ class RealtimeCallBridge:
                 asyncio.get_running_loop().create_task(
                     self._handle_tool_call(event)
                 )
+            elif event.type == "response_done":
+                await self._flush_deferred_tool_results()
             elif event.type == "error":
                 logger.warning("voice_call realtime: model error: %s", event.text)
             elif event.type == "closed":
@@ -311,13 +320,24 @@ class RealtimeCallBridge:
     async def _handle_barge_in(self, pacer: AudioPacer) -> None:
         if time.time() < self._greeting_until:
             return  # don't let line noise cut off the greeting
+        # Caller speech is only an interruption when the bot is actually
+        # talking (response in flight or audio still queued). Otherwise it's
+        # a normal conversational turn — clearing the pacer here would dump
+        # answers the model already finished generating (it produces audio
+        # faster than realtime), and cancelling would just spam
+        # "no active response found" errors.
+        if not (self.session.response_active or pacer.pending):
+            return
         dropped = pacer.clear()
         if self._ws is not None and not self._ws.closed:
             await self._ws.send_str(self.adapter.serialize_clear())
-        try:
-            await self.session.cancel_response()
-        except Exception:  # noqa: BLE001
-            logger.debug("voice_call realtime: cancel_response failed", exc_info=True)
+        if self.session.response_active:
+            try:
+                await self.session.cancel_response()
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "voice_call realtime: cancel_response failed", exc_info=True
+                )
         if dropped:
             logger.debug(
                 "voice_call realtime: barge-in dropped %d queued frames", dropped
@@ -339,6 +359,16 @@ class RealtimeCallBridge:
 
     async def _handle_tool_call(self, event) -> None:
         question = str(event.tool_args.get("question", "")).strip()
+        # Consults take seconds (full agent model) — speak a filler so the
+        # caller isn't sitting in silence wondering if the call dropped
+        # (silence provokes "hello?", which used to barge-in the answer).
+        phrase = self.runtime.config.responder.thinking_phrase
+        if phrase and not self.session.response_active:
+            try:
+                await self.session.inject_text(phrase)
+            except Exception:  # noqa: BLE001
+                logger.debug("voice_call realtime: filler inject failed",
+                             exc_info=True)
         try:
             answer = await asyncio.wait_for(
                 self._consult_agent(question), timeout=CONSULT_TIMEOUT_S
@@ -348,11 +378,34 @@ class RealtimeCallBridge:
         except Exception as e:  # noqa: BLE001
             logger.exception("voice_call realtime: agent_consult failed")
             answer = f"Sorry, I could not check that: {e}"
+        await self._deliver_tool_result(event.tool_call_id, answer)
+
+    async def _deliver_tool_result(self, tool_call_id: str, answer: str) -> None:
+        """Send now, or defer until the in-flight utterance (filler) ends —
+        response.create during an active response is rejected by the API."""
+        if self.session.response_active:
+            self._deferred_tool_results.append((tool_call_id, answer))
+            # Re-check: the response may have ended between the check and
+            # the append (its response_done already processed).
+            if not self.session.response_active:
+                await self._flush_deferred_tool_results()
+            return
         try:
-            await self.session.send_tool_result(event.tool_call_id, answer)
+            await self.session.send_tool_result(tool_call_id, answer)
         except Exception:  # noqa: BLE001
             logger.warning("voice_call realtime: tool result delivery failed",
                            exc_info=True)
+
+    async def _flush_deferred_tool_results(self) -> None:
+        while self._deferred_tool_results and not self.session.response_active:
+            tool_call_id, answer = self._deferred_tool_results.pop(0)
+            try:
+                await self.session.send_tool_result(tool_call_id, answer)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "voice_call realtime: deferred tool result delivery failed",
+                    exc_info=True,
+                )
 
     async def _consult_agent(self, question: str) -> str:
         if not question:

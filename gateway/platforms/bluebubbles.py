@@ -9,6 +9,7 @@ downloading from PR #4588 (YuhangLin).
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -870,7 +871,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
             or request.headers.get("x-guid")
             or request.headers.get("x-bluebubbles-guid")
         )
-        if token != self.password:
+        # Constant-time comparison so the webhook secret cannot be recovered
+        # via a response-timing side channel (CWE-208). A plain ``!=`` short-
+        # circuits on the first differing byte, leaking the matched prefix
+        # length. ``token`` may be ``None`` when no credential header/param is
+        # present, so coerce to a string before encoding.
+        if not hmac.compare_digest(
+            (token or "").encode("utf-8"), self.password.encode("utf-8")
+        ):
             return web.json_response({"error": "unauthorized"}, status=401)
         try:
             raw = await request.read()

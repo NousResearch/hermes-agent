@@ -830,3 +830,54 @@ class TestBlueBubblesWebhookRegistration:
             adapter._unregister_webhook()
         )
         assert ok is False
+
+
+class _FakeWebhookRequest:
+    """Minimal stand-in for an aiohttp request used by _handle_webhook."""
+
+    def __init__(self, query=None, headers=None, body=b"{}"):
+        self.query = query or {}
+        self.headers = headers or {}
+        self._body = body
+
+    async def read(self):
+        return self._body
+
+
+class TestBlueBubblesWebhookAuth:
+    """Webhook credential check must be timing-safe (CWE-208)."""
+
+    def test_wrong_password_rejected(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        req = _FakeWebhookRequest(query={"password": "wrong"})
+        resp = asyncio.run(adapter._handle_webhook(req))
+        assert resp.status == 401
+
+    def test_missing_credential_rejected(self, monkeypatch):
+        # token resolves to None when no query param / header is present;
+        # the comparison must not raise and must still reject.
+        adapter = _make_adapter(monkeypatch)
+        req = _FakeWebhookRequest()
+        resp = asyncio.run(adapter._handle_webhook(req))
+        assert resp.status == 401
+
+    def test_auth_uses_constant_time_compare(self, monkeypatch):
+        adapter = _make_adapter(monkeypatch)
+        import gateway.platforms.bluebubbles as bb
+
+        calls = []
+
+        def spy(a, b):
+            calls.append((a, b))
+            return False  # short-circuit before payload processing
+
+        monkeypatch.setattr(bb.hmac, "compare_digest", spy)
+        req = _FakeWebhookRequest(query={"password": "secret"})
+        resp = asyncio.run(adapter._handle_webhook(req))
+
+        assert resp.status == 401
+        # The supplied token AND the configured secret must both flow through
+        # the constant-time comparator (no plain == fast path remains).
+        assert calls, "webhook auth must use hmac.compare_digest"
+        assert calls[0][0] == b"secret"
+        assert calls[0][1] == b"secret"

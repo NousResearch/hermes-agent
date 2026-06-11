@@ -1266,6 +1266,8 @@ export const zhHant = defineLocale({
     stopDictation: '停止聽寫',
     transcribingDictation: '正在轉寫聽寫',
     voiceDictation: '語音聽寫',
+    toggleAutoTts: '朗讀回覆',
+    toggleAutoTtsOff: '停止朗讀',
     lookupLoading: '查詢中…',
     lookupNoMatches: '沒有相符項目。',
     lookupTry: '試試',

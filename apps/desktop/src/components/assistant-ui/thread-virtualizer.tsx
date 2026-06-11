@@ -1,4 +1,5 @@
 import { ThreadPrimitive, useAuiEvent, useAuiState } from '@assistant-ui/react'
+import { useStore } from '@nanostores/react'
 import { useVirtualizer, type Virtualizer } from '@tanstack/react-virtual'
 import {
   type ComponentProps,
@@ -13,8 +14,10 @@ import {
 } from 'react'
 
 import { setMutableRef } from '@/lib/mutable-ref'
+import { playSpeechText } from '@/lib/voice-playback'
 import { cn } from '@/lib/utils'
 import { setThreadScrolledUp } from '@/store/thread-scroll'
+import { $autoTts, $voicePlayback } from '@/store/voice-playback'
 
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
@@ -78,6 +81,43 @@ const VirtualizedThreadInner: FC<VirtualizedThreadProps> = ({
   )
 
   const isRunning = useAuiState(s => s.thread.isRunning)
+
+  // ── Auto-TTS: speak assistant response when a run completes ────────
+  const autoTts = useStore($autoTts)
+  const voicePlayback = useStore($voicePlayback)
+  const prevRunningRef = useRef(isRunning)
+
+  const lastAssistant = useAuiState(s => {
+    const messages = s.thread.messages
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]
+      if (msg.role === 'assistant') {
+        const parts = msg.content
+        let text = ''
+        if (typeof parts === 'string') {
+          text = parts
+        } else if (Array.isArray(parts)) {
+          text = parts
+            .filter((p: Record<string, unknown>) => !p.type || p.type === 'text')
+            .map((p: Record<string, unknown>) => (typeof p.text === 'string' ? p.text : ''))
+            .join('')
+        }
+        return { id: msg.id, text: text.trim() }
+      }
+    }
+    return null
+  })
+
+  useEffect(() => {
+    const wasRunning = prevRunningRef.current
+    prevRunningRef.current = isRunning
+    if (wasRunning && !isRunning && autoTts && voicePlayback.status === 'idle' && lastAssistant?.text) {
+      void playSpeechText(lastAssistant.text, {
+        messageId: lastAssistant.id,
+        source: 'read-aloud'
+      }).catch(() => { /* TTS failure is non-fatal */ })
+    }
+  }, [isRunning, autoTts, voicePlayback.status, lastAssistant])
 
   const groups = useMemo(() => buildGroups(messageSignature), [messageSignature])
   const renderEmpty = groups.length === 0 && Boolean(emptyPlaceholder)

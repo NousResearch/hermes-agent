@@ -899,6 +899,8 @@ export interface Translations {
     stopDictation: string
     transcribingDictation: string
     voiceDictation: string
+    toggleAutoTts: string
+    toggleAutoTtsOff: string
     lookupLoading: string
     lookupNoMatches: string
     lookupTry: string

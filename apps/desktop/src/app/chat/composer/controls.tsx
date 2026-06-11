@@ -1,11 +1,13 @@
+import { useStore } from '@nanostores/react'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { AudioLines, Layers3, Loader2, Square, SteeringWheel } from '@/lib/icons'
+import { AudioLines, Layers3, Loader2, Square, SteeringWheel, Volume2, VolumeX } from '@/lib/icons'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
+import { $autoTts, setAutoTts } from '@/store/voice-playback'
 
 import type { ConversationStatus } from './hooks/use-voice-conversation'
 import type { ChatBarState, VoiceStatus } from './types'
@@ -64,6 +66,7 @@ export function ComposerControls({
   const { t } = useI18n()
   const c = t.composer
   const steerLabel = `${c.steer} (${formatCombo('mod+enter')})`
+  const autoTts = useStore($autoTts)
 
   if (conversation.active) {
     return <ConversationPill {...conversation} disabled={disabled} />
@@ -73,6 +76,23 @@ export function ComposerControls({
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
+      <Tip label={autoTts ? c.toggleAutoTtsOff : c.toggleAutoTts}>
+        <Button
+          aria-label={autoTts ? c.toggleAutoTtsOff : c.toggleAutoTts}
+          aria-pressed={autoTts}
+          className={cn(GHOST_ICON_BTN, 'p-0', autoTts && 'bg-accent text-foreground')}
+          disabled={disabled}
+          onClick={() => {
+            triggerHaptic('selection')
+            setAutoTts(!autoTts)
+          }}
+          size="icon"
+          type="button"
+          variant="ghost"
+        >
+          {autoTts ? <Volume2 size={16} /> : <VolumeX size={16} />}
+        </Button>
+      </Tip>
       <DictationButton disabled={disabled} onToggle={onDictate} state={state.voice} status={voiceStatus} />
       {canSteer && (
         <Tip label={steerLabel}>

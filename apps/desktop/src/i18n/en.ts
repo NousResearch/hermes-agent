@@ -1168,6 +1168,8 @@ export const en: Translations = {
     stopDictation: 'Stop dictation',
     transcribingDictation: 'Transcribing dictation',
     voiceDictation: 'Voice dictation',
+    toggleAutoTts: 'Read responses aloud',
+    toggleAutoTtsOff: 'Stop reading aloud',
     lookupLoading: 'Looking up…',
     lookupNoMatches: 'No matches.',
     lookupTry: 'Try',

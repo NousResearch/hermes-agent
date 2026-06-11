@@ -22,3 +22,10 @@ export const $voicePlayback = atom<VoicePlaybackState>({
 export function setVoicePlaybackState(next: VoicePlaybackState) {
   $voicePlayback.set(next)
 }
+
+// ── Auto-TTS preference ──────────────────────────────────────────────
+export const $autoTts = atom(false)
+
+export function setAutoTts(value: boolean) {
+  $autoTts.set(value)
+}

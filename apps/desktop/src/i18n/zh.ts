@@ -1354,6 +1354,8 @@ export const zh: Translations = {
     stopDictation: '停止听写',
     transcribingDictation: '正在转写听写',
     voiceDictation: '语音听写',
+    toggleAutoTts: '朗读回复',
+    toggleAutoTtsOff: '停止朗读',
     lookupLoading: '查找中…',
     lookupNoMatches: '没有匹配项。',
     lookupTry: '试试',

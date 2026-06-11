@@ -147,16 +147,41 @@ def _image_data_url(data: bytes, mime_type: str) -> str:
     return f"data:{mime_type};base64,{base64.b64encode(data).decode('ascii')}"
 
 
+def _drive_letter_path(drive: str, rest: str) -> Path:
+    """Build a readable Path for a Windows drive-letter path.
+
+    Under WSL the Windows filesystem is only reachable through the
+    ``/mnt/<drive>/`` mount, so rewrite to that form. On native Windows — and
+    any other non-WSL host — keep the real drive path. Mirrors the ``is_wsl()``
+    guard in ``session._translate_acp_cwd``; without it a native-Windows client
+    gets a bogus ``/mnt/c/...`` path that does not exist.
+    """
+    from hermes_constants import is_wsl
+
+    tail = rest.lstrip("/\\").replace("\\", "/")
+    if is_wsl():
+        return Path("/mnt") / drive.lower() / tail
+    return Path(f"{drive.upper()}:/{tail}")
+
+
 def _path_from_file_uri(uri: str) -> Path | None:
     """Convert local file URIs/paths from ACP clients into a readable Path.
 
-    Zed may send POSIX file URIs from Linux/WSL workspaces or Windows-ish paths
-    when launched through wsl.exe. Translate the common Windows drive form to
-    /mnt/<drive>/... so Hermes running in WSL can read it.
+    Zed may send POSIX ``file://`` URIs from Linux/WSL workspaces, Windows
+    drive URIs/paths (``file:///C:/...`` or ``C:\\Users\\...``), or bare POSIX
+    paths. Windows drive paths are rewritten to ``/mnt/<drive>/...`` only when
+    Hermes itself runs inside WSL; on native Windows the real drive path is
+    returned (see ``_drive_letter_path``).
     """
     raw = (uri or "").strip()
     if not raw:
         return None
+
+    # Bare Windows drive paths (``C:\Users\...`` / ``C:/Users/...``) must be
+    # handled before urlparse, which parses the leading drive letter as a URL
+    # scheme ("c:") and would trip the non-file scheme guard below.
+    if len(raw) >= 2 and raw[1] == ":" and raw[0].isalpha():
+        return _drive_letter_path(raw[0], raw[2:])
 
     parsed = urlparse(raw)
     if parsed.scheme and parsed.scheme != "file":
@@ -169,15 +194,12 @@ def _path_from_file_uri(uri: str) -> Path | None:
     else:
         path_text = unquote(raw)
 
-    # file:///C:/Users/... or C:\Users\...
+    # file:///C:/Users/... — drive letter sits after the URI's leading slash.
     if len(path_text) >= 3 and path_text[0] == "/" and path_text[2] == ":" and path_text[1].isalpha():
-        drive = path_text[1].lower()
-        rest = path_text[3:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+        return _drive_letter_path(path_text[1], path_text[3:])
+    # Bare drive form only visible after percent-decoding (e.g. ``C%3A\...``).
     if len(path_text) >= 2 and path_text[1] == ":" and path_text[0].isalpha():
-        drive = path_text[0].lower()
-        rest = path_text[2:].lstrip("/\\").replace("\\", "/")
-        return Path("/mnt") / drive / rest
+        return _drive_letter_path(path_text[0], path_text[2:])
 
     return Path(path_text)
 

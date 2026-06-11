@@ -36,7 +36,12 @@ from acp.schema import (
     UserMessageChunk,
 )
 from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID
-from acp_adapter.server import HermesACPAgent, HERMES_VERSION
+from acp_adapter.server import (
+    HermesACPAgent,
+    HERMES_VERSION,
+    _drive_letter_path,
+    _path_from_file_uri,
+)
 from acp_adapter.session import SessionManager
 from hermes_state import SessionDB
 
@@ -1841,3 +1846,71 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+# ---------------------------------------------------------------------------
+# _path_from_file_uri — Windows drive handling gated on is_wsl()
+# ---------------------------------------------------------------------------
+
+
+class TestPathFromFileUri:
+    """ACP clients can reference files as ``file:///C:/...`` URIs or bare
+    ``C:\\...`` paths. The ``/mnt/<drive>/`` rewrite is only correct when Hermes
+    itself runs inside WSL; on native Windows the real drive path must be kept,
+    mirroring the ``is_wsl()`` guard in ``session._translate_acp_cwd``.
+
+    Results are compared via ``.as_posix()`` so the assertions hold on both a
+    Windows test runner (``WindowsPath``) and Linux CI (``PosixPath``).
+    """
+
+    def test_drive_uri_returns_native_path_off_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        result = _path_from_file_uri("file:///C:/Users/foo/bar.txt")
+        assert result is not None
+        assert result.as_posix() == "C:/Users/foo/bar.txt"
+
+    def test_bare_drive_path_returns_native_path_off_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        # Bare backslash paths used to be rejected outright because urlparse
+        # reads the drive letter as scheme "c:"; they must now resolve.
+        result = _path_from_file_uri(r"C:\Users\foo\bar.txt")
+        assert result is not None
+        assert result.as_posix() == "C:/Users/foo/bar.txt"
+
+    def test_forward_slash_drive_path_off_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        result = _path_from_file_uri("D:/work/project")
+        assert result is not None
+        assert result.as_posix() == "D:/work/project"
+
+    def test_drive_uri_maps_to_mnt_on_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        result = _path_from_file_uri("file:///C:/Users/foo/bar.txt")
+        assert result is not None
+        assert result.as_posix() == "/mnt/c/Users/foo/bar.txt"
+
+    def test_bare_drive_path_maps_to_mnt_on_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        result = _path_from_file_uri(r"E:\Projects\AI\paperclip")
+        assert result is not None
+        assert result.as_posix() == "/mnt/e/Projects/AI/paperclip"
+
+    def test_posix_file_uri_unchanged_on_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        result = _path_from_file_uri("file:///home/user/notes.md")
+        assert result is not None
+        assert result.as_posix() == "/home/user/notes.md"
+
+    def test_non_file_scheme_returns_none(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        assert _path_from_file_uri("https://example.com/x") is None
+
+    def test_blank_uri_returns_none(self):
+        assert _path_from_file_uri("") is None
+        assert _path_from_file_uri("   ") is None
+
+    def test_drive_letter_path_helper_gates_on_wsl(self, monkeypatch):
+        monkeypatch.setattr("hermes_constants._wsl_detected", False)
+        assert _drive_letter_path("c", "/Users/foo").as_posix() == "C:/Users/foo"
+        monkeypatch.setattr("hermes_constants._wsl_detected", True)
+        assert _drive_letter_path("c", "/Users/foo").as_posix() == "/mnt/c/Users/foo"

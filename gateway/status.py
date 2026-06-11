@@ -139,27 +139,28 @@ def _read_process_cmdline(pid: int) -> Optional[str]:
         if raw:
             return raw.replace(b"\x00", b" ").decode("utf-8", errors="ignore").strip()
 
-    try:
-        result = subprocess.run(
-            ["ps", "-p", str(pid), "-o", "command="],
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except (OSError, subprocess.TimeoutExpired):
-        pass
-
-    # Windows fallback: psutil (already used by _pid_exists)
-    try:
-        import psutil  # type: ignore
-        proc = psutil.Process(pid)
-        cmdline_parts = proc.cmdline()
-        if cmdline_parts:
-            return " ".join(cmdline_parts)
-    except Exception:
-        pass
+    # On Windows, skip `ps` (Git's ps.exe pops a console window) and use psutil directly.
+    if sys.platform == "win32":
+        try:
+            import psutil  # type: ignore
+            proc = psutil.Process(pid)
+            cmdline_parts = proc.cmdline()
+            if cmdline_parts:
+                return " ".join(cmdline_parts)
+        except Exception:
+            pass
+    else:
+        try:
+            result = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except (OSError, subprocess.TimeoutExpired):
+            pass
 
     return None
 

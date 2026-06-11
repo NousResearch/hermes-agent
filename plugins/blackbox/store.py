@@ -75,6 +75,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             comp_tool_arg_tokens INT,
             comp_tool_result_count INT,
             comp_skills_tokens INT,
+            comp_skills_count INT,
             comp_framing_tokens INT,
             comp_calls_json TEXT,
             cost_usd REAL,
@@ -132,6 +133,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "comp_history_message_count",
         "comp_tool_result_tokens", "comp_tool_arg_tokens", "comp_tool_result_count",
         "comp_skills_tokens", "comp_framing_tokens",
+        "comp_skills_count",
     ):
         if _col not in _existing:
             try:
@@ -217,10 +219,11 @@ def insert_turn(record: TurnRecord) -> None:
                     comp_history_message_count,
                     comp_tool_result_tokens, comp_tool_arg_tokens, comp_tool_result_count,
                     comp_skills_tokens, comp_framing_tokens,
+                    comp_skills_count,
                     comp_calls_json,
                     cost_usd, cost_status, interrupted, alerted, user_text,
                     final_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     record.turn_id,
@@ -255,6 +258,7 @@ def insert_turn(record: TurnRecord) -> None:
                     _int_or_none(record.comp_tool_result_count),
                     _int_or_none(record.comp_skills_tokens),
                     _int_or_none(record.comp_framing_tokens),
+                    _int_or_none(record.comp_skills_count),
                     record.comp_calls_json,
                     _cost_float(record.cost_usd),
                     record.cost_status or "unknown",

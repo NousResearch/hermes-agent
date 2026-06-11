@@ -43,6 +43,36 @@ def test_buckets_sum_exactly_to_total():
     assert comp["history_message_count"] == 2
 
 
+def test_skills_count_matches_index_bullet_lines():
+    # build_skills_system_prompt renders each skill as "    - name[: desc]"
+    # (4-space indent). Category headers use 2 spaces and must NOT be counted.
+    skills_prompt = (
+        "## Skills (mandatory)\n"
+        "<available_skills>\n"
+        "  github: GitHub workflow skills\n"
+        "    - github-pr-workflow: open/merge PRs\n"
+        "    - github-issues: triage issues\n"
+        "  devops:\n"
+        "    - docker-management: containers\n"
+        "</available_skills>\n"
+    )
+    comp = compose_request_breakdown(
+        [{"role": "user", "content": "hi"}],
+        system_prompt="IDENTITY " + skills_prompt,
+        skills_prompt=skills_prompt,
+    )
+    # Three "    - " bullets → 3 skills; the two category headers are ignored.
+    assert comp["skills_count"] == 3
+    assert comp["skills_tokens"] > 0
+
+
+def test_skills_count_zero_when_no_skills_prompt():
+    comp = compose_request_breakdown(
+        [{"role": "user", "content": "hi"}], system_prompt="IDENTITY ONLY"
+    )
+    assert comp["skills_count"] == 0
+
+
 def test_system_message_in_list_is_not_double_counted():
     sys_prompt = "S" * 40000
     base = [{"role": "user", "content": "hello world"}]
@@ -239,6 +269,7 @@ def _record(**over):
         comp_history_message_count=12,
         comp_tool_arg_tokens=200, comp_tool_result_count=4,
         comp_skills_tokens=600, comp_framing_tokens=720,
+        comp_skills_count=58,
         comp_calls_json=json.dumps([{"fixed_tokens": 3000}]),
     )
     base.update(over)
@@ -257,6 +288,7 @@ def test_comp_columns_round_trip(bb_store):
     assert got["comp_tool_arg_tokens"] == 200
     assert got["comp_tool_result_count"] == 4
     assert got["comp_skills_tokens"] == 600
+    assert got["comp_skills_count"] == 58
     assert got["comp_framing_tokens"] == 720
     assert json.loads(got["comp_calls_json"]) == [{"fixed_tokens": 3000}]
 
@@ -293,6 +325,7 @@ def test_migration_adds_comp_columns_to_legacy_db(bb_store, tmp_path):
               "comp_history_message_count",
               "comp_tool_result_tokens", "comp_tool_arg_tokens",
               "comp_tool_result_count", "comp_skills_tokens",
+              "comp_skills_count",
               "comp_framing_tokens", "comp_calls_json"):
         assert c in cols, f"migration missed {c}"
 

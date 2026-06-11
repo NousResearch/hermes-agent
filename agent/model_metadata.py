@@ -2021,6 +2021,15 @@ def compose_request_breakdown(
     # The skills catalog is a substring of the system prompt; never let it
     # exceed the whole prompt (defensive against a stale/mismatched stash).
     skills_chars = min(skills_chars, sys_chars)
+    # Count the skills listed in the index. Each skill is rendered as a
+    # bullet line "    - {name}[: {desc}]" (4-space indent) by
+    # build_skills_system_prompt; category headers use a 2-space indent, so
+    # the 4-space "    - " prefix uniquely identifies a skill entry.
+    skills_count = 0
+    if skills_prompt:
+        for _line in skills_prompt.splitlines():
+            if _line.startswith("    - "):
+                skills_count += 1
     tool_schema_chars = len(str(tools)) if tools else 0
     history_chars = 0
     tool_result_chars = 0
@@ -2088,6 +2097,7 @@ def compose_request_breakdown(
         "sys_tokens": sys_tokens,
         "identity_tokens": identity_tokens,
         "skills_tokens": skills_tokens,
+        "skills_count": skills_count,
         "tool_schema_tokens": tool_schema_tokens,
         "history_tokens": history_tokens,
         "history_message_count": history_message_count,

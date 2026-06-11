@@ -1,0 +1,66 @@
+name: nextcloud-talk-platform
+label: Nextcloud Talk
+kind: platform
+version: 1.0.0
+description: >
+  Nextcloud Talk platform adapter for Hermes Agent.
+  Connects Hermes as a regular Nextcloud user (User API, App Password)
+  to one or more Talk conversations via OCS long-polling. Supports
+  attachments (download via WebDAV), per-conversation aliases, and
+  optional speech-to-text for voice messages.
+
+  This adapter ships as a bundled platform plugin under
+  ``plugins/platforms/nextcloud_talk/``. The Hermes plugin loader
+  discovers it at startup, calls :func:`register`, and the platform
+  becomes available to ``gateway/run.py`` and ``tools/send_message_tool``
+  through the registry — no core file edits required.
+
+  Configuration is split:
+    * Secrets (URL, username, app password) come from ``.env`` (see
+      ``requires_env`` below).
+    * Conversation list and per-conversation aliases live in
+      ``config.yaml`` under ``platforms.nextcloud_talk.extra.conversations``.
+
+author: nsyring
+requires_env:
+  - name: NEXTCLOUD_TALK_URL
+    description: "Base URL of your Nextcloud instance (e.g. https://nextcloud.example.com)"
+    prompt: "Nextcloud base URL"
+    password: false
+  - name: NEXTCLOUD_TALK_USERNAME
+    description: "Nextcloud username the Hermes bot logs in as"
+    prompt: "Nextcloud username"
+    password: false
+  - name: NEXTCLOUD_TALK_APP_PASSWORD
+    description: "Nextcloud app password (Settings → Security → Devices & sessions → Create new app password)"
+    prompt: "Nextcloud app password"
+    password: true
+optional_env:
+  - name: NEXTCLOUD_TALK_CONVERSATIONS
+    description: "Comma-separated list of conversation tokens to join (alternative to config.yaml)"
+    prompt: "Conversation tokens (comma-separated)"
+    password: false
+  - name: NEXTCLOUD_TALK_ALLOWED_USERS
+    description: "Comma-separated list of Nextcloud usernames allowed to talk to Hermes (allowlist)"
+    prompt: "Allowed Nextcloud usernames (comma-separated)"
+    password: false
+  - name: NEXTCLOUD_TALK_ALLOW_ALL_USERS
+    description: "Allow any participant in joined conversations to talk to Hermes (true/false, default: false)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: NEXTCLOUD_TALK_HOME_CHANNEL
+    description: "Conversation token for cron / notification delivery"
+    prompt: "Home channel conversation token (or empty)"
+    password: false
+  - name: NEXTCLOUD_TALK_HOME_CHANNEL_NAME
+    description: "Human-readable display name for the home channel"
+    prompt: "Home channel display name (or empty)"
+    password: false
+  - name: NEXTCLOUD_TALK_POLL_TIMEOUT
+    description: "Long-poll timeout in seconds (default: 30, max: 60)"
+    prompt: "Poll timeout in seconds"
+    password: false
+  - name: NEXTCLOUD_TALK_SHOW_STATUS_UPDATES
+    description: "Show '⏳ Thinking...' acknowledgment messages (true/false, default: true)"
+    prompt: "Show thinking acks? (true/false)"
+    password: false

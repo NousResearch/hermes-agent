@@ -13138,6 +13138,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             set_sudo_password_callback(None)
             set_approval_callback(None)
             set_secret_capture_callback(None)
+            # Flush any un-persisted conversation messages to SQLite before
+            # closing the session.  Without this, Ctrl+C at the idle prompt
+            # (or any exit that bypasses run_conversation's _persist_session)
+            # leaves the messages table empty even though the session row
+            # exists.  (#44281)
+            if (
+                hasattr(self, 'conversation_history')
+                and self.conversation_history
+                and self.agent
+                and hasattr(self.agent, '_flush_messages_to_session_db')
+            ):
+                try:
+                    self.agent._flush_messages_to_session_db(
+                        self.conversation_history, None,
+                    )
+                except Exception as e:
+                    logger.debug("Could not flush messages on exit: %s", e)
             # Close session in SQLite
             if hasattr(self, '_session_db') and self._session_db and self.agent:
                 try:

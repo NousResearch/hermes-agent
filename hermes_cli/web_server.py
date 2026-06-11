@@ -3129,7 +3129,20 @@ _CREDENTIAL_PROBES: dict[str, tuple[str, str]] = {
     "OPENAI_API_KEY": ("https://api.openai.com/v1/models", "bearer"),
     "XAI_API_KEY": ("https://api.x.ai/v1/models", "bearer"),
     "GEMINI_API_KEY": ("https://generativelanguage.googleapis.com/v1beta/models", "query"),
+    # GitHub tokens (Skills Hub rate limits, issues/PRs/forks) validate against
+    # the REST API ``/user`` endpoint, which authenticates BOTH classic
+    # (``ghp_*``) and fine-grained (``github_pat_*``) PATs. The Copilot API only
+    # accepts fine-grained/OAuth tokens, so probing it would wrongly reject a
+    # classic PAT that is perfectly valid for everything the GitHub token is
+    # used for here. See #40041.
+    "GITHUB_TOKEN": ("https://api.github.com/user", "bearer"),
+    "GH_TOKEN": ("https://api.github.com/user", "bearer"),
 }
+
+# GitHub keys get bespoke result handling: ``/user`` returns 401 only for a
+# bad/expired token, while 403 means a real token that is rate-limited or
+# SSO-gated (still proves the credential authenticates), so we don't block it.
+_GITHUB_TOKEN_KEYS = frozenset({"GITHUB_TOKEN", "GH_TOKEN"})
 
 
 def _parse_model_ids(resp: "Any") -> List[str]:
@@ -3207,6 +3220,23 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
             resp = client.get(url, headers=headers, params=params)
     except Exception:
         return {"ok": False, "reachable": False, "message": "Could not reach the provider to verify the key."}
+
+    if key in _GITHUB_TOKEN_KEYS:
+        # 200 = token authenticates (any PAT type); 403/429 = real but
+        # rate-limited or SSO-gated — don't block; 401 = genuinely bad token.
+        if resp.is_success or resp.status_code in (403, 429):
+            return {"ok": True, "reachable": True, "message": ""}
+        if resp.status_code == 401:
+            return {
+                "ok": False,
+                "reachable": True,
+                "message": (
+                    "GitHub rejected this token. Use a classic PAT (ghp_…) or a "
+                    "fine-grained PAT (github_pat_…) — generate one at "
+                    "https://github.com/settings/tokens."
+                ),
+            }
+        return {"ok": False, "reachable": True, "message": f"GitHub returned HTTP {resp.status_code} for this token."}
 
     if resp.status_code in (401, 403):
         return {"ok": False, "reachable": True, "message": "That API key was rejected. Double-check it and try again."}

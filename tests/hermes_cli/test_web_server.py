@@ -4875,6 +4875,58 @@ class TestValidateProviderCredential:
         data = self._post("OPENAI_API_KEY", "   ").json()
         assert data["ok"] is False
 
+    # ── GitHub PAT validation (#40041) ──────────────────────────────────
+    # Regression coverage: GitHub tokens must be probed against the REST API
+    # (``/user``), which accepts BOTH classic (ghp_*) and fine-grained
+    # (github_pat_*) PATs — not the Copilot API, which rejects classic PATs and
+    # made the desktop "Tools & Keys → GitHub" save surface an opaque error.
+
+    def test_github_probe_targets_rest_api_not_copilot(self):
+        # The probe URL is the authenticated-user REST endpoint, where every
+        # PAT type works — never the Copilot host that rejects classic PATs.
+        from hermes_cli.web_server import _CREDENTIAL_PROBES
+
+        url, auth = _CREDENTIAL_PROBES["GITHUB_TOKEN"]
+        assert url == "https://api.github.com/user"
+        assert auth == "bearer"
+        assert "copilot" not in url.lower()
+
+    def test_github_classic_pat_validates(self, monkeypatch):
+        # A classic ``ghp_*`` PAT — rejected by the Copilot API — authenticates
+        # fine against the REST API, so it must come back ok + reachable.
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=200))
+        data = self._post("GITHUB_TOKEN", "ghp_classicpattoken0000000000000000000000").json()
+        assert data["ok"] is True and data["reachable"] is True
+
+    def test_github_finegrained_pat_validates(self, monkeypatch):
+        # Fine-grained PATs validate too, and so does the ``GH_TOKEN`` alias.
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=200))
+        data = self._post("GH_TOKEN", "github_pat_11ABC_finegrainedtoken0000000000").json()
+        assert data["ok"] is True and data["reachable"] is True
+
+    def test_github_bad_token_rejected_with_human_message(self, monkeypatch):
+        # 401 = genuinely bad token → blocked, but with an actionable message
+        # naming both accepted PAT types instead of an opaque server error.
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=401))
+        data = self._post("GITHUB_TOKEN", "ghp_revokedtoken000000000000000000000000").json()
+        assert data["ok"] is False and data["reachable"] is True
+        assert "github_pat_" in data["message"]
+        assert "github.com/settings/tokens" in data["message"]
+
+    def test_github_rate_limited_token_not_blocked(self, monkeypatch):
+        # 403 from ``/user`` means a real (authenticated) token that is
+        # rate-limited or SSO-gated — it must not be treated as invalid.
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(status=403))
+        data = self._post("GITHUB_TOKEN", "ghp_ratelimitedtoken00000000000000000000").json()
+        assert data["ok"] is True and data["reachable"] is True
+
+    def test_github_token_offline_does_not_hard_block(self, monkeypatch):
+        # A network failure leaves validation inconclusive (reachable False) so
+        # offline users can still save, matching every other probed provider.
+        monkeypatch.setattr("httpx.Client", _fake_httpx_client(raise_exc=True))
+        data = self._post("GITHUB_TOKEN", "ghp_sometoken00000000000000000000000000").json()
+        assert data["ok"] is False and data["reachable"] is False
+
 
 class TestDesktopCronTicker:
     """The dashboard backend fires cron jobs itself only when desktop-spawned."""

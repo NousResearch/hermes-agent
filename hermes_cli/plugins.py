@@ -1038,6 +1038,87 @@ class PluginContext:
             action_id,
         )
 
+    # -- background service registration ------------------------------------
+
+    def register_background_service(
+        self,
+        name: str,
+        label: str,
+        service_factory: Callable,
+        check_fn: Callable,
+        validate_config: Callable | None = None,
+        required_env: list | None = None,
+        install_hint: str = "",
+        **entry_kwargs: Any,
+    ) -> None:
+        """Register a long-running gateway background service.
+
+        Background services differ from platform adapters: they observe an
+        external event source (notification queue, file watcher, webhook
+        endpoint) and emit gateway-internal events rather than handling
+        user-to-agent messages directly. Examples: Nextcloud notification
+        poller, WebDAV file sync watcher, RSS feed monitor.
+
+        The ``service_factory`` callable receives ``(config_dict, gateway_runner)``
+        and returns an instance exposing ``async start()`` and ``async stop()``
+        methods. See ``gateway.services.base.BaseService`` for the canonical
+        interface and the bundled service plugins under
+        ``plugins/services/`` for examples.
+
+        After registration, the service is wired up by the gateway during
+        startup whenever ``services.<name>.enabled`` is True in config.yaml.
+
+        Args:
+            name: stable service key (snake_case). Used in
+                ``services.<name>`` in config.yaml.
+            label: human-readable name shown in logs and the dashboard.
+            service_factory: callable ``(cfg_dict, gateway_runner) -> service``.
+            check_fn: returns True when dependencies are importable. Called
+                before instantiation; on False the gateway logs the install
+                hint and skips creation.
+            validate_config: optional callable ``(cfg_dict) -> bool`` invoked
+                after ``enabled`` is verified by the caller. Use this for
+                deeper checks like "required keys present in extra".
+            required_env: list of env-var names the service needs, surfaced
+                in ``hermes config`` UI.
+            install_hint: shown when ``check_fn`` returns False
+                (e.g. ``pip install httpx``).
+            **entry_kwargs: forwarded to ``BackgroundServiceEntry`` for any
+                future fields (e.g. dashboard metadata).
+
+        Example::
+
+            ctx.register_background_service(
+                name="nextcloud_notifications",
+                label="Nextcloud Notifications",
+                service_factory=lambda cfg, gw: NextcloudNotificationService(cfg, gw),
+                check_fn=lambda: True,
+            )
+        """
+        from gateway.service_registry import (
+            service_registry,
+            BackgroundServiceEntry,
+        )
+
+        entry_kwargs.setdefault("plugin_name", self.manifest.name)
+        entry = BackgroundServiceEntry(
+            name=name,
+            label=label,
+            service_factory=service_factory,
+            check_fn=check_fn,
+            validate_config=validate_config,
+            required_env=required_env or [],
+            install_hint=install_hint,
+            source="plugin",
+            **entry_kwargs,
+        )
+        service_registry.register(entry)
+        logger.debug(
+            "Plugin %s registered background service: %s",
+            self.manifest.name,
+            name,
+        )
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------

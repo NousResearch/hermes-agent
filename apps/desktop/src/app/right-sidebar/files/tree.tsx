@@ -7,6 +7,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
+import { getFileTreeDndManager } from './dnd-manager'
 import type { TreeNode } from './use-project-tree'
 
 const ROW_HEIGHT = 22
@@ -94,6 +95,7 @@ export function ProjectTree({
           disableDrag
           disableDrop
           disableEdit
+          dndManager={getFileTreeDndManager()}
           height={size.height}
           indent={INDENT}
           initialOpenState={openState}

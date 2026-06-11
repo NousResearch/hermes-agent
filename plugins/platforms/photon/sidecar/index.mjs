@@ -48,6 +48,9 @@
 //   PHOTON_SIDECAR_TOKEN
 // Optional:
 //   PHOTON_SIDECAR_BIND    (default 127.0.0.1)
+//   PHOTON_SIDECAR_WATCH_STDIN  "1" = exit when stdin hits EOF (set by the
+//                          adapter, which holds our stdin pipe — parent-death
+//                          detection so a dead gateway can't orphan us)
 //   PHOTON_TELEMETRY       enable Spectrum SDK telemetry ("true"/"1"/"on"/"yes";
 //                          default off — toggle with `hermes photon telemetry`)
 
@@ -642,7 +645,12 @@ server.listen(port, bind, () => {
   console.error(`photon-sidecar: listening on ${bind}:${port}`);
 });
 
+let stopping = false;
 async function shutdown(signal) {
+  // Re-entry guard: stdin EOF, a signal and /shutdown can all fire together
+  // during one teardown.
+  if (stopping) return;
+  stopping = true;
   console.error(`photon-sidecar: received ${signal}, stopping...`);
   try {
     await Promise.race([
@@ -658,6 +666,18 @@ async function shutdown(signal) {
 
 process.on("SIGINT", () => shutdown("SIGINT"));
 process.on("SIGTERM", () => shutdown("SIGTERM"));
+
+// Lifetime binding to the parent. The adapter spawns us with stdin as a pipe
+// it holds open; EOF means the gateway process is gone — including hard
+// deaths (crash, SIGKILL) where no signal and no /shutdown ever reaches us.
+// Without this, an orphaned sidecar squats the port and keeps consuming the
+// inbound gRPC stream, and every replacement spawn dies on EADDRINUSE.
+// Opt-in via env so manual `node index.mjs` runs aren't affected.
+if (process.env.PHOTON_SIDECAR_WATCH_STDIN === "1") {
+  process.stdin.resume();
+  process.stdin.on("end", () => shutdown("stdin EOF (parent exited)"));
+  process.stdin.on("error", () => shutdown("stdin error (parent exited)"));
+}
 
 // Don't let a stray promise rejection take the process down silently — handlers
 // catch their own errors, so log and keep serving (Python supervises restart on

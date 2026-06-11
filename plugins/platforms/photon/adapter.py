@@ -611,21 +611,118 @@ class PhotonAdapter(BasePlatformAdapter):
 
     # -- Sidecar lifecycle -------------------------------------------------
 
+    @staticmethod
+    def _find_listener_pids(port: int) -> List[int]:
+        """PIDs listening on a local TCP port (empty if none/undeterminable)."""
+        try:
+            out = subprocess.run(  # noqa: S603, S607
+                ["lsof", "-ti", f"tcp:{port}", "-sTCP:LISTEN"],
+                capture_output=True, text=True, timeout=5.0, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return []
+        return [int(tok) for tok in out.stdout.split() if tok.strip().isdigit()]
+
+    @staticmethod
+    def _pid_is_sidecar(pid: int) -> bool:
+        """True if ``pid``'s command line is a Photon sidecar process."""
+        try:
+            out = subprocess.run(  # noqa: S603, S607
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True, text=True, timeout=5.0, check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+        # Checkout-agnostic: any Hermes checkout's sidecar entry point.
+        return "photon/sidecar/index.mjs" in out.stdout
+
+    @staticmethod
+    def _pid_alive(pid: int) -> bool:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+    async def _reap_stale_sidecar(self) -> None:
+        """Kill an orphaned sidecar squatting our port before spawning ours.
+
+        A hard gateway exit (crash, SIGKILL, supervisor restart) used to leave
+        the detached sidecar running with a token the new gateway doesn't
+        know, so it can't be told to ``/shutdown`` — and every replacement
+        spawn died on EADDRINUSE, failing each reconnect attempt. The
+        stdin-EOF watch prevents new orphans; this reclaims the port from
+        orphans that predate it (or survived it). Listeners are verified by
+        command line before being signalled.
+        """
+        if sys.platform == "win32":  # lsof/ps; orphaning is a POSIX-only path
+            return
+        try:
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                await client.post(
+                    f"http://{self._sidecar_bind}:{self._sidecar_port}/healthz",
+                    headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
+                )
+        except httpx.RequestError:
+            return  # nothing listening — the normal case
+        pids = self._find_listener_pids(self._sidecar_port)
+        stale = [pid for pid in pids if self._pid_is_sidecar(pid)]
+        foreign = [pid for pid in pids if pid not in stale]
+        if not stale:
+            raise RuntimeError(
+                f"port {self._sidecar_port} is in use by another process "
+                f"(pids: {foreign or 'unknown'}, not a Photon sidecar) — "
+                f"free it or set PHOTON_SIDECAR_PORT to a different port"
+            )
+        for pid in stale:
+            logger.warning(
+                "[photon] reaping orphaned sidecar (pid %d) on port %d",
+                pid, self._sidecar_port,
+            )
+            try:
+                os.kill(pid, signal.SIGTERM)
+            except OSError:
+                pass
+        deadline = time.time() + 3.0
+        while time.time() < deadline and any(self._pid_alive(p) for p in stale):
+            await asyncio.sleep(0.1)
+        for pid in stale:
+            if self._pid_alive(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except OSError:
+                    pass
+        # Give the OS a beat to release the listening socket.
+        await asyncio.sleep(0.2)
+        if foreign:
+            raise RuntimeError(
+                f"port {self._sidecar_port} is also held by non-sidecar "
+                f"processes (pids: {foreign}) — free it or set "
+                f"PHOTON_SIDECAR_PORT to a different port"
+            )
+
     async def _start_sidecar(self) -> None:
         if not (_SIDECAR_DIR / "node_modules").exists():
             raise RuntimeError(
                 f"Photon sidecar deps not installed. Run: "
                 f"cd {_SIDECAR_DIR} && npm install   (or `hermes photon setup`)"
             )
+        await self._reap_stale_sidecar()
+
         env = os.environ.copy()
         env["PHOTON_PROJECT_ID"] = self._project_id
         env["PHOTON_PROJECT_SECRET"] = self._project_secret
         env["PHOTON_SIDECAR_PORT"] = str(self._sidecar_port)
         env["PHOTON_SIDECAR_BIND"] = self._sidecar_bind
         env["PHOTON_SIDECAR_TOKEN"] = self._sidecar_token
+        # The sidecar exits when its stdin (the pipe below) hits EOF, so a
+        # gateway death of ANY kind — including SIGKILL, where disconnect()
+        # never runs — can't leave it orphaned on the port.
+        env["PHOTON_SIDECAR_WATCH_STDIN"] = "1"
 
         self._sidecar_proc = subprocess.Popen(  # noqa: S603
             [self._node_bin, str(_SIDECAR_DIR / "index.mjs")],
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             env=env,
@@ -682,6 +779,14 @@ class PhotonAdapter(BasePlatformAdapter):
         if proc is None:
             return
         try:
+            # Closing our end of the stdin pipe is itself a shutdown signal
+            # (the sidecar watches for EOF), and covers the case where the
+            # HTTP call below can't get through.
+            if proc.stdin is not None:
+                try:
+                    proc.stdin.close()
+                except Exception:
+                    pass
             # Polite shutdown first.
             if self._http_client is not None:
                 try:

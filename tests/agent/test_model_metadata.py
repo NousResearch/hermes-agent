@@ -882,6 +882,54 @@ class TestGetModelContextLength:
         assert result == 131072
 
     @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_fuzzy_match_rejects_boundary_collision(
+        self, mock_endpoint_fetch, mock_fetch
+    ):
+        """A short configured name must not latch onto an unrelated longer model.
+
+        "gpt-4" overlaps both "gpt-4o" (a different model with a larger window)
+        and "gpt-4-base". The old first-substring scan returned whichever the
+        endpoint listed first — picking "gpt-4o"'s 1M window for an 8K model
+        overflows context on the next turn. Matching must be anchored on a
+        separator boundary, so "gpt-4o" is rejected and "gpt-4-base" wins
+        regardless of catalog order.
+        """
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {
+            "gpt-4o": {"context_length": 1_000_000},
+            "gpt-4-base": {"context_length": 8192},
+        }
+
+        result = get_model_context_length(
+            "gpt-4",
+            base_url="http://myserver.example.com:8080/v1",
+            api_key="test-key",
+        )
+
+        assert result == 8192
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_fuzzy_match_is_order_independent(
+        self, mock_endpoint_fetch, mock_fetch
+    ):
+        """The chosen match is the most specific id, not the first one listed."""
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {
+            "gpt-4-base": {"context_length": 8192},
+            "gpt-4o": {"context_length": 1_000_000},
+        }
+
+        result = get_model_context_length(
+            "gpt-4",
+            base_url="http://myserver.example.com:8080/v1",
+            api_key="test-key",
+        )
+
+        assert result == 8192
+
+    @patch("agent.model_metadata.fetch_model_metadata")
     def test_config_context_length_overrides_all(self, mock_fetch):
         """Explicit config_context_length takes priority over everything."""
         mock_fetch.return_value = {

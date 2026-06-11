@@ -75,6 +75,7 @@ AUTHOR_MAP = {
     "harjoth.khara@gmail.com": "harjothkhara",
     "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
+    "290880780+vondelomlo@users.noreply.github.com": "vondelomlo",
     "dirtyren@users.noreply.github.com": "dirtyren",
     "mvanhorn@MacBook-Pro.local": "mvanhorn",
     "470766206@qq.com": "youjunxiaji",

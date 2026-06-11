@@ -800,6 +800,27 @@ def fetch_endpoint_model_metadata(
     return {}
 
 
+def _model_ids_boundary_match(a: str, b: str) -> bool:
+    """Return True if model ids *a* and *b* line up on a separator boundary.
+
+    The shorter id must be a prefix of the longer one and stop on a
+    separator (``-`` ``:`` ``.`` ``/``), or the two must be identical. This is
+    stricter than a bare substring test: it lets ``"llama-3.3-70b-instruct"``
+    match ``"llama-3.3-70b-instruct-fp8"`` while refusing to let ``"gpt-4"``
+    latch onto an unrelated ``"gpt-4o"`` (whose next char ``o`` is not a
+    boundary).
+    """
+    a, b = a.strip().lower(), b.strip().lower()
+    if not a or not b:
+        return False
+    short, long = (a, b) if len(a) <= len(b) else (b, a)
+    if short == long:
+        return True
+    if not long.startswith(short):
+        return False
+    return long[len(short)] in "-:./"
+
+
 def _resolve_endpoint_context_length(
     model: str,
     base_url: str,
@@ -812,10 +833,22 @@ def _resolve_endpoint_context_length(
         if len(endpoint_metadata) == 1:
             matched = next(iter(endpoint_metadata.values()))
         else:
-            for key, entry in endpoint_metadata.items():
-                if model in key or key in model:
-                    matched = entry
-                    break
+            # No exact hit. A bare first-match substring scan
+            # (`model in key or key in model`) is order-dependent and can
+            # latch onto an unrelated model — e.g. configured "gpt-4" matching
+            # "gpt-4o" and reporting its (larger) window, which then overflows
+            # the real model's context. Require a separator-boundary match
+            # instead, and pick the most specific (longest) endpoint id so the
+            # closest match wins deterministically regardless of the order
+            # /models returns its catalog.
+            best_key: Optional[str] = None
+            for key in endpoint_metadata:
+                bare_key = key.split("/", 1)[1] if "/" in key else key
+                if _model_ids_boundary_match(model, key) or _model_ids_boundary_match(model, bare_key):
+                    if best_key is None or len(key) > len(best_key):
+                        best_key = key
+            if best_key is not None:
+                matched = endpoint_metadata[best_key]
     if matched:
         context_length = matched.get("context_length")
         if isinstance(context_length, int):

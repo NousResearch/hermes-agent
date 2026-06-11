@@ -337,6 +337,62 @@ def test_exception_is_logged_and_user_visible(mock_get_client):
     assert "may not work this session" in messages[0]
 
 
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_exception_with_status_callback_emits_only_once(mock_get_client):
+    """Live status_callback → immediate delivery + NO replay queue.
+    Regression test for teknium1 review on PR #44200: gateway agents wire
+    status_callback, so the next-turn replay in turn_context.py:159-161
+    would duplicate the warning. The fix only sets _compression_warning
+    when there is no live callback to surface it now.
+    """
+    agent = _make_agent()
+    mock_get_client.side_effect = RuntimeError("boom")
+
+    # Capture only the lifecycle status_callback invocations (what the gateway
+    # sends to the user interface). Keep _emit_status on the real impl so
+    # its internal status_callback dispatch path runs unchanged.
+    callback_messages = []
+
+    def _live_cb(event_type: str, message: str) -> None:
+        callback_messages.append((event_type, message))
+
+    agent.status_callback = _live_cb
+    # Quiet vprint to keep pytest clean
+    agent.quiet_mode = True
+
+    agent._check_compression_model_feasibility()
+
+    # Live callback fired exactly once via _emit_status — no replay double-fire here
+    assert len(callback_messages) == 1
+    assert callback_messages[0][0] == "lifecycle"
+    assert "Compression feasibility check failed" in callback_messages[0][1]
+    assert "may not work this session" in callback_messages[0][1]
+    # _compression_warning was NOT queued because the live callback already delivered
+    assert agent._compression_warning is None
+
+
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_exception_without_status_callback_queues_for_next_turn_replay(mock_get_client):
+    """No status_callback → _compression_warning is queued for next-turn replay.
+    Companion to the live-callback test: when there is no callback to deliver
+    the message immediately, the stored value persists so turn_context.py can
+    surface it on the next turn (and then clear it exactly once).
+    """
+    agent = _make_agent()
+    mock_get_client.side_effect = RuntimeError("boom")
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    agent._check_compression_model_feasibility()
+
+    assert len(messages) == 1
+    assert "may not work this session" in messages[0]
+    # Without a callback, queue the warning so turn_context.py replays it on the next turn.
+    assert agent._compression_warning is not None
+    assert "may not work this session" in agent._compression_warning
+
+
 @patch("agent.model_metadata.get_model_context_length", return_value=100_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_exact_threshold_boundary_no_warning(mock_get_client, mock_ctx_len):

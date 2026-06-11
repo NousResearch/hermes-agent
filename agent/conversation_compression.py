@@ -249,7 +249,13 @@ def check_compression_model_feasibility(agent: Any) -> None:
             "⚠ Compression feasibility check failed — context compression "
             f"may not work this session: {exc}"
         )
-        agent._compression_warning = msg
+        # When the agent has a wired status_callback (gateway agents deliver
+        # via _emit_status immediately), deferring to the next-turn replay
+        # produces a duplicate delivery. Only queue the warning when there
+        # is no live callback to surface it now — turn_context.py:159-161
+        # replays and clears the stored value once.
+        if not getattr(agent, "status_callback", None):
+            agent._compression_warning = msg
         agent._emit_status(msg)
         logger.warning(
             "Compression feasibility check failed (non-fatal): %s", exc

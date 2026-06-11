@@ -191,16 +191,19 @@ export async function listAllProfileSessions(
   }
 }
 
-// Mutations take the owning `profile` so Electron routes them to that profile's
-// backend (remote pool or local primary) via request.profile — matching the
-// read path. A remote session's row lives only on its remote host, so a mutation
-// that hit the local primary would no-op or 404. Omit for the current/default.
+// Mutations take the owning `profile` twice: request.profile picks which
+// backend *process* Electron routes to (remote pool or local primary), and the
+// body/query copy tells that process which profile's state.db to open. The
+// second copy matters because the serving process's own profile can differ
+// from what the desktop believes (the sticky active_profile file is honored on
+// a legacy launch) — sidebar rows are read per-profile from disk, so a
+// mutation against the process's own db 404s. Omit for the current/default.
 export function setSessionArchived(id: string, archived: boolean, profile?: string | null): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived }
+    body: { archived, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -223,9 +226,11 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
 }
 
 export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {
+  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...(profile ? { profile } : {}),
-    path: `/api/sessions/${encodeURIComponent(id)}`,
+    path: `/api/sessions/${encodeURIComponent(id)}${suffix}`,
     method: 'DELETE'
   })
 }

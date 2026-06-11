@@ -43,6 +43,15 @@ const UPDATE_EXIT_CONCURRENT: i32 = 2;
 const DESKTOP_EXIT_WAIT: Duration = Duration::from_secs(20);
 const DESKTOP_EXIT_POLL: Duration = Duration::from_millis(500);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArchiveGitPreparePlan {
+    remote_url: String,
+    archive_ref: String,
+    branch: String,
+    fetch_refspec: String,
+    reset_ref: String,
+}
+
 /// Guards against concurrent update runs. The frontend kicks `startUpdate()`
 /// from a mount effect, which can fire more than once (React strict-mode
 /// double-invokes effects in dev; a window reload or stray re-init can do it
@@ -136,6 +145,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
             LogStream::Stdout,
             "[update] archive-created checkout is missing .git; Git checkout preparation is required",
         );
+        prepare_archive_git_checkout(&app, &install_root, &update_branch).await?;
     }
 
     // Synthetic manifest so the existing progress UI renders our two stages.
@@ -177,8 +187,7 @@ async fn run_update(app: AppHandle) -> Result<()> {
         &format!("[update] updating against branch {update_branch}"),
     );
     let child_env = update_child_env(&install_root);
-    let mut update_args: Vec<String> =
-        vec!["update".into(), "--yes".into(), "--gateway".into()];
+    let mut update_args: Vec<String> = vec!["update".into(), "--yes".into(), "--gateway".into()];
     // --force skips `hermes update`'s Windows running-exe guard (which would
     // `sys.exit(2)` and dead-end the handoff). By contract the desktop has
     // already exited and waited for the venv shim to unlock before launching
@@ -325,7 +334,13 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
         return Err(anyhow!(msg));
     }
-    emit_stage(&app, "rebuild", StageState::Succeeded, Some(rebuild_ms), None);
+    emit_stage(
+        &app,
+        "rebuild",
+        StageState::Succeeded,
+        Some(rebuild_ms),
+        None,
+    );
 
     let launch_target = if let Some(target_app) = target_app {
         let started = Instant::now();
@@ -382,8 +397,11 @@ async fn run_update(app: AppHandle) -> Result<()> {
                 &format!("[update] could not auto-launch desktop: {err}. Launch Hermes manually."),
             );
         }
-    } else if let Err(err) =
-        crate::bootstrap::launch_hermes_desktop(app.clone(), install_root.to_string_lossy().into_owned()).await
+    } else if let Err(err) = crate::bootstrap::launch_hermes_desktop(
+        app.clone(),
+        install_root.to_string_lossy().into_owned(),
+    )
+    .await
     {
         // Launch failed: don't hard-fail the update (it succeeded); surface a
         // log line so the success screen can still tell the user to launch
@@ -406,7 +424,12 @@ async fn wait_for_venv_free(install_root: &Path, app: &AppHandle) {
     let shim = venv_hermes(install_root);
     let deadline = Instant::now() + DESKTOP_EXIT_WAIT;
 
-    emit_log(app, Some("update"), LogStream::Stdout, "[update] waiting for Hermes to exit…");
+    emit_log(
+        app,
+        Some("update"),
+        LogStream::Stdout,
+        "[update] waiting for Hermes to exit…",
+    );
 
     loop {
         if !is_locked(&shim) {
@@ -492,7 +515,11 @@ fn is_locked(path: &Path) -> bool {
     if !path.exists() {
         return false;
     }
-    match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+    match std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)
+    {
         Ok(_) => false,
         Err(_) => true,
     }
@@ -557,7 +584,10 @@ async fn run_streamed(
         emit_log(app, stage_owned.as_deref(), LogStream::Stderr, &l);
     }
 
-    let status = child.wait().await.map_err(|e| anyhow!("waiting for child: {e}"))?;
+    let status = child
+        .wait()
+        .await
+        .map_err(|e| anyhow!("waiting for child: {e}"))?;
     Ok(CmdResult {
         exit_code: status.code(),
     })
@@ -584,9 +614,17 @@ fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
         return Some(shim);
     }
     // PATH fallback. which-style probe via env, kept dependency-free.
-    let exe = if cfg!(target_os = "windows") { "hermes.exe" } else { "hermes" };
+    let exe = if cfg!(target_os = "windows") {
+        "hermes.exe"
+    } else {
+        "hermes"
+    };
     if let Ok(path) = std::env::var("PATH") {
-        let sep = if cfg!(target_os = "windows") { ';' } else { ':' };
+        let sep = if cfg!(target_os = "windows") {
+            ';'
+        } else {
+            ':'
+        };
         for dir in path.split(sep) {
             let cand = Path::new(dir).join(exe);
             if cand.exists() {
@@ -603,6 +641,209 @@ fn needs_archive_git_checkout_prepare(install_root: &Path) -> bool {
             crate::repo_archive::read_archive_source_marker(install_root),
             Ok(Some(_))
         )
+}
+
+fn archive_git_prepare_plan(marker: &serde_json::Value) -> Result<ArchiveGitPreparePlan> {
+    let owner = marker_string(marker, "owner")?;
+    let repo = marker_string(marker, "repo")?;
+    let archive_ref = marker_string(marker, "ref")?;
+    let branch = marker
+        .get("branch")
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("main")
+        .to_string();
+    Ok(ArchiveGitPreparePlan {
+        remote_url: format!("https://github.com/{owner}/{repo}.git"),
+        archive_ref: archive_ref.clone(),
+        branch: branch.clone(),
+        fetch_refspec: archive_ref.clone(),
+        reset_ref: archive_ref,
+    })
+}
+
+fn marker_string(marker: &serde_json::Value, key: &str) -> Result<String> {
+    marker
+        .get(key)
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| anyhow!("archive source marker is missing `{key}`"))
+}
+
+fn archive_git_prepare_commands(plan: &ArchiveGitPreparePlan) -> Vec<Vec<String>> {
+    vec![
+        vec!["init".to_string()],
+        vec![
+            "config".to_string(),
+            "windows.appendAtomically".to_string(),
+            "false".to_string(),
+        ],
+        vec![
+            "config".to_string(),
+            "core.autocrlf".to_string(),
+            "false".to_string(),
+        ],
+        vec![
+            "remote".to_string(),
+            "remove".to_string(),
+            "origin".to_string(),
+        ],
+        vec![
+            "remote".to_string(),
+            "add".to_string(),
+            "origin".to_string(),
+            plan.remote_url.clone(),
+        ],
+        vec![
+            "fetch".to_string(),
+            "--depth".to_string(),
+            "1".to_string(),
+            "origin".to_string(),
+            plan.fetch_refspec.clone(),
+        ],
+        vec![
+            "reset".to_string(),
+            "--hard".to_string(),
+            plan.reset_ref.clone(),
+        ],
+    ]
+}
+
+async fn prepare_archive_git_checkout(
+    app: &AppHandle,
+    install_root: &Path,
+    update_branch: &str,
+) -> Result<()> {
+    let marker = crate::repo_archive::read_archive_source_marker(install_root)?
+        .ok_or_else(|| anyhow!("archive source marker is missing"))?;
+    let plan = archive_git_prepare_plan(&marker)?;
+    let git = ensure_git_available_for_archive_update(app, update_branch).await?;
+    emit_log(
+        app,
+        Some("update"),
+        LogStream::Stdout,
+        &format!(
+            "[update] preparing archive checkout as git repo from {} @ {}",
+            plan.remote_url, plan.archive_ref
+        ),
+    );
+    for args in archive_git_prepare_commands(&plan) {
+        let result = run_streamed(app, &git, &args, install_root, &[], Some("update")).await?;
+        if result.exit_code == Some(0) || git_prepare_command_may_fail(&args) {
+            continue;
+        }
+        return Err(anyhow!(
+            "git archive checkout preparation failed: git {} exited {:?}",
+            args.join(" "),
+            result.exit_code
+        ));
+    }
+    Ok(())
+}
+
+fn git_prepare_command_may_fail(args: &[String]) -> bool {
+    args == ["remote", "remove", "origin"]
+}
+
+async fn ensure_git_available_for_archive_update(
+    app: &AppHandle,
+    update_branch: &str,
+) -> Result<PathBuf> {
+    let hermes_home = crate::paths::hermes_home();
+    if let Some(git) = resolve_git_for_update(&hermes_home).await {
+        return Ok(git);
+    }
+    if !cfg!(target_os = "windows") {
+        return Err(anyhow!(
+            "Git is required to update archive-created checkouts; install Git and retry"
+        ));
+    }
+    emit_log(
+        app,
+        Some("update"),
+        LogStream::Stdout,
+        "[update] Git is missing; running installer Git stage before update",
+    );
+    let pin = crate::install_script::Pin {
+        commit: option_env_string("BUILD_PIN_COMMIT"),
+        branch: Some(update_branch.to_string()),
+    };
+    let script = crate::install_script::resolve(
+        crate::install_script::ScriptKind::for_current_os(),
+        &pin,
+        &|line| emit_log(app, Some("update"), LogStream::Stdout, line),
+    )
+    .await?;
+    let args = vec![
+        "-Stage".to_string(),
+        "git".to_string(),
+        "-NonInteractive".to_string(),
+        "-Json".to_string(),
+        "-Branch".to_string(),
+        update_branch.to_string(),
+    ];
+    let sink = crate::powershell::StreamSink {
+        on_stdout_line: Box::new({
+            let app = app.clone();
+            move |line| emit_log(&app, Some("update"), LogStream::Stdout, line)
+        }),
+        on_stderr_line: Box::new({
+            let app = app.clone();
+            move |line| emit_log(&app, Some("update"), LogStream::Stderr, line)
+        }),
+    };
+    let hermes_home_text = hermes_home.to_string_lossy().to_string();
+    let result =
+        crate::powershell::run_script(&script.path, &args, sink, Some(&hermes_home_text), None)
+            .await?;
+    let ok = crate::powershell::parse_stage_result(&result.stdout)
+        .map(|frame| frame.ok)
+        .unwrap_or(false);
+    if ok && result.exit_code == Some(0) {
+        if let Some(git) = resolve_git_for_update(&hermes_home).await {
+            return Ok(git);
+        }
+    }
+    Err(anyhow!(
+        "installer Git stage failed or Git is still unavailable (exit {:?})",
+        result.exit_code
+    ))
+}
+
+fn git_candidate_paths(hermes_home: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    if cfg!(target_os = "windows") {
+        candidates.push(hermes_home.join("git").join("cmd").join("git.exe"));
+        candidates.push(hermes_home.join("git").join("bin").join("git.exe"));
+    }
+    candidates.push(PathBuf::from("git"));
+    candidates
+}
+
+async fn resolve_git_for_update(hermes_home: &Path) -> Option<PathBuf> {
+    for candidate in git_candidate_paths(hermes_home) {
+        if candidate.is_absolute() && !candidate.is_file() {
+            continue;
+        }
+        if git_command_works(&candidate).await {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+async fn git_command_works(executable: &Path) -> bool {
+    Command::new(executable)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 fn update_child_env(install_root: &Path) -> Vec<(String, OsString)> {
@@ -686,12 +927,17 @@ async fn install_macos_app_update(
         ));
     }
 
-    let rebuilt_app = crate::bootstrap::resolve_hermes_desktop_app(install_root).ok_or_else(|| {
-        anyhow!(
-            "desktop rebuild succeeded but no Hermes.app was found under {}",
-            install_root.join("apps").join("desktop").join("release").display()
-        )
-    })?;
+    let rebuilt_app =
+        crate::bootstrap::resolve_hermes_desktop_app(install_root).ok_or_else(|| {
+            anyhow!(
+                "desktop rebuild succeeded but no Hermes.app was found under {}",
+                install_root
+                    .join("apps")
+                    .join("desktop")
+                    .join("release")
+                    .display()
+            )
+        })?;
 
     let same = match (rebuilt_app.canonicalize(), target_app.canonicalize()) {
         (Ok(a), Ok(b)) => a == b,
@@ -789,7 +1035,10 @@ async fn swap_in_new_bundle(tmp: &Path, target: &Path, old: &Path) -> Result<()>
             let _ = tokio::fs::rename(old, target).await;
         }
         remove_dir_if_exists(tmp).await;
-        return Err(anyhow!("installing updated app at {}: {err}", target.display()));
+        return Err(anyhow!(
+            "installing updated app at {}: {err}",
+            target.display()
+        ));
     }
     remove_dir_if_exists(old).await;
     Ok(())
@@ -926,7 +1175,10 @@ mod tests {
             target_app_from_args(["--update", "--target-app", "/Applications/Hermes.app"]),
             Some(PathBuf::from("/Applications/Hermes.app"))
         );
-        assert_eq!(target_app_from_args(["--target-app", "/tmp/not-an-app"]), None);
+        assert_eq!(
+            target_app_from_args(["--target-app", "/tmp/not-an-app"]),
+            None
+        );
     }
 
     #[test]
@@ -948,6 +1200,95 @@ mod tests {
         assert!(!needs_archive_git_checkout_prepare(&install_root));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn archive_git_prepare_plan_uses_marker_remote_and_ref() {
+        let marker = serde_json::json!({
+            "schemaVersion": 1,
+            "method": "github_archive",
+            "owner": "NiceBlueChai",
+            "repo": "hermes-agent",
+            "ref": "abcdef123",
+            "branch": "feature/rust-release",
+        });
+
+        let plan = archive_git_prepare_plan(&marker).expect("marker should produce a plan");
+
+        assert_eq!(
+            plan.remote_url,
+            "https://github.com/NiceBlueChai/hermes-agent.git"
+        );
+        assert_eq!(plan.archive_ref, "abcdef123");
+        assert_eq!(plan.branch, "feature/rust-release");
+        assert_eq!(plan.fetch_refspec, "abcdef123");
+        assert_eq!(plan.reset_ref, "abcdef123");
+    }
+
+    #[test]
+    fn archive_git_prepare_plan_rejects_missing_owner() {
+        let marker = serde_json::json!({
+            "schemaVersion": 1,
+            "method": "github_archive",
+            "repo": "hermes-agent",
+            "ref": "main",
+        });
+
+        let err = archive_git_prepare_plan(&marker).unwrap_err();
+
+        assert!(err.to_string().contains("owner"));
+    }
+
+    #[test]
+    fn archive_git_prepare_commands_fetch_and_reset_archive_ref() {
+        let plan = ArchiveGitPreparePlan {
+            remote_url: "https://github.com/NiceBlueChai/hermes-agent.git".into(),
+            archive_ref: "abcdef123".into(),
+            branch: "feature/rust-release".into(),
+            fetch_refspec: "feature/rust-release".into(),
+            reset_ref: "abcdef123".into(),
+        };
+
+        let commands = archive_git_prepare_commands(&plan);
+
+        assert_eq!(
+            commands,
+            vec![
+                vec!["init"],
+                vec!["config", "windows.appendAtomically", "false"],
+                vec!["config", "core.autocrlf", "false"],
+                vec!["remote", "remove", "origin"],
+                vec![
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://github.com/NiceBlueChai/hermes-agent.git"
+                ],
+                vec!["fetch", "--depth", "1", "origin", "feature/rust-release"],
+                vec!["reset", "--hard", "abcdef123"],
+            ]
+        );
+    }
+
+    #[test]
+    fn git_candidate_paths_prefer_managed_portable_git() {
+        let hermes_home = PathBuf::from("C:/Users/example/AppData/Local/hermes");
+
+        let candidates = git_candidate_paths(&hermes_home);
+
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                candidates[0],
+                hermes_home.join("git").join("cmd").join("git.exe")
+            );
+            assert_eq!(
+                candidates[1],
+                hermes_home.join("git").join("bin").join("git.exe")
+            );
+            assert_eq!(candidates[2], PathBuf::from("git"));
+        } else {
+            assert_eq!(candidates, vec![PathBuf::from("git")]);
+        }
     }
 
     // Helpers for the swap tests: make a throwaway dir tree we can rename.
@@ -1010,8 +1351,14 @@ mod tests {
 
         let result = swap_in_new_bundle(&tmp, &target, &old).await;
 
-        assert!(result.is_err(), "swap should fail when neither move can complete");
-        assert!(target.exists(), "original app must NOT be deleted on failure");
+        assert!(
+            result.is_err(),
+            "swap should fail when neither move can complete"
+        );
+        assert!(
+            target.exists(),
+            "original app must NOT be deleted on failure"
+        );
         assert_eq!(
             std::fs::read_to_string(target.join("marker.txt")).unwrap(),
             "OLD",
@@ -1033,12 +1380,18 @@ mod tests {
         let result = swap_in_new_bundle(&tmp, &target, &old).await;
 
         assert!(result.is_err());
-        assert!(target.exists(), "original must be restored after failed install");
+        assert!(
+            target.exists(),
+            "original must be restored after failed install"
+        );
         assert_eq!(
             std::fs::read_to_string(target.join("marker.txt")).unwrap(),
             "OLD"
         );
-        assert!(!old.exists(), "backup should be rolled back, not left behind");
+        assert!(
+            !old.exists(),
+            "backup should be rolled back, not left behind"
+        );
         let _ = std::fs::remove_dir_all(&base);
     }
 }

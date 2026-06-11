@@ -640,13 +640,27 @@ export function ChatSidebar({
       groups.set(key, group)
     }
 
+    // Count pinned sessions per profile so we can subtract them from the
+    // server-reported total.  sessionProfileTotals includes ALL sessions
+    // (pinned + unpinned), but agentSessions (and therefore group.sessions)
+    // only contains unpinned ones.  Without this adjustment the "Load N
+    // more" button shows a phantom gap that can never be closed.
+    const pinnedCountByProfile = new Map<string, number>()
+    for (const ps of pinnedSessions) {
+      const pk = normalizeProfileKey(ps.profile)
+      pinnedCountByProfile.set(pk, (pinnedCountByProfile.get(pk) ?? 0) + 1)
+    }
+
     return (
       [...groups.values()]
         .map(group => ({
           ...group,
           loadingMore: Boolean(profileLoadMorePending[group.id]),
           onLoadMore: onLoadMoreProfileSessions ? () => loadMoreForProfileGroup(group.id) : undefined,
-          totalCount: Math.max(group.sessions.length, sessionProfileTotals[group.id] ?? 0)
+          totalCount: Math.max(
+            group.sessions.length,
+            Math.max(0, (sessionProfileTotals[group.id] ?? 0) - (pinnedCountByProfile.get(group.id) ?? 0))
+          )
         }))
         // default (root) first, then the rest alphabetically.
         .sort((a, b) => (a.id === 'default' ? -1 : b.id === 'default' ? 1 : a.label.localeCompare(b.label)))
@@ -656,6 +670,7 @@ export function ChatSidebar({
     agentSessions,
     loadMoreForProfileGroup,
     onLoadMoreProfileSessions,
+    pinnedSessions,
     profileLoadMorePending,
     sessionProfileTotals
   ])

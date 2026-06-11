@@ -1487,8 +1487,20 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
             "base_url": base_url or None,
             "api_mode": api_mode or None,
         }
+    # A bare billing class (custom, auto, openrouter) without a base_url is
+    # not a routable provider id -- it's the billing bucket the session was
+    # charged to.  Restoring it as the provider identity causes
+    # "No LLM provider configured" on resume (#44022).  Only set
+    # provider_override when the provider is either:
+    #   (a) a fully-qualified name (e.g. "custom:<name>") that carries a
+    #       base_url in model_config, or
+    #   (b) a real explicit provider (e.g. "anthropic", "openai-codex")
+    #       which is routable without a base_url.
+    _BARE_BILLING_CLASSES = {"custom", "auto", "openrouter"}
     if provider:
-        overrides["provider_override"] = provider
+        _is_bare_billing = provider in _BARE_BILLING_CLASSES and not base_url
+        if not _is_bare_billing:
+            overrides["provider_override"] = provider
     if isinstance(reasoning_config, dict):
         overrides["reasoning_config_override"] = reasoning_config
     if service_tier:

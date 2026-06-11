@@ -25,7 +25,6 @@ import {
   AlertTriangle,
   Sparkles,
   Loader2,
-  Users,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -36,9 +35,8 @@ import type {
   SkillHubInstalledEntry,
   SkillHubPreview,
   SkillHubScan,
-  ProfileInfo,
 } from "@/lib/api";
-import { useSearchParams } from "react-router-dom";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
@@ -137,51 +135,15 @@ export default function SkillsPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
 
   // ── Profile scoping ──
-  // The dashboard process runs under ONE profile, but skills/toolsets are
-  // per-profile state. Without an explicit selector, users who "activated"
-  // a profile on the Profiles page (which only affects FUTURE CLI/gateway
-  // runs) toggled skills here and silently wrote into the dashboard's own
-  // profile. The selector makes the write target explicit and deep-linkable
-  // via /skills?profile=<name>.
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
-  const [currentProfile, setCurrentProfile] = useState<string>("");
-  const urlProfile = searchParams.get("profile") ?? "";
-  // "" = the dashboard's own profile (legacy behavior).
-  const selectedProfile = urlProfile;
-
-  const setSelectedProfile = useCallback(
-    (name: string) => {
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          if (name) next.set("profile", name);
-          else next.delete("profile");
-          return next;
-        },
-        { replace: true },
-      );
-    },
-    [setSearchParams],
-  );
-
-  // The profile actually being managed, for display purposes.
-  const managedProfile = selectedProfile || currentProfile || "default";
-  const managingOtherProfile =
-    !!selectedProfile && selectedProfile !== currentProfile;
-
-  useEffect(() => {
-    // Profile list + the dashboard's own profile, for the selector. Failure
-    // leaves the selector hidden — the page still works profile-unscoped.
-    api
-      .getProfiles()
-      .then((res) => setProfiles(res.profiles))
-      .catch(() => {});
-    api
-      .getActiveProfile()
-      .then((info) => setCurrentProfile(info.current || "default"))
-      .catch(() => setCurrentProfile("default"));
-  }, []);
+  // The write target comes from the GLOBAL profile switcher (sidebar) via
+  // ProfileContext — one selector for the whole dashboard, deep-linkable
+  // as ?profile=<name>. This page just consumes it: the fetchJSON layer
+  // appends the param automatically; we still pass it explicitly where the
+  // call signature supports it (clearer, and robust if a caller bypasses
+  // the auto-injection).
+  const {
+    profile: selectedProfile,
+  } = useProfileScope();
 
   useEffect(() => {
     // Promise-chain shape: setState fires only inside async callbacks so the
@@ -298,33 +260,6 @@ export default function SkillsPage() {
         {t.skills.enabledOf
           .replace("{enabled}", String(enabledCount))
           .replace("{total}", String(skills.length))}
-        {profiles.length > 1 && (
-          <span className="flex items-center gap-1">
-            <Users className="h-3 w-3" />
-            <select
-              aria-label={t.skills.profileSelector ?? "Profile"}
-              className="h-6 rounded-none border border-border bg-background px-1 text-xs text-foreground"
-              value={selectedProfile}
-              onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
-                setSelectedProfile(e.target.value)
-              }
-            >
-              <option value="">
-                {(t.skills.currentProfile ?? "current ({name})").replace(
-                  "{name}",
-                  currentProfile || "default",
-                )}
-              </option>
-              {profiles
-                .filter((p) => p.name !== currentProfile)
-                .map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.name}
-                  </option>
-                ))}
-            </select>
-          </span>
-        )}
       </span>,
     );
     setEnd(
@@ -361,10 +296,6 @@ export default function SkillsPage() {
     setEnd,
     skills.length,
     t,
-    profiles,
-    selectedProfile,
-    currentProfile,
-    setSelectedProfile,
   ]);
 
   const filteredToolsets = useMemo(() => {
@@ -390,18 +321,6 @@ export default function SkillsPage() {
     <div className="flex flex-col gap-4">
       <PluginSlot name="skills:top" />
       <Toast toast={toast} />
-
-      {managingOtherProfile && (
-        <div className="flex items-center gap-2 border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-          <Users className="h-3.5 w-3.5 shrink-0" />
-          <span>
-            {(
-              t.skills.managingProfile ??
-              "Managing profile “{name}” — toggles apply to that profile, not this dashboard’s."
-            ).replace("{name}", managedProfile)}
-          </span>
-        </div>
-      )}
 
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">

@@ -45,6 +45,26 @@ def build_dashboard_parser(
             "where npm may not be available. Pre-build with: cd web && npm run build"
         ),
     )
+    dashboard_parser.add_argument(
+        "--isolated",
+        action="store_true",
+        help=(
+            "When launched from a named profile (e.g. `worker dashboard`), run "
+            "a dedicated dashboard server scoped to that profile instead of "
+            "routing to the machine dashboard. Default behavior is unified: "
+            "profile launches attach to (or start) ONE machine-level dashboard "
+            "and preselect the profile in the UI's profile switcher."
+        ),
+    )
+    # Internal flag set by the unified-launch re-exec (cmd_dashboard) to
+    # preselect the launching profile in the SPA switcher. Hidden from
+    # --help: users get this behavior automatically via `<profile> dashboard`.
+    dashboard_parser.add_argument(
+        "--open-profile",
+        dest="open_profile",
+        default="",
+        help=argparse.SUPPRESS,
+    )
     # Lifecycle flags — mutually exclusive with each other and with the
     # start-a-server flags above (if both are passed, --stop / --status win
     # because they exit before the server is started).  The dashboard has

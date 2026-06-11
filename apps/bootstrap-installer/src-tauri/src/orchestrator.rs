@@ -32,8 +32,18 @@ pub struct InstallStateReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlannedStage {
     pub name: String,
+    pub execution: StageExecutionMode,
     pub rust_probe: bool,
     pub script_fallback: bool,
+}
+
+/// How a bootstrap stage is currently handled by the Rust orchestrator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StageExecutionMode {
+    Native,
+    NativeWithScriptFallback,
+    ProbeThenScript,
+    Script,
 }
 
 /// Build a read-only state report without including user config or session data.
@@ -60,10 +70,19 @@ pub fn probe_install_state(hermes_home: &Path) -> InstallStateReport {
 pub fn build_stage_plan(stages: &[StageInfo], _include_desktop: bool) -> Vec<PlannedStage> {
     stages
         .iter()
-        .map(|stage| PlannedStage {
-            name: stage.name.clone(),
-            rust_probe: is_probe_owned_stage(&stage.name),
-            script_fallback: true,
+        .map(|stage| {
+            let execution = stage_execution_mode(&stage.name);
+            PlannedStage {
+                name: stage.name.clone(),
+                execution,
+                rust_probe: execution == StageExecutionMode::ProbeThenScript,
+                script_fallback: matches!(
+                    execution,
+                    StageExecutionMode::NativeWithScriptFallback
+                        | StageExecutionMode::ProbeThenScript
+                        | StageExecutionMode::Script
+                ),
+            }
         })
         .collect()
 }
@@ -79,12 +98,33 @@ pub fn summarize_plan(report: &InstallStateReport, plan: &[PlannedStage]) -> Str
         })
         .collect::<Vec<_>>()
         .join(", ");
-    let probe_count = plan.iter().filter(|stage| stage.rust_probe).count();
+    let native_count = plan
+        .iter()
+        .filter(|stage| {
+            matches!(
+                stage.execution,
+                StageExecutionMode::Native | StageExecutionMode::NativeWithScriptFallback
+            )
+        })
+        .count();
+    let probe_count = plan
+        .iter()
+        .filter(|stage| stage.execution == StageExecutionMode::ProbeThenScript)
+        .count();
+    let script_count = plan
+        .iter()
+        .filter(|stage| stage.execution == StageExecutionMode::Script)
+        .count();
     format!(
-        "[bootstrap] rust orchestrator: install_root={} marker_exists={} probe_stages={}/{} tools=[{}]",
+        concat!(
+            "[bootstrap] rust orchestrator: install_root={} marker_exists={} ",
+            "native_stages={} probe_stages={} script_stages={} total_stages={} tools=[{}]"
+        ),
         report.install_root.display(),
         report.bootstrap_marker_exists,
+        native_count,
         probe_count,
+        script_count,
         plan.len(),
         tool_summary
     )
@@ -238,7 +278,7 @@ pub fn configure_windows_path_stage(hermes_home: &Path, install_root: &Path) -> 
     Ok(report)
 }
 
-/// Keep Unix path setup script-backed until symlink/profile parity is complete.
+/// Reject accidental Windows PATH calls on Unix builds.
 #[cfg(not(target_os = "windows"))]
 pub fn configure_windows_path_stage(_hermes_home: &Path, _install_root: &Path) -> Result<serde_json::Value> {
     Err(anyhow!("native PATH stage is only available on Windows"))
@@ -499,11 +539,23 @@ fn probe_tool(name: &str) -> ToolProbe {
     }
 }
 
-fn is_probe_owned_stage(name: &str) -> bool {
-    matches!(
-        name,
-        "uv" | "python" | "git" | "node" | "system-packages" | "path"
-    )
+fn stage_execution_mode(name: &str) -> StageExecutionMode {
+    if name.eq_ignore_ascii_case("repository") {
+        return StageExecutionMode::NativeWithScriptFallback;
+    }
+    if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "bootstrap-marker" | "config" | "config-templates" | "complete" | "path"
+    ) {
+        return StageExecutionMode::Native;
+    }
+    if matches!(
+        name.to_ascii_lowercase().as_str(),
+        "uv" | "python" | "git" | "node" | "system-packages"
+    ) {
+        return StageExecutionMode::ProbeThenScript;
+    }
+    StageExecutionMode::Script
 }
 
 fn find_executable_on_path<P>(name: &str, path_env: P, pathext: &str) -> Option<PathBuf>
@@ -571,17 +623,28 @@ mod tests {
     }
 
     #[test]
-    fn build_stage_plan_marks_known_probe_owned_stages_without_skipping_scripts() {
-        let stages = vec![stage("uv"), stage("repository"), stage("configure")];
+    fn build_stage_plan_classifies_native_probe_and_script_stages() {
+        let stages = vec![
+            stage("repository"),
+            stage("path"),
+            stage("uv"),
+            stage("venv"),
+        ];
         let plan = build_stage_plan(&stages, false);
 
-        assert_eq!(plan.len(), 3);
-        assert_eq!(plan[0].name, "uv");
-        assert_eq!(plan[0].rust_probe, true);
+        assert_eq!(plan.len(), 4);
+        assert_eq!(plan[0].name, "repository");
+        assert_eq!(plan[0].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[0].script_fallback, true);
-        assert_eq!(plan[1].name, "repository");
-        assert_eq!(plan[1].rust_probe, false);
-        assert_eq!(plan[2].script_fallback, true);
+        assert_eq!(plan[1].name, "path");
+        assert_eq!(plan[1].execution, StageExecutionMode::Native);
+        assert_eq!(plan[1].script_fallback, false);
+        assert_eq!(plan[2].name, "uv");
+        assert_eq!(plan[2].execution, StageExecutionMode::ProbeThenScript);
+        assert_eq!(plan[2].rust_probe, true);
+        assert_eq!(plan[3].name, "venv");
+        assert_eq!(plan[3].execution, StageExecutionMode::Script);
+        assert_eq!(plan[3].rust_probe, false);
     }
 
     #[test]
@@ -592,6 +655,28 @@ mod tests {
         assert_eq!(report.hermes_home, hermes_home);
         assert_eq!(report.install_root, hermes_home.join("hermes-agent"));
         assert!(report.tools.is_empty());
+    }
+
+    #[test]
+    fn summarize_plan_reports_native_probe_and_script_coverage() {
+        let hermes_home = PathBuf::from("C:/Users/example/AppData/Local/hermes");
+        let report = install_state_report(
+            &hermes_home,
+            vec![ToolProbe {
+                name: "uv".to_string(),
+                path: None,
+            }],
+        );
+        let stages = vec![stage("repository"), stage("path"), stage("uv"), stage("venv")];
+        let plan = build_stage_plan(&stages, false);
+
+        let summary = summarize_plan(&report, &plan);
+
+        assert!(summary.contains("native_stages=2"));
+        assert!(summary.contains("probe_stages=1"));
+        assert!(summary.contains("script_stages=1"));
+        assert!(summary.contains("total_stages=4"));
+        assert!(summary.contains("uv=missing"));
     }
 
     #[test]

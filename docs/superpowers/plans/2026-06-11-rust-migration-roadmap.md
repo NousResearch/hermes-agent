@@ -140,6 +140,8 @@ language-specific setup where needed.
   prerequisites stage does not install or require Git when Rust will fetch the source archive.
 - Rust ZIP extraction now rejects symlink entries as well as path traversal entries before materializing repository
   archive contents.
+- Rust stage planning now reports native-first, probe-only, and script-only coverage counts so later bootstrap work can
+  target the remaining script-owned dependency stages explicitly.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` and the Unix `config` stage now run as native Rust stages while preserving Python
   `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.

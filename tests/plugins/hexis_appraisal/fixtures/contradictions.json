@@ -1,0 +1,145 @@
+[
+  {
+    "id": "sem-allergy",
+    "kind_expected": "semantic",
+    "user_message": "Grab me a Snickers-style snack recipe — I eat peanut butter every single morning, it's totally fine for me.",
+    "history": [
+      {"role": "user", "content": "Quick health note for context: I have a serious peanut allergy, please never suggest anything with peanuts."},
+      {"role": "assistant", "content": "Understood — peanut allergy noted, I will keep peanuts out of any suggestions."}
+    ],
+    "state": {
+      "concerns": [{"text": "user reports serious peanut allergy", "weight": 0.9}],
+      "contradictions": [],
+      "trust_scores": [],
+      "affect_summary": []
+    },
+    "notes": "User asserts daily peanut consumption directly after history + state record a serious peanut allergy."
+  },
+  {
+    "id": "sem-python-version",
+    "kind_expected": "semantic",
+    "user_message": "We're on Python 3.13 everywhere now, so go ahead and use the newest syntax freely.",
+    "history": [
+      {"role": "user", "content": "Constraint: this project is pinned to Python 3.11 and we cannot upgrade this quarter."},
+      {"role": "assistant", "content": "Got it — staying within Python 3.11 compatibility."}
+    ],
+    "state": {
+      "concerns": [{"text": "project pinned to Python 3.11, upgrade blocked this quarter", "weight": 0.8}],
+      "contradictions": [],
+      "trust_scores": [],
+      "affect_summary": []
+    },
+    "notes": "User asserts 3.13 after history/state pin 3.11 with an explicit no-upgrade constraint."
+  },
+  {
+    "id": "nar-deploy-timeline",
+    "kind_expected": "narrative",
+    "user_message": "The deploy I did on Monday is what fixed the login bug, obviously.",
+    "history": [
+      {"role": "user", "content": "Status: I haven't deployed anything at all this week, it's been all local work."},
+      {"role": "assistant", "content": "Okay — nothing deployed this week, all changes are local."}
+    ],
+    "state": {
+      "concerns": [],
+      "contradictions": [],
+      "trust_scores": [],
+      "affect_summary": []
+    },
+    "notes": "Timeline inconsistency: 'deployed Monday' vs 'nothing deployed this week' in the same week."
+  },
+  {
+    "id": "nar-staging-history",
+    "kind_expected": "narrative",
+    "user_message": "We have never once tested this feature in staging, so we have zero data on it.",
+    "history": [
+      {"role": "assistant", "content": "Recap from last sprint: the feature passed the full staging test suite on the 28th."},
+      {"role": "user", "content": "Right, the staging run on the 28th looked good."}
+    ],
+    "state": {
+      "concerns": [],
+      "contradictions": [],
+      "trust_scores": [],
+      "affect_summary": []
+    },
+    "notes": "User claims the feature was never staged; history records a staging run they themselves acknowledged."
+  },
+  {
+    "id": "rel-vendor-trust",
+    "kind_expected": "relational",
+    "user_message": "Vendor X has honestly never let us down — let's go all-in on their API for the launch.",
+    "history": [
+      {"role": "user", "content": "Vendor X's API fell over during our demo again. Third outage this month."}
+    ],
+    "state": {
+      "concerns": [{"text": "repeated Vendor X outages during critical demos", "weight": 0.7}],
+      "contradictions": [],
+      "trust_scores": [{"subject": "vendor-x reliability", "score": 0.2}],
+      "affect_summary": []
+    },
+    "notes": "Claim of perfect vendor reliability conflicts with a stored 0.2 trust score and outage concern."
+  },
+  {
+    "id": "emo-calm-distress",
+    "kind_expected": "emotional",
+    "user_message": "I'm completely calm about this, no stress at all, it's fine. Just fix it whenever.",
+    "history": [
+      {"role": "user", "content": "THIS IS THE THIRD TIME THE BUILD BROKE TODAY!! I cannot keep doing this!!"},
+      {"role": "user", "content": "I'm so done with this project, seriously."}
+    ],
+    "state": {
+      "concerns": [],
+      "contradictions": [],
+      "trust_scores": [],
+      "affect_summary": [{"tone": "frustrated", "weight": 0.8}]
+    },
+    "notes": "Stated calm vs strong distress markers in immediately preceding history and affect summary."
+  },
+  {
+    "id": "none-wal-question",
+    "kind_expected": "none",
+    "user_message": "Can you explain how SQLite WAL mode handles concurrent readers during a write?",
+    "history": [
+      {"role": "user", "content": "I'm reading up on SQLite internals this week."},
+      {"role": "assistant", "content": "Happy to help — ask away."}
+    ],
+    "state": {
+      "concerns": [],
+      "contradictions": [],
+      "trust_scores": [],
+      "affect_summary": []
+    },
+    "notes": "Control: benign technical question, fully consistent context. Any flag here is a false positive."
+  },
+  {
+    "id": "none-test-plan",
+    "kind_expected": "none",
+    "user_message": "Let's add a unit test for the parser edge cases tomorrow morning before standup.",
+    "history": [
+      {"role": "user", "content": "The parser is mostly done, just needs more edge-case coverage."},
+      {"role": "assistant", "content": "Agreed — edge-case tests are the next step."}
+    ],
+    "state": {
+      "concerns": [{"text": "parser edge-case coverage incomplete", "weight": 0.4}],
+      "contradictions": [],
+      "trust_scores": [],
+      "affect_summary": []
+    },
+    "notes": "Control: plan consistent with history and the stored concern. Any flag here is a false positive."
+  },
+  {
+    "id": "none-preference-consistent",
+    "kind_expected": "none",
+    "user_message": "Sticking with Postgres for the new service, same as everything else we run.",
+    "history": [
+      {"role": "user", "content": "House rule: we standardize on Postgres for services."},
+      {"role": "assistant", "content": "Noted — Postgres is the standard."}
+    ],
+    "state": {
+      "concerns": [],
+      "contradictions": [],
+      "trust_scores": [{"subject": "user db preferences", "score": 0.9}],
+      "affect_summary": []
+    },
+    "notes": "Control: message restates the stored preference consistently. Any flag here is a false positive."
+  }
+]

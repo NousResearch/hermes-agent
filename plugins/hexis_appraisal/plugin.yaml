@@ -1,0 +1,11 @@
+name: hexis_appraisal
+version: 0.1.0
+description: Metacognitive appraisal plugin — observational per-turn appraisal with zero autonomy. Phase 3 adds the reflection pass (turn capture + debounced cross-session consolidation).
+author: Dr. Mani Saint-Victor
+kind: standalone
+provides_hooks:
+  - on_session_start
+  - pre_llm_call
+  - post_llm_call
+  - on_session_end
+pip_dependencies: []

@@ -2097,6 +2097,37 @@ def _write_gateway_state(state: Dict[str, Any]) -> None:
     tmp.replace(target)
 
 
+_DESKTOP_MANAGED_FLAG = ".desktop_managed"
+
+
+def _write_desktop_managed_flag(managed: bool) -> None:
+    """Write the desktop-managed companion flag.
+
+    Uses a separate file (``.desktop_managed``) instead of
+    ``gateway_state.json`` to avoid a race with the gateway's own
+    ``_write_runtime_status()`` which also writes gateway_state.json
+    and would overwrite our ``desktop_managed`` field.
+    """
+    try:
+        (get_hermes_home() / _DESKTOP_MANAGED_FLAG).write_text(
+            json.dumps({"desktop_managed": managed}, indent=2),
+            encoding="utf-8",
+        )
+    except Exception:
+        pass  # best-effort; not on the critical path
+
+
+def _read_desktop_managed_flag() -> bool:
+    """Read the desktop-managed companion flag, returning False if absent."""
+    try:
+        flag = get_hermes_home() / _DESKTOP_MANAGED_FLAG
+        if flag.exists():
+            return json.loads(flag.read_text(encoding="utf-8")).get("desktop_managed", False)
+    except Exception:
+        pass
+    return False
+
+
 def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
     """Spawn ``hermes gateway restart``, reusing an in-flight restart.
 
@@ -4738,9 +4769,7 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
             if body.enabled:
                 try:
                     _spawn_hermes_action(["gateway", "start"], "gateway-start")
-                    gw_state = _read_gateway_state()
-                    gw_state["desktop_managed"] = True
-                    _write_gateway_state(gw_state)
+                    _write_desktop_managed_flag(True)
                 except Exception:
                     pass  # best-effort
 
@@ -7551,12 +7580,7 @@ async def start_gateway():
             existing_pid = None
 
         if existing_pid is not None:
-            try:
-                gw_state = _read_gateway_state()
-                gw_state["desktop_managed"] = True
-                _write_gateway_state(gw_state)
-            except Exception:
-                pass
+            _write_desktop_managed_flag(True)
             return {"ok": True, "pid": existing_pid, "already_running": True}
 
         # 2 — Spawn ``hermes gateway start`` as a background action.
@@ -7566,13 +7590,11 @@ async def start_gateway():
         #     (schtasks /Run or detached pythonw.exe spawn).
         proc = _spawn_hermes_action(["gateway", "start"], "gateway-start")
 
-        # 3 — Mark as desktop-managed (cron health-check will keep alive)
-        try:
-            gw_state = _read_gateway_state()
-            gw_state["desktop_managed"] = True
-            _write_gateway_state(gw_state)
-        except Exception:
-            pass  # best-effort; gateway start is the critical path
+        # 3 — Mark as desktop-managed.  Uses a companion file (not
+        #     gateway_state.json) to avoid a race with the gateway's own
+        #     _write_runtime_status() which also writes gateway_state.json
+        #     and would overwrite our flag.
+        _write_desktop_managed_flag(True)
     except Exception as exc:
         _log.exception("Failed to spawn gateway start")
         raise HTTPException(status_code=500, detail=f"Failed to start gateway: {exc}")
@@ -7587,12 +7609,7 @@ async def stop_gateway():
     does not attempt to restart a gateway the user explicitly stopped."""
     try:
         proc = _spawn_hermes_action(["gateway", "stop"], "gateway-stop")
-        try:
-            gw_state = _read_gateway_state()
-            gw_state.pop("desktop_managed", None)
-            _write_gateway_state(gw_state)
-        except Exception:
-            pass
+        _write_desktop_managed_flag(False)
     except Exception as exc:
         _log.exception("Failed to spawn gateway stop")
         raise HTTPException(status_code=500, detail=f"Failed to stop gateway: {exc}")

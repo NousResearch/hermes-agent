@@ -5167,6 +5167,15 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
         print("✗ Hermes Desktop requires sudo to configure Electron's Linux sandbox helper.")
         return False
 
+    # When running non-interactively (e.g. spawned from the desktop app's
+    # self-update), sudo can't prompt for a password.  Warn and skip so we
+    # don't block the build or hang forever waiting on a TTY that will never
+    # come.  The caller (desktop update / next interactive ``hermes desktop``
+    # launch) can fix it up later.
+    if not sys.stdin.isatty():
+        logger.warning("Skipping sandbox helper configuration (non-interactive — no TTY for sudo).")
+        return True
+
     print("→ Configuring Electron Linux sandbox helper (sudo required)...")
     for command in ([sudo, "chown", "root:root", str(sandbox)], [sudo, "chmod", "4755", str(sandbox)]):
         if subprocess.run(command, check=False).returncode != 0:

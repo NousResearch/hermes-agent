@@ -23,7 +23,7 @@ const https = require('node:https')
 const net = require('node:net')
 const path = require('node:path')
 const { pathToFileURL } = require('node:url')
-const { execFileSync, spawn } = require('node:child_process')
+const { execFileSync, spawn, spawnSync } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
@@ -1862,8 +1862,51 @@ async function applyUpdatesPosixInApp() {
   const targetApp = runningAppBundle()
 
   // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
-  // backend is updated; the next launch picks up the rebuilt GUI.
+  // backend is updated.  On a packaged build we can auto-restart in place
+  // (electron-builder overwrites the same binary path via rebuild), so the
+  // user gets the new GUI immediately instead of a manual "restart to load
+  // the new version".  Dev / AppImage / unresolvable installs still show
+  // the manual prompt.
+  //
+  // On Linux the rebuilt app has a fresh chrome-sandbox without the SUID
+  // bit (root:root 4755).  Electron needs this to create sandboxed renderer
+  // processes.  Try `sudo -n` (non-interactive, uses cached credentials) to
+  // configure it before relaunch; if sudo can't run without a password
+  // prompt, skip the auto-relaunch and show the manual prompt so the user
+  // can fix the sandbox via `hermes desktop` in a terminal.
   if (!rebuiltApp || !targetApp) {
+    if (app.isPackaged && process.execPath && process.platform === 'linux') {
+      let sandboxOk = true
+      const sandboxPath = path.join(path.dirname(process.execPath), 'chrome-sandbox')
+      try {
+        const stat = fs.statSync(sandboxPath)
+        if (stat.isFile() && (stat.uid !== 0 || (stat.mode & 0o7777) !== 0o4755)) {
+          emitUpdateProgress({ stage: 'rebuild', message: 'Configuring sandbox…', percent: 85 })
+          rememberLog(`[updates] configuring chrome-sandbox SUID via sudo -n: ${sandboxPath}`)
+          const sudo = findOnPath('sudo')
+          if (sudo) {
+            for (const cmd of [[sudo, '-n', 'chown', 'root:root', sandboxPath], [sudo, '-n', 'chmod', '4755', sandboxPath]]) {
+              const r = spawnSync(cmd[0], cmd.slice(1), { timeout: 10_000, encoding: 'utf8' })
+              if (r.error || r.status !== 0) {
+                sandboxOk = false
+                rememberLog(`[updates] sandbox fixup failed for ${sandboxPath}: ${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`}`)
+                break
+              }
+            }
+          }
+        }
+      } catch (err) {
+        rememberLog(`[updates] sandbox check skipped: ${err.message}`)
+      }
+      if (sandboxOk) {
+        rememberLog('[updates] restarting in-place after successful rebuild')
+        emitUpdateProgress({ stage: 'restart', message: 'Restarting Hermes with the new version…', percent: 100 })
+        app.relaunch()
+        app.quit()
+        return { ok: true, handedOff: true }
+      }
+      rememberLog('[updates] sandbox not configured; falling back to manual-restart prompt')
+    }
     emitUpdateProgress({
       stage: 'done',
       message: 'Backend updated. Restart Hermes to load the new version.',

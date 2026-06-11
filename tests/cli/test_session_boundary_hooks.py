@@ -101,3 +101,20 @@ def test_hook_errors_are_caught(mock_invoke_hook):
     # This should not raise
     results = mgr.invoke_hook("on_session_finalize", session_id="test", platform="cli")
     assert results == []
+
+
+@patch("hermes_cli.plugins.invoke_hook")
+def test_session_finalize_not_fired_on_reset_if_no_session_id(mock_invoke_hook):
+    """Verify on_session_finalize does not fire on /new if agent has no session ID."""
+    cli = HermesCLI()
+    cli.agent = MagicMock()
+    cli.agent.session_id = None
+
+    cli.new_session(silent=True)
+
+    # Check that on_session_finalize was NOT called
+    assert not any(
+        c.args == ("on_session_finalize",)
+        for c in mock_invoke_hook.call_args_list
+    )
+

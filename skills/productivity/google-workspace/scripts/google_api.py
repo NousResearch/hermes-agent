@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Google Workspace API CLI for Hermes Agent.
 
 Uses the Google Workspace CLI (`gws`) when available, but preserves the
@@ -37,21 +38,13 @@ if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
 from _hermes_home import get_hermes_home
+import auth_contexts as gauth
 
 HERMES_HOME = get_hermes_home()
 TOKEN_PATH = HERMES_HOME / "google_token.json"
 CLIENT_SECRET_PATH = HERMES_HOME / "google_client_secret.json"
-
-SCOPES = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
-    "https://www.googleapis.com/auth/gmail.modify",
-    "https://www.googleapis.com/auth/calendar",
-    "https://www.googleapis.com/auth/drive",
-    "https://www.googleapis.com/auth/contacts.readonly",
-    "https://www.googleapis.com/auth/spreadsheets",
-    "https://www.googleapis.com/auth/documents",
-]
+SCOPES = gauth.SCOPES
+CURRENT_AUTH_CONTEXT = "default"
 
 
 def _normalize_authorized_user_payload(payload: dict) -> dict:
@@ -62,21 +55,14 @@ def _normalize_authorized_user_payload(payload: dict) -> dict:
 
 
 def _ensure_authenticated():
-    if not TOKEN_PATH.exists():
-        print("Not authenticated. Run the setup script first:", file=sys.stderr)
-        print(f"  python {Path(__file__).parent / 'setup.py'}", file=sys.stderr)
+    if not gauth.get_token_payload(CURRENT_AUTH_CONTEXT):
+        print(f"Not authenticated for Google auth context {CURRENT_AUTH_CONTEXT!r}. Run the setup script first:", file=sys.stderr)
+        print(f"  python {Path(__file__).parent / 'setup.py'} --auth-context {CURRENT_AUTH_CONTEXT} --auth-url", file=sys.stderr)
         sys.exit(1)
 
 
 def _stored_token_scopes() -> list[str]:
-    try:
-        data = json.loads(TOKEN_PATH.read_text())
-    except Exception:
-        return list(SCOPES)
-    scopes = data.get("scopes")
-    if isinstance(scopes, list) and scopes:
-        return scopes
-    return list(SCOPES)
+    return gauth.granted_scopes_for_context(CURRENT_AUTH_CONTEXT)
 
 
 def _gws_binary() -> str | None:
@@ -88,7 +74,8 @@ def _gws_binary() -> str | None:
 
 def _gws_env() -> dict[str, str]:
     env = os.environ.copy()
-    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(TOKEN_PATH)
+    env["GOOGLE_WORKSPACE_CLI_CREDENTIALS_FILE"] = str(gauth.materialize_token_file(CURRENT_AUTH_CONTEXT))
+    env["HERMES_GOOGLE_AUTH_CONTEXT"] = CURRENT_AUTH_CONTEXT
     return env
 
 
@@ -185,15 +172,14 @@ def get_credentials():
     from google.oauth2.credentials import Credentials
     from google.auth.transport.requests import Request
 
-    creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), _stored_token_scopes())
+    creds = Credentials.from_authorized_user_file(str(gauth.materialize_token_file(CURRENT_AUTH_CONTEXT)), _stored_token_scopes())
     if creds.expired and creds.refresh_token:
         creds.refresh(Request())
-        TOKEN_PATH.write_text(
-            json.dumps(
-                _normalize_authorized_user_payload(json.loads(creds.to_json())),
-                indent=2,
-            )
-        )
+        payload = _normalize_authorized_user_payload(json.loads(creds.to_json()))
+        existing_scopes = _stored_token_scopes()
+        if existing_scopes and not (payload.get("scopes") or payload.get("scope")):
+            payload["scopes"] = existing_scopes
+        gauth.set_token_payload(CURRENT_AUTH_CONTEXT, payload)
     if not creds.valid:
         print("Token is invalid. Re-run setup.", file=sys.stderr)
         sys.exit(1)
@@ -1053,6 +1039,7 @@ def _docs_insert_text(doc_id: str, text: str, index: int) -> None:
 
 def main():
     parser = argparse.ArgumentParser(description="Google Workspace API for Hermes Agent")
+    parser.add_argument("--auth-context", default="", help="Named Google OAuth auth context. Defaults by API service, then legacy/default.")
     sub = parser.add_subparsers(dest="service", required=True)
 
     # --- Gmail ---
@@ -1218,6 +1205,14 @@ def main():
     p.set_defaults(func=docs_append)
 
     args = parser.parse_args()
+    global CURRENT_AUTH_CONTEXT
+    try:
+        CURRENT_AUTH_CONTEXT = args.auth_context or gauth.default_context_for_service(args.service)
+        gauth.validate_context_name(CURRENT_AUTH_CONTEXT)
+        gauth.assert_command_allowed(CURRENT_AUTH_CONTEXT, args.service, args.action)
+    except (PermissionError, ValueError) as e:
+        print(f"ERROR: {e}", file=sys.stderr)
+        sys.exit(2)
     args.func(args)
 
 

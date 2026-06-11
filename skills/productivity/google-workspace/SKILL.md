@@ -6,10 +6,12 @@ author: Nous Research
 license: MIT
 platforms: [linux, macos, windows]
 required_credential_files:
+  - path: google_workspace_auth_contexts.json
+    description: Named Google Workspace OAuth auth contexts (created by setup script)
   - path: google_token.json
-    description: Google OAuth2 token (created by setup script)
+    description: Legacy Google OAuth2 token (created by setup script)
   - path: google_client_secret.json
-    description: Google OAuth2 client credentials (downloaded from Google Cloud Console)
+    description: Legacy Google OAuth2 client credentials (downloaded from Google Cloud Console)
 metadata:
   hermes:
     tags: [Google, Gmail, Calendar, Drive, Sheets, Docs, Contacts, Email, OAuth]
@@ -29,6 +31,54 @@ Gmail, Calendar, Drive, Contacts, Sheets, and Docs — through Hermes-managed OA
 
 - `scripts/setup.py` — OAuth2 setup (run once to authorize)
 - `scripts/google_api.py` — compatibility wrapper CLI. It prefers `gws` for operations when available, while preserving Hermes' existing JSON output contract.
+
+## Auth Contexts
+
+By default this skill remains backward compatible with the legacy single-token files:
+
+- `~/.hermes/google_token.json`
+- `~/.hermes/google_client_secret.json`
+
+For least-privilege or multi-account setups, use **auth contexts**. An auth context is a named Google OAuth credential bundle: account hint, OAuth client, requested services/scopes, token, and pending PKCE state. Contexts are stored in `~/.hermes/google_workspace_auth_contexts.json`, a single static credential file that remote terminal backends can mount.
+
+Auth contexts generalize both multi-account aliases and scoped OAuth. They can represent different Google accounts, or multiple differently scoped OAuth grants for the same Google account.
+
+Common examples:
+
+```bash
+# Gmail read-only context
+$GSETUP --auth-context gmail-readonly --client-secret /path/to/mail-client.json --account-hint mail@example.com
+$GSETUP --auth-context gmail-readonly --services gmail-readonly --auth-url
+$GSETUP --auth-context gmail-readonly --auth-code "THE_REDIRECT_URL"
+$GSETUP --auth-context gmail-readonly --set-default-for gmail
+
+# Drive/Calendar/Docs/Sheets writer context
+$GSETUP --auth-context workspace-writer --client-secret /path/to/workspace-client.json --account-hint workspace@example.com
+$GSETUP --auth-context workspace-writer --services drive,calendar,docs,sheets --auth-url
+$GSETUP --auth-context workspace-writer --auth-code "THE_REDIRECT_URL"
+$GSETUP --auth-context workspace-writer --set-default-for drive,calendar,docs,sheets
+
+# Inspect without starting OAuth
+$GSETUP --services gmail-readonly --print-scopes
+$GSETUP --list-contexts
+```
+
+Then API calls can omit `--auth-context`; `google_api.py` routes by service default:
+
+```bash
+$GAPI gmail search "newer_than:1d"       # gmail-readonly
+$GAPI drive search "renovation"          # workspace-writer
+$GAPI calendar list                       # workspace-writer
+```
+
+You can always override routing explicitly:
+
+```bash
+$GAPI --auth-context gmail-readonly gmail get MESSAGE_ID
+$GAPI --auth-context workspace-writer drive upload report.md
+```
+
+Local scope gates fail early when a context lacks the permission for a command. For example, `gmail send` with a `gmail-readonly` token fails before calling Google.
 
 ## First-Time Setup
 

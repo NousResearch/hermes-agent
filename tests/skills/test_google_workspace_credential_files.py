@@ -17,7 +17,7 @@ SKILL_MD = (
     / "skills/productivity/google-workspace/SKILL.md"
 )
 
-_EXPECTED_PATHS = {"google_token.json", "google_client_secret.json"}
+_EXPECTED_PATHS = {"google_token.json", "google_client_secret.json", "google_workspace_auth_contexts.json"}
 
 
 def _parse_frontmatter(content: str) -> dict:
@@ -47,6 +47,7 @@ class TestGoogleWorkspaceCredentialFiles:
         hermes_home.mkdir()
         (hermes_home / "google_token.json").write_text("{}")
         (hermes_home / "google_client_secret.json").write_text("{}")
+        (hermes_home / "google_workspace_auth_contexts.json").write_text("{}")
 
         from tools.credential_files import (
             clear_credential_files,

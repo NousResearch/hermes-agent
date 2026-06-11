@@ -20,6 +20,30 @@ The setup is fully agent-driven — ask Hermes to set up Google Workspace and it
 3. **Authorize** — Hermes generates an auth URL, you approve in the browser, paste back the redirect URL
 4. **Done** — token auto-refreshes from that point on
 
+Hermes remains backward compatible with the legacy single-token files (`~/.hermes/google_token.json` and `~/.hermes/google_client_secret.json`). For least-privilege or multi-account setups, use **auth contexts**: named OAuth credential bundles stored in `~/.hermes/google_workspace_auth_contexts.json`.
+
+Auth contexts let one Hermes profile route different Google APIs through different tokens without splitting the agent's memory/session context. A context can represent a different Google account, or a separately scoped grant for the same account.
+
+```bash
+# Gmail read-only context
+$GSETUP --auth-context gmail-readonly --client-secret /path/to/mail-client.json --account-hint mail@example.com
+$GSETUP --auth-context gmail-readonly --services gmail-readonly --auth-url
+$GSETUP --auth-context gmail-readonly --auth-code "THE_REDIRECT_URL"
+$GSETUP --auth-context gmail-readonly --set-default-for gmail
+
+# Drive/Calendar/Docs/Sheets writer context
+$GSETUP --auth-context workspace-writer --client-secret /path/to/workspace-client.json --account-hint workspace@example.com
+$GSETUP --auth-context workspace-writer --services drive,calendar,docs,sheets --auth-url
+$GSETUP --auth-context workspace-writer --auth-code "THE_REDIRECT_URL"
+$GSETUP --auth-context workspace-writer --set-default-for drive,calendar,docs,sheets
+
+# Inspect scopes without starting OAuth
+$GSETUP --services gmail-readonly --print-scopes
+$GSETUP --list-contexts
+```
+
+API commands use service defaults when `--auth-context` is omitted, and they fail locally if the selected context lacks the scope required for a write/send/delete/share operation.
+
 :::tip Email-only users
 If you only need email (no Calendar/Drive/Sheets), use the **himalaya** skill instead — it works with a Gmail App Password and takes 2 minutes. No Google Cloud project needed.
 :::

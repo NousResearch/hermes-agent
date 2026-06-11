@@ -1,0 +1,139 @@
+"""Tests for Google Workspace named auth contexts."""
+
+from __future__ import annotations
+
+import importlib.util
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+SCRIPT_DIR = Path(__file__).resolve().parents[2] / "skills/productivity/google-workspace/scripts"
+AUTH_CONTEXTS_PATH = SCRIPT_DIR / "auth_contexts.py"
+API_PATH = SCRIPT_DIR / "google_api.py"
+
+
+def load_module(name: str, path: Path, monkeypatch, tmp_path):
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir(exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.syspath_prepend(str(SCRIPT_DIR))
+    spec = importlib.util.spec_from_file_location(name, path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.fixture
+def auth_contexts(monkeypatch, tmp_path):
+    return load_module("auth_contexts_test", AUTH_CONTEXTS_PATH, monkeypatch, tmp_path)
+
+
+class TestContextNames:
+    @pytest.mark.parametrize("name", ["default", "gmail-readonly", "workspace.writer", "x_1"])
+    def test_accepts_path_safe_names(self, auth_contexts, name):
+        assert auth_contexts.validate_context_name(name) == name
+
+    @pytest.mark.parametrize("name", ["", ".", "..", "../x", "x/y", "x\\y", " space"])
+    def test_rejects_unsafe_names(self, auth_contexts, name):
+        with pytest.raises(ValueError):
+            auth_contexts.validate_context_name(name)
+
+
+class TestScopeResolution:
+    def test_gmail_readonly_is_least_privilege(self, auth_contexts):
+        assert auth_contexts.resolve_scopes(services="gmail-readonly") == [
+            "https://www.googleapis.com/auth/gmail.readonly"
+        ]
+
+    def test_workspace_writer_services(self, auth_contexts):
+        assert auth_contexts.resolve_scopes(services="drive,calendar,docs,sheets") == [
+            "https://www.googleapis.com/auth/drive",
+            "https://www.googleapis.com/auth/calendar",
+            "https://www.googleapis.com/auth/documents",
+            "https://www.googleapis.com/auth/spreadsheets",
+        ]
+
+    def test_explicit_scopes_override_services(self, auth_contexts):
+        assert auth_contexts.resolve_scopes(
+            services="all",
+            scopes="https://www.googleapis.com/auth/calendar.readonly,https://www.googleapis.com/auth/drive.file",
+        ) == [
+            "https://www.googleapis.com/auth/calendar.readonly",
+            "https://www.googleapis.com/auth/drive.file",
+        ]
+
+    def test_unknown_service_fails(self, auth_contexts):
+        with pytest.raises(ValueError):
+            auth_contexts.resolve_scopes(services="gmail-readonly,photos")
+
+
+class TestStoreAndDefaults:
+    def test_context_store_round_trip(self, auth_contexts):
+        auth_contexts.set_client_secret("gmail-readonly", {"installed": {"client_id": "id"}}, account_hint="mail@example.com")
+        auth_contexts.set_token_payload(
+            "gmail-readonly",
+            {"token": "tok", "scopes": [auth_contexts.GMAIL_READONLY]},
+            services=["gmail-readonly"],
+            requested_scopes=[auth_contexts.GMAIL_READONLY],
+        )
+        data = json.loads(auth_contexts.store_path().read_text())
+        assert data["contexts"]["gmail-readonly"]["account_hint"] == "mail@example.com"
+        assert auth_contexts.get_token_payload("gmail-readonly")["token"] == "tok"
+
+    def test_default_context_routing(self, auth_contexts):
+        auth_contexts.set_client_secret("workspace-writer", {"installed": {"client_id": "id"}})
+        auth_contexts.set_default_for_services("workspace-writer", "drive,calendar")
+        assert auth_contexts.default_context_for_service("drive") == "workspace-writer"
+        assert auth_contexts.default_context_for_service("calendar") == "workspace-writer"
+        assert auth_contexts.default_context_for_service("gmail") == "default"
+
+    def test_legacy_default_context_reads_old_files(self, auth_contexts):
+        auth_contexts.legacy_token_path().write_text(json.dumps({"token": "legacy"}))
+        auth_contexts.legacy_client_secret_path().write_text(json.dumps({"installed": {"client_id": "id"}}))
+        assert auth_contexts.get_token_payload("default")["token"] == "legacy"
+        assert auth_contexts.materialize_token_file("default") == auth_contexts.legacy_token_path()
+
+
+class TestCommandScopeGate:
+    def test_allows_readonly_gmail_read(self, auth_contexts):
+        auth_contexts.set_token_payload("gmail-readonly", {"token": "tok", "scopes": [auth_contexts.GMAIL_READONLY]})
+        auth_contexts.assert_command_allowed("gmail-readonly", "gmail", "search")
+
+    def test_blocks_gmail_send_with_readonly_context(self, auth_contexts):
+        auth_contexts.set_token_payload("gmail-readonly", {"token": "tok", "scopes": [auth_contexts.GMAIL_READONLY]})
+        with pytest.raises(PermissionError):
+            auth_contexts.assert_command_allowed("gmail-readonly", "gmail", "send")
+
+    def test_blocks_named_context_when_scope_metadata_missing(self, auth_contexts):
+        auth_contexts.set_token_payload("unknown", {"token": "tok"})
+        with pytest.raises(PermissionError):
+            auth_contexts.assert_command_allowed("unknown", "gmail", "send")
+
+    def test_auth_store_is_private(self, auth_contexts):
+        auth_contexts.set_token_payload("gmail-readonly", {"token": "tok", "scopes": [auth_contexts.GMAIL_READONLY]})
+        mode = auth_contexts.store_path().stat().st_mode & 0o777
+        assert mode == 0o600
+
+    def test_delete_token_removes_materialized_cache_file(self, auth_contexts):
+        auth_contexts.set_token_payload("gmail-readonly", {"token": "tok", "scopes": [auth_contexts.GMAIL_READONLY]})
+        path = auth_contexts.materialize_token_file("gmail-readonly")
+        assert path.exists()
+        auth_contexts.delete_token("gmail-readonly")
+        assert not path.exists()
+
+    def test_store_existing_default_does_not_fallback_to_stale_legacy(self, auth_contexts):
+        auth_contexts.legacy_token_path().write_text('{"token": "legacy"}')
+        auth_contexts.legacy_client_secret_path().write_text('{"installed": {"client_id": "legacy"}}')
+        auth_contexts.legacy_pending_path().write_text('{"state": "legacy"}')
+        auth_contexts.set_default_for_services("default", "gmail")
+        assert auth_contexts.get_token_payload("default") == {}
+        assert auth_contexts.get_client_secret("default") == {}
+        assert auth_contexts.get_pending_auth("default") == {}
+
+    def test_full_drive_implies_read(self, auth_contexts):
+        auth_contexts.set_token_payload("drive", {"token": "tok", "scopes": [auth_contexts.DRIVE]})
+        auth_contexts.assert_command_allowed("drive", "drive", "search")

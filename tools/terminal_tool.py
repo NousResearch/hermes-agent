@@ -1140,12 +1140,18 @@ def _get_env_config() -> Dict[str, Any]:
                         cwd, env_type, default_cwd)
             cwd = default_cwd
     elif env_type == "wsl" and cwd:
-        # WSL is not a container.  Reject any cwd that isn't a Linux
-        # absolute path: Windows drive letters, UNC paths, and relative
-        # paths are all invalid inside WSL's bash.  Let WslEnvironment
-        # probe $HOME instead.
+        # WSL is not a container.  Reject Windows-style paths (drive
+        # letters, UNC) and relative paths — all invalid inside WSL's
+        # bash.  Let WslEnvironment probe $HOME instead.
+        import re
+        _WIN_DRIVE_RE = re.compile(r"^[A-Za-z]:")
         def _is_linux_absolute(p: str) -> bool:
-            return os.path.isabs(p) and p.startswith("/") and ":" not in p
+            return (
+                os.path.isabs(p)
+                and p.startswith("/")
+                and not p.startswith("\\")
+                and not _WIN_DRIVE_RE.match(p)
+            )
         if not _is_linux_absolute(cwd):
             logger.info("Ignoring TERMINAL_CWD=%r for wsl backend "
                         "(not a Linux absolute path). "

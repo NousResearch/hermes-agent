@@ -100,11 +100,15 @@ class ChronosCronScheduler(CronScheduler):
 
     # -- lifecycle --------------------------------------------------------
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60, defer_to_gateway_owner=False):
         """Arm all enabled jobs via NAS, then RETURN immediately.
 
         Does NOT block and does NOT spawn a 60s wake (DQ-1) — that is the whole
         point of scale-to-zero. The machine wakes only on a NAS→agent fire.
+
+        ``defer_to_gateway_owner`` is accepted for interface parity but ignored:
+        an external scheduler owns execution provenance via the NAS→agent fire
+        chain, so there is no local non-authoritative ticker to defer.
         """
         try:
             self.reconcile()

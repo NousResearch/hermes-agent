@@ -289,6 +289,34 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+def _gateway_scheduler_owner_active() -> bool:
+    """Return True when a gateway process owns the scheduler for this profile.
+
+    The gateway runtime lock is per-HERMES_HOME (i.e. per profile), held for
+    the live gateway's lifetime and released by the OS if that process dies, so
+    a stale lock never lingers. When it is held, the launchd/systemd-managed
+    gateway is the authoritative scheduler owner for the profile.
+
+    This is the ownership signal the ``.tick.lock`` does not provide: the tick
+    lock only gives at-most-once execution, but says nothing about *which*
+    process runs the job. On macOS that distinction is part of the security
+    model — TCC / Full Disk Access provenance depends on the executing process
+    ancestry — so a non-authoritative ticker (e.g. a Desktop dashboard backend)
+    must defer to the gateway rather than run jobs from the wrong ancestry.
+    """
+    try:
+        from gateway.status import is_gateway_runtime_lock_active
+        return is_gateway_runtime_lock_active()
+    except Exception:
+        # If the ownership signal is unavailable, fail open: behave as before
+        # (no owner detected) rather than blocking the only available ticker.
+        logger.debug(
+            "gateway scheduler-owner check failed; assuming no owner",
+            exc_info=True,
+        )
+        return False
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -2127,21 +2155,44 @@ def _notify_provider_jobs_changed() -> None:
         logger.debug("on_jobs_changed notify failed: %s", e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
+def tick(
+    verbose: bool = True,
+    adapters=None,
+    loop=None,
+    sync: bool = True,
+    *,
+    defer_to_gateway_owner: bool = False,
+) -> int:
     """
     Check and run all due jobs.
-    
+
     Uses a file lock so only one tick runs at a time, even if the gateway's
     in-process ticker and a standalone daemon or manual tick overlap.
-    
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
-    
+        defer_to_gateway_owner: When True, skip execution entirely if a gateway
+            already owns the scheduler for this profile. Non-authoritative
+            tickers (e.g. the Desktop dashboard backend) pass True so that jobs
+            only ever execute from the authorised gateway process ancestry —
+            the ``.tick.lock`` alone gives at-most-once execution but not
+            deterministic provenance, which macOS TCC / Full Disk Access
+            requires. The gateway's own ticker leaves this False so it always
+            runs.
+
     Returns:
-        Number of jobs executed (0 if another tick is already running)
+        Number of jobs executed (0 if another tick is already running, or if
+        deferring to the gateway scheduler owner)
     """
+    if defer_to_gateway_owner and _gateway_scheduler_owner_active():
+        logger.info(
+            "Cron tick skipped — a gateway owns the scheduler for this profile; "
+            "deferring execution to preserve job provenance"
+        )
+        return 0
+
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 

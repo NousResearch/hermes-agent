@@ -56,6 +56,7 @@ class CronScheduler(ABC):
         adapters: Any = None,
         loop: Any = None,
         interval: int = 60,
+        defer_to_gateway_owner: bool = False,
     ) -> None:
         """Begin firing due jobs.
 
@@ -63,6 +64,13 @@ class CronScheduler(ABC):
         (it is run inside a daemon thread by the caller, exactly as today).
         An external provider may register a schedule/webhook and return
         immediately; in that case it must still honor stop_event for teardown.
+
+        ``defer_to_gateway_owner``: a non-authoritative ticker (e.g. the Desktop
+        dashboard backend) passes True so it skips execution while a gateway
+        already owns the scheduler for this profile — the tick lock gives
+        at-most-once execution but not deterministic process provenance, which
+        macOS TCC / Full Disk Access requires. The gateway's own ticker leaves
+        it False. Providers that manage their own provenance may ignore it.
         """
 
     def stop(self) -> None:
@@ -163,7 +171,7 @@ class InProcessCronScheduler(CronScheduler):
     def name(self) -> str:
         return "builtin"
 
-    def start(self, stop_event, *, adapters=None, loop=None, interval=60):
+    def start(self, stop_event, *, adapters=None, loop=None, interval=60, defer_to_gateway_owner=False):
         import logging
         from cron.scheduler import tick as cron_tick
 
@@ -171,7 +179,13 @@ class InProcessCronScheduler(CronScheduler):
         logger.info("In-process cron scheduler started (interval=%ds)", interval)
         while not stop_event.is_set():
             try:
-                cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
+                cron_tick(
+                    verbose=False,
+                    adapters=adapters,
+                    loop=loop,
+                    sync=False,
+                    defer_to_gateway_owner=defer_to_gateway_owner,
+                )
             except Exception as e:
                 logger.debug("Cron tick error: %s", e)
             stop_event.wait(interval)

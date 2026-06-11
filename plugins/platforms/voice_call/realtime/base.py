@@ -38,6 +38,20 @@ DEFAULT_INSTRUCTIONS = (
     "Never read secrets, tokens, or credentials aloud."
 )
 
+# Always appended to the session instructions (even user-configured ones):
+# how to sound while a consult is running. Without this the model
+# improvises negatively ("I don't have the result yet").
+WAITING_ETIQUETTE = (
+    " While a lookup is in progress and the caller says something, respond "
+    "briefly, warmly, and positively — for example 'Still checking, just a "
+    "couple more seconds' or 'Almost there'. Never say you don't have the "
+    "result, never say it failed or is unavailable while it is still "
+    "running, and never offer to get back to them later — the answer "
+    "arrives in this call. Vary the phrasing; don't repeat the same filler "
+    "twice in a row. When the result arrives, deliver it directly without "
+    "re-announcing that you were checking."
+)
+
 
 @dataclass
 class RealtimeEvent:

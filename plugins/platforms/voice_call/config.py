@@ -100,7 +100,7 @@ class TimeoutsConfig:
 
 @dataclass
 class ResponderConfig:
-    thinking_phrase: str = "One moment."
+    thinking_phrase: str = "Let me check that for you — one moment."
     response_timeout_s: int = 60
 
 
@@ -217,7 +217,7 @@ class VoiceCallConfig:
                 transcript_wait_s=_as_int(timeouts_raw.get("transcript_wait_s"), 60),
             ),
             responder=ResponderConfig(
-                thinking_phrase=str(responder_raw.get("thinking_phrase", "One moment.")),
+                thinking_phrase=str(responder_raw.get("thinking_phrase", "Let me check that for you — one moment.")),
                 response_timeout_s=_as_int(responder_raw.get("response_timeout_s"), 60),
             ),
             security=SecurityConfig(

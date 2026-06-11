@@ -99,7 +99,8 @@ class RealtimeBridgeManager:
 
     def __init__(self, runtime: "VoiceCallRuntime"):
         self.runtime = runtime
-        self._tokens: Dict[str, Tuple[str, float]] = {}  # token → (call_id, ts)
+        # token → (call_id, ts)
+        self._tokens: Dict[str, Tuple[str, float]] = {}
         self.active_bridges: Dict[str, "RealtimeCallBridge"] = {}
 
     # -- token lifecycle ------------------------------------------------------
@@ -137,7 +138,8 @@ class RealtimeBridgeManager:
                 record.call_id,
             )
             return
-        wss_base = public.replace("https://", "wss://").replace("http://", "ws://")
+        wss_base = public.replace(
+            "https://", "wss://").replace("http://", "ws://")
         token = self.mint_token(record.call_id)
         stream_url = f"{wss_base}{config.serve.stream_path}/{token}"
         record.metadata["stream_url"] = stream_url
@@ -156,7 +158,8 @@ class RealtimeBridgeManager:
         token = request.match_info.get("token", "")
         call_id = self.consume_token(token)
         if call_id is None:
-            logger.warning("voice_call realtime: rejected stream with bad token")
+            logger.warning(
+                "voice_call realtime: rejected stream with bad token")
             return web.json_response({"error": "invalid token"}, status=403)
         manager = self.runtime.manager
         record = manager.get_call(call_id) if manager else None
@@ -239,7 +242,8 @@ class RealtimeCallBridge:
         self._pacer = pacer
         tasks = [
             asyncio.create_task(self._inbound_pump(ws), name="vc-rt-inbound"),
-            asyncio.create_task(self._outbound_pump(pacer), name="vc-rt-outbound"),
+            asyncio.create_task(self._outbound_pump(pacer),
+                                name="vc-rt-outbound"),
             asyncio.create_task(pacer.run(), name="vc-rt-pacer"),
         ]
         try:
@@ -259,7 +263,8 @@ class RealtimeCallBridge:
             await self.session.close()
             if not ws.closed:
                 await ws.close()
-        logger.info("voice_call realtime: bridge for %s ended", self.record.call_id)
+        logger.info("voice_call realtime: bridge for %s ended",
+                    self.record.call_id)
 
     async def _send_media_frame(self, frame: bytes) -> None:
         if self._ws is not None and not self._ws.closed:
@@ -331,7 +336,8 @@ class RealtimeCallBridge:
                 if "no active response" in (event.text or "").lower():
                     logger.debug("voice_call realtime: %s", event.text)
                 else:
-                    logger.warning("voice_call realtime: model error: %s", event.text)
+                    logger.warning(
+                        "voice_call realtime: model error: %s", event.text)
             elif event.type == "closed":
                 return
 
@@ -393,12 +399,14 @@ class RealtimeCallBridge:
                 self.record.call_id,
             )
         except Exception:  # noqa: BLE001
-            logger.debug("voice_call realtime: filler inject failed", exc_info=True)
+            logger.debug(
+                "voice_call realtime: filler inject failed", exc_info=True)
 
     async def _handle_tool_call(self, event) -> None:
         question = str(event.tool_args.get("question", "")).strip()
         started_at = time.time()
-        timeout = max(15.0, float(self.runtime.config.responder.response_timeout_s))
+        timeout = max(15.0, float(
+            self.runtime.config.responder.response_timeout_s))
 
         # Empty-args consults happen when the model flails (e.g. retrying
         # after a timeout). OpenClaw's fallback: join an in-flight consult

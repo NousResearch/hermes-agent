@@ -17,6 +17,7 @@ from ..config import RealtimeConfig
 from .base import (
     AGENT_CONSULT_TOOL,
     DEFAULT_INSTRUCTIONS,
+    WAITING_ETIQUETTE,
     RealtimeEvent,
     RealtimeVoiceSession,
 )
@@ -44,7 +45,9 @@ class OpenAIRealtimeSession(RealtimeVoiceSession):
             raise ValueError("OpenAI Realtime requires OPENAI_API_KEY")
         self.model = config.model or DEFAULT_MODEL
         self.voice = config.voice or DEFAULT_VOICE
-        self.instructions = config.instructions or DEFAULT_INSTRUCTIONS
+        self.instructions = (
+            config.instructions or DEFAULT_INSTRUCTIONS
+        ) + WAITING_ETIQUETTE
         self._ws = None
         self._closed = False
         # call_ids already surfaced as tool_call events — GA can deliver a

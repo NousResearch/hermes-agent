@@ -712,6 +712,25 @@ def test_openai_session_update_uses_ga_shape(monkeypatch):
     assert s["tools"][0]["name"] == "agent_consult"
 
 
+def test_waiting_etiquette_appended_to_instructions(monkeypatch):
+    """Custom instructions still get the wait-etiquette suffix — without it
+    the model improvises negatively ('I don't have the result yet')."""
+    from plugins.platforms.voice_call.config import RealtimeConfig
+    from plugins.platforms.voice_call.realtime.base import WAITING_ETIQUETTE
+    from plugins.platforms.voice_call.realtime.openai_realtime import (
+        OpenAIRealtimeSession,
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    session = OpenAIRealtimeSession(
+        RealtimeConfig(enabled=True, provider="openai",
+                       instructions="You are a custom voice bot.")
+    )
+    assert session.instructions.startswith("You are a custom voice bot.")
+    assert session.instructions.endswith(WAITING_ETIQUETTE)
+    assert "Still checking" in session.instructions
+
+
 def test_openai_tool_calls_from_response_done_with_dedupe(monkeypatch):
     """GA delivers function calls inside response.done output items; the
     standalone arguments.done event may also fire — surface each call once."""

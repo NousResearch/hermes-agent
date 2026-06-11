@@ -1574,6 +1574,26 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             sys.exit(1)
         return path
 
+    node = _node_bin("node")
+    node_flags = ["--expose-gc"]
+    try:
+        ws_check = subprocess.run(
+            [node, "-e", "process.exit(typeof WebSocket === 'undefined' ? 1 : 0)"],
+            capture_output=True,
+            text=True
+        )
+        if ws_check.returncode != 0:
+            exp_check = subprocess.run(
+                [node, "--experimental-websocket", "-e", "process.exit(typeof WebSocket === 'undefined' ? 1 : 0)"],
+                capture_output=True,
+                text=True
+            )
+            if exp_check.returncode == 0:
+                node_flags.append("--experimental-websocket")
+                os.environ["NODE_OPTIONS"] = (os.environ.get("NODE_OPTIONS", "") + " --experimental-websocket").strip()
+    except Exception:
+        pass
+
     # Footgun: --dev against a prebuilt bundle that has no source/node_modules.
     ext_dir = os.environ.get("HERMES_TUI_DIR")
     if tui_dev and ext_dir:
@@ -1590,14 +1610,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if ext_dir:
             p = Path(ext_dir)
             if (p / "dist" / "entry.js").is_file():
-                node = _node_bin("node")
-                return [node, "--expose-gc", str(p / "dist" / "entry.js")], p
+                return [node] + node_flags + [str(p / "dist" / "entry.js")], p
 
         # 1b. Bundled in wheel (pip install)
         bundled = _find_bundled_tui()
         if bundled is not None:
-            node = _node_bin("node")
-            return [node, "--expose-gc", str(bundled)], bundled.parent
+            return [node] + node_flags + [str(bundled)], bundled.parent
 
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
@@ -1708,8 +1726,7 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 print(preview)
             sys.exit(1)
 
-    node = _node_bin("node")
-    return [node, "--expose-gc", str(tui_dir / "dist" / "entry.js")], tui_dir
+    return [node] + node_flags + [str(tui_dir / "dist" / "entry.js")], tui_dir
 
 
 def _normalize_tui_toolsets(toolsets: object) -> list[str]:

@@ -270,6 +270,34 @@ export function useMainApp(gw: GatewayClient) {
   })
 
   const { actions: composerActions, refs: composerRefs, state: composerState } = composer
+
+  const composerActionsRef = useRef(composerActions)
+  composerActionsRef.current = composerActions
+
+  const stableComposerActions = useMemo(() => {
+    const obj = {} as any
+    const keys: Array<keyof typeof composerActions> = [
+      'clearIn',
+      'dequeue',
+      'enqueue',
+      'handleTextPaste',
+      'openEditor',
+      'pushHistory',
+      'removeQueue',
+      'replaceQueue',
+      'setCompIdx',
+      'setHistoryIdx',
+      'setInput',
+      'setInputBuf',
+      'setPasteSnips',
+      'setQueueEdit',
+      'syncQueue'
+    ]
+    for (const key of keys) {
+      obj[key] = (...args: any[]) => (composerActionsRef.current[key] as any)(...args)
+    }
+    return obj as typeof composerActions
+  }, [])
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
 
   useEffect(() => {
@@ -405,7 +433,11 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const appendMessage = useCallback(
-    (msg: Msg) => setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg))),
+    (msg: Msg) => {
+      queueMicrotask(() => {
+        setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg)))
+      })
+    },
     []
   )
 
@@ -483,7 +515,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const session = useSessionLifecycle({
     colsRef,
-    composerActions,
+    composerActions: stableComposerActions,
     gw,
     panel,
     rpc,
@@ -668,7 +700,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const { dispatchSubmission, send, sendQueued, submit } = useSubmission({
     appendMessage,
-    composerActions,
+    composerActions: stableComposerActions,
     composerRefs,
     composerState,
     gw,
@@ -694,13 +726,13 @@ export function useMainApp(gw: GatewayClient) {
       return
     }
 
-    const next = composerActions.dequeue()
+    const next = stableComposerActions.dequeue()
 
     if (next) {
       patchUiState({ busy: true, status: 'running…' })
       sendQueued(next)
     }
-  }, [ui.sid, ui.busy, composerActions, composerRefs, sendQueued])
+  }, [ui.sid, ui.busy, stableComposerActions, composerRefs, sendQueued])
 
   const { pagerPageSize } = useInputHandlers({
     actions: {
@@ -712,7 +744,7 @@ export function useMainApp(gw: GatewayClient) {
       newSession: session.newSession,
       sys
     },
-    composer: { actions: composerActions, refs: composerRefs, state: composerState },
+    composer: { actions: stableComposerActions, refs: composerRefs, state: composerState },
     gateway,
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
@@ -730,7 +762,7 @@ export function useMainApp(gw: GatewayClient) {
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
-        composer: { setInput: composerActions.setInput },
+        composer: { setInput: stableComposerActions.setInput },
         gateway,
         session: {
           STARTUP_RESUME_ID,
@@ -755,7 +787,7 @@ export function useMainApp(gw: GatewayClient) {
       appendMessage,
       bellOnComplete,
       clearSelection,
-      composerActions.setInput,
+      stableComposerActions.setInput,
       gateway,
       panel,
       session.newSession,
@@ -826,12 +858,12 @@ export function useMainApp(gw: GatewayClient) {
     () =>
       createSlashHandler({
         composer: {
-          enqueue: composerActions.enqueue,
+          enqueue: stableComposerActions.enqueue,
           hasSelection,
           paste,
           queueRef: composerRefs.queueRef,
           selection,
-          setInput: composerActions.setInput
+          setInput: stableComposerActions.setInput
         },
         gateway,
         local: {
@@ -858,7 +890,7 @@ export function useMainApp(gw: GatewayClient) {
       }),
     [
       catalog,
-      composerActions,
+      stableComposerActions,
       composerRefs,
       die,
       gateway,
@@ -1062,17 +1094,17 @@ export function useMainApp(gw: GatewayClient) {
       compIdx: composerState.compIdx,
       completions: composerState.completions,
       empty,
-      handleTextPaste: composerActions.handleTextPaste,
+      handleTextPaste: stableComposerActions.handleTextPaste,
       input: composerState.input,
       inputBuf: composerState.inputBuf,
       pagerPageSize,
       queueEditIdx: composerState.queueEditIdx,
       queuedDisplay: composerState.queuedDisplay,
       submit,
-      updateInput: composerActions.setInput,
+      updateInput: stableComposerActions.setInput,
       voiceRecordKey
     }),
-    [cols, composerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
+    [cols, stableComposerActions, composerState, empty, pagerPageSize, submit, voiceRecordKey]
   )
 
   // Pass current progress through unfrozen — streaming update throttling

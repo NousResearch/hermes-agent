@@ -4,7 +4,10 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 
+import { HUD_HEADING, HUD_ITEM, HUD_POSITION, HUD_SURFACE, HUD_TEXT } from '@/app/floating-hud'
+import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command'
+import { KbdGroup } from '@/components/ui/kbd'
 import { getHermesConfigRecord, listSessions } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -12,11 +15,11 @@ import {
   Activity,
   Archive,
   BarChart3,
-  Check,
   ChevronLeft,
   ChevronRight,
   Clock,
   Cpu,
+  Download,
   Globe,
   type IconComponent,
   Info,
@@ -30,13 +33,18 @@ import {
   Settings,
   Settings2,
   Sun,
+  Terminal,
   Users,
   Wrench,
   Zap
 } from '@/lib/icons'
+import { comboTokens } from '@/lib/keybinds/combo'
 import { cn } from '@/lib/utils'
 import { $commandPaletteOpen, closeCommandPalette, setCommandPaletteOpen } from '@/store/command-palette'
+import { $bindings } from '@/store/keybinds'
+import { luminance } from '@/themes/color'
 import { type ThemeMode, useTheme } from '@/themes/context'
+import { isUserTheme, resolveTheme } from '@/themes/user-themes'
 
 import {
   AGENTS_ROUTE,
@@ -54,8 +62,11 @@ import { FIELD_LABELS, SECTIONS } from '../settings/constants'
 import { fieldCopyForSchemaKey } from '../settings/field-copy'
 import { prettyName } from '../settings/helpers'
 
+import { MarketplaceThemePage } from './marketplace-theme-page'
+
 interface PaletteItem {
-  active?: boolean
+  /** Keybind action id — its live combo renders as a hotkey hint. */
+  action?: string
   icon: IconComponent
   id: string
   /** Keep the palette open after running (live-preview pickers like theme/mode). */
@@ -69,9 +80,15 @@ interface PaletteItem {
 }
 
 interface PaletteGroup {
-  heading: string
+  /** Optional: a headingless group renders as a bare action row (e.g. the
+   *  "Install theme…" entry pinned atop the theme picker). */
+  heading?: string
   items: PaletteItem[]
 }
+
+// Nested page → its parent, so Back / Esc step up one level instead of closing
+// the palette. Pages absent here go straight back to the root list.
+const PAGE_PARENTS: Record<string, string> = { 'install-theme': 'theme' }
 
 /** A nested page reachable from a root item via `to`. */
 interface PalettePage {
@@ -84,6 +101,22 @@ interface SessionEntry {
   id: string
   preview?: string
   title: string
+}
+
+// cmdk defaults to fuzzy subsequence scoring, so "color" matches anything with
+// c…o…l…o…r scattered across it. Use case-insensitive multi-term substring
+// matching instead: every typed word must literally appear in the item's
+// value/keywords, which keeps results tight and predictable.
+const paletteFilter = (value: string, search: string, keywords?: string[]): number => {
+  const needle = search.trim().toLowerCase()
+
+  if (!needle) {
+    return 1
+  }
+
+  const haystack = `${value} ${keywords?.join(' ') ?? ''}`.toLowerCase()
+
+  return needle.split(/\s+/).every(term => haystack.includes(term)) ? 1 : 0
 }
 
 type SessionRow = Awaited<ReturnType<typeof listSessions>>['sessions'][number]
@@ -146,11 +179,32 @@ const THEME_MODES: ReadonlyArray<{ icon: IconComponent; mode: ThemeMode }> = [
   { icon: Monitor, mode: 'system' }
 ]
 
+// Which Light/Dark groups a theme belongs in. Built-ins render in both modes
+// (the engine synthesises the missing side). Imported VS Code themes only carry
+// the variant(s) the extension shipped — a single dark theme like Dracula lives
+// under Dark only, while a GitHub/Solarized family (light + dark) lives in both.
+function themeSupportsMode(name: string, target: 'light' | 'dark'): boolean {
+  if (!isUserTheme(name)) {
+    return true
+  }
+
+  const resolved = resolveTheme(name)
+
+  if (!resolved) {
+    return true
+  }
+
+  const background = target === 'dark' ? (resolved.darkColors ?? resolved.colors).background : resolved.colors.background
+
+  return target === 'dark' ? luminance(background) <= 0.5 : luminance(background) > 0.5
+}
+
 export function CommandPalette() {
   const { t } = useI18n()
   const open = useStore($commandPaletteOpen)
+  const bindings = useStore($bindings)
   const navigate = useNavigate()
-  const { availableThemes, mode, resolvedMode, setMode, setTheme, themeName } = useTheme()
+  const { availableThemes, resolvedMode, setMode, setTheme, themeName } = useTheme()
   const [search, setSearch] = useState('')
   const [page, setPage] = useState<string | null>(null)
 
@@ -194,10 +248,19 @@ export function CommandPalette() {
   }, [open])
 
   const go = useCallback((path: string) => () => navigate(path), [navigate])
+
+  // Step up one nested page (or back to the root list), clearing the filter so
+  // the parent page doesn't reopen mid-search.
+  const goBack = useCallback(() => {
+    setSearch('')
+    setPage(prev => (prev ? (PAGE_PARENTS[prev] ?? null) : null))
+  }, [])
+
   const settingsSectionLabel = useCallback(
     (section: (typeof SECTIONS)[number]) => t.settings.sections[section.id] ?? section.label,
     [t.settings.sections]
   )
+
   const configFieldLabel = useCallback(
     (key: string) =>
       fieldCopyForSchemaKey(t.settings.fieldLabels, key) ??
@@ -214,20 +277,61 @@ export function CommandPalette() {
       {
         heading: cc.goTo,
         items: [
-          { icon: Plus, id: 'nav-new', keywords: ['chat', 'create'], label: cc.nav.newChat.title, run: go(NEW_CHAT_ROUTE) },
-          { icon: Settings, id: 'nav-settings', label: cc.nav.settings.title, run: go(SETTINGS_ROUTE) },
           {
+            action: 'session.new',
+            icon: Plus,
+            id: 'nav-new',
+            keywords: ['chat', 'create'],
+            label: cc.nav.newChat.title,
+            run: go(NEW_CHAT_ROUTE)
+          },
+          {
+            action: 'view.showTerminal',
+            icon: Terminal,
+            id: 'nav-terminal',
+            keywords: ['terminal', 'shell', 'console'],
+            label: t.keybinds.actions['view.showTerminal'],
+            run: () => setTerminalTakeover(true)
+          },
+          {
+            action: 'nav.settings',
+            icon: Settings,
+            id: 'nav-settings',
+            label: cc.nav.settings.title,
+            run: go(SETTINGS_ROUTE)
+          },
+          {
+            action: 'nav.skills',
             icon: Wrench,
             id: 'nav-skills',
             keywords: ['tools', 'toolsets'],
             label: cc.nav.skills.title,
             run: go(SKILLS_ROUTE)
           },
-          { icon: MessageCircle, id: 'nav-messaging', label: cc.nav.messaging.title, run: go(MESSAGING_ROUTE) },
-          { icon: Package, id: 'nav-artifacts', label: cc.nav.artifacts.title, run: go(ARTIFACTS_ROUTE) },
-          { icon: Clock, id: 'nav-cron', keywords: ['schedule', 'jobs'], label: t.shell.statusbar.cron, run: go(CRON_ROUTE) },
-          { icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
-          { icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) }
+          {
+            action: 'nav.messaging',
+            icon: MessageCircle,
+            id: 'nav-messaging',
+            label: cc.nav.messaging.title,
+            run: go(MESSAGING_ROUTE)
+          },
+          {
+            action: 'nav.artifacts',
+            icon: Package,
+            id: 'nav-artifacts',
+            label: cc.nav.artifacts.title,
+            run: go(ARTIFACTS_ROUTE)
+          },
+          {
+            action: 'nav.cron',
+            icon: Clock,
+            id: 'nav-cron',
+            keywords: ['schedule', 'jobs'],
+            label: t.shell.statusbar.cron,
+            run: go(CRON_ROUTE)
+          },
+          { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
+          { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) }
         ]
       },
       {
@@ -373,24 +477,40 @@ export function CommandPalette() {
       theme: {
         title: t.settings.appearance.themeTitle,
         placeholder: t.settings.appearance.themeDesc,
-        // Skins aren't inherently light/dark — the same skin renders in either
-        // mode. Group by appearance so picking an entry sets skin + mode at
-        // once, and keep the palette open so each pick previews live.
-        groups: (['light', 'dark'] as const).map(groupMode => ({
-          heading: groupMode === 'light' ? t.settings.modeOptions.light.label : t.settings.modeOptions.dark.label,
-          items: availableThemes.map(theme => ({
-            active: themeName === theme.name && resolvedMode === groupMode,
-            icon: groupMode === 'light' ? Sun : Moon,
-            id: `theme-${theme.name}-${groupMode}`,
-            keepOpen: true,
-            keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
-            label: theme.label,
-            run: () => {
-              setTheme(theme.name)
-              setMode(groupMode)
-            }
+        groups: [
+          // Pinned at the top: drills into the Marketplace browser.
+          {
+            items: [
+              {
+                icon: Download,
+                id: 'theme-install',
+                keywords: ['install', 'marketplace', 'vscode', 'vs code', 'download', 'new', 'color'],
+                label: t.commandCenter.installTheme.title,
+                to: 'install-theme'
+              }
+            ]
+          },
+          // Built-ins and imported families list under the mode(s) they support;
+          // picking sets skin + mode at once. A multi-variant import (GitHub,
+          // Solarized) appears in both groups and switches variants with the mode.
+          ...(['light', 'dark'] as const).map(groupMode => ({
+            heading: groupMode === 'light' ? t.settings.modeOptions.light.label : t.settings.modeOptions.dark.label,
+            items: availableThemes
+              .filter(theme => themeSupportsMode(theme.name, groupMode))
+              .map(theme => ({
+                active: themeName === theme.name && resolvedMode === groupMode,
+                icon: groupMode === 'light' ? Sun : Moon,
+                id: `theme-${theme.name}-${groupMode}`,
+                keepOpen: true,
+                keywords: ['theme', 'appearance', 'palette', groupMode, theme.label, theme.description ?? ''],
+                label: theme.label,
+                run: () => {
+                  setTheme(theme.name)
+                  setMode(groupMode)
+                }
+              }))
           }))
-        }))
+        ]
       },
       'color-mode': {
         title: t.settings.appearance.colorMode,
@@ -399,7 +519,6 @@ export function CommandPalette() {
           {
             heading: t.settings.appearance.colorMode,
             items: THEME_MODES.map(entry => ({
-              active: mode === entry.mode,
               icon: entry.icon,
               id: `mode-${entry.mode}`,
               keepOpen: true,
@@ -409,9 +528,16 @@ export function CommandPalette() {
             }))
           }
         ]
+      },
+      // Server-driven page: items come from the Marketplace, rendered by
+      // <MarketplaceThemePage> (loader + live search + per-row install).
+      'install-theme': {
+        title: t.commandCenter.installTheme.title,
+        placeholder: t.commandCenter.installTheme.placeholder,
+        groups: []
       }
     }),
-    [availableThemes, mode, resolvedMode, setMode, setTheme, t, themeName]
+    [availableThemes, resolvedMode, setMode, setTheme, t, themeName]
   )
 
   const activePage = page ? subPages[page] : null
@@ -436,17 +562,22 @@ export function CommandPalette() {
   return (
     <DialogPrimitive.Root onOpenChange={setCommandPaletteOpen} open={open}>
       <DialogPrimitive.Portal>
-        <DialogPrimitive.Overlay className="fixed inset-0 z-[200] bg-black/15 backdrop-blur-[1px] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0" />
+        {/* Transparent overlay: keeps click-away + focus trap, but no dim/blur. */}
+        <DialogPrimitive.Overlay className="fixed inset-0 z-[200]" />
         <DialogPrimitive.Content
           aria-describedby={undefined}
-          className="fixed left-1/2 top-[14vh] z-[210] w-[min(40rem,calc(100vw-2rem))] -translate-x-1/2 overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-lg duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95"
+          className={cn(
+            HUD_POSITION,
+            HUD_SURFACE,
+            'z-[210] w-[min(34rem,calc(100vw-2rem))] overflow-hidden duration-150 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:slide-in-from-top-2 data-[state=open]:zoom-in-95'
+          )}
         >
           <DialogPrimitive.Title className="sr-only">{t.commandCenter.paletteTitle}</DialogPrimitive.Title>
-          <Command className="bg-transparent" loop>
+          <Command className="bg-transparent" filter={paletteFilter} loop>
             {activePage && (
               <button
                 className="flex w-full items-center gap-1.5 border-b border-border px-3 py-1.5 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
-                onClick={() => setPage(null)}
+                onClick={goBack}
                 type="button"
               >
                 <ChevronLeft className="size-3.5" />
@@ -456,6 +587,7 @@ export function CommandPalette() {
               </button>
             )}
             <CommandInput
+              className={HUD_TEXT}
               onKeyDown={event => {
                 if (!activePage) {
                   return
@@ -466,38 +598,45 @@ export function CommandPalette() {
                 if (event.key === 'Escape' || (event.key === 'Backspace' && search === '')) {
                   event.preventDefault()
                   event.stopPropagation()
-                  setPage(null)
+                  goBack()
                 }
               }}
               onValueChange={setSearch}
               placeholder={placeholder}
               value={search}
             />
-            <CommandList className="max-h-[min(24rem,60vh)]">
-              <CommandEmpty>{t.commandCenter.noResults}</CommandEmpty>
-              {visibleGroups.map(group => (
+            <CommandList className="dt-portal-scrollbar max-h-[min(20rem,56vh)]">
+              {page === 'install-theme' ? (
+                <MarketplaceThemePage onPickTheme={setTheme} search={search} />
+              ) : (
+                <CommandEmpty>{t.commandCenter.noResults}</CommandEmpty>
+              )}
+              {visibleGroups.map((group, index) => (
                 <CommandGroup
-                  className="**:[[cmdk-group-heading]]:uppercase **:[[cmdk-group-heading]]:tracking-wider **:[[cmdk-group-heading]]:text-[0.6875rem] **:[[cmdk-group-heading]]:text-muted-foreground/70"
+                  className={HUD_HEADING}
                   heading={group.heading}
-                  key={group.heading}
+                  key={group.heading ?? `palette-group-${index}`}
                 >
                   {group.items.map(item => {
                     const Icon = item.icon
+                    const combo = item.action ? bindings[item.action]?.[0] : undefined
+                    const keys = combo ? comboTokens(combo) : null
 
                     return (
                       <CommandItem
-                        className="gap-2.5"
+                        className={cn(HUD_ITEM, HUD_TEXT)}
                         key={item.id}
                         keywords={item.keywords}
                         onSelect={() => handleSelect(item)}
                         value={`${item.label} ${item.keywords?.join(' ') ?? ''} ${item.id}`}
                       >
-                        <Icon className="size-4 shrink-0 text-muted-foreground" />
+                        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
                         <span className="truncate">{item.label}</span>
-                        {item.to ? (
-                          <ChevronRight className="ml-auto size-4 shrink-0 text-muted-foreground/70" />
-                        ) : (
-                          <Check className={cn('ml-auto size-4 text-foreground', !item.active && 'invisible')} />
+                        {keys && <KbdGroup className="ml-auto" keys={keys} />}
+                        {item.to && (
+                          <ChevronRight
+                            className={cn('size-3.5 shrink-0 text-muted-foreground/70', !keys && 'ml-auto')}
+                          />
                         )}
                       </CommandItem>
                     )

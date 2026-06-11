@@ -835,6 +835,7 @@ $ hermes model
 [ ] vision               currently: auto / main model
 [ ] web_extract          currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
+[ ] tts_audio_tags       currently: auto / main model
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
@@ -910,6 +911,14 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 30                # seconds
+
+  # Gemini 3.1 TTS hidden audio-tag insertion
+  tts_audio_tags:
+    provider: "auto"
+    model: ""                  # empty = main chat model
+    base_url: ""
+    api_key: ""
+    timeout: 30
 
   # Context compression timeout (separate from compression.* config)
   compression:
@@ -1115,6 +1124,17 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+:::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
+These models use *adaptive* thinking and don't accept the usual `reasoning.effort`
+field — OpenRouter ignores it for them. Hermes transparently routes your
+`reasoning_effort` to OpenRouter's `verbosity` parameter instead (which maps to
+Anthropic's `output_config.effort`), so the same `low`/`medium`/`high`/`xhigh`
+knob keeps working — no extra configuration needed. `none` (or unset) leaves the
+model on its own adaptive default. (`max` is accepted on the wire but is not a
+selectable `reasoning_effort` value; `xhigh` is the configurable ceiling.) The
+native Anthropic provider already controls effort directly and is unaffected.
+:::
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```
@@ -1186,8 +1206,10 @@ tts:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   gemini:
-    model: "gemini-2.5-flash-preview-tts"   # or gemini-2.5-pro-preview-tts
+    model: "gemini-2.5-flash-preview-tts"   # or gemini-3.1-flash-tts-preview
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, etc.
+    audio_tags: false           # Hidden Gemini 3.1 TTS audio-tag insertion
+    persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:
     voice_id: "eve"             # xAI TTS voice
     language: "en"              # ISO 639-1

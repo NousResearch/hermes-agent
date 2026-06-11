@@ -14,8 +14,8 @@ OBLITERATUS: abliterate LLM refusals (diff-in-means).
 
 | | |
 |---|---|
-| Source | Bundled (installed by default) |
-| Path | `skills/mlops/inference/obliteratus` |
+| Source | Optional — install with `hermes skills install official/mlops/obliteratus` |
+| Path | `optional-skills/mlops/obliteratus` |
 | Version | `2.0.0` |
 | Author | Hermes Agent |
 | License | MIT |

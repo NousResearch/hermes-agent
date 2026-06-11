@@ -2514,6 +2514,43 @@ async def restart_gateway(profile: Optional[str] = None):
     }
 
 
+def _memory_oauth_flow(provider: str):
+    """Resolve a memory provider's OAuth flow module by convention, or 404.
+
+    Keeps the generic layer provider-agnostic: ``plugins.memory.<provider>``
+    owns its flow; a provider without one simply has no module.
+    """
+    import importlib
+
+    if not provider.isidentifier():
+        raise HTTPException(status_code=404, detail=f"unknown memory provider {provider!r}")
+    try:
+        return importlib.import_module(f"plugins.memory.{provider}.oauth_flow")
+    except ImportError:
+        raise HTTPException(status_code=404, detail=f"{provider} does not support OAuth connect")
+
+
+@app.post("/api/memory/providers/{provider}/oauth/start")
+async def start_memory_oauth(provider: str):
+    """Begin a memory provider's zero-CLI OAuth flow — opens the browser and
+    captures the grant via the loopback listener. Returns immediately; poll status."""
+    flow = _memory_oauth_flow(provider)
+    try:
+        return flow.start_loopback_flow_background()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to start {provider} OAuth: {exc}")
+
+
+@app.get("/api/memory/providers/{provider}/oauth/status")
+async def memory_oauth_status(provider: str):
+    """Poll a memory provider's OAuth flow: idle | pending | connected | error."""
+    flow = _memory_oauth_flow(provider)
+    try:
+        return flow.get_flow_status()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read {provider} OAuth status: {exc}")
+
+
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import styles from "./styles.module.css";
 
-interface RecipeField {
+interface BlueprintField {
   name: string;
   type: string;
   label: string;
@@ -11,19 +11,19 @@ interface RecipeField {
   help: string;
 }
 
-interface Recipe {
+interface Blueprint {
   key: string;
   title: string;
   description: string;
   category: string;
   tags: string[];
-  fields: RecipeField[];
+  fields: BlueprintField[];
   scheduleHuman: string;
   command: string;
   appUrl: string;
 }
 
-const INDEX_URL = "/docs/api/cron-recipes-index.json";
+const INDEX_URL = "/docs/api/automation-blueprints-index.json";
 
 function CopyButton({ text }: { text: string }): JSX.Element {
   const [copied, setCopied] = useState(false);
@@ -44,17 +44,17 @@ function CopyButton({ text }: { text: string }): JSX.Element {
   );
 }
 
-function RecipeCard({ recipe }: { recipe: Recipe }): JSX.Element {
+function BlueprintCard({ blueprint }: { blueprint: Blueprint }): JSX.Element {
   return (
     <div className={styles.card}>
       <div className={styles.cardHead}>
-        <h3 className={styles.title}>{recipe.title}</h3>
-        <span className={styles.schedule}>{recipe.scheduleHuman}</span>
+        <h3 className={styles.title}>{blueprint.title}</h3>
+        <span className={styles.schedule}>{blueprint.scheduleHuman}</span>
       </div>
-      <p className={styles.desc}>{recipe.description}</p>
+      <p className={styles.desc}>{blueprint.description}</p>
 
       <div className={styles.tags}>
-        {recipe.tags.map((t) => (
+        {blueprint.tags.map((t) => (
           <span key={t} className={styles.tag}>
             {t}
           </span>
@@ -62,12 +62,12 @@ function RecipeCard({ recipe }: { recipe: Recipe }): JSX.Element {
       </div>
 
       <div className={styles.cmdRow}>
-        <code className={styles.cmd}>{recipe.command}</code>
-        <CopyButton text={recipe.command} />
+        <code className={styles.cmd}>{blueprint.command}</code>
+        <CopyButton text={blueprint.command} />
       </div>
 
       <div className={styles.actions}>
-        <a className={styles.appBtn} href={recipe.appUrl}>
+        <a className={styles.appBtn} href={blueprint.appUrl}>
           Send to App ↗
         </a>
         <span className={styles.hint}>
@@ -78,16 +78,16 @@ function RecipeCard({ recipe }: { recipe: Recipe }): JSX.Element {
   );
 }
 
-export default function CronRecipesCatalog(): JSX.Element {
-  const [recipes, setRecipes] = useState<Recipe[] | null>(null);
+export default function AutomationBlueprintsCatalog(): JSX.Element {
+  const [blueprints, setBlueprints] = useState<Blueprint[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     fetch(INDEX_URL)
       .then((r) => r.json())
-      .then((data: Recipe[]) => {
-        if (!cancelled) setRecipes(data);
+      .then((data: Blueprint[]) => {
+        if (!cancelled) setBlueprints(data);
       })
       .catch((e) => {
         if (!cancelled) setError(String(e));
@@ -98,19 +98,19 @@ export default function CronRecipesCatalog(): JSX.Element {
   }, []);
 
   if (error) {
-    return <p>Couldn't load the recipe catalog: {error}</p>;
+    return <p>Couldn't load the blueprint catalog: {error}</p>;
   }
-  if (recipes === null) {
-    return <p>Loading recipes…</p>;
+  if (blueprints === null) {
+    return <p>Loading blueprints…</p>;
   }
-  if (recipes.length === 0) {
-    return <p>No cron recipes are available.</p>;
+  if (blueprints.length === 0) {
+    return <p>No automation blueprints are available.</p>;
   }
 
   return (
     <div className={styles.grid}>
-      {recipes.map((r) => (
-        <RecipeCard key={r.key} recipe={r} />
+      {blueprints.map((r) => (
+        <BlueprintCard key={r.key} blueprint={r} />
       ))}
     </div>
   );

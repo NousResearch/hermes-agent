@@ -497,14 +497,14 @@ export const api = {
   deleteCronJob: (id: string, profile = "default") =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${encodeURIComponent(id)}?profile=${encodeURIComponent(profile)}`, { method: "DELETE" }),
 
-  // Cron Recipes — parameterized automation templates
-  getCronRecipes: () =>
-    fetchJSON<{ recipes: CronRecipe[] }>("/api/cron/recipes"),
-  instantiateCronRecipe: (
-    body: { recipe: string; values: Record<string, string> },
+  // Automation Blueprints — parameterized automation templates
+  getAutomationBlueprints: () =>
+    fetchJSON<{ blueprints: AutomationBlueprint[] }>("/api/cron/blueprints"),
+  instantiateAutomationBlueprint: (
+    body: { blueprint: string; values: Record<string, string> },
     profile = "default",
   ) =>
-    fetchJSON<CronJob>(`/api/cron/recipes/instantiate?profile=${encodeURIComponent(profile)}`, {
+    fetchJSON<CronJob>(`/api/cron/blueprints/instantiate?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
@@ -1838,7 +1838,7 @@ export interface CronDeliveryTarget {
   home_env_var: string | null;
 }
 
-export interface CronRecipeField {
+export interface AutomationBlueprintField {
   name: string;
   type: "time" | "enum" | "text" | "weekdays";
   label: string;
@@ -1850,13 +1850,13 @@ export interface CronRecipeField {
   help: string;
 }
 
-export interface CronRecipe {
+export interface AutomationBlueprint {
   key: string;
   title: string;
   description: string;
   category: string;
   tags: string[];
-  fields: CronRecipeField[];
+  fields: AutomationBlueprintField[];
   command: string;
   appUrl: string;
 }

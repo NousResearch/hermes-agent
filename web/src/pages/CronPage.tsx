@@ -30,7 +30,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
-import { CronRecipes } from "@/components/CronRecipes";
+import { AutomationBlueprints } from "@/components/AutomationBlueprints";
 import { cn, themedBody } from "@/lib/utils";
 
 function formatTime(iso?: string | null): string {
@@ -178,7 +178,7 @@ export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [selectedProfile, setSelectedProfile] = useState("all");
-  const [view, setView] = useState<"jobs" | "recipes">("jobs");
+  const [view, setView] = useState<"jobs" | "blueprints">("jobs");
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
   const { t, locale } = useI18n();
@@ -512,15 +512,15 @@ export default function CronPage() {
 
       <Segmented
         value={view}
-        onChange={(v) => setView(v as "jobs" | "recipes")}
+        onChange={(v) => setView(v as "jobs" | "blueprints")}
         options={[
           { value: "jobs", label: "Jobs" },
-          { value: "recipes", label: "Recipes" },
+          { value: "blueprints", label: "Blueprints" },
         ]}
       />
 
-      {view === "recipes" && (
-        <CronRecipes
+      {view === "blueprints" && (
+        <AutomationBlueprints
           profile={selectedProfile === "all" ? "default" : selectedProfile}
           onCreated={loadJobs}
         />

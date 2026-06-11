@@ -234,6 +234,11 @@ gateway:
 
   resume:
     db_unavailable:        "Session database not available."
+    parse_error:           "⚠️ Could not parse `/resume` arguments: {error}.\nUse quotes around titles with spaces, for example: `/resume \"Project A Plan\"`."
+    matrix_no_named_sessions: "No named sessions found for this Matrix room.\nUse `/title My Session` to name the current room session, `/resume --all` to list all Matrix sessions, or `/resume --cross-room <session name>` to explicitly cross room boundaries."
+    matrix_blocked_no_origin: "⚠️ Matrix /resume blocked: this named session has no recorded room origin, so Hermes will not resume it inside the current room by default. Use `/resume --cross-room {name}` if you intentionally want to cross room boundaries."
+    matrix_blocked_other_room: "⚠️ Matrix /resume blocked: that session belongs to a different Matrix room ({room}). Use `/resume --cross-room {name}` if you intentionally want to resume it here."
+    matrix_cross_room_success: "⚠️ Cross-room resume: resumed **{title}** inside Matrix room **{room}**.\nFuture messages in this room will use that transcript until `/reset` or another `/resume`.{msg_part}"
     no_named_sessions:     "No named sessions found.\nUse `/title My Session` to name your current session, then `/resume My Session` to return to it later."
     list_header:           "📋 **Named Sessions**\n"
     list_item:             "• **{title}**{preview_part}"
@@ -266,6 +271,12 @@ gateway:
 
   status:
     header:                "📊 **Hermes Gateway Status**"
+    matrix_scope_header:   "**Matrix scope:**"
+    matrix_scope_room:     "  room: {room}"
+    matrix_scope_room_id:  "  room_id: {room_id}"
+    matrix_scope_thread:   "  thread_id: {thread_id}"
+    matrix_scope_mode:     "  session_scope: {scope}"
+    matrix_scope_key:      "  session_key: {session_key}"
     session_id:            "**Session ID:** `{session_id}`"
     title:                 "**Title:** {title}"
     created:               "**Created:** {timestamp}"

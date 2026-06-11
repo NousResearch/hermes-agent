@@ -75,7 +75,7 @@ export function SidebarSessionRow({
   // messaging platform — surface that origin as a small badge so e.g. a
   // Telegram thread continued here still reads as Telegram.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
-  const handoffLabel = handoffSource ? sessionSourceLabel(handoffSource) ?? handoffSource : null
+  const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
@@ -192,44 +192,63 @@ export function SidebarSessionRow({
               <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
             </span>
           )}
-          {handoffSource && handoffLabel ? (
-            <Tip label={r.handoffOrigin(handoffLabel)}>
-              <PlatformAvatar
-                className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
-                platformId={handoffSource}
-                platformName={handoffLabel}
-              />
-            </Tip>
-          ) : null}
-          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
-          </span>
-        </button>
-        <div className="relative z-2 grid w-[1.375rem] place-items-center">
-          {!isWorking && (
-            <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
-              {age}
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+              {title}
             </span>
-          )}
-          <SessionActionsMenu
-            onArchive={onArchive}
-            onDelete={onDelete}
-            onPin={onPin}
-            pinned={isPinned}
-            profile={session.profile}
-            sessionId={session.id}
-            title={title}
+            {handoffSource && handoffLabel ? (
+              <Tip label={r.handoffOrigin(handoffLabel)}>
+                <PlatformAvatar
+                  className="size-3.5 shrink-0 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
+                  platformId={handoffSource}
+                  platformName={handoffLabel}
+                />
+              </Tip>
+            ) : null}
+          </div>
+        </button>
+        {/* Trailing slot: on an IDLE row the timestamp is visible and, on
+            hover/focus, slides left to make room while the 3-dot menu slides
+            in from the right (both on screen at once). On an ACTIVE row the
+            pulsing orange dot on the left already signals "running", so the
+            timestamp is hidden — but its width is still reserved (opacity-0,
+            not unmounted) so the menu lands in the same spot and the row
+            height never shifts. Transform/opacity only — no layout reflow. */}
+        <div className="relative flex h-full items-center justify-end self-stretch pl-1 pr-1.5">
+          <span
+            className={cn(
+              'pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-[transform,opacity] duration-150 ease-out',
+              // Slide left by the menu's footprint on hover so the age stays
+              // fully legible beside the revealed 3-dot button.
+              'group-hover:-translate-x-5 group-focus-within:-translate-x-5',
+              // Active sessions: the orange dot is the status cue; hide the
+              // timestamp (keep its reserved width) for the whole active run.
+              isWorking && 'opacity-0'
+            )}
           >
-            <Button
-              aria-label={r.actionsFor(title)}
-              className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
-              size="icon"
-              title={r.sessionActions}
-              variant="ghost"
+            {age}
+          </span>
+          <div className="absolute inset-y-0 right-1 grid place-items-center">
+            <SessionActionsMenu
+              onArchive={onArchive}
+              onDelete={onDelete}
+              onPin={onPin}
+              pinned={isPinned}
+              profile={session.profile}
+              sessionId={session.id}
+              title={title}
             >
-              <Codicon name="ellipsis" size="0.875rem" />
-            </Button>
-          </SessionActionsMenu>
+              <Button
+                aria-label={r.actionsFor(title)}
+                className="size-5 translate-x-1 scale-90 rounded-[4px] bg-transparent text-transparent opacity-0 transition-all duration-150 ease-out group-hover:translate-x-0 group-hover:scale-100 group-hover:text-(--ui-text-tertiary) group-hover:opacity-100 group-focus-within:translate-x-0 group-focus-within:scale-100 group-focus-within:opacity-100 hover:bg-(--ui-control-active-background)! hover:text-foreground! focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:opacity-100 focus-visible:ring-0 data-[state=open]:translate-x-0 data-[state=open]:scale-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
+                size="icon"
+                title={r.sessionActions}
+                variant="ghost"
+              >
+                <Codicon name="ellipsis" size="0.875rem" />
+              </Button>
+            </SessionActionsMenu>
+          </div>
         </div>
       </div>
     </SessionContextMenu>

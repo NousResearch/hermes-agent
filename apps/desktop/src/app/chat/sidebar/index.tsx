@@ -91,12 +91,12 @@ import {
 } from '@/store/session'
 
 import { type AppView, ARTIFACTS_ROUTE, MESSAGING_ROUTE, SKILLS_ROUTE } from '../../routes'
-import { SidebarPanelLabel } from '../../shell/sidebar-label'
 import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { ProfileRail } from './profile-switcher'
+import { SidebarCount, SidebarSectionHeader } from './section-header'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -594,25 +594,41 @@ export function ChatSidebar({
       bySource.set(sourceId, list)
     }
 
-    return [...bySource.entries()]
-      .map(([sourceId, list]) => {
-        const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
-        const known = messagingPlatformTotals[sourceId]
-        const total = Math.max(ordered.length, known ?? 0)
+    return (
+      [...bySource.entries()]
+        .map(([sourceId, list]) => {
+          const ordered = [...list].sort((a, b) => sessionTime(b) - sessionTime(a))
+          // Pinning MOVES a row to the Pinned section (matching how recents
+          // disappear from Sessions when pinned) — don't render it here too.
+          // Pinned rows still count as LOADED for the load-more math: they're
+          // platform conversations already in memory, just housed elsewhere, so
+          // hiding them must not make the pager think more remain on disk.
+          const rows = ordered.filter(s => !pinnedRealIdSet.has(s.id))
+          const known = messagingPlatformTotals[sourceId]
+          const total = Math.max(ordered.length, known ?? 0)
 
-        return {
-          // Known exact total → more exist iff total exceeds loaded; otherwise
-          // the seed fetch was capped, so assume more until a per-platform load
-          // resolves the count.
-          hasMore: known != null ? known > ordered.length : messagingTruncated,
-          label: sessionSourceLabel(sourceId) ?? sourceId,
-          sessions: ordered,
-          sourceId,
-          total
-        }
-      })
-      .sort((a, b) => sessionTime(b.sessions[0]) - sessionTime(a.sessions[0]))
-  }, [messagingSessions, messagingPlatformTotals, messagingTruncated])
+          return {
+            // Known exact total → more exist iff total exceeds loaded; otherwise
+            // the seed fetch was capped, so assume more until a per-platform load
+            // resolves the count.
+            hasMore: known != null ? known > ordered.length : messagingTruncated,
+            label: sessionSourceLabel(sourceId) ?? sourceId,
+            // Section recency comes from every loaded row (pinned included) so a
+            // platform doesn't reshuffle when its newest thread gets pinned.
+            latestActivity: sessionTime(ordered[0]),
+            loadedCount: ordered.length,
+            sessions: rows,
+            sourceId,
+            total
+          }
+        })
+        // A platform whose every loaded row is pinned (and with nothing more on
+        // disk) has nothing left to show — drop the empty shell. Kept when more
+        // rows exist so its pager stays reachable.
+        .filter(group => group.sessions.length > 0 || group.hasMore)
+        .sort((a, b) => b.latestActivity - a.latestActivity)
+    )
+  }, [messagingSessions, messagingPlatformTotals, messagingTruncated, pinnedRealIdSet])
 
   // ALL-profiles view: one collapsible group per profile, color on the header
   // (not on every row). Default profile floats to the top, the rest alpha.
@@ -797,11 +813,13 @@ export function ChatSidebar({
                     <SidebarMenuButton
                       aria-disabled={!isInteractive}
                       className={cn(
-                        'flex h-7 w-full justify-start gap-2 rounded-md border border-transparent px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
+                        // Inset ring (not border) for the active state: a border
+                        // eats 1px of padding and pushes the icon column off the
+                        // grid shared with the section dots / row dots below.
+                        'flex h-7 w-full justify-start gap-1.5 rounded-md px-2 text-left text-[0.8125rem] font-medium text-(--ui-text-secondary) transition-colors duration-100 ease-out hover:bg-(--ui-control-hover-background) hover:text-foreground hover:transition-none',
                         active &&
-                          'border-(--ui-stroke-tertiary) bg-(--ui-control-active-background) text-foreground shadow-none hover:border-(--ui-stroke-tertiary)!',
-                        !isInteractive &&
-                          'cursor-default hover:border-transparent hover:bg-transparent hover:text-inherit'
+                          'bg-(--ui-control-active-background) text-foreground shadow-none ring-1 ring-inset ring-(--ui-stroke-tertiary)',
+                        !isInteractive && 'cursor-default hover:bg-transparent hover:text-inherit'
                       )}
                       onClick={() => {
                         // A plain new session lands in whatever profile the live
@@ -817,7 +835,11 @@ export function ChatSidebar({
                       tooltip={s.nav[item.id] ?? item.label}
                       type="button"
                     >
-                      <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
+                      {/* Same w-3.5 leading slot as the section headers and
+                          session rows — one glyph column for the whole rail. */}
+                      <span className="grid w-3.5 shrink-0 place-items-center">
+                        <item.icon className="size-4 shrink-0 text-[color-mix(in_srgb,currentColor_72%,transparent)]" />
+                      </span>
                       {contentVisible && (
                         <>
                           <span className="min-w-0 flex-1 truncate">{s.nav[item.id] ?? item.label}</span>
@@ -838,7 +860,9 @@ export function ChatSidebar({
         </SidebarGroup>
 
         {contentVisible && showSessionSections && (
-          <div className="shrink-0 px-2 pb-1 pt-1">
+          // px-1.5 + the field's own px-0.5 put the search glyph on the shared
+          // leading column and the typed text on the rows' title edge.
+          <div className="shrink-0 px-1.5 pb-1 pt-1">
             <SearchField
               aria-label={s.searchAria}
               inputRef={searchInputRef}
@@ -874,7 +898,6 @@ export function ChatSidebar({
                 workingSessionIdSet={workingSessionIdSet}
               />
             )}
-
             {!trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}
@@ -926,19 +949,19 @@ export function ChatSidebar({
                 forceEmptyState={showSessionSkeletons}
                 groups={displayAgentGroups}
                 headerAction={
-                  // Always reserve the icon-xs (size-6) slot so the header keeps the
+                  // Always reserve the icon-xs (size-5) slot so the header keeps the
                   // same height whether or not the toggle renders — otherwise the
                   // "Sessions" label jumps when switching to the ALL-profiles view.
                   // Grouping operates on unpinned recents; if everything is pinned
                   // the toggle does nothing, and it's irrelevant in the ALL-profiles
                   // view (always grouped by profile), so hide the button (not the slot).
-                  <div className="grid size-6 shrink-0 place-items-center">
+                  <div className="grid size-5 shrink-0 place-items-center pr-0.5">
                     {!showAllProfiles && agentSessions.length > 0 ? (
                       <Tip label={agentsGrouped ? s.groupTitleGrouped : s.groupTitleUngrouped}>
                         <Button
                           aria-label={agentsGrouped ? s.groupAriaGrouped : s.groupAriaUngrouped}
                           className={cn(
-                            'text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
+                            'size-5 text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100',
                             agentsGrouped && 'bg-(--ui-control-active-background) text-foreground opacity-100'
                           )}
                           onClick={event => {
@@ -993,7 +1016,7 @@ export function ChatSidebar({
                       canRevealMore ? (
                         <SidebarLoadMoreRow
                           loading={Boolean(messagingLoadMorePending[group.sourceId])}
-                          onClick={() => revealMoreMessaging(group.sourceId, group.sessions.length, group.hasMore)}
+                          onClick={() => revealMoreMessaging(group.sourceId, group.loadedCount, group.hasMore)}
                           step={Math.min(NON_SESSION_LOAD_STEP, Math.max(0, group.total - shownSessions.length))}
                         />
                       ) : null
@@ -1002,12 +1025,12 @@ export function ChatSidebar({
                     label={group.label}
                     labelIcon={
                       <PlatformAvatar
-                        className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
+                        className="size-3.5 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
                         platformId={group.sourceId}
                         platformName={group.label}
                       />
                     }
-                    labelMeta={countLabel(group.sessions.length, group.total)}
+                    labelMeta={countLabel(group.loadedCount, group.total)}
                     onArchiveSession={onArchiveSession}
                     onDeleteSession={onDeleteSession}
                     onResumeSession={onResumeSession}
@@ -1045,36 +1068,6 @@ export function ChatSidebar({
         )}
       </SidebarContent>
     </Sidebar>
-  )
-}
-
-interface SidebarSectionHeaderProps {
-  label: string
-  open: boolean
-  onToggle: () => void
-  action?: React.ReactNode
-  meta?: React.ReactNode
-  icon?: React.ReactNode
-}
-
-function SidebarSectionHeader({ label, open, onToggle, action, meta, icon }: SidebarSectionHeaderProps) {
-  return (
-    <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
-      <button
-        className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
-        onClick={onToggle}
-        type="button"
-      >
-        {icon}
-        <SidebarPanelLabel>{label}</SidebarPanelLabel>
-        {meta && <SidebarCount>{meta}</SidebarCount>}
-        <DisclosureCaret
-          className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
-          open={open}
-        />
-      </button>
-      {action}
-    </div>
   )
 }
 
@@ -1134,6 +1127,8 @@ interface MessagingSection {
   sessions: SessionInfo[]
   total: number
   hasMore: boolean
+  latestActivity: number
+  loadedCount: number
 }
 
 interface SidebarSessionsSectionProps {
@@ -1388,20 +1383,20 @@ function SidebarWorkspaceGroup({
           onClick={() => setOpen(value => !value)}
           type="button"
         >
-          {group.color ? (
-            <span
-              aria-hidden="true"
-              className="size-2 shrink-0 rounded-full"
-              style={{ backgroundColor: group.color }}
-            />
-          ) : null}
-          {isSourceGroup && group.sourceId ? (
-            <PlatformAvatar
-              className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
-              platformId={group.sourceId}
-              platformName={group.label}
-            />
-          ) : null}
+          {/* Leading w-3.5 slot mirrors the section headers and session rows,
+              so group labels share their text edge — even when the group has
+              no color dot or platform avatar to show. */}
+          <span aria-hidden="true" className="grid w-3.5 shrink-0 place-items-center">
+            {group.color ? (
+              <span className="size-2 shrink-0 rounded-full" style={{ backgroundColor: group.color }} />
+            ) : isSourceGroup && group.sourceId ? (
+              <PlatformAvatar
+                className="size-3.5 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
+                platformId={group.sourceId}
+                platformName={group.label}
+              />
+            ) : null}
+          </span>
           <span className="truncate">{group.label}</span>
           <SidebarCount>
             {isProfileGroup ? countLabel(visibleSessions.length, totalCount) : group.sessions.length}
@@ -1480,10 +1475,6 @@ interface SortableWorkspaceProps {
 
 function SortableSidebarWorkspaceGroup(props: SortableWorkspaceProps) {
   return <SidebarWorkspaceGroup {...props} {...useSortableBindings(groupDndId(props.group.id))} />
-}
-
-function SidebarCount({ children }: { children: React.ReactNode }) {
-  return <span className="text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{children}</span>
 }
 
 interface SortableSessionRowProps {

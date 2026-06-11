@@ -111,6 +111,58 @@ def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
         )
         return None
 
+
+def _api_error_diagnostics_block(info: dict) -> str:
+    """Build a compact, non-secret diagnostics block for cron failure logs."""
+    if not isinstance(info, dict):
+        return ""
+
+    diag = info.get("api_error_context")
+    if not isinstance(diag, dict):
+        return ""
+
+    parts = []
+    provider = (diag.get("provider") or "").strip()
+    if provider:
+        parts.append(f"- Provider: {provider}")
+
+    model = (diag.get("model") or "").strip()
+    if model:
+        parts.append(f"- Model: {model}")
+
+    base_url = (diag.get("base_url") or "").strip()
+    if base_url:
+        parts.append(f"- Base URL: {base_url}")
+
+    attempt = diag.get("attempt") if diag.get("attempt") is not None else diag.get("attempts")
+    if attempt is not None:
+        parts.append(f"- Attempt: {attempt}")
+
+    context_messages = diag.get("context_messages")
+    if context_messages is not None:
+        parts.append(f"- Context messages: {context_messages}")
+
+    context_tokens = diag.get("context_tokens")
+    if context_tokens is not None:
+        parts.append(f"- Approx context tokens: {context_tokens}")
+
+    error_type = (diag.get("error_type") or "").strip()
+    if error_type:
+        parts.append(f"- Error type: {error_type}")
+
+    status_code = diag.get("status_code")
+    if status_code is not None:
+        parts.append(f"- Status: {status_code}")
+
+    reason = (diag.get("failure_reason") or "").strip()
+    if reason:
+        parts.append(f"- Failure reason: {reason}")
+
+    if not parts:
+        return ""
+
+    return "\n\n**API diagnostics:**\n" + "\n".join(parts)
+
 # Valid delivery platforms — used to validate user-supplied platform names
 # in cron delivery targets, preventing env var enumeration via crafted names.
 _KNOWN_DELIVERY_PLATFORMS = frozenset({
@@ -1862,6 +1914,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 or (result.get("final_response") or "").strip()
                 or "agent reported failure"
             )
+            _err_text = f"{_err_text}{_api_error_diagnostics_block(result)}"
             raise RuntimeError(_err_text)
 
         final_response = result.get("final_response", "") or ""

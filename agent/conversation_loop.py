@@ -444,6 +444,24 @@ def run_conversation(
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
 
+    def _build_api_error_context(
+        error: Exception,
+        *,
+        failure_reason: str | None = None,
+        status_code: int | None = None,
+    ) -> dict:
+        return {
+            "provider": str(_provider or ""),
+            "model": str(_model or ""),
+            "base_url": str(_base or ""),
+            "attempt": api_call_count,
+            "context_messages": len(api_messages) if isinstance(api_messages, list) else len(messages),
+            "context_tokens": approx_tokens,
+            "error_type": type(error).__name__,
+            "status_code": status_code,
+            "failure_reason": failure_reason,
+        }
+
     # Optional opt-in runtime: if api_mode == codex_app_server, hand the
     # turn to the codex app-server subprocess (terminal/file ops/patching
     # all run inside Codex). Default Hermes path is bypassed entirely.
@@ -3089,6 +3107,11 @@ def run_conversation(
                             "completed": False,
                             "failed": True,
                             "error": f"content_policy_blocked: {_summary}",
+                            "api_error_context": _build_api_error_context(
+                                api_error,
+                                failure_reason=classified.reason.value,
+                                status_code=status_code,
+                            ),
                         }
                     return {
                         "final_response": None,
@@ -3097,6 +3120,11 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": str(api_error),
+                        "api_error_context": _build_api_error_context(
+                            api_error,
+                            failure_reason=classified.reason.value,
+                            status_code=status_code,
+                        ),
                     }
 
                 if retry_count >= max_retries:
@@ -3204,6 +3232,11 @@ def run_conversation(
                         "completed": False,
                         "failed": True,
                         "error": _final_summary,
+                        "api_error_context": _build_api_error_context(
+                            api_error,
+                            failure_reason=classified.reason.value,
+                            status_code=status_code,
+                        ),
                         # Surface the classified reason so callers (notably the
                         # kanban worker path in cli.py) can distinguish a
                         # transient throttle from a real failure and choose a

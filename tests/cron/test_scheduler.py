@@ -1205,6 +1205,26 @@ class TestRunJobSessionPersistence:
                 "API call failed",
             ),
             (
+                {
+                    "final_response": None,
+                    "completed": False,
+                    "failed": True,
+                    "error": "api call timed out",
+                    "api_error_context": {
+                        "provider": "openrouter",
+                        "model": "qwen2.5:3b",
+                        "base_url": "https://example.invalid/v1",
+                        "attempt": 2,
+                        "context_messages": 7,
+                        "context_tokens": 256,
+                        "error_type": "TimeoutError",
+                        "status_code": 408,
+                        "failure_reason": "timeout",
+                    },
+                },
+                "api call timed out",
+            ),
+            (
                 {"final_response": None, "completed": False, "failed": True},
                 "agent reported failure",
             ),
@@ -1267,6 +1287,13 @@ class TestRunJobSessionPersistence:
         assert "(FAILED)" in output
         # Ephemeral cron agent must still be closed even on agent-flagged failure.
         mock_agent.close.assert_called_once()
+
+        if agent_result.get("api_error_context"):
+            assert "API diagnostics" in error
+            assert "Provider: openrouter" in error
+            assert "Model: qwen2.5:3b" in error
+            assert "Attempt: 2" in error
+            assert "Approx context tokens: 256" in error
 
     def test_run_job_completed_true_without_failed_flag_succeeds(self, tmp_path):
         """Regression guard: a normal success result (``completed=True``,

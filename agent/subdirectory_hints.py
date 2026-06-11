@@ -144,7 +144,10 @@ class SubdirectoryHintTracker:
                 if parent == p:
                     break  # filesystem root
                 p = parent
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
+            # RuntimeError covers Path.expanduser() on a "~user" token whose
+            # user is not a real account ("Could not determine home directory.").
+            # The hint walk is best-effort, so a bad path is skipped, never fatal.
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):

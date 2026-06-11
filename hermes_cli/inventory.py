@@ -251,12 +251,26 @@ def build_models_payload(
     }
 
 
+# Direct routes where the runtime never sends reasoning controls — no
+# extra_body.reasoning, no reasoning_effort, no thinking toggle (see
+# run_agent._supports_reasoning_extra_body and the transport kwargs
+# builders in agent/transports/). On these providers the thinking mode is
+# fixed by model choice (DeepSeek maps deepseek-chat / deepseek-reasoner
+# to the non-thinking / thinking modes of deepseek-v4-flash), so a picker
+# Thinking toggle or effort dial would be a placebo control (#44030).
+# models.dev still reports such models as `reasoning: true` because they
+# *do* reason — the question here is whether Hermes can steer it.
+_REASONING_FIXED_PROVIDERS = frozenset({"deepseek"})
+
+
 def _apply_capabilities(rows: list[dict]) -> None:
     """Attach a ``{model: {fast, reasoning}}`` map to each provider row.
 
     `fast` mirrors ``model_supports_fast_mode`` (the same gate the runtime
-    enforces). `reasoning` comes from the models.dev catalog when known and
-    defaults to True otherwise — the effort dial is broadly accepted and a
+    enforces). `reasoning` means "the runtime can steer reasoning for this
+    model": False for ``_REASONING_FIXED_PROVIDERS`` routes that never
+    receive reasoning controls, otherwise from the models.dev catalog when
+    known, defaulting to True — the effort dial is broadly accepted and a
     no-op on models that ignore it, whereas hiding it from a capable-but-
     uncatalogued model is the worse failure.
     """
@@ -272,8 +286,8 @@ def _apply_capabilities(rows: list[dict]) -> None:
         caps: dict[str, dict[str, bool]] = {}
 
         for model in row.get("models") or []:
-            reasoning = True
-            if get_model_capabilities is not None and slug:
+            reasoning = slug not in _REASONING_FIXED_PROVIDERS
+            if reasoning and get_model_capabilities is not None and slug:
                 try:
                     meta = get_model_capabilities(slug, model)
                     if meta is not None:

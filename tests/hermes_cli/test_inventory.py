@@ -945,3 +945,62 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 0
         model_switch.list_authenticated_providers(refresh=True)
         assert clear.call_count == 1
+
+
+# ─── capabilities (#44030) ─────────────────────────────────────────────
+
+
+def _provider_row(slug: str, models: list[str]) -> dict:
+    return {
+        "slug": slug,
+        "name": slug.title(),
+        "models": models,
+        "total_models": len(models),
+        "is_current": True,
+        "is_user_defined": False,
+        "source": "built-in",
+    }
+
+
+def _capabilities_for(rows: list[dict], models_dev_meta) -> dict:
+    """Run build_models_payload(capabilities=True) with models.dev mocked."""
+    ctx = _empty_ctx()
+    with _list_auth_returning(rows), patch(
+        "agent.models_dev.get_model_capabilities",
+        return_value=models_dev_meta,
+    ):
+        payload = build_models_payload(ctx, capabilities=True)
+    return {row["slug"]: row["capabilities"] for row in payload["providers"]}
+
+
+def test_capabilities_reasoning_fixed_provider_is_false():
+    """Direct DeepSeek never receives reasoning controls from the runtime
+    (thinking mode is fixed by model choice), so the capability map must
+    report reasoning=False even though models.dev catalogs the models as
+    reasoning-capable — otherwise pickers show placebo controls (#44030).
+    """
+    from agent.models_dev import ModelCapabilities
+
+    rows = [_provider_row("deepseek", ["deepseek-v4-flash", "deepseek-chat"])]
+    caps = _capabilities_for(rows, ModelCapabilities(supports_reasoning=True))
+    assert caps["deepseek"]["deepseek-v4-flash"]["reasoning"] is False
+    assert caps["deepseek"]["deepseek-chat"]["reasoning"] is False
+
+
+def test_capabilities_reasoning_from_models_dev_when_steerable():
+    """On steerable routes the models.dev catalog still gates reasoning."""
+    from agent.models_dev import ModelCapabilities
+
+    rows = [_provider_row("openrouter", ["some/non-reasoning-model"])]
+    caps = _capabilities_for(rows, ModelCapabilities(supports_reasoning=False))
+    assert caps["openrouter"]["some/non-reasoning-model"]["reasoning"] is False
+
+
+def test_capabilities_reasoning_defaults_true_when_uncatalogued():
+    """Unknown models on steerable routes keep the permissive default —
+    hiding the dial from a capable-but-uncatalogued model is the worse
+    failure (the dial is a no-op on models that ignore it).
+    """
+    rows = [_provider_row("openrouter", ["unknown/model"])]
+    caps = _capabilities_for(rows, None)
+    assert caps["openrouter"]["unknown/model"]["reasoning"] is True

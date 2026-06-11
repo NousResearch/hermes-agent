@@ -263,6 +263,8 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                   effFast
                 )
 
+                // No effort label on models whose reasoning Hermes cannot
+                // steer — it would mirror the placebo dial (#44030).
                 const meta = [
                   fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
                   (caps?.reasoning ?? true) ? reasoningEffortLabel(effEffort) || copy.medium : null

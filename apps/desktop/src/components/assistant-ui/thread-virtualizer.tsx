@@ -398,21 +398,34 @@ function useThreadScrollAnchor({
   // on every render, causing excessive scrollTop writes and layout work.
   const prevTotalSizeRef = useRef(0)
   const pinPendingRef = useRef(false)
+  const rafIdRef = useRef(0)
   const totalSize = virtualizer.getTotalSize()
   useLayoutEffect(() => {
     if (!enabled) return
 
-    if (totalSize > prevTotalSizeRef.current && stickyBottomRef.current) {
-      prevTotalSizeRef.current = totalSize
+    const grew = totalSize > prevTotalSizeRef.current
+    // Always track the latest size so a subsequent decrease (e.g. from
+    // re-measurement) doesn't leave prevTotalSizeRef permanently ahead
+    // of reality — which would break auto-follow when parked at bottom.
+    prevTotalSizeRef.current = totalSize
+
+    if (grew && stickyBottomRef.current) {
       if (!pinPendingRef.current) {
         pinPendingRef.current = true
-        requestAnimationFrame(() => {
+        rafIdRef.current = requestAnimationFrame(() => {
           pinPendingRef.current = false
-          if (stickyBottomRef.current) {
+          // Re-check both guards — the component may have unmounted or
+          // the user may have scrolled up since the render.
+          if (enabled && stickyBottomRef.current) {
             pinToBottom()
           }
         })
       }
+    }
+
+    return () => {
+      cancelAnimationFrame(rafIdRef.current)
+      pinPendingRef.current = false
     }
   }, [totalSize, enabled, pinToBottom])
 

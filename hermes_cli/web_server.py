@@ -1207,7 +1207,7 @@ def _managed_files_policy(request: Request, *, create_root: bool = True) -> Mana
         root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
         return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
 
-    if not _local_dashboard_request(request) or _default_hermes_root_is_opt_data():
+    if not _local_dashboard_request(request) and _default_hermes_root_is_opt_data():
         root = _ensure_managed_root(_HOSTED_MANAGED_FILES_ROOT) if create_root else _HOSTED_MANAGED_FILES_ROOT
         return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
 

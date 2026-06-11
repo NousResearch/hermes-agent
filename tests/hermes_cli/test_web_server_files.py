@@ -227,9 +227,10 @@ def test_local_mode_upload_read_mkdir_delete_roundtrip(local_files_client):
     assert not folder.exists()
 
 
-def test_hosted_policy_locks_to_opt_data(monkeypatch):
+def test_localhost_docker_uses_home(monkeypatch, tmp_path):
+    """Localhost request inside Docker should use home dir (local access is always trusted)."""
     monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
-    monkeypatch.setenv("HERMES_HOME", "/opt/data")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "data"))
     client, prev_auth_required, prev_bound_host = _client_with_app_state()
     try:
         request = SimpleNamespace(
@@ -242,5 +243,65 @@ def test_hosted_policy_locks_to_opt_data(monkeypatch):
         _restore_app_state(prev_auth_required, prev_bound_host)
         client.close()
 
+    assert policy.locked_root is None
+    assert policy.can_change_path is True
+
+
+def test_non_localhost_non_docker_uses_home(monkeypatch, tmp_path):
+    """Non-localhost request on a non-Docker host should use home dir, not /opt/data."""
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    client, prev_auth_required, prev_bound_host = _client_with_app_state()
+    try:
+        request = SimpleNamespace(
+            app=web_server.app,
+            client=SimpleNamespace(host="100.64.0.1"),
+            url=SimpleNamespace(hostname="100.64.0.1"),
+        )
+        policy = web_server._managed_files_policy(request, create_root=False)
+    finally:
+        _restore_app_state(prev_auth_required, prev_bound_host)
+        client.close()
+
+    assert policy.locked_root is None
+    assert policy.can_change_path is True
+
+
+def test_non_localhost_docker_locks_to_opt_data(monkeypatch):
+    """Non-localhost request inside Docker should still lock to /opt/data."""
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    monkeypatch.setenv("HERMES_HOME", "/opt/data")
+    client, prev_auth_required, prev_bound_host = _client_with_app_state()
+    try:
+        request = SimpleNamespace(
+            app=web_server.app,
+            client=SimpleNamespace(host="100.64.0.1"),
+            url=SimpleNamespace(hostname="100.64.0.1"),
+        )
+        policy = web_server._managed_files_policy(request, create_root=False)
+    finally:
+        _restore_app_state(prev_auth_required, prev_bound_host)
+        client.close()
+
     assert str(policy.locked_root) == "/opt/data"
     assert policy.can_change_path is False
+
+
+def test_localhost_non_docker_uses_home(monkeypatch, tmp_path):
+    """Localhost request on non-Docker host should use home dir."""
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    client, prev_auth_required, prev_bound_host = _client_with_app_state()
+    try:
+        request = SimpleNamespace(
+            app=web_server.app,
+            client=SimpleNamespace(host="127.0.0.1"),
+            url=SimpleNamespace(hostname="127.0.0.1"),
+        )
+        policy = web_server._managed_files_policy(request, create_root=False)
+    finally:
+        _restore_app_state(prev_auth_required, prev_bound_host)
+        client.close()
+
+    assert policy.locked_root is None
+    assert policy.can_change_path is True

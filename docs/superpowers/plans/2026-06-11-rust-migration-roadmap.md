@@ -146,9 +146,9 @@ language-specific setup where needed.
   PowerShell or bash just to discover the stage list.
 - Non-interactive post-install stages that require user input are now skipped in Rust with the same successful skipped
   result shape, so GUI bootstrap no longer starts shell processes for those no-op stages.
-- Windows bootstrap tool stages for `uv`, `git`, and `system-packages` now use Rust preflight checks to skip the
-  script process when the required tools are already available, while preserving script fallback when anything is
-  missing.
+- Windows bootstrap tool stages for `uv`, `git`, `node`, and `system-packages` now use Rust preflight checks to skip
+  the script process when the required tools are already available, while preserving script fallback when anything is
+  missing or the detected Node.js version is too old for the desktop build.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` and the Unix `config` stage now run as native Rust stages while preserving Python
   `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.

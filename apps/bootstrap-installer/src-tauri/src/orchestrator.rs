@@ -115,6 +115,7 @@ pub fn interactive_stage_skip_result(stage: &StageInfo) -> Option<crate::events:
 }
 
 /// Return a Rust-side skip result for tool stages already satisfied locally.
+#[cfg(test)]
 pub fn satisfied_tool_stage_skip_result<P>(
     stage: &StageInfo,
     hermes_home: &Path,
@@ -124,6 +125,26 @@ pub fn satisfied_tool_stage_skip_result<P>(
 where
     P: AsRef<OsStr>,
 {
+    satisfied_tool_stage_skip_result_with_node_probe(
+        stage,
+        hermes_home,
+        path_env,
+        pathext,
+        |_| false,
+    )
+}
+
+fn satisfied_tool_stage_skip_result_with_node_probe<P, F>(
+    stage: &StageInfo,
+    hermes_home: &Path,
+    path_env: P,
+    pathext: &str,
+    node_version_ok: F,
+) -> Option<crate::events::StageResultPayload>
+where
+    P: AsRef<OsStr>,
+    F: Fn(&Path) -> bool,
+{
     let available = match stage.name.as_str() {
         name if name.eq_ignore_ascii_case("uv") => {
             managed_tool_path(hermes_home, "uv").is_file()
@@ -131,6 +152,11 @@ where
         }
         name if name.eq_ignore_ascii_case("git") => {
             find_executable_on_path("git", path_env.as_ref(), pathext).is_some()
+        }
+        name if name.eq_ignore_ascii_case("node") => {
+            let node = find_node_executable(hermes_home, path_env.as_ref(), pathext);
+            let npm = find_npm_executable(hermes_home, path_env.as_ref(), pathext);
+            matches!(node, Some(path) if npm.is_some() && node_version_ok(&path))
         }
         name if name.eq_ignore_ascii_case("system-packages") => {
             find_executable_on_path("rg", path_env.as_ref(), pathext).is_some()
@@ -157,7 +183,13 @@ pub fn satisfied_tool_stage_skip_result_from_env(
 ) -> Option<crate::events::StageResultPayload> {
     let path_env = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    satisfied_tool_stage_skip_result(stage, hermes_home, path_env, &pathext)
+    satisfied_tool_stage_skip_result_with_node_probe(
+        stage,
+        hermes_home,
+        path_env,
+        &pathext,
+        node_version_satisfies_build,
+    )
 }
 
 /// Return a compact log line for the current Rust orchestration coverage.
@@ -740,6 +772,72 @@ fn managed_tool_path(hermes_home: &Path, name: &str) -> PathBuf {
     hermes_home.join("bin").join(filename)
 }
 
+fn find_node_executable<P>(hermes_home: &Path, path_env: P, pathext: &str) -> Option<PathBuf>
+where
+    P: AsRef<OsStr>,
+{
+    let managed = if cfg!(target_os = "windows") {
+        hermes_home.join("node").join("node.exe")
+    } else {
+        hermes_home.join("node").join("bin").join("node")
+    };
+    if managed.is_file() {
+        return Some(managed);
+    }
+    find_executable_on_path("node", path_env, pathext)
+}
+
+fn find_npm_executable<P>(hermes_home: &Path, path_env: P, pathext: &str) -> Option<PathBuf>
+where
+    P: AsRef<OsStr>,
+{
+    let managed = if cfg!(target_os = "windows") {
+        hermes_home.join("node").join("npm.cmd")
+    } else {
+        hermes_home.join("node").join("bin").join("npm")
+    };
+    if managed.is_file() {
+        return Some(managed);
+    }
+    find_executable_on_path("npm", path_env, pathext)
+}
+
+fn node_version_satisfies_build(node: &Path) -> bool {
+    let output = Command::new(node)
+        .arg("--version")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output();
+    let Ok(output) = output else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    let Ok(version) = String::from_utf8(output.stdout) else {
+        return false;
+    };
+    node_version_string_satisfies_build(version.trim())
+}
+
+fn node_version_string_satisfies_build(version: &str) -> bool {
+    let cleaned = version
+        .trim_start_matches('v')
+        .split_once('-')
+        .map(|(base, _)| base)
+        .unwrap_or(version);
+    let parts = cleaned
+        .split('.')
+        .filter_map(|part| part.parse::<u32>().ok())
+        .collect::<Vec<_>>();
+    if parts.len() < 2 {
+        return false;
+    }
+    let major = parts[0];
+    let minor = parts[1];
+    (major == 20 && minor >= 19) || (major == 22 && minor >= 12) || major > 22
+}
+
 fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if name.eq_ignore_ascii_case("repository") {
         return StageExecutionMode::NativeWithScriptFallback;
@@ -974,10 +1072,13 @@ mod tests {
         std::fs::create_dir_all(&tools).unwrap();
         std::fs::write(hermes_home.join("bin").join("uv.exe"), b"uv").unwrap();
         std::fs::write(tools.join("git.exe"), b"git").unwrap();
+        std::fs::write(tools.join("node.exe"), b"node").unwrap();
+        std::fs::write(tools.join("npm.cmd"), b"npm").unwrap();
         std::fs::write(tools.join("rg.exe"), b"rg").unwrap();
 
         let uv = stage_info("uv", "Installing uv package manager", "prereqs", false);
         let git = stage_info("git", "Installing Git", "prereqs", false);
+        let node = stage_info("node", "Detecting Node.js", "prereqs", false);
         let system_packages = stage_info(
             "system-packages",
             "Installing ripgrep and ffmpeg",
@@ -993,6 +1094,7 @@ mod tests {
 
         let uv_result = satisfied_tool_stage_skip_result(&uv, &hermes_home, &tools, ".EXE").unwrap();
         let git_result = satisfied_tool_stage_skip_result(&git, &hermes_home, &tools, ".EXE").unwrap();
+        let old_node_result = satisfied_tool_stage_skip_result(&node, &hermes_home, &tools, ".EXE;.CMD");
 
         assert_eq!(uv_result.stage, "uv");
         assert_eq!(uv_result.ok, true);
@@ -1002,6 +1104,17 @@ mod tests {
             Some("required tool already available")
         );
         assert_eq!(git_result.stage, "git");
+        assert!(old_node_result.is_none());
+        let new_node_result = satisfied_tool_stage_skip_result_with_node_probe(
+            &node,
+            &hermes_home,
+            &tools,
+            ".EXE;.CMD",
+            |_| true,
+        )
+        .unwrap();
+        assert_eq!(new_node_result.stage, "node");
+        assert_eq!(new_node_result.reason.as_deref(), Some("required tool already available"));
         assert!(satisfied_tool_stage_skip_result(
             &system_packages,
             &hermes_home,

@@ -48,6 +48,22 @@ def _truncate(s: str, n: int = 140) -> str:
 
 def to_draft(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     args = args or {}
+
+    # Action d'un MCP additionnel managé : on affiche le LIBELLÉ fourni par l'opérateur (white-label),
+    # jamais le nom technique de l'outil. kind="action" → l'instance rejoue l'outil à l'approbation.
+    from . import managed
+    action = managed.action_for(tool_name)
+    if action is not None:
+        body = _first(args, _BODY_KEYS) or _first(args, _SUBJECT_KEYS)
+        return {
+            "kind": str(action.get("kind") or "action"),
+            "title": str(action.get("label") or "Action à valider"),
+            "preview": _truncate(body),
+            "to": _first(args, _RECIPIENT_KEYS),
+            # channel ≠ telegram/email → côté portail, l'instance exécute (replay), pas le control-plane.
+            "payload": {"channel": "mcp"},
+        }
+
     kind = kind_for(tool_name)
     to = _first(args, _RECIPIENT_KEYS)
     subject = _first(args, _SUBJECT_KEYS)

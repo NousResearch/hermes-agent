@@ -27,9 +27,27 @@ import jb_outbound.replay as replay  # noqa: E402
 import jb_outbound.store as store  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _isolate_home(tmp_path, monkeypatch):
+    """Isole HERMES_HOME pour CHAQUE test → la table managée lue est celle du tmp_path (jamais ~/.hermes)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+
+def _write_managed(tmp_path, write_tools: dict) -> None:
+    """Dépose la table managée `<HERMES_HOME>/jb_outbound/managed.json` (forme du bundle JB)."""
+    d = tmp_path / "jb_outbound"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "managed.json").write_text(
+        json.dumps({"version": 1, "writeTools": write_tools}), encoding="utf-8"
+    )
+
+
+# Une action MCP additionnelle typique (serveur `x-crm`, outil `create_contact`).
+_CRM_ACTION = {"mcp_x_crm_create_contact": {"label": "Créer un contact", "kind": "action"}}
+
+
 @pytest.fixture
 def posts(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("JB_DECISION_PUSH_URL", "http://127.0.0.1:8444/jb/decision")
     monkeypatch.setenv("JB_DRAFT_ADDR", "127.0.0.1:8442")
     captured: list = []
@@ -142,3 +160,52 @@ def test_replay_execute_puis_idempotent(posts, monkeypatch):
     # rejouer la même décision → idempotent (aucun nouvel envoi)
     replay.handle_decision(decision)
     assert len(dispatched) == 1
+
+
+# ---------------------------------------------------------------------------
+# MCP additionnels (hors Composio) : pas de blocage ; actions → dashboard.
+# ---------------------------------------------------------------------------
+
+def test_classify_action_mcp_additionnel(tmp_path):
+    _write_managed(tmp_path, _CRM_ACTION)
+    # Action déclarée → proposition (dashboard).
+    assert classify.classify("mcp_x_crm_create_contact") == classify.PROPOSE
+    # Lecture du MÊME serveur, non déclarée comme action → PASS (aucun blocage, conforme à la consigne).
+    assert classify.classify("mcp_x_crm_find_contact") == classify.PASS
+
+
+def test_classify_sans_table_managee_ne_bloque_pas(tmp_path):
+    # Pas de managed.json → un outil de MCP additionnel reste une lecture (PASS), jamais bloqué.
+    assert classify.classify("mcp_x_crm_create_contact") == classify.PASS
+
+
+def test_mapping_action_utilise_le_libelle_white_label(tmp_path):
+    _write_managed(tmp_path, _CRM_ACTION)
+    d = mapping.to_draft("mcp_x_crm_create_contact", {"name": "Marie", "note": "rappeler le devis"})
+    assert d["kind"] == "action"
+    assert d["title"] == "Créer un contact"  # libellé opérateur
+    # White-label : le nom technique de l'outil ne fuit nulle part dans la proposition.
+    assert "mcp_x_crm" not in json.dumps(d, ensure_ascii=False)
+
+
+def test_middleware_action_court_circuite_et_depose(posts, tmp_path):
+    _write_managed(tmp_path, _CRM_ACTION)
+
+    def next_call(_a):
+        raise AssertionError("une action MCP NE doit PAS s'exécuter avant validation")
+
+    out = json.loads(
+        middleware.make_middleware()(
+            tool_name="mcp_x_crm_create_contact", args={"name": "Marie"}, next_call=next_call
+        )
+    )
+    assert out["status"] == "queued_for_approval"
+    assert len(posts) == 1
+    _, body = posts[0]
+    assert body["kind"] == "action"
+    assert body["title"] == "Créer un contact"
+
+    # Les args complets restent LOCAUX pour le replay ; le payload relayé n'en porte pas (RGPD).
+    rec = store.load(out["id"])
+    assert rec["args"] == {"name": "Marie"} and rec["kind"] == "action"
+    assert "Marie" not in json.dumps(body["payload"], ensure_ascii=False)

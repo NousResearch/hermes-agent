@@ -32,6 +32,10 @@ const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const {
+  OFFICIAL_REPO_HTTPS_URL,
+  isOfficialSshRemote
+} = require('./update-remote.cjs')
+const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
   modeRemovesAgent,
@@ -1312,6 +1316,11 @@ function runGit(args, options = {}) {
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
+async function getOriginUrl(updateRoot) {
+  const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
+  return origin.code === 0 ? origin.stdout.trim() : ''
+}
+
 function emitUpdateProgress(payload) {
   const merged = { stage: 'idle', message: '', percent: null, error: null, ...payload, at: Date.now() }
   rememberLog(`[updates] ${merged.stage}: ${merged.message || merged.error || ''}`)
@@ -1331,7 +1340,9 @@ async function resolveHealedBranch(updateRoot, branch) {
     return branch || 'main'
   }
 
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', 'origin', branch], { cwd: updateRoot })
+  const originUrl = await getOriginUrl(updateRoot)
+  const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
+  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
   if (probe.code !== 2) {
     return branch
   }
@@ -1359,6 +1370,40 @@ async function checkUpdates() {
   }
 
   branch = await resolveHealedBranch(updateRoot, branch)
+  const originUrl = await getOriginUrl(updateRoot)
+  if (isOfficialSshRemote(originUrl)) {
+    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
+      git(['rev-parse', 'HEAD']),
+      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
+      git(['status', '--porcelain']),
+      git(['rev-parse', '--abbrev-ref', 'HEAD'])
+    ])
+    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
+    if (target.code !== 0 || !targetSha) {
+      return {
+        supported: true,
+        branch,
+        error: 'fetch-failed',
+        message: firstLine(target.stderr) || 'git ls-remote failed.',
+        hermesRoot: updateRoot,
+        fetchedAt: Date.now()
+      }
+    }
+    return {
+      supported: true,
+      branch,
+      currentBranch,
+      behind: currentSha && currentSha === targetSha ? 0 : 1,
+      currentSha,
+      targetSha,
+      commits: [],
+      dirty: dirtyStr.length > 0,
+      hermesRoot: updateRoot,
+      fetchedAt: Date.now()
+    }
+  }
+
   const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
   if (fetched.code !== 0) {
     return {

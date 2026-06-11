@@ -1471,3 +1471,127 @@ class TestCallConverseInvalidatesOnStaleError:
         )
 
         assert _bedrock_runtime_client_cache.get("us-east-1") is live_client
+
+
+class TestStreamingAccessDeniedDetection:
+    """is_streaming_access_denied_error() recognizes IAM denials of
+    bedrock:InvokeModelWithResponseStream (InvokeModel-only policies)."""
+
+    def _denied_client_error(self):
+        from botocore.exceptions import ClientError
+        return ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User: arn:aws:iam::123456789012:user/x is not "
+                        "authorized to perform: "
+                        "bedrock:InvokeModelWithResponseStream on resource: "
+                        "arn:aws:bedrock:us-east-1::foundation-model/"
+                        "anthropic.claude-3-sonnet-20240229-v1:0"
+                    ),
+                }
+            },
+            operation_name="ConverseStream",
+        )
+
+    def test_matches_access_denied_client_error(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        assert is_streaming_access_denied_error(self._denied_client_error()) is True
+
+    def test_ignores_access_denied_for_other_actions(self):
+        """AccessDenied on InvokeModel itself is NOT a streaming-only denial."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        from botocore.exceptions import ClientError
+        exc = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User is not authorized to perform: bedrock:InvokeModel"
+                    ),
+                }
+            },
+            operation_name="Converse",
+        )
+        assert is_streaming_access_denied_error(exc) is False
+
+    def test_ignores_validation_error_mentioning_action(self):
+        """Non-authz ClientErrors don't match even if the action name appears."""
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        from botocore.exceptions import ClientError
+        exc = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "ValidationException",
+                    "Message": "InvokeModelWithResponseStream input malformed",
+                }
+            },
+            operation_name="ConverseStream",
+        )
+        assert is_streaming_access_denied_error(exc) is False
+
+    def test_matches_wrapped_sdk_permission_error(self):
+        """Non-ClientError wrappers (AnthropicBedrock SDK) match on message."""
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        exc = RuntimeError(
+            "PermissionDeniedError: user is not authorized to perform: "
+            "bedrock:InvokeModelWithResponseStream"
+        )
+        assert is_streaming_access_denied_error(exc) is True
+
+    def test_ignores_unrelated_errors(self):
+        from agent.bedrock_adapter import is_streaming_access_denied_error
+        assert is_streaming_access_denied_error(ValueError("boom")) is False
+        assert is_streaming_access_denied_error(
+            RuntimeError("stream not supported")
+        ) is False
+
+
+class TestCallConverseStreamIamFallback:
+    """call_converse_stream() falls back to converse() when IAM denies the
+    streaming action — InvokeModel-only policies keep working."""
+
+    def test_falls_back_to_converse_on_streaming_denial(self):
+        pytest.importorskip("botocore", reason="botocore required for Bedrock exception tests")
+        from agent.bedrock_adapter import (
+            _bedrock_runtime_client_cache,
+            call_converse_stream,
+            reset_client_cache,
+        )
+        from botocore.exceptions import ClientError
+
+        reset_client_cache()
+        client = MagicMock()
+        client.converse_stream.side_effect = ClientError(
+            error_response={
+                "Error": {
+                    "Code": "AccessDeniedException",
+                    "Message": (
+                        "User is not authorized to perform: "
+                        "bedrock:InvokeModelWithResponseStream"
+                    ),
+                }
+            },
+            operation_name="ConverseStream",
+        )
+        client.converse.return_value = {
+            "output": {"message": {"role": "assistant", "content": [{"text": "hi"}]}},
+            "stopReason": "end_turn",
+            "usage": {"inputTokens": 1, "outputTokens": 1, "totalTokens": 2},
+        }
+        _bedrock_runtime_client_cache["us-east-1"] = client
+
+        result = call_converse_stream(
+            region="us-east-1",
+            model="anthropic.claude-3-sonnet-20240229-v1:0",
+            messages=[{"role": "user", "content": "hi"}],
+        )
+
+        client.converse.assert_called_once()
+        assert result.choices[0].message.content == "hi"
+        # Not a stale connection — client stays cached.
+        assert _bedrock_runtime_client_cache.get("us-east-1") is client

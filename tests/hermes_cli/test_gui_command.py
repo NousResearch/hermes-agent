@@ -121,6 +121,23 @@ def test_gui_exits_when_npm_missing(tmp_path, monkeypatch, capsys):
     assert "npm was not found" in capsys.readouterr().out
 
 
+def test_gui_build_only_skips_gracefully_when_npm_missing(tmp_path, monkeypatch, capsys):
+    """The updater's headless `hermes desktop --build-only` rebuild must NOT
+    hard-fail when Node/npm is absent: the code update already succeeded and the
+    existing packaged app still runs, so a missing toolchain is a non-fatal skip
+    (exit 0) — otherwise the bootstrap shows a red "UPDATE DIDN'T FINISH" on
+    CLI-only / Node-less hosts. The actionable guidance is still printed."""
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+
+    with patch("hermes_cli.main.shutil.which", return_value=None), \
+         pytest.raises(SystemExit) as exc:
+        cli_main.cmd_gui(_ns(build_only=True))
+
+    assert exc.value.code == 0
+    assert "npm was not found" in capsys.readouterr().out
+
+
 def test_gui_skip_build_requires_existing_packaged_app(tmp_path, monkeypatch, capsys):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)

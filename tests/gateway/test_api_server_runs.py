@@ -256,6 +256,72 @@ class TestRunStatus:
                 assert status["session_id"] == "space-session"
 
     @pytest.mark.asyncio
+    async def test_stale_session_id_resolves_to_compression_tip(self, adapter):
+        """A session_id superseded by compression resumes the live tip, not the ended parent (#44004)."""
+        mock_db = MagicMock()
+        mock_db.get_compression_tip.return_value = "live-tip"
+        adapter._session_db = mock_db
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "compressed-parent"},
+                )
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                mock_db.get_compression_tip.assert_called_with("compressed-parent")
+                assert mock_create.call_args.kwargs["session_id"] == "live-tip"
+                assert status["session_id"] == "live-tip"
+
+    @pytest.mark.asyncio
+    async def test_completed_status_surfaces_mid_run_session_rotation(self, adapter):
+        """Compression mid-run rotates agent.session_id; run status must surface the new id (#44004)."""
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+                mock_agent.run_conversation.return_value = {"final_response": "done"}
+                # Simulate compaction rotating the session during the run.
+                mock_agent.session_id = "rotated-child"
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "original-session"},
+                )
+                data = await resp.json()
+                run_id = data["run_id"]
+
+                for _ in range(20):
+                    status_resp = await cli.get(f"/v1/runs/{run_id}")
+                    status = await status_resp.json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+                assert status["status"] == "completed"
+                assert status["session_id"] == "rotated-child"
+
+    @pytest.mark.asyncio
     async def test_status_not_found_returns_404(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

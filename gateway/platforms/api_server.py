@@ -997,6 +997,31 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    def _resolve_session_tip(self, session_id: Optional[str]) -> Optional[str]:
+        """Follow a compression-continuation chain to its live tip.
+
+        Context compression ends the active session and continues in a new
+        child session.  Resident platforms (Discord, TUI) pick up the rotated
+        id in memory, but stateless API clients re-supply the original
+        ``session_id`` on every request; resuming the ended parent forks a
+        fresh lineage on every turn (#44004).  Best-effort: any failure
+        returns the id unchanged.
+        """
+        if not session_id:
+            return session_id
+        try:
+            db = self._ensure_session_db()
+            if db is None:
+                return session_id
+            resolved = db.get_compression_tip(session_id)
+        except Exception as e:
+            logger.debug("Compression-tip resolution failed for %s: %s", session_id, e)
+            return session_id
+        if isinstance(resolved, str) and resolved and resolved != session_id:
+            logger.debug("Resolved session %s -> compression tip %s", session_id, resolved)
+            return resolved
+        return session_id
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -1547,6 +1572,7 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        session_id = self._resolve_session_tip(session_id)
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1591,6 +1617,7 @@ class APIServerAdapter(BasePlatformAdapter):
         _, err = self._get_existing_session_or_404(session_id)
         if err:
             return err
+        session_id = self._resolve_session_tip(session_id)
         body, err = await self._read_json_body(request)
         if err:
             return err
@@ -1813,7 +1840,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     {"error": {"message": "Invalid session ID", "type": "invalid_request_error"}},
                     status=400,
                 )
-            session_id = provided_session_id
+            session_id = self._resolve_session_tip(provided_session_id)
             try:
                 db = self._ensure_session_db()
                 if db is not None:
@@ -1831,7 +1858,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 if cm.get("role") == "user":
                     first_user = cm.get("content", "")
                     break
-            session_id = _derive_chat_session_id(system_prompt, first_user)
+            session_id = self._resolve_session_tip(
+                _derive_chat_session_id(system_prompt, first_user)
+            )
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
@@ -3701,7 +3730,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     conversation_history.append({"role": msg["role"], "content": str(content)})
 
         run_id = f"run_{uuid.uuid4().hex}"
-        session_id = body.get("session_id") or stored_session_id or run_id
+        session_id = self._resolve_session_tip(body.get("session_id") or stored_session_id) or run_id
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
@@ -3833,18 +3862,27 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    # Compression can rotate the session id mid-run; surface
+                    # the effective id so stateless clients can re-supply it
+                    # on the next request instead of forking from the ended
+                    # parent session (#44004).
+                    effective_session_id = getattr(agent, "session_id", None)
+                    if not isinstance(effective_session_id, str) or not effective_session_id:
+                        effective_session_id = session_id
                     q.put_nowait({
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
                         "output": final_response,
                         "usage": usage,
+                        "session_id": effective_session_id,
                     })
                     self._set_run_status(
                         run_id,
                         "completed",
                         output=final_response,
                         usage=usage,
+                        session_id=effective_session_id,
                         last_event="run.completed",
                     )
             except asyncio.CancelledError:

@@ -248,6 +248,45 @@ async def test_session_chat_loads_history_and_preserves_session_headers(auth_ada
 
 
 @pytest.mark.asyncio
+async def test_session_chat_resumes_compression_tip_instead_of_forking(auth_adapter, session_db):
+    """Chatting against a compressed-away session must continue its live tip (#44004).
+
+    Stateless clients re-supply the original session_id every turn; without
+    forward resolution each turn resumes the ended parent and forks a fresh
+    lineage from it.
+    """
+    source_id = session_db.create_session("stale-parent", "api_server")
+    session_db.append_message(source_id, "user", "before compression")
+    session_db.end_session(source_id, "compression")
+    session_db.create_session("live-tip", "api_server", parent_session_id=source_id)
+    session_db.append_message("live-tip", "user", "compressed summary")
+    session_db.append_message("live-tip", "assistant", "post-compression reply")
+
+    mock_run = AsyncMock(return_value=({"final_response": "continuing", "session_id": "live-tip"}, {"total_tokens": 2}))
+    app = _create_session_app(auth_adapter)
+    with patch.object(auth_adapter, "_run_agent", mock_run):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{source_id}/chat",
+                json={"message": "next turn"},
+                headers={"Authorization": "Bearer sk-test"},
+            )
+            assert resp.status == 200, await resp.text()
+            payload = await resp.json()
+
+    _, kwargs = mock_run.call_args
+    # The run must target the live continuation, not the ended parent...
+    assert kwargs["session_id"] == "live-tip"
+    # ...and history must come from the tip (compressed context), not the parent.
+    assert kwargs["conversation_history"] == [
+        {"role": "user", "content": "compressed summary"},
+        {"role": "assistant", "content": "post-compression reply"},
+    ]
+    assert payload["session_id"] == "live-tip"
+    assert resp.headers["X-Hermes-Session-Id"] == "live-tip"
+
+
+@pytest.mark.asyncio
 async def test_session_chat_accepts_multimodal_message(auth_adapter, session_db):
     session_id = session_db.create_session("image-session", "api_server")
     image_payload = [

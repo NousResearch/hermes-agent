@@ -48,6 +48,7 @@ class TestNormalizeWorkdir:
     def test_tilde_expands(self, tmp_path, monkeypatch):
         from cron.jobs import _normalize_workdir
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
         result = _normalize_workdir("~")
         assert result == str(tmp_path.resolve())
 

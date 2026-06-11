@@ -24,6 +24,7 @@ import os
 import sqlite3
 import threading
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Optional
 
@@ -33,6 +34,7 @@ DEFAULT_API = "https://api.meshboard.ai"
 PUSH_INTERVAL_S = 5.0
 BATCH_LIMIT = 200
 _ROLES = {"user", "assistant", "tool", "system"}
+_PERMISSIONS = {"read", "post", "admin"}
 
 
 def cloud_api() -> str:
@@ -89,6 +91,16 @@ def promote_session(
         "model": model or None,
         "source": source,
         "origin_device_id": origin_device_id or None,
+    })
+
+
+def invite_member(channel_id: str, email: str, permission: str = "read") -> dict:
+    """Create a cloud-channel invite and return the cloud response."""
+    channel = urllib.parse.quote(str(channel_id), safe="")
+    perm = permission if permission in _PERMISSIONS else "read"
+    return _request("POST", f"/v1/channels/{channel}/invites", {
+        "email": email,
+        "permission": perm,
     })
 
 

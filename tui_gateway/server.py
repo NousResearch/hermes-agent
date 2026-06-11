@@ -4098,6 +4098,31 @@ def _(rid, params: dict) -> dict:
     })
 
 
+@method("session.cloud_invite")
+def _(rid, params: dict) -> dict:
+    """Create an invite for an already-shared cloud channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    if not status or not status.get("channel_id"):
+        return _err(rid, 4008, "session is not shared to cloud")
+
+    email = str(params.get("email") or "").strip()
+    if not email:
+        return _err(rid, 4006, "email required")
+
+    permission = str(params.get("permission") or "read").strip().lower() or "read"
+    try:
+        result = cloud_channels.invite_member(str(status["channel_id"]), email, permission)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud invite failed: {e}")
+    return _ok(rid, result)
+
+
 @method("session.cloud_unshare")
 def _(rid, params: dict) -> dict:
     """Stop pushing this session to the cloud (the cloud log is kept;

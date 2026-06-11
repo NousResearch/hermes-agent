@@ -17,7 +17,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Input } from '@/components/ui/input'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { copyCloudChannelId, shareSessionToCloud } from '@/lib/cloud-share'
+import { copyCloudChannelId, inviteCloudChannelMember, shareSessionToCloud } from '@/lib/cloud-share'
 import { triggerHaptic } from '@/lib/haptics'
 import { exportSession } from '@/lib/session-export'
 import { notify, notifyError } from '@/store/notifications'
@@ -66,6 +66,7 @@ function useSessionActions({
   const { t } = useI18n()
   const r = t.sidebar.row
   const [renameOpen, setRenameOpen] = useState(false)
+  const [inviteOpen, setInviteOpen] = useState(false)
 
   const selectItem: ItemSpec[] = onSelect
     ? [
@@ -124,6 +125,16 @@ function useSessionActions({
     }
   }
 
+  const inviteToCloudItem: ItemSpec = {
+    disabled: !sessionId,
+    icon: 'mail',
+    label: r.inviteToCloud,
+    onSelect: () => {
+      triggerHaptic('selection')
+      setInviteOpen(true)
+    }
+  }
+
   const exportItem: ItemSpec = {
     disabled: !sessionId,
     icon: 'cloud-download',
@@ -177,6 +188,7 @@ function useSessionActions({
           : []),
         shareToCloudItem,
         copyCloudIdItem,
+        inviteToCloudItem,
         exportItem,
         {
           disabled: !sessionId,
@@ -217,7 +229,11 @@ function useSessionActions({
     />
   )
 
-  return { renameDialog, renderItems }
+  const inviteDialog = (
+    <InviteCloudDialog onOpenChange={setInviteOpen} open={inviteOpen} sessionId={sessionId} />
+  )
+
+  return { inviteDialog, renameDialog, renderItems }
 }
 
 interface SessionActionsMenuProps
@@ -227,7 +243,7 @@ interface SessionActionsMenuProps
 
 export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ...actions }: SessionActionsMenuProps) {
   const { t } = useI18n()
-  const { renameDialog, renderItems } = useSessionActions(actions)
+  const { inviteDialog, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -242,6 +258,7 @@ export function SessionActionsMenu({ children, align = 'end', sideOffset = 6, ..
           {renderItems(DropdownMenuItem)}
         </DropdownMenuContent>
       </DropdownMenu>
+      {inviteDialog}
       {renameDialog}
     </>
   )
@@ -253,7 +270,7 @@ interface SessionContextMenuProps extends SessionActions {
 
 export function SessionContextMenu({ children, ...actions }: SessionContextMenuProps) {
   const { t } = useI18n()
-  const { renameDialog, renderItems } = useSessionActions(actions)
+  const { inviteDialog, renameDialog, renderItems } = useSessionActions(actions)
 
   return (
     <>
@@ -263,8 +280,83 @@ export function SessionContextMenu({ children, ...actions }: SessionContextMenuP
           {renderItems(ContextMenuItem)}
         </ContextMenuContent>
       </ContextMenu>
+      {inviteDialog}
       {renameDialog}
     </>
+  )
+}
+
+interface InviteCloudDialogProps {
+  open: boolean
+  onOpenChange: (open: boolean) => void
+  sessionId: string
+}
+
+function InviteCloudDialog({ open, onOpenChange, sessionId }: InviteCloudDialogProps) {
+  const { t } = useI18n()
+  const r = t.sidebar.row
+  const [email, setEmail] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (open) {
+      setEmail('')
+      window.setTimeout(() => inputRef.current?.focus(), 0)
+    }
+  }, [open])
+
+  const submit = async () => {
+    if (!sessionId || submitting) {
+      return
+    }
+
+    setSubmitting(true)
+
+    try {
+      const ok = await inviteCloudChannelMember(sessionId, email)
+      if (ok) {
+        onOpenChange(false)
+      }
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>{r.inviteCloudTitle}</DialogTitle>
+          <DialogDescription>{r.inviteCloudDesc}</DialogDescription>
+        </DialogHeader>
+        <Input
+          autoFocus
+          disabled={submitting}
+          onChange={event => setEmail(event.target.value)}
+          onKeyDown={event => {
+            if (event.key === 'Enter') {
+              event.preventDefault()
+              void submit()
+            } else if (event.key === 'Escape') {
+              onOpenChange(false)
+            }
+          }}
+          placeholder={r.inviteEmailPlaceholder}
+          ref={inputRef}
+          type="email"
+          value={email}
+        />
+        <DialogFooter>
+          <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
+            {t.common.cancel}
+          </Button>
+          <Button disabled={submitting} onClick={() => void submit()} type="button">
+            {r.inviteCreate}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

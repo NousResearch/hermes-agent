@@ -14,6 +14,12 @@ interface CloudStatusResult {
   shared: boolean
 }
 
+interface CloudInviteResult {
+  accept_token?: string
+  email?: string
+  permission?: string
+}
+
 // "Share to cloud" (channels slice 4.0): promote the session to a cloud
 // channel and start the gateway's background pusher. Self-contained like
 // exportSession so the actions menu can call it without threading a handler
@@ -90,5 +96,64 @@ export async function copyCloudChannelId(sessionId: string): Promise<void> {
     notify({ kind: 'success', title: 'Copied cloud ID', message: result.channel_id })
   } catch (err) {
     notifyError(err, 'Could not copy the cloud channel ID')
+  }
+}
+
+export async function inviteCloudChannelMember(sessionId: string, email: string): Promise<boolean> {
+  const gateway = activeGateway()
+  const trimmed = email.trim()
+
+  if (!gateway) {
+    notify({ kind: 'error', title: 'Invite to cloud', message: 'Not connected yet — try again in a moment.' })
+
+    return false
+  }
+
+  if (!trimmed) {
+    notify({ kind: 'error', title: 'Invite to cloud', message: 'Email is required.' })
+
+    return false
+  }
+
+  try {
+    const result = await gateway.request<CloudInviteResult>('session.cloud_invite', {
+      email: trimmed,
+      permission: 'read',
+      session_id: sessionId
+    })
+
+    if (result.accept_token) {
+      await writeClipboardText(result.accept_token)
+    }
+
+    notify({
+      kind: 'success',
+      title: result.accept_token ? 'Invite token copied' : 'Cloud invite created',
+      message: `Invite ready for ${result.email || trimmed}.`
+    })
+
+    return true
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+
+    if (/not configured/i.test(message)) {
+      notify({
+        kind: 'error',
+        title: "Cloud sharing isn't set up",
+        message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
+      })
+
+      return false
+    }
+
+    if (/not shared/i.test(message)) {
+      notify({ kind: 'error', title: 'Invite to cloud', message: 'Share this chat to the cloud first.' })
+
+      return false
+    }
+
+    notifyError(err, 'Could not create the cloud invite')
+
+    return false
   }
 }

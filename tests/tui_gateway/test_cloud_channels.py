@@ -41,6 +41,39 @@ def test_rows_to_batch_skips_roles_the_cloud_rejects():
     assert [m["origin_message_id"] for m in batch] == ["2"]
 
 
+def test_invite_member_posts_to_channel_invites(monkeypatch):
+    sent = []
+
+    def fake_request(method, path, body=None, timeout=15.0):
+        sent.append((method, path, body))
+        return {"accept_token": "tok_1", "email": body["email"], "permission": body["permission"]}
+
+    monkeypatch.setattr(cloud_channels, "_request", fake_request)
+
+    result = cloud_channels.invite_member("chan/1", "ada@example.com", "admin")
+
+    assert result["accept_token"] == "tok_1"
+    assert sent == [(
+        "POST",
+        "/v1/channels/chan%2F1/invites",
+        {"email": "ada@example.com", "permission": "admin"},
+    )]
+
+
+def test_invite_member_falls_back_to_read_for_unknown_permissions(monkeypatch):
+    bodies = []
+
+    def fake_request(method, path, body=None, timeout=15.0):
+        bodies.append(body)
+        return {}
+
+    monkeypatch.setattr(cloud_channels, "_request", fake_request)
+
+    cloud_channels.invite_member("chan_1", "ada@example.com", "owner")
+
+    assert bodies == [{"email": "ada@example.com", "permission": "read"}]
+
+
 @pytest.fixture()
 def message_db(tmp_path):
     path = tmp_path / "state.db"

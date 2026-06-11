@@ -599,6 +599,21 @@ def _get_lock_paths() -> tuple[Path, Path]:
     return lock_dir, lock_dir / ".tick.lock"
 
 
+def _gateway_scheduler_owner_active() -> bool:
+    """Return True when a gateway process owns the scheduler for this profile."""
+    try:
+        from gateway.status import is_gateway_runtime_lock_active
+
+        return is_gateway_runtime_lock_active()
+    except Exception:
+        # Fail open: preserve legacy cron behavior if the owner probe fails.
+        logger.debug(
+            "gateway scheduler-owner check failed; assuming no owner",
+            exc_info=True,
+        )
+        return False
+
+
 def _resolve_origin(job: dict) -> Optional[dict]:
     """Extract origin info from a job, preserving any extra routing metadata.
 
@@ -3892,7 +3907,8 @@ def tick(
     sync: bool = True,
     *,
     can_dispatch=None,
-):
+    defer_to_gateway_owner: bool = False,
+) -> int:
     """
     Check and run all due jobs.
     
@@ -3905,10 +3921,21 @@ def tick(
         loop: Optional asyncio event loop (from gateway) for live adapter sends
         can_dispatch: Optional synchronous gate; false leaves due jobs untouched
             for the next allowed tick
+        defer_to_gateway_owner: When True, skip this tick if a gateway runtime
+            lock already owns scheduler execution for this profile.
 
     Returns:
-        Number of jobs executed (0 if another tick is already running)
+        Number of jobs executed (0 if another tick is already running, or if a
+        gateway owner is handling this profile)
     """
+    if defer_to_gateway_owner and _gateway_scheduler_owner_active():
+        log = logger.info if verbose else logger.debug
+        log(
+            "Cron tick skipped — a gateway owns the scheduler for this profile; "
+            "deferring execution to preserve job provenance"
+        )
+        return 0
+
     lock_dir, lock_file = _get_lock_paths()
     lock_dir.mkdir(parents=True, exist_ok=True)
 

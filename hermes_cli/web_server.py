@@ -151,16 +151,19 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
     scheduler provider here (no live adapters; delivery falls back to the
     per-platform send path).
 
-    Cross-process safe: the built-in provider's ``cron.scheduler.tick`` takes
-    the ``cron/.tick.lock`` file lock, so this never double-fires alongside a
-    real gateway on the same HERMES_HOME — whichever process grabs the lock
-    first wins the tick.
+    The shared ``cron/.tick.lock`` only guarantees at-most-once execution; it
+    does not guarantee that the correct process ancestry runs the job. The
+    desktop therefore asks the built-in provider to defer each tick while a
+    same-profile gateway owns scheduler execution.
     """
-    from cron.scheduler_provider import resolve_cron_scheduler
+    from cron.scheduler_provider import InProcessCronScheduler, resolve_cron_scheduler
 
     provider = resolve_cron_scheduler()
     _log.info("Desktop cron scheduler started (provider=%s, interval=%ds)", provider.name, interval)
-    provider.start(stop_event, interval=interval)
+    start_kwargs = {"interval": interval}
+    if isinstance(provider, InProcessCronScheduler):
+        start_kwargs["defer_to_gateway_owner"] = True
+    provider.start(stop_event, **start_kwargs)
 
 
 def _warm_gateway_module() -> None:
@@ -198,9 +201,9 @@ async def _lifespan(app: "FastAPI"):
     # the server socket is already open and accepting probes.
     asyncio.get_event_loop().run_in_executor(None, _warm_gateway_module)
 
-    # Desktop-spawned backends (HERMES_DESKTOP=1) fire cron jobs themselves,
-    # since the app has no gateway running the scheduler. Server `hermes
-    # dashboard` is unaffected — it relies on its own gateway.
+    # Desktop-spawned backends (HERMES_DESKTOP=1) keep a minimal ticker alive
+    # so jobs still run when no same-profile gateway exists. The ticker opts
+    # into scheduler-level gateway-owner deferral on each tick.
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":

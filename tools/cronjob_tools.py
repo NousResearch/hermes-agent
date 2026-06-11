@@ -453,6 +453,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["workdir"] = job["workdir"]
     if job.get("profile"):
         result["profile"] = job["profile"]
+    if "script_args" in job:
+        result["script_args"] = job["script_args"]
     return result
 
 
@@ -477,6 +479,7 @@ def cronjob(
     workdir: Optional[str] = None,
     profile: Optional[str] = None,
     no_agent: Optional[bool] = None,
+    script_args: Optional[List[str]] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -544,6 +547,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 profile=_normalize_optional_job_value(profile),
                 no_agent=_no_agent,
+                script_args=script_args,
             )
             return json.dumps(
                 {
@@ -681,6 +685,14 @@ def cronjob(
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
                 updates["profile"] = _normalize_optional_job_value(profile) or None
+            if script_args is not None:
+                if isinstance(script_args, list):
+                    updates["script_args"] = [str(a) for a in script_args]
+                else:
+                    return tool_error(
+                        f"script_args must be a list of strings, got {type(script_args).__name__}",
+                        success=False,
+                    )
             if no_agent is not None:
                 # Toggling no_agent on/off at update time. If flipping to True,
                 # we need a script to already exist on the job (or be part of
@@ -794,6 +806,11 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "string",
                 "description": f"Optional path to a script that runs each tick. In the default mode its stdout is injected into the agent's prompt as context (data-collection / change-detection pattern). With no_agent=True, the script IS the job and its stdout is delivered verbatim (classic watchdog pattern). Relative paths resolve under {display_hermes_home()}/scripts/. ``.sh``/``.bash`` extensions run via bash, everything else via Python. On update, pass empty string to clear."
             },
+            "script_args": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional list of string arguments to pass to the script. When set, these are appended to the subprocess argv after the script path (e.g. ['--mode', 'close']). When omitted or empty, the script runs with no extra arguments."
+            },
             "no_agent": {
                 "type": "boolean",
                 "default": False,
@@ -894,6 +911,7 @@ registry.register(
         workdir=args.get("workdir"),
         profile=args.get("profile"),
         no_agent=args.get("no_agent"),
+        script_args=args.get("script_args"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

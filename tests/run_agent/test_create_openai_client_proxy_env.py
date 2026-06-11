@@ -86,6 +86,7 @@ def test_create_openai_client_routes_via_proxy_when_env_set(mock_openai, monkeyp
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
 
     agent = _make_agent()
@@ -122,6 +123,7 @@ def test_create_openai_client_no_proxy_when_env_unset(mock_openai, monkeypatch):
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
 
     agent = _make_agent()
     kwargs = {
@@ -196,6 +198,7 @@ def test_create_openai_client_bypasses_proxy_for_no_proxy_host(mock_openai, monk
                 "https_proxy", "http_proxy", "all_proxy",
                 "NO_PROXY", "no_proxy"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("HERMES_DISABLE_LAZY_INSTALLS", "1")
     monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:7897")
     monkeypatch.setenv("NO_PROXY", "localhost,127.0.0.1")
 

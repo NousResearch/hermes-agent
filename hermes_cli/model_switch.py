@@ -91,6 +91,27 @@ def _check_hermes_model_warning(model_name: str) -> str:
     return ""
 
 
+def _prioritize_model_ids(model_ids: list[str], preferred_ids: list[str]) -> list[str]:
+    """Return ``model_ids`` with any matching ``preferred_ids`` moved to the front.
+
+    This preserves the Portal recommendation order first, then the original
+    curated order for every remaining model. Duplicates are removed while
+    preserving first occurrence.
+    """
+    seen: set[str] = set()
+    ordered: list[str] = []
+    available = set(model_ids)
+    for mid in preferred_ids:
+        if mid in available and mid not in seen:
+            ordered.append(mid)
+            seen.add(mid)
+    for mid in model_ids:
+        if mid not in seen:
+            ordered.append(mid)
+            seen.add(mid)
+    return ordered
+
+
 # ---------------------------------------------------------------------------
 # Model aliases -- short names -> (vendor, family) with NO version numbers.
 # Resolved dynamically against the live models.dev catalog.
@@ -1527,6 +1548,8 @@ def list_authenticated_providers(
                 from hermes_cli.models import (
                     get_pricing_for_provider as _nous_pricing,
                     check_nous_free_tier as _nous_free,
+                    partition_nous_models_by_tier as _partition_nous,
+                    fetch_nous_recommended_models as _fetch_nous_recommended,
                     union_with_portal_free_recommendations as _union_free,
                     union_with_portal_paid_recommendations as _union_paid,
                 )
@@ -1539,10 +1562,42 @@ def list_authenticated_providers(
                     _portal = _st.get("portal_base_url", "") or ""
                 except Exception:
                     _portal = ""
+                _recommended_payload = None
+                try:
+                    _recommended_payload = _fetch_nous_recommended(_portal)
+                except Exception:
+                    _recommended_payload = None
+
+                def _recommended_ids(key: str) -> list[str]:
+                    block = (
+                        _recommended_payload.get(key)
+                        if isinstance(_recommended_payload, dict)
+                        else None
+                    )
+                    if not isinstance(block, list):
+                        return []
+                    ids: list[str] = []
+                    for entry in block:
+                        if not isinstance(entry, dict):
+                            continue
+                        name = entry.get("modelName")
+                        if isinstance(name, str) and name.strip():
+                            ids.append(name.strip())
+                    return ids
+
                 if _nous_free(force_fresh=True):
-                    model_ids, _ = _union_free(model_ids, _pricing, _portal)
+                    model_ids, _pricing = _union_free(model_ids, _pricing, _portal)
+                    model_ids, _ = _partition_nous(model_ids, _pricing, free_tier=True)
+                    model_ids = _prioritize_model_ids(
+                        model_ids,
+                        _recommended_ids("freeRecommendedModels"),
+                    )
                 else:
                     model_ids, _ = _union_paid(model_ids, _pricing, _portal)
+                    model_ids = _prioritize_model_ids(
+                        model_ids,
+                        _recommended_ids("paidRecommendedModels"),
+                    )
             except Exception:
                 # Portal recommendation fetch failed — fall back to the
                 # curated list alone (still correct, just may lag newly

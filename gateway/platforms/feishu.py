@@ -2042,10 +2042,6 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client or not HAS_CARDKIT:
             return None
         try:
-            # Best-effort hydrate bot name on first streaming card use.
-            if not getattr(self, "_bot_name", ""):
-                await self._hydrate_bot_identity()
-
             # --- Card reuse: if this chat already has an active streaming
             # card, update it in-place instead of closing + recreating.
             # This handles the tool-boundary case where stream_consumer
@@ -4679,10 +4675,10 @@ class FeishuAdapter(BasePlatformAdapter):
                             "[Feishu] FEISHU_BOT_NAME differs from /bot/v3/info; using hydrated bot name for group @mention gating."
                         )
                     self._bot_name = bot_name
-                    logger.info("[Feishu] Bot identity hydrated: bot_name=%r open_id=%r", bot_name, open_id[:8] if open_id else "")
-        except Exception as exc:
-            logger.warning(
-                "[Feishu] /bot/v3/info probe failed during hydration: %s", exc,
+        except Exception:
+            logger.debug(
+                "[Feishu] /bot/v3/info probe failed during hydration",
+                exc_info=True,
             )
 
         # Fallback probe for _bot_name only: application info endpoint. Needs

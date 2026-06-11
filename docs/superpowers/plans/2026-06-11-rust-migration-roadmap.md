@@ -180,6 +180,8 @@ language-specific setup where needed.
 - Bootstrap installer now runs the Unix `path` stage natively for shell profile PATH setup, writing an idempotent
   Hermes-managed profile block through the Rust manager and refreshing the bootstrap process PATH. System-level
   symlink behavior remains script-backed until full parity exists.
+- Bootstrap installer now runs the Unix `complete` stage natively for the install-method stamp, preserving the existing
+  `git` value so status, dashboard, and update recommendations remain compatible with archive-created checkouts.
 - `hermes-manager plan-shortcuts` reports Start Menu and Desktop `.lnk` targets for the packaged Windows desktop app,
   including working directory and icon location, without mutating user state.
 - `hermes-manager write-shortcuts` can dry-run or create those `.lnk` files through the built-in Windows shortcut COM

@@ -173,6 +173,20 @@ pub fn configure_templates(hermes_home: &Path, install_root: &Path) -> Result<se
     }))
 }
 
+/// Stamp the install method used by status and update recommendations.
+pub fn write_install_method_stamp(hermes_home: &Path) -> Result<serde_json::Value> {
+    let stamp_path = hermes_home.join(".install_method");
+    if let Some(parent) = stamp_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(&stamp_path, "git\n")
+        .with_context(|| format!("writing install method stamp {}", stamp_path.display()))?;
+    Ok(serde_json::json!({
+        "installMethod": "git",
+        "stampPath": stamp_path.display().to_string(),
+    }))
+}
+
 /// Build a native Windows PATH stage report without mutating user state.
 pub fn windows_path_stage_plan(
     hermes_home: &Path,
@@ -701,6 +715,19 @@ mod tests {
             install_root.join("venv").join("bin").display().to_string()
         );
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_method_stamp_writes_git_for_update_compatibility() {
+        let root = std::env::temp_dir().join(format!("hermes-install-method-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let report = write_install_method_stamp(&root).unwrap();
+
+        assert_eq!(std::fs::read_to_string(root.join(".install_method")).unwrap(), "git\n");
+        assert_eq!(report["installMethod"], "git");
+        assert_eq!(report["stampPath"], root.join(".install_method").display().to_string());
         let _ = std::fs::remove_dir_all(&root);
     }
 

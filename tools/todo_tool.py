@@ -164,9 +164,11 @@ class TodoStore:
 
         content = str(item.get("content", "")).strip()
         if not content:
-            content = "(no description)"
-        else:
-            content = TodoStore._cap_content(content)
+            raise ValueError(
+                f"Todo item '{item_id}' has empty or missing content. "
+                "Each item must have a non-empty description."
+            )
+        content = TodoStore._cap_content(content)
 
         status = str(item.get("status", "pending")).strip().lower()
         if status not in VALID_STATUSES:
@@ -204,7 +206,10 @@ def todo_tool(
         return tool_error("TodoStore not initialized")
 
     if todos is not None:
-        items = store.write(todos, merge)
+        try:
+            items = store.write(todos, merge)
+        except ValueError as e:
+            return tool_error(str(e))
     else:
         items = store.read()
 

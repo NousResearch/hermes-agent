@@ -109,6 +109,8 @@ language-specific setup where needed.
 - Downloaded installer artifacts use a Rust helper for HTTP download, optional SHA-256 verification, and atomic cache
   writes.
 - Rust ZIP extraction exists with path traversal protection for future repository/archive fallback replacement.
+- Rust repository archive fallback primitives can build GitHub ZIP URLs, strip the archive's single top-level directory,
+  and refuse to overwrite an existing install root.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` now runs as a native Rust stage while preserving Python `tools/skills_sync.py` when available and
   retaining the existing bundled-skill copy fallback.
@@ -117,7 +119,7 @@ language-specific setup where needed.
 **Still script-backed:**
 - Language/runtime setup: uv, Python, venv, Python dependencies, Node, npm dependencies, desktop build, and platform SDK
   verification.
-- Repository clone/update logic until the Git/ZIP fallback matrix has a parity suite.
+- Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - PATH mutation and shell/profile integration, which belongs in Phase 5 platform integration.
 
 **Exit Criteria:**
@@ -147,6 +149,12 @@ language-specific setup where needed.
 - `hermes-manager uninstall-lite` and `repair-clean` support dry-run planning without deleting files.
 - Cleanup commands can emit machine-readable JSON via `--json`, while keeping the existing text output for desktop
   cleanup script compatibility.
+- `hermes-manager plan-path` computes side-effect-free PATH updates and Unix shell profile hints for future desktop UI
+  and OS-specific apply commands.
+- `hermes-manager write-profile-hint` can idempotently write a managed Hermes PATH block to an explicitly provided
+  shell profile file, with dry-run and JSON output support.
+- `hermes-manager write-user-path` can dry-run or write the current user's Windows `Path` registry value, using the
+  registry as the default source of truth and broadcasting an environment-change notification after apply.
 
 **Exit Criteria:**
 - Rust manager can perform platform cleanup with parity to Python/shell uninstall.
@@ -177,6 +185,12 @@ language-specific setup where needed.
 - Desktop release staging writes `build/hermes-manager/bundled-manifest.json` beside the packaged Rust manager.
 - The manifest records schema version, Hermes desktop version, source commit, manager resource path, and SHA-256.
 - `hermes-manager doctor --manifest <path>` validates the generated manifest successfully in a local staging smoke.
+- Commit-pinned bootstrap installers now compile `scripts/install.ps1` and `scripts/install.sh` into the Rust binary,
+  so the first run does not need to download the orchestration script from GitHub.
+- Branch-following bootstrap builds still resolve install scripts from GitHub raw, preserving HEAD-tracking behavior
+  for development and non-immutable builds.
+- Bootstrap logs now include an embedded install-script resource summary with size and SHA-256 prefix for diagnostics
+  and future release manifest integration.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

@@ -939,7 +939,7 @@ CONTEXT_TRUNCATE_TAIL_RATIO = 0.2
 _SKILLS_PROMPT_CACHE_MAX = 8
 _SKILLS_PROMPT_CACHE: OrderedDict[tuple, str] = OrderedDict()
 _SKILLS_PROMPT_CACHE_LOCK = threading.Lock()
-_SKILLS_SNAPSHOT_VERSION = 1
+_SKILLS_SNAPSHOT_VERSION = 2
 
 
 def _skills_prompt_snapshot_path() -> Path:
@@ -1027,6 +1027,15 @@ def _build_snapshot_entry(
     if isinstance(platforms, str):
         platforms = [platforms]
 
+    # Extract trigger_keywords for LLM skill matching (gh#3879)
+    raw_kw = frontmatter.get("trigger_keywords") or []
+    if isinstance(raw_kw, str):
+        kw = [kw.strip() for kw in raw_kw.split(",") if kw.strip()]
+    elif isinstance(raw_kw, list):
+        kw = [str(k).strip() for k in raw_kw if str(k).strip()]
+    else:
+        kw = []
+
     return {
         "skill_name": skill_name,
         "category": category,
@@ -1034,6 +1043,7 @@ def _build_snapshot_entry(
         "description": description,
         "platforms": [str(p).strip() for p in platforms if str(p).strip()],
         "conditions": extract_skill_conditions(frontmatter),
+        "trigger_keywords": kw,
     }
 
 
@@ -1157,7 +1167,7 @@ def build_skills_system_prompt(
     # ── Layer 2: disk snapshot ────────────────────────────────────────
     snapshot = _load_skills_snapshot(skills_dir)
 
-    skills_by_category: dict[str, list[tuple[str, str]]] = {}
+    skills_by_category: dict[str, list[tuple[str, str, list[str]]]] = {}
     category_descriptions: dict[str, str] = {}
 
     if snapshot is not None:
@@ -1180,7 +1190,7 @@ def build_skills_system_prompt(
             ):
                 continue
             skills_by_category.setdefault(category, []).append(
-                (frontmatter_name, entry.get("description", ""))
+                (frontmatter_name, entry.get("description", ""), entry.get("trigger_keywords") or [])
             )
         category_descriptions = {
             str(k): str(v)
@@ -1205,7 +1215,7 @@ def build_skills_system_prompt(
             ):
                 continue
             skills_by_category.setdefault(entry["category"], []).append(
-                (entry["frontmatter_name"], entry["description"])
+                (entry["frontmatter_name"], entry["description"], entry.get("trigger_keywords") or [])
             )
 
         # Read category-level DESCRIPTION.md files
@@ -1235,7 +1245,7 @@ def build_skills_system_prompt(
     # precedence: we track seen names and skip duplicates from external dirs.
     seen_skill_names: set[str] = set()
     for cat_skills in skills_by_category.values():
-        for name, _desc in cat_skills:
+        for name, _desc, _kw in cat_skills:
             seen_skill_names.add(name)
 
     for ext_dir in external_dirs:
@@ -1261,7 +1271,7 @@ def build_skills_system_prompt(
                     continue
                 seen_skill_names.add(frontmatter_name)
                 skills_by_category.setdefault(entry["category"], []).append(
-                    (frontmatter_name, entry["description"])
+                    (frontmatter_name, entry["description"], entry.get("trigger_keywords") or [])
                 )
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
@@ -1318,14 +1328,18 @@ def build_skills_system_prompt(
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
-            for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
+            # Deduplicate and sort skills within each category
+            seen = set()
+            for name, desc, kw in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
                 seen.add(name)
+                line = f"    - {name}: "
                 if desc:
-                    index_lines.append(f"    - {name}: {desc}")
-                else:
-                    index_lines.append(f"    - {name}")
+                    line += desc
+                if kw:
+                    line += f" [{', '.join(kw)}]"
+                index_lines.append(line)
 
         result = (
             "## Skills (mandatory)\n"

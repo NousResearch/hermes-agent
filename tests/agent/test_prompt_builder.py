@@ -1314,6 +1314,121 @@ class TestOpenAIModelExecutionGuidance:
 
 
 # =========================================================================
+# Trigger keywords (gh#3879) — snapshot extraction, rendering, backward compat
+# =========================================================================
+
+
+class TestTriggerKeywordsSnapshotEntry:
+    """Test that _build_snapshot_entry extracts and stores trigger_keywords."""
+
+    def test_trigger_keywords_extracted_from_list(self, tmp_path):
+        skills_dir = tmp_path / "skills" / "general"
+        skill_file = skills_dir / "SKILL.md"
+        skills_dir.mkdir(parents=True)
+        skill_file.write_text(
+            "---\nname: weather\ntrigger_keywords: [weather, forecast, temperature]\n---\n"
+        )
+        from agent.prompt_builder import _build_snapshot_entry
+
+        frontmatter = {
+            "name": "weather",
+            "trigger_keywords": ["weather", "forecast", "temperature"],
+        }
+        entry = _build_snapshot_entry(skill_file, skills_dir.parent, frontmatter, "")
+        assert entry["trigger_keywords"] == ["weather", "forecast", "temperature"]
+
+    def test_trigger_keywords_extracted_from_comma_string(self, tmp_path):
+        skills_dir = tmp_path / "skills" / "general"
+        skill_file = skills_dir / "SKILL.md"
+        skills_dir.mkdir(parents=True)
+        skill_file.write_text("---\nname: code-review\n---\n")
+        from agent.prompt_builder import _build_snapshot_entry
+
+        frontmatter = {
+            "name": "code-review",
+            "trigger_keywords": "review, refactor, lint, code-quality",
+        }
+        entry = _build_snapshot_entry(skill_file, skills_dir.parent, frontmatter, "")
+        assert entry["trigger_keywords"] == ["review", "refactor", "lint", "code-quality"]
+
+    def test_missing_trigger_keywords_defaults_empty(self, tmp_path):
+        skills_dir = tmp_path / "skills" / "general"
+        skill_file = skills_dir / "SKILL.md"
+        skills_dir.mkdir(parents=True)
+        skill_file.write_text("---\nname: plain-skill\n---\n")
+        from agent.prompt_builder import _build_snapshot_entry
+
+        entry = _build_snapshot_entry(skill_file, skills_dir.parent, {}, "")
+        assert entry["trigger_keywords"] == []
+
+
+class TestTriggerKeywordsRendering:
+    """Test that trigger keywords render inline with skill descriptions."""
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def test_keywords_rendered_inline_with_brackets(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "general"
+        skill = skills_dir / "weather"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: weather\ntrigger_keywords: [weather, forecast]\ndescription: Weather data\n---\n"
+        )
+        result = build_skills_system_prompt()
+        assert "[weather, forecast]" in result
+        assert "- weather:" in result
+
+    def test_no_keywords_skips_brackets(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "general"
+        skill = skills_dir / "plain-skill"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            "---\nname: plain-skill\ndescription: No trigger keywords\n---\n"
+        )
+        result = build_skills_system_prompt()
+        assert "plain-skill" in result
+        # Ensure no stray brackets for a skill without keywords
+        assert "[plain-skill" not in result
+
+    def test_backward_compat_mixed_skills(self, monkeypatch, tmp_path):
+        """Skills with and without trigger_keywords coexist cleanly."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "general"
+
+        # Skill WITH keywords
+        skill_with = skills_dir / "weather"
+        skill_with.mkdir(parents=True)
+        (skill_with / "SKILL.md").write_text(
+            "---\nname: weather\ntrigger_keywords: [weather, forecast]\ndescription: Weather data\n---\n"
+        )
+
+        # Skill WITHOUT keywords
+        skill_without = skills_dir / "notes"
+        skill_without.mkdir(parents=True)
+        (skill_without / "SKILL.md").write_text(
+            "---\nname: notes\ndescription: Take notes\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+        # Both present
+        assert "weather" in result
+        assert "notes" in result
+        # Keywords appear only for weather
+        assert "[weather, forecast]" in result
+        # No brackets near 'notes' line
+        lines = result.splitlines()
+        notes_line = next(l for l in lines if "- notes:" in l)
+        assert "[" not in notes_line or "[]" not in notes_line
+
+
+# =========================================================================
 # Budget warning history stripping
 # =========================================================================
 

@@ -24,7 +24,14 @@ import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
-import { $composerAttachments, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
+import {
+  $composerAttachments,
+  clearComposerAttachments,
+  clearSessionDraft,
+  type ComposerAttachment,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import {
   browseBackward,
   browseForward,
@@ -130,6 +137,10 @@ interface QueueEditState {
 
 const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
 
+// Quiet period after the last keystroke before persisting the draft;
+// unmount/pagehide flushes bypass it.
+const DRAFT_PERSIST_DEBOUNCE_MS = 400
+
 export function ChatBar({
   busy,
   cwd,
@@ -171,6 +182,9 @@ export function ChatBar({
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
+  const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
+  const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
+  activeQueueSessionKeyRef.current = activeQueueSessionKey
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -182,6 +196,8 @@ export function ChatBar({
   const [dragActive, setDragActive] = useState(false)
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
+  const queueEditRef = useRef(queueEdit)
+  queueEditRef.current = queueEdit
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
   const lastSpokenIdRef = useRef<string | null>(null)
@@ -1097,6 +1113,69 @@ export function ChatBar({
     }
   }
 
+  const stashAt = (
+    scope: string | null,
+    text = draftRef.current,
+    attachments = $composerAttachments.get()
+  ) => stashSessionDraft(scope, text, attachments)
+
+  // Per-thread draft swap — the composer's only session coupling. Lifecycle
+  // never clears composer state; this effect alone stashes on leave, restores
+  // on enter. Keyed writes are idempotent, so no skip-sentinel.
+  useEffect(() => {
+    const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
+    loadIntoComposer(text, attachments)
+
+    return () => {
+      const editing = queueEditRef.current
+
+      if (editing?.sessionKey === activeQueueSessionKey) {
+        stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
+      } else if (!isBrowsingHistory(sessionId)) {
+        stashAt(activeQueueSessionKey)
+      }
+    }
+  }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Debounced stash into the active scope. Skipped while browsing history or
+  // editing a queued prompt — recalled text must not clobber the real draft.
+  useEffect(() => {
+    if (isBrowsingHistory(sessionId) || queueEdit) {
+      return
+    }
+
+    pendingDraftPersistRef.current = { scope: activeQueueSessionKey, text: draft }
+
+    const handle = window.setTimeout(() => {
+      pendingDraftPersistRef.current = null
+      stashAt(activeQueueSessionKey, draft)
+    }, DRAFT_PERSIST_DEBOUNCE_MS)
+
+    return () => window.clearTimeout(handle)
+  }, [activeQueueSessionKey, draft, queueEdit, sessionId])
+
+  // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
+  // inside the debounce window would drop trailing keystrokes without this.
+  useEffect(() => {
+    const flushPendingDraftPersist = () => {
+      const pending = pendingDraftPersistRef.current
+
+      if (!pending) {
+        return
+      }
+
+      pendingDraftPersistRef.current = null
+      stashAt(pending.scope, pending.text)
+    }
+
+    window.addEventListener('pagehide', flushPendingDraftPersist)
+
+    return () => {
+      window.removeEventListener('pagehide', flushPendingDraftPersist)
+      flushPendingDraftPersist()
+    }
+  }, [])
+
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {
       return
@@ -1299,19 +1378,37 @@ export function ChatBar({
     }
   }, [busy, drainNextQueued, queuedPrompts.length])
 
-  // Clean up queue edit when its target disappears (session swap or external delete).
+  // Queue-edit cleanup: on session swap the scope effect already stashed the
+  // edit snapshot; only restore into the composer when still on the same scope.
   useEffect(() => {
     if (!queueEdit) {
       return
     }
 
-    if (queueEdit.sessionKey === activeQueueSessionKey && editingQueuedPrompt) {
-      return
+    if (queueEdit.sessionKey === activeQueueSessionKey) {
+      if (editingQueuedPrompt) {
+        return
+      }
+
+      loadIntoComposer(queueEdit.draft, queueEdit.attachments)
     }
 
-    loadIntoComposer(queueEdit.draft, queueEdit.attachments)
     setQueueEdit(null)
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
+    const submittedScope = activeQueueSessionKeyRef.current
+    const submittedAttachments = attachments ?? []
+
+    const restore = () => {
+      loadIntoComposer(text, submittedAttachments)
+      stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
+    }
+
+    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
+      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
+      .catch(restore)
+  }
 
   const submitDraft = () => {
     // Source the text from the DOM editor, not React state. The AUI composer
@@ -1323,8 +1420,10 @@ export function ChatBar({
     // input event; refresh it from the editor once more to also cover an
     // in-flight keystroke that hasn't fired its input event yet.
     const editor = editorRef.current
+
     if (editor) {
       const domText = composerPlainText(editor)
+
       if (domText !== draftRef.current) {
         draftRef.current = domText
         aui.composer().setText(domText)
@@ -1345,10 +1444,9 @@ export function ChatBar({
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
       if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
-        const submitted = text
         triggerHaptic('submit')
         clearDraft()
-        void onSubmit(submitted)
+        dispatchSubmit(text)
       } else if (payloadPresent) {
         queueCurrentDraft()
       } else {
@@ -1360,12 +1458,12 @@ export function ChatBar({
     } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()
     } else if (payloadPresent) {
-      const submitted = text
+      const submittedAttachments = cloneAttachments(attachments)
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       clearComposerAttachments()
-      void onSubmit(submitted, { attachments })
+      dispatchSubmit(text, submittedAttachments)
     }
 
     focusInput()

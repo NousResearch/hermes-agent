@@ -328,10 +328,8 @@ export function useSessionActions({
       setYoloActive(false)
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
-      // Composer contents are owned by ChatBar's per-scope draft persistence:
-      // the scope change triggered by the session-id updates above stashes the
-      // departing session's attachments and restores this scope's draft.
-      // Clearing here would wipe the departing stash before it's saved.
+      // Never clear the composer here: it sits above the thread and its
+      // contents (text + attachments) follow the user across session changes.
       setFreshDraftReady(true)
     },
     [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]

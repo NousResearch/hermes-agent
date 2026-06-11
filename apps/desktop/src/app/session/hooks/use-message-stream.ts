@@ -26,6 +26,8 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   $localDeviceName,
+  $selectedStoredSessionId,
+  reconcileLiveSessionKey,
   type SessionParticipant,
   setCurrentBranch,
   setCurrentCwd,
@@ -37,6 +39,7 @@ import {
   setCurrentServiceTier,
   setCurrentUsage,
   setLocalDeviceName,
+  setSelectedStoredSessionId,
   setSessionActivityStatus,
   setSessionParticipants,
   setTurnStartedAt,
@@ -683,9 +686,11 @@ export function useMessageStream({
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+
       if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
         return
       }
+
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
@@ -710,6 +715,16 @@ export function useMessageStream({
         const modelChanged = typeof payload?.model === 'string'
         const providerChanged = typeof payload?.provider === 'string'
         const runningChanged = typeof payload?.running === 'boolean'
+        const liveStoredSessionId = typeof payload?.session_key === 'string' ? payload.session_key.trim() : ''
+
+        if (apply && sessionId && liveStoredSessionId) {
+          const previousStoredSessionId = $selectedStoredSessionId.get()
+
+          if (previousStoredSessionId !== liveStoredSessionId) {
+            reconcileLiveSessionKey(previousStoredSessionId || sessionId, liveStoredSessionId)
+            setSelectedStoredSessionId(liveStoredSessionId)
+          }
+        }
 
         if (apply) {
           if (modelChanged) {
@@ -749,13 +764,13 @@ export function useMessageStream({
           }
         }
 
-        if (sessionId && hasStatePatch) {
+        if (sessionId && (hasStatePatch || liveStoredSessionId)) {
           updateSessionState(sessionId, state => ({
             ...state,
             ...statePatch,
             branch: statePatch.branch ?? state.branch,
             cwd: statePatch.cwd ?? state.cwd
-          }))
+          }), liveStoredSessionId || undefined)
         }
 
         if (apply) {
@@ -787,7 +802,7 @@ export function useMessageStream({
                 streamId: null,
                 turnStartedAt: null
               }
-            })
+            }, liveStoredSessionId || undefined)
           }
         }
 
@@ -913,6 +928,7 @@ export function useMessageStream({
 
         flushQueuedDeltas(sessionId)
         upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
+
         // Update context usage in real-time during tool execution.
         if (payload?.usage && (!explicitSid || isActiveEvent)) {
           setCurrentUsage(current => ({ ...current, ...payload.usage }))

@@ -108,21 +108,25 @@ function dedupeSessionsByAlias(sessions: SessionInfo[]): SessionInfo[] {
 
     if (existingIndex !== undefined) {
       const current = deduped[existingIndex]
+
       if (
         aliases.length > sessionAliasIds(current).length ||
         (aliases.length === sessionAliasIds(current).length && session.last_active > current.last_active)
       ) {
         deduped[existingIndex] = session
       }
+
       for (const id of aliases) {
         aliasIndex.set(id, existingIndex)
       }
+
       continue
     }
 
     for (const id of aliases) {
       aliasIndex.set(id, deduped.length)
     }
+
     deduped.push(session)
   }
 
@@ -174,6 +178,50 @@ export function mergeSessionPage(
   )
 
   return survivors.length ? [...survivors, ...dedupedIncoming] : dedupedIncoming
+}
+
+export function reconcileLiveSessionKey(previousSessionId: string | null | undefined, liveSessionId: string) {
+  const previousId = previousSessionId?.trim() || ''
+  const nextId = liveSessionId.trim()
+
+  if (!previousId || !nextId || previousId === nextId) {
+    return
+  }
+
+  setSessions(current => {
+    const existingLiveIndex = current.findIndex(session => sessionAliasIds(session).includes(nextId))
+    const previousIndex = current.findIndex(session => sessionAliasIds(session).includes(previousId))
+
+    if (existingLiveIndex !== -1) {
+      if (previousIndex === -1 || previousIndex === existingLiveIndex) {
+        return current
+      }
+
+      return current.filter((_, index) => index !== previousIndex)
+    }
+
+    if (previousIndex === -1) {
+      return current
+    }
+
+    const previous = current[previousIndex]
+    const lineageIds = [...new Set([...(previous._lineage_ids ?? []), previous.id, nextId].filter(Boolean))]
+
+    const next: SessionInfo = {
+      ...previous,
+      id: nextId,
+      _lineage_root_id: previous._lineage_root_id ?? previous.id,
+      _lineage_ids: lineageIds,
+      ended_at: null,
+      is_active: true,
+      last_active: Math.max(previous.last_active ?? 0, Date.now() / 1000)
+    }
+
+    const nextSessions = current.slice()
+    nextSessions[previousIndex] = next
+
+    return nextSessions
+  })
 }
 
 export const $connection = atom<HermesConnection | null>(null)

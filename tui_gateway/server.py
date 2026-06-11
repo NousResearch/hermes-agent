@@ -2178,6 +2178,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "branch": _git_branch_for_cwd(cwd),
         "personality": str(personality or ""),
         "running": bool((session or {}).get("running")),
+        "session_key": str((session or {}).get("session_key") or getattr(agent, "session_id", "") or ""),
         "desktop_contract": DESKTOP_BACKEND_CONTRACT,
         "version": "",
         "release_date": "",
@@ -3978,11 +3979,12 @@ def _find_live_session_by_key(session_key: str) -> tuple[str, dict] | None:
 def _fallback_session_info(session: dict) -> dict:
     agent = session.get("agent")
     if agent is not None:
-        return _session_info(agent)
+        return _session_info(agent, session)
     return {
         "cwd": os.getenv("TERMINAL_CWD", os.getcwd()),
         "lazy": True,
         "model": _resolve_model(),
+        "session_key": str(session.get("session_key") or ""),
         "skills": {},
         "tools": {},
     }

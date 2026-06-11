@@ -5,12 +5,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
-import { $currentUsage, $localDeviceName, $sessionActivityStatus } from '@/store/session'
+import { $currentUsage, $localDeviceName, $selectedStoredSessionId, $sessionActivityStatus } from '@/store/session'
 import type { RpcEvent } from '@/types/hermes'
 
 import { useMessageStream } from './use-message-stream'
 
 let handleEvent: (event: RpcEvent) => void = () => undefined
+let updateCalls: Array<{ sessionId: string; storedSessionId?: null | string }> = []
 
 function MessageStreamHarness({ activeSessionId = 'session-1' }: { activeSessionId?: string }) {
   const activeSessionIdRef = useRef<string | null>(activeSessionId)
@@ -23,10 +24,12 @@ function MessageStreamHarness({ activeSessionId = 'session-1' }: { activeSession
     queryClient: queryClientRef.current,
     refreshHermesConfig: vi.fn(async () => undefined),
     refreshSessions: vi.fn(async () => undefined),
-    updateSessionState: (sessionId, updater) => {
+    updateSessionState: (sessionId, updater, storedSessionId) => {
       const previous = statesRef.current.get(sessionId) ?? createClientSessionState(null)
-      const next = updater(previous)
+      const state = storedSessionId === undefined ? previous : { ...previous, storedSessionId }
+      const next = updater(state)
       statesRef.current.set(sessionId, next)
+      updateCalls.push({ sessionId, storedSessionId })
 
       return next
     }
@@ -105,6 +108,42 @@ describe('useMessageStream token usage events', () => {
     )
 
     expect($currentUsage.get()).toEqual({ calls: 1, input: 10, output: 5, total: 15 })
+  })
+})
+
+describe('useMessageStream session.info events', () => {
+  beforeEach(() => {
+    handleEvent = () => undefined
+    updateCalls = []
+    $selectedStoredSessionId.set(null)
+  })
+
+  afterEach(() => {
+    cleanup()
+    $selectedStoredSessionId.set(null)
+    vi.restoreAllMocks()
+  })
+
+  it('rebinds active session state to the live session_key from the backend', () => {
+    $selectedStoredSessionId.set('parent')
+    render(<MessageStreamHarness activeSessionId="runtime" />)
+
+    act(() =>
+      handleEvent({
+        payload: {
+          running: true,
+          session_key: 'continuation'
+        },
+        session_id: 'runtime',
+        type: 'session.info'
+      } as RpcEvent)
+    )
+
+    expect($selectedStoredSessionId.get()).toBe('continuation')
+    expect(updateCalls).toEqual([
+      { sessionId: 'runtime', storedSessionId: 'continuation' },
+      { sessionId: 'runtime', storedSessionId: 'continuation' }
+    ])
   })
 })
 

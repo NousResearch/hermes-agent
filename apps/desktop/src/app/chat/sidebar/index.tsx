@@ -77,6 +77,7 @@ import {
   $sessionsLoading,
   $sessionsTotal,
   $workingSessionIds,
+  sessionAliasIds,
   sessionPinId
 } from '@/store/session'
 import {
@@ -1469,6 +1470,7 @@ function SidebarSessionsSection({
 
   const renderRow = (session: SessionInfo) => {
     const rowIsChecked = selectedIdSet?.has(session.id) ?? false
+    const aliases = sessionAliasIds(session)
 
     const rowProps = {
       archived: archivedRows,
@@ -1476,8 +1478,8 @@ function SidebarSessionsSection({
       checked: rowIsChecked,
       dragging: draggingSession?.id === session.id,
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
+      isSelected: !!activeSessionId && aliases.includes(activeSessionId),
+      isWorking: aliases.some(id => workingSessionIdSet.has(id)),
       onArchive: () => onArchiveSession(session.id),
       onArchiveSelectedSessions: onArchiveSessions,
       onDelete: () => onDeleteSession(session.id),

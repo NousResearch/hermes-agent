@@ -48,6 +48,7 @@ export type GatewayEventPayload = {
   fast?: boolean
   yolo?: boolean
   running?: boolean
+  session_key?: string
   cwd?: string
   branch?: string
   credential_warning?: string

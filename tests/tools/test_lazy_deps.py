@@ -178,7 +178,34 @@ class TestEnsure:
             ld, "_venv_pip_install",
             lambda specs, **kw: ld._InstallResult(True, "ok", ""),
         )
+        # find_spec smoke test: pretend the package is importable.
+        import importlib.util
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: True)
         ld.ensure("test.install", prompt=False)
+
+    def test_install_success_metadata_ok_but_import_broken(self, monkeypatch):
+        """Regression: pip succeeds + metadata is correct, but actual files
+        are missing (e.g. partial install, .pyd overwritten).  ensure() must
+        raise FeatureUnavailable instead of silently succeeding."""
+        monkeypatch.setitem(ld.LAZY_DEPS, "test.broken", ("chardet>=7",))
+        call_count = {"n": 0}
+
+        def fake_satisfied(spec):
+            call_count["n"] += 1
+            return call_count["n"] > 1  # missing first, installed after
+
+        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+        # find_spec returns None — package metadata is present but files
+        # are broken / missing.
+        import importlib.util
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        with pytest.raises(ld.FeatureUnavailable, match="import check failed"):
+            ld.ensure("test.broken", prompt=False)
 
     def test_install_failure_surfaces_pip_stderr(self, monkeypatch):
         monkeypatch.setitem(ld.LAZY_DEPS, "test.fail", ("zzzfake>=1",))

@@ -521,6 +521,27 @@ def ensure(feature: str, *, prompt: bool = True) -> None:
             "(may require Python restart)"
         )
 
+    # Smoke-test: metadata may report success even when actual files are
+    # broken (e.g. .pyd overwritten on Windows, partial install with
+    # missing submodules).  Verify each installed package is actually
+    # importable via importlib.util.find_spec().
+    import importlib.util
+    _broken = []
+    for spec in missing:
+        pkg = _pkg_name_from_spec(spec)
+        # pip normalises hyphens to underscores in the wheel, but the
+        # Python import name uses underscores too — try both.
+        mod_name = pkg.replace("-", "_")
+        if importlib.util.find_spec(mod_name) is None and importlib.util.find_spec(pkg) is None:
+            _broken.append(pkg)
+    if _broken:
+        raise FeatureUnavailable(
+            feature, tuple(missing),
+            "install reported success and metadata is correct, but "
+            f"import check failed for: {', '.join(_broken)} "
+            "(files may be missing or corrupted — try restarting Python)"
+        )
+
     logger.info("Lazy install complete for feature %r", feature)
 
 

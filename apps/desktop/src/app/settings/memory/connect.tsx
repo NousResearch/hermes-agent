@@ -1,36 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
-import { profileScoped } from '@/hermes'
+import { getMemoryProviderOAuthStatus, startMemoryProviderOAuth } from '@/hermes'
 import { Check, ExternalLink, Loader2 } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
-
-interface OAuthStatus {
-  auth: 'apikey' | 'oauth' | null
-  connected: boolean
-  detail: string
-  state: 'connected' | 'error' | 'idle' | 'pending'
-}
+import type { MemoryProviderOAuthStatus } from '@/types/hermes'
 
 const POLL_MS = 1500
 const POLL_TIMEOUT_MS = 120_000
-
-// Profile-scoped: the active profile's backend owns the config the grant lands
-// in and runs the loopback flow + token refresh after.
-function start(provider: string): Promise<OAuthStatus> {
-  return window.hermesDesktop.api<OAuthStatus>({
-    ...profileScoped(),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/start`,
-    method: 'POST'
-  })
-}
-
-function poll(provider: string): Promise<OAuthStatus> {
-  return window.hermesDesktop.api<OAuthStatus>({
-    ...profileScoped(),
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/oauth/status`
-  })
-}
 
 // Small connect affordance rendered under the provider dropdown. Capability is
 // backend-driven: the status route 404s for providers without an oauth_flow
@@ -38,7 +15,7 @@ function poll(provider: string): Promise<OAuthStatus> {
 export function MemoryConnect({ provider }: { provider: string }) {
   const [capable, setCapable] = useState<'no' | 'unknown' | 'yes'>('unknown')
   const [connected, setConnected] = useState(false)
-  const [auth, setAuth] = useState<'apikey' | 'oauth' | null>(null)
+  const [auth, setAuth] = useState<MemoryProviderOAuthStatus['auth']>(null)
   const [phase, setPhase] = useState<'error' | 'idle' | 'pending'>('idle')
   const [detail, setDetail] = useState('')
   const timer = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -54,7 +31,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
   useEffect(() => {
     let active = true
     setCapable('unknown')
-    poll(provider)
+    getMemoryProviderOAuthStatus(provider)
       .then(s => {
         if (!active) {
           return
@@ -80,7 +57,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
     setPhase('pending')
 
     try {
-      await start(provider)
+      await startMemoryProviderOAuth(provider)
     } catch (err) {
       setPhase('error')
       setDetail('Could not start the connection.')
@@ -94,7 +71,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
     timer.current = setInterval(() => {
       void (async () => {
         try {
-          const next = await poll(provider)
+          const next = await getMemoryProviderOAuthStatus(provider)
 
           if (next.state === 'pending') {
             if (Date.now() > deadline.current) {

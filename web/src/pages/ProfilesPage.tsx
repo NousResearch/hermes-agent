@@ -794,7 +794,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto",
+              "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -816,7 +816,7 @@ export default function ProfilesPage() {
               </h2>
             </header>
 
-            <div className="p-5 grid gap-4">
+            <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="profile-name">{t.profiles.name}</Label>
 
@@ -1207,7 +1207,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto",
+              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -1234,7 +1234,12 @@ export default function ProfilesPage() {
               </h2>
             </header>
 
-            <div className="p-5 grid gap-4">
+            <div
+              className={cn(
+                "p-5 grid gap-4",
+                editorKind === "soul" && "min-h-0 overflow-y-auto",
+              )}
+            >
               {editorKind === "model" &&
                 (modelChoices !== null && modelChoices.length === 0 ? (
                   <p className="text-xs text-muted-foreground">{L.modelNone}</p>

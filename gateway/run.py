@@ -7174,11 +7174,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "suggestions":
             return await self._handle_suggestions_command(event)
 
-        if canonical == "cron-recipe":
-            _recipe_result = await self._handle_cron_recipe_command(event)
-            _recipe_seed = getattr(_recipe_result, "agent_seed", None)
-            if _recipe_seed:
-                # Recipe matched — rewrite the turn to the seed and fall
+        if canonical == "blueprint":
+            _blueprint_result = await self._handle_blueprint_command(event)
+            _blueprint_seed = getattr(_blueprint_result, "agent_seed", None)
+            if _blueprint_seed:
+                # Blueprint matched — rewrite the turn to the seed and fall
                 # through to _handle_message_with_agent so the agent asks the
                 # user for each slot value conversationally and then calls the
                 # cronjob tool (the /steer fall-through pattern). The seed
@@ -7186,7 +7186,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Send the "Setting up X…" ack first so the user gets the same
                 # immediate feedback CLI users see, instead of silence until
                 # the agent's first question.
-                _ack = getattr(_recipe_result, "text", "") or ""
+                _ack = getattr(_blueprint_result, "text", "") or ""
                 if _ack:
                     try:
                         adapter = self.adapters.get(source.platform)
@@ -7194,13 +7194,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             _ack_meta = self._thread_metadata_for_source(source)
                             await adapter.send(str(source.chat_id), _ack, metadata=_ack_meta)
                     except Exception:
-                        logger.debug("cron-recipe ack send failed", exc_info=True)
+                        logger.debug("blueprint ack send failed", exc_info=True)
                 try:
-                    event.text = _recipe_seed
+                    event.text = _blueprint_seed
                 except Exception:
-                    return getattr(_recipe_result, "text", "") or None
+                    return getattr(_blueprint_result, "text", "") or None
             else:
-                return getattr(_recipe_result, "text", "") or None
+                return getattr(_blueprint_result, "text", "") or None
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -9298,15 +9298,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("suggestions command failed: %s", e)
             return f"Suggestions command failed: {e}"
 
-    async def _handle_cron_recipe_command(self, event: MessageEvent):
-        """Handle /cron-recipe in the gateway.
+    async def _handle_blueprint_command(self, event: MessageEvent):
+        """Handle /blueprint in the gateway.
 
         Delegates to the shared handler so CLI, TUI, and gateway never drift.
-        Returns a RecipeCommandResult: ``text`` is shown to the user, and if
+        Returns a BlueprintCommandResult: ``text`` is shown to the user, and if
         ``agent_seed`` is set the dispatch site rewrites ``event.text`` to the
         seed and falls through to the agent (the ``/steer`` pattern) so the
         agent gathers the slot values conversationally. Origin is built from the
-        event source so a directly created recipe job delivers back to this chat.
+        event source so a directly created blueprint job delivers back to this chat.
         """
         args = (event.get_command_args() or "").strip()
         source = event.source
@@ -9324,14 +9324,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             origin = None
         try:
-            from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
+            from hermes_cli.blueprint_cmd import handle_blueprint_command
 
-            return handle_cron_recipe_command(args, origin=origin, surface="gateway")
+            return handle_blueprint_command(args, origin=origin, surface="gateway")
         except Exception as e:
-            logger.debug("cron-recipe command failed: %s", e)
-            from hermes_cli.cron_recipe_cmd import RecipeCommandResult
+            logger.debug("blueprint command failed: %s", e)
+            from hermes_cli.blueprint_cmd import BlueprintCommandResult
 
-            return RecipeCommandResult(f"Cron recipe command failed: {e}")
+            return BlueprintCommandResult(f"Cron blueprint command failed: {e}")
 
     # ────────────────────────────────────────────────────────────────
     # /goal — persistent cross-turn goals (Ralph-style loop)

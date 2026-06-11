@@ -25,7 +25,7 @@ def _fmt_pending(pending: list) -> str:
         return (
             "No suggested automations right now.\n"
             "Try `/suggestions catalog` to see the curated starter set, or "
-            "install a recipe skill to get one."
+            "install a blueprint skill to get one."
         )
     lines = ["Suggested automations — `/suggestions accept N` or `dismiss N`:\n"]
     for i, s in enumerate(pending, 1):

@@ -1,7 +1,7 @@
 """Tests for the Suggested Cron Jobs feature.
 
 Covers the store (add/dedup/cap/accept/dismiss/latch), catalog seeding, the
-recipe->suggestion bridge, and the shared command handler. Uses an isolated
+blueprint->suggestion bridge, and the shared command handler. Uses an isolated
 HERMES_HOME so the real suggestions.json is never touched.
 """
 
@@ -136,23 +136,23 @@ class TestCatalog:
         assert Path(classify_items_script_path()).name == "classify_items.py"
 
 
-class TestRecipeBridge:
-    def test_recipe_registers_suggestion(self, store):
-        from tools.recipes import RecipeSpec, register_recipe_suggestion
+class TestBlueprintBridge:
+    def test_blueprint_registers_suggestion(self, store):
+        from tools.blueprints import BlueprintSpec, register_blueprint_suggestion
 
-        spec = RecipeSpec(skill_name="morning-brief", schedule="0 8 * * *", deliver="telegram")
+        spec = BlueprintSpec(skill_name="morning-brief", schedule="0 8 * * *", deliver="telegram")
         with patch("cron.suggestions.add_suggestion", store.add_suggestion):
-            rec = register_recipe_suggestion(spec)
+            rec = register_blueprint_suggestion(spec)
         assert rec is not None
-        assert rec["source"] == "recipe"
+        assert rec["source"] == "blueprint"
         assert rec["job_spec"]["skills"] == ["morning-brief"]
         assert rec["job_spec"]["schedule"] == "0 8 * * *"
 
-    def test_recipe_to_job_spec_matches_create_recipe_job(self):
-        from tools.recipes import RecipeSpec, recipe_to_job_spec
+    def test_blueprint_to_job_spec_matches_create_blueprint_job(self):
+        from tools.blueprints import BlueprintSpec, blueprint_to_job_spec
 
-        spec = RecipeSpec(skill_name="x", schedule="every 2h", deliver="origin", prompt="p")
-        js = recipe_to_job_spec(spec)
+        spec = BlueprintSpec(skill_name="x", schedule="every 2h", deliver="origin", prompt="p")
+        js = blueprint_to_job_spec(spec)
         assert js["skills"] == ["x"]
         assert js["schedule"] == "every 2h"
         assert js["prompt"] == "p"

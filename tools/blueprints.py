@@ -1,30 +1,30 @@
-"""Recipes: shareable plain-language automations layered on skills + cron.
+"""Blueprints: shareable plain-language automations layered on skills + cron.
 
-A "recipe" is NOT a new object type. It is an ordinary skill (a SKILL.md the
+A "blueprint" is NOT a new object type. It is an ordinary skill (a SKILL.md the
 agent loads) that additionally declares an automation schedule in its
 frontmatter:
 
     metadata:
       hermes:
-        recipe:
-          schedule: "0 9 * * *"     # presence of `recipe:` marks it runnable
+        blueprint:
+          schedule: "0 9 * * *"     # presence of `blueprint:` marks it runnable
           deliver: origin            # optional (default "origin")
           prompt: "..."              # optional task instruction for the run
           no_agent: false            # optional
 
-Because a recipe is just a skill, it flows through the ENTIRE existing
+Because a blueprint is just a skill, it flows through the ENTIRE existing
 skills-hub pipeline for free — search, inspect, quarantine, security scan,
 install, lock-file provenance, audit log, taps, the centralized index, and
 `hermes skills publish` for sharing. No new source type, no new store, no new
 transport. This module is the thin bridge between that skill metadata and the
 existing cron `create_job()` API:
 
-  * ``parse_recipe(skill_md_text)``  -> RecipeSpec | None
-  * ``recipe_spec_for_installed(name)`` -> RecipeSpec | None
-  * ``create_recipe_job(spec, ...)`` -> the created cron job dict
-  * ``export_recipe(job, body)``      -> a shareable SKILL.md string
+  * ``parse_blueprint(skill_md_text)``  -> BlueprintSpec | None
+  * ``blueprint_spec_for_installed(name)`` -> BlueprintSpec | None
+  * ``create_blueprint_job(spec, ...)`` -> the created cron job dict
+  * ``export_blueprint(job, body)``      -> a shareable SKILL.md string
 
-The dev guide's "Extend, Don't Duplicate" rule is the whole design: the recipe
+The dev guide's "Extend, Don't Duplicate" rule is the whole design: the blueprint
 is a skill, the schedule is a cron job, sharing is the existing publish/tap/
 index path.
 """
@@ -39,24 +39,24 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "RecipeSpec",
-    "parse_recipe",
-    "recipe_spec_for_installed",
-    "recipe_to_job_spec",
-    "create_recipe_job",
-    "register_recipe_suggestion",
-    "export_recipe",
-    "RecipeError",
+    "BlueprintSpec",
+    "parse_blueprint",
+    "blueprint_spec_for_installed",
+    "blueprint_to_job_spec",
+    "create_blueprint_job",
+    "register_blueprint_suggestion",
+    "export_blueprint",
+    "BlueprintError",
 ]
 
 
-class RecipeError(ValueError):
-    """Raised when a recipe block is present but malformed."""
+class BlueprintError(ValueError):
+    """Raised when a blueprint block is present but malformed."""
 
 
 @dataclass
-class RecipeSpec:
-    """Parsed ``metadata.hermes.recipe`` automation spec for a skill."""
+class BlueprintSpec:
+    """Parsed ``metadata.hermes.blueprint`` automation spec for a skill."""
 
     skill_name: str
     schedule: str
@@ -87,16 +87,16 @@ def _split_frontmatter(text: str) -> Optional[Dict[str, Any]]:
 
         data = yaml.safe_load(fm_text)
     except Exception as e:  # pragma: no cover - malformed YAML
-        logger.debug("recipe: frontmatter YAML parse failed: %s", e)
+        logger.debug("blueprint: frontmatter YAML parse failed: %s", e)
         return None
     return data if isinstance(data, dict) else None
 
 
-def parse_recipe(skill_md_text: str) -> Optional[RecipeSpec]:
-    """Extract a RecipeSpec from a SKILL.md string, or None if not a recipe.
+def parse_blueprint(skill_md_text: str) -> Optional[BlueprintSpec]:
+    """Extract a BlueprintSpec from a SKILL.md string, or None if not a blueprint.
 
-    A skill is a recipe iff ``metadata.hermes.recipe`` is a mapping containing
-    a non-empty ``schedule``. Raises RecipeError if the block exists but is
+    A skill is a blueprint iff ``metadata.hermes.blueprint`` is a mapping containing
+    a non-empty ``schedule``. Raises BlueprintError if the block exists but is
     structurally invalid (so a typo surfaces instead of silently no-op'ing).
     """
     fm = _split_frontmatter(skill_md_text)
@@ -107,28 +107,28 @@ def parse_recipe(skill_md_text: str) -> Optional[RecipeSpec]:
 
     meta = fm.get("metadata")
     hermes = meta.get("hermes") if isinstance(meta, dict) else None
-    recipe = hermes.get("recipe") if isinstance(hermes, dict) else None
-    if recipe is None:
+    blueprint = hermes.get("blueprint") if isinstance(hermes, dict) else None
+    if blueprint is None:
         return None
-    if not isinstance(recipe, dict):
-        raise RecipeError("metadata.hermes.recipe must be a mapping")
+    if not isinstance(blueprint, dict):
+        raise BlueprintError("metadata.hermes.blueprint must be a mapping")
 
-    schedule = str(recipe.get("schedule", "")).strip()
+    schedule = str(blueprint.get("schedule", "")).strip()
     if not schedule:
-        raise RecipeError("recipe.schedule is required and must be non-empty")
+        raise BlueprintError("blueprint.schedule is required and must be non-empty")
 
-    deliver = str(recipe.get("deliver", "origin")).strip() or "origin"
-    prompt = recipe.get("prompt")
+    deliver = str(blueprint.get("deliver", "origin")).strip() or "origin"
+    prompt = blueprint.get("prompt")
     if prompt is not None:
         prompt = str(prompt)
-    no_agent = bool(recipe.get("no_agent", False))
-    model = recipe.get("model")
-    provider = recipe.get("provider")
-    toolsets = recipe.get("enabled_toolsets")
+    no_agent = bool(blueprint.get("no_agent", False))
+    model = blueprint.get("model")
+    provider = blueprint.get("provider")
+    toolsets = blueprint.get("enabled_toolsets")
     if toolsets is not None and not isinstance(toolsets, list):
-        raise RecipeError("recipe.enabled_toolsets must be a list when present")
+        raise BlueprintError("blueprint.enabled_toolsets must be a list when present")
 
-    return RecipeSpec(
+    return BlueprintSpec(
         skill_name=name,
         schedule=schedule,
         deliver=deliver,
@@ -137,15 +137,15 @@ def parse_recipe(skill_md_text: str) -> Optional[RecipeSpec]:
         model=str(model).strip() if model else None,
         provider=str(provider).strip() if provider else None,
         enabled_toolsets=[str(t) for t in toolsets] if toolsets else None,
-        raw=recipe,
+        raw=blueprint,
     )
 
 
-def recipe_spec_for_installed(skill_name: str) -> Optional[RecipeSpec]:
-    """Locate an installed skill's SKILL.md and parse its recipe block.
+def blueprint_spec_for_installed(skill_name: str) -> Optional[BlueprintSpec]:
+    """Locate an installed skill's SKILL.md and parse its blueprint block.
 
     Searches the standard skills tree for ``<skill_name>/SKILL.md``. Returns
-    None if the skill isn't found or isn't a recipe.
+    None if the skill isn't found or isn't a blueprint.
     """
     try:
         from tools.skills_hub import SKILLS_DIR
@@ -160,7 +160,7 @@ def recipe_spec_for_installed(skill_name: str) -> Optional[RecipeSpec]:
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        spec = parse_recipe(text)
+        spec = parse_blueprint(text)
         if spec is not None:
             # Prefer the frontmatter name, fall back to the directory name.
             if not spec.skill_name:
@@ -169,22 +169,22 @@ def recipe_spec_for_installed(skill_name: str) -> Optional[RecipeSpec]:
     return None
 
 
-def recipe_to_job_spec(
-    spec: RecipeSpec,
+def blueprint_to_job_spec(
+    spec: BlueprintSpec,
     *,
     name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Build the ``cron.jobs.create_job`` kwargs dict for a RecipeSpec.
+    """Build the ``cron.jobs.create_job`` kwargs dict for a BlueprintSpec.
 
-    This is the single source of truth for translating a recipe into a job.
-    Both the direct ``create_recipe_job`` path and the suggestion path
-    (``register_recipe_suggestion``) build on it, so a recipe scheduled now and
-    a recipe accepted from a suggestion produce an identical job.
+    This is the single source of truth for translating a blueprint into a job.
+    Both the direct ``create_blueprint_job`` path and the suggestion path
+    (``register_blueprint_suggestion``) build on it, so a blueprint scheduled now and
+    a blueprint accepted from a suggestion produce an identical job.
     """
     return {
         "prompt": spec.prompt,
         "schedule": spec.schedule,
-        "name": name or f"recipe:{spec.skill_name}",
+        "name": name or f"blueprint:{spec.skill_name}",
         "deliver": spec.deliver,
         "skills": [spec.skill_name] if spec.skill_name else None,
         "model": spec.model,
@@ -194,31 +194,31 @@ def recipe_to_job_spec(
     }
 
 
-def create_recipe_job(
-    spec: RecipeSpec,
+def create_blueprint_job(
+    spec: BlueprintSpec,
     *,
     origin: Optional[Dict[str, Any]] = None,
     name: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Create the cron job described by a RecipeSpec via the existing cron API.
+    """Create the cron job described by a BlueprintSpec via the existing cron API.
 
-    The recipe's skill is loaded before the run (cron ``skills=[name]``); the
+    The blueprint's skill is loaded before the run (cron ``skills=[name]``); the
     optional ``prompt`` becomes the task instruction. Delivery, model, and
     toolsets carry through. Returns the created job dict.
     """
     from cron.jobs import create_job
 
-    job_spec = recipe_to_job_spec(spec, name=name)
+    job_spec = blueprint_to_job_spec(spec, name=name)
     if origin is not None:
         job_spec["origin"] = origin
     return create_job(**job_spec)
 
 
-def register_recipe_suggestion(spec: RecipeSpec) -> Optional[Dict[str, Any]]:
-    """Turn an installed recipe into a pending Suggested Cron Job.
+def register_blueprint_suggestion(spec: BlueprintSpec) -> Optional[Dict[str, Any]]:
+    """Turn an installed blueprint into a pending Suggested Cron Job.
 
-    Recipes are source ``recipe`` of the unified suggestion surface: installing
-    a skill that carries a ``recipe:`` block does NOT auto-schedule it — it
+    Blueprints are source ``blueprint`` of the unified suggestion surface: installing
+    a skill that carries a ``blueprint:`` block does NOT auto-schedule it — it
     registers a suggestion the user accepts (or dismisses) like any other.
     Returns the suggestion record, or None if it was skipped (already
     seen/dismissed, backlog full, etc.).
@@ -233,53 +233,53 @@ def register_recipe_suggestion(spec: RecipeSpec) -> Optional[Dict[str, Any]]:
     return add_suggestion(
         title=f"Schedule '{spec.skill_name}'",
         description=(
-            f"The '{spec.skill_name}' recipe runs on schedule {spec.schedule}"
+            f"The '{spec.skill_name}' blueprint runs on schedule {spec.schedule}"
             + (f", delivering to {spec.deliver}" if spec.deliver and spec.deliver != "origin" else "")
             + "."
         ),
-        source="recipe",
-        job_spec=recipe_to_job_spec(spec),
-        dedup_key=f"recipe:{spec.skill_name}:{spec.schedule}",
+        source="blueprint",
+        job_spec=blueprint_to_job_spec(spec),
+        dedup_key=f"blueprint:{spec.skill_name}:{spec.schedule}",
     )
 
 
-def export_recipe(job: Dict[str, Any], body: str, *, recipe_name: Optional[str] = None) -> str:
-    """Render a shareable recipe SKILL.md from an existing cron job dict.
+def export_blueprint(job: Dict[str, Any], body: str, *, blueprint_name: Optional[str] = None) -> str:
+    """Render a shareable blueprint SKILL.md from an existing cron job dict.
 
-    The inverse of ``create_recipe_job``: take a cron job a user already built
-    and emit a SKILL.md (with a ``metadata.hermes.recipe`` block) they can hand
+    The inverse of ``create_blueprint_job``: take a cron job a user already built
+    and emit a SKILL.md (with a ``metadata.hermes.blueprint`` block) they can hand
     to ``hermes skills publish`` to share. ``body`` is the plain-language
     description / instructions that become the SKILL.md body.
     """
     import yaml
 
-    name = recipe_name or job.get("name") or "shared-recipe"
+    name = blueprint_name or job.get("name") or "shared-blueprint"
     # Sanitize to a valid skill identifier.
     name = "".join(c if (c.isalnum() or c in "-_") else "-" for c in str(name).lower())
-    name = name.strip("-_") or "shared-recipe"
+    name = name.strip("-_") or "shared-blueprint"
 
     schedule = job.get("schedule_display") or _schedule_to_string(job.get("schedule"))
     skills = job.get("skills") or ([job["skill"]] if job.get("skill") else [])
 
-    recipe_block: Dict[str, Any] = {"schedule": schedule}
+    blueprint_block: Dict[str, Any] = {"schedule": schedule}
     deliver = job.get("deliver")
     if deliver and deliver != "origin":
-        recipe_block["deliver"] = deliver
+        blueprint_block["deliver"] = deliver
     if job.get("prompt"):
-        recipe_block["prompt"] = job["prompt"]
+        blueprint_block["prompt"] = job["prompt"]
     if job.get("no_agent"):
-        recipe_block["no_agent"] = True
+        blueprint_block["no_agent"] = True
     if job.get("model"):
-        recipe_block["model"] = job["model"]
+        blueprint_block["model"] = job["model"]
     if job.get("provider"):
-        recipe_block["provider"] = job["provider"]
+        blueprint_block["provider"] = job["provider"]
     if job.get("enabled_toolsets"):
-        recipe_block["enabled_toolsets"] = job["enabled_toolsets"]
+        blueprint_block["enabled_toolsets"] = job["enabled_toolsets"]
 
     description = (
-        (body.strip().splitlines() or ["Shared automation recipe."])[0][:200]
+        (body.strip().splitlines() or ["Shared automation blueprint."])[0][:200]
         if body.strip()
-        else "Shared automation recipe."
+        else "Shared automation blueprint."
     )
 
     frontmatter = {
@@ -289,13 +289,13 @@ def export_recipe(job: Dict[str, Any], body: str, *, recipe_name: Optional[str] 
         "license": "MIT",
         "metadata": {
             "hermes": {
-                "tags": ["recipe", "automation"],
-                "recipe": recipe_block,
+                "tags": ["blueprint", "automation"],
+                "blueprint": blueprint_block,
             }
         },
     }
     fm_yaml = yaml.safe_dump(frontmatter, sort_keys=False, allow_unicode=True).strip()
-    body_text = body.strip() or f"# {name}\n\nShared automation recipe."
+    body_text = body.strip() or f"# {name}\n\nShared automation blueprint."
     return f"---\n{fm_yaml}\n---\n\n{body_text}\n"
 
 

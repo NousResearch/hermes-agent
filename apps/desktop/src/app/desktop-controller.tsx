@@ -267,14 +267,14 @@ export function DesktopController() {
     }
   }, [])
 
-  // hermes:// deep links (e.g. a docs "Send to App" button for a cron recipe).
-  // Build the equivalent /cron-recipe slash command from the payload and drop
+  // hermes:// deep links (e.g. a docs "Send to App" button for an automation blueprint).
+  // Build the equivalent /blueprint slash command from the payload and drop
   // it into the composer — the user reviews/edits, then sends; the agent (or
   // the shared command handler) creates the job. Signal readiness so a link
   // that arrived during boot is flushed exactly once.
   useEffect(() => {
     const unsubscribe = window.hermesDesktop?.onDeepLink?.((payload) => {
-      if (!payload || payload.kind !== 'cron-recipe' || !payload.name) {
+      if (!payload || payload.kind !== 'blueprint' || !payload.name) {
         return
       }
       const slots = Object.entries(payload.params || {})
@@ -283,7 +283,7 @@ export function DesktopController() {
           return `${k}=${sval}`
         })
         .join(' ')
-      const command = `/cron-recipe ${payload.name}${slots ? ' ' + slots : ''}`
+      const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
       requestComposerInsert(command, { mode: 'block', target: 'main' })
       requestComposerFocus('main')
     })

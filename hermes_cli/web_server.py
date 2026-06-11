@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager, contextmanager
 import asyncio
 import base64
 import binascii
+import copy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hmac
@@ -761,6 +762,22 @@ def _apply_main_model_assignment(
         model_cfg["base_url"] = ""
     model_cfg.pop("context_length", None)
     return model_cfg
+
+
+class ModelProfileCreate(BaseModel):
+    """Save the current main+auxiliary model routing as a named profile."""
+
+    name: str
+    profile_id: str = ""
+    routing: Dict[str, Any] | None = None
+
+
+class ModelProfileUpdate(BaseModel):
+    """Rename a model profile and/or replace it with the current routing."""
+
+    name: str = ""
+    from_current: bool = False
+    routing: Dict[str, Any] | None = None
 
 
 _GATEWAY_HEALTH_URL = os.getenv("GATEWAY_HEALTH_URL")
@@ -2643,6 +2660,194 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 )
 
 
+_MODEL_PROFILE_ID_RE = re.compile(r"[^a-z0-9_-]+")
+
+
+def _model_profile_id_from_name(name: str) -> str:
+    """Return a stable, URL-safe id candidate for a model profile name."""
+    value = (name or "").strip().lower()
+    value = _MODEL_PROFILE_ID_RE.sub("-", value).strip("-_")
+    return value[:64] if value else "model-profile"
+
+
+def _unique_model_profile_id(profiles: Dict[str, Any], desired: str) -> str:
+    base = _model_profile_id_from_name(desired)
+    if base not in profiles:
+        return base
+    for idx in range(2, 1000):
+        candidate = f"{base}-{idx}"
+        if candidate not in profiles:
+            return candidate
+    raise HTTPException(status_code=400, detail="could not allocate a unique model profile id")
+
+
+def _model_profile_store(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    profiles = cfg.get("model_profiles")
+    if not isinstance(profiles, dict):
+        profiles = {}
+        cfg["model_profiles"] = profiles
+    return profiles
+
+
+def _current_model_profile_snapshot(cfg: Dict[str, Any], *, name: str) -> Dict[str, Any]:
+    """Snapshot only model routing, not provider credentials or auth state."""
+    model_cfg = cfg.get("model", "")
+    auxiliary_cfg = cfg.get("auxiliary", {})
+    return {
+        "name": name.strip() or "Model profile",
+        "model": copy.deepcopy(model_cfg) if isinstance(model_cfg, (dict, str)) else "",
+        "auxiliary": copy.deepcopy(auxiliary_cfg) if isinstance(auxiliary_cfg, dict) else {},
+    }
+
+
+def _model_cfg_from_routing_main(main_cfg: Any) -> Dict[str, Any] | str:
+    if isinstance(main_cfg, str):
+        return main_cfg
+    if not isinstance(main_cfg, dict):
+        return ""
+
+    provider = str(main_cfg.get("provider", "") or "").strip()
+    model = str(
+        main_cfg.get("model", main_cfg.get("default", main_cfg.get("name", ""))) or ""
+    ).strip()
+    if not provider and not model:
+        return ""
+
+    model_cfg: Dict[str, Any] = {}
+    if provider:
+        model_cfg["provider"] = provider
+    if model:
+        model_cfg["default"] = model
+
+    base_url = str(main_cfg.get("base_url", "") or "").strip()
+    if base_url:
+        model_cfg["base_url"] = base_url
+
+    return model_cfg
+
+
+def _auxiliary_cfg_from_routing(auxiliary_cfg: Any) -> Dict[str, Any]:
+    if isinstance(auxiliary_cfg, dict):
+        # Accept either the raw config shape ({task: {provider, model}}) or a
+        # wrapper shape ({tasks: [...]}) from the desktop UI.
+        if isinstance(auxiliary_cfg.get("tasks"), list):
+            auxiliary_cfg = auxiliary_cfg.get("tasks")
+        else:
+            result: Dict[str, Any] = {}
+            for task, value in auxiliary_cfg.items():
+                if task not in _AUX_TASK_SLOTS or not isinstance(value, dict):
+                    continue
+                result[task] = {
+                    "provider": str(value.get("provider", "auto") or "auto"),
+                    "model": str(value.get("model", "") or ""),
+                    "base_url": str(value.get("base_url", "") or ""),
+                }
+            return result
+
+    result: Dict[str, Any] = {}
+    if not isinstance(auxiliary_cfg, list):
+        return result
+
+    for entry in auxiliary_cfg:
+        if not isinstance(entry, dict):
+            continue
+        task = str(entry.get("task", "") or "").strip().lower()
+        if task not in _AUX_TASK_SLOTS:
+            continue
+        result[task] = {
+            "provider": str(entry.get("provider", "auto") or "auto"),
+            "model": str(entry.get("model", "") or ""),
+            "base_url": str(entry.get("base_url", "") or ""),
+        }
+    return result
+
+
+def _model_profile_snapshot_from_routing(
+    routing: Any, *, fallback_cfg: Dict[str, Any], name: str
+) -> Dict[str, Any]:
+    if not isinstance(routing, dict):
+        return _current_model_profile_snapshot(fallback_cfg, name=name)
+    return {
+        "name": name.strip() or "Model profile",
+        "model": _model_cfg_from_routing_main(routing.get("main", {})),
+        "auxiliary": _auxiliary_cfg_from_routing(routing.get("auxiliary", {})),
+    }
+
+
+def _main_model_summary(model_cfg: Any) -> Dict[str, str]:
+    if isinstance(model_cfg, dict):
+        return {
+            "provider": str(model_cfg.get("provider", "") or ""),
+            "model": str(model_cfg.get("default", model_cfg.get("name", "")) or ""),
+        }
+    return {"provider": "", "model": str(model_cfg) if model_cfg else ""}
+
+
+def _auxiliary_override_count(auxiliary_cfg: Any) -> int:
+    if not isinstance(auxiliary_cfg, dict):
+        return 0
+    count = 0
+    for slot_cfg in auxiliary_cfg.values():
+        if not isinstance(slot_cfg, dict):
+            continue
+        provider = str(slot_cfg.get("provider", "auto") or "auto").strip()
+        model = str(slot_cfg.get("model", "") or "").strip()
+        base_url = str(slot_cfg.get("base_url", "") or "").strip()
+        if (provider and provider != "auto") or model or base_url:
+            count += 1
+    return count
+
+
+def _auxiliary_tasks_payload(auxiliary_cfg: Any) -> list[Dict[str, str]]:
+    if not isinstance(auxiliary_cfg, dict):
+        auxiliary_cfg = {}
+
+    tasks = []
+    for slot in _AUX_TASK_SLOTS:
+        slot_cfg = auxiliary_cfg.get(slot, {}) if isinstance(auxiliary_cfg.get(slot), dict) else {}
+        tasks.append({
+            "task": slot,
+            "provider": str(slot_cfg.get("provider", "auto") or "auto"),
+            "model": str(slot_cfg.get("model", "") or ""),
+            "base_url": str(slot_cfg.get("base_url", "") or ""),
+        })
+    return tasks
+
+
+def _model_profile_payload(profile_id: str, profile: Any) -> Dict[str, Any]:
+    profile_cfg = profile if isinstance(profile, dict) else {}
+    auxiliary_cfg = profile_cfg.get("auxiliary", {})
+    return {
+        "id": profile_id,
+        "name": str(profile_cfg.get("name", "") or profile_id),
+        "main": _main_model_summary(profile_cfg.get("model", "")),
+        "auxiliary": _auxiliary_tasks_payload(auxiliary_cfg),
+        "auxiliary_overrides": _auxiliary_override_count(auxiliary_cfg),
+    }
+
+
+def _profile_name_exists(
+    profiles: Dict[str, Any], name: str, *, exclude_profile_id: str = ""
+) -> bool:
+    normalized = name.strip().casefold()
+    if not normalized:
+        return False
+    for profile_id, profile in profiles.items():
+        if profile_id == exclude_profile_id:
+            continue
+        if not isinstance(profile, dict):
+            continue
+        if str(profile.get("name", "") or profile_id).strip().casefold() == normalized:
+            return True
+    return False
+
+
+def _clear_active_model_profile(cfg: Dict[str, Any]) -> None:
+    """Direct model edits make the current routing diverge from any saved profile."""
+    if cfg.get("active_model_profile"):
+        cfg["active_model_profile"] = ""
+
+
 @app.get("/api/model/options")
 def get_model_options():
     """Return authenticated providers + their curated model lists.
@@ -2793,6 +2998,153 @@ def get_auxiliary_models():
         raise HTTPException(status_code=500, detail="Failed to read auxiliary config")
 
 
+@app.get("/api/model/profiles")
+def get_model_profiles():
+    """Return saved main+auxiliary model routing profiles."""
+    try:
+        cfg = load_config()
+        profiles = cfg.get("model_profiles", {})
+        if not isinstance(profiles, dict):
+            profiles = {}
+        active = str(cfg.get("active_model_profile", "") or "")
+        return {
+            "active": active if active in profiles else "",
+            "profiles": [
+                _model_profile_payload(profile_id, profile)
+                for profile_id, profile in profiles.items()
+            ],
+        }
+    except Exception:
+        _log.exception("GET /api/model/profiles failed")
+        raise HTTPException(status_code=500, detail="Failed to read model profiles")
+
+
+@app.post("/api/model/profiles")
+async def create_model_profile(body: ModelProfileCreate):
+    """Save the current main+auxiliary routing as a model profile."""
+    name = (body.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+
+    try:
+        cfg = load_config()
+        profiles = _model_profile_store(cfg)
+        if _profile_name_exists(profiles, name):
+            raise HTTPException(status_code=409, detail="model profile name already exists")
+        profile_id = _unique_model_profile_id(profiles, body.profile_id or name)
+        profiles[profile_id] = _model_profile_snapshot_from_routing(
+            body.routing, fallback_cfg=cfg, name=name
+        )
+        cfg["active_model_profile"] = profile_id
+        cfg["model_profiles"] = profiles
+        save_config(cfg)
+        return {
+            "ok": True,
+            "active": profile_id,
+            "profile": _model_profile_payload(profile_id, profiles[profile_id]),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/model/profiles failed")
+        raise HTTPException(status_code=500, detail="Failed to save model profile")
+
+
+@app.post("/api/model/profiles/{profile_id}/apply")
+async def apply_model_profile(profile_id: str):
+    """Apply a saved model profile to the current top-level model routing."""
+    try:
+        cfg = load_config()
+        profiles = cfg.get("model_profiles", {})
+        if not isinstance(profiles, dict) or profile_id not in profiles:
+            raise HTTPException(status_code=404, detail="model profile not found")
+        profile = profiles.get(profile_id)
+        if not isinstance(profile, dict):
+            raise HTTPException(status_code=400, detail="model profile is invalid")
+
+        model_cfg = profile.get("model", "")
+        cfg["model"] = copy.deepcopy(model_cfg) if isinstance(model_cfg, (dict, str)) else ""
+
+        auxiliary_cfg = profile.get("auxiliary", {})
+        if isinstance(auxiliary_cfg, dict):
+            cfg["auxiliary"] = copy.deepcopy(auxiliary_cfg)
+
+        cfg["active_model_profile"] = profile_id
+        save_config(cfg)
+        return {
+            "ok": True,
+            "active": profile_id,
+            "profile": _model_profile_payload(profile_id, profile),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/model/profiles/%s/apply failed", profile_id)
+        raise HTTPException(status_code=500, detail="Failed to apply model profile")
+
+
+@app.put("/api/model/profiles/{profile_id}")
+async def update_model_profile(profile_id: str, body: ModelProfileUpdate):
+    """Rename a model profile, or replace its routing with the current config."""
+    try:
+        cfg = load_config()
+        profiles = cfg.get("model_profiles", {})
+        if not isinstance(profiles, dict) or profile_id not in profiles:
+            raise HTTPException(status_code=404, detail="model profile not found")
+        current = profiles.get(profile_id)
+        if not isinstance(current, dict):
+            current = {}
+
+        name = (body.name or "").strip() or str(current.get("name", "") or profile_id)
+        if _profile_name_exists(profiles, name, exclude_profile_id=profile_id):
+            raise HTTPException(status_code=409, detail="model profile name already exists")
+
+        if body.routing is not None:
+            profiles[profile_id] = _model_profile_snapshot_from_routing(
+                body.routing, fallback_cfg=cfg, name=name
+            )
+        elif body.from_current:
+            profiles[profile_id] = _current_model_profile_snapshot(cfg, name=name)
+        else:
+            current["name"] = name
+            profiles[profile_id] = current
+
+        cfg["model_profiles"] = profiles
+        save_config(cfg)
+        return {
+            "ok": True,
+            "active": str(cfg.get("active_model_profile", "") or ""),
+            "profile": _model_profile_payload(profile_id, profiles[profile_id]),
+        }
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("PUT /api/model/profiles/%s failed", profile_id)
+        raise HTTPException(status_code=500, detail="Failed to update model profile")
+
+
+@app.delete("/api/model/profiles/{profile_id}")
+async def delete_model_profile(profile_id: str):
+    """Delete a saved model profile without changing the current routing."""
+    try:
+        cfg = load_config()
+        profiles = cfg.get("model_profiles", {})
+        if not isinstance(profiles, dict) or profile_id not in profiles:
+            raise HTTPException(status_code=404, detail="model profile not found")
+
+        profiles.pop(profile_id, None)
+        cfg["model_profiles"] = profiles
+        if str(cfg.get("active_model_profile", "") or "") == profile_id:
+            cfg["active_model_profile"] = ""
+        save_config(cfg)
+        return {"ok": True, "active": str(cfg.get("active_model_profile", "") or "")}
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("DELETE /api/model/profiles/%s failed", profile_id)
+        raise HTTPException(status_code=500, detail="Failed to delete model profile")
+
+
 @app.post("/api/model/set")
 async def set_model_assignment(body: ModelAssignment):
     """Assign a model to the main slot or an auxiliary task slot.
@@ -2874,6 +3226,7 @@ async def set_model_assignment(body: ModelAssignment):
                     # must never block saving the model assignment.
                     _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
 
+            _clear_active_model_profile(cfg)
             save_config(cfg)
 
             # Surface auxiliary slots still pinned to a *different* provider than
@@ -2930,6 +3283,7 @@ async def set_model_assignment(body: ModelAssignment):
                 slot_cfg["model"] = ""
                 aux[slot] = slot_cfg
             cfg["auxiliary"] = aux
+            _clear_active_model_profile(cfg)
             save_config(cfg)
             return {"ok": True, "scope": "auxiliary", "reset": True}
 
@@ -2948,6 +3302,7 @@ async def set_model_assignment(body: ModelAssignment):
             aux[slot] = slot_cfg
 
         cfg["auxiliary"] = aux
+        _clear_active_model_profile(cfg)
         save_config(cfg)
         return {
             "ok": True,

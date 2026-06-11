@@ -24,6 +24,9 @@ import type {
   ModelAssignmentResponse,
   ModelInfoResponse,
   ModelOptionsResponse,
+  ModelProfileMutationResponse,
+  ModelProfilesResponse,
+  ModelRoutingPayload,
   OAuthPollResponse,
   OAuthProvidersResponse,
   OAuthStartResponse,
@@ -82,6 +85,10 @@ export type {
   ModelInfoResponse,
   ModelOptionProvider,
   ModelOptionsResponse,
+  ModelProfileMutationResponse,
+  ModelProfilesResponse,
+  ModelProfileSummary,
+  ModelRoutingPayload,
   PaginatedSessions,
   ProfileCreatePayload,
   ProfileInfo,
@@ -662,6 +669,45 @@ export function getAuxiliaryModels(): Promise<AuxiliaryModelsResponse> {
   return window.hermesDesktop.api<AuxiliaryModelsResponse>({
     ...profileScoped(),
     path: '/api/model/auxiliary'
+  })
+}
+
+export function getModelProfiles(): Promise<ModelProfilesResponse> {
+  return window.hermesDesktop.api<ModelProfilesResponse>({
+    path: '/api/model/profiles'
+  })
+}
+
+export function createModelProfile(name: string, routing?: ModelRoutingPayload): Promise<ModelProfileMutationResponse> {
+  return window.hermesDesktop.api<ModelProfileMutationResponse>({
+    path: '/api/model/profiles',
+    method: 'POST',
+    body: { name, ...(routing ? { routing } : {}) }
+  })
+}
+
+export function applyModelProfile(id: string): Promise<ModelProfileMutationResponse> {
+  return window.hermesDesktop.api<ModelProfileMutationResponse>({
+    path: `/api/model/profiles/${encodeURIComponent(id)}/apply`,
+    method: 'POST'
+  })
+}
+
+export function updateModelProfile(
+  id: string,
+  body: { from_current?: boolean; name?: string; routing?: ModelRoutingPayload }
+): Promise<ModelProfileMutationResponse> {
+  return window.hermesDesktop.api<ModelProfileMutationResponse>({
+    path: `/api/model/profiles/${encodeURIComponent(id)}`,
+    method: 'PUT',
+    body
+  })
+}
+
+export function deleteModelProfile(id: string): Promise<ModelProfileMutationResponse> {
+  return window.hermesDesktop.api<ModelProfileMutationResponse>({
+    path: `/api/model/profiles/${encodeURIComponent(id)}`,
+    method: 'DELETE'
   })
 }
 

@@ -637,6 +637,30 @@ export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[]
 }
 
+export interface ModelRoutingPayload {
+  auxiliary: AuxiliaryTaskAssignment[]
+  main: { base_url?: string; model: string; provider: string }
+}
+
+export interface ModelProfileSummary {
+  auxiliary: AuxiliaryTaskAssignment[]
+  auxiliary_overrides: number
+  id: string
+  main: { model: string; provider: string }
+  name: string
+}
+
+export interface ModelProfilesResponse {
+  active: string
+  profiles: ModelProfileSummary[]
+}
+
+export interface ModelProfileMutationResponse {
+  active?: string
+  ok: boolean
+  profile?: ModelProfileSummary
+}
+
 export interface ModelAssignmentRequest {
   /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
    *  on the main slot — wires a self-hosted endpoint into runtime resolution. */

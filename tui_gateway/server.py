@@ -4337,6 +4337,30 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("handoff.fail")
+def _(rid, params: dict) -> dict:
+    """Mark an in-flight handoff as failed so the user can retry.
+
+    Desktop calls this when its bounded poll times out. Only pending/running
+    rows are changed so a late success from the gateway watcher is not clobbered.
+    """
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    reason = str(params.get("error") or "handoff failed").strip()[:500]
+    with _session_db(session) as db:
+        if db is None:
+            return _db_unavailable_error(rid, code=5007)
+        key = session["session_key"]
+        record = db.get_handoff_state(key) or {}
+        state = record.get("state") or ""
+        if state in {"pending", "running"}:
+            db.fail_handoff(key, reason)
+            return _ok(rid, {"failed": True, "state": "failed"})
+
+    return _ok(rid, {"failed": False, "state": state})
+
+
 @method("session.usage")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)

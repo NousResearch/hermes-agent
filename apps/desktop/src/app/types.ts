@@ -76,6 +76,11 @@ export interface HandoffStateResponse {
   error?: string
 }
 
+export interface HandoffFailResponse {
+  failed?: boolean
+  state?: string
+}
+
 export interface ExecCommandDispatchResponse {
   type: 'exec' | 'plugin'
   output?: string

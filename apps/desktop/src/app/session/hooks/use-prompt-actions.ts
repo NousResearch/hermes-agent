@@ -56,6 +56,7 @@ import {
 import type {
   ClientSessionState,
   FileAttachResponse,
+  HandoffFailResponse,
   HandoffRequestResponse,
   HandoffStateResponse,
   ImageAttachResponse,
@@ -71,6 +72,12 @@ interface HandoffResult {
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isSessionIdCandidate(value: string): boolean {
+  const trimmed = value.trim()
+
+  return /^\d{8}_\d{6}_[A-Fa-f0-9]{6}$/.test(trimmed) || /^[A-Fa-f0-9]{32}$/.test(trimmed)
 }
 
 function blobToDataUrl(blob: Blob): Promise<string> {
@@ -792,6 +799,18 @@ export function usePromptActions({
         }
       }
 
+      const cleanup = await requestGateway<HandoffFailResponse>('handoff.fail', {
+        error: copy.handoff.timedOut,
+        session_id: sid
+      }).catch(() => null)
+
+      if (cleanup?.state === 'completed') {
+        appendSessionTextMessage(sid, 'system', copy.handoff.systemNote(target))
+        notify({ kind: 'success', message: copy.handoff.success(target) })
+
+        return { ok: true }
+      }
+
       return { error: copy.handoff.timedOut, ok: false }
     },
     [activeSessionIdRef, appendSessionTextMessage, copy, requestGateway]
@@ -1106,6 +1125,12 @@ export function usePromptActions({
           sessions.find(session => (session.preview ?? '').toLowerCase().includes(lower))
 
         if (!match) {
+          if (isSessionIdCandidate(query)) {
+            await resumeStoredSession(query)
+
+            return
+          }
+
           notify({ kind: 'error', message: copy.resumeFailed })
 
           return

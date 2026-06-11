@@ -3837,6 +3837,33 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         return error
 
+    def _telegram_media_too_large_note(self, label: str, file_size: Any, max_bytes: int) -> str:
+        limit_mb = max(1, max_bytes // (1024 * 1024))
+        try:
+            size_mb = int(file_size or 0) / (1024 * 1024)
+            size_text = f"{size_mb:.1f} MB"
+        except (TypeError, ValueError):
+            size_text = "unknown size"
+        return (
+            f"[Telegram {label} skipped: file size {size_text} exceeds the "
+            f"{limit_mb} MB limit. Ask the user to send a shorter voice note "
+            "or a smaller audio file.]"
+        )
+
+    def _telegram_media_size_allowed(self, source: Any, label: str) -> tuple[bool, Optional[str]]:
+        """Validate Telegram media size before downloading into memory."""
+        max_bytes = int(getattr(self, "_max_doc_bytes", 20 * 1024 * 1024) or 20 * 1024 * 1024)
+        file_size = getattr(source, "file_size", None)
+        try:
+            size = int(file_size or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size <= 0:
+            return True, None
+        if size <= max_bytes:
+            return True, None
+        return False, self._telegram_media_too_large_note(label, size, max_bytes)
+
     async def send_voice(
         self,
         chat_id: str,
@@ -5602,6 +5629,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
             try:
+                allowed, note = self._telegram_media_size_allowed(msg.voice, "voice message")
+                if not allowed:
+                    event.text = self._append_observed_note(event.text, note or "")
+                    logger.info("[Telegram] Skipped oversized user voice (size=%s)", getattr(msg.voice, "file_size", None))
+                    await self.handle_message(event)
+                    return
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
@@ -5612,6 +5645,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
         elif msg.audio:
             try:
+                allowed, note = self._telegram_media_size_allowed(msg.audio, "audio file")
+                if not allowed:
+                    event.text = self._append_observed_note(event.text, note or "")
+                    logger.info("[Telegram] Skipped oversized user audio (size=%s)", getattr(msg.audio, "file_size", None))
+                    await self.handle_message(event)
+                    return
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")

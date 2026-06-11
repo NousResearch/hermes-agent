@@ -343,6 +343,9 @@ class SlackAdapter(BasePlatformAdapter):
         # Track active assistant thread status indicators so stop_typing can
         # clear them (chat_id → thread_ts).
         self._active_status_threads: Dict[str, str] = {}
+        # Cache for _is_self_targeted_dm: channel_id → bool
+        # Prevents repeated conversations.info API calls for the same DM channel.
+        self._dm_ownership_cache: Dict[str, bool] = {}
         # Slash-command contexts: stash response_url + user_id so send()
         # can route the first reply ephemerally.  Keyed by
         # (channel_id, user_id) to avoid cross-user collisions.
@@ -3009,6 +3012,69 @@ class SlackAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    async def _is_self_targeted_dm(self, channel_id: str, bot_user_id: str) -> bool:
+        """Return True if this IM channel is actually addressed to this bot.
+
+        Drops DM events from channels where the counterparty is a *different*
+        bot — the Slack gateway delivers events to all bot members of a DM
+        channel, even if the DM was between a user and a different bot.
+
+        This is the architectural fix for CC v1.2 Item 7 (confirmed-live
+        2026-05-26: Marques /goal to Atlas intercepted by Hermes-1 via DM
+        passthrough because `_slack_allowed_channels()` exempts all DMs).
+
+        Calls conversations.info to fetch `channel.user` (the non-bot
+        participant in an IM channel).  If that user is itself a bot AND
+        not in our SLACK_ALLOWED_USERS list, we consider this DM foreign
+        and drop the event.  Result is cached per channel_id to avoid
+        repeated API calls.  Falls back to True (allow) on any API error
+        to avoid blocking legitimate DMs.
+        """
+        if channel_id in self._dm_ownership_cache:
+            return self._dm_ownership_cache[channel_id]
+
+        if not self._app:
+            return True  # not connected yet — allow, re-checks on next event
+
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_info(channel=channel_id)
+            channel_info = result.get("channel", {}) if isinstance(result, dict) else {}
+            if not channel_info:
+                channel_info = getattr(result, "data", {}).get("channel", {})
+            channel_user = channel_info.get("user", "")
+
+            is_owned = True  # default: allow (fail open for safety)
+            if channel_user and channel_user != bot_user_id:
+                # Check if the counterparty is a bot not in our allowed list
+                try:
+                    user_result = await client.users_info(user=channel_user)
+                    user_data = user_result.get("user", {}) if isinstance(user_result, dict) else {}
+                    if not user_data:
+                        user_data = getattr(user_result, "data", {}).get("user", {})
+                    is_bot = user_data.get("is_bot", False)
+                    if is_bot:
+                        allowed_raw = os.getenv("SLACK_ALLOWED_USERS", "")
+                        allowed_users = {u.strip() for u in allowed_raw.split(",") if u.strip()}
+                        if channel_user not in allowed_users:
+                            logger.info(
+                                "[Slack] Dropping DM event from channel %s: "
+                                "counterparty %s is a bot not in SLACK_ALLOWED_USERS — "
+                                "DM belongs to a different bot",
+                                channel_id,
+                                channel_user,
+                            )
+                            is_owned = False
+                except Exception as ue:
+                    logger.debug("[Slack] _is_self_targeted_dm users_info(%s) failed: %s", channel_user, ue)
+
+            self._dm_ownership_cache[channel_id] = is_owned
+            return is_owned
+
+        except Exception as exc:
+            logger.debug("[Slack] _is_self_targeted_dm conversations_info(%s) failed: %s", channel_id, exc)
+            return True  # fail open — never block a legitimate DM on API error
 
     def _slack_allowed_channels(self) -> set:
         """Return the whitelist of channel IDs the bot will respond in.

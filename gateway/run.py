@@ -7205,7 +7205,23 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
-        
+
+        # Inject AgentActivity cross-agent context block written by the
+        # agent-activity-poll hook (agent:start event).  The hook fires just
+        # before this code runs and writes ~/.hermes/hooks/agent-activity-poll/
+        # context_block.txt; we read it here and append to context_prompt.
+        # Fail-silent: any read error is swallowed so session start is never blocked.
+        try:
+            _activity_block_path = (
+                _hermes_home / "hooks" / "agent-activity-poll" / "context_block.txt"
+            )
+            if _activity_block_path.exists():
+                _activity_block = _activity_block_path.read_text(encoding="utf-8").strip()
+                if _activity_block:
+                    context_prompt = (context_prompt + "\n\n" + _activity_block).strip()
+        except Exception:
+            pass
+
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):

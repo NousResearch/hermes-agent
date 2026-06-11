@@ -39,6 +39,7 @@ export function createClientSessionState(
     storedSessionId,
     messages,
     branch: '',
+    compressCount: 0,
     cwd: '',
     model: '',
     provider: '',

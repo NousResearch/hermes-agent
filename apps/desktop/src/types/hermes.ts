@@ -279,6 +279,7 @@ export interface SessionCreateResponse {
 
 export interface SessionInfo {
   archived?: boolean
+  compress_count?: number
   cwd?: null | string
   ended_at: null | number
   id: string
@@ -344,6 +345,7 @@ export interface SessionResumeResponse {
 
 export interface SessionRuntimeInfo {
   branch?: string
+  compress_count?: number
   config_warning?: string
   credential_warning?: string
   cwd?: string

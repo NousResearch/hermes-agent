@@ -1872,6 +1872,52 @@ class SessionDB:
             current = row["id"]
         return current
 
+    def get_compression_count(self, session_id: str) -> int:
+        """Return how many compression boundaries precede ``session_id``.
+
+        Only counts parent links that are actual compression continuations:
+        the parent ended with ``end_reason='compression'`` and the child was
+        created at or after that parent ended. This deliberately ignores
+        delegate subagents and branch children that also have a parent.
+        """
+        if not session_id:
+            return 0
+
+        count = 0
+        current = session_id
+        seen = set()
+        with self._lock:
+            for _ in range(100):
+                if not current or current in seen:
+                    break
+                seen.add(current)
+                row = self._conn.execute(
+                    "SELECT child.parent_session_id, child.started_at AS child_started_at, "
+                    "       parent.ended_at AS parent_ended_at, parent.end_reason AS parent_end_reason "
+                    "FROM sessions child "
+                    "LEFT JOIN sessions parent ON parent.id = child.parent_session_id "
+                    "WHERE child.id = ?",
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    break
+                parent_id = row["parent_session_id"] if hasattr(row, "keys") else row[0]
+                if not parent_id:
+                    break
+                child_started_at = row["child_started_at"] if hasattr(row, "keys") else row[1]
+                parent_ended_at = row["parent_ended_at"] if hasattr(row, "keys") else row[2]
+                parent_end_reason = row["parent_end_reason"] if hasattr(row, "keys") else row[3]
+                if (
+                    parent_end_reason != "compression"
+                    or parent_ended_at is None
+                    or child_started_at is None
+                    or child_started_at < parent_ended_at
+                ):
+                    break
+                count += 1
+                current = parent_id
+        return count
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -2078,6 +2124,7 @@ class SessionDB:
                 s["preview"] = ""
             # Drop the internal ordering column so callers see a clean dict.
             s.pop("_effective_last_active", None)
+            s["compress_count"] = self.get_compression_count(s.get("id", ""))
             sessions.append(s)
 
         # Project compression roots forward to their tips. Each row whose
@@ -2111,6 +2158,7 @@ class SessionDB:
                     if key in tip_row:
                         merged[key] = tip_row[key]
                 merged["_lineage_root_id"] = s["id"]
+                merged["compress_count"] = self.get_compression_count(tip_id)
                 projected.append(merged)
             sessions = projected
 

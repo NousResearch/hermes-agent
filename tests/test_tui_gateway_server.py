@@ -3731,6 +3731,22 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_includes_compression_count(monkeypatch):
+    class FakeDB:
+        def get_compression_count(self, session_id):
+            assert session_id == "tip-session"
+            return 3
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+
+    info = server._session_info(
+        types.SimpleNamespace(tools=[], model="", session_id="fallback"),
+        {"session_key": "tip-session"},
+    )
+
+    assert info["compress_count"] == 3
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

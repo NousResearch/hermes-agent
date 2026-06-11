@@ -122,6 +122,7 @@ export interface ClientSessionState {
   storedSessionId: string | null
   messages: ChatMessage[]
   branch: string
+  compressCount: number
   cwd: string
   model: string
   provider: string

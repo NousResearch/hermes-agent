@@ -30,10 +30,24 @@ import re
 import inspect
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
 from tools.registry import tool_error
+
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+    _TENACITY_AVAILABLE = True
+except ImportError:
+    _TENACITY_AVAILABLE = False
+    # Simple no-op decorator when tenacity not available
+    def retry(*args, **kwargs):  # type: ignore
+        def _wrap(fn: Callable) -> Callable:
+            return fn
+        return _wrap
+    def stop_after_attempt(n): pass  # type: ignore
+    def wait_exponential(*args, **kwargs): pass  # type: ignore
+    def retry_if_exception_type(*args): pass  # type: ignore
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +56,37 @@ logger = logging.getLogger(__name__)
 # teardown indefinitely — the worker threads are daemon, so anything still
 # running past this window dies with the interpreter.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
+
+# Retry configuration for transient memory provider errors
+# (network timeouts, temporary daemon unavailability, etc.)
+_MEMORY_RETRY_ATTEMPTS = 3
+_MEMORY_RETRY_WAIT_MIN = 0.5  # seconds
+_MEMORY_RETRY_WAIT_MAX = 2.0  # seconds
+
+def _memory_retry():
+    """Decorator for transient memory provider operations.
+    
+    Retries on common transient exceptions with exponential backoff.
+    """
+    if not _TENACITY_AVAILABLE:
+        def _noop(fn: Callable) -> Callable:
+            return fn
+        return _noop
+    return retry(
+        reraise=True,
+        stop=stop_after_attempt(_MEMORY_RETRY_ATTEMPTS),
+        wait=wait_exponential(
+            multiplier=1,
+            min=_MEMORY_RETRY_WAIT_MIN,
+            max=_MEMORY_RETRY_WAIT_MAX,
+        ),
+        retry=retry_if_exception_type((
+            ConnectionError,
+            TimeoutError,
+            IOError,
+            OSError,
+        )),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -268,6 +313,32 @@ class MemoryManager:
         self._sync_executor: Optional[ThreadPoolExecutor] = None
         self._sync_executor_lock = threading.Lock()
 
+    def _call_with_retry(self, provider: MemoryProvider, method_name: str, *args, **kwargs):
+        """Call a provider method with retry on transient errors."""
+        method = getattr(provider, method_name)
+        if not _TENACITY_AVAILABLE:
+            return method(*args, **kwargs)
+
+        @retry(
+            reraise=True,
+            stop=stop_after_attempt(_MEMORY_RETRY_ATTEMPTS),
+            wait=wait_exponential(
+                multiplier=1,
+                min=_MEMORY_RETRY_WAIT_MIN,
+                max=_MEMORY_RETRY_WAIT_MAX,
+            ),
+            retry=retry_if_exception_type((
+                ConnectionError,
+                TimeoutError,
+                IOError,
+                OSError,
+            )),
+        )
+        def _retry_call():
+            return method(*args, **kwargs)
+
+        return _retry_call()
+
     # -- Registration --------------------------------------------------------
 
     def add_provider(self, provider: MemoryProvider) -> None:
@@ -358,7 +429,7 @@ class MemoryManager:
         blocks = []
         for provider in self._providers:
             try:
-                block = provider.system_prompt_block()
+                block = self._call_with_retry(provider, "system_prompt_block")
                 if block and block.strip():
                     blocks.append(block)
             except Exception as e:
@@ -379,7 +450,7 @@ class MemoryManager:
         parts = []
         for provider in self._providers:
             try:
-                result = provider.prefetch(query, session_id=session_id)
+                result = self._call_with_retry(provider, "prefetch", query, session_id=session_id)
                 if result and result.strip():
                     parts.append(result)
             except Exception as e:
@@ -403,7 +474,7 @@ class MemoryManager:
         def _run() -> None:
             for provider in providers:
                 try:
-                    provider.queue_prefetch(query, session_id=session_id)
+                    self._call_with_retry(provider, "queue_prefetch", query, session_id=session_id)
                 except Exception as e:
                     logger.debug(
                         "Memory provider '%s' queue_prefetch failed (non-fatal): %s",
@@ -459,16 +530,15 @@ class MemoryManager:
             for provider in providers:
                 try:
                     if messages is not None and self._provider_sync_accepts_messages(provider):
-                        provider.sync_turn(
-                            user_content,
-                            assistant_content,
-                            session_id=session_id,
-                            messages=messages,
+                        self._call_with_retry(
+                            provider, "sync_turn",
+                            user_content, assistant_content,
+                            session_id=session_id, messages=messages,
                         )
                     else:
-                        provider.sync_turn(
-                            user_content,
-                            assistant_content,
+                        self._call_with_retry(
+                            provider, "sync_turn",
+                            user_content, assistant_content,
                             session_id=session_id,
                         )
                 except Exception as e:
@@ -600,7 +670,7 @@ class MemoryManager:
         if provider is None:
             return tool_error(f"No memory provider handles tool '{tool_name}'")
         try:
-            return provider.handle_tool_call(tool_name, args, **kwargs)
+            return self._call_with_retry(provider, "handle_tool_call", tool_name, args, **kwargs)
         except Exception as e:
             logger.error(
                 "Memory provider '%s' handle_tool_call(%s) failed: %s",
@@ -745,13 +815,20 @@ class MemoryManager:
             try:
                 metadata_mode = self._provider_memory_write_metadata_mode(provider)
                 if metadata_mode == "keyword":
-                    provider.on_memory_write(
+                    self._call_with_retry(
+                        provider, "on_memory_write",
                         action, target, content, metadata=dict(metadata or {})
                     )
                 elif metadata_mode == "positional":
-                    provider.on_memory_write(action, target, content, dict(metadata or {}))
+                    self._call_with_retry(
+                        provider, "on_memory_write",
+                        action, target, content, dict(metadata or {})
+                    )
                 else:
-                    provider.on_memory_write(action, target, content)
+                    self._call_with_retry(
+                        provider, "on_memory_write",
+                        action, target, content
+                    )
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_memory_write failed: %s",

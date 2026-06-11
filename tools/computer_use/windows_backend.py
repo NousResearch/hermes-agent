@@ -20,8 +20,10 @@ import base64
 import ctypes
 import ctypes.wintypes
 import io
+import json
 import logging
 import os
+import socket
 import sys
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -278,6 +280,89 @@ def _type_unicode(text: str) -> None:
 # Window / UIA helpers
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# On-screen overlay (visible "PC use mode") — optional, best-effort
+# ---------------------------------------------------------------------------
+
+class _OverlayClient:
+    """Drives the overlay subprocess (tools/computer_use/overlay.py).
+
+    Strictly fire-and-forget: every failure disables the overlay silently;
+    desktop-control actions must never be affected by overlay problems.
+    Disable entirely with HERMES_COMPUTER_USE_OVERLAY=0.
+    """
+
+    def __init__(self) -> None:
+        self._proc = None
+        self._sock: Optional[socket.socket] = None
+        self._addr: Optional[Tuple[str, int]] = None
+        self._dead = os.environ.get("HERMES_COMPUTER_USE_OVERLAY", "1") == "0"
+
+    @property
+    def pid(self) -> Optional[int]:
+        return self._proc.pid if self._proc is not None else None
+
+    def start(self) -> None:
+        if self._dead or self._proc is not None:
+            return
+        try:
+            import subprocess
+            overlay_py = os.path.join(os.path.dirname(__file__), "overlay.py")
+            self._proc = subprocess.Popen(
+                [sys.executable, "-u", overlay_py],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            line = ""
+            deadline = time.monotonic() + 8.0
+            while time.monotonic() < deadline:
+                line = (self._proc.stdout.readline() or b"").decode("utf-8", "ignore").strip()
+                if line.startswith("PORT "):
+                    break
+            if not line.startswith("PORT "):
+                raise RuntimeError(f"overlay did not report a port (got {line!r})")
+            self._addr = ("127.0.0.1", int(line.split()[1]))
+            self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.send({"cmd": "banner", "text": "HERMES — DESKTOP CONTROL",
+                       "state": "active"})
+        except Exception as e:
+            logger.warning("computer_use overlay unavailable: %s", e)
+            self._shutdown()
+            self._dead = True
+
+    def send(self, msg: Dict[str, Any]) -> None:
+        if self._dead or self._sock is None or self._addr is None:
+            return
+        try:
+            self._sock.sendto(json.dumps(msg).encode("utf-8"), self._addr)
+        except Exception:
+            self._dead = True
+            self._shutdown()
+
+    def stop(self) -> None:
+        self.send({"cmd": "bye"})
+        self._shutdown()
+
+    def _shutdown(self) -> None:
+        try:
+            if self._sock is not None:
+                self._sock.close()
+        except Exception:
+            pass
+        self._sock = None
+        try:
+            if self._proc is not None:
+                try:
+                    self._proc.stdin.close()  # stdin EOF → overlay exits
+                except Exception:
+                    pass
+                self._proc.terminate()
+        except Exception:
+            pass
+        self._proc = None
+
+
 _DWMWA_CLOAKED = 14
 _DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
@@ -336,6 +421,7 @@ class WindowsUIABackend(ComputerUseBackend):
         self._target_hwnd: Optional[int] = None
         self._target_pid: Optional[int] = None
         self._started = False
+        self._overlay = _OverlayClient()
 
     # ── Lifecycle ──────────────────────────────────────────────────
     def start(self) -> None:
@@ -344,10 +430,12 @@ class WindowsUIABackend(ComputerUseBackend):
         if not windows_backend_available():
             raise RuntimeError(f"Windows backend unavailable: {_IMPORT_ERROR}")
         _set_dpi_awareness()
+        self._overlay.start()
         self._started = True
 
     def stop(self) -> None:
         self._elements.clear()
+        self._overlay.stop()
         self._started = False
 
     def is_available(self) -> bool:
@@ -459,8 +547,17 @@ class WindowsUIABackend(ComputerUseBackend):
             hwnd = win32gui.GetForegroundWindow()
             if hwnd:
                 _tid, pid = win32process.GetWindowThreadProcessId(hwnd)
-                self._target_hwnd, self._target_pid = hwnd, pid
-                self._last_app = _exe_for_pid(pid)
+                if pid == self._overlay.pid:
+                    # Never capture our own overlay; fall back to the first
+                    # real top-level window.
+                    wins = self._enum_top_windows()
+                    if wins:
+                        hwnd, pid = wins[0]["hwnd"], wins[0]["pid"]
+                    else:
+                        hwnd = None
+                if hwnd:
+                    self._target_hwnd, self._target_pid = hwnd, pid
+                    self._last_app = _exe_for_pid(pid)
 
         if not hwnd:
             return CaptureResult(mode=mode, width=0, height=0)
@@ -488,6 +585,16 @@ class WindowsUIABackend(ComputerUseBackend):
             png_bytes = buf.getvalue()
             png_b64 = base64.b64encode(png_bytes).decode("ascii")
             png_bytes_len = len(png_bytes)
+
+        # Mirror what Hermes sees onto the user's screen (sent AFTER the
+        # grab, so the boxes are never part of the screenshot itself).
+        self._overlay.send({
+            "cmd": "elements",
+            "items": [{"index": e.index, "bounds": list(e.bounds)} for e in elements],
+            "ttl": 4.0,
+        })
+        self._overlay.send({"cmd": "flash",
+                            "text": f"capture · {len(elements)} elements", "ttl": 2.0})
 
         return CaptureResult(
             mode=mode,
@@ -629,6 +736,8 @@ class WindowsUIABackend(ComputerUseBackend):
             return ActionResult(ok=False, action="click",
                                 message=f"unknown button {button!r}")
         try:
+            self._overlay.send({"cmd": "click", "x": px, "y": py})
+            self._overlay.send({"cmd": "flash", "text": f"click · {what}", "ttl": 1.5})
             self._ensure_target_foreground()
             old_pos = win32api.GetCursorPos()
             _send_inputs(mods_down)
@@ -669,6 +778,8 @@ class WindowsUIABackend(ComputerUseBackend):
             return ActionResult(ok=False, action="drag",
                                 message=f"unknown button {button!r}")
         try:
+            self._overlay.send({"cmd": "drag", "from": [fx, fy], "to": [tx, ty]})
+            self._overlay.send({"cmd": "flash", "text": f"drag · {src} → {dst}", "ttl": 1.5})
             self._ensure_target_foreground()
             old_pos = win32api.GetCursorPos()
             _send_inputs(mods_down)
@@ -715,6 +826,8 @@ class WindowsUIABackend(ComputerUseBackend):
         except ValueError as e:
             return ActionResult(ok=False, action="scroll", message=str(e))
         try:
+            self._overlay.send({"cmd": "flash",
+                                "text": f"scroll {direction} x{amount}", "ttl": 1.2})
             self._ensure_target_foreground()
             old_pos = win32api.GetCursorPos()
             _send_inputs(mods_down)
@@ -738,6 +851,8 @@ class WindowsUIABackend(ComputerUseBackend):
             return ActionResult(ok=False, action="type",
                                 message=f"text too long ({len(text)} chars; max 20000)")
         try:
+            self._overlay.send({"cmd": "flash",
+                                "text": f"typing · {len(text)} chars", "ttl": 2.0})
             self._ensure_target_foreground()
             _type_unicode(text)
             return ActionResult(ok=True, action="type",
@@ -757,6 +872,7 @@ class WindowsUIABackend(ComputerUseBackend):
                                     message=f"unknown key {part!r} in {keys!r}")
             vks.append(vk)
         try:
+            self._overlay.send({"cmd": "flash", "text": f"key · {keys}", "ttl": 1.5})
             self._ensure_target_foreground()
             _press_combo(vks)
             return ActionResult(ok=True, action="key", message=f"pressed {keys}")
@@ -777,6 +893,11 @@ class WindowsUIABackend(ComputerUseBackend):
         if not (hwnd and win32gui.IsWindow(hwnd)):
             return ActionResult(ok=False, action="set_value",
                                 message="target window is gone — re-run capture")
+        self._overlay.send({"cmd": "elements",
+                            "items": [{"index": cached.index, "bounds": list(cached.bounds)}],
+                            "ttl": 2.0})
+        self._overlay.send({"cmd": "flash",
+                            "text": f"set_value · #{cached.index}", "ttl": 1.5})
         try:
             with _auto.UIAutomationInitializerInThread():
                 ctrl = self._refind_control(hwnd, cached)

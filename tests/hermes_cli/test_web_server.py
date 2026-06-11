@@ -1286,6 +1286,43 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json() == {"ok": True, "already_absent": True}
 
+    def test_archive_session_routes_to_owning_profile_db(self):
+        """PATCH archived with ``profile`` opens the owning profile's state.db.
+
+        Same #44117 failure mode as delete: without the profile in the body
+        the lookup hits the serving process's own db and 404s, even though
+        the row exists in the owning profile's db.
+        """
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        profile_home = get_hermes_home() / "profiles" / "worker-beta"
+        profile_home.mkdir(parents=True)
+        pdb = SessionDB(db_path=profile_home / "state.db")
+        try:
+            pdb.create_session(session_id="profile-archived", source="cli")
+        finally:
+            pdb.close()
+
+        resp = self.client.patch(
+            "/api/sessions/profile-archived", json={"archived": True}
+        )
+        assert resp.status_code == 404
+
+        resp = self.client.patch(
+            "/api/sessions/profile-archived",
+            json={"archived": True, "profile": "worker-beta"},
+        )
+        assert resp.status_code == 200
+        assert resp.json()["archived"] is True
+
+        pdb = SessionDB(db_path=profile_home / "state.db")
+        try:
+            row = pdb.get_session("profile-archived")
+            assert row is not None and bool(row["archived"])
+        finally:
+            pdb.close()
+
     def test_profiles_sessions_tags_default_profile(self):
         """The cross-profile aggregator returns the default profile's rows
         tagged profile="default" (single-profile parity with /api/sessions)."""

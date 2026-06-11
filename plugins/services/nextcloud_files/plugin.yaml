@@ -1,0 +1,22 @@
+name: nextcloud-files-service
+label: Nextcloud Files
+kind: backend
+version: 1.0.0
+description: >
+  Background service that bidirectionally syncs a Nextcloud folder
+  with a local working directory. Subscribes to notify_push for
+  incoming change events, watches the local tree via inotify for
+  outgoing changes, and uses chunked WebDAV uploads for files larger
+  than the configured chunk size.
+
+  This plugin ships under ``plugins/services/nextcloud_files/`` and
+  registers a background service via
+  ``PluginContext.register_background_service``. The gateway starts
+  it after platforms come up and stops it before they disconnect.
+author: nsyring
+requires_env: []
+optional_env:
+  - name: NEXTCLOUD_TALK_APP_PASSWORD
+    description: "Reused from the Nextcloud Talk adapter — same App Password unlocks WebDAV access for sync"
+    prompt: "Nextcloud App Password (same as NC Talk)"
+    password: true

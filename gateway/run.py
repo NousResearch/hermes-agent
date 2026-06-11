@@ -2076,6 +2076,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
+        # Voice transcript echo de-duplication for the active-task interrupt
+        # flow.  A voice message sent while an agent is running is first
+        # peeked by monitor_for_interrupt() so the agent can be interrupted
+        # with the transcript, then the same event is later dequeued by the
+        # pending-message helper.  Object attributes on the MessageEvent are
+        # not a reliable guard because adapters may hand back a different
+        # event instance; keep a small process-local key set instead.
+        self._stt_echo_keys: dict[tuple[str, str, str, str], float] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
         # LRU cache of live SessionSources keyed by session_key. Used by
@@ -7675,7 +7683,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _echo_adapter = self.adapters.get(source.platform)
                     _echo_meta = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     if _echo_adapter:
-                        for _tx in _successful_transcripts:
+                        for _idx, _tx in enumerate(_successful_transcripts):
+                            _audio_path = audio_paths[_idx] if _idx < len(audio_paths) else None
+                            if not self._mark_stt_echo_sent_once(event=event, source=source, audio_path=_audio_path, transcript=_tx):
+                                continue
                             try:
                                 await _echo_adapter.send(
                                     source.chat_id,
@@ -11756,6 +11767,48 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix, successful_transcripts
         return user_text, successful_transcripts
 
+    def _mark_stt_echo_sent_once(
+        self,
+        source,
+        event,
+        audio_path: str | None,
+        transcript: str,
+    ) -> bool:
+        """Return True exactly once for a voice transcript echo.
+
+        Telegram voice messages that arrive during an active agent run travel
+        through two code paths: the interrupt monitor (peek, do not consume)
+        and the later pending-message dequeue. Both paths may have enough
+        information to echo `🎙️ "..."` back to the user. De-dupe by stable
+        platform/chat/event/audio/transcript identity instead of by mutating
+        the MessageEvent object; some adapter paths can recreate the event.
+        """
+        platform = str(getattr(source, "platform", "") or "")
+        chat_id = str(getattr(source, "chat_id", "") or "")
+        thread_id = str(getattr(source, "thread_id", "") or "")
+        transcript_key = " ".join(str(transcript or "").split())
+        # Do NOT include event.message_id or audio_path here. In the active
+        # interrupt path the same Telegram voice can be represented by two
+        # different MessageEvent instances and/or cached file paths by the time
+        # the pending-message helper runs. The stable duplicate signal is the
+        # same transcript being echoed into the same chat/thread immediately.
+        key = (platform, chat_id, thread_id, transcript_key)
+        now = time.time()
+        # Short TTL: suppress immediate double-echo from interrupt+pending, but
+        # still allow the user to intentionally send the same phrase again.
+        for old_key, seen_at in list(self._stt_echo_keys.items()):
+            if now - seen_at > 20.0:
+                self._stt_echo_keys.pop(old_key, None)
+        if key in self._stt_echo_keys:
+            return False
+        self._stt_echo_keys[key] = now
+        # Bound memory in the long-lived gateway. This guard is only needed
+        # across a short interrupt/dequeue window, so recent keys are enough.
+        if len(self._stt_echo_keys) > 512:
+            self._stt_echo_keys.clear()
+            self._stt_echo_keys[key] = now
+        return True
+
     async def _dequeue_pending_with_transcription(
         self,
         adapter,
@@ -11800,11 +11853,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             # Echo raw transcripts back to the user so voice interrupts
             # feel identical to fresh voice messages.
-            if successful_transcripts:
+            if successful_transcripts and not getattr(event, "_stt_echo_sent", False):
                 echo_adapter = self.adapters.get(source.platform)
                 echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
                 if echo_adapter:
-                    for tx in successful_transcripts:
+                    for idx, tx in enumerate(successful_transcripts):
+                        audio_path = audio_paths[idx] if idx < len(audio_paths) else None
+                        if not self._mark_stt_echo_sent_once(event=event, source=source, audio_path=audio_path, transcript=tx):
+                            continue
                         try:
                             await echo_adapter.send(
                                 source.chat_id,
@@ -14808,20 +14864,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             pending_text, _audio_paths,
                                         )
                                         pending_text = _enriched
-                                        if _transcripts:
-                                            _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                                            for _tx in _transcripts:
-                                                try:
-                                                    await _adapter.send(
-                                                        source.chat_id,
-                                                        f'🎙️ "{_tx}"',
-                                                        metadata=_echo_meta,
-                                                    )
-                                                except Exception as _echo_exc:
-                                                    logger.debug(
-                                                        "Voice-interrupt echo failed (non-fatal): %s",
-                                                        _echo_exc,
-                                                    )
+                                        # Do not echo transcripts from the interrupt monitor.
+                                        # The same voice event remains queued and will later
+                                        # flow through _dequeue_pending_with_transcription(),
+                                        # which owns the user-visible 🎙️ echo. Sending from
+                                        # both places caused duplicate Telegram transcript
+                                        # bubbles when voice arrived during an active run.
                                     except Exception as _trans_exc:
                                         logger.warning(
                                             "Voice-interrupt transcription failed: %s", _trans_exc,
@@ -15178,7 +15226,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             pending = _enriched or None
                             if _transcripts:
                                 _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                                for _tx in _transcripts:
+                                for _idx, _tx in enumerate(_transcripts):
+                                    _audio_path = _audio_paths[_idx] if _idx < len(_audio_paths) else None
+                                    if not self._mark_stt_echo_sent_once(event=pending_event, source=source, audio_path=_audio_path, transcript=_tx):
+                                        continue
                                     try:
                                         await adapter.send(
                                             source.chat_id,

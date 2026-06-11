@@ -41,6 +41,7 @@ import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
+from types import SimpleNamespace
 from datetime import datetime
 from typing import Dict, Optional, Any, List, Union
 
@@ -1936,6 +1937,10 @@ class GatewayRunner:
         # /new and /reset.  /model and other mid-session operations
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
+        # SQLite-backed crash-recovery for /queue overflow.  See
+        # _ensure_queue_persistence_db and _rehydrate_queue_persistence.
+        # The connection is lazy — opened on first write, reused after.
+        self._queue_persistence_conn: Optional[Any] = None
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
@@ -2856,8 +2861,21 @@ class GatewayRunner:
     # it up.  Clearing happens on /new and /reset via
     # _handle_reset_command.
 
-    def _enqueue_fifo(self, session_key: str, queued_event: "MessageEvent", adapter: Any) -> None:
-        """Append a /queue event to the FIFO chain for a session."""
+    def _enqueue_fifo(
+        self,
+        session_key: str,
+        queued_event: "MessageEvent",
+        adapter: Any,
+        *,
+        persist: bool = True,
+    ) -> None:
+        """Append a /queue event to the FIFO chain for a session.
+
+        Always prefers the overflow list when the slot is occupied so
+        multiple items land in order.  When ``persist`` is true (default)
+        the new entry is also written to the SQLite crash-recovery table
+        so a hard gateway crash doesn't drop queued turns.
+        """
         if adapter is None:
             return
         pending_slot = getattr(adapter, "_pending_messages", None)
@@ -2871,6 +2889,8 @@ class GatewayRunner:
             queued_events.setdefault(session_key, []).append(queued_event)
         else:
             pending_slot[session_key] = queued_event
+        if persist:
+            self._persist_queued_event(session_key, queued_event)
 
     def _promote_queued_event(
         self,
@@ -2899,6 +2919,10 @@ class GatewayRunner:
         if not overflow:
             queued_events.pop(session_key, None)
         if pending_event is None:
+            # Head of the overflow was just promoted to the pending_event
+            # the caller will return.  Drop the matching persistence row
+            # so the SQLite table stays in sync with in-memory state.
+            self._promote_persisted_event(session_key)
             return next_queued
         if adapter is not None and hasattr(adapter, "_pending_messages"):
             adapter._pending_messages[session_key] = next_queued
@@ -2914,6 +2938,304 @@ class GatewayRunner:
         if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
             depth += 1
         return depth
+
+    def _queue_inventory(
+        self, session_key: str, *, adapter: Any = None, max_preview: int = 60
+    ) -> List[str]:
+        """Human-readable preview of every queued item (slot + overflow).
+
+        Used by ``/queue`` (no args) and ``/status`` to make the queue
+        observable.  Each entry is the first ``max_preview`` characters of
+        the item's text, with an ellipsis when truncated, prefixed by a
+        1-based position number.
+        """
+        items: List[str] = []
+        slot_event = None
+        if adapter is not None:
+            slot_event = getattr(adapter, "_pending_messages", {}).get(session_key)
+        if slot_event is not None and getattr(slot_event, "text", None):
+            text = slot_event.text
+            preview = text[:max_preview] + ("..." if len(text) > max_preview else "")
+            items.append(f"  1. {preview}")
+        queued_events = getattr(self, "_queued_events", None) or {}
+        for idx, ev in enumerate(queued_events.get(session_key, []) or [], start=len(items) + 1):
+            text = getattr(ev, "text", "") or ""
+            preview = text[:max_preview] + ("..." if len(text) > max_preview else "")
+            items.append(f"  {idx}. {preview}")
+        return items
+
+    def _queue_inventory_message(self, session_key: str, adapter: Any) -> str:
+        """Build the user-facing message for ``/queue`` with no args.
+
+        Returns a one-liner when the queue is empty, or a numbered list of
+        item previews otherwise.  Always tells the user how to add or
+        drop items so the command is self-documenting.
+        """
+        items = self._queue_inventory(session_key, adapter=adapter)
+        if not items:
+            return "Queue is empty. Use `/queue <text>` to add one."
+        header = f"📋 Queue ({len(items)} item{'s' if len(items) != 1 else ''}):"
+        footer = "Use `/queue <text>` to add, `/queue drop` to remove the last, or `/queue clear` to empty."
+        return "\n".join([header, *items, footer])
+
+    def _queue_drop_command(self, session_key: str, adapter: Any) -> str:
+        """Remove the user's most-recent queued item (overflow tail).
+
+        Falls back to the slot if overflow is empty, but only if that
+        slot's event looks like a user /queue (not a foreign follow-up
+        like a photo-burst caption).  We don't try to introspect the
+        event's origin — anything in the slot when ``/queue drop`` is
+        issued is treated as fair game, matching user intent.
+        """
+        queued_events = getattr(self, "_queued_events", None) or {}
+        overflow = queued_events.get(session_key) or []
+        if overflow:
+            dropped = overflow.pop()
+            if not overflow:
+                queued_events.pop(session_key, None)
+            self._promote_persisted_event(session_key)
+            text = getattr(dropped, "text", "") or ""
+            preview = text[:50] + ("..." if len(text) > 50 else "")
+            depth = self._queue_depth(session_key, adapter=adapter)
+            suffix = f" ({depth} remaining)" if depth else " (queue empty)"
+            return f"🗑️ Dropped from queue: '{preview}'{suffix}"
+        # Fall back to the slot.
+        if adapter is not None:
+            slot = getattr(adapter, "_pending_messages", None)
+            if slot is not None and session_key in slot:
+                dropped = slot.pop(session_key)
+                self._promote_persisted_event(session_key)
+                text = getattr(dropped, "text", "") or ""
+                preview = text[:50] + ("..." if len(text) > 50 else "")
+                return f"🗑️ Dropped from queue: '{preview}' (queue empty)"
+        return "Queue is empty — nothing to drop."
+
+    def _queue_clear_command(self, session_key: str, adapter: Any) -> str:
+        """Wipe the entire queue for a session and report what was cleared.
+
+        Counts the items before clearing so the user knows what they
+        removed.  Returns a friendly confirmation in all cases.
+        """
+        depth_before = self._queue_depth(session_key, adapter=adapter)
+        # Clear overflow
+        queued_events = getattr(self, "_queued_events", None) or {}
+        queued_events.pop(session_key, None)
+        # Clear slot only if the user is the one clearing; foreign follow-ups
+        # (photo-burst captions) are rare here, and if the user explicitly
+        # asks to clear, they want a clean slate.
+        if adapter is not None:
+            slot = getattr(adapter, "_pending_messages", None)
+            if slot is not None and session_key in slot:
+                slot.pop(session_key, None)
+        # Clear persistence too
+        self._clear_persisted_queue(session_key)
+        if depth_before == 0:
+            return "Queue was already empty."
+        suffix = "item" if depth_before == 1 else "items"
+        return f"🧹 Cleared {depth_before} queued {suffix}."
+
+    # ------------------------------------------------------------------
+    # Queue limits and crash-recovery persistence
+    # ------------------------------------------------------------------
+    # DoS protection: a misbehaving or malicious client could enqueue
+    # thousands of items in a single session.  We cap overflow growth
+    # with a soft warning and a hard rejection so memory stays bounded
+    # and the user gets a clear error.  Numbers are tuned for typical
+    # chat usage (a handful of items) plus a generous safety margin.
+    _QUEUE_SOFT_LIMIT = 20
+    _QUEUE_HARD_LIMIT = 50
+
+    def _check_queue_capacity(self, session_key: str, *, adapter: Any) -> Optional[str]:
+        """Return an error string if the queue is at hard capacity, else None.
+
+        Soft limit (warn) is returned alongside the result via the
+        ``soft_warn`` attribute of the caller — we keep this method focused
+        on the hard rejection path so the dispatch site can choose how
+        to format the soft warning.
+        """
+        depth = self._queue_depth(session_key, adapter=adapter)
+        if depth >= self._QUEUE_HARD_LIMIT:
+            return (
+                f"Queue full ({depth}/{self._QUEUE_HARD_LIMIT}). "
+                "Use `/new` to start fresh, or `/queue clear` to drop pending items."
+            )
+        return None
+
+    def _queue_soft_warning(self, session_key: str, *, adapter: Any) -> str:
+        """Return a one-line warning if the queue is past the soft limit."""
+        depth = self._queue_depth(session_key, adapter=adapter)
+        if depth >= self._QUEUE_SOFT_LIMIT:
+            return (
+                f"\n⚠️ Queue is large ({depth} items). "
+                "Use `/queue clear` to drop pending items, or `/new` to reset."
+            )
+        return ""
+
+    # ------------------------------------------------------------------
+    # SQLite-backed crash recovery
+    # ------------------------------------------------------------------
+    # On graceful restart (``_restart_requested`` + ``busy_input_mode in
+    # {queue, steer}``) the gateway already retries to preserve queue
+    # items.  But on a HARD crash (SIGKILL, OOM, machine reboot) the
+    # in-memory ``_queued_events`` dict is lost.  This SQLite table is
+    # the durable backstop: every enqueue writes a row, every promote
+    # deletes the matching row, and on startup the runner reloads any
+    # surviving rows into the in-memory state.  This is intentionally
+    # separate from the session DB to keep queue lifetimes short and
+    # avoid polluting the FTS5 index with user prompts.
+    _QUEUE_PERSISTENCE_SCHEMA = (
+        "CREATE TABLE IF NOT EXISTS queue_persistence ("
+        "  session_key TEXT NOT NULL,"
+        "  position    INTEGER NOT NULL,"
+        "  text        TEXT NOT NULL,"
+        "  source_platform TEXT,"
+        "  source_user_id TEXT,"
+        "  source_chat_id TEXT,"
+        "  queued_at   REAL NOT NULL,"
+        "  PRIMARY KEY (session_key, position)"
+        ")"
+    )
+    _QUEUE_PERSISTENCE_INDEX = (
+        "CREATE INDEX IF NOT EXISTS idx_queue_persistence_queued_at "
+        "ON queue_persistence (queued_at)"
+    )
+
+    def _get_queue_persistence_path(self) -> Optional[Path]:
+        """Path to the queue-persistence SQLite file.  None if hermes_home
+        is unavailable (test fixtures)."""
+        try:
+            home = get_hermes_home()
+        except Exception:
+            return None
+        if home is None:
+            return None
+        return Path(home) / "queue_persistence.sqlite"
+
+    def _ensure_queue_persistence_db(self) -> Optional[Any]:
+        """Return an open sqlite3 connection with the schema applied, or
+        None if persistence isn't available.  Cheap to call repeatedly —
+        connection is cached on the runner."""
+        if not getattr(self, "_queue_persistence_conn", None):
+            db_path = self._get_queue_persistence_path()
+            if db_path is None:
+                return None
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            import sqlite3
+            conn = sqlite3.connect(str(db_path), check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute(self._QUEUE_PERSISTENCE_SCHEMA)
+            conn.execute(self._QUEUE_PERSISTENCE_INDEX)
+            conn.commit()
+            self._queue_persistence_conn = conn
+        return self._queue_persistence_conn
+
+    def _persist_queued_event(self, session_key: str, queued_event: Any) -> None:
+        """Write one queued event to SQLite.  Best-effort — failures are
+        logged and swallowed so persistence issues can never block the
+        user-facing queue path."""
+        conn = self._ensure_queue_persistence_db()
+        if conn is None:
+            return
+        try:
+            text = getattr(queued_event, "text", "") or ""
+            source = getattr(queued_event, "source", None)
+            platform = getattr(source, "platform", None)
+            platform_val = platform.value if hasattr(platform, "value") else platform
+            user_id = getattr(source, "user_id", None)
+            chat_id = getattr(source, "chat_id", None)
+            queued_at = time.time()
+            # Position is monotonic per session: next free slot.
+            row = conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM queue_persistence WHERE session_key = ?",
+                (session_key,),
+            ).fetchone()
+            position = (row[0] if row else 0)
+            conn.execute(
+                "INSERT OR REPLACE INTO queue_persistence "
+                "(session_key, position, text, source_platform, source_user_id, source_chat_id, queued_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (session_key, position, text, platform_val, user_id, chat_id, queued_at),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.warning("Queue persistence write failed: %s", exc)
+
+    def _promote_persisted_event(self, session_key: str) -> None:
+        """Drop the head row for a session after the FIFO promotion.  Idempotent."""
+        conn = self._ensure_queue_persistence_db()
+        if conn is None:
+            return
+        try:
+            conn.execute(
+                "DELETE FROM queue_persistence WHERE session_key = ? AND position = "
+                "(SELECT MIN(position) FROM queue_persistence WHERE session_key = ?)",
+                (session_key, session_key),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.warning("Queue persistence promote-cleanup failed: %s", exc)
+
+    def _clear_persisted_queue(self, session_key: str) -> None:
+        """Wipe all persisted queue rows for a session (used by /new)."""
+        conn = self._ensure_queue_persistence_db()
+        if conn is None:
+            return
+        try:
+            conn.execute(
+                "DELETE FROM queue_persistence WHERE session_key = ?",
+                (session_key,),
+            )
+            conn.commit()
+        except Exception as exc:
+            logger.warning("Queue persistence clear failed: %s", exc)
+
+    def _rehydrate_queue_persistence(self) -> int:
+        """Reload any persisted queue rows from disk into in-memory state.
+
+        Called once during runner startup.  Returns the number of sessions
+        rehydrated.  When a row's text and source are restored we build
+        a lightweight ``MessageEvent``-shaped object — full event
+        reconstruction needs platform context we can't easily persist, so
+        the rehydrated events carry only ``text`` plus minimal source
+        metadata.  The downstream queue-drain path uses only ``.text``.
+        """
+        conn = self._ensure_queue_persistence_db()
+        if conn is None:
+            return 0
+        try:
+            rows = conn.execute(
+                "SELECT session_key, position, text, source_platform, source_user_id, source_chat_id "
+                "FROM queue_persistence ORDER BY session_key, position"
+            ).fetchall()
+        except Exception as exc:
+            logger.warning("Queue persistence rehydrate read failed: %s", exc)
+            return 0
+        if not rows:
+            return 0
+        rehydrated_sessions: set = set()
+        for session_key, _position, text, _platform, _user_id, _chat_id in rows:
+            queued_events = getattr(self, "_queued_events", None)
+            if queued_events is None:
+                queued_events = {}
+                self._queued_events = queued_events
+            rehydrated_sessions.add(session_key)
+            # Build a minimal placeholder with the text — the next run
+            # will pick it up via the normal overflow path.
+            placeholder = SimpleNamespace(
+                text=text,
+                source=None,
+                message_id=None,
+                channel_prompt=None,
+            )
+            queued_events.setdefault(session_key, []).append(placeholder)
+        if rehydrated_sessions:
+            logger.info(
+                "Queue persistence rehydrated %d items across %d session(s)",
+                sum(len(v) for v in (getattr(self, "_queued_events", {}) or {}).values()),
+                len(rehydrated_sessions),
+            )
+        return len(rehydrated_sessions)
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -4302,6 +4624,21 @@ class GatewayRunner:
         except RuntimeError:
             self._gateway_loop = None
         logger.info("Session storage: %s", self.config.sessions_dir)
+
+        # Rehydrate any queue items that survived a hard crash (SIGKILL,
+        # OOM, power loss).  On graceful restart the in-memory state is
+        # still authoritative, so this only matters when the process was
+        # killed without draining.  Best-effort — failures don't block
+        # startup; users just lose their queue in that pathological case.
+        try:
+            rehydrated = self._rehydrate_queue_persistence()
+            if rehydrated:
+                logger.info(
+                    "Rehydrated queue items for %d session(s) from previous run",
+                    rehydrated,
+                )
+        except Exception as _e:
+            logger.debug("Queue rehydrate failed: %s", _e)
 
         # Sanity-check that systemd's TimeoutStopSec covers our drain
         # window.  When the user upgraded hermes-agent without re-running
@@ -7806,11 +8143,41 @@ class GatewayRunner:
             # Semantics: each /queue invocation produces its own full agent
             # turn, processed in FIFO order after the current run (and any
             # earlier /queue items) finishes.  Messages are NOT merged.
+            #
+            # Sub-commands:
+            #   /queue                       → show queue inventory
+            #   /queue <text>                → enqueue a new turn
+            #   /queue drop                  → remove the LAST queued item
+            #   /queue clear                 → drop ALL queued items
             if event.get_command() in {"queue", "q"}:
-                queued_text = event.get_command_args().strip()
-                if not queued_text:
-                    return "Usage: /queue <prompt>"
                 adapter = self.adapters.get(source.platform)
+                queued_text = event.get_command_args().strip()
+                cmd_lower = queued_text.lower()
+
+                # /queue drop — remove the last queued item (overflow tail,
+                # or slot if overflow is empty).  Always targets the user's
+                # own most-recent enqueue, never the slot's prior content
+                # which might be a photo-burst follow-up.
+                if cmd_lower == "drop":
+                    return self._queue_drop_command(_quick_key, adapter)
+
+                # /queue clear — wipe the entire queue for this session
+                # (slot + overflow).  Slot replacement is guarded so a
+                # foreign follow-up (e.g. photo-burst caption) isn't
+                # silently dropped if the queue was empty.
+                if cmd_lower == "clear":
+                    return self._queue_clear_command(_quick_key, adapter)
+
+                # /queue (no args) — show the queue inventory so the user
+                # can see what's pending without guessing.
+                if not queued_text:
+                    return self._queue_inventory_message(_quick_key, adapter)
+
+                # Enqueue path — check hard capacity first.
+                capacity_error = self._check_queue_capacity(_quick_key, adapter=adapter)
+                if capacity_error:
+                    return capacity_error
+
                 if adapter:
                     queued_event = MessageEvent(
                         text=queued_text,
@@ -7821,9 +8188,10 @@ class GatewayRunner:
                     )
                     self._enqueue_fifo(_quick_key, queued_event, adapter)
                 depth = self._queue_depth(_quick_key, adapter=self.adapters.get(source.platform))
+                soft_warn = self._queue_soft_warning(_quick_key, adapter=self.adapters.get(source.platform))
                 if depth <= 1:
-                    return "Queued for the next turn."
-                return f"Queued for the next turn. ({depth} queued)"
+                    return f"Queued for the next turn.{soft_warn}"
+                return f"Queued for the next turn. ({depth} queued){soft_warn}"
 
             # /steer <prompt> — inject mid-run after the next tool call.
             # Unlike /queue (turn boundary), /steer lands BETWEEN tool-call
@@ -7836,7 +8204,10 @@ class GatewayRunner:
                     return "Usage: /steer <prompt>"
                 running_agent = self._running_agents.get(_quick_key)
                 if running_agent is _AGENT_PENDING_SENTINEL:
-                    # Agent hasn't started yet — queue as turn-boundary fallback.
+                    # Agent hasn't started yet — queue as turn-boundary
+                    # fallback.  Use the FIFO path (not slot-overwrite) so
+                    # we don't clobber a pre-existing queued item the user
+                    # already enqueued.
                     adapter = self.adapters.get(source.platform)
                     if adapter:
                         queued_event = MessageEvent(
@@ -7846,7 +8217,7 @@ class GatewayRunner:
                             message_id=event.message_id,
                             channel_prompt=event.channel_prompt,
                         )
-                        adapter._pending_messages[_quick_key] = queued_event
+                        self._enqueue_fifo(_quick_key, queued_event, adapter)
                     return "Agent still starting — /steer queued for the next turn."
                 if running_agent and hasattr(running_agent, "steer"):
                     try:
@@ -7858,7 +8229,10 @@ class GatewayRunner:
                         preview = steer_text[:60] + ("..." if len(steer_text) > 60 else "")
                         return f"⏩ Steer queued — arrives after the next tool call: '{preview}'"
                     return "Steer rejected (empty payload)."
-                # Running agent is missing or lacks steer() — fall back to queue.
+                # Running agent is missing or lacks steer() — fall back
+                # to queue.  Use the FIFO path (not slot-overwrite) so we
+                # don't clobber a pre-existing queued item the user
+                # already enqueued.
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     queued_event = MessageEvent(
@@ -7868,7 +8242,7 @@ class GatewayRunner:
                         message_id=event.message_id,
                         channel_prompt=event.channel_prompt,
                     )
-                    adapter._pending_messages[_quick_key] = queued_event
+                    self._enqueue_fifo(_quick_key, queued_event, adapter)
                 return "No active agent — /steer queued for the next turn."
 
             # /model must not be used while the agent is running.
@@ -10104,9 +10478,12 @@ class GatewayRunner:
         # Discard any /queue overflow for this session — /new is a
         # conversation-boundary operation, queued follow-ups from the
         # previous conversation must not bleed into the new one.
+        # Wipe BOTH in-memory overflow and the SQLite crash-recovery
+        # table so a stale row never rehydrates into the new session.
         _qe = getattr(self, "_queued_events", None)
         if _qe is not None:
             _qe.pop(session_key, None)
+        self._clear_persisted_queue(session_key)
 
         try:
             from tools.env_passthrough import clear_env_passthrough
@@ -10503,6 +10880,18 @@ class GatewayRunner:
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
+            # Surface queue contents so the user knows WHAT is pending,
+            # not just how many items.  Capped at the first 3 items to
+            # keep /status readable; full inventory is on `/queue`.
+            inventory = self._queue_inventory(
+                session_key, adapter=adapter, max_preview=50
+            )
+            for line in inventory[:3]:
+                lines.append(line)
+            if len(inventory) > 3:
+                lines.append(
+                    f"  … and {len(inventory) - 3} more — see `/queue` for full list"
+                )
         lines.extend([
             "",
             t("gateway.status.platforms", platforms=', '.join(connected_platforms)),

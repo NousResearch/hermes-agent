@@ -251,6 +251,17 @@ class HolographicMemoryProvider(MemoryProvider):
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
     def shutdown(self) -> None:
+        # IMPORTANT (#44037, same class as #29507): explicitly close the
+        # MemoryStore before dropping the reference so the sqlite3.Connection
+        # is finalized deterministically on the caller's thread.  Leaving it
+        # to refcount/GC would release the DB fd at a non-deterministic time
+        # on a non-deterministic thread, widening the fd-recycle race window
+        # that allows TLS ciphertext to land in the SQLite file.
+        if self._store is not None:
+            try:
+                self._store.close()
+            except Exception:
+                pass
         self._store = None
         self._retriever = None
 

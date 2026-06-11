@@ -3,6 +3,10 @@
 Tests the unified streaming API call, delta callbacks, tool-call
 suppression, provider fallback, and CLI streaming display.
 """
+import json
+import threading
+import time
+import uuid
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -987,10 +991,128 @@ class TestAnthropicStreamCallbacks:
         assert touch_calls.count("receiving stream response") == len(events)
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_anthropic_tool_use_start_marks_partial_tool_for_mid_tool_retry(
+        self, mock_replace, monkeypatch,
+    ):
+        """Anthropic tool_use starts should populate partial tool names.
+
+        Without that, text + tool_use + transient disconnect falls into the
+        partial-text stub path instead of the mid-tool silent retry path.
+        """
+        from run_agent import AIAgent
+        import httpx as _httpx
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "1")
+
+        final_message = SimpleNamespace(
+            content=[
+                SimpleNamespace(
+                    type="tool_use",
+                    id="toolu_1",
+                    name="write_file",
+                    input={"path": "/tmp/audit.md", "content": "ok"},
+                )
+            ],
+            stop_reason="tool_use",
+        )
+
+        class _FailingToolUseStream:
+            response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                yield SimpleNamespace(
+                    type="content_block_delta",
+                    delta=SimpleNamespace(
+                        type="text_delta",
+                        text="Let me write the audit: ",
+                    ),
+                )
+                yield SimpleNamespace(
+                    type="content_block_start",
+                    content_block=SimpleNamespace(
+                        type="tool_use",
+                        name="write_file",
+                    ),
+                )
+                raise _httpx.RemoteProtocolError("peer closed connection")
+
+        class _RecoveredToolUseStream:
+            response = None
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(
+                        type="content_block_start",
+                        content_block=SimpleNamespace(
+                            type="tool_use",
+                            name="write_file",
+                        ),
+                    )
+                ])
+
+            def get_final_message(self):
+                return final_message
+
+        anthropic_client = MagicMock()
+        anthropic_client.messages.stream.side_effect = [
+            _FailingToolUseStream(),
+            _RecoveredToolUseStream(),
+        ]
+        agent._anthropic_client = anthropic_client
+
+        rebuild_calls = []
+        stream_drops = []
+        fired_deltas = []
+        agent._rebuild_anthropic_client = lambda: rebuild_calls.append(True)
+        agent._emit_stream_drop = lambda **kw: stream_drops.append(kw)
+        agent._fire_stream_delta = lambda text: fired_deltas.append(text)
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response is final_message
+        assert anthropic_client.messages.stream.call_count == 2
+        assert rebuild_calls == [True]
+        assert mock_replace.call_count == 0
+        assert stream_drops and stream_drops[0]["mid_tool_call"] is True
+        assert any("reconnecting" in text.lower() for text in fired_deltas)
+
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
         self, mock_replace, monkeypatch,
     ):
-        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None."""
+        """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None.
+
+        Regression for issue #28161: on the Anthropic path the stream-retry
+        pool-cleanup branch used to call ``_replace_primary_openai_client``,
+        which fails without ``OPENAI_API_KEY`` and leaves the in-flight httpx
+        stream blocked on a dead socket until the 900s read-timeout fires.
+        The fix mirrors the ``_interrupt_requested`` branch and closes +
+        rebuilds the Anthropic client instead, so ``mock_replace`` must NOT
+        be called and the Anthropic client must be rebuilt.
+        """
         from run_agent import AIAgent
 
         agent = AIAgent(
@@ -1030,12 +1152,22 @@ class TestAnthropicStreamCallbacks:
             _BadStream(),
             good_stream,
         ]
+        rebuild_calls = {"n": 0}
+        agent._rebuild_anthropic_client = lambda: rebuild_calls.__setitem__(
+            "n", rebuild_calls["n"] + 1
+        )
 
         response = agent._interruptible_streaming_api_call({})
 
         assert response is final_message
         assert agent._anthropic_client.messages.stream.call_count == 2
-        assert mock_replace.call_count == 1
+        # The OpenAI rebuild must NOT be invoked on the Anthropic path:
+        # it raises ``Missing credentials`` without OPENAI_API_KEY and
+        # leaves the dead httpx stream blocked for the full read-timeout.
+        assert mock_replace.call_count == 0
+        # Instead, the Anthropic client should be rebuilt (mirror of the
+        # _interrupt_requested branch).
+        assert rebuild_calls["n"] == 1
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
@@ -1067,6 +1199,93 @@ class TestAnthropicStreamCallbacks:
 
         assert agent._anthropic_client.messages.stream.call_count == 1
         assert mock_replace.call_count == 0
+
+    @patch("run_agent.AIAgent._replace_primary_openai_client")
+    def test_anthropic_stale_stream_does_not_swap_openai_client(
+        self, mock_replace, monkeypatch,
+    ):
+        """Regression for issue #28161: on the Anthropic path the stale-stream
+        polling-loop branch must NOT call ``_replace_primary_openai_client``.
+
+        The OpenAI rebuild fails with ``Missing credentials`` on
+        Anthropic-only configurations and, worse, never closes the
+        in-flight ``messages.stream(...)`` httpx socket, so the worker
+        thread blocks for the full 900s httpx read-timeout (the user-visible
+        15-minute hang).  The fix mirrors the existing ``_interrupt_requested``
+        branch: close + rebuild the Anthropic client so the worker thread
+        unblocks immediately.
+        """
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        agent._interrupt_requested = False
+        # Force the stale-stream branch on the very first poll cycle.
+        monkeypatch.setenv("HERMES_STREAM_STALE_TIMEOUT", "0.01")
+
+        # The worker thread must terminate so the polling loop exits.  We
+        # drive that by signalling completion after the stale-kill fires.
+        rebuild_calls = {"n": 0}
+        close_calls = {"n": 0}
+
+        def _rebuild():
+            rebuild_calls["n"] += 1
+            # End the worker thread on the next iteration by raising
+            # inside the stream context.
+            agent._anthropic_client.messages.stream.side_effect = (
+                InterruptedError("stale kill")
+            )
+
+        agent._rebuild_anthropic_client = _rebuild
+
+        # Stream that hangs indefinitely until the stale detector fires.
+        class _HangStream:
+            response = None
+
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *_args):
+                return False
+
+            def __iter__(self_inner):
+                # Block long enough for the stale detector to fire (>10ms).
+                time.sleep(0.5)
+                return iter(())
+
+            def get_final_message(self_inner):
+                return SimpleNamespace(content=[], stop_reason="end_turn")
+
+        anthropic_client = MagicMock()
+        anthropic_client.close = MagicMock(
+            side_effect=lambda: close_calls.__setitem__("n", close_calls["n"] + 1)
+        )
+        anthropic_client.messages.stream.return_value = _HangStream()
+        agent._anthropic_client = anthropic_client
+
+        # We don't care whether the outer call ultimately succeeds or
+        # raises; the contract under test is purely:
+        #   1. The OpenAI client is NOT swapped.
+        #   2. The Anthropic client IS closed + rebuilt.
+        try:
+            agent._interruptible_streaming_api_call({})
+        except Exception:
+            pass
+
+        assert mock_replace.call_count == 0, (
+            "Anthropic stale-stream must not invoke the OpenAI client swap "
+            "(see issue #28161)."
+        )
+        assert rebuild_calls["n"] >= 1
+        assert close_calls["n"] >= 1
 
 
 class TestPartialToolCallWarning:

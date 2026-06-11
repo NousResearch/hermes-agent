@@ -843,6 +843,16 @@ def _load_context_cache() -> Dict[str, int]:
         return {}
 
 
+def _context_cache_known_floor(model: str, base_url: str) -> Optional[int]:
+    """Return a known provider floor below which cached values are stale."""
+    model_lower = (model or "").lower()
+    if "gemini" not in model_lower:
+        return None
+    if _infer_provider_from_url(base_url or "") == "gemini":
+        return DEFAULT_CONTEXT_LENGTHS["gemini"]
+    return None
+
+
 def save_context_length(model: str, base_url: str, length: int) -> None:
     """Persist a discovered context length for a model+provider combo.
 
@@ -851,6 +861,24 @@ def save_context_length(model: str, base_url: str, length: int) -> None:
     """
     key = f"{model}@{base_url}"
     cache = _load_context_cache()
+    floor = _context_cache_known_floor(model, base_url)
+    if floor is not None and length < floor:
+        if cache.get(key, floor) < floor:
+            del cache[key]
+            path = _get_context_cache_path()
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "w", encoding="utf-8") as f:
+                    yaml.dump({"context_lengths": cache}, f, default_flow_style=False)
+            except Exception as e:
+                logger.debug("Failed to drop stale low context length cache entry %s: %s", key, e)
+        logger.info(
+            "Ignoring context length cache %s -> %s tokens below known floor %s",
+            key,
+            f"{length:,}",
+            f"{floor:,}",
+        )
+        return
     if cache.get(key) == length:
         return  # already stored
     cache[key] = length
@@ -1636,6 +1664,16 @@ def get_model_context_length(
                     "Dropping stale Grok-4.3 cache entry %s@%s -> %s (pre-catalog value); "
                     "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            elif (
+                (floor := _context_cache_known_floor(model, base_url)) is not None
+                and cached < floor
+            ):
+                logger.info(
+                    "Dropping stale Gemini cache entry %s@%s -> %s below known floor %s; "
+                    "re-resolving via hardcoded defaults",
+                    model, base_url, f"{cached:,}", f"{floor:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
             # Nous Portal: the portal /v1/models endpoint is authoritative.

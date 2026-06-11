@@ -136,6 +136,71 @@ class TestTelegramModelPicker:
         assert "`gpt-5`" in edit_kwargs["text"]
         assert "12345" not in adapter._model_picker_state
 
+    @pytest.mark.parametrize(
+        ("callback_message_id", "callback_thread_id"),
+        [
+            (99, 111),
+            (42, 222),
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_model_picker_rejects_stale_message_or_thread_callback(
+        self,
+        callback_message_id,
+        callback_thread_id,
+        monkeypatch,
+    ):
+        adapter = _make_adapter()
+        callback = AsyncMock(return_value="Switched to `gemini-3.5-flash`")
+        monkeypatch.setattr(
+            "hermes_cli.model_cost_guard.expensive_model_warning",
+            lambda *_args, **_kwargs: None,
+        )
+
+        async def mock_send_message(**kwargs):
+            return SimpleNamespace(message_id=42)
+
+        adapter._bot.send_message = AsyncMock(side_effect=mock_send_message)
+
+        result = await adapter.send_model_picker(
+            chat_id="12345",
+            providers=[
+                {
+                    "slug": "gemini",
+                    "name": "Google",
+                    "models": ["gemini-3.5-flash"],
+                    "total_models": 1,
+                }
+            ],
+            current_model="gpt-5.5",
+            current_provider="openai-codex",
+            session_key="agent:main:telegram:dm:12345:111",
+            on_model_selected=callback,
+            metadata={"thread_id": "111"},
+        )
+        assert result.success is True
+
+        state = next(iter(adapter._model_picker_state.values()))
+        state["selected_provider"] = "gemini"
+        state["model_list"] = ["gemini-3.5-flash"]
+
+        query = AsyncMock()
+        query.data = "mm:0"
+        query.message = SimpleNamespace(
+            chat_id=12345,
+            message_id=callback_message_id,
+            message_thread_id=callback_thread_id,
+        )
+        query.from_user = SimpleNamespace(first_name="Sam")
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        await adapter._handle_model_picker_callback(query, "mm:0", "12345")
+
+        callback.assert_not_awaited()
+        query.edit_message_text.assert_not_awaited()
+        query.answer.assert_awaited()
+
     @pytest.mark.asyncio
     async def test_provider_group_folds_and_drills_down(self, monkeypatch):
         """A provider family (e.g. MiniMax) collapses to one mpg: button at

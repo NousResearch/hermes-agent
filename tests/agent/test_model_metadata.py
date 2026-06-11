@@ -183,6 +183,35 @@ class TestDefaultContextLengths:
                 api_key="oauth-token",
             ) == 256000
 
+    def test_low_gemini_cache_is_ignored_and_invalidated(self, tmp_path, monkeypatch):
+        """A stale low Gemini cache entry must not override the known 1M default."""
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://generativelanguage.googleapis.com/v1beta"
+        stale_key = f"gemini-3.5-flash@{base_url}"
+        other_key = "other-model@https://api.example.com/v1"
+        cache_file.write_text(yaml.dump({"context_lengths": {
+            stale_key: 131_072,
+            other_key: 64_000,
+        }}))
+
+        with patch("agent.model_metadata._query_ollama_api_show", return_value=None), \
+             patch("agent.models_dev.lookup_models_dev_context", return_value=None), \
+             patch("agent.model_metadata.fetch_model_metadata", return_value={}):
+            ctx = mm.get_model_context_length(
+                model="gemini-3.5-flash",
+                base_url=base_url,
+                provider="gemini",
+            )
+
+        assert ctx == 1_048_576
+        remaining = yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert stale_key not in remaining
+        assert remaining.get(other_key) == 64_000
+
     def test_deepseek_v4_models_1m_context(self):
         from agent.model_metadata import get_model_context_length
         from unittest.mock import patch as mock_patch
@@ -1335,6 +1364,17 @@ class TestContextLengthCache:
             save_context_length("model", "http://x", 128000)
             save_context_length("model", "http://x", 64000)
             assert get_cached_context_length("model", "http://x") == 64000
+
+    def test_save_rejects_gemini_value_below_known_default(self, tmp_path):
+        """Do not persist accidental Gemini probe-down values below the family floor."""
+        cache_file = tmp_path / "cache.yaml"
+        base_url = "https://generativelanguage.googleapis.com/v1beta"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("gemini-3.5-flash", base_url, 131_072)
+
+        if cache_file.exists():
+            data = yaml.safe_load(cache_file.read_text()) or {}
+            assert f"gemini-3.5-flash@{base_url}" not in data.get("context_lengths", {})
 
     def test_corrupted_yaml_returns_empty(self, tmp_path):
         """Corrupted cache file is handled gracefully."""

@@ -130,7 +130,7 @@ When pointing Hermes at a self-hosted Honcho server, `hermes honcho setup` (and 
 | `dialecticMaxInputChars` | `10000` | Max chars for dialectic query input to `peer.chat()` |
 | `sessionStrategy` | `'per-directory'` | `per-directory`, `per-repo`, `per-session`, or `global` |
 | `pinUserPeer` | `false` | Gateway only. When `true`, every platform user collapses to `peerName` |
-| `userPeerAliases` | `{}` | Gateway only. Map of runtime IDs to peers (`{"86701400": "eri"}`). Many-to-one |
+| `userPeerAliases` | `{}` | Gateway only. Map of runtime IDs to peers (`{"86701400": "alice"}`). Many-to-one |
 | `runtimePeerPrefix` | `""` | Gateway only. Namespaces unknown runtime IDs (`telegram_86701400`) when no alias matches |
 
 **Session strategy** controls how Honcho sessions map to your work:

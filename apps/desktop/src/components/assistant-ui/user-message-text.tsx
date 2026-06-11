@@ -2,6 +2,7 @@ import type { FC } from 'react'
 import { Fragment, useMemo } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
+import { textDirection } from '@/lib/text-direction'
 import { cn } from '@/lib/utils'
 
 // User messages should render the bare-minimum of markdown: backtick `code`
@@ -126,8 +127,23 @@ export const UserMessageText: FC<UserMessageTextProps> = ({ className, text }) =
 const InlineSegmentView: FC<{ text: string }> = ({ text }) => {
   const nodes = useMemo(() => splitInlineCode(text), [text])
 
+  // Direction comes from the segment's prose; inline code doesn't get a
+  // vote, so a message that *starts* with a command still right-aligns
+  // when the sentence around it is Hebrew/Arabic. `text-start` follows the
+  // resolved direction (the bubble itself is `text-left`); fences stay LTR.
+  const dir = useMemo(
+    () =>
+      textDirection(
+        nodes
+          .filter(node => node.kind === 'inline-text')
+          .map(node => node.text)
+          .join('')
+      ) ?? 'auto',
+    [nodes]
+  )
+
   return (
-    <span className="wrap-anywhere block whitespace-pre-line">
+    <span className="wrap-anywhere block whitespace-pre-line text-start" dir={dir}>
       {nodes.map((node, nodeIndex) =>
         node.kind === 'inline-code' ? (
           <code

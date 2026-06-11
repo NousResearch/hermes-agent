@@ -7,7 +7,17 @@ import {
   type SyntaxHighlighterProps
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
-import { type ComponentProps, memo, type ReactNode, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type ComponentProps,
+  isValidElement,
+  memo,
+  type ReactNode,
+  useDeferredValue,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from 'react'
 
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
@@ -26,6 +36,7 @@ import {
   mediaStreamUrl
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
+import { textDirection } from '@/lib/text-direction'
 import { cn } from '@/lib/utils'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
@@ -162,6 +173,40 @@ function MediaAttachment({ path }: { path: string }) {
       {failed ? `Open ${name}` : `Loading ${name}...`}
     </a>
   )
+}
+
+// Block direction comes from the block's prose: code spans and math don't
+// get a vote, so a paragraph that *starts* with `./script.sh` or `npm ...`
+// still right-aligns when the sentence around it is Hebrew/Arabic. Blocks
+// with no prose at all fall back to dir="auto" (plain first-strong).
+function proseText(node: ReactNode): string {
+  if (typeof node === 'string' || typeof node === 'number') {
+    return String(node)
+  }
+
+  if (Array.isArray(node)) {
+    return node.map(proseText).join('')
+  }
+
+  if (isValidElement(node)) {
+    const props = node.props as { children?: ReactNode; className?: string; node?: { tagName?: string } }
+
+    if (
+      node.type === 'code' ||
+      props.node?.tagName === 'code' ||
+      (typeof props.className === 'string' && props.className.includes('katex'))
+    ) {
+      return ''
+    }
+
+    return proseText(props.children)
+  }
+
+  return ''
+}
+
+function proseDir(children: ReactNode): 'auto' | 'ltr' | 'rtl' {
+  return textDirection(proseText(children)) ?? 'auto'
 }
 
 function childrenToText(children: unknown): string {
@@ -386,40 +431,67 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
     () =>
       ({
         h1: ({ className, ...props }: ComponentProps<'h1'>) => (
-          <h1 className={cn('my-1 font-semibold', HEADING_SIZES.h1, className)} {...props} />
+          <h1
+            className={cn('my-1 font-semibold text-start', HEADING_SIZES.h1, className)}
+            dir={proseDir(props.children)}
+            {...props}
+          />
         ),
         h2: ({ className, ...props }: ComponentProps<'h2'>) => (
-          <h2 className={cn('my-1 font-semibold', HEADING_SIZES.h2, className)} {...props} />
+          <h2
+            className={cn('my-1 font-semibold text-start', HEADING_SIZES.h2, className)}
+            dir={proseDir(props.children)}
+            {...props}
+          />
         ),
         h3: ({ className, ...props }: ComponentProps<'h3'>) => (
-          <h3 className={cn('my-1 font-semibold', HEADING_SIZES.h3, className)} {...props} />
+          <h3
+            className={cn('my-1 font-semibold text-start', HEADING_SIZES.h3, className)}
+            dir={proseDir(props.children)}
+            {...props}
+          />
         ),
         h4: ({ className, ...props }: ComponentProps<'h4'>) => (
-          <h4 className={cn('my-1 font-semibold', HEADING_SIZES.h4, className)} {...props} />
+          <h4
+            className={cn('my-1 font-semibold text-start', HEADING_SIZES.h4, className)}
+            dir={proseDir(props.children)}
+            {...props}
+          />
         ),
         p: ({ className, ...props }: ComponentProps<'p'>) => (
           // Vertical rhythm is owned by styles.css (`--paragraph-gap`), which
           // must out-specify Tailwind Typography's `prose` margins — so no
-          // `my-*` here on purpose.
-          <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
+          // `my-*` here on purpose. Direction + `text-start` let each
+          // paragraph right-align when its prose is RTL without affecting
+          // LTR content (see proseDir).
+          <p
+            className={cn('wrap-anywhere text-start leading-(--dt-line-height)', className)}
+            dir={proseDir(props.children)}
+            {...props}
+          />
         ),
         a: MarkdownLink,
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
         blockquote: ({ className, ...props }: ComponentProps<'blockquote'>) => (
           <blockquote
-            className={cn('border-l-2 border-border pl-3 text-muted-foreground italic', className)}
+            className={cn('border-s-2 border-border ps-3 text-start text-muted-foreground italic', className)}
+            dir={proseDir(props.children)}
             {...props}
           />
         ),
         ul: ({ className, ...props }: ComponentProps<'ul'>) => (
-          <ul className={cn('my-1 gap-0', className)} {...props} />
+          <ul className={cn('my-1 gap-0', className)} dir={proseDir(props.children)} {...props} />
         ),
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
-          <ol className={cn('my-1 gap-0', className)} {...props} />
+          <ol className={cn('my-1 gap-0', className)} dir={proseDir(props.children)} {...props} />
         ),
         li: ({ className, ...props }: ComponentProps<'li'>) => (
-          <li className={cn('leading-(--dt-line-height)', className)} {...props} />
+          <li
+            className={cn('text-start leading-(--dt-line-height)', className)}
+            dir={proseDir(props.children)}
+            {...props}
+          />
         ),
         table: ({ className, ...props }: ComponentProps<'table'>) => (
           <div className="aui-md-table my-2 max-w-full overflow-x-auto rounded-[0.375rem] border border-border">

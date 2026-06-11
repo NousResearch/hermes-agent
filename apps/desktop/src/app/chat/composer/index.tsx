@@ -1604,6 +1604,7 @@ export function ChatBar({
         contentEditable={!disabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
+        dir="auto"
         onBlur={() => window.setTimeout(closeTrigger, 80)}
         onCompositionEnd={event => {
           composingRef.current = false

@@ -1053,6 +1053,24 @@ canvas {
   color: var(--ui-inline-code-foreground);
 }
 
+/* Inside a direction-resolved block (the dir attribute is only ever set on
+   message blocks and the composer), inline code and KaTeX math keep their
+   internal LTR order: their neutrals (dots, slashes, dashes) would
+   otherwise be reordered by an RTL paragraph's bidi run. `isolate` stops
+   the run from leaking into the sentence around it. */
+[dir] :is(code, .katex) {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Code blocks are LTR surfaces even when they sit inside an RTL list item
+   or blockquote: pin them so the card chrome and code lines don't mirror. */
+[data-slot='code-card'],
+[data-streamdown='code-block'],
+[data-slot='aui_user-fence'] {
+  direction: ltr;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md :where(.aui-shiki, .aui-shiki > pre) {
   margin: 0 !important;
 }

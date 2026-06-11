@@ -884,9 +884,7 @@ def build_environment_hints() -> str:
             )
         hints.append("\n".join(host_lines))
 
-        # WSL backend: terminal runs inside WSL2 (Linux), file tools stay on
-        # Windows. The agent must use Linux paths for terminal commands and
-        # Windows paths for read_file / write_file / patch / search_files.
+        # WSL backend: all tools execute inside WSL2 (Linux).
         if backend == "wsl":
             hints.append(_WSL_BACKEND_HINT)
 

@@ -1,8 +1,9 @@
-"""WSL2 execution environment - terminal inside WSL, file tools on Windows.
+"""WSL2 execution environment — all tools execute inside WSL2 via ``wsl -e bash``.
 
-Mirrors Docker's philosophy: no path translation. The agent is told
-(via prompt) to use Linux paths for terminal commands and Windows paths
-for file tools.
+``ShellFileOperations`` routes ``read_file`` / ``write_file`` / ``patch`` /
+``search_files`` through ``self.env.execute()``, so file I/O also runs inside
+WSL.  Use Linux paths for all tools.  Windows files are accessible via the
+``/mnt/c/`` mount point.
 
 .. note::
     ``self.cwd`` stores a **Linux** path (e.g. ``/home/agents``), not a
@@ -79,7 +80,8 @@ class WslEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout, env=env)
         self.init_session()
 
-    def get_temp_dir(self) -> str:
+    @staticmethod
+    def get_temp_dir() -> str:
         return "/tmp"
 
     def _run_bash(
@@ -116,11 +118,13 @@ class WslEnvironment(BaseEnvironment):
         self._extract_cwd_from_output(result)
 
     def cleanup(self):
-        for f in (self._snapshot_path, self._cwd_file):
-            try:
-                os.unlink(f)
-            except OSError:
-                pass
+        # Temp files live in WSL's /tmp — unreachable from Windows Python.
+        # Remove them via wsl -e rm instead of os.unlink.
+        subprocess.run(
+            [self._wsl, "-e", "rm", "-f", self._snapshot_path, self._cwd_file],
+            timeout=5, capture_output=True,
+            creationflags=windows_hide_flags(),
+        )
 
     def _kill_process(self, proc):
         try:

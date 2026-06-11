@@ -1,25 +1,25 @@
-"""Shared ``/cron-recipe`` command logic for CLI, TUI, and gateway.
+"""Shared ``/blueprint`` command logic for CLI, TUI, and gateway.
 
-The conversational counterpart to the dashboard's Cron Recipes form. Where a
+The conversational counterpart to the dashboard's Automation Blueprints form. Where a
 surface has a screen, the user fills a form (dashboard / GUI app) and the API
-calls ``fill_recipe`` -> ``create_job`` directly. Where a surface is just a
-chat line, the user picks a recipe by name and the agent asks for what it
-needs — pick a recipe by name and the agent asks you for what it needs, one
-question at a time (the messaging-assistant model: pick a recipe → it asks you
+calls ``fill_blueprint`` -> ``create_job`` directly. Where a surface is just a
+chat line, the user picks a blueprint by name and the agent asks for what it
+needs — pick a blueprint by name and the agent asks you for what it needs, one
+question at a time (the messaging-assistant model: pick a blueprint → it asks you
 a couple things → done).
 
 Subcommand shapes:
-  /cron-recipe                      list the catalog
-  /cron-recipe <name>               name-match a recipe, then SEED THE AGENT to
+  /blueprint                      list the catalog
+  /blueprint <name>               name-match a blueprint, then SEED THE AGENT to
                                     ask the user for each value conversationally
-  /cron-recipe <name> slot=val …    fill + create the cron job directly
+  /blueprint <name> slot=val …    fill + create the cron job directly
                                     (the deterministic dashboard / docs / power-
                                     user shortcut — no agent turn)
 
 The ``<name>`` form is forgiving: exact key, unique prefix, or fuzzy match all
 resolve; an ambiguous query lists the candidates; an unknown one suggests the
 closest. When it resolves, the handler returns an ``agent_seed`` — a natural-
-language instruction built from the recipe's typed slots + schedule/prompt
+language instruction built from the blueprint's typed slots + schedule/prompt
 templates — that the calling surface feeds to the agent as a normal user turn
 (gateway: rewrite ``event.text`` and fall through, the ``/steer`` pattern; CLI:
 a one-shot pending seed the main loop runs). The agent then asks for each slot
@@ -41,12 +41,12 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class RecipeCommandResult:
-    """Outcome of a ``/cron-recipe`` invocation.
+class BlueprintCommandResult:
+    """Outcome of a ``/blueprint`` invocation.
 
     ``text`` is always shown to the user. When ``agent_seed`` is set, the
     calling surface should ALSO hand that seed to the agent as the user's next
-    turn (the recipe was matched and now the agent gathers the slot values
+    turn (the blueprint was matched and now the agent gathers the slot values
     conversationally). When ``agent_seed`` is None the command is fully handled
     (catalog listing, direct create, or an error) and nothing is sent to the
     agent.
@@ -91,11 +91,11 @@ def _parse_kv(tokens) -> Tuple[Dict[str, str], list]:
     return values, leftovers
 
 
-def match_recipe(query: str) -> Tuple[Optional[Any], List[Any]]:
-    """Resolve a free-typed recipe name to a recipe.
+def match_blueprint(query: str) -> Tuple[Optional[Any], List[Any]]:
+    """Resolve a free-typed blueprint name to a blueprint.
 
-    Returns ``(recipe, candidates)``:
-      * exact key or unique prefix / fuzzy match -> ``(recipe, [])``
+    Returns ``(blueprint, candidates)``:
+      * exact key or unique prefix / fuzzy match -> ``(blueprint, [])``
       * ambiguous (2+ plausible) -> ``(None, [candidates…])``
       * no plausible match -> ``(None, [])``
 
@@ -103,13 +103,13 @@ def match_recipe(query: str) -> Tuple[Optional[Any], List[Any]]:
     dashboard/Discord where it's picked): exact key first, then case-insensitive
     prefix on key or title, then a difflib fuzzy pass.
     """
-    from cron.recipe_catalog import CATALOG, get_recipe
+    from cron.blueprint_catalog import CATALOG, get_blueprint
 
     q = (query or "").strip().lower()
     if not q:
         return None, []
 
-    exact = get_recipe(q)
+    exact = get_blueprint(q)
     if exact is not None:
         return exact, []
 
@@ -138,43 +138,43 @@ def match_recipe(query: str) -> Tuple[Optional[Any], List[Any]]:
     keys = [r.key for r in CATALOG]
     close = difflib.get_close_matches(q, keys, n=3, cutoff=0.6)
     if len(close) == 1:
-        return get_recipe(close[0]), []
+        return get_blueprint(close[0]), []
     if len(close) > 1:
-        return None, [get_recipe(k) for k in close]
+        return None, [get_blueprint(k) for k in close]
 
     return None, []
 
 
-def _humanize_schedule(recipe) -> str:
-    from cron.recipe_catalog import _humanize_schedule as _h
+def _humanize_schedule(blueprint) -> str:
+    from cron.blueprint_catalog import _humanize_schedule as _h
 
     try:
-        return _h(recipe)
+        return _h(blueprint)
     except Exception:
         return "on a schedule"
 
 
-def build_recipe_seed(recipe) -> str:
+def build_blueprint_seed(blueprint) -> str:
     """Build the natural-language fill-request the agent will act on.
 
     The agent reads this as a normal user turn, asks the user for each unfilled
     slot one at a time, then calls the ``cronjob`` tool with the
-    cron expression it builds from the recipe's ``schedule_template`` and the
+    cron expression it builds from the blueprint's ``schedule_template`` and the
     rendered prompt. Defaults are stated so the agent can offer them.
     """
-    from cron.recipe_catalog import WEEKDAY_PRESETS
+    from cron.blueprint_catalog import WEEKDAY_PRESETS
 
     lines: List[str] = []
     lines.append(
-        f"Set up the '{recipe.title}' automation for me (cron recipe "
-        f"'{recipe.key}'). {recipe.description}"
+        f"Set up the '{blueprint.title}' automation for me (automation blueprint "
+        f"'{blueprint.key}'). {blueprint.description}"
     )
     lines.append("")
     lines.append(
         "Ask me for each of these, one at a time, offering the default in "
         "brackets if I don't have a preference:"
     )
-    for s in recipe.slots:
+    for s in blueprint.slots:
         bits = [f"- {s.label} ({s.name})"]
         if s.options:
             bits.append(f" — one of: {', '.join(map(str, s.options))}")
@@ -190,47 +190,47 @@ def build_recipe_seed(recipe) -> str:
     lines.append(
         "Once you have my answers, create the job by calling the cronjob tool "
         "with action='create'. Build the schedule as a cron expression from "
-        f"this template: `{recipe.schedule_template}` "
+        f"this template: `{blueprint.schedule_template}` "
         "(fill {minute}/{hour} from the chosen time, {dow} from the weekday "
         f"choice using {dict(WEEKDAY_PRESETS)}, {{interval_min}} from any "
         "interval). Use this exact prompt for the job (substituting my "
-        f"answers into any {{slot}} placeholders): \"{recipe.prompt_template}\". "
+        f"answers into any {{slot}} placeholders): \"{blueprint.prompt_template}\". "
         "Confirm the schedule and what it will do before you create it."
     )
     return "\n".join(lines)
 
 
 def _fmt_catalog() -> str:
-    from cron.recipe_catalog import CATALOG
+    from cron.blueprint_catalog import CATALOG
 
-    lines = ["Cron Recipes — `/cron-recipe <name>` and I'll ask you what I need:\n"]
+    lines = ["Automation Blueprints — `/blueprint <name>` and I'll ask you what I need:\n"]
     for r in CATALOG:
         lines.append(f"  • {r.key} — {r.title}")
         lines.append(f"    {r.description}")
     lines.append(
-        "\nTip: `/cron-recipe <name>` walks you through it. Power users can "
-        "pass values inline, e.g. `/cron-recipe morning-brief time=08:00`."
+        "\nTip: `/blueprint <name>` walks you through it. Power users can "
+        "pass values inline, e.g. `/blueprint morning-brief time=08:00`."
     )
     return "\n".join(lines)
 
 
 def _fmt_candidates(query: str, candidates: List[Any]) -> str:
-    lines = [f"'{query}' matches several recipes — which one?\n"]
+    lines = [f"'{query}' matches several blueprints — which one?\n"]
     for r in candidates:
         lines.append(f"  • {r.key} — {r.title}")
-    lines.append("\nRun `/cron-recipe <name>` with one of the names above.")
+    lines.append("\nRun `/blueprint <name>` with one of the names above.")
     return "\n".join(lines)
 
 
 def _fmt_no_match(query: str) -> str:
-    from cron.recipe_catalog import CATALOG
+    from cron.blueprint_catalog import CATALOG
 
     keys = [r.key for r in CATALOG]
     close = difflib.get_close_matches((query or "").lower(), keys, n=3, cutoff=0.4)
-    msg = f"No cron recipe matches '{query}'."
+    msg = f"No automation blueprint matches '{query}'."
     if close:
         msg += " Did you mean: " + ", ".join(close) + "?"
-    msg += " Run /cron-recipe to see the catalog."
+    msg += " Run /blueprint to see the catalog."
     return msg
 
 
@@ -243,28 +243,28 @@ def _manage_hint(surface: str) -> str:
     return "Ask me to list, pause, or remove it any time."
 
 
-def handle_cron_recipe_command(
+def handle_blueprint_command(
     args: str,
     *,
     origin: Optional[Dict[str, Any]] = None,
     surface: str = "cli",
-) -> RecipeCommandResult:
-    """Dispatch a ``/cron-recipe`` invocation.
+) -> BlueprintCommandResult:
+    """Dispatch a ``/blueprint`` invocation.
 
-    Returns a :class:`RecipeCommandResult`. When ``agent_seed`` is set the
+    Returns a :class:`BlueprintCommandResult`. When ``agent_seed`` is set the
     caller must feed it to the agent as the next user turn; otherwise the
     command is fully handled and only ``text`` is shown.
 
-    ``args`` is everything after ``/cron-recipe``. ``origin`` lets a directly
+    ``args`` is everything after ``/blueprint``. ``origin`` lets a directly
     created job deliver back to the chat it was set up from. ``surface``
     (``"cli"`` | ``"gateway"``) picks the right wording for follow-up hints —
     ``/cron`` only exists on the CLI.
     """
     try:
-        from cron.recipe_catalog import fill_recipe, RecipeFillError
+        from cron.blueprint_catalog import fill_blueprint, BlueprintFillError
     except Exception as e:  # pragma: no cover - import guard
-        logger.debug("recipe catalog import failed: %s", e)
-        return RecipeCommandResult("Cron Recipes are unavailable in this build.")
+        logger.debug("blueprint catalog import failed: %s", e)
+        return BlueprintCommandResult("Automation Blueprints are unavailable in this build.")
 
     try:
         tokens = shlex.split(args or "")
@@ -273,33 +273,33 @@ def handle_cron_recipe_command(
 
     # Bare -> list catalog.
     if not tokens:
-        return RecipeCommandResult(_fmt_catalog())
+        return BlueprintCommandResult(_fmt_catalog())
 
     query = tokens[0]
     values, _leftover = _parse_kv(tokens[1:])
 
-    recipe, candidates = match_recipe(query)
-    if recipe is None:
+    blueprint, candidates = match_blueprint(query)
+    if blueprint is None:
         if candidates:
-            return RecipeCommandResult(_fmt_candidates(query, candidates))
-        return RecipeCommandResult(_fmt_no_match(query))
+            return BlueprintCommandResult(_fmt_candidates(query, candidates))
+        return BlueprintCommandResult(_fmt_no_match(query))
 
     # `<name>` with no inline slot values -> seed the agent to ask for them.
     if not values:
-        seed = build_recipe_seed(recipe)
+        seed = build_blueprint_seed(blueprint)
         text = (
-            f"Setting up '{recipe.title}' ({_humanize_schedule(recipe)}). "
+            f"Setting up '{blueprint.title}' ({_humanize_schedule(blueprint)}). "
             "I'll ask you a couple of things…"
         )
-        return RecipeCommandResult(text, agent_seed=seed)
+        return BlueprintCommandResult(text, agent_seed=seed)
 
     # `<name> slot=val …` -> fill + create directly (deterministic shortcut).
     try:
-        spec = fill_recipe(recipe, values, origin=_resolve_origin(origin))
-    except RecipeFillError as e:
-        return RecipeCommandResult(
-            f"Can't set up '{recipe.title}': {e}\n"
-            f"Or just run /cron-recipe {recipe.key} and I'll ask you for the values."
+        spec = fill_blueprint(blueprint, values, origin=_resolve_origin(origin))
+    except BlueprintFillError as e:
+        return BlueprintCommandResult(
+            f"Can't set up '{blueprint.title}': {e}\n"
+            f"Or just run /blueprint {blueprint.key} and I'll ask you for the values."
         )
 
     try:
@@ -307,12 +307,12 @@ def handle_cron_recipe_command(
 
         job = create_job(**spec)
     except Exception as e:
-        logger.debug("cron-recipe create_job failed: %s", e)
-        return RecipeCommandResult(f"Failed to create the job: {e}")
+        logger.debug("blueprint create_job failed: %s", e)
+        return BlueprintCommandResult(f"Failed to create the job: {e}")
 
     sched = job.get("schedule_display") or spec.get("schedule", "")
-    return RecipeCommandResult(
-        f"Scheduled '{recipe.title}'"
+    return BlueprintCommandResult(
+        f"Scheduled '{blueprint.title}'"
         + (f" ({sched})" if sched else "")
         + f", delivering to {spec.get('deliver', 'origin')}. {_manage_hint(surface)}"
     )

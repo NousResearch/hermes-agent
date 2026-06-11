@@ -3504,7 +3504,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # the next submitted input, whether it's the selection or anything
         # else). See #34584.
         self._pending_resume_sessions = None
-        # One-shot agent seed set by a slash handler (e.g. /cron-recipe <name>)
+        # One-shot agent seed set by a slash handler (e.g. /blueprint <name>)
         # that wants its output run as the next agent turn. Consumed and cleared
         # by the interactive loop immediately after process_command() returns.
         self._pending_agent_seed = None
@@ -7415,8 +7415,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._handle_cron_command(cmd_original)
         elif canonical == "suggestions":
             self._handle_suggestions_command(cmd_original)
-        elif canonical == "cron-recipe":
-            self._handle_cron_recipe_command(cmd_original)
+        elif canonical == "blueprint":
+            self._handle_blueprint_command(cmd_original)
         elif canonical == "curator":
             self._handle_curator_command(cmd_original)
         elif canonical == "kanban":
@@ -12837,7 +12837,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             _cprint("\n[dim]Command interrupted.[/dim]")
                             continue
                         # A slash handler may set a one-shot pending seed (e.g.
-                        # /cron-recipe <name>) to be run as the next agent turn.
+                        # /blueprint <name>) to be run as the next agent turn.
                         # If present, fall through to the chat path with the seed
                         # as the user message instead of looping back to idle.
                         _seed = getattr(self, "_pending_agent_seed", None)

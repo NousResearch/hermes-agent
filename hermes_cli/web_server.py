@@ -6779,25 +6779,25 @@ async def delete_cron_job(job_id: str, profile: Optional[str] = None):
 
 
 # ---------------------------------------------------------------------------
-# Cron Recipes — parameterized automation templates. The dashboard renders the
+# Automation Blueprints — parameterized automation templates. The dashboard renders the
 # slot schema as a form; submitting instantiates a real cron job via the same
-# create_job path. See cron/recipe_catalog.py for the single source of truth.
+# create_job path. See cron/blueprint_catalog.py for the single source of truth.
 # ---------------------------------------------------------------------------
-class CronRecipeInstantiate(BaseModel):
-    recipe: str                      # recipe key, e.g. "morning-brief"
+class AutomationBlueprintInstantiate(BaseModel):
+    blueprint: str                      # blueprint key, e.g. "morning-brief"
     values: Dict[str, Any] = {}      # filled slot values from the form
 
 
-@app.get("/api/cron/recipes")
-async def list_cron_recipes():
-    """Return the recipe catalog as form schemas for the dashboard gallery.
+@app.get("/api/cron/blueprints")
+async def list_cron_blueprints():
+    """Return the blueprint catalog as form schemas for the dashboard gallery.
 
     The ``deliver`` slot's options are rewritten from the user's actually
     configured gateway platforms (plus the universal origin/local/all), so the
     form never offers a platform that isn't connected.
     """
     try:
-        from cron.recipe_catalog import CATALOG, recipe_catalog_entry
+        from cron.blueprint_catalog import CATALOG, blueprint_catalog_entry
 
         deliver_options = None
         try:
@@ -6810,40 +6810,40 @@ async def list_cron_recipes():
 
         entries = []
         for r in CATALOG:
-            entry = recipe_catalog_entry(r)
+            entry = blueprint_catalog_entry(r)
             if deliver_options:
                 for f in entry.get("fields", []):
                     if f.get("name") == "deliver":
                         f["options"] = deliver_options
             entries.append(entry)
-        return {"recipes": entries}
+        return {"blueprints": entries}
     except Exception as e:
-        _log.exception("GET /api/cron/recipes failed")
+        _log.exception("GET /api/cron/blueprints failed")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/cron/recipes/instantiate")
-async def instantiate_cron_recipe(body: CronRecipeInstantiate, profile: str = "default"):
-    """Fill a recipe's slots and create the cron job (form-submit path)."""
+@app.post("/api/cron/blueprints/instantiate")
+async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: str = "default"):
+    """Fill a blueprint's slots and create the cron job (form-submit path)."""
     try:
-        from cron.recipe_catalog import fill_recipe, get_recipe, RecipeFillError
+        from cron.blueprint_catalog import fill_blueprint, get_blueprint, BlueprintFillError
 
-        recipe = get_recipe(body.recipe)
-        if recipe is None:
-            raise HTTPException(status_code=404, detail=f"Unknown recipe: {body.recipe}")
+        blueprint = get_blueprint(body.blueprint)
+        if blueprint is None:
+            raise HTTPException(status_code=404, detail=f"Unknown blueprint: {body.blueprint}")
         try:
-            spec = fill_recipe(recipe, body.values)
-        except RecipeFillError as exc:
+            spec = fill_blueprint(blueprint, body.values)
+        except BlueprintFillError as exc:
             # Field-level validation error — 422 so the form can show it inline.
             raise HTTPException(status_code=422, detail=str(exc)) from exc
-        # Recipe-created jobs deliver to the dashboard's configured target by
+        # Blueprint-created jobs deliver to the dashboard's configured target by
         # default; the form's deliver slot overrides via spec["deliver"].
         spec.pop("origin", None)
         return _call_cron_for_profile(profile, "create_job", **spec)
     except HTTPException:
         raise
     except Exception as e:
-        _log.exception("POST /api/cron/recipes/instantiate failed")
+        _log.exception("POST /api/cron/blueprints/instantiate failed")
         raise HTTPException(status_code=400, detail=str(e))
 
 

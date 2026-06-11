@@ -66,7 +66,7 @@ metadata:
         description: "What this setting controls"
         default: "sensible-default"
         prompt: "Display prompt for setup"
-    recipe:                              # Optional — marks this skill a runnable automation
+    blueprint:                              # Optional — marks this skill a runnable automation
       schedule: "0 9 * * *"              #   cron expr / "every 2h" / ISO timestamp
       deliver: origin                    #   optional (default origin)
       prompt: "Task instruction for each run"  # optional
@@ -339,28 +339,28 @@ If your skill is official and useful but not universally needed (e.g., a paid se
 
 If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a registry and share it via `hermes skills install`.
 
-## Recipes: skills that are also automations
+## Blueprints: skills that are also automations
 
-A **recipe** is an ordinary skill that additionally declares a schedule in its frontmatter. Add a `metadata.hermes.recipe` block and the skill becomes a shareable, runnable automation:
+A **blueprint** is an ordinary skill that additionally declares a schedule in its frontmatter. Add a `metadata.hermes.blueprint` block and the skill becomes a shareable, runnable automation:
 
 ```yaml
 metadata:
   hermes:
-    tags: [recipe, email]
-    recipe:
-      schedule: "0 8 * * *"     # presence of `recipe:` marks it runnable
+    tags: [blueprint, email]
+    blueprint:
+      schedule: "0 8 * * *"     # presence of `blueprint:` marks it runnable
       deliver: telegram          # optional (default: origin)
       prompt: "Summarize my unread email and today's calendar."  # optional
       no_agent: false            # optional
 ```
 
-Because a recipe **is** a skill, it flows through the entire skills pipeline unchanged — search, inspect, install, security scan, provenance, taps, the centralized index, and `hermes skills publish` for sharing. Nothing new to learn.
+Because a blueprint **is** a skill, it flows through the entire skills pipeline unchanged — search, inspect, install, security scan, provenance, taps, the centralized index, and `hermes skills publish` for sharing. Nothing new to learn.
 
-**Installing a recipe.** When you install a skill that carries a `recipe:` block, Hermes registers it as a **suggested cron job** rather than scheduling it. Scheduling is **opt-in** — installing never silently creates a recurring job. You review and accept it via `/suggestions`:
+**Installing a blueprint.** When you install a skill that carries a `blueprint:` block, Hermes registers it as a **suggested cron job** rather than scheduling it. Scheduling is **opt-in** — installing never silently creates a recurring job. You review and accept it via `/suggestions`:
 
 ```bash
 hermes skills install owner/morning-brief
-# → Recipe: 'morning-brief' is an automation (schedule 0 8 * * *).
+# → Blueprint: 'morning-brief' is an automation (schedule 0 8 * * *).
 #   Added to your suggestions — run /suggestions to schedule or dismiss it.
 
 # then, in a session:
@@ -369,11 +369,11 @@ hermes skills install owner/morning-brief
 /suggestions dismiss 1   # never offer it again
 ```
 
-Recipes are one **source** of the unified Suggested Cron Jobs surface — the same place curated starter automations and (later) usage-pattern and integration suggestions appear. See [Suggested Cron Jobs](#suggested-cron-jobs) below.
+Blueprints are one **source** of the unified Suggested Cron Jobs surface — the same place curated starter automations and (later) usage-pattern and integration suggestions appear. See [Suggested Cron Jobs](#suggested-cron-jobs) below.
 
-**Sharing an automation you built.** A recipe loaded by a cron job (`hermes cron create --skill <name> ...`) can be exported back to a SKILL.md and published like any other skill, so an automation you tuned for yourself becomes a one-command install for someone else.
+**Sharing an automation you built.** A blueprint loaded by a cron job (`hermes cron create --skill <name> ...`) can be exported back to a SKILL.md and published like any other skill, so an automation you tuned for yourself becomes a one-command install for someone else.
 
-The recipe layer adds no new object type, store, or transport — the recipe is a skill, the schedule is a cron job, and sharing is the existing publish/tap/index path.
+The blueprint layer adds no new object type, store, or transport — the blueprint is a skill, the schedule is a cron job, and sharing is the existing publish/tap/index path.
 
 ## Suggested Cron Jobs
 
@@ -382,7 +382,7 @@ Hermes can *propose* automations and let you accept them with one tap, instead o
 | Source | Trigger |
 |--------|---------|
 | `catalog` | Curated starter automations (`/suggestions catalog`) — daily briefing, important-mail monitor, weekly review, workday-start reminder |
-| `recipe` | You installed a skill carrying a `recipe:` block |
+| `blueprint` | You installed a skill carrying a `blueprint:` block |
 | `usage` | The background review noticed a recurring ask a schedule would serve |
 | `integration` | You connected an account (Gmail, GitHub, ...) and the obvious automations are offered |
 

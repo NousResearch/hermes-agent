@@ -1,23 +1,23 @@
-"""Cron Recipes — parameterized automation templates with typed slots.
+"""Automation Blueprints — parameterized automation templates with typed slots.
 
-A *recipe* is a one-place definition of an automation that every surface
+A *blueprint* is a one-place definition of an automation that every surface
 renders natively:
 
   * Dashboard / GUI app  -> a form (one field per slot)
-  * CLI / TUI / messenger -> a pre-filled ``/cron-recipe`` slash command
+  * CLI / TUI / messenger -> a pre-filled ``/blueprint`` slash command
   * Agent                 -> a seed prompt; it asks for any blank/ambiguous slot
   * Docs catalog          -> a copy-paste command + a ``hermes://`` deep-link
 
-The single source of truth is the slot schema below. ``recipe_form_schema``
-emits what a form renderer needs; ``recipe_slash_command`` emits the flattened
-one-line command; ``fill_recipe`` validates user-supplied values and turns a
-recipe into a ``cron.jobs.create_job`` kwargs dict (so there is no second job
+The single source of truth is the slot schema below. ``blueprint_form_schema``
+emits what a form renderer needs; ``blueprint_slash_command`` emits the flattened
+one-line command; ``fill_blueprint`` validates user-supplied values and turns a
+blueprint into a ``cron.jobs.create_job`` kwargs dict (so there is no second job
 engine). The form-where-there's-a-screen / agent-fills-where-there's-a-chat
 split both consume this same module.
 
-Design choice: users never type raw cron. A recipe carries a fixed recurrence
+Design choice: users never type raw cron. A blueprint carries a fixed recurrence
 in ``schedule_template`` and parameterizes only the human-friendly parts
-(time-of-day, weekday set). Recipes needing full flexibility expose a ``text``
+(time-of-day, weekday set). Blueprints needing full flexibility expose a ``text``
 slot named ``schedule`` that passes through verbatim.
 """
 
@@ -28,21 +28,21 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
 __all__ = [
-    "RecipeSlot",
-    "CronRecipe",
+    "BlueprintSlot",
+    "AutomationBlueprint",
     "CATALOG",
-    "get_recipe",
-    "recipe_form_schema",
-    "recipe_slash_command",
-    "recipe_deeplink",
-    "recipe_catalog_entry",
-    "fill_recipe",
-    "RecipeFillError",
+    "get_blueprint",
+    "blueprint_form_schema",
+    "blueprint_slash_command",
+    "blueprint_deeplink",
+    "blueprint_catalog_entry",
+    "fill_blueprint",
+    "BlueprintFillError",
     "WEEKDAY_PRESETS",
 ]
 
 
-class RecipeFillError(ValueError):
+class BlueprintFillError(ValueError):
     """Raised when supplied slot values fail validation."""
 
 
@@ -58,8 +58,8 @@ WEEKDAY_PRESETS: Dict[str, str] = {
 
 
 @dataclass(frozen=True)
-class RecipeSlot:
-    """A single fillable field on a recipe."""
+class BlueprintSlot:
+    """A single fillable field on a blueprint."""
 
     name: str
     type: str
@@ -80,7 +80,7 @@ class RecipeSlot:
 
 
 @dataclass(frozen=True)
-class CronRecipe:
+class AutomationBlueprint:
     """A parameterized automation template."""
 
     key: str
@@ -93,7 +93,7 @@ class CronRecipe:
     schedule_template: str
     # Seed instruction for the agent / the cron job prompt; may contain {slot}s.
     prompt_template: str
-    slots: List[RecipeSlot] = field(default_factory=list)
+    slots: List[BlueprintSlot] = field(default_factory=list)
     deliver_default: str = "origin"
     skills: tuple = ()        # skills the job loads before running
     tags: tuple = ()
@@ -103,11 +103,11 @@ class CronRecipe:
 # Curated in-repo catalog
 # ---------------------------------------------------------------------------
 
-_TIME = lambda default="08:00": RecipeSlot(  # noqa: E731 - concise factory
+_TIME = lambda default="08:00": BlueprintSlot(  # noqa: E731 - concise factory
     name="time", type="time", label="What time?", default=default,
     help="24h local time, e.g. 08:00",
 )
-_DELIVER = RecipeSlot(
+_DELIVER = BlueprintSlot(
     name="deliver", type="enum", label="Where to deliver?",
     default="origin", options=("origin", "local", "telegram", "discord", "email"),
     optional=False, strict=False,
@@ -117,8 +117,8 @@ _DELIVER = RecipeSlot(
 )
 
 
-CATALOG: List[CronRecipe] = [
-    CronRecipe(
+CATALOG: List[AutomationBlueprint] = [
+    AutomationBlueprint(
         key="morning-brief",
         title="Morning briefing",
         description="A short daily briefing: today's calendar, weather, and "
@@ -134,7 +134,7 @@ CATALOG: List[CronRecipe] = [
         slots=[_TIME("08:00"), _DELIVER],
         tags=("daily", "briefing"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="important-mail",
         title="Important-mail monitor",
         description="Check your inbox periodically and ping you ONLY about mail "
@@ -149,12 +149,12 @@ CATALOG: List[CronRecipe] = [
             "configured, explain how to connect one and stop."
         ),
         slots=[
-            RecipeSlot(
+            BlueprintSlot(
                 name="interval_min", type="enum", label="How often?",
                 default="30", options=("15", "30", "60"),
                 help="minutes between checks",
             ),
-            RecipeSlot(
+            BlueprintSlot(
                 name="criteria", type="text",
                 label="Only notify me if the mail…",
                 default="needs a reply today, is from my manager or family, "
@@ -164,7 +164,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("email", "monitor"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="weekly-review",
         title="Weekly review",
         description="A weekly recap: what got done, what's still open, and "
@@ -178,7 +178,7 @@ CATALOG: List[CronRecipe] = [
         ),
         slots=[
             _TIME("18:00"),
-            RecipeSlot(
+            BlueprintSlot(
                 name="day", type="enum", label="Which day?",
                 default="sunday",
                 options=("sunday", "monday", "friday", "saturday"),
@@ -187,7 +187,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("weekly", "review"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="workday-start",
         title="Workday start reminder",
         description="A weekday nudge with your agenda and top priorities.",
@@ -201,7 +201,7 @@ CATALOG: List[CronRecipe] = [
         slots=[_TIME("09:00"), _DELIVER],
         tags=("daily", "focus"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="custom-reminder",
         title="Custom reminder",
         description="A recurring reminder in your own words, on your schedule.",
@@ -209,10 +209,10 @@ CATALOG: List[CronRecipe] = [
         schedule_template="{minute} {hour} * * {dow}",
         prompt_template="Remind the user: {what}",
         slots=[
-            RecipeSlot(name="what", type="text", label="Remind me to…",
+            BlueprintSlot(name="what", type="text", label="Remind me to…",
                        default="take a break and stretch"),
             _TIME("14:00"),
-            RecipeSlot(
+            BlueprintSlot(
                 name="recurrence", type="weekdays", label="Repeat on",
                 default="everyday",
                 options=tuple(WEEKDAY_PRESETS.keys()),
@@ -221,7 +221,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("reminder",),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="evening-winddown",
         title="Evening wind-down",
         description="An end-of-day check-in: tomorrow's calendar at a glance "
@@ -238,7 +238,7 @@ CATALOG: List[CronRecipe] = [
         slots=[_TIME("21:00"), _DELIVER],
         tags=("daily", "evening"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="news-digest",
         title="Topic news digest",
         description="A recurring digest on a topic you care about — deduped "
@@ -253,18 +253,18 @@ CATALOG: List[CronRecipe] = [
             "last run, respond with [SILENT]."
         ),
         slots=[
-            RecipeSlot(
+            BlueprintSlot(
                 name="topic", type="text", label="What topic?",
                 default="AI and technology",
                 help="a subject, product, person, or search phrase",
             ),
             _TIME("18:00"),
-            RecipeSlot(
+            BlueprintSlot(
                 name="recurrence", type="weekdays", label="Repeat on",
                 default="weekdays",
                 options=tuple(WEEKDAY_PRESETS.keys()),
             ),
-            RecipeSlot(
+            BlueprintSlot(
                 name="count", type="enum", label="How many bullets?",
                 default="5", options=("3", "5", "8"),
             ),
@@ -272,7 +272,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("digest", "research"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="bill-renewal-watch",
         title="Bills & renewals reminder",
         description="A heads-up before a recurring payment, subscription "
@@ -285,12 +285,12 @@ CATALOG: List[CronRecipe] = [
             "it renews'), not just a notification. One short message."
         ),
         slots=[
-            RecipeSlot(
+            BlueprintSlot(
                 name="what", type="text", label="What's due?",
                 default="my streaming subscription renews soon",
             ),
             _TIME("10:00"),
-            RecipeSlot(
+            BlueprintSlot(
                 name="recurrence", type="weekdays", label="Repeat on",
                 default="everyday",
                 options=tuple(WEEKDAY_PRESETS.keys()),
@@ -299,7 +299,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("reminder", "finance"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="habit-checkin",
         title="Habit check-in",
         description="A recurring nudge to keep a habit on track and reflect "
@@ -312,12 +312,12 @@ CATALOG: List[CronRecipe] = [
             "of encouragement. One short message."
         ),
         slots=[
-            RecipeSlot(
+            BlueprintSlot(
                 name="habit", type="text", label="Which habit?",
                 default="20 minutes of reading",
             ),
             _TIME("20:00"),
-            RecipeSlot(
+            BlueprintSlot(
                 name="recurrence", type="weekdays", label="Repeat on",
                 default="everyday",
                 options=tuple(WEEKDAY_PRESETS.keys()),
@@ -326,7 +326,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("habit", "wellbeing"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="hydration-move",
         title="Hydration & movement nudge",
         description="A periodic nudge during the day to drink water, stand up, "
@@ -342,17 +342,17 @@ CATALOG: List[CronRecipe] = [
             "doesn't feel robotic. One short line."
         ),
         slots=[
-            RecipeSlot(
+            BlueprintSlot(
                 name="interval_hours", type="enum", label="How often?",
                 default="1", options=("1", "2", "3"),
                 help="hours between nudges",
             ),
-            RecipeSlot(
+            BlueprintSlot(
                 name="start_hour", type="enum", label="Start hour",
                 default="9", options=("7", "8", "9", "10"),
                 help="first hour of the active window (24h)",
             ),
-            RecipeSlot(
+            BlueprintSlot(
                 name="end_hour", type="enum", label="End hour",
                 default="17", options=("16", "17", "18", "19"),
                 help="last hour of the active window (24h)",
@@ -361,7 +361,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("wellbeing", "focus"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="meal-plan",
         title="Weekly meal plan",
         description="A weekly meal plan plus a consolidated grocery list, "
@@ -371,27 +371,27 @@ CATALOG: List[CronRecipe] = [
         prompt_template=(
             "Build the user a meal plan for the coming week: {meals} per day, "
             "suited to a {diet} diet and roughly {effort} cooking effort. "
-            "Include a consolidated grocery list grouped by aisle. Keep recipes "
+            "Include a consolidated grocery list grouped by aisle. Keep blueprints "
             "simple and skimmable."
         ),
         slots=[
-            RecipeSlot(
+            BlueprintSlot(
                 name="diet", type="enum", label="Diet?",
                 default="no restrictions",
                 options=("no restrictions", "vegetarian", "vegan",
                          "high-protein", "low-carb"),
             ),
-            RecipeSlot(
+            BlueprintSlot(
                 name="meals", type="enum", label="Meals per day?",
                 default="dinner only",
                 options=("dinner only", "lunch and dinner", "all three"),
             ),
-            RecipeSlot(
+            BlueprintSlot(
                 name="effort", type="enum", label="Cooking effort?",
                 default="quick", options=("quick", "medium", "ambitious"),
             ),
             _TIME("17:00"),
-            RecipeSlot(
+            BlueprintSlot(
                 name="day", type="enum", label="Which day?",
                 default="sunday",
                 options=("sunday", "monday", "friday", "saturday"),
@@ -400,7 +400,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("weekly", "food"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="learn-daily",
         title="Daily learning drip",
         description="One bite-sized lesson a day on a topic you want to learn, "
@@ -414,12 +414,12 @@ CATALOG: List[CronRecipe] = [
             "with a single question to check understanding."
         ),
         slots=[
-            RecipeSlot(
+            BlueprintSlot(
                 name="topic", type="text", label="Learn about…",
                 default="Spanish vocabulary",
             ),
             _TIME("08:30"),
-            RecipeSlot(
+            BlueprintSlot(
                 name="recurrence", type="weekdays", label="Repeat on",
                 default="weekdays",
                 options=tuple(WEEKDAY_PRESETS.keys()),
@@ -428,7 +428,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("learning", "daily"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="gratitude-journal",
         title="Gratitude & reflection prompt",
         description="A gentle evening prompt to reflect on the day and note "
@@ -443,7 +443,7 @@ CATALOG: List[CronRecipe] = [
         ),
         slots=[
             _TIME("21:30"),
-            RecipeSlot(
+            BlueprintSlot(
                 name="recurrence", type="weekdays", label="Repeat on",
                 default="everyday",
                 options=tuple(WEEKDAY_PRESETS.keys()),
@@ -452,7 +452,7 @@ CATALOG: List[CronRecipe] = [
         ],
         tags=("wellbeing", "reflection"),
     ),
-    CronRecipe(
+    AutomationBlueprint(
         key="on-this-day",
         title="On-this-day discovery",
         description="A daily dose of curiosity: a notable historical event, "
@@ -465,7 +465,7 @@ CATALOG: List[CronRecipe] = [
             "no filler."
         ),
         slots=[
-            RecipeSlot(
+            BlueprintSlot(
                 name="flavor", type="enum", label="What kind?",
                 default="on this day in history",
                 options=("on this day in history", "word of the day",
@@ -481,7 +481,7 @@ CATALOG: List[CronRecipe] = [
 _CATALOG_BY_KEY = {r.key: r for r in CATALOG}
 
 
-def get_recipe(key: str) -> Optional[CronRecipe]:
+def get_blueprint(key: str) -> Optional[AutomationBlueprint]:
     return _CATALOG_BY_KEY.get(key)
 
 
@@ -489,14 +489,14 @@ def get_recipe(key: str) -> Optional[CronRecipe]:
 # Renderers
 # ---------------------------------------------------------------------------
 
-def recipe_form_schema(recipe: CronRecipe) -> Dict[str, Any]:
-    """Emit the JSON a form renderer (dashboard / GUI) needs for this recipe."""
+def blueprint_form_schema(blueprint: AutomationBlueprint) -> Dict[str, Any]:
+    """Emit the JSON a form renderer (dashboard / GUI) needs for this blueprint."""
     return {
-        "key": recipe.key,
-        "title": recipe.title,
-        "description": recipe.description,
-        "category": recipe.category,
-        "tags": list(recipe.tags),
+        "key": blueprint.key,
+        "title": blueprint.title,
+        "description": blueprint.description,
+        "category": blueprint.category,
+        "tags": list(blueprint.tags),
         "fields": [
             {
                 "name": s.name,
@@ -508,20 +508,20 @@ def recipe_form_schema(recipe: CronRecipe) -> Dict[str, Any]:
                 "strict": s.strict,
                 "help": s.help,
             }
-            for s in recipe.slots
+            for s in blueprint.slots
         ],
     }
 
 
-def recipe_slash_command(recipe: CronRecipe, values: Optional[Dict[str, Any]] = None) -> str:
-    """Build the flattened ``/cron-recipe <key> slot=val …`` command string.
+def blueprint_slash_command(blueprint: AutomationBlueprint, values: Optional[Dict[str, Any]] = None) -> str:
+    """Build the flattened ``/blueprint <key> slot=val …`` command string.
 
     Uses each slot's default when ``values`` is omitted, so the docs/dashboard
     can show a ready-to-paste command. Free-text slots are quoted.
     """
     values = values or {}
-    parts = [f"/cron-recipe {recipe.key}"]
-    for s in recipe.slots:
+    parts = [f"/blueprint {blueprint.key}"]
+    for s in blueprint.slots:
         val = values.get(s.name, s.default)
         if val is None or val == "":
             if s.optional:
@@ -534,38 +534,38 @@ def recipe_slash_command(recipe: CronRecipe, values: Optional[Dict[str, Any]] = 
     return " ".join(parts)
 
 
-def recipe_deeplink(recipe: CronRecipe, values: Optional[Dict[str, Any]] = None) -> str:
-    """Build the ``hermes://cron-recipe/<key>?slot=val`` deep-link URL."""
+def blueprint_deeplink(blueprint: AutomationBlueprint, values: Optional[Dict[str, Any]] = None) -> str:
+    """Build the ``hermes://blueprint/<key>?slot=val`` deep-link URL."""
     from urllib.parse import quote, urlencode
 
     values = values or {}
     query = {}
-    for s in recipe.slots:
+    for s in blueprint.slots:
         val = values.get(s.name, s.default)
         if val not in (None, ""):
             query[s.name] = str(val)
     qs = ("?" + urlencode(query)) if query else ""
-    return f"hermes://cron-recipe/{quote(recipe.key)}{qs}"
+    return f"hermes://blueprint/{quote(blueprint.key)}{qs}"
 
 
-def _humanize_schedule(recipe: CronRecipe) -> str:
-    """A short human-readable description of when a recipe runs (defaults)."""
-    sched = recipe.schedule_template
+def _humanize_schedule(blueprint: AutomationBlueprint) -> str:
+    """A short human-readable description of when a blueprint runs (defaults)."""
+    sched = blueprint.schedule_template
     if sched.startswith("*/"):
-        iv = next((s for s in recipe.slots if s.name == "interval_min"), None)
+        iv = next((s for s in blueprint.slots if s.name == "interval_min"), None)
         every = (iv.default if iv else None) or sched.split("/")[1].split()[0]
         return f"every {every} minutes"
     if "{interval_hours}" in sched:
-        iv = next((s for s in recipe.slots if s.name == "interval_hours"), None)
+        iv = next((s for s in blueprint.slots if s.name == "interval_hours"), None)
         every = str((iv.default if iv else None) or "1")
         scope = "weekdays, " if "* * 1-5" in sched else ""
         return f"{scope}every hour" if every == "1" else f"{scope}every {every} hours"
-    time_slot = next((s for s in recipe.slots if s.type == "time"), None)
+    time_slot = next((s for s in blueprint.slots if s.type == "time"), None)
     when = time_slot.default if time_slot else None
     if "* * 1-5" in sched:
         return f"weekdays at {when}" if when else "every weekday"
     if "{dow}" in sched:
-        day_slot = next((s for s in recipe.slots if s.name in ("day", "recurrence")), None)
+        day_slot = next((s for s in blueprint.slots if s.name in ("day", "recurrence")), None)
         scope = (day_slot.default if day_slot else "") or ""
         if scope and when:
             return f"{scope} at {when}"
@@ -575,17 +575,17 @@ def _humanize_schedule(recipe: CronRecipe) -> str:
     return "on a schedule"
 
 
-def recipe_catalog_entry(recipe: CronRecipe) -> Dict[str, Any]:
-    """Unified serializable shape for a recipe — used by the docs generator
+def blueprint_catalog_entry(blueprint: AutomationBlueprint) -> Dict[str, Any]:
+    """Unified serializable shape for a blueprint — used by the docs generator
     and the dashboard API. Combines the form schema, the ready-to-paste slash
     command, the deep-link URL, and a human-readable schedule.
     """
     return {
-        **recipe_form_schema(recipe),
-        "schedule": recipe.schedule_template,
-        "scheduleHuman": _humanize_schedule(recipe),
-        "command": recipe_slash_command(recipe),
-        "appUrl": recipe_deeplink(recipe),
+        **blueprint_form_schema(blueprint),
+        "schedule": blueprint.schedule_template,
+        "scheduleHuman": _humanize_schedule(blueprint),
+        "command": blueprint_slash_command(blueprint),
+        "appUrl": blueprint_deeplink(blueprint),
     }
 
 
@@ -600,9 +600,9 @@ _DAY_TO_DOW = {
 }
 
 
-def _resolve_schedule(recipe: CronRecipe, values: Dict[str, Any]) -> str:
+def _resolve_schedule(blueprint: AutomationBlueprint, values: Dict[str, Any]) -> str:
     """Fill the schedule_template placeholders from resolved slot values."""
-    sched = recipe.schedule_template
+    sched = blueprint.schedule_template
 
     # A free-text `schedule` slot passes through verbatim (full flexibility).
     if "schedule" in values and values["schedule"]:
@@ -614,10 +614,10 @@ def _resolve_schedule(recipe: CronRecipe, values: Dict[str, Any]) -> str:
     time_val = values.get("time")
     if "{minute}" in sched or "{hour}" in sched:
         if not time_val:
-            raise RecipeFillError("a time is required")
+            raise BlueprintFillError("a time is required")
         m = _TIME_RE.match(str(time_val).strip())
         if not m:
-            raise RecipeFillError(f"invalid time {time_val!r} — use HH:MM (24h)")
+            raise BlueprintFillError(f"invalid time {time_val!r} — use HH:MM (24h)")
         repl["hour"] = str(int(m.group(1)))
         repl["minute"] = str(int(m.group(2)))
 
@@ -626,14 +626,14 @@ def _resolve_schedule(recipe: CronRecipe, values: Dict[str, Any]) -> str:
         if "recurrence" in values:
             preset = str(values.get("recurrence", "everyday")).lower()
             if preset not in WEEKDAY_PRESETS:
-                raise RecipeFillError(
+                raise BlueprintFillError(
                     f"unknown recurrence {preset!r} — one of {', '.join(WEEKDAY_PRESETS)}"
                 )
             repl["dow"] = WEEKDAY_PRESETS[preset]
         elif "day" in values:
             day = str(values.get("day", "")).lower()
             if day not in _DAY_TO_DOW:
-                raise RecipeFillError(f"unknown day {day!r}")
+                raise BlueprintFillError(f"unknown day {day!r}")
             repl["dow"] = _DAY_TO_DOW[day]
         else:
             repl["dow"] = "*"
@@ -642,12 +642,12 @@ def _resolve_schedule(recipe: CronRecipe, values: Dict[str, Any]) -> str:
     if "{interval_min}" in sched:
         iv = str(values.get("interval_min", "")).strip()
         if not iv.isdigit() or int(iv) <= 0:
-            raise RecipeFillError(f"invalid interval {iv!r} — minutes as a positive integer")
+            raise BlueprintFillError(f"invalid interval {iv!r} — minutes as a positive integer")
         repl["interval_min"] = iv
 
     # Any remaining {slot} placeholders are filled verbatim from validated
     # enum/text slot values (e.g. an hour-range window). Enum options have
-    # already been checked in fill_recipe, so these are safe to interpolate.
+    # already been checked in fill_blueprint, so these are safe to interpolate.
     for name in re.findall(r"\{(\w+)\}", sched):
         if name not in repl and name in values:
             repl[name] = str(values[name])
@@ -655,59 +655,59 @@ def _resolve_schedule(recipe: CronRecipe, values: Dict[str, Any]) -> str:
     try:
         return sched.format(**repl)
     except KeyError as e:  # pragma: no cover - template/slot mismatch is a dev error
-        raise RecipeFillError(f"schedule template missing value for {e}") from e
+        raise BlueprintFillError(f"schedule template missing value for {e}") from e
 
 
-def fill_recipe(
-    recipe: CronRecipe,
+def fill_blueprint(
+    blueprint: AutomationBlueprint,
     values: Dict[str, Any],
     *,
     origin: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Validate ``values`` and return ``cron.jobs.create_job`` kwargs.
 
-    Missing required (non-optional) slots raise RecipeFillError naming the
+    Missing required (non-optional) slots raise BlueprintFillError naming the
     slot, so a form can show field errors and the agent knows what to ask.
     Unknown slot names are rejected (a typo'd ``tiem=07:15`` must not silently
     create a job with the default time). Enum values are checked against their
     options. The result is passed straight to ``create_job`` — no second schema.
     """
-    known = {s.name for s in recipe.slots}
+    known = {s.name for s in blueprint.slots}
     unknown = sorted(set(values) - known)
     if unknown:
-        raise RecipeFillError(
+        raise BlueprintFillError(
             f"unknown slot{'s' if len(unknown) > 1 else ''}: "
-            f"{', '.join(unknown)} — valid: {', '.join(s.name for s in recipe.slots)}"
+            f"{', '.join(unknown)} — valid: {', '.join(s.name for s in blueprint.slots)}"
         )
     resolved: Dict[str, Any] = {}
-    for s in recipe.slots:
+    for s in blueprint.slots:
         raw = values.get(s.name, s.default)
         if raw in (None, ""):
             if s.optional:
                 continue
-            raise RecipeFillError(f"missing required value: {s.name} ({s.label})")
+            raise BlueprintFillError(f"missing required value: {s.name} ({s.label})")
         if s.type == "enum" and s.strict and s.options and str(raw) not in {str(o) for o in s.options}:
-            raise RecipeFillError(
+            raise BlueprintFillError(
                 f"{s.name}={raw!r} not allowed — one of {', '.join(map(str, s.options))}"
             )
         resolved[s.name] = raw
 
-    schedule = _resolve_schedule(recipe, resolved)
+    schedule = _resolve_schedule(blueprint, resolved)
 
     # Render the prompt with whatever slots it references.
     try:
-        prompt = recipe.prompt_template.format(**resolved)
+        prompt = blueprint.prompt_template.format(**resolved)
     except KeyError as e:
-        raise RecipeFillError(f"recipe prompt missing value for {e}") from e
+        raise BlueprintFillError(f"blueprint prompt missing value for {e}") from e
 
     spec: Dict[str, Any] = {
         "prompt": prompt,
         "schedule": schedule,
-        "name": recipe.title,
-        "deliver": resolved.get("deliver", recipe.deliver_default),
+        "name": blueprint.title,
+        "deliver": resolved.get("deliver", blueprint.deliver_default),
     }
-    if recipe.skills:
-        spec["skills"] = list(recipe.skills)
+    if blueprint.skills:
+        spec["skills"] = list(blueprint.skills)
     if origin is not None:
         spec["origin"] = origin
     return spec

@@ -89,9 +89,9 @@ website/static/api/skills-index.json
 # every build).
 website/static/api/skills.json
 website/static/api/skills-meta.json
-# cron-recipes-index.json is a build artifact emitted by
-# website/scripts/extract-cron-recipes.py during prebuild.
-website/static/api/cron-recipes-index.json
+# automation-blueprints-index.json is a build artifact emitted by
+# website/scripts/extract-automation-blueprints.py during prebuild.
+website/static/api/automation-blueprints-index.json
 models-dev-upstream/
 
 # Local editor / agent tooling (machine-specific; keep in global config, not the repo)

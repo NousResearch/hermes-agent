@@ -1276,13 +1276,13 @@ class CLICommandsMixin:
             output = f"Suggestions command failed: {e}"
         self._console_print(output)
 
-    def _handle_cron_recipe_command(self, cmd: str):
-        """Handle /cron-recipe — set up an automation from a recipe template.
+    def _handle_blueprint_command(self, cmd: str):
+        """Handle /blueprint — set up an automation from a blueprint template.
 
-        Delegates to the shared handler. A bare ``/cron-recipe`` lists the
-        catalog; ``/cron-recipe <name>`` name-matches a recipe and seeds the
+        Delegates to the shared handler. A bare ``/blueprint`` lists the
+        catalog; ``/blueprint <name>`` name-matches a blueprint and seeds the
         agent to ask the user for each value conversationally (the result's
-        ``agent_seed``); ``/cron-recipe <name> slot=val …`` creates the job
+        ``agent_seed``); ``/blueprint <name> slot=val …`` creates the job
         directly. When a seed is returned it is stashed as a one-shot pending
         message the interactive loop runs as the next agent turn.
         """
@@ -1294,10 +1294,10 @@ class CLICommandsMixin:
             tokens = (cmd or "").split()[1:]
         args = " ".join(shlex.quote(t) for t in tokens)
         try:
-            from hermes_cli.cron_recipe_cmd import handle_cron_recipe_command
-            result = handle_cron_recipe_command(args)
+            from hermes_cli.blueprint_cmd import handle_blueprint_command
+            result = handle_blueprint_command(args)
         except Exception as e:
-            self._console_print(f"Cron recipe command failed: {e}")
+            self._console_print(f"Cron blueprint command failed: {e}")
             return
         self._console_print(result.text)
         seed = getattr(result, "agent_seed", None)

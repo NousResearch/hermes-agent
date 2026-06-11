@@ -7,8 +7,8 @@ flows through, regardless of where it came from:
 
   * ``catalog``  — a curated starter automation (daily briefing, important-mail
                    monitor, weekly digest, ...).
-  * ``recipe``   — the user installed a skill that carries a ``recipe:`` block
-                   (see ``tools/recipes.py``); installing it registers a
+  * ``blueprint``   — the user installed a skill that carries a ``blueprint:`` block
+                   (see ``tools/blueprints.py``); installing it registers a
                    suggestion instead of auto-scheduling.
   * ``usage``    — the background self-improvement review noticed a recurring
                    ask that a scheduled job would serve.
@@ -53,7 +53,7 @@ _suggestions_lock = threading.Lock()
 # new suggestions are dropped (the user should clear the backlog first).
 MAX_PENDING = 5
 
-VALID_SOURCES = frozenset({"catalog", "recipe", "usage", "integration"})
+VALID_SOURCES = frozenset({"catalog", "blueprint", "usage", "integration"})
 _STATUS_PENDING = "pending"
 _STATUS_ACCEPTED = "accepted"
 _STATUS_DISMISSED = "dismissed"

@@ -691,24 +691,24 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
 
-    # Recipe detection: if the installed skill declares a
-    # metadata.hermes.recipe block, it is a runnable automation. Register it as
+    # Blueprint detection: if the installed skill declares a
+    # metadata.hermes.blueprint block, it is a runnable automation. Register it as
     # a Suggested Cron Job rather than auto-scheduling — installing never
     # silently creates a recurring job; the user accepts it via /suggestions.
     # This is the single surface every automation proposal flows through.
     try:
-        from tools.recipes import RecipeError, recipe_spec_for_installed, register_recipe_suggestion
+        from tools.blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
 
         try:
-            spec = recipe_spec_for_installed(bundle.name)
-        except RecipeError as _rec_err:
-            c.print(f"[yellow]Recipe block present but invalid:[/] {_rec_err}\n")
+            spec = blueprint_spec_for_installed(bundle.name)
+        except BlueprintError as _rec_err:
+            c.print(f"[yellow]Blueprint block present but invalid:[/] {_rec_err}\n")
             spec = None
         if spec is not None:
-            registered = register_recipe_suggestion(spec)
+            registered = register_blueprint_suggestion(spec)
             if registered is not None:
                 c.print(
-                    f"[bold cyan]Recipe:[/] '{bundle.name}' is an automation "
+                    f"[bold cyan]Blueprint:[/] '{bundle.name}' is an automation "
                     f"(schedule [bold]{spec.schedule}[/])."
                 )
                 c.print(
@@ -720,7 +720,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                 # list is at its cap. Say so instead of silently doing nothing —
                 # the user can still schedule it by hand.
                 c.print(
-                    f"[bold cyan]Recipe:[/] '{bundle.name}' is an automation "
+                    f"[bold cyan]Blueprint:[/] '{bundle.name}' is an automation "
                     f"(schedule [bold]{spec.schedule}[/]), but it wasn't added to "
                     "your suggestions (already offered/dismissed, or the pending "
                     "list is full — run [bold]/suggestions[/] to review)."
@@ -729,7 +729,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                     "[dim]You can still schedule it any time by asking the agent "
                     "or via[/] [bold]hermes cron add[/][dim].[/]\n"
                 )
-    except Exception:  # pragma: no cover - recipe detection is best-effort
+    except Exception:  # pragma: no cover - blueprint detection is best-effort
         pass
 
     if invalidate_cache:

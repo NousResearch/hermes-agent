@@ -75,6 +75,29 @@ export interface CloudChannelMessagesResult {
   truncated?: boolean
 }
 
+export interface CloudChannelParticipant {
+  count: number
+  device: string
+}
+
+export interface CloudChannelParticipantsResult {
+  count?: number
+  generated_at?: string
+  host_connected?: boolean
+  participants?: CloudChannelParticipant[]
+}
+
+export interface CloudChannelTailStartResult {
+  channel_id: string
+  subscription_id: string
+}
+
+export interface CloudChannelTailStopResult {
+  ok?: boolean
+  stopped?: boolean
+  subscription_id?: string
+}
+
 export interface CloudChannelMember {
   account_id: string
   display_name?: string | null
@@ -338,6 +361,96 @@ export async function loadCloudChannelMessages(
 
     notifyError(err, 'Could not load cloud messages')
 
+    return null
+  }
+}
+
+export async function loadCloudChannelParticipants(
+  channelId: string,
+  options: { quiet?: boolean } = {}
+): Promise<CloudChannelParticipantsResult | null> {
+  const gateway = activeGateway()
+  const trimmed = channelId.trim()
+
+  if (!gateway) {
+    if (!options.quiet) {
+      notify({ kind: 'error', title: 'Cloud participants', message: 'Not connected yet - try again in a moment.' })
+    }
+
+    return null
+  }
+
+  if (!trimmed) {
+    if (!options.quiet) {
+      notify({ kind: 'error', title: 'Cloud participants', message: 'Channel ID is required.' })
+    }
+
+    return null
+  }
+
+  try {
+    return await gateway.request<CloudChannelParticipantsResult>('cloud.channel_participants', {
+      channel_id: trimmed
+    })
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+
+    if (/not configured/i.test(message)) {
+      if (!options.quiet) {
+        notify({
+          kind: 'error',
+          title: "Cloud sharing isn't set up",
+          message: 'Add your cloud token (HERMES_CLOUD_TOKEN) where the gateway runs, then try again.'
+        })
+      }
+
+      return null
+    }
+
+    if (!options.quiet) {
+      notifyError(err, 'Could not load cloud participants')
+    }
+
+    return null
+  }
+}
+
+export async function startCloudChannelTail(
+  channelId: string,
+  sinceSeq = 0
+): Promise<CloudChannelTailStartResult | null> {
+  const gateway = activeGateway()
+  const trimmed = channelId.trim()
+
+  if (!gateway || !trimmed) {
+    return null
+  }
+
+  try {
+    return await gateway.request<CloudChannelTailStartResult>('cloud.channel_tail_start', {
+      channel_id: trimmed,
+      since_seq: sinceSeq
+    })
+  } catch (err) {
+    notifyError(err, 'Could not start cloud live updates')
+
+    return null
+  }
+}
+
+export async function stopCloudChannelTail(subscriptionId: string): Promise<CloudChannelTailStopResult | null> {
+  const gateway = activeGateway()
+  const trimmed = subscriptionId.trim()
+
+  if (!gateway || !trimmed) {
+    return null
+  }
+
+  try {
+    return await gateway.request<CloudChannelTailStopResult>('cloud.channel_tail_stop', {
+      subscription_id: trimmed
+    })
+  } catch {
     return null
   }
 }

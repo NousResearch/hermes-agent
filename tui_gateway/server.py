@@ -133,6 +133,8 @@ _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
 _pending_prompt_payloads: dict[str, tuple[str, dict]] = {}
 _answers: dict[str, str] = {}
+_cloud_tails: dict[str, dict] = {}
+_cloud_tails_lock = threading.Lock()
 _db = None
 _db_error: str | None = None
 _stdout_lock = threading.Lock()
@@ -4213,6 +4215,154 @@ def _(rid, params: dict) -> dict:
     except Exception as e:
         return _err(rid, 5040, f"cloud channel messages failed: {e}")
     return _ok(rid, result)
+
+
+@method("cloud.channel_participants")
+def _(rid, params: dict) -> dict:
+    """Read the live cloud-channel roster for a joined/owned channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    channel_id = str(params.get("channel_id") or "").strip()
+    if not channel_id:
+        return _err(rid, 4006, "channel_id required")
+
+    try:
+        result = cloud_channels.list_participants(channel_id)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud channel participants failed: {e}")
+    return _ok(rid, result)
+
+
+def _emit_cloud_tail_event(transport, event_type: str, subscription_id: str, channel_id: str, payload: dict) -> bool:
+    frame = {
+        "jsonrpc": "2.0",
+        "method": "event",
+        "params": {
+            "type": event_type,
+            "payload": {
+                "subscription_id": subscription_id,
+                "channel_id": channel_id,
+                **payload,
+            },
+        },
+    }
+    if transport is not None:
+        return bool(transport.write(frame))
+    return bool(write_json(frame))
+
+
+def _cloud_tail_worker(subscription_id: str, channel_id: str, since_seq: int, transport, stop: threading.Event):
+    from tui_gateway import cloud_channels
+
+    next_seq = max(0, int(since_seq or 0))
+    try:
+        while not stop.is_set():
+            try:
+                for event_name, payload in cloud_channels.stream_messages(
+                    channel_id,
+                    since_seq=next_seq,
+                    stop_event=stop,
+                ):
+                    if stop.is_set():
+                        break
+                    if event_name == "message" and isinstance(payload, dict):
+                        try:
+                            seq = int(payload.get("seq") or next_seq)
+                        except Exception:
+                            seq = next_seq
+                        next_seq = max(next_seq, seq)
+                        if not _emit_cloud_tail_event(
+                            transport,
+                            "cloud.channel.message",
+                            subscription_id,
+                            channel_id,
+                            {"message": payload, "next_seq": next_seq},
+                        ):
+                            stop.set()
+                            break
+                    elif event_name == "error":
+                        if not _emit_cloud_tail_event(
+                            transport,
+                            "cloud.channel.error",
+                            subscription_id,
+                            channel_id,
+                            {"error": payload},
+                        ):
+                            stop.set()
+                            break
+                if not stop.is_set():
+                    stop.wait(1.0)
+            except Exception as e:
+                if stop.is_set():
+                    break
+                if not _emit_cloud_tail_event(
+                    transport,
+                    "cloud.channel.error",
+                    subscription_id,
+                    channel_id,
+                    {"error": str(e)},
+                ):
+                    stop.set()
+                    break
+                stop.wait(5.0)
+    finally:
+        with _cloud_tails_lock:
+            current = _cloud_tails.get(subscription_id)
+            if current and current.get("stop") is stop:
+                _cloud_tails.pop(subscription_id, None)
+
+
+@method("cloud.channel_tail_start")
+def _(rid, params: dict) -> dict:
+    """Start a cloud-channel SSE tail and emit gateway events as messages arrive."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    channel_id = str(params.get("channel_id") or "").strip()
+    if not channel_id:
+        return _err(rid, 4006, "channel_id required")
+
+    try:
+        since_seq = int(params.get("since_seq") or 0)
+    except Exception:
+        since_seq = 0
+
+    subscription_id = f"cloud-tail-{uuid.uuid4().hex}"
+    stop = threading.Event()
+    transport = current_transport() or _stdio_transport
+    thread = threading.Thread(
+        target=_cloud_tail_worker,
+        args=(subscription_id, channel_id, since_seq, transport, stop),
+        name=f"cloud-tail-{channel_id[:18]}",
+        daemon=True,
+    )
+    with _cloud_tails_lock:
+        _cloud_tails[subscription_id] = {
+            "channel_id": channel_id,
+            "stop": stop,
+            "thread": thread,
+        }
+    thread.start()
+    return _ok(rid, {"subscription_id": subscription_id, "channel_id": channel_id})
+
+
+@method("cloud.channel_tail_stop")
+def _(rid, params: dict) -> dict:
+    """Stop a cloud-channel SSE tail started by cloud.channel_tail_start."""
+    subscription_id = str(params.get("subscription_id") or "").strip()
+    if not subscription_id:
+        return _err(rid, 4006, "subscription_id required")
+
+    with _cloud_tails_lock:
+        current = _cloud_tails.pop(subscription_id, None)
+    if current:
+        current["stop"].set()
+    return _ok(rid, {"ok": True, "subscription_id": subscription_id, "stopped": bool(current)})
 
 
 @method("session.delete")

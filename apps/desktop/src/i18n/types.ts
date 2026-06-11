@@ -876,6 +876,11 @@ export interface Translations {
     cloudMessagesLoadMore: string
     cloudMessagesLoadingMore: string
     cloudMessagesNoContent: string
+    cloudParticipantsTitle: string
+    cloudParticipantsEmpty: string
+    cloudHostOnline: string
+    cloudHostOffline: string
+    cloudParticipantLabel: (device: string, count: string) => string
     allPinned: string
     shiftClickHint: string
     noWorkspace: string

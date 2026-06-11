@@ -1,4 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import type { GatewayEvent } from '@hermes/shared'
+import { useStore } from '@nanostores/react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -17,10 +19,15 @@ import {
   acceptCloudChannelInvite,
   type CloudChannel,
   type CloudChannelMessage,
+  type CloudChannelParticipant,
   loadCloudChannelMessages,
-  loadCloudChannels
+  loadCloudChannelParticipants,
+  loadCloudChannels,
+  startCloudChannelTail,
+  stopCloudChannelTail
 } from '@/lib/cloud-share'
 import { cn } from '@/lib/utils'
+import { $gateway } from '@/store/gateway'
 
 interface CloudChannelsDialogProps {
   onOpenChange: (open: boolean) => void
@@ -49,17 +56,63 @@ const messageKey = (message: CloudChannelMessage) =>
 const messageSender = (message: CloudChannelMessage) =>
   message.sender_device || message.origin_device_id || message.sender_account_id || ''
 
+interface CloudMessageEventPayload {
+  channel_id?: string
+  message?: CloudChannelMessage
+  next_seq?: number
+  subscription_id?: string
+}
+
 export function CloudChannelsDialog({ onOpenChange, open }: CloudChannelsDialogProps) {
   const { t } = useI18n()
   const s = t.sidebar
+  const gateway = useStore($gateway)
   const [channels, setChannels] = useState<CloudChannel[]>([])
+  const [hostConnected, setHostConnected] = useState(false)
   const [inviteToken, setInviteToken] = useState('')
   const [loading, setLoading] = useState(false)
   const [messages, setMessages] = useState<CloudChannelMessage[]>([])
   const [messagesLoading, setMessagesLoading] = useState(false)
   const [messageCursor, setMessageCursor] = useState<MessageCursor | null>(null)
+  const [participants, setParticipants] = useState<CloudChannelParticipant[]>([])
   const [selectedChannelId, setSelectedChannelId] = useState<string | null>(null)
   const [submitting, setSubmitting] = useState(false)
+  const messageCursorRef = useRef<MessageCursor | null>(null)
+
+  useEffect(() => {
+    messageCursorRef.current = messageCursor
+  }, [messageCursor])
+
+  const appendLiveMessage = useCallback((channelId: string, message: CloudChannelMessage) => {
+    setMessages(current => {
+      const key = messageKey(message)
+
+      if (current.some(existing => messageKey(existing) === key)) {
+        return current
+      }
+
+      return [...current, message].sort((a, b) => a.seq - b.seq)
+    })
+    setMessageCursor(current => {
+      const base = current ?? { lastSeq: message.seq, nextSeq: message.seq, truncated: false }
+      const nextSeq = Math.max(base.nextSeq, message.seq)
+      const next = {
+        lastSeq: Math.max(base.lastSeq, message.seq),
+        nextSeq,
+        truncated: base.truncated
+      }
+      messageCursorRef.current = next
+
+      return next
+    })
+    setChannels(current =>
+      current.map(channel =>
+        channel.id === channelId
+          ? { ...channel, last_seq: Math.max(Number(channel.last_seq ?? 0), message.seq) }
+          : channel
+      )
+    )
+  }, [])
 
   const loadMessages = useCallback(async (channelId: string, sinceSeq = 0, append = false) => {
     setMessagesLoading(true)
@@ -89,6 +142,17 @@ export function CloudChannelsDialog({ onOpenChange, open }: CloudChannelsDialogP
     } finally {
       setMessagesLoading(false)
     }
+  }, [])
+
+  const loadParticipants = useCallback(async (channelId: string, quiet = false) => {
+    const result = await loadCloudChannelParticipants(channelId, { quiet })
+
+    if (!result) {
+      return
+    }
+
+    setParticipants(result.participants ?? [])
+    setHostConnected(Boolean(result.host_connected))
   }, [])
 
   const refresh = useCallback(async () => {
@@ -124,20 +188,77 @@ export function CloudChannelsDialog({ onOpenChange, open }: CloudChannelsDialogP
         if (result.channel_id) {
           setSelectedChannelId(result.channel_id)
           await loadMessages(result.channel_id)
+          await loadParticipants(result.channel_id)
         }
       }
     } finally {
       setSubmitting(false)
     }
-  }, [inviteToken, loadMessages, refresh])
+  }, [inviteToken, loadMessages, loadParticipants, refresh])
 
   const selectChannel = useCallback(
     (channel: CloudChannel) => {
       setSelectedChannelId(channel.id)
+      setMessages([])
+      setMessageCursor(null)
+      setParticipants([])
+      setHostConnected(false)
       void loadMessages(channel.id)
+      void loadParticipants(channel.id)
     },
-    [loadMessages]
+    [loadMessages, loadParticipants]
   )
+
+  useEffect(() => {
+    if (!open || !selectedChannelId) {
+      return
+    }
+
+    void loadParticipants(selectedChannelId, true)
+    const timer = setInterval(() => void loadParticipants(selectedChannelId, true), 5000)
+
+    return () => clearInterval(timer)
+  }, [loadParticipants, open, selectedChannelId])
+
+  useEffect(() => {
+    if (!open || !selectedChannelId || !gateway) {
+      return
+    }
+
+    let active = true
+    let subscriptionId: string | null = null
+    const offMessage = gateway.on('cloud.channel.message', (event: GatewayEvent<CloudMessageEventPayload>) => {
+      const payload = event.payload
+
+      if (!payload?.message || payload.channel_id !== selectedChannelId) {
+        return
+      }
+
+      appendLiveMessage(selectedChannelId, payload.message)
+    })
+    void startCloudChannelTail(selectedChannelId, messageCursorRef.current?.nextSeq ?? 0).then(result => {
+      if (!result) {
+        return
+      }
+
+      if (!active) {
+        void stopCloudChannelTail(result.subscription_id)
+
+        return
+      }
+
+      subscriptionId = result.subscription_id
+    })
+
+    return () => {
+      active = false
+      offMessage()
+
+      if (subscriptionId) {
+        void stopCloudChannelTail(subscriptionId)
+      }
+    }
+  }, [appendLiveMessage, gateway, open, selectedChannelId])
 
   const selectedChannel = channels.find(channel => channel.id === selectedChannelId) ?? null
   const canLoadMore =
@@ -249,6 +370,28 @@ export function CloudChannelsDialog({ onOpenChange, open }: CloudChannelsDialogP
                   {s.cloudMessagesRefresh}
                 </Button>
               </div>
+
+              {selectedChannelId && (
+                <div className="flex min-h-8 min-w-0 flex-wrap items-center gap-1 rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-background) px-2 py-1">
+                  <span className="mr-1 text-[0.6875rem] font-medium text-(--ui-text-secondary)">
+                    {s.cloudParticipantsTitle}
+                  </span>
+                  <Badge variant={hostConnected ? 'default' : 'muted'}>
+                    {hostConnected ? s.cloudHostOnline : s.cloudHostOffline}
+                  </Badge>
+                  {participants.length === 0 ? (
+                    <span className="text-[0.6875rem] text-(--ui-text-tertiary)">
+                      {s.cloudParticipantsEmpty}
+                    </span>
+                  ) : (
+                    participants.map(participant => (
+                      <Badge key={participant.device} variant="outline">
+                        {s.cloudParticipantLabel(participant.device, String(participant.count))}
+                      </Badge>
+                    ))
+                  )}
+                </div>
+              )}
 
               <div className="max-h-80 overflow-y-auto rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-background)">
                 {!selectedChannelId ? (

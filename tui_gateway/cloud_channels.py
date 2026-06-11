@@ -134,6 +134,71 @@ def list_messages(channel_id: str, *, since_seq: int = 0, limit: int = 100) -> d
     return _request("GET", f"/v1/channels/{channel}/messages?{query}")
 
 
+def list_participants(channel_id: str) -> dict:
+    """Return the live cloud-channel roster visible to the account."""
+    channel = urllib.parse.quote(str(channel_id), safe="")
+    return _request("GET", f"/v1/channels/{channel}/participants")
+
+
+def _stream_request(path: str, timeout: float = 310.0):
+    req = urllib.request.Request(
+        f"{cloud_api()}{path}",
+        method="GET",
+        headers={
+            "authorization": f"Bearer {cloud_token()}",
+            "accept": "text/event-stream",
+        },
+    )
+    return urllib.request.urlopen(req, timeout=timeout)
+
+
+def stream_messages(
+    channel_id: str,
+    *,
+    since_seq: int = 0,
+    stop_event: Optional[threading.Event] = None,
+) -> Any:
+    """Yield ``(event, payload)`` tuples from the cloud-channel SSE tail."""
+    channel = urllib.parse.quote(str(channel_id), safe="")
+    query = urllib.parse.urlencode({"since_seq": max(0, int(since_seq or 0))})
+    event = "message"
+    data_lines: list[str] = []
+
+    with _stream_request(f"/v1/channels/{channel}/stream?{query}") as resp:
+        for raw in resp:
+            if stop_event is not None and stop_event.is_set():
+                break
+
+            line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
+            if not line:
+                if data_lines:
+                    data = "\n".join(data_lines)
+                    try:
+                        payload: Any = json.loads(data)
+                    except json.JSONDecodeError:
+                        payload = data
+                    yield event, payload
+                event = "message"
+                data_lines = []
+                continue
+
+            if line.startswith(":"):
+                continue
+            if line.startswith("event:"):
+                event = line[6:].strip() or "message"
+                continue
+            if line.startswith("data:"):
+                data_lines.append(line[5:].lstrip())
+
+        if data_lines and (stop_event is None or not stop_event.is_set()):
+            data = "\n".join(data_lines)
+            try:
+                payload = json.loads(data)
+            except json.JSONDecodeError:
+                payload = data
+            yield event, payload
+
+
 def rows_to_batch(rows: list[dict], device_name: str) -> list[dict]:
     """Map local ``messages`` rows to the cloud push shape.
 

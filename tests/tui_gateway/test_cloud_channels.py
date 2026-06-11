@@ -134,6 +134,62 @@ def test_list_messages_gets_channel_messages_with_cursor(monkeypatch):
     assert sent == [("GET", "/v1/channels/chan%2F1/messages?since_seq=41&limit=25", None)]
 
 
+def test_list_participants_gets_channel_roster(monkeypatch):
+    sent = []
+
+    def fake_request(method, path, body=None, timeout=15.0):
+        sent.append((method, path, body))
+        return {"participants": [{"device": "ko-mac", "count": 1}], "host_connected": True}
+
+    monkeypatch.setattr(cloud_channels, "_request", fake_request)
+
+    result = cloud_channels.list_participants("chan/1")
+
+    assert result["host_connected"] is True
+    assert sent == [("GET", "/v1/channels/chan%2F1/participants", None)]
+
+
+class _FakeStream:
+    def __init__(self, lines):
+        self.lines = lines
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def __iter__(self):
+        return iter(self.lines)
+
+
+def test_stream_messages_parses_cloud_sse(monkeypatch):
+    paths = []
+
+    def fake_stream(path, timeout=310.0):
+        paths.append(path)
+        return _FakeStream([
+            b": keepalive\n",
+            b"\n",
+            b"event: message\n",
+            b'data: {"seq": 42, "role": "user", "content": "hello"}\n',
+            b"\n",
+            b"event: error\n",
+            b'data: {"message": "boom"}\n',
+            b"\n",
+        ])
+
+    monkeypatch.setattr(cloud_channels, "_stream_request", fake_stream)
+
+    events = list(cloud_channels.stream_messages("chan/1", since_seq=41))
+
+    assert paths == ["/v1/channels/chan%2F1/stream?since_seq=41"]
+    assert events == [
+        ("message", {"seq": 42, "role": "user", "content": "hello"}),
+        ("error", {"message": "boom"}),
+    ]
+
+
 @pytest.fixture()
 def message_db(tmp_path):
     path = tmp_path / "state.db"

@@ -809,11 +809,80 @@ def try_recover_primary_transport(
             f"rebuilt client, waiting {wait_time}s before one last primary attempt.",
             force=True,
         )
+
+        # For timeout-class errors on long sessions, also try to reduce the
+        # context. The default client rebuild doesn't help when the timeout
+        # is correlated with the request size (large context → slow response
+        # → APITimeoutError). Without this, the "one last primary attempt"
+        # times out for the same reason and the turn fails. See #44285.
+        if error_type in _TIMEOUT_TRANSPORT_ERRORS:
+            _try_compress_long_session(agent)
+
         time.sleep(wait_time)
         return True
     except Exception as e:
         logger.warning("Primary transport recovery failed: %s", e)
         return False
+
+
+# A subset of transient errors that are MOST LIKELY caused by a slow
+# provider response to a large request — i.e. correlated with the
+# session's context size. Rebuilding the client (same provider, same
+# config) doesn't help here; the recovery is only useful if it also
+# reduces the request size via context compression.
+_TIMEOUT_TRANSPORT_ERRORS = frozenset({
+    "ReadTimeout",
+    "Timeout",
+    "APITimeoutError",
+})
+
+# A long-session message count is the threshold at which APITimeoutError
+# is empirically likely to be a context-size issue, not a transient
+# TCP-level hiccup. The threshold is intentionally conservative — false
+# negatives (don't compress a session that needed it) cost the user a
+# failed turn; false positives (compress a session that didn't need it)
+# waste a few seconds on a no-op. 200 messages ≈ 80-100k tokens of
+# back-and-forth, the size class at which custom providers start to
+# time out (see #44285: "around 300+ messages / ~230k-250k tokens").
+_LONG_SESSION_MESSAGE_THRESHOLD = 200
+
+
+def _try_compress_long_session(agent) -> None:
+    """Best-effort context compression for long-session timeout recovery.
+
+    Called from ``try_recover_primary_transport`` when the error is in
+    the timeout set and the session is long enough that the timeout is
+    likely correlated with request size. Failures are swallowed — a
+    broken compression should never break the rebuild recovery.
+    """
+    messages = getattr(agent, "messages", None)
+    if not messages or len(messages) < _LONG_SESSION_MESSAGE_THRESHOLD:
+        return
+    system_message = ""
+    sm = getattr(agent, "active_system_prompt", None)
+    if isinstance(sm, str):
+        system_message = sm
+    try:
+        new_messages, new_system = agent._compress_context(
+            list(messages), system_message,
+        )
+        # Update in place only if compression actually reduced the
+        # message list. A no-op compression (already small) shouldn't
+        # risk losing the user's context.
+        if new_messages and len(new_messages) < len(messages):
+            agent.messages = new_messages
+            if new_system and not system_message:
+                agent.active_system_prompt = new_system
+            agent._vprint(
+                f"{agent.log_prefix}🗜️ Pre-recovery compression reduced "
+                f"{len(messages)} → {len(new_messages)} messages before "
+                f"the rebuilt client's one last attempt.",
+                force=True,
+            )
+    except Exception as e:
+        # Best-effort: log and move on. The rebuilt client still gets
+        # its one last attempt; it just won't have a smaller context.
+        logger.debug("Long-session pre-recovery compression failed: %s", e)
 
 # ── End provider fallback ──────────────────────────────────────────────
 

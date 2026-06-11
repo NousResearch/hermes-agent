@@ -9,8 +9,9 @@ Verifies that:
 6. Non-transport errors don't trigger recovery
 """
 
+import asyncio
 import time
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, AsyncMock, call
 
 
 from run_agent import AIAgent
@@ -526,3 +527,155 @@ class TestRateLimitCooldown:
 
         # second call should not have extended the cooldown
         assert second_cooldown == first_cooldown
+
+
+# =============================================================================
+# Long-session APITimeoutError recovery — regression test for #44285
+#
+# Bug: in a long CLI session (~300+ messages, ~230k-250k tokens), the
+# custom OpenAI-compatible provider's response time grows. When the
+# request exceeds the provider's timeout, an `APITimeoutError` fires.
+# The existing `try_recover_primary_transport` path rebuilds the client
+# (same provider, same config) and retries — but the *cause* of the
+# timeout (large context) is unchanged, so the next batch of retries
+# also times out and the turn fails.
+#
+# Expected behavior: when primary transport recovery fires for an
+# APITimeoutError on a long session, the recovery path should ALSO
+# attempt to reduce the context (via `_compress_context`) before
+# giving the rebuilt client its "one last primary attempt."
+# =============================================================================
+
+
+def _make_long_session_agent(provider="custom", message_count=320, total_chars=600_000):
+    """Make an AIAgent with a long session — many messages, lots of text.
+
+    Defaults reproduce the size class from #44285: 300+ messages,
+    ~230k-250k tokens. We use chars as a proxy (~4 chars per token).
+    """
+    agent = _make_agent(provider=provider)
+    # Build a long messages list — each message is a user/assistant pair
+    # with substantial text. The agent stores these in self.messages.
+    chars_per_msg = max(1, total_chars // max(1, message_count))
+    long_text = ("x" * chars_per_msg) + " — synthetic long-session payload"
+    agent.messages = []
+    for i in range(message_count):
+        role = "user" if i % 2 == 0 else "assistant"
+        agent.messages.append({
+            "role": role,
+            "content": f"[{i:04d}] {long_text}",
+        })
+    return agent
+
+
+class TestLongSessionTimeoutRecovery:
+    """Regression tests for issue #44285: APITimeoutError on custom provider
+    in long CLI sessions should trigger context compression alongside the
+    client rebuild, not just the client rebuild alone.
+
+    The contract being asserted: on a long session, when
+    `try_recover_primary_transport` succeeds, the *full* recovery
+    (client rebuild + context compression) must have been attempted
+    before the call returns. Pre-fix, only the client rebuild fires.
+    """
+
+    def test_long_session_recovers_with_compression(self):
+        """A long-session APITimeoutError must trigger _compress_context
+        as part of the recovery, not just a client rebuild.
+
+        Pre-fix: only the client is rebuilt; the long context persists,
+        and the next 3 retries will also time out for the same reason.
+        Post-fix: _compress_context is called alongside the rebuild.
+        """
+        agent = _make_long_session_agent(provider="custom", message_count=320)
+        error = _make_transport_error("APITimeoutError")
+        original_message_count = len(agent.messages)
+
+        # The fix needs to call agent._compress_context. Mock it so we
+        # don't actually compress (we just want to observe that the call
+        # happened, and that messages were reduced).
+        def fake_compress(messages, system_message, *, approx_tokens=None,
+                          task_id="default", focus_topic=None, force=False):
+            # Simulate compression halving the messages list
+            return messages[: len(messages) // 2], system_message
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"), \
+             patch.object(agent, "_compress_context", side_effect=fake_compress) as mock_compress:
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        # The fix: _compress_context must have been called
+        assert mock_compress.called, (
+            "Expected _compress_context to be called as part of long-session "
+            "APITimeoutError recovery. Pre-fix: only client rebuild fires; "
+            "the long context persists and the next 3 retries time out for "
+            "the same reason. See issue #44285."
+        )
+
+    def test_short_session_skips_compression(self):
+        """A short-session transport error should still recover without
+        the compression overhead — compression on every transient error
+        would waste time and risk message loss on small contexts.
+
+        The contract: the recovery is only "long-session-aware" when
+        the session is actually long. A short session falls through to
+        the existing single-rebuild path.
+        """
+        agent = _make_agent(provider="custom")
+        # Short session: just a few messages
+        agent.messages = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "hello"},
+        ]
+        error = _make_transport_error("ReadTimeout")
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"), \
+             patch.object(agent, "_compress_context") as mock_compress:
+            result = agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        assert result is True
+        # Short session: no compression needed — client rebuild alone is fine
+        assert not mock_compress.called, (
+            "Short-session recovery should not invoke _compress_context. "
+            "The compression-on-recovery path is only for long sessions."
+        )
+
+    def test_long_session_compression_reduces_message_count(self):
+        """When the recovery path runs _compress_context, the agent's
+        stored message list must be updated to the compressed form —
+        otherwise the next retry still sends the full long context.
+
+        Asserts an invariant: after recovery on a long session, the
+        message count must be ≤ what it was before recovery. Pre-fix,
+        the message count is unchanged.
+        """
+        agent = _make_long_session_agent(provider="custom", message_count=320)
+        error = _make_transport_error("APITimeoutError")
+        original_count = len(agent.messages)
+
+        def fake_compress(messages, system_message, *, approx_tokens=None,
+                          task_id="default", focus_topic=None, force=False):
+            # Simulate successful compression
+            return messages[: len(messages) // 3], system_message
+
+        with patch("run_agent.OpenAI", return_value=MagicMock()), \
+             patch("time.sleep"), \
+             patch.object(agent, "_compress_context", side_effect=fake_compress):
+            agent._try_recover_primary_transport(
+                error, retry_count=3, max_retries=3,
+            )
+
+        # After recovery, the in-memory message list must reflect the
+        # compressed form. The next retry should send a smaller context.
+        assert len(agent.messages) < original_count, (
+            f"Long-session recovery must reduce in-memory messages. "
+            f"Before: {original_count}, after: {len(agent.messages)}. "
+            f"Pre-fix the message list is unchanged and the next 3 "
+            f"retries time out on the same large context."
+        )

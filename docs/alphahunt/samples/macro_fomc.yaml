@@ -1,0 +1,37 @@
+subject: FOMC policy path research
+kind: macro_event
+asset_class: macro_event
+aliases:
+- FOMC
+- Federal Reserve
+- policy rates
+research_markdown: |
+  # FOMC Macro Research
+
+  The macro event hinges on inflation progress, labor-market cooling, and communication around the expected policy path.
+note:
+  thesis: Policy-path expectations should be reassessed after the next inflation and
+    labor releases.
+  key_assumptions:
+  - Inflation continues to moderate.
+  - Labor conditions cool without a sharp break.
+  risk_triggers:
+  - Inflation re-accelerates.
+  - Unemployment rises abruptly.
+  invalidation_conditions:
+  - Core inflation surprises higher twice.
+  - FOMC guidance shifts hawkish.
+  observables:
+  - name: Core PCE inflation
+    source: BEA release
+    threshold: monthly change
+    direction: down
+  next_check_at: '2026-06-18T00:00:00+00:00'
+  bull_case:
+  - Key assumptions continue to hold.
+  bear_case:
+  - Risk triggers become observable.
+  confidence: 0.6
+  action_suggestion: research
+  source_references:
+  - https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm

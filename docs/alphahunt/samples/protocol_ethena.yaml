@@ -1,0 +1,40 @@
+subject: Ethena protocol basis-yield research
+kind: protocol
+asset_class: DRAFT:crypto_protocol
+chain: ethereum
+contract_addresses:
+- '0x0000000000000000000000000000000000000000'
+aliases:
+- Ethena
+- USDe
+- sUSDe
+research_markdown: |
+  # Ethena Protocol Research
+
+  Ethena's opportunity depends on durable demand for dollar-denominated crypto yield, exchange liquidity, and transparent collateral/risk disclosures.
+note:
+  thesis: Ethena is worth continued research if collateral transparency and exchange
+    liquidity remain intact.
+  key_assumptions:
+  - USDe supply remains liquid across major venues.
+  - Funding-rate income remains observable.
+  risk_triggers:
+  - Sustained depeg pressure.
+  - Material decline in disclosed backing quality.
+  invalidation_conditions:
+  - USDe trades below 0.98 for a full day.
+  - Collateral reporting becomes stale.
+  observables:
+  - name: USDe secondary-market peg
+    source: Public exchange market data
+    threshold: '0.98'
+    direction: down
+  next_check_at: '2026-06-18T00:00:00+00:00'
+  bull_case:
+  - Key assumptions continue to hold.
+  bear_case:
+  - Risk triggers become observable.
+  confidence: 0.6
+  action_suggestion: research
+  source_references:
+  - https://docs.ethena.fi/

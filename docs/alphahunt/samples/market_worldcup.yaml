@@ -1,0 +1,42 @@
+subject: World Cup champion prediction market research
+kind: market
+asset_class: prediction_market
+aliases:
+- World Cup champion
+- prediction market
+market_meta:
+  rules: Market resolves according to the venue's published champion settlement rules.
+  settlement: Winning national team after the final is officially completed.
+  deadline: '2026-07-19T23:59:00+00:00'
+research_markdown: |
+  # World Cup Market Research
+
+  This output is reference-only. It is for observation and manual review, not automated participation.
+
+  Boundary: no_participation, no_execution, 不自动下注, 不自动交易, 不保证收益.
+note:
+  thesis: The market is suitable only for observation because sports outcomes are
+    high-variance.
+  key_assumptions:
+  - Venue rules remain stable.
+  - Team availability data is current.
+  risk_triggers:
+  - Rule ambiguity.
+  - Major injury or roster uncertainty.
+  invalidation_conditions:
+  - Settlement wording changes.
+  - Liquidity becomes too thin for reliable interpretation.
+  observables:
+  - name: Market-implied probability
+    source: Public market page
+    threshold: large move after official news
+    direction: up
+  next_check_at: '2026-06-18T00:00:00+00:00'
+  bull_case:
+  - Key assumptions continue to hold.
+  bear_case:
+  - Risk triggers become observable.
+  confidence: 0.6
+  action_suggestion: no_participation
+  source_references:
+  - https://www.fifa.com/

@@ -1,0 +1,37 @@
+subject: Copper electrification demand research
+kind: commodity_theme
+asset_class: commodity_theme
+aliases:
+- copper
+- electrification
+- grid demand
+research_markdown: |
+  # Copper Theme Research
+
+  Copper demand is tied to grid investment, electric equipment, construction activity, and mine supply disruptions.
+note:
+  thesis: Copper deserves monitoring while electrification demand offsets cyclical
+    construction softness.
+  key_assumptions:
+  - Grid capex remains elevated.
+  - Mine supply disruptions persist.
+  risk_triggers:
+  - China construction demand weakens further.
+  - Inventories rebuild quickly.
+  invalidation_conditions:
+  - Visible inventories rise for four consecutive weeks.
+  - Treatment charges normalize sharply.
+  observables:
+  - name: Exchange copper inventory
+    source: LME/COMEX public inventory data
+    threshold: four-week trend
+    direction: up
+  next_check_at: '2026-06-18T00:00:00+00:00'
+  bull_case:
+  - Key assumptions continue to hold.
+  bear_case:
+  - Risk triggers become observable.
+  confidence: 0.6
+  action_suggestion: research
+  source_references:
+  - https://www.lme.com/

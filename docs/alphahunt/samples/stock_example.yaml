@@ -1,0 +1,37 @@
+subject: Example Semiconductor Inc research
+kind: stock
+asset_class: stock
+tickers:
+- EXSM
+aliases:
+- Example Semiconductor
+research_markdown: |
+  # Example Semiconductor Research
+
+  The company is a placeholder equity research sample for validating the Hermes AlphaHunt research envelope.
+note:
+  thesis: The equity case depends on revenue growth translating into durable margin
+    expansion.
+  key_assumptions:
+  - Demand remains resilient.
+  - Inventory normalizes over the next two quarters.
+  risk_triggers:
+  - Guidance cut.
+  - Gross margin compression.
+  invalidation_conditions:
+  - Revenue growth turns negative.
+  - Management withdraws margin targets.
+  observables:
+  - name: Quarterly revenue growth
+    source: Company filings
+    threshold: positive year over year
+    direction: up
+  next_check_at: '2026-06-18T00:00:00+00:00'
+  bull_case:
+  - Key assumptions continue to hold.
+  bear_case:
+  - Risk triggers become observable.
+  confidence: 0.6
+  action_suggestion: research
+  source_references:
+  - https://www.sec.gov/edgar

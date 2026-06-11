@@ -1952,6 +1952,15 @@ class ClawHubSource(SkillSource):
     # minutes. Bound it so a slow/large catalog cannot hang the caller.
     CATALOG_WALK_BUDGET_SECONDS = 12
 
+    def __init__(self, catalog_walk_budget_seconds: Optional[float] = None):
+        # Interactive callers (browse/search cold start) keep the tight class
+        # default so a slow catalog cannot hang them. Walk-to-exhaustion
+        # callers — the offline index builder — need ~250 sequential pages for
+        # the full 50k+ catalog, which no interactive budget can cover, so
+        # they pass an explicit larger budget here.
+        if catalog_walk_budget_seconds is not None:
+            self.CATALOG_WALK_BUDGET_SECONDS = catalog_walk_budget_seconds
+
     def source_id(self) -> str:
         return "clawhub"
 

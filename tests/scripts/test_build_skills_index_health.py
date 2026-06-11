@@ -49,7 +49,11 @@ def _install_fake_sources(monkeypatch, *, github_count, claude_count=40,
         build_mod, "GitHubSource",
         lambda auth: _FakeSource("github", github_count, rate_limited=github_rate_limited),
     )
-    monkeypatch.setattr(build_mod, "ClawHubSource", lambda: _FakeSource("clawhub", 69000))
+    monkeypatch.setattr(
+        build_mod,
+        "ClawHubSource",
+        lambda catalog_walk_budget_seconds=None: _FakeSource("clawhub", 69000),
+    )
     monkeypatch.setattr(
         build_mod, "ClaudeMarketplaceSource",
         lambda auth: _FakeSource("claude-marketplace", claude_count, rate_limited=github_rate_limited),

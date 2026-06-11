@@ -255,7 +255,12 @@ def main():
         "official": OptionalSkillSource(),
         "well-known": WellKnownSkillSource(),
         "github": GitHubSource(auth=auth),
-        "clawhub": ClawHubSource(),
+        # The interactive 12s walk budget truncates the full ~50k catalog at
+        # ~16 pages (~3.2k skills), which trips the EXPECTED_FLOORS health
+        # check below and blocks the deploy. The offline builder walks to
+        # exhaustion (~250 sequential pages, ~3-4 min), so give it a budget
+        # sized for that.
+        "clawhub": ClawHubSource(catalog_walk_budget_seconds=600),
         "claude-marketplace": ClaudeMarketplaceSource(auth=auth),
         "lobehub": LobeHubSource(),
         "browse-sh": BrowseShSource(),

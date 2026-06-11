@@ -422,6 +422,48 @@ class TestClawHubSource(unittest.TestCase):
         self.assertEqual(results[0].identifier, "only-skill")
         mock_write_cache.assert_called_once()
 
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_catalog_walk_budget_instance_override_wins_over_class_default(
+        self, mock_get, _mock_read_cache, mock_write_cache
+    ):
+        """The offline index builder passes an explicit walk budget so the
+        interactive 12s default cannot truncate the full-catalog walk (which
+        shipped a degenerate ~3.2k-skill index and failed the EXPECTED_FLOORS
+        deploy check). With the class default forced to an already-expired
+        deadline, an instance constructed with its own budget must still walk
+        to natural termination and cache the result."""
+        pages = {"n": 0}
+
+        def side_effect(url, *args, **kwargs):
+            if url.endswith("/skills"):
+                idx = pages["n"]
+                pages["n"] += 1
+                last = idx == 2
+                return _MockResponse(
+                    status_code=200,
+                    json_data={
+                        "items": [
+                            {"slug": f"skill-{idx}", "displayName": f"Skill {idx}"}
+                        ],
+                        **({} if last else {"nextCursor": f"cursor-{idx + 1}"}),
+                    },
+                )
+            return _MockResponse(status_code=404, json_data={})
+
+        mock_get.side_effect = side_effect
+
+        with patch.object(ClawHubSource, "CATALOG_WALK_BUDGET_SECONDS", -1):
+            src = ClawHubSource(catalog_walk_budget_seconds=60)
+            results = src._load_catalog_index()
+
+        # Walked all three pages to natural termination despite the expired
+        # class-level deadline, and cached the complete catalog.
+        self.assertEqual(pages["n"], 3)
+        self.assertEqual(len(results), 3)
+        mock_write_cache.assert_called_once()
+
 
 class TestClawHubCatalogWalkBounded(unittest.TestCase):
     """max_items bounds the walk so browse's cold-start fallback renders one

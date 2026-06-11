@@ -684,7 +684,7 @@ const sidebars: SidebarsConfig = {
         'guides/build-a-hermes-plugin',
         'guides/automate-with-cron',
         'guides/cron-script-only',
-        'guides/automation-templates',
+        'guides/automation-blueprints',
         'guides/cron-troubleshooting',
         'guides/work-with-skills',
         'guides/delegation-patterns',

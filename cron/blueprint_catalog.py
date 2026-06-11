@@ -1,4 +1,4 @@
-"""Automation Blueprints — parameterized automation templates with typed slots.
+"""Automation Blueprints — parameterized automation blueprints with typed slots.
 
 A *blueprint* is a one-place definition of an automation that every surface
 renders natively:
@@ -81,7 +81,7 @@ class BlueprintSlot:
 
 @dataclass(frozen=True)
 class AutomationBlueprint:
-    """A parameterized automation template."""
+    """A parameterized automation blueprint."""
 
     key: str
     title: str

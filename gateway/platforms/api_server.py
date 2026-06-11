@@ -1308,8 +1308,12 @@ class APIServerAdapter(BasePlatformAdapter):
             "reasoning_tokens", "estimated_cost_usd", "actual_cost_usd",
             "api_call_count", "parent_session_id", "last_active", "preview",
             "_lineage_root_id",
+            "archived",
         )
         payload = {key: session.get(key) for key in safe_keys if key in session}
+        # SQLite stores booleans as integers; convert for the API contract.
+        if "archived" in payload:
+            payload["archived"] = bool(payload["archived"])
         # Avoid exposing full system prompts/model_config through the client API;
         # callers only need to know whether those snapshots exist.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
@@ -1441,7 +1445,7 @@ class APIServerAdapter(BasePlatformAdapter):
         body, err = await self._read_json_body(request)
         if err:
             return err
-        allowed = {"title", "end_reason"}
+        allowed = {"title", "end_reason", "archived"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
@@ -1454,6 +1458,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
         if body.get("end_reason"):
             db.end_session(session_id, str(body["end_reason"]))
+        if "archived" in body:
+            db.set_session_archived(session_id, bool(body["archived"]))
         session = db.get_session(session_id) or session
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 

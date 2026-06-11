@@ -21,11 +21,13 @@ description: "通过 Termux 在 Android 手机上直接运行 Hermes Agent"
 - Honcho 记忆支持
 - ACP 支持
 
-具体对应以下命令：
+具体来说，在下方手动路径中的 Android psutil 预构建步骤完成后，它对应以下命令：
 
 ```bash
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
+
+在全新的 Android 环境中，请使用一行安装程序，或按下面完整手动流程执行；不要单独直接运行这条 pip 命令。
 
 ## 哪些功能尚未纳入已验证路径？
 
@@ -52,6 +54,7 @@ curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 在 Termux 上，安装程序会自动：
 - 使用 `pkg` 安装系统包
 - 使用 `python -m venv` 创建虚拟环境
+- 在 Python 包安装前预构建 Android psutil 兼容 shim
 - 优先尝试较大的 `.[termux-all]` 扩展，失败后回退到较小的 `.[termux]` 扩展（再次失败则进行基础安装）——curl 安装程序自动按此顺序执行
 - 将 `hermes` 链接到 `$PREFIX/bin`，使其保留在 Termux PATH 中
 - 跳过未经验证的浏览器 / WhatsApp 引导
@@ -95,7 +98,17 @@ python -m pip install --upgrade pip setuptools wheel
 
 `ANDROID_API_LEVEL` 对于基于 Rust / maturin 的包（如 `jiter`）非常重要。
 
-### 4. 安装已验证的 Termux 包
+### 4. 为 Android 预构建 psutil
+
+```bash
+python scripts/install_psutil_android.py
+```
+
+Termux 上的 Python 3.13 会报告 `sys.platform == "android"`，而上游 psutil 当前会在生成包元数据时拒绝该平台。Hermes 随仓库提供这个临时兼容 shim，使手动安装路径与一行安装程序自动执行的流程保持一致。
+
+如果该命令因为缺少构建工具链而失败，请重新执行第 1 步的包安装，然后先重试本步骤再继续。
+
+### 5. 安装已验证的 Termux 包
 
 ```bash
 python -m pip install -e '.[termux]' -c constraints-termux.txt
@@ -107,7 +120,7 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 python -m pip install -e '.' -c constraints-termux.txt
 ```
 
-### 5. 将 `hermes` 添加到 Termux PATH
+### 6. 将 `hermes` 添加到 Termux PATH
 
 ```bash
 ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
@@ -115,14 +128,14 @@ ln -sf "$PWD/venv/bin/hermes" "$PREFIX/bin/hermes"
 
 `$PREFIX/bin` 在 Termux 中已默认在 PATH 中，因此这样做可以让 `hermes` 命令在新 shell 中持续可用，无需每次重新激活虚拟环境。
 
-### 6. 验证安装
+### 7. 验证安装
 
 ```bash
 hermes version
 hermes doctor
 ```
 
-### 7. 启动 Hermes
+### 8. 启动 Hermes
 
 ```bash
 hermes
@@ -168,6 +181,7 @@ npm install
 改用已验证的 Termux 包：
 
 ```bash
+python scripts/install_psutil_android.py
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
@@ -185,6 +199,7 @@ python -m venv venv
 source venv/bin/activate
 export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
 python -m pip install --upgrade pip setuptools wheel
+python scripts/install_psutil_android.py
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 
@@ -195,6 +210,22 @@ python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```bash
 export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
 python -m pip install -e '.[termux]' -c constraints-termux.txt
+```
+
+### `jiter` / `maturin` 报错 `Unsupported Android architecture: armv8l`
+
+部分 32 位 Termux 设备会报告 `armv8l`，但 maturin 不接受它作为构建目标。安装前显式设置 Rust 目标：
+
+```bash
+export ANDROID_API_LEVEL="$(getprop ro.build.version.sdk)"
+export CARGO_BUILD_TARGET="armv7-linux-androideabi"
+python -m pip install -e '.[termux]' -c constraints-termux.txt
+```
+
+如果你的 Termux 运行时是 64 位，请改用 `aarch64-linux-android`：
+
+```bash
+export CARGO_BUILD_TARGET="aarch64-linux-android"
 ```
 
 ### `hermes doctor` 提示缺少 ripgrep 或 Node
@@ -216,6 +247,7 @@ pkg install clang rust make pkg-config libffi openssl
 然后重试：
 
 ```bash
+python scripts/install_psutil_android.py
 python -m pip install -e '.[termux]' -c constraints-termux.txt
 ```
 

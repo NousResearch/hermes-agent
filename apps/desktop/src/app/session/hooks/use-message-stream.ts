@@ -22,6 +22,7 @@ import { setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { $processNotificationsMode, processCompletionToast } from '@/store/process-notifications'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   setCurrentBranch,
@@ -616,9 +617,11 @@ export function useMessageStream({
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+
       if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
         return
       }
+
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
@@ -929,6 +932,20 @@ export function useMessageStream({
             request_id: requestId,
             text: result ? JSON.stringify(result) : ''
           })
+        }
+      } else if (event.type === 'status.update') {
+        // Background process lifecycle from the gateway's notification poller
+        // (tui_gateway/server.py). The poller also chains an agent turn that
+        // surfaces the text in-chat; the native toast covers the hands-off
+        // case (#44201) — window hidden, or the process belongs to a chat the
+        // user isn't looking at. Gated by the same config the messaging
+        // gateways honor: display.background_process_notifications.
+        if (payload?.kind === 'process') {
+          const toast = processCompletionToast(payload, $processNotificationsMode.get())
+
+          if (toast && (document.hidden || sessionId !== activeSessionIdRef.current)) {
+            void window.hermesDesktop?.notify(toast)
+          }
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'

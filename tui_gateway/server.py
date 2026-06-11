@@ -5216,6 +5216,23 @@ def _notification_event_dedup_key(evt: dict) -> tuple:
     return (evt_sid, evt_type)
 
 
+def _process_status_payload(evt: dict, text: str) -> dict:
+    """Build the status.update payload for a process notification event.
+
+    Besides the agent-facing formatted text, include the structured fields
+    (event type, command, exit code) so GUI clients can render their own
+    surfaces — e.g. the desktop app's native OS notifications (#44201) —
+    without parsing the [IMPORTANT: ...] prose.
+    """
+    return {
+        "kind": "process",
+        "text": text,
+        "event_type": evt.get("type", "completion"),
+        "command": evt.get("command", ""),
+        "exit_code": evt.get("exit_code"),
+    }
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -5263,7 +5280,7 @@ def _notification_poller_loop(
         # visible independently.
         _dedup_key = _notification_event_dedup_key(evt)
         if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
+            _emit("status.update", sid, _process_status_payload(evt, text))
             _emitted.add(_dedup_key)
 
         with session["history_lock"]:
@@ -5306,7 +5323,7 @@ def _notification_poller_loop(
 
         _dedup_key = _notification_event_dedup_key(evt)
         if _dedup_key not in _emitted:
-            _emit("status.update", sid, {"kind": "process", "text": text})
+            _emit("status.update", sid, _process_status_payload(evt, text))
             _emitted.add(_dedup_key)
 
         with session["history_lock"]:

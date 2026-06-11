@@ -64,6 +64,10 @@ export type GatewayEventPayload = {
   // terminal.read.request (GUI agent reading the in-app terminal pane)
   start?: number
   count?: number
+  // status.update (background process notification poller)
+  kind?: string
+  event_type?: string
+  exit_code?: null | number
 }
 
 export function textPart(text: string): ChatMessagePart {

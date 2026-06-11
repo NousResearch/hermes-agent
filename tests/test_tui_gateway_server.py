@@ -6390,10 +6390,14 @@ def test_notification_poller_delivers_completion(monkeypatch):
     try:
         server._notification_poller_loop(stop, "sid_poll", sess)
 
-        # Should have emitted a status.update with kind=process
+        # Should have emitted a status.update with kind=process, carrying the
+        # structured fields GUI clients use for native notifications (#44201)
         status_calls = [a for a in emitted if a[0] == "status.update"]
         assert len(status_calls) >= 1
         assert status_calls[0][2]["kind"] == "process"
+        assert status_calls[0][2]["event_type"] == "completion"
+        assert status_calls[0][2]["command"] == "echo hello"
+        assert status_calls[0][2]["exit_code"] == 0
 
         # Should have triggered an agent turn
         assert len(turns) == 1

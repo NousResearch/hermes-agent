@@ -23,6 +23,16 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     preflight.add_argument("--report-path", default="")
     preflight.add_argument("--timeout-seconds", type=int, default=None)
 
+    profiles = subs.add_parser("profiles", help="Print FH6VR RTX 3060 DIBR profiles")
+    profiles.add_argument("--launcher-exe", default="")
+    profiles.add_argument("--timeout-seconds", type=int, default=None)
+
+    rtx3060 = subs.add_parser(
+        "rtx3060-selftest", help="Validate FH6VR RTX 3060 DIBR profile budgets"
+    )
+    rtx3060.add_argument("--launcher-exe", default="")
+    rtx3060.add_argument("--timeout-seconds", type=int, default=None)
+
     session = subs.add_parser(
         "session-readiness", help="Run FH6VR OpenXR session-readiness probe"
     )
@@ -36,6 +46,33 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     graphics_session.add_argument("--launcher-exe", default="")
     graphics_session.add_argument("--timeout-seconds", type=int, default=None)
 
+    frame_loop = subs.add_parser("frame-loop", help="Run FH6VR minimal OpenXR frame-loop probe")
+    frame_loop.add_argument("--launcher-exe", default="")
+    frame_loop.add_argument("--timeout-seconds", type=int, default=None)
+
+    dibr_swapchain = subs.add_parser(
+        "dibr-swapchain", help="Run FH6VR DIBR-to-OpenXR swapchain write probe"
+    )
+    dibr_swapchain.add_argument("--launcher-exe", default="")
+    dibr_swapchain.add_argument("--timeout-seconds", type=int, default=None)
+
+    capture_preflight = subs.add_parser(
+        "capture-preflight", help="Run FH6VR non-invasive FH6/D3D12 capture preflight"
+    )
+    capture_preflight.add_argument("--launcher-exe", default="")
+    capture_preflight.add_argument("--timeout-seconds", type=int, default=None)
+
+    support_report = subs.add_parser(
+        "support-report", help="Create redacted JSON and HTML support reports"
+    )
+    support_report.add_argument("--launcher-exe", default="")
+    support_report.add_argument("--json-path", default="")
+    support_report.add_argument("--html-path", default="")
+    support_report.add_argument("--include-live-openxr", action="store_true")
+    support_report.add_argument("--no-openxr", action="store_true")
+    support_report.add_argument("--include-sensitive-paths", action="store_true")
+    support_report.add_argument("--timeout-seconds", type=int, default=None)
+
     unity_scan = subs.add_parser("unity-scan", help="Scan Unity/VCC projects")
     unity_scan.add_argument("--project-path", default="")
     unity_scan.add_argument("--max-projects", type=int, default=None)
@@ -48,7 +85,9 @@ def questframe_command(args: argparse.Namespace) -> int:
     if not command:
         print(
             "usage: hermes questframe "
-            "{setup,status,preflight,session-readiness,graphics-session,unity-scan}"
+            "{setup,status,preflight,profiles,rtx3060-selftest,session-readiness,"
+            "graphics-session,frame-loop,"
+            "dibr-swapchain,capture-preflight,support-report,unity-scan}"
         )
         return 2
     if command == "setup":
@@ -72,6 +111,24 @@ def questframe_command(args: argparse.Namespace) -> int:
                 timeout_seconds=getattr(args, "timeout_seconds", None),
             )
         )
+    if command == "profiles":
+        return _print(
+            core.run_launcher(
+                "profiles",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "rtx3060-selftest":
+        return _print(
+            core.run_launcher(
+                "rtx3060-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
     if command == "session-readiness":
         return _print(
             core.run_launcher(
@@ -87,6 +144,47 @@ def questframe_command(args: argparse.Namespace) -> int:
                 "graphics-session-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "frame-loop":
+        return _print(
+            core.run_launcher(
+                "frame-loop-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "dibr-swapchain":
+        return _print(
+            core.run_launcher(
+                "dibr-swapchain-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "capture-preflight":
+        return _print(
+            core.run_launcher(
+                "fh6-capture-preflight",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "support-report":
+        return _print(
+            core.support_report(
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                json_path=getattr(args, "json_path", "") or None,
+                html_path=getattr(args, "html_path", "") or None,
+                include_live_openxr=bool(getattr(args, "include_live_openxr", False)),
+                no_openxr=bool(getattr(args, "no_openxr", False)),
+                include_sensitive_paths=bool(
+                    getattr(args, "include_sensitive_paths", False)
+                ),
                 timeout_seconds=getattr(args, "timeout_seconds", None),
             )
         )

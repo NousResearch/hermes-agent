@@ -90,6 +90,46 @@ PREFLIGHT_SCHEMA = {
     },
 }
 
+RTX3060_PROFILES_SCHEMA = {
+    "name": "questframe_rtx3060_profiles",
+    "description": "Print the FH6VR RTX 3060 DIBR runtime profiles.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
+RTX3060_SELFTEST_SCHEMA = {
+    "name": "questframe_rtx3060_selftest",
+    "description": "Validate the FH6VR RTX 3060 DIBR profile contract.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 SESSION_READINESS_SCHEMA = {
     "name": "questframe_session_readiness",
     "description": "Run the FH6VR OpenXR session-readiness probe.",
@@ -119,6 +159,106 @@ GRAPHICS_SESSION_SCHEMA = {
             "launcher_exe": {
                 "type": "string",
                 "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
+FRAME_LOOP_SCHEMA = {
+    "name": "questframe_frame_loop",
+    "description": "Run the FH6VR minimal OpenXR frame-loop probe.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
+DIBR_SWAPCHAIN_SCHEMA = {
+    "name": "questframe_dibr_swapchain",
+    "description": "Run the FH6VR DIBR-to-OpenXR swapchain write probe.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
+FH6_CAPTURE_PREFLIGHT_SCHEMA = {
+    "name": "questframe_fh6_capture_preflight",
+    "description": "Run the FH6VR non-invasive FH6/D3D12 capture preflight.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
+SUPPORT_REPORT_SCHEMA = {
+    "name": "questframe_support_report",
+    "description": "Create redacted QuestFrame/FH6VR JSON and HTML support reports.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "json_path": {
+                "type": "string",
+                "description": "Optional output path for the redacted JSON report.",
+            },
+            "html_path": {
+                "type": "string",
+                "description": "Optional output path for the redacted HTML report.",
+            },
+            "include_live_openxr": {
+                "type": "boolean",
+                "description": "Include live OpenXR session, frame-loop, and DIBR swapchain probes.",
+            },
+            "no_openxr": {
+                "type": "boolean",
+                "description": "Skip OpenXR probes and create a reduced offline report.",
+            },
+            "include_sensitive_paths": {
+                "type": "boolean",
+                "description": "Local-only debugging option. Do not enable for BOOTH support exports.",
             },
             "timeout_seconds": {
                 "type": "integer",
@@ -264,6 +404,18 @@ def _bounded(text: str, limit: int = 12000) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n[TRUNCATED]"
+
+
+def _report_dir() -> Path:
+    path = get_hermes_home() / "reports" / "questframe"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def _default_report_paths(prefix: str = "questframe-support") -> tuple[Path, Path]:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    base = _report_dir() / f"{prefix}-{stamp}"
+    return base.with_suffix(".json"), base.with_suffix(".html")
 
 
 def _parse_json_stdout(stdout: str) -> Any:
@@ -512,14 +664,20 @@ def status() -> dict[str, Any]:
             "questframe_status",
             "questframe_setup",
             "questframe_fh6vr_preflight",
+            "questframe_rtx3060_profiles",
+            "questframe_rtx3060_selftest",
             "questframe_session_readiness",
             "questframe_graphics_session",
+            "questframe_frame_loop",
+            "questframe_dibr_swapchain",
+            "questframe_fh6_capture_preflight",
+            "questframe_support_report",
             "questframe_unity_scan",
         ],
         "next_step": (
             "Run questframe_setup with launcher_exe before bridge probes."
             if not launcher
-            else "Run questframe_fh6vr_preflight or questframe_session_readiness."
+            else "Run questframe_support_report or questframe_rtx3060_selftest."
         ),
     }
 
@@ -543,6 +701,30 @@ def handle_preflight(args: dict[str, Any] | None = None, **_: Any) -> str:
             "preflight",
             launcher_exe=str(args.get("launcher_exe") or "") or None,
             extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
+def handle_rtx3060_profiles(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        run_launcher(
+            "profiles",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=["--json"],
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
+def handle_rtx3060_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        run_launcher(
+            "rtx3060-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=["--json"],
             timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
         )
     )
@@ -572,6 +754,102 @@ def handle_graphics_session(args: dict[str, Any] | None = None, **_: Any) -> str
     )
 
 
+def handle_frame_loop(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        run_launcher(
+            "frame-loop-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=["--json"],
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
+def handle_dibr_swapchain(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        run_launcher(
+            "dibr-swapchain-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=["--json"],
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
+def handle_fh6_capture_preflight(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        run_launcher(
+            "fh6-capture-preflight",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=["--json"],
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
+def support_report(
+    *,
+    launcher_exe: str | None = None,
+    json_path: str | None = None,
+    html_path: str | None = None,
+    include_live_openxr: bool = False,
+    no_openxr: bool = False,
+    include_sensitive_paths: bool = False,
+    timeout_seconds: int | None = None,
+) -> dict[str, Any]:
+    if not json_path or not html_path:
+        default_json, default_html = _default_report_paths(
+            "questframe-support-live" if include_live_openxr else "questframe-support"
+        )
+        json_path = json_path or str(default_json)
+        html_path = html_path or str(default_html)
+
+    extra = [
+        "--json",
+        "--write-json",
+        str(Path(json_path).expanduser()),
+        "--write-html",
+        str(Path(html_path).expanduser()),
+    ]
+    if include_live_openxr:
+        extra.append("--include-live-openxr")
+    if no_openxr:
+        extra.append("--no-openxr")
+    if include_sensitive_paths:
+        extra.append("--include-sensitive-paths")
+
+    result = run_launcher(
+        "support-report",
+        launcher_exe=launcher_exe,
+        extra_args=extra,
+        timeout_seconds=timeout_seconds,
+    )
+    result["report_paths"] = {
+        "json": str(Path(json_path).expanduser()),
+        "html": str(Path(html_path).expanduser()),
+    }
+    result["redacted_by_default"] = not include_sensitive_paths
+    return result
+
+
+def handle_support_report(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        support_report(
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            json_path=str(args.get("json_path") or "") or None,
+            html_path=str(args.get("html_path") or "") or None,
+            include_live_openxr=bool(args.get("include_live_openxr")),
+            no_openxr=bool(args.get("no_openxr")),
+            include_sensitive_paths=bool(args.get("include_sensitive_paths")),
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 def handle_unity_scan(args: dict[str, Any] | None = None, **_: Any) -> str:
     args = args or {}
     return _json(
@@ -585,8 +863,14 @@ def handle_unity_scan(args: dict[str, Any] | None = None, **_: Any) -> str:
 HELP = """questframe commands:
   /questframe status
   /questframe preflight
+  /questframe profiles
+  /questframe rtx3060-selftest
   /questframe session
   /questframe graphics-session
+  /questframe frame-loop
+  /questframe dibr-swapchain
+  /questframe capture-preflight
+  /questframe support-report
   /questframe unity-scan [project_path]
 """
 
@@ -600,10 +884,22 @@ def handle_slash(raw_args: str) -> str:
         return _json(status())
     if command == "preflight":
         return handle_preflight({})
+    if command in {"profiles", "rtx3060-profiles"}:
+        return handle_rtx3060_profiles({})
+    if command in {"rtx3060-selftest", "rtx3060"}:
+        return handle_rtx3060_selftest({})
     if command in {"session", "session-readiness"}:
         return handle_session_readiness({})
     if command in {"graphics-session", "graphics"}:
         return handle_graphics_session({})
+    if command in {"frame-loop", "frame"}:
+        return handle_frame_loop({})
+    if command in {"dibr-swapchain", "swapchain"}:
+        return handle_dibr_swapchain({})
+    if command in {"capture-preflight", "fh6-capture-preflight", "capture"}:
+        return handle_fh6_capture_preflight({})
+    if command in {"support-report", "report"}:
+        return handle_support_report({})
     if command == "unity-scan":
         project = argv[1] if len(argv) > 1 else None
         return _json(scan_unity_projects(project_path=project))

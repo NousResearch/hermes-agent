@@ -10,6 +10,18 @@ _TOOLS = (
     ("questframe_setup", core.SETUP_SCHEMA, core.handle_setup, "Q"),
     ("questframe_fh6vr_preflight", core.PREFLIGHT_SCHEMA, core.handle_preflight, "Q"),
     (
+        "questframe_rtx3060_profiles",
+        core.RTX3060_PROFILES_SCHEMA,
+        core.handle_rtx3060_profiles,
+        "Q",
+    ),
+    (
+        "questframe_rtx3060_selftest",
+        core.RTX3060_SELFTEST_SCHEMA,
+        core.handle_rtx3060_selftest,
+        "Q",
+    ),
+    (
         "questframe_session_readiness",
         core.SESSION_READINESS_SCHEMA,
         core.handle_session_readiness,
@@ -19,6 +31,25 @@ _TOOLS = (
         "questframe_graphics_session",
         core.GRAPHICS_SESSION_SCHEMA,
         core.handle_graphics_session,
+        "Q",
+    ),
+    ("questframe_frame_loop", core.FRAME_LOOP_SCHEMA, core.handle_frame_loop, "Q"),
+    (
+        "questframe_dibr_swapchain",
+        core.DIBR_SWAPCHAIN_SCHEMA,
+        core.handle_dibr_swapchain,
+        "Q",
+    ),
+    (
+        "questframe_fh6_capture_preflight",
+        core.FH6_CAPTURE_PREFLIGHT_SCHEMA,
+        core.handle_fh6_capture_preflight,
+        "Q",
+    ),
+    (
+        "questframe_support_report",
+        core.SUPPORT_REPORT_SCHEMA,
+        core.handle_support_report,
         "Q",
     ),
     ("questframe_unity_scan", core.UNITY_SCAN_SCHEMA, core.handle_unity_scan, "Q"),
@@ -42,7 +73,11 @@ def register(ctx) -> None:
         "questframe",
         handler=core.handle_slash,
         description="Run QuestFrame PCVR and FH6VR bridge diagnostics.",
-        args_hint="[status|preflight|session|graphics-session|unity-scan]",
+        args_hint=(
+            "[status|preflight|profiles|rtx3060-selftest|session|"
+            "graphics-session|frame-loop|dibr-swapchain|capture-preflight|"
+            "support-report|unity-scan]"
+        ),
     )
     ctx.register_cli_command(
         name="questframe",

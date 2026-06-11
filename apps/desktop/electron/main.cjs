@@ -227,8 +227,22 @@ if (INSTALL_STAMP) {
 // HERMES_DESKTOP_USER_DATA_DIR (used by test:desktop:fresh) puts the sandbox
 // HERMES_HOME beneath the throwaway userData dir so a fresh-install run never
 // touches the user's real ~/.hermes / %LOCALAPPDATA%\hermes.
+function isRepoLocalHermesHome(homePath) {
+  if (path.basename(homePath) !== '.hermes') return false
+  const parent = path.dirname(homePath)
+  if (fileExists(path.join(parent, '.git'))) return true
+  const devRoot = process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT)
+  return Boolean(devRoot && path.resolve(parent) === devRoot)
+}
+
 function resolveHermesHome() {
-  if (process.env.HERMES_HOME) return path.resolve(process.env.HERMES_HOME)
+  if (process.env.HERMES_HOME) {
+    const resolved = path.resolve(process.env.HERMES_HOME)
+    if (!isRepoLocalHermesHome(resolved)) return resolved
+    console.error(
+      `[hermes] Ignoring repo-local HERMES_HOME (${resolved}); using canonical user install home`
+    )
+  }
   if (USER_DATA_OVERRIDE) return path.join(path.resolve(USER_DATA_OVERRIDE), 'hermes-home')
   if (IS_WINDOWS && process.env.LOCALAPPDATA) {
     const localappdata = path.join(process.env.LOCALAPPDATA, 'hermes')

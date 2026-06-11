@@ -451,12 +451,8 @@ $definitions = @(
     }
 )
 
-$hermesHome = if ($env:HERMES_HOME -and $env:HERMES_HOME.Trim()) {
-    $env:HERMES_HOME
-}
-else {
-    Join-Path $env:USERPROFILE ".hermes"
-}
+. (Join-Path $RepoRoot "scripts\windows\Resolve-CanonicalHermesHome.ps1")
+$hermesHome = Resolve-CanonicalHermesHome -RepoRoot $RepoRoot
 if (-not (Test-Path -LiteralPath $hermesHome)) {
     New-Item -ItemType Directory -Path $hermesHome -Force | Out-Null
 }

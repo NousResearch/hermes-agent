@@ -27,11 +27,9 @@ if ($env:HERMES_GATEWAY_WINDOW_STYLE -and $env:HERMES_GATEWAY_WINDOW_STYLE.Trim(
     }
 }
 
-$HermesHome = if ($env:HERMES_HOME -and $env:HERMES_HOME.Trim()) {
-    $env:HERMES_HOME
-} else {
-    Join-Path $env:USERPROFILE ".hermes"
-}
+. (Join-Path $ScriptDir "Resolve-CanonicalHermesHome.ps1")
+
+$HermesHome = Resolve-CanonicalHermesHome -RepoRoot $RepoRoot
 
 $LogDir = Join-Path $HermesHome "logs"
 New-Item -ItemType Directory -Path $LogDir -Force | Out-Null

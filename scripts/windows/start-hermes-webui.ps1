@@ -7,11 +7,12 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+$RepoRoot = Resolve-Path (Join-Path $ScriptDir "..\..")
+. (Join-Path $ScriptDir "Resolve-CanonicalHermesHome.ps1")
+
 function Get-HermesHome {
-    if ($env:HERMES_HOME -and $env:HERMES_HOME.Trim()) {
-        return $env:HERMES_HOME.Trim()
-    }
-    return (Join-Path $env:USERPROFILE ".hermes")
+    return (Resolve-CanonicalHermesHome -RepoRoot $RepoRoot)
 }
 
 function Read-DotEnvValue {

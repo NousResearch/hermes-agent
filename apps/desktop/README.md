@@ -72,6 +72,8 @@ HERMES_HOME=/tmp/throwaway npm run dev
 npm run dev:fake-boot   # exercise the startup overlay with deterministic delays
 ```
 
+> **Do not set `HERMES_HOME` to `<repo>/.hermes`.** That creates a second install home that competes with `~/.hermes` for OAuth refresh-token rotation and cron ticks. Use `HERMES_DESKTOP_HERMES_ROOT` for the source checkout; keep `HERMES_HOME` on the user install (`~/.hermes` on this machine).
+
 ### Building installers
 
 ```bash

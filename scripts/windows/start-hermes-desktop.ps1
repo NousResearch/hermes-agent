@@ -8,6 +8,7 @@ $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = (Resolve-Path (Join-Path $ScriptDir "..\..")).Path
+. (Join-Path $ScriptDir "Resolve-CanonicalHermesHome.ps1")
 
 if (-not $HermesRoot) {
     $HermesRoot = $RepoRoot
@@ -15,14 +16,7 @@ if (-not $HermesRoot) {
 if (-not $Cwd) {
     $Cwd = $HermesRoot
 }
-if (-not $HermesHome) {
-    if ($env:HERMES_HOME -and $env:HERMES_HOME.Trim()) {
-        $HermesHome = $env:HERMES_HOME.Trim()
-    }
-    else {
-        $HermesHome = Join-Path $env:USERPROFILE ".hermes"
-    }
-}
+$HermesHome = Resolve-CanonicalHermesHome -Preferred $HermesHome -RepoRoot $RepoRoot
 
 $PythonExe = Join-Path $HermesRoot ".venv\Scripts\python.exe"
 if (-not (Test-Path -LiteralPath $PythonExe)) {

@@ -156,7 +156,7 @@ _PHASE_TRANSITIONS: Dict[int, set] = {
     _CardPhase.COMPLETED: set(),
     _CardPhase.ABORTED: set(),
     _CardPhase.TERMINATED: set(),
-    _CardPhase.CREATION_FAILED: set(),
+    _CardPhase.CREATION_FAILED: {_CardPhase.IDLE},
 }
 
 # Feishu server auto-closes streaming after ~10 minutes; rotate at ~8 min.
@@ -178,6 +178,7 @@ try:
         UpdateCardRequest,
         UpdateCardRequestBody,
     )
+    from lark_oapi.api.cardkit.v1.model import Card as CardKitCard  # type: ignore[attr-defined]
 
     HAS_CARDKIT = True
 except (ImportError, AttributeError):
@@ -191,6 +192,7 @@ except (ImportError, AttributeError):
     SettingsCardRequestBody = None  # type: ignore[assignment,misc]
     UpdateCardRequest = None  # type: ignore[assignment,misc]
     UpdateCardRequestBody = None  # type: ignore[assignment,misc]
+    CardKitCard = None  # type: ignore[assignment,misc]
 
 FEISHU_WEBSOCKET_AVAILABLE = websockets is not None
 FEISHU_WEBHOOK_AVAILABLE = aiohttp is not None
@@ -2166,13 +2168,9 @@ class FeishuAdapter(BasePlatformAdapter):
                         card_id, card_state.get("sequence"),
                     )
                     return result
-                # Edit failed — fall through to create a new card.
+                # Edit failed — close the stale card before creating new one.
                 logger.warning("[Feishu] Streaming card reuse edit failed; creating new card")
-
-            # Close any previously-open streaming cards for this chat before
-            # creating a new one (only reached when no active card exists or
-            # reuse failed).
-            await self._close_streaming_siblings(chat_id)
+                await self._close_streaming_siblings(chat_id)
 
             if not self._transition_card_phase(chat_id, _CardPhase.CREATING):
                 logger.warning("[Feishu] Cannot create card: invalid phase %s", self._card_phase(chat_id))
@@ -2382,7 +2380,6 @@ class FeishuAdapter(BasePlatformAdapter):
                 bot_name=bot_name, status=status, error_summary=error_summary,
                 last_content=card_state.get("last_content", ""),
             )
-            from lark_oapi.api.cardkit.v1.model import Card as CardKitCard
             card_obj = CardKitCard.builder() \
                 .type("card_json") \
                 .data(card_json) \
@@ -2475,7 +2472,6 @@ class FeishuAdapter(BasePlatformAdapter):
         self._closed_streaming_card_ids[card_id] = None
         if len(self._closed_streaming_card_ids) > 500:
             self._closed_streaming_card_ids.popitem(last=False)
-        self._transition_card_phase(chat_id, target_phase)
         # Reset to IDLE so the next turn can create a new card.
         self._card_phases[chat_id] = _CardPhase.IDLE
 

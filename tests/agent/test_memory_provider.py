@@ -979,6 +979,67 @@ class TestMemoryContextFencing:
         assert combined.index("weather") < fence_start
 
 
+class TestFlattenMessageContent:
+    """Multimodal message content (list of typed parts) must flatten to a
+    plain string before reaching providers — a raw list crashes their regex
+    sanitization with ``expected string or bytes-like object, got 'list'``."""
+
+    def test_string_passthrough(self):
+        from agent.memory_manager import flatten_message_content
+        assert flatten_message_content("hello") == "hello"
+
+    def test_none_is_empty(self):
+        from agent.memory_manager import flatten_message_content
+        assert flatten_message_content(None) == ""
+
+    def test_text_parts_joined(self):
+        from agent.memory_manager import flatten_message_content
+        content = [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]
+        assert flatten_message_content(content) == "first\nsecond"
+
+    def test_image_part_becomes_marker(self):
+        from agent.memory_manager import flatten_message_content
+        content = [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,xyz"}},
+        ]
+        assert flatten_message_content(content) == "[1 image] look at this"
+
+    def test_image_only_message(self):
+        from agent.memory_manager import flatten_message_content
+        content = [
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        assert flatten_message_content(content) == "[2 images]"
+
+    def test_unknown_parts_skipped(self):
+        from agent.memory_manager import flatten_message_content
+        content = [{"type": "audio", "data": "..."}, {"type": "text", "text": "ok"}, 42]
+        assert flatten_message_content(content) == "ok"
+
+    def test_bare_strings_in_list(self):
+        from agent.memory_manager import flatten_message_content
+        assert flatten_message_content(["plain", "strings"]) == "plain\nstrings"
+
+    def test_scalar_fallback(self):
+        from agent.memory_manager import flatten_message_content
+        assert flatten_message_content(42) == "42"
+
+    def test_flattened_output_is_regex_safe(self):
+        """The original failure: sanitize_context(list) raised TypeError."""
+        from agent.memory_manager import flatten_message_content, sanitize_context
+        content = [
+            {"type": "text", "text": "fix this bug"},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        # Must not raise.
+        assert sanitize_context(flatten_message_content(content))
+
+
 # ---------------------------------------------------------------------------
 # AIAgent.commit_memory_session — routes to MemoryManager.on_session_end
 # ---------------------------------------------------------------------------

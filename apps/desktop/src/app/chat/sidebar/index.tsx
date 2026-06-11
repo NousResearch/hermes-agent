@@ -1622,17 +1622,23 @@ function SidebarSessionsSection({
   )
 
   const renderRow = (session: SessionInfo) => {
+    const rowIsChecked = selectedIdSet?.has(session.id) ?? false
+
     const rowProps = {
       archived: archivedRows,
-      checked: selectedIdSet?.has(session.id) ?? false,
+      bulkSelectedSessionIds: rowIsChecked && selection.ids.length > 1 ? selection.ids : undefined,
+      checked: rowIsChecked,
       dragging: draggingSession?.id === session.id,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),
+      onArchiveSelectedSessions: onArchiveSessions,
       onDelete: () => onDeleteSession(session.id),
+      onDeleteSelectedSessions: onDeleteSessions,
       onPin: () => onTogglePin(sessionPinId(session)),
       onRestore: onRestoreSession ? () => onRestoreSession(session.id) : undefined,
+      onRestoreSelectedSessions: onRestoreSessions,
       onResume: () => onResumeSession(session.id),
       onSessionDragEnd,
       onSessionDragStart,
@@ -1688,8 +1694,11 @@ function SidebarSessionsSection({
         archived={archivedRows}
         draggingSessionId={draggingSession?.id}
         onArchiveSession={onArchiveSession}
+        onArchiveSessions={onArchiveSessions}
         onDeleteSession={onDeleteSession}
+        onDeleteSessions={onDeleteSessions}
         onRestoreSession={onRestoreSession}
+        onRestoreSessions={onRestoreSessions}
         onResumeSession={onResumeSession}
         onSessionDragEnd={onSessionDragEnd}
         onSessionDragStart={onSessionDragStart}
@@ -1699,6 +1708,7 @@ function SidebarSessionsSection({
         reorderable={sortable}
         selectable={selectable}
         selectedIds={selectedIdSet}
+        selectedSessionIds={selection.ids}
         selectionActive={selectionActive}
         sessions={previewSessions}
         workingSessionIdSet={workingSessionIdSet}

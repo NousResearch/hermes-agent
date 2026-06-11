@@ -15,7 +15,7 @@ import { $attentionSessionIds, sessionPinId } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 import type { SessionPresenceRecord } from '@/types/hermes'
 
-import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
+import { SessionActionsMenu, type SessionBulkContextActions, SessionContextMenu } from './session-actions-menu'
 
 export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   session: SessionInfo
@@ -45,6 +45,11 @@ export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   /** This row is in the current selection. */
   checked?: boolean
   onToggleSelect?: (mode: 'range' | 'single') => void
+  /** Multi-selected ids to use for the row's right-click menu when this row is checked. */
+  bulkSelectedSessionIds?: readonly string[]
+  onArchiveSelectedSessions?: SessionBulkContextActions['onArchiveSessions']
+  onDeleteSelectedSessions?: SessionBulkContextActions['onDeleteSessions']
+  onRestoreSelectedSessions?: SessionBulkContextActions['onRestoreSessions']
 }
 
 const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
@@ -85,6 +90,10 @@ export function SidebarSessionRow({
   selectionActive = false,
   checked = false,
   onToggleSelect,
+  bulkSelectedSessionIds,
+  onArchiveSelectedSessions,
+  onDeleteSelectedSessions,
+  onRestoreSelectedSessions,
   className,
   style,
   ref,
@@ -97,6 +106,18 @@ export function SidebarSessionRow({
   const [actionsMenuOpen, setActionsMenuOpen] = useState(false)
   const [actionsKeyboardFocus, setActionsKeyboardFocus] = useState(false)
   const actionsVisible = actionsMenuOpen || actionsKeyboardFocus
+
+  const bulkContextActions =
+    checked && bulkSelectedSessionIds && bulkSelectedSessionIds.length > 1
+      ? {
+          archived,
+          onArchiveSessions: onArchiveSelectedSessions,
+          onDeleteSessions: onDeleteSelectedSessions,
+          onRestoreSessions: onRestoreSelectedSessions,
+          sessionIds: bulkSelectedSessionIds
+        }
+      : undefined
+
   // Subscribe per-row (the leaf) instead of drilling a set through the list —
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
@@ -110,6 +131,7 @@ export function SidebarSessionRow({
   return (
     <SessionContextMenu
       archived={archived}
+      bulkActions={bulkContextActions}
       onArchive={onArchive}
       onDelete={onDelete}
       onPin={onPin}
@@ -291,6 +313,7 @@ export function SidebarSessionRow({
               archived={archived}
               onArchive={onArchive}
               onDelete={onDelete}
+              onOpenChange={setActionsMenuOpen}
               onPin={onPin}
               onRestore={onRestore}
               onSelect={selectable && onToggleSelect ? () => toggleSelect('single') : undefined}
@@ -298,7 +321,6 @@ export function SidebarSessionRow({
               profile={session.profile}
               sessionId={session.id}
               title={title}
-              onOpenChange={setActionsMenuOpen}
             >
               <Button
                 aria-label={r.actionsFor(title)}

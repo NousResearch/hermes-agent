@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { readSessionDrag } from '@/app/chat/composer/inline-refs'
@@ -169,6 +169,28 @@ describe('SidebarSessionRow gestures', () => {
 
     expect(checkbox).toBeTruthy()
     expect(checkbox?.getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('right-clicking a checked multi-selected row opens bulk actions for the selected set', async () => {
+    const onArchiveSelectedSessions = vi.fn()
+
+    const { handlers, rowButton } = renderRow({
+      bulkSelectedSessionIds: ['s1', 's2', 's3'],
+      checked: true,
+      onArchiveSelectedSessions,
+      selectionActive: true
+    })
+
+    fireEvent.contextMenu(rowButton)
+
+    expect(await screen.findByText('Archive 3')).toBeTruthy()
+    expect(screen.getByText('Delete 3')).toBeTruthy()
+    expect(screen.queryByText('Rename')).toBeNull()
+
+    fireEvent.click(screen.getByText('Archive 3'))
+
+    await waitFor(() => expect(onArchiveSelectedSessions).toHaveBeenCalledWith(['s1', 's2', 's3']))
+    expect(handlers.onArchive).not.toHaveBeenCalled()
   })
 
   it('moves the timestamp for a real actions menu open, not lingering pointer focus', () => {

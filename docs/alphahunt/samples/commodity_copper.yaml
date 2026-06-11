@@ -1,6 +1,6 @@
 subject: Copper electrification demand research
 kind: commodity_theme
-asset_class: commodity_theme
+asset_class: commodity
 aliases:
 - copper
 - electrification

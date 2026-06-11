@@ -30,18 +30,14 @@ KINDS = frozenset(
 
 KNOWN_ASSET_CLASSES = frozenset(
     {
-        "stock",
         "equity",
         "etf",
         "crypto",
         "commodity",
-        "commodity_theme",
-        "macro",
-        "macro_event",
+        "macro_theme",
         "industry",
         "industry_theme",
         "market",
-        "prediction_market",
     }
 )
 
@@ -222,7 +218,7 @@ def sample_research_envelope(kind: str) -> dict[str, Any]:
         "stock": {
             "subject": "Example Semiconductor Inc research",
             "kind": "stock",
-            "asset_class": "stock",
+            "asset_class": "DRAFT:us_stock",
             "tickers": ["EXSM"],
             "aliases": ["Example Semiconductor"],
             "research_markdown": (
@@ -267,7 +263,7 @@ def sample_research_envelope(kind: str) -> dict[str, Any]:
         "commodity_theme": {
             "subject": "Copper electrification demand research",
             "kind": "commodity_theme",
-            "asset_class": "commodity_theme",
+            "asset_class": "commodity",
             "aliases": ["copper", "electrification", "grid demand"],
             "research_markdown": (
                 "# Copper Theme Research\n\n"
@@ -289,7 +285,7 @@ def sample_research_envelope(kind: str) -> dict[str, Any]:
         "macro_event": {
             "subject": "FOMC policy path research",
             "kind": "macro_event",
-            "asset_class": "macro_event",
+            "asset_class": "macro_theme",
             "aliases": ["FOMC", "Federal Reserve", "policy rates"],
             "research_markdown": (
                 "# FOMC Macro Research\n\n"
@@ -311,7 +307,7 @@ def sample_research_envelope(kind: str) -> dict[str, Any]:
         "market": {
             "subject": "World Cup champion prediction market research",
             "kind": "market",
-            "asset_class": "prediction_market",
+            "asset_class": "DRAFT:prediction_market",
             "aliases": ["World Cup champion", "prediction market"],
             "market_meta": {
                 "rules": "Market resolves according to the venue's published champion settlement rules.",

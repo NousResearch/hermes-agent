@@ -20,6 +20,10 @@ market / odds / prediction 输出永远 reference-only，只能给 observe / res
 1. Produce the markdown research body.
 2. Convert the same conclusions into the YAML envelope from
    `docs/alphahunt/RESEARCH_OUTPUT_CONTRACT.md`.
+   `asset_class` must be an AlphaHunt authorized production enum. If it is an
+   unauthorized new category, use `DRAFT:<name>`. DRAFT values only go into the
+   research note / raw_json and must not be written into the
+   `projects.asset_class` production enum column.
 3. Validate the YAML:
 
 ```bash

@@ -273,6 +273,8 @@ emit_manifest() {
         '{"name":"uv","title":"Install uv package manager","category":"runtime","needs_user_input":false},' \
         '{"name":"node","title":"Detect Node.js","category":"runtime","needs_user_input":false},' \
         '{"name":"python","title":"Verify Python 3.11","category":"runtime","needs_user_input":false},' \
+        '{"name":"system-packages","title":"Install system packages","category":"runtime",' \
+        '"needs_user_input":false},' \
         '{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},' \
         '{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},' \
         '{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},' \
@@ -2632,6 +2634,13 @@ run_stage_body() {
             install_uv
             check_python
             ;;
+        system-packages)
+            print_banner
+            detect_os
+            resolve_install_layout
+            check_network_prerequisites
+            install_system_packages
+            ;;
         prerequisites)
             print_banner
             detect_os
@@ -2656,8 +2665,12 @@ run_stage_body() {
             else
                 check_node
             fi
-            check_network_prerequisites
-            install_system_packages
+            if [ "${HERMES_NATIVE_SYSTEM_PACKAGES_STAGE:-}" = "1" ]; then
+                log_info "Skipping system packages; native bootstrap system-packages stage owns it"
+            else
+                check_network_prerequisites
+                install_system_packages
+            fi
             ;;
         repository)
             detect_os

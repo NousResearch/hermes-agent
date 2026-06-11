@@ -216,6 +216,8 @@ language-specific setup where needed.
   runtime is already available, while preserving script fallback so missing Python can still be installed by uv.
 - Unix bootstrap manifests now expose Python 3.11 as a separate native-first stage after Node.js, and Rust passes an
   internal skip signal so the prerequisites shell fallback does not repeat the Python check/install path.
+- Unix bootstrap manifests now expose `system-packages` as a separate probe-then-script stage after Python, so Rust can
+  skip the shell process when `rg` and `ffmpeg` are already available and preserve shell package-manager fallback.
 - `python` now also runs native-first installation through Rust by invoking `uv python install 3.11`, with script
   fallback preserved if uv fails to install or locate the runtime.
 - `venv` now runs native-first through Rust by invoking `uv venv venv --python 3.11` in the checkout, with script

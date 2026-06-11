@@ -18,7 +18,13 @@ the agent repeatedly re-surfacing already-cancelled work across turns.
 These tests pin the post-fix invariants so the conflict cannot regress.
 """
 
-from agent.context_compressor import SUMMARY_PREFIX
+from agent.context_compressor import (
+    HISTORICAL_IN_PROGRESS_HEADING,
+    HISTORICAL_PENDING_ASKS_HEADING,
+    HISTORICAL_REMAINING_WORK_HEADING,
+    HISTORICAL_TASK_HEADING,
+    SUMMARY_PREFIX,
+)
 
 
 def test_no_resume_exactly_directive():
@@ -30,8 +36,22 @@ def test_latest_message_wins_on_conflict():
     """The prefix must explicitly say latest user message wins on conflict."""
     lower = SUMMARY_PREFIX.lower()
     assert "latest user message" in lower
+    assert HISTORICAL_TASK_HEADING.lower() in lower
+    assert HISTORICAL_PENDING_ASKS_HEADING.lower() in lower
+    assert HISTORICAL_REMAINING_WORK_HEADING.lower() in lower
     # Must have an explicit conflict-resolution rule.
     assert "wins" in lower or "supersede" in lower or "discard" in lower
+
+
+def test_handoff_sections_are_framed_as_historical():
+    """The summary headings referenced in the prefix must sound historical,
+    not like live instructions for the current turn."""
+    lower = SUMMARY_PREFIX.lower()
+    assert "## active task" not in lower
+    assert "## pending user asks" not in lower
+    assert "## remaining work" not in lower
+    assert HISTORICAL_TASK_HEADING.lower() in lower
+    assert HISTORICAL_IN_PROGRESS_HEADING.lower() in lower
 
 
 def test_reverse_signals_called_out():

@@ -1,9 +1,9 @@
 """Regression coverage for #35344: a resumed session must not let a stale
-``## Active Task`` from an inherited compaction handoff hijack the reply to a
+historical task snapshot from an inherited compaction handoff hijack the reply to a
 new, unrelated user message.
 
 The failure mode (real report): a lineage was compacted, producing a handoff
-whose ``## Active Task`` described task A. The lineage was resumed later and
+whose historical task snapshot described task A. The lineage was resumed later and
 the user asked about an unrelated task B. The model answered with A because
 the handoff's resume directive outranked the fresh ask.
 
@@ -16,14 +16,15 @@ named reverse-signal verbs. Two invariants guard the resume path specifically:
      pre-fix stale handoff cannot keep its "resume exactly" directive forever.
 
   2. The current handoff prefix contains an unambiguous "latest message wins /
-     discard stale Active Task" rule, so an unrelated new ask is privileged over
-     the inherited ``## Active Task``.
+     discard stale historical task" rule, so an unrelated new ask is privileged over
+     the inherited task snapshot.
 
 These are content/structural assertions (no live model call) — they pin the
 mechanism that makes the stale task historical rather than active.
 """
 
 from agent.context_compressor import (
+    HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     LEGACY_SUMMARY_PREFIX,
     ContextCompressor,
@@ -48,10 +49,10 @@ _OLD_CONFLICTING_PREFIX = (
 
 def test_latest_message_wins_over_inherited_active_task():
     """The handoff must explicitly privilege the latest user message over a
-    stale ``## Active Task`` — the core #35344 contract."""
+    stale historical task snapshot — the core #35344 contract."""
     lower = SUMMARY_PREFIX.lower()
     assert "latest user message" in lower
-    assert "## active task" in lower
+    assert HISTORICAL_TASK_HEADING.lower() in lower
     # Conflict-resolution must be explicit, not implied.
     assert "wins" in lower or "supersede" in lower
     assert "discard" in lower
@@ -69,7 +70,7 @@ def test_resumed_stale_handoff_gets_renormalized_to_current_prefix():
     prefix when re-normalized on re-compaction — so the "resume exactly"
     directive cannot survive into a resumed session."""
     stale_body = (
-        "## Active Task\n"
+        f"{HISTORICAL_TASK_HEADING}\n"
         "User asked: 'Migrate the billing module to Stripe'\n\n"
         "## Goal\nMigrate billing.\n"
     )
@@ -92,7 +93,7 @@ def test_resumed_stale_handoff_gets_renormalized_to_current_prefix():
 def test_legacy_prefix_handoff_also_renormalized():
     """The same upgrade applies to the oldest ``[CONTEXT SUMMARY]:`` handoff
     format that may sit in a long-lived resumed lineage."""
-    legacy = f"{LEGACY_SUMMARY_PREFIX} ## Active Task\nUser asked: 'task A'"
+    legacy = f"{LEGACY_SUMMARY_PREFIX} {HISTORICAL_TASK_HEADING}\nUser asked: 'task A'"
     renormalized = ContextCompressor._with_summary_prefix(legacy)
     assert renormalized.startswith(SUMMARY_PREFIX)
     assert LEGACY_SUMMARY_PREFIX not in renormalized
@@ -107,7 +108,7 @@ def test_inherited_handoff_detected_in_resumed_protected_head():
     Task read as live intent)."""
     messages = [
         {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": f"{SUMMARY_PREFIX}\n## Active Task\nUser asked: 'task A'"},
+        {"role": "user", "content": f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nUser asked: 'task A'"},
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "Unrelated task B: what's the capital of France?"},
     ]
@@ -129,7 +130,7 @@ def test_historical_prefixed_handoff_detected_and_stripped():
     stale 'resume exactly' text as a fresh turn."""
     messages = [
         {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": f"{_OLD_CONFLICTING_PREFIX}\n## Active Task\nUser asked: 'task A'"},
+        {"role": "user", "content": f"{_OLD_CONFLICTING_PREFIX}\n{HISTORICAL_TASK_HEADING}\nUser asked: 'task A'"},
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "Unrelated task B"},
     ]

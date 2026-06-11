@@ -270,6 +270,64 @@ def save_goal(session_id: str, state: GoalState) -> None:
         logger.debug("GoalManager: set_meta failed: %s", exc)
 
 
+def _delete_goal(session_id: str) -> None:
+    """Remove a goal state key from SessionDB. No-op if DB unavailable."""
+    if not session_id:
+        return
+    db = _get_session_db()
+    if db is None:
+        return
+    key = _meta_key(session_id)
+    try:
+        if hasattr(db, "_execute_write"):
+            db._execute_write(lambda conn: conn.execute("DELETE FROM state_meta WHERE key = ?", (key,)))
+        else:  # pragma: no cover - defensive for non-SessionDB test doubles
+            conn = getattr(db, "_conn", None)
+            lock = getattr(db, "_lock", None)
+            if conn is None:
+                return
+            if lock is None:
+                conn.execute("DELETE FROM state_meta WHERE key = ?", (key,))
+                conn.commit()
+            else:
+                with lock:
+                    conn.execute("DELETE FROM state_meta WHERE key = ?", (key,))
+                    conn.commit()
+    except Exception as exc:
+        logger.debug("GoalManager: delete goal failed: %s", exc)
+
+
+def migrate_active_goal(old_session_id: str, new_session_id: str) -> bool:
+    """Move an active goal to a new session id after session compression.
+
+    The stored GoalState schema is unchanged: this renames the state_meta key
+    from ``goal:<old_session_id>`` to ``goal:<new_session_id>``.  If the
+    destination already has an active goal, skip to avoid two owners racing the
+    same loop.  Inactive destination state may be overwritten by the active
+    source goal.
+    """
+    if not old_session_id or not new_session_id or old_session_id == new_session_id:
+        return False
+
+    old_state = load_goal(old_session_id)
+    if old_state is None or old_state.status != "active":
+        return False
+
+    new_state = load_goal(new_session_id)
+    if new_state is not None and new_state.status == "active":
+        logger.warning(
+            "GoalManager: migration skipped; destination session already has active goal (%s -> %s)",
+            old_session_id,
+            new_session_id,
+        )
+        return False
+
+    save_goal(new_session_id, old_state)
+    _delete_goal(old_session_id)
+    logger.info("GoalManager: migrated active goal %s -> %s", old_session_id, new_session_id)
+    return True
+
+
 def clear_goal(session_id: str) -> None:
     """Mark a goal cleared in the DB (preserved for audit, status=cleared)."""
     state = load_goal(session_id)

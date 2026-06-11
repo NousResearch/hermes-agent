@@ -7474,6 +7474,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            _return_result = _agent_result
+            _goal_agent_result = _agent_result
+            _stashed_results = getattr(self, "_post_turn_agent_results", None)
+            if isinstance(_stashed_results, dict):
+                _stashed_result = _stashed_results.pop(_quick_key, None)
+                if _goal_agent_result is None:
+                    _goal_agent_result = _stashed_result
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -7482,10 +7489,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # broken judge never breaks normal message handling.
             try:
                 _final_text = ""
-                if isinstance(_agent_result, dict):
-                    _final_text = str(_agent_result.get("final_response") or "")
-                elif isinstance(_agent_result, str):
-                    _final_text = _agent_result
+                if isinstance(_goal_agent_result, dict):
+                    _final_text = str(_goal_agent_result.get("final_response") or "")
+                elif isinstance(_goal_agent_result, str):
+                    _final_text = _goal_agent_result
                 # Skip for empty responses (interrupted / errored) — the
                 # judge would almost always say "continue" and we'd loop
                 # on error. Let the user drive the next turn.
@@ -7495,14 +7502,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     except Exception:
                         session_entry = None
                     if session_entry is not None:
+                        _response_already_delivered = (
+                            isinstance(_goal_agent_result, dict)
+                            and bool(_goal_agent_result.get("already_sent"))
+                            and not bool(_goal_agent_result.get("failed"))
+                        )
                         await self._post_turn_goal_continuation(
                             session_entry=session_entry,
                             source=source,
                             final_response=_final_text,
+                            response_already_delivered=_response_already_delivered,
                         )
             except Exception as _goal_exc:
                 logger.debug("goal continuation hook failed: %s", _goal_exc)
-            return _agent_result
+            return _return_result
         finally:
             # Unconditional release covers every exit path. _release_running_agent_state
             # is idempotent (pop-on-absent is harmless) and, called without a
@@ -8870,6 +8883,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                _stashed_results = getattr(self, "_post_turn_agent_results", None)
+                if _stashed_results is None:
+                    _stashed_results = {}
+                    self._post_turn_agent_results = _stashed_results
+                _stashed_results[_quick_key] = agent_result
                 return None
 
             return response
@@ -9353,6 +9371,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         session_entry: Any,
         source: Any,
         final_response: str,
+        response_already_delivered: bool = False,
     ) -> None:
         """Run the goal judge after a gateway turn and, if still active,
         enqueue a continuation prompt for the same session.
@@ -9384,13 +9403,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         msg = decision.get("message") or ""
 
         # Defer the status line until after the adapter has delivered the
-        # agent's visible final response. The judge runs after the response is
-        # produced but before BasePlatformAdapter sends it, so sending here
-        # would show "✓ Goal achieved" before the answer itself. Registering
-        # an awaited post-delivery callback preserves delivery reliability
-        # without reversing the user-visible ordering.
+        # agent's visible final response. When streaming already delivered the
+        # body, there is no later adapter send to trigger a post-delivery
+        # callback, so deliver the goal status immediately.
         if msg and source is not None:
-            await self._defer_goal_status_notice_after_delivery(source, msg)
+            if response_already_delivered:
+                await self._send_goal_status_notice(source, msg)
+            else:
+                await self._defer_goal_status_notice_after_delivery(source, msg)
 
         if not decision.get("should_continue"):
             return
@@ -14475,6 +14495,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Session split detected: %s → %s (compression)",
                     session_id, agent.session_id,
                 )
+                try:
+                    from hermes_cli.goals import migrate_active_goal
+
+                    migrate_active_goal(session_id, agent.session_id)
+                except Exception as exc:
+                    logger.debug("goal migration after session split failed: %s", exc)
                 entry = self.session_store._entries.get(session_key)
                 if entry:
                     entry.session_id = agent.session_id

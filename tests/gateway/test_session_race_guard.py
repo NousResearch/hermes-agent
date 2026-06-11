@@ -125,6 +125,30 @@ async def test_sentinel_cleaned_up_after_handler_returns():
     )
 
 
+@pytest.mark.asyncio
+async def test_goal_continuation_uses_stashed_streamed_final_response():
+    """Streaming platforms return None to avoid duplicate sends, but the
+    post-turn goal hook still needs the already-delivered final text."""
+    runner = _make_runner()
+    event = _make_event()
+    final_response = "partial progress; keep going"
+
+    async def mock_inner(self_inner, ev, src, qk, generation):
+        runner._post_turn_agent_results = {
+            qk: {"final_response": final_response, "already_sent": True}
+        }
+        return None
+
+    runner._post_turn_goal_continuation = AsyncMock()
+
+    with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
+        response = await runner._handle_message(event)
+
+    assert response is None
+    runner._post_turn_goal_continuation.assert_awaited_once()
+    assert runner._post_turn_goal_continuation.await_args.kwargs["final_response"] == final_response
+
+
 # ------------------------------------------------------------------
 # Test 3: Sentinel cleaned up on exception
 # ------------------------------------------------------------------

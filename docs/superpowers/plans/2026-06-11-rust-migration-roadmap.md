@@ -149,6 +149,9 @@ language-specific setup where needed.
 - Windows bootstrap tool stages for `uv`, `git`, `node`, and `system-packages` now use Rust preflight checks to skip
   the script process when the required tools are already available, while preserving script fallback when anything is
   missing or the detected Node.js version is too old for the desktop build.
+- Windows `node` now has a Rust native-first portable ZIP path for Node.js v22, including official index resolution,
+  ZIP download/extraction into `$HERMES_HOME/node`, current-process PATH update, and User PATH persistence; the
+  PowerShell stage remains fallback for download, extraction, PATH, or version-verification failures.
 - Windows `python` now uses a Rust `uv python find 3.11` preflight to skip the PowerShell stage when the required
   runtime is already available, while preserving script fallback so missing Python can still be installed by uv.
 - `python` now also runs native-first installation through Rust by invoking `uv python install 3.11`, with script
@@ -176,8 +179,9 @@ language-specific setup where needed.
 
 **Still script-backed:**
 - Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Node installation
-  when missing, Unix npm dependency installation when npm is available, Unix desktop build when the desktop package is
-  present, and script fallback for Windows npm, Windows desktop recovery, and platform SDK recovery.
+  on Unix or Windows fallback paths, Unix npm dependency installation when npm is available, Unix desktop build when
+  the desktop package is present, and script fallback for Windows Node, Windows npm, Windows desktop recovery, and
+  platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

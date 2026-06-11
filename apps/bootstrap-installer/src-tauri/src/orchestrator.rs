@@ -80,6 +80,17 @@ pub struct DesktopBuildStagePlan {
     pub desktop_dir: PathBuf,
 }
 
+/// Native Windows Node runtime installation plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WindowsNodeRuntimeStagePlan {
+    pub version_major: u32,
+    pub archive_name: String,
+    pub download_url: String,
+    pub archive_path: PathBuf,
+    pub install_dir: PathBuf,
+    pub node_exe: PathBuf,
+}
+
 /// Messaging-platform SDK requirement derived from user configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformSdkRequirement {
@@ -850,6 +861,80 @@ pub fn install_python_runtime_stage(hermes_home: &Path) -> Result<serde_json::Va
     }))
 }
 
+/// Build a Windows Node runtime plan from the Node.js latest-v22.x index.
+pub fn windows_node_runtime_stage_plan_from_index(
+    hermes_home: &Path,
+    arch: &str,
+    index_html: &str,
+) -> Result<WindowsNodeRuntimeStagePlan> {
+    let version_major = 22;
+    let archive_name = latest_windows_node_archive_name(index_html, version_major, arch)
+        .ok_or_else(|| anyhow!("Node.js v{version_major} Windows {arch} archive not found"))?;
+    let download_url =
+        format!("https://nodejs.org/dist/latest-v{version_major}.x/{archive_name}");
+    let archive_path = hermes_home
+        .join("bootstrap-cache")
+        .join(&archive_name);
+    let install_dir = hermes_home.join("node");
+    let node_exe = install_dir.join("node.exe");
+    Ok(WindowsNodeRuntimeStagePlan {
+        version_major,
+        archive_name,
+        download_url,
+        archive_path,
+        install_dir,
+        node_exe,
+    })
+}
+
+/// Install the Windows Node.js runtime from the official portable ZIP archive.
+pub async fn install_windows_node_runtime_stage(
+    hermes_home: &Path,
+) -> Result<serde_json::Value> {
+    if !cfg!(target_os = "windows") {
+        return Err(anyhow!("native Node runtime stage is only available on Windows"));
+    }
+    let arch = windows_node_arch_slug();
+    if arch != "x64" && arch != "arm64" && arch != "x86" {
+        return Err(anyhow!("unsupported Windows architecture for Node.js: {arch}"));
+    }
+    let version_major = 22;
+    let index_url = format!("https://nodejs.org/dist/latest-v{version_major}.x/");
+    let index_html = reqwest::Client::new()
+        .get(&index_url)
+        .header("User-Agent", "Hermes-Setup")
+        .send()
+        .await
+        .with_context(|| format!("GET {index_url}"))?
+        .text()
+        .await
+        .with_context(|| format!("reading body of {index_url}"))?;
+    let plan = windows_node_runtime_stage_plan_from_index(hermes_home, &arch, &index_html)?;
+    crate::artifact::download_to_cache(
+        crate::artifact::DownloadSpec {
+            url: plan.download_url.clone(),
+            user_agent: "Hermes-Setup",
+            expected_sha256: None,
+        },
+        &plan.archive_path,
+    )
+    .await
+    .with_context(|| format!("downloading {}", plan.archive_name))?;
+    install_windows_node_archive(&plan.archive_path, &plan.install_dir)?;
+    if !node_version_satisfies_build(&plan.node_exe) {
+        return Err(anyhow!(
+            "installed Node.js does not satisfy desktop build requirements"
+        ));
+    }
+    prepend_process_path(&plan.install_dir);
+    persist_windows_path_entry(&plan.install_dir)?;
+    Ok(serde_json::json!({
+        "node": plan.node_exe,
+        "archive": plan.archive_name,
+        "installDir": plan.install_dir,
+    }))
+}
+
 /// Build the native Python virtual environment stage plan.
 pub fn python_venv_stage_plan<P>(
     install_root: &Path,
@@ -1444,6 +1529,158 @@ where
         .ok_or_else(|| anyhow!("uv is not available"))
 }
 
+fn latest_windows_node_archive_name(
+    index_html: &str,
+    version_major: u32,
+    arch: &str,
+) -> Option<String> {
+    let prefix = format!("node-v{version_major}.");
+    let suffix = format!("-win-{arch}.zip");
+    index_html
+        .split('"')
+        .flat_map(|part| part.split_whitespace())
+        .filter_map(|part| {
+            let name = part.trim_matches(|ch: char| {
+                matches!(ch, '<' | '>' | '\'' | '"' | '=')
+            });
+            if name.starts_with(&prefix) && name.ends_with(&suffix) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .max_by(|left, right| compare_node_archive_versions(left, right))
+}
+
+fn compare_node_archive_versions(left: &str, right: &str) -> std::cmp::Ordering {
+    node_archive_version_tuple(left).cmp(&node_archive_version_tuple(right))
+}
+
+fn node_archive_version_tuple(name: &str) -> (u32, u32, u32) {
+    let version = name
+        .strip_prefix("node-v")
+        .and_then(|rest| rest.split_once('-').map(|(version, _)| version))
+        .unwrap_or_default();
+    let mut parts = version
+        .split('.')
+        .filter_map(|part| part.parse::<u32>().ok());
+    (
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+        parts.next().unwrap_or_default(),
+    )
+}
+
+fn install_windows_node_archive(archive_path: &Path, install_dir: &Path) -> Result<()> {
+    let parent = install_dir.parent().ok_or_else(|| {
+        anyhow!(
+            "Node install directory has no parent: {}",
+            install_dir.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating Node install parent {}", parent.display()))?;
+    let tmp_dir = install_dir.with_extension("extracting");
+    remove_path_if_exists(&tmp_dir)?;
+    fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("creating Node extraction directory {}", tmp_dir.display()))?;
+
+    let result: Result<()> = (|| {
+        crate::artifact::extract_zip_archive(archive_path, &tmp_dir)?;
+        let extracted_root = single_child_dir(&tmp_dir)?;
+        remove_path_if_exists(install_dir)?;
+        fs::rename(&extracted_root, install_dir).with_context(|| {
+            format!(
+                "moving Node runtime {} to {}",
+                extracted_root.display(),
+                install_dir.display()
+            )
+        })?;
+        Ok(())
+    })();
+    let cleanup = remove_path_if_exists(&tmp_dir);
+    result?;
+    cleanup
+}
+
+fn single_child_dir(parent: &Path) -> Result<PathBuf> {
+    let mut dirs = fs::read_dir(parent)
+        .with_context(|| format!("reading {}", parent.display()))?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect::<Vec<_>>();
+    dirs.sort();
+    if dirs.len() != 1 {
+        return Err(anyhow!(
+            "expected exactly one extracted directory under {}, found {}",
+            parent.display(),
+            dirs.len()
+        ));
+    }
+    Ok(dirs.remove(0))
+}
+
+fn remove_path_if_exists(path: &Path) -> Result<()> {
+    if !path.exists() {
+        return Ok(());
+    }
+    if path.is_dir() {
+        fs::remove_dir_all(path)
+            .with_context(|| format!("removing directory {}", path.display()))
+    } else {
+        fs::remove_file(path)
+            .with_context(|| format!("removing file {}", path.display()))
+    }
+}
+
+fn windows_node_arch_slug() -> String {
+    let arch = std::env::var("PROCESSOR_ARCHITEW6432")
+        .or_else(|_| std::env::var("PROCESSOR_ARCHITECTURE"))
+        .unwrap_or_else(|_| std::env::consts::ARCH.to_string());
+    match arch.to_ascii_lowercase().as_str() {
+        "amd64" | "x86_64" => "x64".to_string(),
+        "arm64" | "aarch64" => "arm64".to_string(),
+        "x86" | "i386" | "i686" => "x86".to_string(),
+        other => other.to_string(),
+    }
+}
+
+fn prepend_process_path(entry: &Path) {
+    let current = std::env::var_os("PATH").unwrap_or_default();
+    let mut parts = vec![entry.to_path_buf()];
+    parts.extend(std::env::split_paths(&current));
+    if let Ok(next) = std::env::join_paths(parts) {
+        std::env::set_var("PATH", next);
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn persist_windows_path_entry(entry: &Path) -> Result<()> {
+    let current = hermes_manager::platform::read_windows_user_path()?;
+    let mut parts = current
+        .as_deref()
+        .unwrap_or_default()
+        .split(';')
+        .filter(|part| !part.trim().is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let entry_text = entry.display().to_string();
+    let exists = parts
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case(&entry_text));
+    if !exists {
+        parts.insert(0, entry_text.clone());
+        hermes_manager::platform::write_windows_user_env_var("Path", &parts.join(";"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+fn persist_windows_path_entry(_entry: &Path) -> Result<()> {
+    Err(anyhow!("Windows PATH persistence is only available on Windows"))
+}
+
 fn find_node_executable<P>(hermes_home: &Path, path_env: P, pathext: &str) -> Option<PathBuf>
 where
     P: AsRef<OsStr>,
@@ -1590,6 +1827,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("desktop") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
+    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("node") {
+        return StageExecutionMode::NativeWithScriptFallback;
+    }
     if matches!(
         name.to_ascii_lowercase().as_str(),
         "bootstrap-marker" | "config" | "config-templates" | "complete" | "path"
@@ -1676,6 +1916,7 @@ mod tests {
             stage("path"),
             stage("python"),
             stage("uv"),
+            stage("node"),
             stage("platform-sdks"),
             stage("node-deps"),
             stage("desktop"),
@@ -1685,7 +1926,7 @@ mod tests {
         ];
         let plan = build_stage_plan(&stages, false);
 
-        assert_eq!(plan.len(), 10);
+        assert_eq!(plan.len(), 11);
         assert_eq!(plan[0].name, "repository");
         assert_eq!(plan[0].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[0].script_fallback, true);
@@ -1698,36 +1939,45 @@ mod tests {
         assert_eq!(plan[3].name, "uv");
         assert_eq!(plan[3].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[3].rust_probe, true);
-        assert_eq!(plan[4].name, "platform-sdks");
-        assert_eq!(plan[4].execution, StageExecutionMode::NativeWithScriptFallback);
+        let node_execution = if cfg!(target_os = "windows") {
+            StageExecutionMode::NativeWithScriptFallback
+        } else {
+            StageExecutionMode::ProbeThenScript
+        };
+        assert_eq!(plan[4].name, "node");
+        assert_eq!(plan[4].execution, node_execution);
+        assert_eq!(plan[4].rust_probe, !cfg!(target_os = "windows"));
         assert_eq!(plan[4].script_fallback, true);
+        assert_eq!(plan[5].name, "platform-sdks");
+        assert_eq!(plan[5].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[5].script_fallback, true);
         let node_deps_execution = if cfg!(target_os = "windows") {
             StageExecutionMode::NativeWithScriptFallback
         } else {
             StageExecutionMode::ProbeThenScript
         };
-        assert_eq!(plan[5].name, "node-deps");
-        assert_eq!(plan[5].execution, node_deps_execution);
-        assert_eq!(plan[5].rust_probe, !cfg!(target_os = "windows"));
-        assert_eq!(plan[5].script_fallback, true);
-        assert_eq!(plan[6].name, "desktop");
+        assert_eq!(plan[6].name, "node-deps");
+        assert_eq!(plan[6].execution, node_deps_execution);
+        assert_eq!(plan[6].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[6].script_fallback, true);
+        assert_eq!(plan[7].name, "desktop");
         let desktop_execution = if cfg!(target_os = "windows") {
             StageExecutionMode::NativeWithScriptFallback
         } else {
             StageExecutionMode::ProbeThenScript
         };
-        assert_eq!(plan[6].execution, desktop_execution);
-        assert_eq!(plan[6].rust_probe, !cfg!(target_os = "windows"));
-        assert_eq!(plan[6].script_fallback, true);
-        assert_eq!(plan[7].name, "venv");
-        assert_eq!(plan[7].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[7].execution, desktop_execution);
+        assert_eq!(plan[7].rust_probe, !cfg!(target_os = "windows"));
         assert_eq!(plan[7].script_fallback, true);
-        assert_eq!(plan[8].name, "dependencies");
+        assert_eq!(plan[8].name, "venv");
         assert_eq!(plan[8].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[8].script_fallback, true);
-        assert_eq!(plan[9].name, "python-deps");
+        assert_eq!(plan[9].name, "dependencies");
         assert_eq!(plan[9].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[9].script_fallback, true);
+        assert_eq!(plan[10].name, "python-deps");
+        assert_eq!(plan[10].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[10].script_fallback, true);
     }
 
     #[test]
@@ -1939,6 +2189,33 @@ mod tests {
         assert_eq!(skipped.reason.as_deref(), Some("npm not available"));
         std::fs::write(tools.join("npm.cmd"), b"npm").unwrap();
         assert!(node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD").is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn windows_node_runtime_stage_plan_parses_latest_v22_zip() {
+        let html = r#"
+            <a href="node-v22.18.0-win-x64.zip">node-v22.18.0-win-x64.zip</a>
+            <a href="node-v22.19.1-win-x64.zip">node-v22.19.1-win-x64.zip</a>
+            <a href="node-v22.19.1-win-arm64.zip">node-v22.19.1-win-arm64.zip</a>
+        "#;
+        let root = std::env::temp_dir().join(format!(
+            "hermes-node-runtime-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+
+        let plan = windows_node_runtime_stage_plan_from_index(&hermes_home, "x64", html).unwrap();
+
+        assert_eq!(plan.version_major, 22);
+        assert_eq!(plan.archive_name, "node-v22.19.1-win-x64.zip");
+        assert_eq!(
+            plan.download_url,
+            "https://nodejs.org/dist/latest-v22.x/node-v22.19.1-win-x64.zip"
+        );
+        assert_eq!(plan.install_dir, hermes_home.join("node"));
+        assert_eq!(plan.node_exe, hermes_home.join("node").join("node.exe"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -3886,6 +3886,96 @@ def providers_dict_to_custom_providers(providers_dict: Any) -> List[Dict[str, An
     return custom_providers
 
 
+_API_KEY_ENV_TEMPLATE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
+
+
+def _provider_credential_identity(api_key: Any, key_env: Any) -> Tuple[str, str]:
+    """Reduce a provider credential to a comparable identity tuple.
+
+    Returns one of:
+
+    - ``("literal", "<secret>")`` — an inline key, a ``${VAR}`` template, or a
+      ``key_env`` that resolves in the current environment (templates and
+      env refs are resolved so "the same secret spelled two ways" compares
+      equal).
+    - ``("env", "VAR")`` — an env-backed credential that does not resolve in
+      this process; identity is the variable name itself.
+    - ``("none", "")`` — no credential configured.
+    """
+    api_key = str(api_key or "").strip()
+    key_env = str(key_env or "").strip()
+    template = _API_KEY_ENV_TEMPLATE_RE.fullmatch(api_key)
+    if template:
+        key_env, api_key = template.group(1), ""
+    if api_key:
+        return ("literal", api_key)
+    if key_env:
+        resolved = os.environ.get(key_env, "").strip()
+        if resolved:
+            return ("literal", resolved)
+        return ("env", key_env)
+    return ("none", "")
+
+
+def find_matching_provider_key(
+    providers_dict: Any,
+    name: str,
+    base_url: str,
+    api_key: str = "",
+    key_env: str = "",
+) -> Optional[Any]:
+    """Return the ``providers:`` map key that already holds this endpoint.
+
+    The actual map key object is returned (not a str() copy) so callers can
+    index ``providers_dict`` with it directly.
+
+    A candidate matches an existing entry when the normalized URL is equal
+    AND the display name is compatible (equal case-insensitively, or absent
+    on either side — the entry's key doubles as its name fallback, matching
+    ``_normalize_custom_provider_entry``) AND the credential identity is
+    compatible (equal, or absent on either side; an entry with no key and an
+    onboarding run that supplies one are the same endpoint).
+
+    Same display name on a DIFFERENT URL or with a different credential is
+    not a match — those are genuinely distinct endpoints and keep the
+    collision-suffix behaviour. Returns None when nothing matches.
+    """
+    if not isinstance(providers_dict, dict):
+        return None
+    cand_url = str(base_url or "").strip().rstrip("/").lower()
+    if not cand_url:
+        return None
+    cand_name = str(name or "").strip().lower()
+    cand_cred = _provider_credential_identity(api_key, key_env)
+    for key, entry in providers_dict.items():
+        if not isinstance(entry, dict):
+            continue
+        entry_url = ""
+        for url_key in ("base_url", "url", "api"):
+            raw_url = entry.get(url_key)
+            if isinstance(raw_url, str) and raw_url.strip():
+                entry_url = raw_url.strip().rstrip("/").lower()
+                break
+        if not entry_url or entry_url != cand_url:
+            continue
+        entry_name = str(entry.get("name", "") or "").strip().lower()
+        if not entry_name:
+            entry_name = str(key).strip().lower()
+        if cand_name and entry_name and cand_name != entry_name:
+            continue
+        entry_cred = _provider_credential_identity(
+            entry.get("api_key"), entry.get("key_env")
+        )
+        if (
+            cand_cred[0] != "none"
+            and entry_cred[0] != "none"
+            and cand_cred != entry_cred
+        ):
+            continue
+        return key
+    return None
+
+
 def get_compatible_custom_providers(
     config: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
@@ -4374,6 +4464,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not isinstance(providers_dict, dict):
                 providers_dict = {}
             migrated_count = 0
+            migrated_keys: List[str] = []
             for entry in custom_list:
                 if not isinstance(entry, dict):
                     continue
@@ -4382,6 +4473,46 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 old_key = entry.get("api_key", "")
                 if not old_url:
                     continue  # skip entries with no URL
+
+                # Idempotency: when an existing ``providers:`` entry is the
+                # SAME endpoint (same URL + compatible name/credential),
+                # merge missing fields into it instead of writing a suffixed
+                # duplicate. Re-running this migration after onboarding had
+                # re-populated custom_providers used to duplicate every
+                # endpoint as ``taro`` + ``taro-3``, ``ai-router`` +
+                # ``ai-router-0``, ... — one picker section per copy.
+                existing_key = find_matching_provider_key(
+                    providers_dict,
+                    old_name,
+                    old_url,
+                    api_key=old_key,
+                    key_env=entry.get("key_env", ""),
+                )
+                if existing_key is not None:
+                    existing = providers_dict[existing_key]
+                    # Add-only merge — never clobber a curated entry.
+                    if (
+                        entry.get("model")
+                        and not existing.get("default_model")
+                        and not existing.get("model")
+                    ):
+                        existing["default_model"] = entry["model"]
+                    if (
+                        entry.get("api_mode")
+                        and not existing.get("transport")
+                        and not existing.get("api_mode")
+                    ):
+                        existing["transport"] = entry["api_mode"]
+                    if (
+                        old_key
+                        and old_key not in {"no-key", "no-key-required", ""}
+                        and not str(existing.get("api_key", "") or "").strip()
+                        and not str(existing.get("key_env", "") or "").strip()
+                    ):
+                        existing["api_key"] = old_key
+                    migrated_count += 1
+                    migrated_keys.append(existing_key)
+                    continue
 
                 # Generate a kebab-case key from the display name
                 key = old_name.strip().lower().replace(" ", "-").replace("(", "").replace(")", "")
@@ -4398,9 +4529,16 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     except Exception:
                         key = f"endpoint-{migrated_count}"
 
-                # Don't overwrite existing entries
+                # Same key but a genuinely different endpoint/credential —
+                # keep both visible under a counter suffix. Loop until the
+                # key is actually free: the old single-shot
+                # f"{key}-{migrated_count}" could itself collide and
+                # silently overwrite a real entry.
                 if key in providers_dict:
-                    key = f"{key}-{migrated_count}"
+                    n = 2
+                    while f"{key}-{n}" in providers_dict:
+                        n += 1
+                    key = f"{key}-{n}"
 
                 new_entry = {"api": old_url}
                 if old_name:
@@ -4416,6 +4554,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
                 providers_dict[key] = new_entry
                 migrated_count += 1
+                migrated_keys.append(key)
 
             if migrated_count > 0:
                 config["providers"] = providers_dict
@@ -4424,8 +4563,8 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                 save_config(config)
                 if not quiet:
                     print(f"  ✓ Migrated {migrated_count} custom provider(s) to providers: section")
-                    for key in list(providers_dict.keys())[-migrated_count:]:
-                        ep = providers_dict[key]
+                    for key in migrated_keys:
+                        ep = providers_dict.get(key, {})
                         print(f"    → {key}: {ep.get('api', '')}")
 
     # ── Version 12 → 13: clear dead LLM_MODEL / OPENAI_MODEL from .env ──

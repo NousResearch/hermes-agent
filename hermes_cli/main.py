@@ -3517,13 +3517,66 @@ def _save_custom_provider(
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
-    Deduplicates by base_url — if the URL already exists, updates the
-    model name, context_length, and api_mode but doesn't add a duplicate entry.
-    Uses *name* when provided, otherwise auto-generates from the URL.
+    Idempotent against both schemas: if the endpoint already lives in the
+    v12+ ``providers:`` map (same URL + compatible name/credential), that
+    entry is updated in place; otherwise deduplicates by base_url against
+    the legacy ``custom_providers`` list — if the URL already exists there,
+    updates the model name, context_length, and api_mode but doesn't add a
+    duplicate entry. Uses *name* when provided, otherwise auto-generates
+    from the URL.
     """
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import find_matching_provider_key, load_config, save_config
 
     cfg = load_config()
+
+    # Recognize the endpoint when it already lives in the v12+ ``providers:``
+    # map and update that entry instead of re-appending a legacy
+    # custom_providers item. The legacy re-append used to feed the v11→12
+    # migration a colliding entry on its next run, duplicating every endpoint
+    # into suffixed providers: keys (taro + taro-3, ai-router + ai-router-0).
+    providers_map = cfg.get("providers")
+    if isinstance(providers_map, dict):
+        match_key = find_matching_provider_key(
+            providers_map, name or "", base_url, api_key=api_key
+        )
+        if match_key is not None and isinstance(providers_map[match_key], dict):
+            entry = providers_map[match_key]
+            changed = False
+            if model and entry.get("default_model") != model:
+                entry["default_model"] = model
+                changed = True
+            if model and context_length:
+                models_cfg = entry.get("models")
+                if not isinstance(models_cfg, dict):
+                    models_cfg = {}
+                model_cfg = models_cfg.get(model)
+                if not isinstance(model_cfg, dict):
+                    model_cfg = {}
+                if model_cfg.get("context_length") != context_length:
+                    model_cfg["context_length"] = context_length
+                    models_cfg[model] = model_cfg
+                    entry["models"] = models_cfg
+                    changed = True
+            if api_mode:
+                # Write to whichever transport field the entry already uses;
+                # an empty api_mode means auto-detect — leave the curated
+                # entry untouched rather than popping its transport.
+                mode_field = "api_mode" if "api_mode" in entry else "transport"
+                if entry.get(mode_field) != api_mode:
+                    entry[mode_field] = api_mode
+                    changed = True
+            if (
+                api_key
+                and not str(entry.get("api_key", "") or "").strip()
+                and not str(entry.get("key_env", "") or "").strip()
+            ):
+                entry["api_key"] = api_key
+                changed = True
+            if changed:
+                cfg["providers"] = providers_map
+                save_config(cfg)
+            return  # endpoint already configured, updated in place if needed
+
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
         providers = []

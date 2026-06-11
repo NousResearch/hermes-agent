@@ -747,6 +747,118 @@ class TestCustomProviderCompatibility:
         # custom_providers removed by migration — runtime reads via compat layer
         assert "custom_providers" not in raw
 
+    def test_v11_remigration_merges_identical_existing_provider(self, tmp_path):
+        """Re-running the v11→12 migration over endpoints that already live in
+        ``providers:`` must update them in place, not write suffixed duplicates.
+
+        Regression for the 2026-06-10 operator config: onboarding re-populated
+        ``custom_providers`` with endpoints that had already been migrated, and
+        the next migration pass duplicated every one of them as ``taro`` +
+        ``taro-3``, ``ai-router`` + ``ai-router-0``, ... — one model-picker
+        section per copy."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 11,
+                    "providers": {
+                        "taro": {
+                            "api": "http://10.10.20.211:8080/v1",
+                            "name": "taro",
+                            "api_key": "sk-taro",
+                        },
+                        "ai-router": {
+                            "api": "http://10.10.20.199:9081/v1",
+                            "name": "ai-router",
+                        },
+                        "ko-mac": {
+                            "api": "http://10.10.20.216:8081/v1",
+                            "name": "ko-mac",
+                        },
+                    },
+                    "custom_providers": [
+                        # Identical literal credential → merge.
+                        {
+                            "name": "taro",
+                            "base_url": "http://10.10.20.211:8080/v1",
+                            "api_key": "sk-taro",
+                            "model": "qwen3-coder",
+                        },
+                        # No credential on either side → merge.
+                        {
+                            "name": "ai-router",
+                            "base_url": "http://10.10.20.199:9081/v1",
+                        },
+                        # Credential only on the incoming side → merge and
+                        # fill the missing api_key in place.
+                        {
+                            "name": "ko-mac",
+                            "base_url": "http://10.10.20.216:8081/v1",
+                            "api_key": "sk-ko-mac",
+                        },
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert sorted(raw["providers"].keys()) == ["ai-router", "ko-mac", "taro"]
+        # default_model merged into the existing entry instead of a duplicate
+        assert raw["providers"]["taro"]["default_model"] == "qwen3-coder"
+        assert raw["providers"]["taro"]["api_key"] == "sk-taro"
+        assert raw["providers"]["ko-mac"]["api_key"] == "sk-ko-mac"
+        assert "custom_providers" not in raw
+
+    def test_v11_migration_suffixes_genuinely_distinct_endpoints_sharing_name(
+        self, tmp_path
+    ):
+        """Endpoints that share a display name but point at different URLs are
+        genuinely distinct: they keep the collision suffix, and the suffix
+        walks past occupied keys instead of overwriting them."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump(
+                {
+                    "_config_version": 11,
+                    "providers": {
+                        "taro": {
+                            "api": "http://10.10.20.211:8080/v1",
+                            "name": "taro",
+                        },
+                        "taro-2": {
+                            "api": "http://10.10.20.212:8080/v1",
+                            "name": "taro",
+                        },
+                    },
+                    "custom_providers": [
+                        {
+                            "name": "taro",
+                            "base_url": "http://10.10.20.213:8080/v1",
+                            "api_key": "sk-third",
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        assert sorted(raw["providers"].keys()) == ["taro", "taro-2", "taro-3"]
+        # Pre-existing entries untouched; the new endpoint landed on the
+        # first free suffix instead of overwriting taro-2.
+        assert raw["providers"]["taro"]["api"] == "http://10.10.20.211:8080/v1"
+        assert raw["providers"]["taro-2"]["api"] == "http://10.10.20.212:8080/v1"
+        assert raw["providers"]["taro-3"]["api"] == "http://10.10.20.213:8080/v1"
+        assert raw["providers"]["taro-3"]["api_key"] == "sk-third"
+        assert "custom_providers" not in raw
+
     def test_providers_dict_resolves_at_runtime(self, tmp_path):
         """After migration deleted custom_providers, get_compatible_custom_providers
         still finds entries from the providers dict."""

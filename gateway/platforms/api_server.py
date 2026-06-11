@@ -1817,6 +1817,14 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 db = self._ensure_session_db()
                 if db is not None:
+                    # Resolve forward: if the client-supplied session_id was
+                    # superseded by compression (parent → child chain), use
+                    # the latest descendant that actually holds messages.
+                    # Without this, stateless clients (Open WebUI, LibreChat,
+                    # etc.) that re-supply the original session_id on every
+                    # request will fork the ended session on each turn.
+                    # See #44004.
+                    session_id = db.resolve_resume_session_id(session_id)
                     history = db.get_messages_as_conversation(session_id)
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)

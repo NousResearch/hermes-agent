@@ -14,6 +14,9 @@ Exposes an HTTP server with endpoints:
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
+- GET  /api/mobile/notifications — list mobile notification inbox items
+- POST /api/mobile/notifications/{notification_id}/read — mark an inbox item read
+- POST /api/mobile/notifications/{notification_id}/actions — resolve an inbox action
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
@@ -53,6 +56,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.mobile_notifications import MobileNotificationStore
 from gateway.platforms.base import (
     BasePlatformAdapter,
     SendResult,
@@ -766,6 +770,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._mobile_notifications: Optional[MobileNotificationStore] = None
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -913,6 +918,12 @@ class APIServerAdapter(BasePlatformAdapter):
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,
         )
+
+    def _get_mobile_notifications(self) -> MobileNotificationStore:
+        """Lazy-init the mobile notification inbox store."""
+        if self._mobile_notifications is None:
+            self._mobile_notifications = MobileNotificationStore()
+        return self._mobile_notifications
 
     # ------------------------------------------------------------------
     # Session header helpers
@@ -1162,6 +1173,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
+                "mobile_notifications": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -1194,8 +1206,89 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+                "mobile_notifications": {"method": "GET", "path": "/api/mobile/notifications"},
+                "mobile_notification_read": {"method": "POST", "path": "/api/mobile/notifications/{notification_id}/read"},
+                "mobile_notification_actions": {"method": "POST", "path": "/api/mobile/notifications/{notification_id}/actions"},
             },
         })
+
+    async def _handle_mobile_notifications(self, request: "web.Request") -> "web.Response":
+        """GET /api/mobile/notifications — list WebUI mobile inbox items."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        status = request.query.get("status", "open")
+        if status not in {"open", "all"}:
+            return web.json_response({"error": "status must be 'open' or 'all'"}, status=400)
+
+        raw_limit = request.query.get("limit", "50")
+        try:
+            limit = int(raw_limit)
+        except (TypeError, ValueError):
+            return web.json_response({"error": "limit must be an integer"}, status=400)
+        if limit < 1 or limit > 100:
+            return web.json_response({"error": "limit must be between 1 and 100"}, status=400)
+
+        notifications = self._get_mobile_notifications().list_notifications(
+            status=status,
+            limit=limit,
+        )
+        return web.json_response({"notifications": notifications})
+
+    async def _handle_mark_mobile_notification_read(self, request: "web.Request") -> "web.Response":
+        """POST /api/mobile/notifications/{id}/read — mark an inbox item read."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        notification_id = request.match_info.get("notification_id", "")
+        if not notification_id:
+            return web.json_response({"error": "notification_id is required"}, status=400)
+
+        notification = self._get_mobile_notifications().mark_read(notification_id)
+        if notification is None:
+            return web.json_response({"error": "Notification not found"}, status=404)
+        return web.json_response({"notification": notification})
+
+    async def _handle_mobile_notification_action(self, request: "web.Request") -> "web.Response":
+        """POST /api/mobile/notifications/{id}/actions — resolve an inbox action."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        notification_id = request.match_info.get("notification_id", "")
+        if not notification_id:
+            return web.json_response({"error": "notification_id is required"}, status=400)
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "Request body must be an object"}, status=400)
+
+        action_id = body.get("action_id")
+        if not isinstance(action_id, str) or not action_id.strip():
+            return web.json_response({"error": "action_id is required"}, status=400)
+
+        result, notification = self._get_mobile_notifications().resolve_action(
+            notification_id,
+            action_id.strip(),
+        )
+        if result == "not_found":
+            return web.json_response({"error": "Notification or action not found"}, status=404)
+        if result == "expired":
+            return web.json_response(
+                {"error": "Notification expired", "notification": notification},
+                status=410,
+            )
+        if result == "conflict":
+            return web.json_response(
+                {"error": "Action already resolved", "notification": notification},
+                status=409,
+            )
+        return web.json_response({"notification": notification})
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.
@@ -4177,6 +4270,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            # Mobile notification inbox for Hermes WebUI / installed web app clients
+            self._app.router.add_get("/api/mobile/notifications", self._handle_mobile_notifications)
+            self._app.router.add_post("/api/mobile/notifications/{notification_id}/read", self._handle_mark_mobile_notification_read)
+            self._app.router.add_post("/api/mobile/notifications/{notification_id}/actions", self._handle_mobile_notification_action)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
@@ -4285,6 +4382,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
+        if self._mobile_notifications is not None:
+            try:
+                self._mobile_notifications.close()
+            except Exception:
+                logger.debug(
+                    "Failed to close mobile notification store for %s",
+                    self.name,
+                    exc_info=True,
+                )
+            self._mobile_notifications = None
         if self._site:
             await self._site.stop()
             self._site = None

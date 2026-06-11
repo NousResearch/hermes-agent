@@ -548,6 +548,20 @@ async fn run_bootstrap(
             continue;
         }
 
+        if let Some(frame) = crate::orchestrator::platform_sdks_skip_result(stage, &hermes_home) {
+            emit_event(
+                &app,
+                BootstrapEvent::Stage {
+                    name: stage.name.clone(),
+                    state: StageState::Skipped,
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                    result: Some(frame),
+                    error: None,
+                },
+            );
+            continue;
+        }
+
         #[cfg(target_os = "windows")]
         if let Some(frame) =
             crate::orchestrator::windows_node_deps_skip_result_from_env(stage, &hermes_home)

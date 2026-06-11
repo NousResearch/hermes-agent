@@ -228,6 +228,54 @@ pub fn windows_node_deps_skip_result_from_env(
     windows_node_deps_skip_result(stage, hermes_home, path_env, &pathext)
 }
 
+/// Return a Rust-side skip result for platform SDK verification with no tokens.
+pub fn platform_sdks_skip_result(
+    stage: &StageInfo,
+    hermes_home: &Path,
+) -> Option<crate::events::StageResultPayload> {
+    if !stage.name.eq_ignore_ascii_case("platform-sdks") {
+        return None;
+    }
+    if platform_env_has_configured_tokens(&hermes_home.join(".env")) {
+        return None;
+    }
+    Some(crate::events::StageResultPayload {
+        stage: stage.name.clone(),
+        ok: true,
+        skipped: true,
+        reason: Some("no messaging platform tokens configured".to_string()),
+        data: None,
+    })
+}
+
+fn platform_env_has_configured_tokens(env_path: &Path) -> bool {
+    let Ok(text) = fs::read_to_string(env_path) else {
+        return false;
+    };
+    text.lines().any(platform_env_line_has_configured_token)
+}
+
+fn platform_env_line_has_configured_token(line: &str) -> bool {
+    if line.trim_start().starts_with('#') {
+        return false;
+    }
+    const PLATFORM_TOKEN_VARS: [&str; 5] = [
+        "TELEGRAM_BOT_TOKEN",
+        "DISCORD_BOT_TOKEN",
+        "SLACK_BOT_TOKEN",
+        "SLACK_APP_TOKEN",
+        "WHATSAPP_ENABLED",
+    ];
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("your-token-here") {
+        return false;
+    }
+    PLATFORM_TOKEN_VARS.iter().any(|var| {
+        let prefix = format!("{}=", var.to_ascii_lowercase());
+        lower.starts_with(&prefix) && line.len() > prefix.len()
+    })
+}
+
 /// Return a compact log line for the current Rust orchestration coverage.
 pub fn summarize_plan(report: &InstallStateReport, plan: &[PlannedStage]) -> String {
     let tool_summary = report
@@ -1191,6 +1239,52 @@ mod tests {
         assert_eq!(skipped.reason.as_deref(), Some("npm not available"));
         std::fs::write(tools.join("npm.cmd"), b"npm").unwrap();
         assert!(windows_node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD").is_none());
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn platform_sdks_skip_result_skips_only_when_no_platform_tokens_are_configured() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-platform-sdks-skip-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        std::fs::create_dir_all(&hermes_home).unwrap();
+
+        let platform_sdks = stage_info(
+            "platform-sdks",
+            "Installing messaging platform SDKs",
+            "finalize",
+            false,
+        );
+        let missing_env = platform_sdks_skip_result(&platform_sdks, &hermes_home).unwrap();
+
+        assert_eq!(missing_env.stage, "platform-sdks");
+        assert_eq!(missing_env.ok, true);
+        assert_eq!(missing_env.skipped, true);
+        assert_eq!(
+            missing_env.reason.as_deref(),
+            Some("no messaging platform tokens configured")
+        );
+
+        std::fs::write(
+            hermes_home.join(".env"),
+            "TELEGRAM_BOT_TOKEN=your-token-here\nDISCORD_BOT_TOKEN=\n",
+        )
+        .unwrap();
+        assert!(platform_sdks_skip_result(&platform_sdks, &hermes_home).is_some());
+
+        std::fs::write(hermes_home.join(".env"), "TELEGRAM_BOT_TOKEN=abc123\n").unwrap();
+        assert!(platform_sdks_skip_result(&platform_sdks, &hermes_home).is_none());
+
+        let config = stage_info(
+            "config-templates",
+            "Writing configuration templates",
+            "finalize",
+            false,
+        );
+        assert!(platform_sdks_skip_result(&config, &hermes_home).is_none());
 
         let _ = std::fs::remove_dir_all(&root);
     }

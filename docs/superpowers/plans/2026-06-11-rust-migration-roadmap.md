@@ -151,6 +151,8 @@ language-specific setup where needed.
   missing or the detected Node.js version is too old for the desktop build.
 - Windows `node-deps` now uses a Rust no-op skip when npm is unavailable, matching the existing script behavior without
   starting PowerShell for a stage that can only skip.
+- Windows `platform-sdks` now skips natively when `.env` has no configured messaging platform tokens, while preserving
+  the existing script-backed SDK verification and recovery path whenever a token is present.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` and the Unix `config` stage now run as native Rust stages while preserving Python
   `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.
@@ -158,9 +160,9 @@ language-specific setup where needed.
 
 **Still script-backed:**
 - Language/runtime setup: uv, Python, venv, Python dependencies, Node, npm dependencies, desktop build, and platform SDK
-  verification.
+  verification when messaging tokens are configured.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
-- PATH mutation and shell/profile integration, which belongs in Phase 5 platform integration.
+- Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 
 **Exit Criteria:**
 - First-launch desktop bootstrap can complete the platform/file-management stages without shell scripts.

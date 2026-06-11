@@ -236,13 +236,15 @@ _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 # patterns so they don't fire on "echo reboot" or "grep 'shutdown' log".
 # Matches: start of string, after command separators (; && || | newline),
 # after subshell openers ( `$(` or backtick ), optionally consuming
-# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid,
+# `command [-p]`, builtin). Only `command -p` is treated as a wrapper:
+# `command -v`/`-V` resolve a name without executing it.
 _CMDPOS = (
     r'(?:^|[;&|\n`]|\$\()'         # start position
     r'\s*'                          # optional whitespace
     r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
     r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
-    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'(?:(?:exec|nohup|setsid|time|builtin|command(?:\s+-p)?)\s+)*'  # optional wrapper commands
     r'\s*'
 )
 
@@ -343,13 +345,17 @@ def detect_hardline_command(command: str) -> tuple:
 # (desktop app, launchd, `hermes gateway restart`), not the hosted agent.
 #
 # Static patterns can't express "our PID", so this is a function guard
-# like the sudo-stdin one: it extracts kill/pkill numeric targets and the
+# like the sudo-stdin one: it extracts numeric ``kill`` targets and the
 # shell self-tokens ``$$`` / ``$PPID`` and compares against this process
-# and its parent. Process-group kills (negative PIDs) are intentionally
-# out of scope here — ``kill -1`` is already hardline-blocked above.
+# and its parent. ``kill`` is anchored at command position via _CMDPOS,
+# so wrapper spellings that still execute it (``command kill``,
+# ``builtin kill``, ``sudo``/``env``/``exec``/``nohup``/``setsid``/
+# ``time`` prefixes, and chains of those) are recognized too.
+# Process-group kills (negative PIDs) are intentionally out of scope
+# here — ``kill -1`` is already hardline-blocked above.
 
 _KILL_CMD_RE = re.compile(
-    r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*kill\s+(?P<args>[^;&|`\n]*)',
+    _CMDPOS + r'kill\s+(?P<args>[^;&|`\n]*)',
     re.IGNORECASE)
 _KILL_SELF_TOKEN_RE = re.compile(r'\$\$|\$\{?PPID\}?\b')
 

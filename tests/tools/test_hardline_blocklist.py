@@ -447,3 +447,40 @@ def test_container_bypasses_self_host_kill(clean_session):
     # container namespace are not the host gateway's.
     result = check_all_command_guards(f"kill {_os.getpid()}", "docker")
     assert result["approved"] is True
+
+
+def test_self_host_kill_blocks_command_and_builtin_wrappers(clean_session):
+    # `command kill` and `builtin kill` are plain shell spellings that
+    # still execute kill; they must not slip past the command-position
+    # anchor.
+    pid = _os.getpid()
+    assert _check_self_host_kill(f"command kill {pid}")[0] is True
+    assert _check_self_host_kill(f"builtin kill {pid}")[0] is True
+    assert _check_self_host_kill("command -p kill $$")[0] is True
+    assert _check_self_host_kill(f"command builtin kill {pid}")[0] is True
+
+
+def test_self_host_kill_blocks_standard_wrapper_prefixes(clean_session):
+    pid = _os.getpid()
+    assert _check_self_host_kill(f"sudo kill {pid}")[0] is True
+    assert _check_self_host_kill(f"env kill {pid}")[0] is True
+    assert _check_self_host_kill("exec kill $PPID")[0] is True
+    assert _check_self_host_kill(f"nohup setsid kill -9 {pid}")[0] is True
+
+
+def test_self_host_kill_allows_foreign_pid_via_wrappers(clean_session):
+    assert _check_self_host_kill("command kill 999999999")[0] is False
+    assert _check_self_host_kill("builtin kill -9 999999998")[0] is False
+
+
+def test_self_host_kill_allows_command_v_lookup(clean_session):
+    # `command -v kill` resolves the name without executing kill, so it
+    # is not a wrapper; only `command [-p]` executes its operand.
+    assert _check_self_host_kill(f"command -v kill {_os.getpid()}")[0] is False
+
+
+def test_check_all_command_guards_blocks_wrapped_self_host_kill(clean_session):
+    for cmd in (f"command kill {_os.getpid()}", f"builtin kill {_os.getpid()}"):
+        result = check_all_command_guards(cmd, "local")
+        assert result["approved"] is False, cmd
+        assert result.get("hardline") is True, cmd

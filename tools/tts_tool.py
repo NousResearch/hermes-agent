@@ -157,7 +157,18 @@ def _import_piper():
     Open Home Foundation). ``pip install piper-tts`` provides cross-platform
     wheels (Linux / macOS / Windows, x86_64 + ARM64) with embedded espeak-ng.
     Voice models (.onnx + .onnx.json) are downloaded on first use.
+
+    Calls :func:`tools.lazy_deps.ensure` first so ``piper-tts`` gets installed
+    on demand — matching the lazy-install pattern used by Edge TTS, ElevenLabs,
+    and Mistral TTS providers.
     """
+    try:
+        from tools.lazy_deps import FeatureUnavailable, ensure
+        ensure("tts.piper", prompt=False)
+    except ImportError:
+        pass
+    except Exception as e:
+        raise ImportError(str(e))
     from piper import PiperVoice
     return PiperVoice
 

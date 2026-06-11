@@ -228,6 +228,59 @@ class TestFindStaleDashboardPids:
         assert pids == []
 
 
+class TestGlobalFlagsBeforeSubcommand:
+    """Detection must survive global flags between entrypoint and subcommand.
+
+    Regression tests for #44035: ``python -m hermes_cli.main --profile work
+    dashboard ...`` was invisible to the fixed substring patterns, so
+    ``hermes dashboard --status``/``--stop`` and the post-update cleanup
+    all treated the profile-scoped dashboard as not running.
+    """
+
+    def _scan(self, *cmdlines: str) -> list[int]:
+        stdout = "\n".join(
+            _ps_line(10000 + i, cmd) for i, cmd in enumerate(cmdlines)
+        ) + "\n"
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout=stdout, stderr="")
+            return _find_stale_dashboard_pids()
+
+    def test_profile_flag_before_dashboard_module_form(self):
+        """The exact shape from #44035 (LaunchAgent-supervised dashboard)."""
+        pids = self._scan(
+            "/home/u/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main "
+            "--profile work dashboard --host 0.0.0.0 --insecure --port 9119 --no-open --skip-build"
+        )
+        assert pids == [10000]
+
+    def test_short_profile_flag_before_dashboard(self):
+        assert self._scan("hermes -p work dashboard --port 9119") == [10000]
+
+    def test_profile_equals_form_before_dashboard(self):
+        assert self._scan("hermes --profile=work dashboard") == [10000]
+
+    def test_boolean_global_flag_before_dashboard(self):
+        assert self._scan("hermes --ignore-user-config dashboard") == [10000]
+
+    def test_script_path_form_with_profile(self):
+        assert self._scan("python /home/x/hermes_cli/main.py -p work dashboard") == [10000]
+
+    def test_profile_flag_before_other_subcommand_not_matched(self):
+        assert self._scan("hermes --profile work chat") == []
+
+    def test_oneshot_prompt_mentioning_dashboard_not_matched(self):
+        """`hermes -z 'fix hermes dashboard'` used to false-positive on the
+        old substring patterns; the tokenized matcher must not kill it."""
+        assert self._scan("hermes -z fix hermes dashboard") == []
+
+    def test_profile_value_named_dashboard_not_matched(self):
+        assert self._scan("hermes -p dashboard chat") == []
+
+    def test_unknown_flag_before_dashboard_not_matched(self):
+        """Unknown flags have unknown arity — bail out rather than guess."""
+        assert self._scan("hermes --some-future-flag dashboard") == []
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX kill semantics")
 class TestKillStaleDashboardPosix:
     """Kill path on Linux / macOS: SIGTERM then SIGKILL any survivors."""

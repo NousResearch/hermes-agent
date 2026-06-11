@@ -5314,6 +5314,77 @@ def cmd_gui(args: argparse.Namespace):
     sys.exit(launch_result.returncode)
 
 
+_DASHBOARD_FLAG_ARITY_CACHE: dict[str, bool] | None = None
+
+
+def _dashboard_global_flag_arity() -> dict[str, bool]:
+    """Map of top-level flags to whether they consume a value token.
+
+    Built by introspecting the real top-level parser (same approach as
+    ``hermes_cli.relaunch``) plus the pre-argparse ``--profile``/``-p``
+    flags, so the dashboard cmdline matcher below never drifts out of
+    sync with the CLI's actual global options.
+    """
+    global _DASHBOARD_FLAG_ARITY_CACHE
+    if _DASHBOARD_FLAG_ARITY_CACHE is None:
+        from hermes_cli._parser import (
+            PRE_ARGPARSE_INHERITED_FLAGS,
+            build_top_level_parser,
+        )
+
+        flags: dict[str, bool] = dict(PRE_ARGPARSE_INHERITED_FLAGS)
+        parser, _subparsers, _chat_parser = build_top_level_parser()
+        for action in parser._actions:
+            takes_value = action.nargs != 0  # store_true/false set nargs=0
+            for opt in action.option_strings:
+                flags[opt] = takes_value
+        _DASHBOARD_FLAG_ARITY_CACHE = flags
+    return _DASHBOARD_FLAG_ARITY_CACHE
+
+
+def _is_dashboard_cmdline(command: str) -> bool:
+    """Return True when *command* is a ``hermes dashboard`` invocation.
+
+    Tokenizes instead of substring-matching so global flags between the
+    entrypoint and the subcommand are still detected — e.g.
+    ``python -m hermes_cli.main --profile work dashboard`` (#44035).
+    Only known top-level flags may appear before ``dashboard``; the first
+    unrecognized token bails out, so cmdlines that merely *mention*
+    dashboard (``hermes -z "fix my dashboard"``) never match.
+    """
+    tokens = [t.strip('"') for t in command.split()]
+
+    entry_idx: int | None = None
+    for i, tok in enumerate(tokens):
+        norm = tok.replace("\\", "/")
+        base = norm.rsplit("/", 1)[-1].lower()
+        if (
+            base in ("hermes", "hermes.exe")
+            or tok == "hermes_cli.main"
+            or norm.endswith("hermes_cli/main.py")
+        ):
+            entry_idx = i
+            break
+    if entry_idx is None:
+        return False
+
+    flag_arity = _dashboard_global_flag_arity()
+    i = entry_idx + 1
+    while i < len(tokens):
+        tok = tokens[i]
+        if tok == "dashboard":
+            return True
+        if not tok.startswith("-"):
+            return False  # a different subcommand or free-text argument
+        if "=" in tok:  # --profile=work
+            i += 1
+            continue
+        if tok not in flag_arity:
+            return False  # unknown flag — don't guess at its arity
+        i += 2 if flag_arity[tok] else 1
+    return False
+
+
 def _find_stale_dashboard_pids(
     *,
     exclude_pids: set[int] | None = None,
@@ -5343,11 +5414,6 @@ def _find_stale_dashboard_pids(
 
     Returns an empty list on any scan error (missing ps/wmic, timeout, etc.).
     """
-    patterns = [
-        "hermes dashboard",
-        "hermes_cli.main dashboard",
-        "hermes_cli/main.py dashboard",
-    ]
     self_pid = os.getpid()
     dashboard_pids: list[int] = []
 
@@ -5377,18 +5443,16 @@ def _find_stale_dashboard_pids(
                     current_cmd = line[len("CommandLine=") :]
                 elif line.startswith("ProcessId="):
                     pid_str = line[len("ProcessId=") :]
-                    if (
-                        any(p in current_cmd for p in patterns)
-                        and int(pid_str) != self_pid
-                    ):
-                        try:
-                            dashboard_pids.append(int(pid_str))
-                        except ValueError:
-                            pass
+                    try:
+                        pid = int(pid_str)
+                    except ValueError:
+                        continue
+                    if _is_dashboard_cmdline(current_cmd) and pid != self_pid:
+                        dashboard_pids.append(pid)
         else:
-            # Linux / macOS: scan the process table via ps and match against
-            # the same explicit patterns list used on Windows.  Using ps
-            # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
+            # Linux / macOS: scan the process table via ps and match with
+            # the same cmdline matcher used on Windows.  Using ps (rather
+            # than `pgrep -f "hermes.*dashboard"`) keeps us consistent
             # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
             # greedy regex matching unrelated cmdlines that merely contain
             # both words (e.g. a chat session discussing "dashboard").
@@ -5411,7 +5475,7 @@ def _find_stale_dashboard_pids(
                     except ValueError:
                         continue
                     command = parts[1]
-                    if any(p in command for p in patterns) and pid != self_pid:
+                    if _is_dashboard_cmdline(command) and pid != self_pid:
                         dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return []

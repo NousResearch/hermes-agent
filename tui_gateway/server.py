@@ -1872,11 +1872,14 @@ def _apply_model_switch(
     raw_input: str,
     *,
     confirm_expensive_model: bool = False,
+    parsed_flags: tuple[str, str, bool, bool] | None = None,
 ) -> dict:
     from hermes_cli.model_switch import parse_model_flags, switch_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
-    model_input, explicit_provider, persist_global, _force_refresh = parse_model_flags(raw_input)
+    if parsed_flags is None:
+        parsed_flags = parse_model_flags(raw_input)
+    model_input, explicit_provider, persist_global, _force_refresh = parsed_flags
     if not model_input:
         raise ValueError("model value required")
 
@@ -1994,13 +1997,6 @@ def _apply_model_switch(
         "warning": result.warning_message or "",
         "confirm_required": False,
     }
-
-
-def _model_switch_has_explicit_provider(raw_input: str) -> bool:
-    from hermes_cli.model_switch import parse_model_flags
-
-    _model_input, explicit_provider, _persist_global, _force_refresh = parse_model_flags(raw_input)
-    return bool(explicit_provider.strip())
 
 
 def _compress_session_history(
@@ -6604,7 +6600,11 @@ def _(rid, params: dict) -> dict:
                         4009,
                         "session busy — /interrupt the current turn before switching models",
                     )
-                if session.get("agent") is None and not _model_switch_has_explicit_provider(value):
+                from hermes_cli.model_switch import parse_model_flags
+
+                parsed_flags = parse_model_flags(value)
+                _model_input, explicit_provider, _persist_global, _force_refresh = parsed_flags
+                if session.get("agent") is None and not explicit_provider.strip():
                     session_id = params.get("session_id", "")
                     _start_agent_build(session_id, session)
                     init_err = _wait_agent(session, rid)
@@ -6619,6 +6619,7 @@ def _(rid, params: dict) -> dict:
                     confirm_expensive_model=bool(
                         params.get("confirm_expensive_model", False)
                     ),
+                    parsed_flags=parsed_flags,
                 )
             else:
                 result = _apply_model_switch(

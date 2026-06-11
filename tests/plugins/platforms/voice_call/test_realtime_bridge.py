@@ -384,7 +384,9 @@ async def test_consult_routes_through_gateway_agent(fake_runtime):
     session.push(RealtimeEvent(type="closed"))
     await asyncio.wait_for(run, 2)
 
-    assert seen_events and seen_events[0].text == "what's the weather in Dublin?"
+    assert seen_events
+    assert seen_events[0].text.endswith("what's the weather in Dublin?")
+    assert seen_events[0].text.startswith("[Voice consult")  # speed contract
     assert session.tool_results == [
         ("call-w", "It is 14 degrees and raining in Dublin.")
     ]
@@ -494,7 +496,8 @@ async def test_empty_args_consult_joins_in_flight_one(fake_runtime):
         tool_args={},  # the flail
     ))
     await asyncio.sleep(0.05)
-    assert dispatched == ["weather in Dublin?"]  # no second gateway turn
+    assert len(dispatched) == 1  # no second gateway turn
+    assert dispatched[0].endswith("weather in Dublin?")
     # The real answer lands; both tool calls get it.
     await bridge.deliver_agent_text("Fourteen degrees and raining.")
     await asyncio.sleep(0.05)

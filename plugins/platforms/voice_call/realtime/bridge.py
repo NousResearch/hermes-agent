@@ -563,10 +563,22 @@ class RealtimeCallBridge:
                 "Superseded by a newer question from the caller; answer that "
                 "instead."
             )
+        # The speed contract rides WITH the question — a distant system-
+        # prompt hint loses to session history full of thorough-research
+        # precedent; an instruction adjacent to the request does not.
+        framed = (
+            "[Voice consult — I am on a live phone call and waiting. Answer "
+            "in 1-3 short spoken sentences as fast as possible: answer "
+            "directly from what you know or at most ONE quick web_search. "
+            "Do not use web_extract, browser, or multi-step research. If a "
+            "thorough answer would take longer, give your best short answer "
+            "now and note what you'd verify later.] "
+            f"{question}"
+        )
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._consult_future = fut
         try:
-            await dispatch_transcript(self.runtime, self.record, question)
+            await dispatch_transcript(self.runtime, self.record, framed)
             answer = (await fut).strip()
             return answer[:CONSULT_MAX_CHARS] or "I could not find an answer."
         finally:

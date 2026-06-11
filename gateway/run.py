@@ -43,7 +43,7 @@ import sqlite3
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, Dict, Optional, Any, List, Union
 
 # account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
@@ -1315,6 +1315,43 @@ def _planned_restart_notification_pending() -> bool:
 
 def _clear_planned_restart_notification() -> None:
     _planned_restart_notification_path().unlink(missing_ok=True)
+
+
+_PREVIOUS_GATEWAY_ACTIVE_STATES = frozenset({"starting", "running", "draining", "degraded"})
+
+
+def _runtime_status_indicates_previous_gateway(status: Optional[dict[str, Any]]) -> bool:
+    """Return True when the persisted status looks like a prior live gateway."""
+    if not isinstance(status, dict):
+        return False
+    kind = status.get("kind")
+    if kind not in (None, "hermes-gateway"):
+        return False
+    state = str(status.get("gateway_state") or "").strip().lower()
+    return state in _PREVIOUS_GATEWAY_ACTIVE_STATES
+
+
+def _crash_scan_window_hours(status: Optional[dict[str, Any]]) -> int:
+    """Bound the crash-record scan to the previous gateway's lifetime.
+
+    The crash that killed the previous gateway must postdate its last runtime
+    status write, so older OS crash records (e.g. an unrelated Python crash
+    yesterday) cannot be the cause. Falls back to 24h when the timestamp is
+    missing or unparsable.
+    """
+    fallback_hours = 24
+    try:
+        raw = str((status or {}).get("updated_at") or "").strip()
+        if not raw:
+            return fallback_hours
+        updated_at = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if updated_at.tzinfo is None:
+            updated_at = updated_at.replace(tzinfo=timezone.utc)
+        elapsed = datetime.now(timezone.utc) - updated_at
+        hours = int(elapsed.total_seconds() // 3600) + 1
+        return max(1, min(fallback_hours, hours))
+    except Exception:
+        return fallback_hours
 
 
 # Mark this process as a gateway so cli.py's module-level load_cli_config()
@@ -6888,6 +6925,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.info("Active profile: %s", _profile)
         except Exception:
             pass
+        _previous_runtime_status = None
+        try:
+            from gateway.status import read_runtime_status
+            _previous_runtime_status = read_runtime_status()
+        except Exception:
+            pass
         try:
             from gateway.status import write_runtime_status
             write_runtime_status(gateway_state="starting", exit_reason=None)
@@ -7098,7 +7141,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # This prevents unwanted auto-resets after `hermes update`,
         # `hermes gateway restart`, or `/restart`.
         _clean_marker = _hermes_home / ".clean_shutdown"
-        if _clean_marker.exists():
+        _previous_clean_shutdown = _clean_marker.exists()
+        _previous_gateway_unclean = (
+            not _previous_clean_shutdown
+            and _runtime_status_indicates_previous_gateway(_previous_runtime_status)
+        )
+        if _previous_clean_shutdown:
             logger.info("Previous gateway exited cleanly — skipping session suspension")
             try:
                 _clean_marker.unlink()
@@ -7405,13 +7453,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # paths). Chat-originated /restart already has a precise reply target
         # in .restart_notify.json, so keep that lifecycle in the originating
         # chat/topic instead of also leaking it to the configured home channel.
-        if planned_restart_notification_pending:
+        should_notify_home_startup = planned_restart_notification_pending or _previous_gateway_unclean
+        if should_notify_home_startup:
+            crash_notice = ""
+            if (
+                _previous_gateway_unclean
+                and not planned_restart_notification_pending
+                and self._home_channel_startup_notification_targets(skip_targets=None)
+            ):
+                crash_notice = await self._restart_crash_notice(_previous_runtime_status)
             try:
                 await self._send_home_channel_startup_notifications(
                     skip_targets=None,
+                    extra_notice=crash_notice,
                 )
             finally:
-                _clear_planned_restart_notification()
+                if planned_restart_notification_pending:
+                    _clear_planned_restart_notification()
 
         # Automatically continue fresh sessions that were interrupted by the
         # previous gateway restart/shutdown.  The resume_pending flag is cleared
@@ -15056,6 +15114,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         *,
         skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+        extra_notice: str = "",
     ) -> set[tuple[str, str, Optional[str]]]:
         """Notify configured home channels that the gateway is back online.
 
@@ -15064,24 +15123,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         when a more specific restart notification is queued for the same chat.
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
-        skipped = skip_targets or set()
-        message = "♻️ Gateway online — Hermes is back and ready."
+        message = "♻️ Gateway online — Hermes is back and ready." + (extra_notice or "")
 
-        for platform, adapter in self.adapters.items():
-            home = self.config.get_home_channel(platform)
-            if not home or not home.chat_id:
-                continue
-
-            platform_cfg = self.config.platforms.get(platform)
-            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
-                logger.info(
-                    "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
-                    platform.value,
-                )
-                continue
-
-            target = (platform.value, str(home.chat_id), str(home.thread_id) if home.thread_id else None)
-            if target in skipped or target in delivered:
+        for platform, adapter, home, target in self._home_channel_startup_notification_targets(
+            skip_targets=skip_targets,
+        ):
+            if target in delivered:
                 continue
 
             try:
@@ -15131,6 +15178,57 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         return delivered
+
+    def _home_channel_startup_notification_targets(
+        self,
+        *,
+        skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None,
+    ) -> list[
+        tuple[Platform, BasePlatformAdapter, HomeChannel, tuple[str, str, Optional[str]]]
+    ]:
+        targets: list[
+            tuple[Platform, BasePlatformAdapter, HomeChannel, tuple[str, str, Optional[str]]]
+        ] = []
+        skipped = skip_targets or set()
+        for platform, adapter in self.adapters.items():
+            home = self.config.get_home_channel(platform)
+            if not home or not home.chat_id:
+                continue
+
+            platform_cfg = self.config.platforms.get(platform)
+            if platform_cfg is not None and not platform_cfg.gateway_restart_notification:
+                logger.info(
+                    "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
+                    platform.value,
+                )
+                continue
+
+            target = (
+                platform.value,
+                str(home.chat_id),
+                str(home.thread_id) if home.thread_id else None,
+            )
+            if target in skipped:
+                continue
+            targets.append((platform, adapter, home, target))
+        return targets
+
+    async def _restart_crash_notice(
+        self, previous_status: Optional[dict[str, Any]] = None
+    ) -> str:
+        try:
+            from gateway.crash_diagnostics import restart_notice
+        except Exception:
+            return ""
+        try:
+            notice = await asyncio.to_thread(
+                restart_notice,
+                name_filter="python",
+                since_hours=_crash_scan_window_hours(previous_status),
+            )
+        except Exception:
+            return ""
+        return notice if isinstance(notice, str) else ""
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

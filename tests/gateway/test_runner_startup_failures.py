@@ -1,11 +1,11 @@
 import pytest
 from unittest.mock import AsyncMock
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import BasePlatformAdapter
+from gateway.config import GatewayConfig, HomeChannel, Platform, PlatformConfig
+from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE
 from gateway.run import GatewayRunner
-from gateway.status import read_runtime_status
+from gateway.status import read_runtime_status, write_runtime_status
 
 
 class _RetryableFailureAdapter(BasePlatformAdapter):
@@ -50,6 +50,7 @@ class _DisabledAdapter(BasePlatformAdapter):
 class _SuccessfulAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="***"), Platform.DISCORD)
+        self.sent = []
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -58,7 +59,8 @@ class _SuccessfulAdapter(BasePlatformAdapter):
         self._mark_disconnected()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
-        raise NotImplementedError
+        self.sent.append((chat_id, content, metadata))
+        return SendResult(success=True, message_id="startup")
 
     async def get_chat_info(self, chat_id):
         return {"id": chat_id}
@@ -140,6 +142,126 @@ async def test_runner_records_connected_platform_state_on_success(monkeypatch, t
     assert state["platforms"]["discord"]["state"] == "connected"
     assert state["platforms"]["discord"]["error_code"] is None
     assert state["platforms"]["discord"]["error_message"] is None
+
+
+@pytest.mark.asyncio
+async def test_runner_appends_crash_notice_after_unclean_previous_gateway(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    write_runtime_status(gateway_state="running", exit_reason=None)
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="ops-home",
+                    name="Ops Home",
+                ),
+            )
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _SuccessfulAdapter()
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+    runner._restart_crash_notice = AsyncMock(
+        return_value="\n\nCrash cause: segmentation fault (Python, SIGSEGV)"
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    runner._restart_crash_notice.assert_awaited_once()
+    (previous_status,) = runner._restart_crash_notice.await_args.args
+    assert previous_status["gateway_state"] == "running"
+    assert adapter.sent == [
+        (
+            "ops-home",
+            "♻️ Gateway online — Hermes is back and ready."
+            "\n\nCrash cause: segmentation fault (Python, SIGSEGV)",
+            None,
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_report_crash_notice_on_first_start(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="ops-home",
+                    name="Ops Home",
+                ),
+            )
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _SuccessfulAdapter()
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+    runner._restart_crash_notice = AsyncMock(
+        return_value="\n\nCrash cause: segmentation fault (Python, SIGSEGV)"
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    runner._restart_crash_notice.assert_not_awaited()
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_runner_does_not_scan_crashes_when_restart_notifications_disabled(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    write_runtime_status(gateway_state="running", exit_reason=None)
+    config = GatewayConfig(
+        platforms={
+            Platform.DISCORD: PlatformConfig(
+                enabled=True,
+                token="***",
+                home_channel=HomeChannel(
+                    platform=Platform.DISCORD,
+                    chat_id="ops-home",
+                    name="Ops Home",
+                ),
+                gateway_restart_notification=False,
+            )
+        },
+        sessions_dir=tmp_path / "sessions",
+    )
+    runner = GatewayRunner(config)
+    adapter = _SuccessfulAdapter()
+
+    monkeypatch.setattr(runner, "_create_adapter", lambda _platform, _config: adapter)
+    monkeypatch.setattr(runner.hooks, "discover_and_load", lambda: None)
+    monkeypatch.setattr(runner.hooks, "emit", AsyncMock())
+    runner._restart_crash_notice = AsyncMock(
+        return_value="\n\nCrash cause: segmentation fault (Python, SIGSEGV)"
+    )
+
+    ok = await runner.start()
+
+    assert ok is True
+    runner._restart_crash_notice.assert_not_awaited()
+    assert adapter.sent == []
 
 
 @pytest.mark.asyncio

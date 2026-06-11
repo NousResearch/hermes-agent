@@ -1,6 +1,7 @@
 """Tests for /restart notification — the gateway notifies the requester on comeback."""
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -43,6 +44,47 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     gateway_run._clear_planned_restart_notification()
 
     assert gateway_run._planned_restart_notification_pending() is False
+
+
+def test_runtime_status_indicates_previous_gateway_only_for_active_states():
+    assert gateway_run._runtime_status_indicates_previous_gateway(None) is False
+    assert gateway_run._runtime_status_indicates_previous_gateway({}) is False
+    assert (
+        gateway_run._runtime_status_indicates_previous_gateway(
+            {"kind": "hermes-gateway", "gateway_state": "running"}
+        )
+        is True
+    )
+    assert (
+        gateway_run._runtime_status_indicates_previous_gateway(
+            {"kind": "hermes-gateway", "gateway_state": "starting"}
+        )
+        is True
+    )
+    assert (
+        gateway_run._runtime_status_indicates_previous_gateway(
+            {"kind": "hermes-gateway", "gateway_state": "stopped"}
+        )
+        is False
+    )
+    assert (
+        gateway_run._runtime_status_indicates_previous_gateway(
+            {"kind": "other", "gateway_state": "running"}
+        )
+        is False
+    )
+
+
+def test_crash_scan_window_hours_bounds_to_previous_status():
+    fresh = datetime.now(timezone.utc).isoformat()
+    assert gateway_run._crash_scan_window_hours({"updated_at": fresh}) == 1
+
+    stale = (datetime.now(timezone.utc) - timedelta(hours=200)).isoformat()
+    assert gateway_run._crash_scan_window_hours({"updated_at": stale}) == 24
+
+    assert gateway_run._crash_scan_window_hours(None) == 24
+    assert gateway_run._crash_scan_window_hours({}) == 24
+    assert gateway_run._crash_scan_window_hours({"updated_at": "garbage"}) == 24
 
 
 # ── _handle_restart_command writes .restart_notify.json ──────────────────
@@ -265,6 +307,103 @@ async def test_send_home_channel_startup_notification_to_configured_home(tmp_pat
         "home-42",
         "♻️ Gateway online — Hermes is back and ready.",
     )
+
+
+@pytest.mark.asyncio
+async def test_send_home_channel_startup_notification_appends_crash_notice(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="home"))
+
+    delivered = await runner._send_home_channel_startup_notifications(
+        extra_notice="\n\nCrash cause: segmentation fault (Python, SIGSEGV)"
+    )
+
+    assert delivered == {("telegram", "home-42", None)}
+    assert adapter.send.call_args[0][1] == (
+        "♻️ Gateway online — Hermes is back and ready."
+        "\n\nCrash cause: segmentation fault (Python, SIGSEGV)"
+    )
+
+
+def test_home_channel_startup_targets_skip_disabled_without_sending(tmp_path, monkeypatch):
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
+        platform=Platform.TELEGRAM,
+        chat_id="home-42",
+        name="Ops Home",
+    )
+    runner.config.platforms[Platform.TELEGRAM].gateway_restart_notification = False
+
+    assert runner._home_channel_startup_notification_targets() == []
+
+
+@pytest.mark.asyncio
+async def test_restart_crash_notice_swallows_import_failures(monkeypatch):
+    runner, _adapter = make_restart_runner()
+
+    original_import = __import__
+
+    def _boom(name, *args, **kwargs):
+        if name == "gateway.crash_diagnostics":
+            raise RuntimeError("import exploded")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", _boom)
+
+    assert await runner._restart_crash_notice() == ""
+
+
+@pytest.mark.asyncio
+async def test_restart_crash_notice_uses_thread_for_best_effort_lookup(monkeypatch):
+    runner, _adapter = make_restart_runner()
+    calls = []
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        calls.append((func, args, kwargs))
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(gateway_run.asyncio, "to_thread", _fake_to_thread)
+    monkeypatch.setattr(
+        "gateway.crash_diagnostics.restart_notice",
+        lambda **_kwargs: "\n\nCrash cause: process aborted (Python, SIGABRT)",
+    )
+
+    assert (
+        await runner._restart_crash_notice()
+        == "\n\nCrash cause: process aborted (Python, SIGABRT)"
+    )
+    assert calls
+    assert calls[0][2] == {"name_filter": "python", "since_hours": 24}
+
+
+@pytest.mark.asyncio
+async def test_restart_crash_notice_narrows_window_to_previous_status(monkeypatch):
+    # A crash record older than the previous gateway's last status write
+    # cannot be its cause — the scan window shrinks accordingly.
+    runner, _adapter = make_restart_runner()
+    captured = {}
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        captured.update(kwargs)
+        return ""
+
+    monkeypatch.setattr(gateway_run.asyncio, "to_thread", _fake_to_thread)
+
+    status = {"updated_at": datetime.now(timezone.utc).isoformat()}
+    await runner._restart_crash_notice(status)
+
+    assert captured["since_hours"] == 1
 
 
 @pytest.mark.asyncio

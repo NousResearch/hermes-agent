@@ -2476,6 +2476,8 @@ class FeishuAdapter(BasePlatformAdapter):
         if len(self._closed_streaming_card_ids) > 500:
             self._closed_streaming_card_ids.popitem(last=False)
         self._transition_card_phase(chat_id, target_phase)
+        # Reset to IDLE so the next turn can create a new card.
+        self._card_phases[chat_id] = _CardPhase.IDLE
 
     async def _close_streaming_siblings(self, chat_id: str) -> None:
         """Finalize all open streaming cards for *chat_id*.

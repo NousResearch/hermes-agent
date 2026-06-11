@@ -3877,9 +3877,45 @@ class AIAgent:
         if merged:
             self._client_kwargs["default_headers"] = merged
 
+    def _pool_entry_swap_base_url(self, entry) -> Any:
+        """Resolve the base URL to adopt when swapping to a pool credential.
+
+        Pool entries seeded from env keys store only the provider's registry
+        default endpoint (``base_url = env_url or pconfig.inference_base_url``
+        in agent/credential_pool.py), while session resolution layers the
+        user's ``model.base_url`` / ``<PROVIDER>_BASE_URL`` override on top
+        (``pool_url_is_default`` in hermes_cli/runtime_provider.py).  Adopting
+        the raw entry URL here therefore silently re-pointed a session running
+        on a configured override (e.g. Xiaomi MiMo's token-plan endpoint) back
+        at the provider default the first time a 401/429 triggered credential
+        recovery — and the session stayed pinned there, failing every later
+        turn (#44070).  Keep the agent's current URL when the entry carries
+        only the registry default; entries with a genuinely per-credential
+        endpoint (kimi/zai region resolution, custom pools seeded from config)
+        still win.
+        """
+        runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None)
+        if not runtime_base:
+            return self.base_url
+        current_base = self.base_url if isinstance(self.base_url, str) else ""
+        if isinstance(runtime_base, str) and current_base:
+            try:
+                from hermes_cli.auth import PROVIDER_REGISTRY
+                pconfig = PROVIDER_REGISTRY.get((self.provider or "").strip().lower())
+            except Exception:
+                pconfig = None
+            default_url = (getattr(pconfig, "inference_base_url", "") or "").rstrip("/")
+            if (
+                default_url
+                and runtime_base.rstrip("/") == default_url
+                and current_base.rstrip("/") != default_url
+            ):
+                return self.base_url
+        return runtime_base
+
     def _swap_credential(self, entry) -> None:
         runtime_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
-        runtime_base = getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or self.base_url
+        runtime_base = self._pool_entry_swap_base_url(entry)
 
         if self.api_mode == "anthropic_messages":
             from agent.anthropic_adapter import build_anthropic_client, _is_oauth_token

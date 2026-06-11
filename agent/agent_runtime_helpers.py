@@ -1593,6 +1593,29 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
     agent._fallback_activated = False
     agent._fallback_index = 0
 
+    # Drop the credential pool when it belongs to a different provider than
+    # the one the user just switched to.  The pool was seeded for the OLD
+    # primary at agent init; leaving it attached means a later recoverable
+    # error (401/429) routes through ``_recover_with_credential_pool`` →
+    # ``_swap_credential`` with an old-provider entry, overwriting the
+    # agent's base_url/api_key back to the provider the user just switched
+    # away from — every subsequent request then fails against the wrong
+    # host.  Mirrors the identical fix on the fallback path (#33163) and
+    # the defensive provider-mismatch guard in
+    # ``recover_with_credential_pool`` (#33088).  Same-provider switches
+    # (e.g. another model on the same endpoint) keep the pool.
+    _existing_pool = getattr(agent, "_credential_pool", None)
+    if _existing_pool is not None:
+        _pool_provider = (getattr(_existing_pool, "provider", "") or "").strip().lower()
+        _new_provider_norm = (new_provider or "").strip().lower()
+        if _pool_provider and _new_provider_norm and _pool_provider != _new_provider_norm:
+            logger.info(
+                "Model switch to %s/%s: detaching credential pool seeded for "
+                "provider %s to prevent cross-provider contamination",
+                new_provider, new_model, _pool_provider,
+            )
+            agent._credential_pool = None
+
     # When the user deliberately swaps primary providers (e.g. openrouter
     # → anthropic), drop any fallback entries that target the OLD primary
     # or the NEW one.  The chain was seeded from config at agent init for

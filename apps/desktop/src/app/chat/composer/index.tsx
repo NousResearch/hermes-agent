@@ -186,7 +186,11 @@ export function ChatBar({
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
-  const skipNextDraftPersistScopeRef = useRef<string | null>(null)
+  // `undefined` = no skip pending. The sentinel must be distinguishable from a
+  // real scope, and `null` IS a real scope (the unsaved-new-session draft):
+  // resetting to null made every persist run in a new chat match the consumed
+  // sentinel and bail, so new-chat drafts were never written at all.
+  const skipNextDraftPersistScopeRef = useRef<string | null | undefined>(undefined)
   const pendingDraftPersistRef = useRef<{ scope: string | null; value: string } | null>(null)
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
@@ -1132,7 +1136,7 @@ export function ChatBar({
 
   useEffect(() => {
     if (skipNextDraftPersistScopeRef.current === draftPersistenceScope) {
-      skipNextDraftPersistScopeRef.current = null
+      skipNextDraftPersistScopeRef.current = undefined
 
       return
     }
@@ -1161,19 +1165,28 @@ export function ChatBar({
     return () => window.clearTimeout(handle)
   }, [draft, draftPersistenceScope, queueEdit, sessionId])
 
-  // Flush any pending debounced draft write when leaving a session scope or
-  // unmounting, so the departing session's latest text is always persisted.
-  useEffect(
-    () => () => {
+  // Flush any pending debounced draft write when leaving a session scope,
+  // unmounting, or the window unloading, so the latest text is always
+  // persisted. The pagehide listener is load-bearing: React does NOT run
+  // effect cleanups on a page reload, so without it a Cmd+R inside the
+  // debounce window silently dropped everything typed in the last 400ms.
+  useEffect(() => {
+    const flushPendingDraftPersist = () => {
       const pending = pendingDraftPersistRef.current
 
       if (pending) {
         pendingDraftPersistRef.current = null
         writePersistedComposerDraft(pending.scope, pending.value)
       }
-    },
-    [draftPersistenceScope]
-  )
+    }
+
+    window.addEventListener('pagehide', flushPendingDraftPersist)
+
+    return () => {
+      window.removeEventListener('pagehide', flushPendingDraftPersist)
+      flushPendingDraftPersist()
+    }
+  }, [draftPersistenceScope])
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {

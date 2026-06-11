@@ -191,9 +191,10 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
-        # Coding posture demotes non-coding skill categories to names-only in
-        # the index (never hidden — skill_view/skills_list reach everything,
-        # and every name stays visible for memory-anchored recall).
+        # Focus mode (opt-in) demotes non-coding skill categories to
+        # names-only in the index (never hidden — skill_view/skills_list
+        # reach everything, and every name stays visible for recall). The
+        # default coding posture leaves the index untouched.
         _compact_cats = frozenset()
         try:
             from agent.coding_context import coding_compact_skill_categories

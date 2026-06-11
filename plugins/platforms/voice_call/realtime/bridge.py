@@ -267,9 +267,15 @@ class RealtimeCallBridge:
             elif frame.type == "media":
                 if frame.track and "outbound" in frame.track:
                     continue  # never echo our own audio into the model
-                pcm = audio.ulaw_to_pcm16(frame.payload)
-                pcm = audio.resample_pcm16(pcm, 8000, self.session.input_sample_rate)
-                await self.session.send_audio(pcm)
+                if self.session.audio_wire_format == "ulaw":
+                    # Model speaks the phone line's codec — pass through.
+                    await self.session.send_audio(frame.payload)
+                else:
+                    pcm = audio.ulaw_to_pcm16(frame.payload)
+                    pcm = audio.resample_pcm16(
+                        pcm, 8000, self.session.input_sample_rate
+                    )
+                    await self.session.send_audio(pcm)
             elif frame.type == "stop":
                 return
             elif frame.type == "error":
@@ -282,10 +288,13 @@ class RealtimeCallBridge:
     async def _outbound_pump(self, pacer: AudioPacer) -> None:
         async for event in self.session.events():
             if event.type == "audio":
-                pcm = audio.resample_pcm16(
-                    event.audio, self.session.output_sample_rate, 8000
-                )
-                pacer.push(audio.pcm16_to_ulaw(pcm))
+                if self.session.audio_wire_format == "ulaw":
+                    pacer.push(event.audio)  # already µ-law @ 8 kHz
+                else:
+                    pcm = audio.resample_pcm16(
+                        event.audio, self.session.output_sample_rate, 8000
+                    )
+                    pacer.push(audio.pcm16_to_ulaw(pcm))
             elif event.type == "speech_started":
                 await self._handle_barge_in(pacer)
             elif event.type == "transcript":

@@ -391,7 +391,35 @@ async def test_stream_upgrade_rejects_bad_and_reused_tokens(tmp_path, make_confi
 
 def test_openai_session_update_uses_ga_shape(monkeypatch):
     """Accounts on the GA realtime API reject the 2024 beta shape with
-    beta_api_shape_disabled — the session.update must be GA-shaped."""
+    beta_api_shape_disabled — the session.update must be GA-shaped, and we
+    declare audio/pcmu so the model speaks the phone line's codec."""
+    from plugins.platforms.voice_call.config import RealtimeConfig
+    from plugins.platforms.voice_call.realtime.openai_realtime import (
+        OpenAIRealtimeSession,
+    )
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    session = OpenAIRealtimeSession(
+        RealtimeConfig(enabled=True, provider="openai", model="gpt-realtime-2")
+    )
+    assert session.audio_wire_format == "ulaw"
+    update = session._session_update()
+    s = update["session"]
+    assert s["type"] == "realtime" and s["model"] == "gpt-realtime-2"
+    assert s["output_modalities"] == ["audio"]
+    assert s["audio"]["input"]["format"] == {"type": "audio/pcmu"}
+    assert s["audio"]["output"]["format"] == {"type": "audio/pcmu"}
+    assert s["audio"]["output"]["voice"] == "marin"
+    # Beta-era keys must be absent.
+    for beta_key in ("modalities", "voice", "input_audio_format",
+                     "output_audio_format", "input_audio_transcription"):
+        assert beta_key not in s, beta_key
+    assert s["tools"][0]["name"] == "agent_consult"
+
+
+def test_openai_tool_calls_from_response_done_with_dedupe(monkeypatch):
+    """GA delivers function calls inside response.done output items; the
+    standalone arguments.done event may also fire — surface each call once."""
     from plugins.platforms.voice_call.config import RealtimeConfig
     from plugins.platforms.voice_call.realtime.openai_realtime import (
         OpenAIRealtimeSession,
@@ -399,17 +427,57 @@ def test_openai_session_update_uses_ga_shape(monkeypatch):
 
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     session = OpenAIRealtimeSession(RealtimeConfig(enabled=True, provider="openai"))
-    update = session._session_update()
-    s = update["session"]
-    assert s["type"] == "realtime" and s["model"] == "gpt-realtime"
-    assert s["output_modalities"] == ["audio"]
-    assert s["audio"]["input"]["format"] == {"type": "audio/pcm", "rate": 24000}
-    assert s["audio"]["output"]["voice"] == "marin"
-    # Beta-era keys must be absent.
-    for beta_key in ("modalities", "voice", "input_audio_format",
-                     "output_audio_format", "input_audio_transcription"):
-        assert beta_key not in s, beta_key
-    assert s["tools"][0]["name"] == "agent_consult"
+
+    events = session._translate({
+        "type": "response.function_call_arguments.done",
+        "call_id": "call_1", "name": "agent_consult",
+        "arguments": '{"question": "q1"}',
+    })
+    assert [e.type for e in events] == ["tool_call"]
+    assert events[0].tool_args == {"question": "q1"}
+
+    # Same call inside response.done → deduped; a new one surfaces.
+    events = session._translate({
+        "type": "response.done",
+        "response": {"output": [
+            {"type": "function_call", "call_id": "call_1",
+             "name": "agent_consult", "arguments": '{"question": "q1"}'},
+            {"type": "function_call", "call_id": "call_2",
+             "name": "agent_consult", "arguments": '{"question": "q2"}'},
+            {"type": "message", "content": []},
+        ]},
+    })
+    assert [e.type for e in events] == ["tool_call", "response_done"]
+    assert events[0].tool_call_id == "call_2"
+
+
+@pytest.mark.asyncio
+async def test_bridge_ulaw_passthrough_skips_transcoding(fake_runtime):
+    """With a ulaw-native session, carrier frames pass through unmodified."""
+    ulaw = bytes(range(160)) + bytes([0x7F]) * 0  # arbitrary µ-law payload
+    ws = FakeCarrierWs([
+        json.dumps({"event": "start", "stream_id": "s1",
+                    "start": {"call_control_id": "v3:rt"}}),
+        _media_frame(ulaw),
+    ])
+    session = FakeSession()
+    session.audio_wire_format = "ulaw"
+    bridge = _bridge(fake_runtime, _record(), session)
+
+    run = asyncio.create_task(bridge.run(ws))
+    await asyncio.wait_for(ws._consumed.wait(), 2)
+    await asyncio.sleep(0.02)
+    # Inbound: exact bytes, no decode/resample.
+    assert session.received_audio == [ulaw]
+    # Outbound: model µ-law goes straight to the pacer → carrier frames.
+    session.push(RealtimeEvent(type="audio", audio=bytes([0x55]) * 160))
+    await asyncio.sleep(0.1)
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
+    import base64 as b64
+
+    media = [m for m in ws.sent if m.get("event") == "media"]
+    assert b64.b64decode(media[0]["media"]["payload"]) == bytes([0x55]) * 160
 
 
 @pytest.mark.asyncio

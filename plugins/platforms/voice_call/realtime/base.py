@@ -60,6 +60,10 @@ class RealtimeVoiceSession(abc.ABC):
     name: str = ""
     input_sample_rate: int = 24000   # PCM16 rate the model expects in
     output_sample_rate: int = 24000  # PCM16 rate the model produces
+    # "pcm16": bridge transcodes carrier µ-law ⇄ PCM16 at the rates above.
+    # "ulaw": the model speaks G.711 µ-law @ 8 kHz natively (OpenAI
+    # audio/pcmu) and the bridge passes carrier frames straight through.
+    audio_wire_format: str = "pcm16"
 
     @abc.abstractmethod
     async def connect(self) -> None:

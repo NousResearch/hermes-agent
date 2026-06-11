@@ -2754,6 +2754,29 @@ def _load_enabled_toolsets() -> list[str] | None:
         return None
 
 
+def _load_disabled_toolsets() -> list[str] | None:
+    """``agent.disabled_toolsets`` from config.yaml, or ``None``.
+
+    The classic CLI (cli.py) and the messaging gateway (gateway/run.py) both
+    forward this list to AIAgent, where get_tool_definitions() strips the
+    named toolsets even out of composite toolsets like ``hermes-cli``
+    (#17309).  The desktop/TUI gateway historically dropped it, so e.g.
+    ``disabled_toolsets: [browser]`` silently had no effect on Desktop —
+    the only consumer was _get_platform_tools()'s name-level subtraction,
+    which can't reach inside a composite default toolset (#44499).
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        agent_cfg = load_config().get("agent") or {}
+        disabled = agent_cfg.get("disabled_toolsets") or None
+        if not disabled:
+            return None
+        return [str(ts) for ts in disabled]
+    except Exception:
+        return None
+
+
 def _session_tool_progress_mode(sid: str) -> str:
     return str(_sessions.get(sid, {}).get("tool_progress_mode", "all") or "all")
 
@@ -4162,6 +4185,8 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
         "max_iterations": _cfg_max_turns(cfg, 25),
         "enabled_toolsets": getattr(agent, "enabled_toolsets", None)
         or _load_enabled_toolsets(),
+        "disabled_toolsets": getattr(agent, "disabled_toolsets", None)
+        or _load_disabled_toolsets(),
         "quiet_mode": True,
         "verbose_logging": False,
         "ephemeral_system_prompt": getattr(agent, "ephemeral_system_prompt", None)
@@ -4614,6 +4639,7 @@ def _make_agent(
             else _load_service_tier()
         ),
         enabled_toolsets=_load_enabled_toolsets(),
+        disabled_toolsets=_load_disabled_toolsets(),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
         # routing instead of letting OpenRouter pick providers at random.
@@ -11534,11 +11560,15 @@ def _(rid, params: dict) -> dict:
             try:
                 from tools.mcp_tool import refresh_agent_mcp_tools
 
-                # Explicit reload: re-resolve enabled toolsets so a server the
-                # user just enabled in config this session is picked up.
+                # Explicit reload: re-resolve enabled AND disabled toolsets so a
+                # server the user just enabled/disabled in config this session is
+                # picked up. refresh_agent_mcp_tools honors both overrides and the
+                # agent's stored disabled_toolsets (#44499).
                 refresh_agent_mcp_tools(
                     agent,
                     enabled_override=_load_enabled_toolsets(),
+                    disabled_override=getattr(agent, "disabled_toolsets", None)
+                    or _load_disabled_toolsets(),
                     quiet_mode=True,
                 )
             except Exception as _exc:
@@ -13889,7 +13919,16 @@ def _(rid, params: dict) -> dict:
             if session
             else _load_enabled_toolsets()
         )
-        tools = get_tool_definitions(enabled_toolsets=enabled, quiet_mode=True)
+        disabled = (
+            getattr(session["agent"], "disabled_toolsets", None)
+            if session
+            else _load_disabled_toolsets()
+        )
+        tools = get_tool_definitions(
+            enabled_toolsets=enabled,
+            disabled_toolsets=disabled,
+            quiet_mode=True,
+        )
         sections = {}
 
         for tool in sorted(tools, key=lambda t: t["function"]["name"]):

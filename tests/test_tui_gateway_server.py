@@ -874,6 +874,35 @@ def test_load_enabled_toolsets_honors_builtin_env_if_config_fails(monkeypatch):
     assert server._load_enabled_toolsets() == ["web"]
 
 
+def test_load_disabled_toolsets_reads_agent_config(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod,
+        "load_config",
+        lambda: {"agent": {"disabled_toolsets": ["browser"]}},
+    )
+
+    assert server._load_disabled_toolsets() == ["browser"]
+
+
+def test_load_disabled_toolsets_none_when_unset_or_config_fails(monkeypatch):
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setattr(
+        config_mod, "load_config", lambda: {"agent": {"disabled_toolsets": []}}
+    )
+    assert server._load_disabled_toolsets() is None
+
+    monkeypatch.setattr(config_mod, "load_config", lambda: {})
+    assert server._load_disabled_toolsets() is None
+
+    monkeypatch.setattr(
+        config_mod, "load_config", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    assert server._load_disabled_toolsets() is None
+
+
 def test_load_enabled_toolsets_all_env_means_all(monkeypatch):
     monkeypatch.setenv("HERMES_TUI_TOOLSETS", "all")
 
@@ -1748,6 +1777,7 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     )
     monkeypatch.setattr("run_agent.AIAgent", fake_agent)
     monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["browser"])
     monkeypatch.setattr(server, "_get_db", lambda: None)
 
     agent = server._make_agent("sid", "session-key")
@@ -1755,6 +1785,7 @@ def test_make_agent_passes_configured_fallback_chain(monkeypatch):
     assert agent.model == "gpt-5.5"
     assert captured["fallback_model"] == fallback_chain
     assert captured["platform"] == "tui"
+    assert captured["disabled_toolsets"] == ["browser"]
 
 
 def test_background_agent_kwargs_preserves_full_fallback_chain(monkeypatch):
@@ -1798,6 +1829,38 @@ def test_background_agent_kwargs_preserves_empty_fallback_chain(monkeypatch):
     kwargs = server._background_agent_kwargs(agent, "task-id")
 
     assert kwargs["fallback_model"] == []
+
+
+def test_background_agent_kwargs_forwards_agent_disabled_toolsets(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+        disabled_toolsets=["browser"],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["disabled_toolsets"] == ["browser"]
+
+
+def test_background_agent_kwargs_falls_back_to_config_disabled_toolsets(monkeypatch):
+    agent = types.SimpleNamespace(
+        model="gpt-5.5",
+        provider="anthropic",
+        _fallback_chain=[],
+    )
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_turns": 25})
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
+    monkeypatch.setattr(server, "_load_disabled_toolsets", lambda: ["browser"])
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    kwargs = server._background_agent_kwargs(agent, "task-id")
+
+    assert kwargs["disabled_toolsets"] == ["browser"]
 
 
 def test_startup_runtime_resolves_short_alias_without_network(monkeypatch):

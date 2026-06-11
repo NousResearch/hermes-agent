@@ -1663,6 +1663,7 @@ export interface ManagedFilesResponse {
   parent: string | null;
   locked_root: string | null;
   can_change_path: boolean;
+  can_delete: boolean;
   entries: ManagedFileEntry[];
 }
 
@@ -1675,6 +1676,7 @@ export interface ManagedFileReadResponse {
   root: string | null;
   locked_root: string | null;
   can_change_path: boolean;
+  can_delete: boolean;
 }
 
 export interface ManagedFileWriteResponse {
@@ -1684,6 +1686,7 @@ export interface ManagedFileWriteResponse {
   root: string | null;
   locked_root: string | null;
   can_change_path: boolean;
+  can_delete: boolean;
 }
 
 export interface AnalyticsDailyEntry {

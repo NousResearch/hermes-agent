@@ -163,6 +163,33 @@ class TestProfileScopedMcp:
         worker_cfg = _cfg(isolated_profiles["worker_beta"])
         assert worker_cfg["mcp_servers"]["srv1"]["enabled"] is False
 
+    def test_mcp_probe_runs_inside_profile_scope(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        """The test-server probe must execute with the selected profile's
+        scope active so env-placeholder expansion reads the profile's .env,
+        matching the config the server was saved into."""
+        import hermes_cli.mcp_config as mcp_config
+        from hermes_constants import get_hermes_home
+
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "mcp_servers:\n  probe-srv:\n    url: http://x/sse\n",
+            encoding="utf-8",
+        )
+        seen = {}
+
+        def fake_probe(name, config, connect_timeout=30):
+            seen["home"] = str(get_hermes_home())
+            return [("tool-a", "desc")]
+
+        monkeypatch.setattr(mcp_config, "_probe_single_server", fake_probe)
+        resp = client.post(
+            "/api/mcp/servers/probe-srv/test", params={"profile": "worker_beta"}
+        )
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert seen["home"] == str(isolated_profiles["worker_beta"])
+
     def test_mcp_remove_scoped(self, client, isolated_profiles):
         (isolated_profiles["worker_beta"] / "config.yaml").write_text(
             "mcp_servers:\n  srv2:\n    url: http://x/sse\n", encoding="utf-8"
@@ -222,6 +249,38 @@ class TestProfileScopedModel:
 
     def test_auxiliary_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/model/auxiliary", params={"profile": "ghost"})
+        assert resp.status_code == 404
+
+    def test_model_options_scoped_to_profile(self, client, isolated_profiles):
+        """The Models picker must read the SAME profile model/set writes —
+        current model/provider in the payload come from the scoped config."""
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n  default: worker/current-pin\n",
+            encoding="utf-8",
+        )
+        resp = client.get("/api/model/options", params={"profile": "worker_beta"})
+        assert resp.status_code == 200
+        body = resp.json()
+        # The payload carries the current selection somewhere stable; assert
+        # the worker pin appears in the scoped response and not the unscoped.
+        assert "worker/current-pin" in resp.text
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert "worker/current-pin" not in resp.text
+        assert isinstance(body, dict)
+
+    def test_model_options_unknown_profile_404(self, client, isolated_profiles):
+        resp = client.get("/api/model/options", params={"profile": "ghost"})
+        assert resp.status_code == 404
+
+    def test_model_info_unknown_profile_404(self, client, isolated_profiles):
+        """Regression: the broad except used to convert the 404 into a 200
+        with empty model info ("no model set" — silently wrong)."""
+        resp = client.get("/api/model/info", params={"profile": "ghost"})
+        assert resp.status_code == 404
+
+    def test_mcp_catalog_unknown_profile_404(self, client, isolated_profiles):
+        resp = client.get("/api/mcp/catalog", params={"profile": "ghost"})
         assert resp.status_code == 404
 
 

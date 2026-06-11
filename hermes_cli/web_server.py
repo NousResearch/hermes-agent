@@ -2600,6 +2600,10 @@ def get_model_info(profile: Optional[str] = None):
             "effective_context_length": effective_ctx,
             "capabilities": caps,
         }
+    except HTTPException:
+        # Unknown/invalid profile must surface as 404, not degrade into a
+        # 200 with empty model info (which would render as "no model set").
+        raise
     except Exception:
         _log.exception("GET /api/model/info failed")
         return dict(_EMPTY_MODEL_INFO)
@@ -2629,13 +2633,17 @@ _AUX_TASK_SLOTS: Tuple[str, ...] = (
 
 
 @app.get("/api/model/options")
-def get_model_options():
+def get_model_options(profile: Optional[str] = None):
     """Return authenticated providers + their curated model lists.
 
     REST equivalent of the ``model.options`` JSON-RPC on tui_gateway, so the
     dashboard Models page can render the picker without a live chat session.
     The response shape matches ``model.options`` 1:1 so ``ModelPickerDialog``
     can share the same types.
+
+    ``profile`` scopes the picker context (current model/provider, custom
+    providers from config, per-profile .env auth state) so the Models page
+    reads the SAME profile /api/model/set writes.
     """
     try:
         from hermes_cli.inventory import build_models_payload, load_picker_context
@@ -2648,15 +2656,18 @@ def get_model_options():
         # come back as skeleton rows carrying `authenticated=False` +
         # `auth_type`/`key_env`/`warning` so the GUI can render a setup
         # affordance instead of hiding the provider entirely.
-        return build_models_payload(
-            load_picker_context(),
-            max_models=50,
-            include_unconfigured=True,
-            picker_hints=True,
-            canonical_order=True,
-            pricing=True,
-            capabilities=True,
-        )
+        with _profile_scope(profile):
+            return build_models_payload(
+                load_picker_context(),
+                max_models=50,
+                include_unconfigured=True,
+                picker_hints=True,
+                canonical_order=True,
+                pricing=True,
+                capabilities=True,
+            )
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
@@ -6537,10 +6548,23 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     if name not in servers:
         raise HTTPException(status_code=404, detail=f"Server '{name}' not found")
 
+    def _probe_scoped():
+        # Re-enter the scope INSIDE the worker thread so call-time
+        # resolution during the probe — env-placeholder expansion in
+        # _resolve_mcp_server_config reading the profile's .env — sees the
+        # selected profile, matching the config the server was saved into.
+        # (asyncio.to_thread copies contextvars, but entering explicitly
+        # keeps the lock-protected SKILLS_DIR swap balanced per-thread.)
+        # Known limit: the dedicated MCP event-loop thread spawned by the
+        # probe doesn't inherit the contextvar, so OAuth token-store paths
+        # resolve against the process HERMES_HOME.
+        with _profile_scope(profile):
+            return _probe_single_server(name, servers[name])
+
     try:
         # Probe blocks on a dedicated MCP event loop — run in a thread so the
         # FastAPI event loop is never blocked.
-        tools = await asyncio.to_thread(_probe_single_server, name, servers[name])
+        tools = await asyncio.to_thread(_probe_scoped)
     except Exception as exc:
         return {
             "ok": False,
@@ -6621,6 +6645,9 @@ async def list_mcp_catalog(profile: Optional[str] = None):
                 "installed": installed_state.get(entry.name, (False, False))[0],
                 "enabled": installed_state.get(entry.name, (False, False))[1],
             })
+    except HTTPException:
+        # Unknown/invalid profile → 404, not a silently-empty catalog.
+        raise
     except Exception:
         _log.exception("list_mcp_catalog failed")
 

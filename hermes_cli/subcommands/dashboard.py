@@ -56,14 +56,14 @@ def build_dashboard_parser(
             "and preselect the profile in the UI's profile switcher."
         ),
     )
+    # Internal flag set by the unified-launch re-exec (cmd_dashboard) to
+    # preselect the launching profile in the SPA switcher. Hidden from
+    # --help: users get this behavior automatically via `<profile> dashboard`.
     dashboard_parser.add_argument(
         "--open-profile",
         dest="open_profile",
         default="",
-        help=(
-            "Preselect this profile in the dashboard's profile switcher when "
-            "auto-opening the browser (appends ?profile=<name> to the URL)."
-        ),
+        help=argparse.SUPPRESS,
     )
     # Lifecycle flags — mutually exclusive with each other and with the
     # start-a-server flags above (if both are passed, --stop / --status win

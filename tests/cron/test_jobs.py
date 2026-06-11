@@ -110,6 +110,23 @@ class TestParseSchedule:
         with pytest.raises(ValueError):
             parse_schedule("99 99 99 99 99")
 
+    def test_multi_cron_semicolon(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("40 8 * * *; 0 19 * * *")
+        assert result["kind"] == "multi_cron"
+        assert result["exprs"] == ["40 8 * * *", "0 19 * * *"]
+
+    def test_multi_cron_newline(self):
+        pytest.importorskip("croniter")
+        result = parse_schedule("0 9 * * 1\n0 14 * * 5")
+        assert result["kind"] == "multi_cron"
+        assert result["exprs"] == ["0 9 * * 1", "0 14 * * 5"]
+
+    def test_multi_cron_invalid_expression_raises(self):
+        pytest.importorskip("croniter")
+        with pytest.raises(ValueError):
+            parse_schedule("0 9 * * *; 99 99 99 99 99")
+
 
 # =========================================================================
 # compute_next_run
@@ -168,6 +185,22 @@ class TestComputeNextRun:
         next_dt = datetime.fromisoformat(result)
         assert isinstance(next_dt, datetime)
         assert next_dt > datetime.now().astimezone()
+
+    def test_multi_cron_returns_earliest_future(self):
+        pytest.importorskip("croniter")
+        now = datetime(2026, 3, 18, 12, 0, 0, tzinfo=timezone.utc)
+        import cron.jobs as jobs_mod
+        original = jobs_mod._hermes_now
+        jobs_mod._hermes_now = lambda: now
+        try:
+            schedule = {"kind": "multi_cron", "exprs": ["40 8 * * *", "0 19 * * *"]}
+            result = compute_next_run(schedule)
+            next_dt = datetime.fromisoformat(result)
+            # At 12:00 UTC the earliest next occurrence is 19:00 today
+            assert next_dt.hour == 19
+            assert next_dt.minute == 0
+        finally:
+            jobs_mod._hermes_now = original
 
     def test_unknown_kind_returns_none(self):
         assert compute_next_run({"kind": "unknown"}) is None

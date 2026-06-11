@@ -278,6 +278,7 @@ const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.j
 // ~/.hermes/active_profile file. Unset (null) preserves the legacy behavior:
 // no --profile flag, so the backend honors active_profile / default.
 const DESKTOP_PROFILE_CONFIG_PATH = path.join(app.getPath('userData'), 'active-profile.json')
+const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
 // Mirrors hermes_cli.profiles._PROFILE_ID_RE so we never hand the backend a
 // value its profile resolver would reject and exit on.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/
@@ -1923,6 +1924,51 @@ function readJson(filePath) {
   } catch {
     return null
   }
+}
+
+function writeJson(filePath, data) {
+  try {
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8')
+    return true
+  } catch {
+    return false
+  }
+}
+
+function loadWindowState() {
+  const stored = readJson(DESKTOP_WINDOW_STATE_PATH)
+  if (!stored || typeof stored !== 'object') return null
+  return {
+    width: Number.isFinite(stored.width) ? stored.width : 1220,
+    height: Number.isFinite(stored.height) ? stored.height : 800,
+    x: Number.isFinite(stored.x) ? stored.x : undefined,
+    y: Number.isFinite(stored.y) ? stored.y : undefined,
+    maximized: stored.maximized === true,
+    fullscreen: stored.fullscreen === true
+  }
+}
+
+function saveWindowState(bounds) {
+  writeJson(DESKTOP_WINDOW_STATE_PATH, bounds)
+}
+
+function isBoundsOnAnyDisplay(bounds) {
+  const { screen } = require('electron')
+  const displays = screen.getAllDisplays()
+  if (!displays || displays.length === 0) return true // trust if we can't query
+  const { x, y, width, height } = bounds
+  const winRight = x + width
+  const winBottom = y + height
+  return displays.some(d => {
+    const db = d.bounds
+    return (
+      winRight > db.x &&
+      x < db.x + db.width &&
+      winBottom > db.y &&
+      y < db.y + db.height
+    )
+  })
 }
 
 // Bootstrap-complete marker helpers. The marker is written ONCE by the
@@ -4947,11 +4993,47 @@ function createSessionWindow(sessionId) {
 
 function createWindow() {
   const icon = getAppIconPath()
+  const state = loadWindowState()
+  const { screen } = require('electron')
+  const primary = screen.getPrimaryDisplay()
+  const workArea = primary.workAreaSize
+
+  const defaultWidth = 1220
+  const defaultHeight = 800
+  const minWidth = 400
+  const minHeight = 620
+
+  let width = state?.width ?? defaultWidth
+  let height = state?.height ?? defaultHeight
+  let x = state?.x
+  let y = state?.y
+
+  // Clamp to minima
+  width = Math.max(width, minWidth)
+  height = Math.max(height, minHeight)
+
+  // If no stored position, center on primary display
+  if (x == null || y == null) {
+    x = Math.round((workArea.width - width) / 2)
+    y = Math.round((workArea.height - height) / 2)
+  }
+
+  // Sanity: if the window is completely off-screen (e.g. after disconnecting
+  // an external monitor), reset to primary display center.
+  if (!isBoundsOnAnyDisplay({ x, y, width, height })) {
+    x = Math.round((workArea.width - Math.min(width, workArea.width - 40)) / 2)
+    y = Math.round((workArea.height - Math.min(height, workArea.height - 40)) / 2)
+    width = Math.min(width, workArea.width - 40)
+    height = Math.min(height, workArea.height - 40)
+  }
+
   mainWindow = new BrowserWindow({
-    width: 1220,
-    height: 800,
-    minWidth: 400,
-    minHeight: 620,
+    width,
+    height,
+    x,
+    y,
+    minWidth,
+    minHeight,
     title: 'Hermes',
     // Frameless title bar on every platform so the renderer can paint the
     // "hide sidebar" button (and other left-side titlebar tools) flush with
@@ -4984,6 +5066,15 @@ function createWindow() {
     }
   })
 
+  // Restore maximized / fullscreen after creation so the initial
+  // BrowserWindow bounds are still the normal (unmaximized) geometry.
+  if (state?.maximized) {
+    mainWindow.maximize()
+  }
+  if (state?.fullscreen) {
+    mainWindow.setFullScreen(true)
+  }
+
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
     if (icon) {
@@ -5006,6 +5097,39 @@ function createWindow() {
   mainWindow.on('leave-full-screen', () => sendWindowStateChanged(false))
 
   wireCommonWindowHandlers(mainWindow)
+
+  // Persist window geometry on every resize/move and on close.
+  let lastNormalBounds = { width, height, x, y }
+  let pendingSave = false
+  function scheduleSave() {
+    if (pendingSave) return
+    pendingSave = true
+    setTimeout(() => {
+      pendingSave = false
+      if (!mainWindow || mainWindow.isDestroyed()) return
+      // If currently normal, snapshot the bounds so we can restore them
+      // later when the user unmaximizes.
+      if (!mainWindow.isMaximized() && !mainWindow.isFullScreen()) {
+        lastNormalBounds = mainWindow.getBounds()
+      }
+      saveWindowState({
+        width: lastNormalBounds.width,
+        height: lastNormalBounds.height,
+        x: lastNormalBounds.x,
+        y: lastNormalBounds.y,
+        maximized: mainWindow.isMaximized(),
+        fullscreen: mainWindow.isFullScreen()
+      })
+    }, 500)
+  }
+
+  mainWindow.on('resize', scheduleSave)
+  mainWindow.on('move', scheduleSave)
+  mainWindow.on('maximize', scheduleSave)
+  mainWindow.on('unmaximize', scheduleSave)
+  mainWindow.on('enter-full-screen', scheduleSave)
+  mainWindow.on('leave-full-screen', scheduleSave)
+  mainWindow.on('close', scheduleSave)
 
   mainWindow.webContents.on('render-process-gone', (_event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)

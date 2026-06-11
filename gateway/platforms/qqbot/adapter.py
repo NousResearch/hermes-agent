@@ -2439,7 +2439,11 @@ class QQAdapter(BasePlatformAdapter):
         Applies format_message(), splits long messages via truncate_message(),
         and retries transient failures with exponential backoff.
         """
-        del metadata
+        # Extract reply_to from metadata when not passed as a separate kwarg.
+        # The gateway sometimes carries reply_to_message_id inside metadata
+        # (e.g. thread-aware delivery paths) instead of the reply_to parameter.
+        if not reply_to and metadata:
+            reply_to = metadata.get("reply_to_message_id")
 
         if not self.is_connected:
             if not await self._wait_for_reconnection():

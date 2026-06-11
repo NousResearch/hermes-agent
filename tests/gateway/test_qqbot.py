@@ -630,6 +630,103 @@ class TestWaitForReconnection:
 
 
 # ---------------------------------------------------------------------------
+# send() metadata reply_to extraction
+# ---------------------------------------------------------------------------
+
+class TestSendMetadataReplyTo:
+    """Test that send() extracts reply_to from metadata when not explicitly provided."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        adapter = QQAdapter(_make_config(**extra))
+        adapter._running = True
+        adapter._ws = SimpleNamespace(closed=False)
+        adapter._http_client = mock.MagicMock()
+        return adapter
+
+    @pytest.mark.asyncio
+    async def test_extracts_reply_to_from_metadata(self):
+        """When reply_to is None, send() should extract it from metadata."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        sent_with = {}
+        original_send_chunk = adapter._send_chunk
+
+        async def capture_send_chunk(chat_id, content, reply_to=None):
+            sent_with["reply_to"] = reply_to
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True, message_id="msg_1")
+
+        adapter._send_chunk = capture_send_chunk
+
+        result = await adapter.send(
+            "test_openid",
+            "Hello!",
+            reply_to=None,
+            metadata={"reply_to_message_id": "inbound_msg_42"},
+        )
+        assert result.success
+        assert sent_with["reply_to"] == "inbound_msg_42"
+
+    @pytest.mark.asyncio
+    async def test_explicit_reply_to_takes_precedence(self):
+        """When reply_to is already set, metadata should not override it."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        sent_with = {}
+
+        async def capture_send_chunk(chat_id, content, reply_to=None):
+            sent_with["reply_to"] = reply_to
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True, message_id="msg_1")
+
+        adapter._send_chunk = capture_send_chunk
+
+        result = await adapter.send(
+            "test_openid",
+            "Hello!",
+            reply_to="explicit_reply",
+            metadata={"reply_to_message_id": "metadata_reply"},
+        )
+        assert result.success
+        assert sent_with["reply_to"] == "explicit_reply"
+
+    @pytest.mark.asyncio
+    async def test_no_reply_to_when_both_absent(self):
+        """When both reply_to and metadata are absent, send() works normally."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        sent_with = {}
+
+        async def capture_send_chunk(chat_id, content, reply_to=None):
+            sent_with["reply_to"] = reply_to
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True, message_id="msg_1")
+
+        adapter._send_chunk = capture_send_chunk
+
+        result = await adapter.send("test_openid", "Hello!")
+        assert result.success
+        assert sent_with["reply_to"] is None
+
+    @pytest.mark.asyncio
+    async def test_empty_metadata_does_not_crash(self):
+        """Empty metadata dict should not cause issues."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        sent_with = {}
+
+        async def capture_send_chunk(chat_id, content, reply_to=None):
+            sent_with["reply_to"] = reply_to
+            from gateway.platforms.base import SendResult
+            return SendResult(success=True, message_id="msg_1")
+
+        adapter._send_chunk = capture_send_chunk
+
+        result = await adapter.send(
+            "test_openid", "Hello!", reply_to=None, metadata={}
+        )
+        assert result.success
+        assert sent_with["reply_to"] is None
+
+
+# ---------------------------------------------------------------------------
 # ChunkedUploader
 # ---------------------------------------------------------------------------
 

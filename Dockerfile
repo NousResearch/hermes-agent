@@ -200,7 +200,7 @@ RUN mkdir -p /opt/hermes/bin && \
         '    raise SystemExit("tirith binary was not installed during image build")' \
         'print(f"tirith baked into image: {path}")' \
         > /tmp/bake_tirith.py && \
-    HERMES_HOME=/opt/hermes /opt/hermes/.venv/bin/python /tmp/bake_tirith.py && \
+    HERMES_HOME=/opt/hermes PYTHONPATH=/opt/hermes /opt/hermes/.venv/bin/python /tmp/bake_tirith.py && \
     rm /tmp/bake_tirith.py
 
 # Build browser dashboard and terminal UI assets.

@@ -1990,18 +1990,26 @@ class TestBuildJobPromptSilentHint:
         result = _build_job_prompt(job)
         assert "[SILENT]" in result
 
-    def test_delivery_guidance_present(self):
+    def test_delivery_guidance_present_for_delivery_targets(self):
         """Cron hint tells agents their final response is auto-delivered."""
-        job = {"prompt": "Generate a report"}
+        job = {"prompt": "Generate a report", "deliver": "origin"}
         result = _build_job_prompt(job)
         assert "do NOT use send_message" in result
         assert "automatically delivered" in result
+
+    def test_local_delivery_guidance_says_saved_locally(self):
+        """Local-only jobs are saved, not delivered as chat messages."""
+        job = {"prompt": "Generate a report", "deliver": "local"}
+        result = _build_job_prompt(job)
+        assert "local-only output" in result
+        assert "saved to the cron run history/output file" in result
+        assert "automatically delivered" not in result
 
     def test_delivery_guidance_precedes_user_prompt(self):
         """System guidance appears before the user's prompt text."""
         job = {"prompt": "My custom prompt"}
         result = _build_job_prompt(job)
-        system_pos = result.index("do NOT use send_message")
+        system_pos = result.index("DELIVERY:")
         prompt_pos = result.index("My custom prompt")
         assert system_pos < prompt_pos
 

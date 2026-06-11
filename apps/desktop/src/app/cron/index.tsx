@@ -557,7 +557,7 @@ function CronJobDetail({
                 <div className="flex flex-wrap items-center gap-2">
                   <h3 className="text-xl font-semibold tracking-tight">{jobTitle(job)}</h3>
                   <StatePill tone={STATE_TONE[state] ?? 'muted'}>{c.states[state] ?? state}</StatePill>
-                  {deliver && deliver !== DEFAULT_DELIVER && (
+                  {deliver && (
                     <StatePill tone="muted">{c.deliveryLabels[deliver] ?? deliver}</StatePill>
                   )}
                 </div>

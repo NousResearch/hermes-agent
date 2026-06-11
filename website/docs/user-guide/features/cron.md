@@ -256,7 +256,7 @@ When scheduling jobs, you specify where the output goes:
 | `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
 | `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
-The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
+For non-local delivery targets, the agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt. `deliver="local"` is save-only: output is written to local cron history/output files, but no chat or platform message is sent.
 
 ### Routing intent (`all`)
 
@@ -431,7 +431,7 @@ This means cron jobs that run at high frequency or during peak hours are more re
 
 ## Schedule formats
 
-The agent's final response is automatically delivered — you do **not** need to include `send_message` in the cron prompt for that same destination. If a cron run calls `send_message` to the exact target the scheduler will already deliver to, Hermes skips that duplicate send and tells the model to put the user-facing content in the final response instead. Use `send_message` only for additional or different targets.
+For non-local delivery targets, the agent's final response is automatically delivered — you do **not** need to include `send_message` in the cron prompt for that same destination. If a cron run calls `send_message` to the exact target the scheduler will already deliver to, Hermes skips that duplicate send and tells the model to put the user-facing content in the final response instead. `deliver="local"` saves output locally only; use `send_message` only when the user's task explicitly asks for an additional or different target.
 
 ### Relative delays (one-shot)
 

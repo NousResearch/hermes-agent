@@ -284,6 +284,14 @@ def _sanitize_node(node: Any, path: str) -> Any:
     if out.get("type") == "object" and not isinstance(out.get("properties"), dict):
         out["properties"] = {}
 
+    # Array nodes without items: inject permissive items schema. OpenAI's
+    # function-schema validator rejects ``{"type": "array"}`` with no
+    # ``items`` ("Invalid schema for function 'X': array schema missing
+    # items"). Malformed MCP tool schemas occasionally omit it (e.g. Bear's
+    # mcp_bear_edit_note `edits` property).
+    if out.get("type") == "array" and "items" not in out:
+        out["items"] = {}
+
     # Prune ``required`` entries that don't exist in properties (defense
     # against malformed MCP schemas; also caught upstream for MCP tools, but
     # built-in tools or plugin tools may not have been through that path).

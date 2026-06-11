@@ -201,6 +201,41 @@ def test_items_sanitized_in_array_schema():
     assert items == {"type": "object", "properties": {}}
 
 
+def test_array_without_items_gets_permissive_items():
+    """Repro for OpenAI 400 'array schema missing items' (e.g. mcp_bear_edit_note).
+
+    OpenAI's function-schema validator rejects ``{"type": "array"}`` with no
+    ``items`` keyword. Symmetric to the object-without-properties rule.
+    """
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "edits": {"type": "array"},  # no items declared
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    edits = out[0]["function"]["parameters"]["properties"]["edits"]
+    assert edits["type"] == "array"
+    assert edits["items"] == {}
+
+
+def test_top_level_array_without_items_gets_items():
+    """Defensive: even if an array shows up at an unusual position, items is injected."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "matrix": {
+                "type": "array",
+                "items": {"type": "array"},  # inner array also missing items
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    inner = out[0]["function"]["parameters"]["properties"]["matrix"]["items"]
+    assert inner["type"] == "array"
+    assert inner["items"] == {}
+
+
 def test_empty_tools_list_returns_empty():
     assert sanitize_tool_schemas([]) == []
 

@@ -1778,7 +1778,14 @@ export const en: Translations = {
     clipboard: 'Clipboard',
     noClipboardImage: 'No image found in clipboard',
     clipboardPasteFailed: 'Clipboard paste failed',
-    dropFiles: 'Drop files'
+    dropFiles: 'Drop files',
+    handoff: {
+      pickPlatform: 'Choose a destination',
+      success: platform => `Handed off to ${platform}. Resume here anytime.`,
+      systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
+      failed: error => `Handoff failed: ${error}`,
+      timedOut: 'Timed out waiting for the gateway. Is `hermes gateway` running?'
+    }
   },
 
   errors: {

@@ -6179,6 +6179,28 @@ class TestPersistUserMessageOverride:
         first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
         assert first_db_write["content"] == "Hello there"
 
+    def test_persist_session_preserves_multimodal_content(self, agent):
+        """Multimodal content lists (images, audio) must not be clobbered."""
+        agent._session_db = MagicMock()
+        agent.session_id = "session-123"
+        agent._last_flushed_db_idx = 0
+        agent._persist_user_message_idx = 0
+        agent._persist_user_message_override = "[Image attachment]"
+        multimodal_content = [
+            {"type": "text", "text": "Describe this image."},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc123"}},
+        ]
+        messages = [
+            {"role": "user", "content": multimodal_content},
+            {"role": "assistant", "content": "A cat."},
+        ]
+
+        agent._apply_persist_user_message_override(messages)
+
+        assert messages[0]["content"] is multimodal_content
+        assert isinstance(messages[0]["content"], list)
+        assert messages[0]["content"][1]["type"] == "image_url"
+
 
 class TestReasoningReplayForStrictProviders:
     """Assistant replay must preserve provider-native reasoning fields."""

@@ -205,6 +205,8 @@ language-specific setup where needed.
   network fallback behavior.
 - Unix Node preflight now prefers matching bundled Node tarballs from `bootstrap-tools/` before downloading from
   nodejs.org, matching the Windows bundled archive behavior for packaged installers.
+- Unix bootstrap manifests now expose Node.js as a separate native-first stage after `uv`, and Rust passes an internal
+  skip signal so the prerequisites shell fallback does not repeat the managed Node.js check/install path.
 - Unix `uv` now has a Rust native-first GitHub release tarball path for Linux and macOS x64/arm64, installing `uv` and
   `uvx` into `$HERMES_HOME/bin` while preserving `install.sh` fallback for unsupported platforms, Termux, download,
   extraction, or version-check failures.
@@ -244,9 +246,9 @@ language-specific setup where needed.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
 
 **Still script-backed:**
-- Language/runtime setup: Python dependency fallback tiers when `uv.lock` sync is unavailable, script fallback for Unix
-  Node, Windows/macOS/Linux npm recovery, Windows uv, Windows Git, Windows Node, Windows/macOS/Linux desktop recovery,
-  and platform SDK recovery.
+- Language/runtime setup: Python dependency fallback tiers when `uv.lock` sync is unavailable, script fallback for
+  Windows/macOS/Linux npm recovery, Windows uv, Windows Git, Windows Node, Windows/macOS/Linux desktop recovery, and
+  platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

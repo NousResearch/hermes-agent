@@ -271,6 +271,7 @@ emit_manifest() {
     printf '%s' \
         '{"protocol_version":1,"stages":[' \
         '{"name":"uv","title":"Install uv package manager","category":"runtime","needs_user_input":false},' \
+        '{"name":"node","title":"Detect Node.js","category":"runtime","needs_user_input":false},' \
         '{"name":"prerequisites","title":"System prerequisites","category":"runtime","needs_user_input":false},' \
         '{"name":"repository","title":"Download Hermes Agent","category":"runtime","needs_user_input":false},' \
         '{"name":"venv","title":"Create Python virtual environment","category":"runtime","needs_user_input":false},' \
@@ -2617,6 +2618,12 @@ run_stage_body() {
             resolve_install_layout
             install_uv
             ;;
+        node)
+            print_banner
+            detect_os
+            resolve_install_layout
+            check_node
+            ;;
         prerequisites)
             print_banner
             detect_os
@@ -2632,7 +2639,11 @@ run_stage_body() {
             else
                 check_git
             fi
-            check_node
+            if [ "${HERMES_NATIVE_NODE_STAGE:-}" = "1" ]; then
+                log_info "Skipping Node.js check; native bootstrap node stage owns it"
+            else
+                check_node
+            fi
             check_network_prerequisites
             install_system_packages
             ;;

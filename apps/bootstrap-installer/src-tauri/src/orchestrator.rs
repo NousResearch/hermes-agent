@@ -731,6 +731,7 @@ fn windows_manifest_stages(include_desktop: bool) -> Vec<StageInfo> {
 fn unix_manifest_stages(include_desktop: bool) -> Vec<StageInfo> {
     let mut stages = vec![
         stage_info("uv", "Install uv package manager", "runtime", false),
+        stage_info("node", "Detect Node.js", "runtime", false),
         stage_info("prerequisites", "System prerequisites", "runtime", false),
         stage_info("repository", "Download Hermes Agent", "runtime", false),
         stage_info(
@@ -2833,7 +2834,7 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
         && name.eq_ignore_ascii_case("desktop") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
-    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("node") {
+    if name.eq_ignore_ascii_case("node") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if name.eq_ignore_ascii_case("uv") {
@@ -3121,6 +3122,7 @@ mod tests {
             names,
             vec![
                 "uv",
+                "node",
                 "prerequisites",
                 "repository",
                 "venv",
@@ -3133,8 +3135,8 @@ mod tests {
                 "complete",
             ]
         );
-        assert_eq!(manifest.stages[7].title, "Prepare config and skills");
-        assert!(manifest.stages[8].needs_user_input);
+        assert_eq!(manifest.stages[8].title, "Prepare config and skills");
+        assert!(manifest.stages[9].needs_user_input);
     }
 
     #[test]

@@ -612,23 +612,6 @@ async fn run_bootstrap(
             continue;
         }
 
-        if !cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("prerequisites") {
-            match crate::orchestrator::install_unix_node_runtime_stage(
-                &hermes_home,
-                bundled_tools_dir.as_deref(),
-            )
-            .await
-            {
-                Ok(data) => emit_log(&format!(
-                    "[bootstrap] native Unix Node preparation succeeded: {data}"
-                )),
-                Err(err) => emit_log(&format!(
-                    "[bootstrap] warning: native Unix Node preparation failed; \
-                     prerequisites script will handle Node fallback: {err}"
-                )),
-            }
-        }
-
         let native_stage_result = {
             if stage.name.eq_ignore_ascii_case("bootstrap-marker") {
                 Some(crate::orchestrator::write_bootstrap_marker(
@@ -679,6 +662,14 @@ async fn run_bootstrap(
             } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("node") {
                 Some(
                     crate::orchestrator::install_windows_node_runtime_stage(
+                        &hermes_home,
+                        bundled_tools_dir.as_deref(),
+                    )
+                    .await,
+                )
+            } else if !cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("node") {
+                Some(
+                    crate::orchestrator::install_unix_node_runtime_stage(
                         &hermes_home,
                         bundled_tools_dir.as_deref(),
                     )
@@ -1096,6 +1087,7 @@ fn stage_script_extra_env(
         if should_use_native_repository_archive(install_root) {
             env.push(("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1"));
         }
+        env.push(("HERMES_NATIVE_NODE_STAGE", "1"));
         env.push(("HERMES_NATIVE_UV_STAGE", "1"));
     }
     env
@@ -1499,6 +1491,7 @@ mod tests {
             stage_script_extra_env("prerequisites", &install_root),
             vec![
                 ("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1"),
+                ("HERMES_NATIVE_NODE_STAGE", "1"),
                 ("HERMES_NATIVE_UV_STAGE", "1")
             ]
         );
@@ -1512,7 +1505,10 @@ mod tests {
         std::fs::create_dir_all(&install_root).unwrap();
         assert_eq!(
             stage_script_extra_env("prerequisites", &install_root),
-            vec![("HERMES_NATIVE_UV_STAGE", "1")]
+            vec![
+                ("HERMES_NATIVE_NODE_STAGE", "1"),
+                ("HERMES_NATIVE_UV_STAGE", "1")
+            ]
         );
         assert!(!should_try_native_repository_archive(
             "repository",

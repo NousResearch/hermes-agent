@@ -69,6 +69,8 @@ def _basename(value: Any) -> str:
 
 
 def _looks_like_shell_wrapping(argv: list[Any]) -> bool:
+    if argv and _basename(argv[0]) == "env" and "-S" in argv[1:]:
+        return True
     for index, part in enumerate(argv):
         if _basename(part) in _SHELL_WRAPPERS:
             return any(str(later) in _SHELL_EVAL_FLAGS for later in argv[index + 1 :])
@@ -104,6 +106,10 @@ def _valid_profile_ref(value: Any) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _valid_action_id(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
 def evaluate_maintenance_action(
     policy: Any,
     action_id: str,
@@ -122,7 +128,9 @@ def evaluate_maintenance_action(
     """
 
     if not policy:
-        return _blocked("policy_absent", action_id=action_id)
+        return _blocked("policy_absent", action_id=str(action_id or ""))
+    if not _valid_action_id(action_id):
+        return _blocked("invalid_action_id")
     if not isinstance(policy, dict):
         return _blocked("policy_invalid", action_id=action_id)
     policy_enabled = policy.get("enabled")
@@ -131,8 +139,12 @@ def evaluate_maintenance_action(
     if policy_enabled is not True:
         return _blocked("policy_enabled_invalid", action_id=action_id)
 
-    if str(invocation_context or "").lower() in _UNATTENDED_CONTEXTS:
-        unattended_reason = _unattended_policy_reason(policy.get("unattended_policy", "none"))
+    unattended_reason = _unattended_policy_reason(policy.get("unattended_policy", "none"))
+    if unattended_reason == "unattended_policy_invalid":
+        return _blocked(unattended_reason, action_id=action_id)
+
+    invocation_context_normalized = str(invocation_context or "").strip().lower()
+    if invocation_context_normalized in _UNATTENDED_CONTEXTS:
         return _blocked(unattended_reason, action_id=action_id)
 
     actions = policy.get("actions")
@@ -178,7 +190,9 @@ def evaluate_maintenance_action(
     require_approval = policy.get("require_interactive_user_approval", True)
     if not isinstance(require_approval, bool):
         return _blocked("invalid_approval_requirement", action_id=action_id, action=action)
-    if require_approval and not current_user_approved:
+    if not isinstance(current_user_approved, bool):
+        return _blocked("invalid_current_user_approval", action_id=action_id, action=action)
+    if require_approval and current_user_approved is not True:
         return _requires_approval(action_id, action)
 
     return _approved(action_id, action)

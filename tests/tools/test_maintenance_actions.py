@@ -88,6 +88,13 @@ class TestMaintenanceActionDefaultDeny:
         assert result.allowed is False
         assert result.reason == "action_disabled"
 
+    @pytest.mark.parametrize("action_id", [None, "", [], {}])
+    def test_malformed_action_id_blocks(self, action_id):
+        result = evaluate_maintenance_action(_policy(), action_id, SAFE_ARGV)
+
+        assert result.allowed is False
+        assert result.reason == "invalid_action_id"
+
     def test_unknown_action_blocks(self):
         result = evaluate_maintenance_action(_policy(), "missing_action", SAFE_ARGV)
 
@@ -167,6 +174,7 @@ class TestMaintenanceActionMalformedPolicy:
             ["bash", "--noprofile", "--norc", "-c", "ssh host command"],
             ["/usr/bin/env", "bash", "-lc", "ssh host command"],
             ["/usr/bin/env", "FOO=bar", "bash", "-lc", "ssh host command"],
+            ["/usr/bin/env", "-S", "bash -lc ssh host command"],
         ],
     )
     def test_missing_or_invalid_exact_argv_blocks(self, exact_argv):
@@ -191,7 +199,7 @@ class TestMaintenanceActionMalformedPolicy:
 class TestMaintenanceActionContext:
     @pytest.mark.parametrize(
         "invocation_context",
-        ["cron", "unattended", "background", "scheduler", "CrOn"],
+        ["cron", "unattended", "background", "scheduler", "CrOn", " cron "],
     )
     @pytest.mark.parametrize("unattended_policy", [None, False, "none", "NONE", "false"])
     def test_unattended_context_blocks_by_default(
@@ -206,6 +214,22 @@ class TestMaintenanceActionContext:
 
         assert result.allowed is False
         assert result.reason == "unattended_forbidden"
+        assert result.eligible is False
+
+    @pytest.mark.parametrize("unattended_policy", [True, "allow", "manual", [], {}])
+    def test_malformed_unattended_policy_blocks_interactive_context(
+        self, unattended_policy
+    ):
+        result = evaluate_maintenance_action(
+            _policy(unattended_policy=unattended_policy),
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            invocation_context="interactive",
+            current_user_approved=True,
+        )
+
+        assert result.allowed is False
+        assert result.reason == "unattended_policy_invalid"
         assert result.eligible is False
 
     @pytest.mark.parametrize("unattended_policy", [True, "allow", "manual", [], {}])
@@ -251,6 +275,19 @@ class TestMaintenanceActionContext:
         assert result.allowed is True
         assert result.reason == "approved"
         assert result.eligible is True
+
+    @pytest.mark.parametrize("current_user_approved", [None, "false", "true", 1, [], {}])
+    def test_malformed_current_user_approved_blocks(self, current_user_approved):
+        result = evaluate_maintenance_action(
+            _policy(),
+            "caspian_inference_restart",
+            SAFE_ARGV,
+            current_user_approved=current_user_approved,
+        )
+
+        assert result.allowed is False
+        assert result.reason == "invalid_current_user_approval"
+        assert result.eligible is False
 
     def test_current_user_approval_allows_when_required_gates_pass(self):
         result = evaluate_maintenance_action(

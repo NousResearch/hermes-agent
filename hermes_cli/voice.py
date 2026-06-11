@@ -106,7 +106,14 @@ def voice_record_key_from_config(cfg: Any) -> Any:
 
 
 def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
-    """Coerce ``voice.record_key`` into prompt_toolkit's ``c-x`` / ``a-x`` format.
+    """Coerce ``voice.record_key`` into Hermes' normalized modifier form.
+
+    The return value is an internal normalized token (``c-x`` / ``a-x``),
+    not the exact argument list that prompt_toolkit's ``@kb.add`` expects
+    for every modifier. Alt/Option bindings still normalize to ``a-...`` so
+    the CLI status label logic and the TUI parser share one canonical form.
+    Use :func:`voice_record_key_binding_for_prompt_toolkit` at the actual
+    prompt_toolkit binding site.
 
     Mirrors the TUI parser contract (``ui-tui/src/lib/platform.ts``)
     so one config value binds the same shortcut in both runtimes:
@@ -180,6 +187,26 @@ def normalize_voice_record_key_for_prompt_toolkit(raw: Any) -> str:
         return _DEFAULT_PT_KEY
 
     return f"{normalized_mod}{named}"
+
+
+def voice_record_key_binding_for_prompt_toolkit(raw: Any) -> tuple[str, ...]:
+    """Return the real ``@kb.add`` argument sequence for ``voice.record_key``.
+
+    prompt_toolkit accepts Ctrl chords as a single token (``"c-b"``), but
+    Alt/Option chords must be registered as an Escape-prefixed key sequence
+    rather than ``"a-b"`` / ``"a-space"``. Keeping this translation in one
+    helper lets CLI startup share the same config/status normalization while
+    binding the portable prompt_toolkit representation that actually works.
+    """
+    normalized = normalize_voice_record_key_for_prompt_toolkit(raw)
+
+    if normalized.startswith("a-"):
+        key = normalized[2:]
+        if key:
+            return ("escape", key)
+        return (_DEFAULT_PT_KEY,)
+
+    return (normalized,)
 
 
 def format_voice_record_key_for_status(raw: Any) -> str:

@@ -13,6 +13,7 @@ import os
 import sys
 
 import pytest
+from prompt_toolkit.key_binding import KeyBindings
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -169,6 +170,43 @@ class TestNormalizeVoiceRecordKeyForPromptToolkit:
         assert normalize_voice_record_key_for_prompt_toolkit("alt+c") == "a-c"
         assert normalize_voice_record_key_for_prompt_toolkit("alt+d") == "a-d"
         assert normalize_voice_record_key_for_prompt_toolkit("alt+l") == "a-l"
+
+
+class TestVoiceRecordKeyBindingForPromptToolkit:
+    def test_ctrl_binding_stays_single_prompt_toolkit_token(self):
+        from hermes_cli.voice import voice_record_key_binding_for_prompt_toolkit
+
+        assert voice_record_key_binding_for_prompt_toolkit("ctrl+b") == ("c-b",)
+        assert voice_record_key_binding_for_prompt_toolkit("control+o") == ("c-o",)
+
+    def test_alt_bindings_become_escape_sequences(self):
+        from hermes_cli.voice import voice_record_key_binding_for_prompt_toolkit
+
+        assert voice_record_key_binding_for_prompt_toolkit("alt+r") == ("escape", "r")
+        assert voice_record_key_binding_for_prompt_toolkit("option+space") == ("escape", "space")
+        assert voice_record_key_binding_for_prompt_toolkit("opt+enter") == ("escape", "enter")
+
+    @pytest.mark.parametrize(
+        ("raw_key", "expected"),
+        [
+            ("ctrl+b", ("c-b",)),
+            ("alt+r", ("escape", "r")),
+            ("alt+space", ("escape", "space")),
+            ("alt+enter", ("escape", "enter")),
+            ("ctrl+spcae", ("c-b",)),
+        ],
+    )
+    def test_binding_sequences_register_with_prompt_toolkit(self, raw_key, expected):
+        from hermes_cli.voice import voice_record_key_binding_for_prompt_toolkit
+
+        binding = voice_record_key_binding_for_prompt_toolkit(raw_key)
+        assert binding == expected
+
+        kb = KeyBindings()
+
+        @kb.add(*binding)
+        def _handler(event):
+            return None
 
 
 class TestVoiceRecordKeyFromConfig:

@@ -61,9 +61,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   // it goes through a confirm step rather than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
   const busy = submitting !== null
-  // The backend drops the permanent-allow path when a tirith content-security
-  // warning is present (it would silently degrade "always" → session scope), so
-  // don't offer the option. Only an explicit false hides it.
+  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
 
   const respond = useCallback(

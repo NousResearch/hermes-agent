@@ -90,8 +90,7 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
-  // When false the backend will not honor a permanent allow (e.g. a tirith
-  // content-security warning is present), so the prompt hides "Always allow".
+  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
   command: string
   description: string

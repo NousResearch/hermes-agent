@@ -1853,10 +1853,10 @@ This compaction should PRIORITISE preserving all information related to the focu
             # Defensive: append canonical markers so the system Skill Safety Rule
             # can detect them.  Fixes #32106 (Ghost Skill — summary loss).
             if _pruned_skill_names:
-                _has_markers = all(
-                    f"skill_view(name='{sn}')" in summary for sn in _pruned_skill_names
-                )
-                if not _has_markers:
+                # The P1 Skill Safety Rule only triggers on [SKILL_PRUNED].
+                # Merely mentioning a skill name is not enough — the marker
+                # must survive.  Re-inject if the canonical marker is absent.
+                if "[SKILL_PRUNED]" not in summary:
                     _ps = []
                     for sn in _pruned_skill_names:
                         _ps.append(

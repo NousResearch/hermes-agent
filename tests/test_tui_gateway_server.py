@@ -1382,6 +1382,94 @@ def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     assert fired["timer"] is False
 
 
+def test_ws_orphan_reap_rearms_while_detached_session_is_mid_turn(monkeypatch):
+    """A detached mid-turn session re-arms the reap timer instead of leaking.
+
+    Regression for #44045: the disconnect-path reap timer was one-shot, so a
+    turn that outlived the grace window (long tool calls, context compression,
+    the post-turn background review pass) was spared once and then never
+    re-checked — the session stayed parked on the drop transport with its DB
+    row un-ended, visible as a separate "active" Desktop chat.
+    """
+    timers = []
+
+    class _Timer:
+        def __init__(self, interval, function):
+            self.interval = interval
+            self.function = function
+            timers.append(self)
+
+        def start(self):
+            pass
+
+    closed = []
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, *, end_reason: closed.append((sid, end_reason)) or True,
+    )
+
+    server._sessions["mid-turn-sid"] = _session(
+        transport=server._detached_ws_transport, running=True
+    )
+    try:
+        server._schedule_ws_orphan_reap("mid-turn-sid")
+        assert len(timers) == 1
+
+        # Grace expires while the turn is still running: spared, but re-armed.
+        timers[0].function()
+        assert closed == []
+        assert len(timers) == 2
+
+        # Turn finishes; the re-armed timer fires and the session is reaped.
+        server._sessions["mid-turn-sid"]["running"] = False
+        timers[1].function()
+        assert closed == [("mid-turn-sid", "ws_orphan_reap")]
+        # Reaped — no further re-arm.
+        assert len(timers) == 2
+    finally:
+        server._sessions.pop("mid-turn-sid", None)
+
+
+def test_ws_orphan_reap_does_not_rearm_after_reattach(monkeypatch):
+    """A mid-turn session that re-binds a live transport cancels the reap chain."""
+    timers = []
+
+    class _Timer:
+        def __init__(self, interval, function):
+            self.function = function
+            timers.append(self)
+
+        def start(self):
+            pass
+
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+    closed = []
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 0.01)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, *, end_reason: closed.append((sid, end_reason)) or True,
+    )
+
+    server._sessions["reattached-sid"] = _session(
+        transport=_LiveTransport(), running=True
+    )
+    try:
+        server._schedule_ws_orphan_reap("reattached-sid")
+        timers[0].function()
+        assert closed == []
+        assert len(timers) == 1  # live transport — chain stops
+    finally:
+        server._sessions.pop("reattached-sid", None)
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 

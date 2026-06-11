@@ -527,7 +527,27 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         # guard with _sessions_lock). _sessions_lock is an RLock and the global
         # ordering is always resume_lock -> sessions_lock, so nesting is safe.
         with _session_resume_lock:
-            if not _ws_session_is_orphaned(_sessions.get(sid)):
+            session = _sessions.get(sid)
+            if not _ws_session_is_orphaned(session):
+                # A detached session that is still mid-turn is spared by the
+                # orphan check, but the turn keeps running in the background
+                # (long tool calls, context compression, the post-turn
+                # review pass can outlive the grace window). The timer used
+                # to be one-shot, so nothing re-checked after the turn
+                # finished: the session stayed parked on the drop transport
+                # with its DB row un-ended until the multi-hour idle reaper,
+                # showing up as a separate "active" Desktop chat (#44045).
+                # Re-arm so the reap happens once the in-flight turn ends —
+                # unless a reconnect re-bound a live transport meanwhile.
+                if (
+                    session is not None
+                    and not session.get("_finalized")
+                    and session.get("running")
+                    and session.get("transport") is _detached_ws_transport
+                ):
+                    rearm = threading.Timer(_WS_ORPHAN_REAP_GRACE_S, _reap)
+                    rearm.daemon = True
+                    rearm.start()
                 return
             _close_session_by_id(sid, end_reason="ws_orphan_reap")
 

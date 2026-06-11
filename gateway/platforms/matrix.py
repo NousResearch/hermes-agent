@@ -2803,6 +2803,44 @@ class MatrixAdapter(BasePlatformAdapter):
         parts = mxc_url[6:]  # strip mxc://
         return f"{self._homeserver}/_matrix/client/v1/media/download/{parts}"
 
+    @staticmethod
+    def _latex_to_math_spans(text: str, stash_fn) -> str:
+        """Replace $...$ and $$...$$ with stashed placeholders for Matrix math markup."""
+        import re as _re
+
+        # Protect code blocks and inline code from LaTeX processing.
+        _code_blocks: list = []
+
+        def _stash_code(m):
+            _code_blocks.append(m.group(0))
+            return f"\x00CODE{len(_code_blocks) - 1}\x00"
+
+        # Stash fenced code blocks and inline code.
+        text = _re.sub(r"```[\s\S]*?```", _stash_code, text)
+        text = _re.sub(r"`[^`]+`", _stash_code, text)
+
+        # Display math: $$...$$
+        def _display_math(m):
+            latex = m.group(1).strip()
+            html = f'<div data-mx-maths="{latex}"><code>{latex}</code></div>'
+            return stash_fn(html)
+
+        text = _re.sub(r"\$\$(.+?)\$\$", _display_math, text, flags=_re.DOTALL)
+
+        # Inline math: $...$
+        def _inline_math(m):
+            latex = m.group(1).strip()
+            html = f'<span data-mx-maths="{latex}"><code>{latex}</code></span>'
+            return stash_fn(html)
+
+        text = _re.sub(r"(?<!\$)\$(?!\$)(.+?)(?<!\$)\$(?!\$)", _inline_math, text)
+
+        # Restore code blocks.
+        for i, block in enumerate(_code_blocks):
+            text = text.replace(f"\x00CODE{i}\x00", block)
+
+        return text
+
     def _markdown_to_html(self, text: str) -> str:
         """Convert Markdown to Matrix-compatible HTML (org.matrix.custom.html).
 
@@ -2812,6 +2850,15 @@ class MatrixAdapter(BasePlatformAdapter):
         links, blockquotes, lists, and horizontal rules — everything the
         Matrix HTML spec allows.
         """
+        # Convert LaTeX math ($...$, $$...$$) to Matrix math spans before markdown processing.
+        # We stash the HTML and restore after markdown to prevent mangling.
+        _math_stash: list = []
+        def _stash_math(html):
+            _math_stash.append(html)
+            return f"\x00MATH{len(_math_stash) - 1}\x00"
+
+        text = self._latex_to_math_spans(text, _stash_math)
+
         try:
             import markdown as _md
 
@@ -2826,11 +2873,17 @@ class MatrixAdapter(BasePlatformAdapter):
 
             if html.count("<p>") == 1:
                 html = html.replace("<p>", "").replace("</p>", "")
+            # Restore math spans.
+            for i, mhtml in enumerate(_math_stash):
+                html = html.replace(f"\x00MATH{i}\x00", mhtml)
             return html
         except ImportError:
             pass
 
-        return self._markdown_to_html_fallback(text)
+        result = self._markdown_to_html_fallback(text)
+        for i, mhtml in enumerate(_math_stash):
+            result = result.replace(f"\x00MATH{i}\x00", mhtml)
+        return result
 
     # ------------------------------------------------------------------
     # Regex-based Markdown -> HTML (no extra dependencies)

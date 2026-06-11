@@ -1504,6 +1504,12 @@ def init_agent(
 
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
+        # External engines own compaction policy: the host compression
+        # threshold (including the Codex gpt-5.5 autoraise above) only
+        # configures the built-in ContextCompressor and never reaches the
+        # plugin, so the autoraise notice would announce a change that does
+        # not apply. Drop it. (#44439)
+        agent._compression_threshold_autoraised = None
         # Resolve context_length for plugin engines — mirrors switch_model() path
         from agent.model_metadata import get_model_context_length
         _plugin_ctx_len = get_model_context_length(
@@ -1678,7 +1684,13 @@ def init_agent(
 
     if not agent.quiet_mode:
         if compression_enabled:
-            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
+            # Report the active engine's own threshold — for a plugin engine
+            # the host compression_threshold is not in effect, and mixing the
+            # two printed a percent that contradicted the token count. (#44439)
+            _active_threshold_pct = getattr(
+                agent.context_compressor, "threshold_percent", compression_threshold
+            )
+            print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(_active_threshold_pct*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
         # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the

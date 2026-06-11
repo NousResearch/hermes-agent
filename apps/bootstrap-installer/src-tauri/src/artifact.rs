@@ -137,6 +137,9 @@ pub fn extract_zip_archive(archive_path: &Path, dest_dir: &Path) -> Result<Vec<P
         let enclosed = entry
             .enclosed_name()
             .ok_or_else(|| anyhow!("unsafe zip entry: {}", entry.name()))?;
+        if entry.is_symlink() {
+            return Err(anyhow!("unsupported symlink zip entry: {}", entry.name()));
+        }
         let out_path = dest_dir.join(enclosed);
 
         if entry.is_dir() {
@@ -214,6 +217,15 @@ mod tests {
         zip.finish().unwrap();
     }
 
+    fn write_symlink_zip(path: &std::path::Path, name: &str, target: &[u8]) {
+        let file = std::fs::File::create(path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let target = std::str::from_utf8(target).unwrap();
+        zip.add_symlink(name, target, SimpleFileOptions::default())
+            .unwrap();
+        zip.finish().unwrap();
+    }
+
     #[test]
     fn sha256_hex_matches_known_content() {
         assert_eq!(
@@ -281,6 +293,20 @@ mod tests {
 
         assert!(err.to_string().contains("unsafe zip entry"));
         assert!(!root.join("escape.txt").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_zip_archive_rejects_symlink_entries() {
+        let root = unique_tmp_dir("zip-symlink");
+        let archive = root.join("repo.zip");
+        let dest = root.join("out");
+        write_symlink_zip(&archive, "repo-main/link", b"/etc/passwd");
+
+        let err = extract_zip_archive(&archive, &dest).unwrap_err();
+
+        assert!(err.to_string().contains("symlink"));
+        assert!(!dest.join("repo-main").join("link").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 }

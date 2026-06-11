@@ -128,6 +128,49 @@ class ResponsesApiTransport(ProviderTransport):
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)
+
+        # xAI server-side web search.
+        #
+        # grok models on xAI's /v1/responses surface (notably
+        # grok-composer-2.5-fast on SuperGrok OAuth) have a *native*,
+        # server-executed web search.  When the model is handed a
+        # client-side function literally named ``web_search``, it routes
+        # the intent to that native engine — but because the tool is
+        # declared as a plain ``function`` rather than xAI's first-class
+        # ``{"type": "web_search"}`` built-in, the server-side search is
+        # dispatched but never reconciled: the response streams reasoning
+        # + ``web_search_call`` progress items, the searches never reach
+        # ``status="completed"`` in the assembled output, no final
+        # message is emitted, and ``_normalize_codex_response`` correctly
+        # sees reasoning-with-no-answer and reports ``incomplete``.  The
+        # turn then burns 3 continuation retries and fails with "Codex
+        # response remained incomplete after 3 continuation attempts".
+        # Verified live against grok-composer-2.5-fast (2026-06).
+        #
+        # Fix: declare xAI's native ``web_search`` built-in so the search
+        # actually runs to completion server-side and the model streams a
+        # real answer.  The Responses API rejects two tools sharing the
+        # name ``web_search`` (HTTP 400 "Duplicate tool names"), so we
+        # drop the client-side ``web_search`` function for the xAI path
+        # and let the native tool satisfy it.  All other client-side
+        # tools (read_file, terminal, web_extract, MCP tools, …) are
+        # untouched and continue to dispatch through Hermes's agent loop.
+        #
+        # NOTE: this routes ``web_search`` to Grok's native search engine
+        # for xAI sessions instead of Hermes's configured web provider
+        # (Tavily/etc.), and those results bypass Hermes's tool-trace /
+        # citation plumbing (they arrive baked into the model's answer
+        # rather than as a tool result the loop observes).  Scoped to
+        # ``is_xai_responses`` deliberately; narrow to specific models if
+        # a future grok variant should keep the client-side function.
+        if is_xai_responses:
+            filtered = [
+                t for t in (response_tools or [])
+                if not (isinstance(t, dict) and t.get("name") == "web_search")
+            ]
+            filtered.append({"type": "web_search"})
+            response_tools = filtered
+
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
         # eagerly call ``_make_tools(tools)`` which does ``for tool in tools``

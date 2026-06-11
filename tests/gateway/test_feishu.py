@@ -4596,6 +4596,57 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         )
         adapter._dispatch_inbound_event.assert_not_called()
 
+    def test_dm_quoted_reply_does_not_create_thread_session(self):
+        """Quoted replies in Feishu DMs populate thread_id/root_id but must not
+        create isolated sessions.  Regression guard for #44028."""
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "yes, that one"}),
+            message_type="text",
+            message_id="m_dm_quoted",
+            mentions=[],
+            chat_id="oc_dm_chat",
+            parent_id="om_parent",
+            upper_message_id=None,
+            thread_id="om_thread_root",
+            root_id="om_thread_root",
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="p2p", message_id="m_dm_quoted",
+            )
+        )
+        # build_source must be called with thread_id=None despite the
+        # message having thread_id/root_id set.
+        call_kwargs = adapter.build_source.call_args[1]
+        self.assertIsNone(call_kwargs.get("thread_id"),
+                          "DM quoted reply must not pass thread_id to build_source")
+
+    def test_group_quoted_reply_preserves_thread_id(self):
+        """Group threads should still use thread_id — only DMs are stripped."""
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "reply in thread"}),
+            message_type="text",
+            message_id="m_grp_thread",
+            mentions=[],
+            chat_id="oc_group_chat",
+            parent_id="om_parent",
+            upper_message_id=None,
+            thread_id="om_thread_root",
+            root_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_grp_thread",
+            )
+        )
+        call_kwargs = adapter.build_source.call_args[1]
+        self.assertEqual(call_kwargs.get("thread_id"), "om_thread_root",
+                         "Group thread must preserve thread_id")
+
 
 class TestFeishuFetchMessageText(unittest.TestCase):
     def _build_adapter(self):

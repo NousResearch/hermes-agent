@@ -159,6 +159,10 @@ language-specific setup where needed.
 - Windows `node` now has a Rust native-first portable ZIP path for Node.js v22, including official index resolution,
   ZIP download/extraction into `$HERMES_HOME/node`, current-process PATH update, and User PATH persistence; the
   PowerShell stage remains fallback for download, extraction, PATH, or version-verification failures.
+- Unix `prerequisites` now runs a Rust native-first Node.js v22 tarball preflight before handing off to `install.sh`.
+  Successful preflight installs `$HERMES_HOME/node`, updates the bootstrap process PATH, and creates Node/npm/npx
+  symlinks, so the script can skip its own Node curl/tar path while still owning uv, Python, Git, system package, and
+  network fallback behavior.
 - Windows `python` now uses a Rust `uv python find 3.11` preflight to skip the PowerShell stage when the required
   runtime is already available, while preserving script fallback so missing Python can still be installed by uv.
 - `python` now also runs native-first installation through Rust by invoking `uv python install 3.11`, with script
@@ -185,10 +189,9 @@ language-specific setup where needed.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
 
 **Still script-backed:**
-- Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Node installation
-  on Unix or Windows fallback paths, Unix npm dependency installation when npm is available, Unix desktop build when
-  the desktop package is present, and script fallback for Windows uv, Windows Git, Windows Node, Windows npm, Windows
-  desktop recovery, and platform SDK recovery.
+- Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Unix npm dependency
+  installation when npm is available, Unix desktop build when the desktop package is present, and script fallback for
+  Unix Node, Windows uv, Windows Git, Windows Node, Windows npm, Windows desktop recovery, and platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

@@ -115,6 +115,19 @@ pub struct WindowsGitRuntimeStagePlan {
     pub is_zip: bool,
 }
 
+/// Native Unix Node runtime installation plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnixNodeRuntimeStagePlan {
+    pub version_major: u32,
+    pub archive_name: String,
+    pub download_url: String,
+    pub archive_path: PathBuf,
+    pub install_dir: PathBuf,
+    pub node_bin: PathBuf,
+    pub npm_bin: PathBuf,
+    pub npx_bin: PathBuf,
+}
+
 /// Messaging-platform SDK requirement derived from user configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PlatformSdkRequirement {
@@ -1002,6 +1015,87 @@ pub async fn install_windows_node_runtime_stage(
     }))
 }
 
+/// Build a Unix Node runtime plan from the Node.js latest-v22.x index.
+pub fn unix_node_runtime_stage_plan_from_index(
+    hermes_home: &Path,
+    node_os: &str,
+    arch: &str,
+    index_html: &str,
+) -> Result<UnixNodeRuntimeStagePlan> {
+    let version_major = 22;
+    let archive_name = latest_unix_node_archive_name(index_html, version_major, node_os, arch)
+        .ok_or_else(|| anyhow!("Node.js v{version_major} {node_os}-{arch} archive not found"))?;
+    let download_url =
+        format!("https://nodejs.org/dist/latest-v{version_major}.x/{archive_name}");
+    let archive_path = bootstrap_archive_cache_path(hermes_home, &archive_name);
+    let install_dir = hermes_home.join("node");
+    let bin_dir = install_dir.join("bin");
+    Ok(UnixNodeRuntimeStagePlan {
+        version_major,
+        archive_name,
+        download_url,
+        archive_path,
+        install_dir,
+        node_bin: bin_dir.join("node"),
+        npm_bin: bin_dir.join("npm"),
+        npx_bin: bin_dir.join("npx"),
+    })
+}
+
+/// Install a Hermes-managed Unix Node.js runtime from the official tarball.
+pub async fn install_unix_node_runtime_stage(hermes_home: &Path) -> Result<serde_json::Value> {
+    if cfg!(target_os = "windows") {
+        return Err(anyhow!("native Unix Node runtime stage is not available on Windows"));
+    }
+    if node_version_satisfies_build(&find_unix_managed_node(hermes_home)) {
+        let node = find_unix_managed_node(hermes_home);
+        prepend_process_path(node.parent().unwrap_or(hermes_home));
+        return Ok(serde_json::json!({
+            "node": node,
+            "skipped": true,
+            "reason": "Hermes-managed Node already satisfies build requirements",
+        }));
+    }
+
+    let node_os = unix_node_os_slug()?;
+    let arch = current_unix_node_arch_slug()?;
+    let version_major = 22;
+    let index_url = format!("https://nodejs.org/dist/latest-v{version_major}.x/");
+    let index_html = reqwest::Client::new()
+        .get(&index_url)
+        .header("User-Agent", "Hermes-Setup")
+        .send()
+        .await
+        .with_context(|| format!("GET {index_url}"))?
+        .text()
+        .await
+        .with_context(|| format!("reading body of {index_url}"))?;
+    let plan = unix_node_runtime_stage_plan_from_index(hermes_home, &node_os, &arch, &index_html)?;
+    crate::artifact::download_to_cache(
+        crate::artifact::DownloadSpec {
+            url: plan.download_url.clone(),
+            user_agent: "Hermes-Setup",
+            expected_sha256: None,
+        },
+        &plan.archive_path,
+    )
+    .await
+    .with_context(|| format!("downloading {}", plan.archive_name))?;
+    install_unix_node_archive(&plan.archive_path, &plan.install_dir)?;
+    if !node_version_satisfies_build(&plan.node_bin) {
+        return Err(anyhow!(
+            "installed Node.js does not satisfy desktop build requirements"
+        ));
+    }
+    prepend_process_path(plan.node_bin.parent().unwrap_or(&plan.install_dir));
+    link_unix_node_tools(&plan)?;
+    Ok(serde_json::json!({
+        "node": plan.node_bin,
+        "archive": plan.archive_name,
+        "installDir": plan.install_dir,
+    }))
+}
+
 /// Build a Windows uv runtime plan from the GitHub release asset matrix.
 pub fn windows_uv_runtime_stage_plan(
     hermes_home: &Path,
@@ -1785,6 +1879,64 @@ fn latest_windows_node_archive_name(
         .max_by(|left, right| compare_node_archive_versions(left, right))
 }
 
+fn latest_unix_node_archive_name(
+    index_html: &str,
+    version_major: u32,
+    node_os: &str,
+    arch: &str,
+) -> Option<String> {
+    let xz_suffix = format!("-{node_os}-{arch}.tar.xz");
+    let gz_suffix = format!("-{node_os}-{arch}.tar.gz");
+    latest_node_archive_name_with_suffix(index_html, version_major, &xz_suffix).or_else(|| {
+        latest_node_archive_name_with_suffix(index_html, version_major, &gz_suffix)
+    })
+}
+
+fn latest_node_archive_name_with_suffix(
+    index_html: &str,
+    version_major: u32,
+    suffix: &str,
+) -> Option<String> {
+    let prefix = format!("node-v{version_major}.");
+    index_html
+        .split('"')
+        .flat_map(|part| part.split_whitespace())
+        .filter_map(|part| {
+            let name = part.trim_matches(|ch: char| {
+                matches!(ch, '<' | '>' | '\'' | '"' | '=')
+            });
+            if name.starts_with(&prefix) && name.ends_with(suffix) {
+                Some(name.to_string())
+            } else {
+                None
+            }
+        })
+        .max_by(|left, right| compare_node_archive_versions(left, right))
+}
+
+fn unix_node_arch_slug(uname_arch: &str) -> Option<&'static str> {
+    match uname_arch {
+        "x86_64" => Some("x64"),
+        "aarch64" | "arm64" => Some("arm64"),
+        "armv7l" => Some("armv7l"),
+        _ => None,
+    }
+}
+
+fn current_unix_node_arch_slug() -> Result<String> {
+    unix_node_arch_slug(std::env::consts::ARCH)
+        .map(|value| value.to_string())
+        .ok_or_else(|| anyhow!("unsupported Unix architecture for Node.js: {}", std::env::consts::ARCH))
+}
+
+fn unix_node_os_slug() -> Result<String> {
+    match std::env::consts::OS {
+        "linux" => Ok("linux".to_string()),
+        "macos" => Ok("darwin".to_string()),
+        other => Err(anyhow!("unsupported Unix OS for Node.js: {other}")),
+    }
+}
+
 fn latest_bundled_windows_node_archive_name(
     bundled_tools_dir: Option<&Path>,
     version_major: u32,
@@ -1891,6 +2043,109 @@ fn install_windows_node_archive(archive_path: &Path, install_dir: &Path) -> Resu
     let cleanup = remove_path_if_exists(&tmp_dir);
     result?;
     cleanup
+}
+
+fn install_unix_node_archive(archive_path: &Path, install_dir: &Path) -> Result<()> {
+    let parent = install_dir.parent().ok_or_else(|| {
+        anyhow!(
+            "Node install directory has no parent: {}",
+            install_dir.display()
+        )
+    })?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("creating Node install parent {}", parent.display()))?;
+    let tmp_dir = install_dir.with_extension("extracting");
+    remove_path_if_exists(&tmp_dir)?;
+    fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("creating Node extraction directory {}", tmp_dir.display()))?;
+
+    let result: Result<()> = (|| {
+        let status = Command::new("tar")
+            .args(["-xf"])
+            .arg(archive_path)
+            .arg("-C")
+            .arg(&tmp_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("extracting {}", archive_path.display()))?;
+        if !status.success() {
+            return Err(anyhow!(
+                "Node archive extraction failed with exit {:?}",
+                status.code()
+            ));
+        }
+        let extracted_root = single_child_dir(&tmp_dir)?;
+        remove_path_if_exists(install_dir)?;
+        fs::rename(&extracted_root, install_dir).with_context(|| {
+            format!(
+                "moving Node runtime {} to {}",
+                extracted_root.display(),
+                install_dir.display()
+            )
+        })?;
+        Ok(())
+    })();
+    let cleanup = remove_path_if_exists(&tmp_dir);
+    result?;
+    cleanup
+}
+
+fn find_unix_managed_node(hermes_home: &Path) -> PathBuf {
+    hermes_home.join("node").join("bin").join("node")
+}
+
+#[cfg(unix)]
+fn link_unix_node_tools(plan: &UnixNodeRuntimeStagePlan) -> Result<()> {
+    let link_dir = unix_node_link_dir();
+    fs::create_dir_all(&link_dir)
+        .with_context(|| format!("creating Node link dir {}", link_dir.display()))?;
+    for (source, name) in [
+        (&plan.node_bin, "node"),
+        (&plan.npm_bin, "npm"),
+        (&plan.npx_bin, "npx"),
+    ] {
+        let dest = link_dir.join(name);
+        remove_path_if_exists(&dest)?;
+        std::os::unix::fs::symlink(source, &dest).with_context(|| {
+            format!("linking {} to {}", dest.display(), source.display())
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn link_unix_node_tools(_plan: &UnixNodeRuntimeStagePlan) -> Result<()> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn unix_node_link_dir() -> PathBuf {
+    if std::env::var_os("TERMUX_VERSION").is_some() {
+        if let Some(prefix) = std::env::var_os("PREFIX") {
+            return PathBuf::from(prefix).join("bin");
+        }
+    }
+    if std::env::var("PREFIX")
+        .map(|value| value.contains("com.termux/files/usr"))
+        .unwrap_or(false)
+    {
+        return PathBuf::from(std::env::var_os("PREFIX").unwrap_or_default()).join("bin");
+    }
+    if cfg!(target_os = "linux") && current_user_is_root() {
+        return PathBuf::from("/usr/local/bin");
+    }
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".local")
+        .join("bin")
+}
+
+#[cfg(unix)]
+fn current_user_is_root() -> bool {
+    std::env::var("USER").map(|user| user == "root").unwrap_or(false)
+        || std::env::var("SUDO_UID").is_ok()
 }
 
 fn install_windows_uv_archive(archive_path: &Path, install_dir: &Path) -> Result<()> {
@@ -2251,6 +2506,9 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     }
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("git") {
         return StageExecutionMode::NativeWithScriptFallback;
+    }
+    if !cfg!(target_os = "windows") && name.eq_ignore_ascii_case("prerequisites") {
+        return StageExecutionMode::ProbeThenScript;
     }
     if matches!(
         name.to_ascii_lowercase().as_str(),
@@ -2658,6 +2916,82 @@ mod tests {
         assert_eq!(plan.node_exe, hermes_home.join("node").join("node.exe"));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unix_node_runtime_stage_plan_prefers_latest_xz_tarball() {
+        let html = r#"
+            <a href="node-v22.18.0-linux-x64.tar.xz">node-v22.18.0-linux-x64.tar.xz</a>
+            <a href="node-v22.19.1-linux-arm64.tar.xz">node-v22.19.1-linux-arm64.tar.xz</a>
+            <a href="node-v22.19.0-linux-x64.tar.gz">node-v22.19.0-linux-x64.tar.gz</a>
+            <a href="node-v22.19.1-linux-x64.tar.xz">node-v22.19.1-linux-x64.tar.xz</a>
+        "#;
+        let root = std::env::temp_dir().join(format!(
+            "hermes-unix-node-runtime-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+
+        let plan = unix_node_runtime_stage_plan_from_index(
+            &hermes_home,
+            "linux",
+            "x64",
+            html,
+        )
+        .unwrap();
+
+        assert_eq!(plan.version_major, 22);
+        assert_eq!(plan.archive_name, "node-v22.19.1-linux-x64.tar.xz");
+        assert_eq!(
+            plan.download_url,
+            "https://nodejs.org/dist/latest-v22.x/node-v22.19.1-linux-x64.tar.xz"
+        );
+        assert_eq!(plan.install_dir, hermes_home.join("node"));
+        assert_eq!(plan.node_bin, hermes_home.join("node").join("bin").join("node"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unix_node_runtime_stage_plan_falls_back_to_latest_gz_tarball() {
+        let html = r#"
+            <a href="node-v22.18.0-darwin-arm64.tar.gz">node-v22.18.0-darwin-arm64.tar.gz</a>
+            <a href="node-v22.19.1-darwin-arm64.tar.gz">node-v22.19.1-darwin-arm64.tar.gz</a>
+        "#;
+        let root = std::env::temp_dir().join(format!(
+            "hermes-unix-node-runtime-gz-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+
+        let plan = unix_node_runtime_stage_plan_from_index(
+            &hermes_home,
+            "darwin",
+            "arm64",
+            html,
+        )
+        .unwrap();
+
+        assert_eq!(plan.archive_name, "node-v22.19.1-darwin-arm64.tar.gz");
+        assert_eq!(
+            plan.npm_bin,
+            hermes_home.join("node").join("bin").join("npm")
+        );
+        assert_eq!(
+            plan.npx_bin,
+            hermes_home.join("node").join("bin").join("npx")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unix_node_arch_slug_maps_supported_uname_arches() {
+        assert_eq!(unix_node_arch_slug("x86_64"), Some("x64"));
+        assert_eq!(unix_node_arch_slug("aarch64"), Some("arm64"));
+        assert_eq!(unix_node_arch_slug("arm64"), Some("arm64"));
+        assert_eq!(unix_node_arch_slug("armv7l"), Some("armv7l"));
+        assert_eq!(unix_node_arch_slug("mips"), None);
     }
 
     #[test]

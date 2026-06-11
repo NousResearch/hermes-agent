@@ -72,6 +72,27 @@ class PrepareBootstrapToolsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unsupported Windows architecture"):
             module.archive_specs_for_arch("mips", "node-v22.19.0-win-mips.zip")
 
+    def test_unix_archive_specs_match_uv_runtime_assets(self):
+        module = _load_script_module()
+
+        linux_specs = module.archive_specs_for_target("linux", "x64")
+        self.assertEqual(
+            [spec.name for spec in linux_specs],
+            ["uv-x86_64-unknown-linux-gnu.tar.gz"],
+        )
+        self.assertTrue(
+            linux_specs[0].url.endswith("/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz")
+        )
+
+        mac_specs = module.archive_specs_for_target("macos", "arm64")
+        self.assertEqual(
+            [spec.name for spec in mac_specs],
+            ["uv-aarch64-apple-darwin.tar.gz"],
+        )
+
+        with self.assertRaisesRegex(ValueError, "unsupported Unix uv platform"):
+            module.archive_specs_for_target("linux", "x86")
+
     def test_manifest_records_archive_size_and_sha256(self):
         module = _load_script_module()
         root = Path("tmp-bootstrap-tools-test")

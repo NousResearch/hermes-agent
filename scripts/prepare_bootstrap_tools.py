@@ -37,6 +37,13 @@ UV_ARCHIVE_NAMES = {
     "x86": "uv-i686-pc-windows-msvc.zip",
 }
 
+UNIX_UV_ARCHIVE_NAMES = {
+    ("linux", "x64"): "uv-x86_64-unknown-linux-gnu.tar.gz",
+    ("linux", "arm64"): "uv-aarch64-unknown-linux-gnu.tar.gz",
+    ("macos", "x64"): "uv-x86_64-apple-darwin.tar.gz",
+    ("macos", "arm64"): "uv-aarch64-apple-darwin.tar.gz",
+}
+
 GIT_ARCHIVE_NAMES = {
     "x64": "PortableGit-2.54.0-64-bit.7z.exe",
     "arm64": "PortableGit-2.54.0-arm64.7z.exe",
@@ -95,6 +102,30 @@ def archive_specs_for_arch(arch: str, node_archive_name: str) -> list[ArchiveSpe
             name=GIT_ARCHIVE_NAMES[arch],
             url=f"https://github.com/git-for-windows/git/releases/download/{GIT_TAG}/{GIT_ARCHIVE_NAMES[arch]}",
         ),
+    ]
+
+
+def archive_specs_for_target(
+    platform: str,
+    arch: str,
+    node_archive_name: str | None = None,
+) -> list[ArchiveSpec]:
+    """Build archive specs for one release platform and architecture."""
+
+    normalized_platform = "macos" if platform == "darwin" else platform
+    if normalized_platform == "windows":
+        if node_archive_name is None:
+            raise ValueError("Windows bootstrap tools require a Node.js archive name")
+        return archive_specs_for_arch(arch, node_archive_name)
+
+    archive_name = UNIX_UV_ARCHIVE_NAMES.get((normalized_platform, arch))
+    if archive_name is None:
+        raise ValueError(f"unsupported Unix uv platform: {normalized_platform}-{arch}")
+    return [
+        ArchiveSpec(
+            name=archive_name,
+            url=f"https://github.com/astral-sh/uv/releases/latest/download/{archive_name}",
+        )
     ]
 
 
@@ -175,19 +206,31 @@ def write_manifest(output_dir: Path, archives: list[PreparedArchive]) -> Path:
     return manifest_path
 
 
-def prepare_archives(output_dir: Path, arches: list[str], force: bool, dry_run: bool) -> list[PreparedArchive]:
+def prepare_archives(
+    output_dir: Path,
+    arches: list[str],
+    force: bool,
+    dry_run: bool,
+    platform: str = "windows",
+) -> list[PreparedArchive]:
     """Resolve and optionally download all archives for the requested architectures."""
 
-    index_html = fetch_text(NODE_INDEX_URL)
+    normalized_platform = "macos" if platform == "darwin" else platform
+    index_html = fetch_text(NODE_INDEX_URL) if normalized_platform == "windows" else ""
     downloaded: list[PreparedArchive] = []
     for arch in arches:
-        node_archive = select_latest_node_archive(index_html, arch)
-        for spec in archive_specs_for_arch(arch, node_archive):
+        node_archive = (
+            select_latest_node_archive(index_html, arch)
+            if normalized_platform == "windows"
+            else None
+        )
+        for spec in archive_specs_for_target(normalized_platform, arch, node_archive):
             if dry_run:
                 print(f"[bootstrap-tools] would download {spec.name} <- {spec.url}")
             else:
                 path = download_archive(spec, output_dir, force)
-                downloaded.append(prepared_archive_record(arch, spec, path))
+                manifest_arch = arch if normalized_platform == "windows" else f"{normalized_platform}-{arch}"
+                downloaded.append(prepared_archive_record(manifest_arch, spec, path))
     if downloaded:
         manifest_path = write_manifest(output_dir, downloaded)
         print(f"[bootstrap-tools] wrote manifest {manifest_path}")
@@ -199,11 +242,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--platform",
+        choices=("windows", "linux", "macos", "darwin"),
+        default="windows",
+        help="Release platform to bundle tools for. Defaults to windows.",
+    )
+    parser.add_argument(
         "--arch",
         action="append",
-        choices=sorted(UV_ARCHIVE_NAMES),
+        choices=sorted(set(UV_ARCHIVE_NAMES) | {"x64", "arm64"}),
         default=None,
-        help="Windows architecture to bundle. Can be passed more than once. Defaults to x64.",
+        help="Architecture to bundle. Can be passed more than once. Defaults to x64.",
     )
     parser.add_argument(
         "--output-dir",
@@ -222,7 +271,13 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     arches = args.arch or ["x64"]
     try:
-        prepared = prepare_archives(args.output_dir, arches, args.force, args.dry_run)
+        prepared = prepare_archives(
+            args.output_dir,
+            arches,
+            args.force,
+            args.dry_run,
+            args.platform,
+        )
     except Exception as exc:
         print(f"[bootstrap-tools] error: {exc}", file=sys.stderr)
         return 1

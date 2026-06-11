@@ -294,6 +294,8 @@ language-specific setup where needed.
   runtime stages prefer matching bundled archives before falling back to the download cache.
 - Windows installer release workflow prepares x64 Node v22, uv, and pinned Git for Windows archives before Tauri
   packaging, then writes `bootstrap-tools-manifest.json` with archive URL, size, and SHA-256 metadata for review.
+- The same release preparation helper now supports `--platform linux|macos` for x64/arm64 uv tarballs, matching the
+  Unix Rust uv installer asset matrix when future macOS/Linux installer packaging wires in bundled tools.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

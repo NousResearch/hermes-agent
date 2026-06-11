@@ -13,6 +13,16 @@ let
   packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/apps/desktop/package.json"));
   version = packageJson.version;
 
+  desktopItem = pkgs.makeDesktopItem {
+    name = "hermes-desktop";
+    desktopName = "Hermes";
+    comment = "Native desktop shell for Hermes Agent";
+    exec = "hermes-desktop";
+    icon = "hermes-desktop";
+    categories = [ "Development" ];
+    startupNotify = true;
+  };
+
   # Build the renderer (dist/ + electron/ + package.json).
   renderer = pkgs.buildNpmPackage (npm // {
     pname = "hermes-desktop-renderer";
@@ -78,8 +88,16 @@ stdenv.mkDerivation {
   installPhase = ''
     runHook preInstall
 
-    mkdir -p $out/share/hermes-desktop $out/bin
+    mkdir -p \
+      $out/share/hermes-desktop \
+      $out/share/applications \
+      $out/share/icons/hicolor/512x512/apps \
+      $out/share/pixmaps \
+      $out/bin
     cp -r ${renderer}/* $out/share/hermes-desktop/
+    cp ${desktopItem}/share/applications/* $out/share/applications/
+    cp ${npm.src}/apps/desktop/assets/icon.png $out/share/icons/hicolor/512x512/apps/hermes-desktop.png
+    cp ${npm.src}/apps/desktop/assets/icon.png $out/share/pixmaps/hermes-desktop.png
 
     # Wrap the nixpkgs electron binary to launch our app.  Set
     # HERMES_DESKTOP_HERMES to the absolute path of the nix-built `hermes`

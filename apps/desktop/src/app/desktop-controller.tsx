@@ -951,7 +951,7 @@ export function DesktopController() {
         navigate(CRON_ROUTE)
       }}
       onNavigate={item => {
-        if (item === 'browser') {
+        if (item.action === 'browser') {
           openBrowserFeedback()
           return
         }
@@ -1233,7 +1233,7 @@ export function DesktopController() {
         <BrowserFeedbackWindow
           minimized={browserFeedbackMinimized}
           onClose={closeBrowserFeedback}
-          onFocus={openBrowserFeedback}
+          onInsertPrompt={composer.addTextToDraft}
           onMinimizedChange={setBrowserFeedbackMinimized}
           open={browserFeedbackOpen}
         />

@@ -1152,7 +1152,7 @@ export const zhHant = defineLocale({
     archiveAllChecked: count => `將封存 ${count} 個顯示中的工作階段。`,
     archiveAllNone: '沒有可封存的工作階段。',
     allPinned: '這裡的全部已釘選。取消釘選某個聊天即可在最近中顯示。',
-    shiftClickHint: '將聊天拖曳到此處，或 Shift + 點擊以釘選',
+    shiftClickHint: '將聊天拖曳到此處以釘選',
     noWorkspace: '無工作區',
     newSessionIn: label => `在 ${label} 中新建工作階段`,
     reorderWorkspace: label => `重新排序工作區 ${label}`,

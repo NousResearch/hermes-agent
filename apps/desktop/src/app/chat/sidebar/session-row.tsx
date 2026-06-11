@@ -178,18 +178,23 @@ export function SidebarSessionRow({
               event.preventDefault()
               event.stopPropagation()
 
-              // Pins can't resolve an archived row, so in the Archived section
-              // shift-click starts a selection instead of pinning.
-              if (archived) {
-                if (selectable && onToggleSelect) {
-                  toggleSelect('single')
-                }
+              // Shift-click is the multi-select gesture everywhere selection
+              // exists: the first one starts the selection with this row, the
+              // next one range-extends (handled by the selectionActive branch
+              // above). Pin used to own this binding — it shadowed selection
+              // and made multi-select undiscoverable, so pin now lives in
+              // drag-to-Pinned, the row menus, and the bulk bar instead.
+              if (selectable && onToggleSelect) {
+                toggleSelect('single')
 
                 return
               }
 
-              triggerHaptic('selection')
-              onPin()
+              // Rows outside any selectable section keep the legacy binding.
+              if (!archived) {
+                triggerHaptic('selection')
+                onPin()
+              }
 
               return
             }

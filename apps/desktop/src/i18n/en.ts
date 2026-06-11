@@ -1111,7 +1111,7 @@ export const en: Translations = {
     archiveAllChecked: count => `${count} visible session${count === 1 ? '' : 's'} will be checked.`,
     archiveAllNone: 'No sessions to archive.',
     allPinned: 'Everything here is pinned. Unpin a chat to show it in recents.',
-    shiftClickHint: 'Drag a chat here, or shift-click to pin',
+    shiftClickHint: 'Drag a chat here to pin',
     noWorkspace: 'No workspace',
     newSessionIn: label => `New session in ${label}`,
     reorderWorkspace: label => `Reorder workspace ${label}`,

@@ -8618,6 +8618,21 @@ def _disable_unselected_skills(profile_dir: Path, keep: List[str]) -> int:
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
     try:
+        config = load_config()
+        profiles_restricted = cfg_get(config, "dashboard", "profiles_restricted", default=False)
+        if profiles_restricted:
+            # Only return the default profile
+            default_home = profiles_mod._get_default_hermes_home()
+            if default_home.is_dir():
+                from hermes_cli.profiles import ProfileInfo
+                info = ProfileInfo(
+                    name="default",
+                    path=default_home,
+                    is_default=True,
+                    gateway_running=profiles_mod._check_gateway_running(default_home),
+                )
+                return {"profiles": [_profile_to_dict(info)]}
+            return {"profiles": []}
         return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
     except Exception:
         _log.exception("GET /api/profiles failed; falling back to profile directory scan")
@@ -8761,7 +8776,13 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     """
     from hermes_cli import profiles as profiles_mod
     try:
+        config = load_config()
+        profiles_restricted = cfg_get(config, "dashboard", "profiles_restricted", default=False)
+        if profiles_restricted and body.name != "default":
+            raise HTTPException(status_code=403, detail="Profile switching is restricted to default only")
         profiles_mod.set_active_profile(body.name)
+    except HTTPException:
+        raise
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

@@ -74,6 +74,56 @@ def test_parse_branch_flag_rejects_empty_and_option_like():
 
 
 # ---------------------------------------------------------------------------
+# CLI parser shape: kanban create (positional title, repeated --parent)
+# ---------------------------------------------------------------------------
+
+def test_kanban_create_title_is_positional_not_flag():
+    """`hermes kanban create` takes the task title as a positional argument,
+    not a --title flag."""
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+
+    # Positional title works:
+    args = parser.parse_args(["kanban", "create", "my task title"])
+    assert args.kanban_action == "create"
+    assert args.title == "my task title"
+
+    # --title is NOT a recognised flag — argparse rejects it:
+    with pytest.raises(SystemExit):
+        parser.parse_args(["kanban", "create", "--title", "wrong"])
+
+
+def test_kanban_create_parent_flag_is_repeatable_singular():
+    """Dependencies use repeated --parent flags (singular), not --parents."""
+    parser = argparse.ArgumentParser(prog="hermes")
+    sub = parser.add_subparsers(dest="command")
+    kc.build_parser(sub)
+
+    # Single parent
+    args = parser.parse_args([
+        "kanban", "create", "child", "--parent", "t_parent1",
+    ])
+    assert args.parent == ["t_parent1"]
+
+    # Multiple parents via repeated --parent
+    args = parser.parse_args([
+        "kanban", "create", "child",
+        "--parent", "t_parent1",
+        "--parent", "t_parent2",
+        "--parent", "t_parent3",
+    ])
+    assert args.parent == ["t_parent1", "t_parent2", "t_parent3"]
+
+    # --parents (plural) is NOT a recognised flag:
+    with pytest.raises(SystemExit):
+        parser.parse_args([
+            "kanban", "create", "child",
+            "--parents", "t_a", "t_b",
+        ])
+
+
+# ---------------------------------------------------------------------------
 # run_slash smoke tests (end-to-end via the same entry both CLI and gateway use)
 # ---------------------------------------------------------------------------
 

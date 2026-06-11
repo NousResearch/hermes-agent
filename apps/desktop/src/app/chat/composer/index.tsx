@@ -27,10 +27,10 @@ import { cn } from '@/lib/utils'
 import {
   $composerAttachments,
   clearComposerAttachments,
-  clearPersistedComposerDraft,
+  clearSessionDraft,
   type ComposerAttachment,
-  readPersistedComposerDraft,
-  writePersistedComposerDraft
+  stashSessionDraft,
+  takeSessionDraft
 } from '@/store/composer'
 import {
   browseBackward,
@@ -182,7 +182,9 @@ export function ChatBar({
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
-  const pendingDraftPersistRef = useRef<string | null>(null)
+  const pendingDraftPersistRef = useRef<{ scope: string | null; text: string } | null>(null)
+  const activeQueueSessionKeyRef = useRef(activeQueueSessionKey)
+  activeQueueSessionKeyRef.current = activeQueueSessionKey
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -194,6 +196,8 @@ export function ChatBar({
   const [dragActive, setDragActive] = useState(false)
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
+  const queueEditRef = useRef(queueEdit)
+  queueEditRef.current = queueEdit
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
   const lastSpokenIdRef = useRef<string | null>(null)
@@ -1109,47 +1113,59 @@ export function ChatBar({
     }
   }
 
-  // The composer sits above the thread and does NOT react to session
-  // switches; the only restore is a one-shot on mount so drafts survive
-  // app reloads.
+  const stashAt = (
+    scope: string | null,
+    text = draftRef.current,
+    attachments = $composerAttachments.get()
+  ) => stashSessionDraft(scope, text, attachments)
+
+  // Per-thread draft swap — the composer's only session coupling. Lifecycle
+  // never clears composer state; this effect alone stashes on leave, restores
+  // on enter. Keyed writes are idempotent, so no skip-sentinel.
   useEffect(() => {
-    const persisted = readPersistedComposerDraft()
+    const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
+    loadIntoComposer(text, attachments)
 
-    if (persisted && !draftRef.current.trim()) {
-      loadIntoComposer(persisted, $composerAttachments.get())
+    return () => {
+      const editing = queueEditRef.current
+
+      if (editing?.sessionKey === activeQueueSessionKey) {
+        stashAt(activeQueueSessionKey, editing.draft, editing.attachments)
+      } else if (!isBrowsingHistory(sessionId)) {
+        stashAt(activeQueueSessionKey)
+      }
     }
-  }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Debounced draft persistence. Skipped for programmatically-loaded text
-  // (history browsing, queued-prompt edits) so recalled text never clobbers
-  // the genuine in-progress draft.
+  // Debounced stash into the active scope. Skipped while browsing history or
+  // editing a queued prompt — recalled text must not clobber the real draft.
   useEffect(() => {
     if (isBrowsingHistory(sessionId) || queueEdit) {
       return
     }
 
-    pendingDraftPersistRef.current = draft
+    pendingDraftPersistRef.current = { scope: activeQueueSessionKey, text: draft }
 
     const handle = window.setTimeout(() => {
       pendingDraftPersistRef.current = null
-      writePersistedComposerDraft(draft)
+      stashAt(activeQueueSessionKey, draft)
     }, DRAFT_PERSIST_DEBOUNCE_MS)
 
     return () => window.clearTimeout(handle)
-  }, [draft, queueEdit, sessionId])
+  }, [activeQueueSessionKey, draft, queueEdit, sessionId])
 
-  // Flush any pending debounced write on unmount or unload. The pagehide
-  // listener is load-bearing: React does NOT run effect cleanups on a page
-  // reload, so without it a Cmd+R inside the debounce window drops the
-  // trailing keystrokes.
+  // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
+  // inside the debounce window would drop trailing keystrokes without this.
   useEffect(() => {
     const flushPendingDraftPersist = () => {
       const pending = pendingDraftPersistRef.current
 
-      if (pending !== null) {
-        pendingDraftPersistRef.current = null
-        writePersistedComposerDraft(pending)
+      if (!pending) {
+        return
       }
+
+      pendingDraftPersistRef.current = null
+      stashAt(pending.scope, pending.text)
     }
 
     window.addEventListener('pagehide', flushPendingDraftPersist)
@@ -1362,30 +1378,35 @@ export function ChatBar({
     }
   }, [busy, drainNextQueued, queuedPrompts.length])
 
-  // Clean up queue edit when its target disappears (session swap or external delete).
+  // Queue-edit cleanup: on session swap the scope effect already stashed the
+  // edit snapshot; only restore into the composer when still on the same scope.
   useEffect(() => {
     if (!queueEdit) {
       return
     }
 
-    if (queueEdit.sessionKey === activeQueueSessionKey && editingQueuedPrompt) {
-      return
+    if (queueEdit.sessionKey === activeQueueSessionKey) {
+      if (editingQueuedPrompt) {
+        return
+      }
+
+      loadIntoComposer(queueEdit.draft, queueEdit.attachments)
     }
 
-    loadIntoComposer(queueEdit.draft, queueEdit.attachments)
     setQueueEdit(null)
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Submit, restoring the composer (and its persisted draft) if the gateway
-  // rejects or the submit throws — typed text is never lost to a failed send.
   const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
+    const submittedScope = activeQueueSessionKeyRef.current
+    const submittedAttachments = attachments ?? []
+
     const restore = () => {
-      loadIntoComposer(text, attachments ?? [])
-      writePersistedComposerDraft(text)
+      loadIntoComposer(text, submittedAttachments)
+      stashAt(activeQueueSessionKeyRef.current, text, submittedAttachments)
     }
 
     void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
-      .then(accepted => void (accepted === false ? restore() : clearPersistedComposerDraft()))
+      .then(accepted => void (accepted === false ? restore() : clearSessionDraft(submittedScope)))
       .catch(restore)
   }
 

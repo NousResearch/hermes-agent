@@ -3,13 +3,13 @@ import { afterEach, describe, expect, it } from 'vitest'
 import {
   $composerAttachments,
   addComposerAttachment,
-  clearPersistedComposerDraft,
-  COMPOSER_DRAFT_STORAGE_KEY,
+  clearSessionDraft,
   type ComposerAttachment,
-  readPersistedComposerDraft,
   removeComposerAttachment,
-  updateComposerAttachment,
-  writePersistedComposerDraft
+  SESSION_DRAFTS_STORAGE_KEY,
+  stashSessionDraft,
+  takeSessionDraft,
+  updateComposerAttachment
 } from './composer'
 
 function attachment(overrides: Partial<ComposerAttachment> & Pick<ComposerAttachment, 'id'>): ComposerAttachment {
@@ -46,30 +46,61 @@ describe('updateComposerAttachment', () => {
   })
 })
 
-describe('persisted composer draft', () => {
+describe('session drafts', () => {
   afterEach(() => {
+    for (const scope of ['session-a', 'session-b', null]) {
+      clearSessionDraft(scope)
+    }
+
     window.localStorage.clear()
   })
 
-  it('stores and restores the draft', () => {
-    writePersistedComposerDraft('almost submitted prompt')
+  it('keeps drafts isolated per session scope', () => {
+    stashSessionDraft('session-a', 'draft a', [])
+    stashSessionDraft('session-b', 'draft b', [attachment({ id: 'image:b', kind: 'image' })])
 
-    expect(readPersistedComposerDraft()).toBe('almost submitted prompt')
-    expect(window.localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY)).toBe('almost submitted prompt')
+    expect(takeSessionDraft('session-a')).toEqual({ attachments: [], text: 'draft a' })
+    expect(takeSessionDraft('session-b').text).toBe('draft b')
+    expect(takeSessionDraft('session-b').attachments.map(a => a.id)).toEqual(['image:b'])
   })
 
-  it('removes empty drafts instead of leaving stale text behind', () => {
-    writePersistedComposerDraft('saved')
-    writePersistedComposerDraft('')
+  it('scopes the unsaved new-session draft separately from real sessions', () => {
+    stashSessionDraft(null, 'new chat draft', [])
+    stashSessionDraft('session-a', 'session draft', [])
 
-    expect(readPersistedComposerDraft()).toBe('')
-    expect(window.localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY)).toBeNull()
+    expect(takeSessionDraft(null).text).toBe('new chat draft')
+    expect(takeSessionDraft(undefined).text).toBe('new chat draft')
+    expect(takeSessionDraft('session-a').text).toBe('session draft')
   })
 
-  it('can explicitly clear a saved draft after submit', () => {
-    writePersistedComposerDraft('saved')
-    clearPersistedComposerDraft()
+  it('persists draft text (not attachments) to localStorage', () => {
+    stashSessionDraft('session-a', 'survives reload', [attachment({ id: 'file:a' })])
 
-    expect(readPersistedComposerDraft()).toBe('')
+    const persisted = JSON.parse(window.localStorage.getItem(SESSION_DRAFTS_STORAGE_KEY) ?? '{}') as Record<string, string>
+
+    expect(persisted['session-a']).toBe('survives reload')
+  })
+
+  it('evicts empty drafts instead of leaving stale entries behind', () => {
+    stashSessionDraft('session-a', 'saved', [])
+    stashSessionDraft('session-a', '   ', [])
+
+    expect(takeSessionDraft('session-a')).toEqual({ attachments: [], text: '' })
+  })
+
+  it('clears a stashed draft after an accepted submit', () => {
+    stashSessionDraft('session-a', 'sent prompt', [attachment({ id: 'file:a' })])
+    clearSessionDraft('session-a')
+
+    expect(takeSessionDraft('session-a')).toEqual({ attachments: [], text: '' })
+  })
+
+  it('returns clones so callers cannot mutate the stash', () => {
+    stashSessionDraft('session-a', 'draft', [attachment({ id: 'file:a' })])
+
+    const taken = takeSessionDraft('session-a')
+    taken.attachments[0]!.label = 'mutated'
+
+    expect(takeSessionDraft('session-a').attachments[0]?.label).toBe('doc.pdf')
   })
 })

@@ -328,8 +328,7 @@ export function useSessionActions({
       setYoloActive(false)
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
-      // Never clear the composer here: it sits above the thread and its
-      // contents (text + attachments) follow the user across session changes.
+      // Never clear the composer here — ChatBar's per-thread draft swap owns it.
       setFreshDraftReady(true)
     },
     [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]

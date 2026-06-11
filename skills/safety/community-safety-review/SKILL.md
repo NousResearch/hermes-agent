@@ -198,13 +198,75 @@ Phrasing to avoid:
 - "Ban this user." (enforcement)
 - "This is definitely fake." (conclusion without human review)
 
+## Project safety review helper (optional script)
+
+In addition to the message-review workflow above, the skill ships a small
+optional helper for reviewing a **Web3/GameFi project** from its public
+information. It is a lightweight, dependency-free Python script that reads a
+JSON description of a project and produces the same kind of neutral safety
+note — automatically detecting public risk signals and trust signals.
+
+The helper keeps every principle of this skill: public signals only, no private
+data, no network calls, no accusations, no enforcement, and a manual-verification
+reminder on every report. The review level it assigns describes *how much
+careful human review is recommended* — it is never a verdict and never claims a
+project is a scam.
+
+### Files
+
+- `scripts/safety_review.py` — the analyzer (Python 3.8+, standard library only).
+- `scripts/sample-project.json` — a sample input.
+- `templates/project-safety-review.md` — a blank note to fill in by hand.
+- `reports/sample-report.md` — a committed example of generated output.
+
+### How to run
+
+```bash
+cd scripts
+python safety_review.py sample-project.json            # print the note
+python safety_review.py sample-project.json --report   # also save to ../reports/
+cat project.json | python safety_review.py -           # read from stdin
+```
+
+### Input
+
+A single JSON object. All fields are optional — provide what is public and
+known. Free-text fields (`description`, `marketing_text`, `documentation`,
+`roadmap`) are scanned for risky language; structured fields record presence or
+clarity. The `reviewer_flags` list lets a human record signals that text
+scanning cannot see (`broken_links`, `copied_content`, `fake_social_proof`,
+`fake_partnership`, `impersonation`). See the header of `safety_review.py` for
+the full field list.
+
+### Risk signals it checks
+
+Anonymous/unclear team, no public documentation, no working product/demo,
+unrealistic reward claims, guaranteed-profit language, aggressive referral
+focus, unverified partnership claims, suspicious token-sale wording, unclear
+tokenomics, no/inactive GitHub, copied content (reviewer flag), broken links
+(reviewer flag), no audit/security information, pressure tactics, and possible
+fabricated social proof.
+
+### Trust signals it checks
+
+Documentation available, working demo/product, public team or named
+contributors, GitHub provided/active, community activity described, transparent
+tokenomics, audit/security notes, roadmap provided, and absence of
+guaranteed-profit language.
+
+### Review levels
+
+- **LOW** — few/no risk signals; human review still recommended.
+- **MEDIUM** — some signals or gaps; manual verification needed.
+- **HIGH** — multiple notable signals; careful human review strongly recommended.
+- **HUMAN REVIEW REQUIRED** — not enough public information to assess.
+
 ## Future automation ideas
 
-These are ideas only. Phase 1 includes no code, scripts, or UI.
+Further ideas that would keep the same principles:
 
-- An optional helper that highlights look-alike domains for a moderator to
-  inspect.
-- An optional checklist prompt that walks a moderator through the signals.
+- An optional helper that highlights look-alike domains for a reviewer to inspect.
+- An optional checklist prompt that walks a reviewer through the signals.
 - An optional log format so a community can keep a neutral history of past
   safety notes for transparency.
 

@@ -690,15 +690,25 @@ def _resolve_named_custom_runtime(
                 requested_norm = "custom"
         except Exception:
             pass
-    if requested_norm == "custom" and explicit_base_url:
-        base_url = explicit_base_url.strip().rstrip("/")
+    if requested_norm == "custom":
+        base_url = (explicit_base_url or "").strip().rstrip("/")
+        if not base_url:
+            # Path C: fallback to model.base_url from config.yaml when
+            # explicit_base_url is not provided (e.g. CLI `hermes chat`).
+            model_cfg = _get_model_config()
+            cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
+            if _config_base_url_trustworthy_for_bare_custom(
+                cfg_base_url, requested_norm
+            ):
+                base_url = cfg_base_url
         # Check credential pool first — mirrors the named-custom-provider path
         # so bare `provider: custom` with a configured custom_providers entry
         # also gets its api_key from the pool instead of env var fallbacks.
-        pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
-        if pool_result:
-            pool_result["source"] = "direct-alias"
-            return pool_result
+        if base_url:
+            pool_result = _try_resolve_from_custom_pool(base_url, "custom", None)
+            if pool_result:
+                pool_result["source"] = "direct-alias"
+                return pool_result
         _da_is_openai_url   = base_url_host_matches(base_url, "openai.com") or base_url_host_matches(base_url, "openai.azure.com")
         _da_is_openrouter   = base_url_host_matches(base_url, "openrouter.ai")
         api_key_candidates = [

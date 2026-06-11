@@ -41,6 +41,8 @@ source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
 node_modules/
+.codegraph/
+repomix-output.*
 browser-use/
 agent-browser/
 # Private keys

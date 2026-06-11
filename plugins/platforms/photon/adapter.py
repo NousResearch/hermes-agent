@@ -1177,14 +1177,18 @@ class PhotonAdapter(BasePlatformAdapter):
         return SendResult(success=True, message_id=data.get("messageId"))
 
     async def _sidecar_call(self, path: str, body: Dict[str, Any]) -> Dict[str, Any]:
+        # Guard: adapter not yet connected (no sidecar address known).
         if self._http_client is None:
             raise RuntimeError("Photon adapter not connected")
-        resp = await self._http_client.post(
-            f"http://{self._sidecar_bind}:{self._sidecar_port}{path}",
-            json=body,
-            headers={"X-Hermes-Sidecar-Token": self._sidecar_token},
-            timeout=30.0,
-        )
+        # Use a fresh client per call so this method is safe when invoked from
+        # a worker thread that owns a different event loop than the one the
+        # persistent _http_client was created on (e.g. via _run_async in
+        # send_message_tool).  The inbound streaming loop continues to use
+        # _http_client directly — it always runs on the gateway's loop.
+        url = f"http://{self._sidecar_bind}:{self._sidecar_port}{path}"
+        headers = {"X-Hermes-Sidecar-Token": self._sidecar_token}
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=body, headers=headers)
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Photon sidecar {path} returned {resp.status_code}: {resp.text[:200]}"

@@ -137,6 +137,10 @@ interface QueueEditState {
 
 const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
 
+// How long the composer waits after the last keystroke before persisting the
+// draft to localStorage. Scope-change/unmount flushes bypass the delay.
+const DRAFT_PERSIST_DEBOUNCE_MS = 400
+
 export function ChatBar({
   busy,
   cwd,
@@ -180,6 +184,7 @@ export function ChatBar({
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
   const skipNextDraftPersistScopeRef = useRef<string | null>(null)
+  const pendingDraftPersistRef = useRef<{ scope: string | null; value: string } | null>(null)
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -1119,8 +1124,34 @@ export function ChatBar({
       return
     }
 
-    writePersistedComposerDraft(draftPersistenceScope, draft)
+    // Debounce the localStorage write: the composer's per-keystroke path was
+    // deliberately slimmed down (see the draftRef sync comment above), so we
+    // don't touch storage on every keypress. The pending ref below is flushed
+    // on scope change / unmount so a fast session switch can't drop the
+    // trailing keystrokes.
+    pendingDraftPersistRef.current = { scope: draftPersistenceScope, value: draft }
+
+    const handle = window.setTimeout(() => {
+      pendingDraftPersistRef.current = null
+      writePersistedComposerDraft(draftPersistenceScope, draft)
+    }, DRAFT_PERSIST_DEBOUNCE_MS)
+
+    return () => window.clearTimeout(handle)
   }, [draft, draftPersistenceScope])
+
+  // Flush any pending debounced draft write when leaving a session scope or
+  // unmounting, so the departing session's latest text is always persisted.
+  useEffect(
+    () => () => {
+      const pending = pendingDraftPersistRef.current
+
+      if (pending) {
+        pendingDraftPersistRef.current = null
+        writePersistedComposerDraft(pending.scope, pending.value)
+      }
+    },
+    [draftPersistenceScope]
+  )
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {

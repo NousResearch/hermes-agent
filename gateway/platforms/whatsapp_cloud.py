@@ -47,6 +47,7 @@ import hmac
 import logging
 import mimetypes
 import os
+import re
 import shutil
 import uuid
 from collections import OrderedDict
@@ -93,6 +94,9 @@ GRAPH_API_BASE = "https://graph.facebook.com"
 # delivery within minutes, not days. 5000 entries with FIFO eviction is
 # plenty for normal traffic and bounds memory.
 WAMID_DEDUP_CACHE_SIZE = 5000
+# Cap for the interactive-button state dicts and the per-chat last-wamid
+# cache. Generous for any realistic number of in-flight prompts / chats.
+INTERACTIVE_STATE_CACHE_SIZE = 1000
 
 # Per-type size caps documented by Meta for the Cloud API /media endpoint.
 # These are the hard limits; we refuse uploads above them with a clean
@@ -211,22 +215,36 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         self._api_version: str = str(extra.get("api_version", DEFAULT_API_VERSION))
 
         # Behavior-mixin contract: these names are read by the mixin's
-        # gating methods. Derived from env / config the same way the
-        # Baileys adapter derives them.
+        # gating methods. WHATSAPP_CLOUD_* env vars take precedence so the
+        # two adapters can run in parallel with independent policies; the
+        # shared WHATSAPP_* names remain as fallback for single-adapter
+        # setups.
         import os
 
         self._reply_prefix: Optional[str] = extra.get("reply_prefix")
         self._dm_policy: str = str(
-            extra.get("dm_policy") or os.getenv("WHATSAPP_DM_POLICY", "open")
+            extra.get("dm_policy")
+            or os.getenv("WHATSAPP_CLOUD_DM_POLICY")
+            or os.getenv("WHATSAPP_DM_POLICY", "open")
         ).strip().lower()
-        self._allow_from: set[str] = self._coerce_allow_list(
-            extra.get("allow_from") or extra.get("allowFrom")
+        self._allow_from: set[str] = self._normalize_allow_ids(
+            self._coerce_allow_list(
+                extra.get("allow_from")
+                or extra.get("allowFrom")
+                or os.getenv("WHATSAPP_CLOUD_ALLOW_FROM")
+            )
         )
         self._group_policy: str = str(
-            extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")
+            extra.get("group_policy")
+            or os.getenv("WHATSAPP_CLOUD_GROUP_POLICY")
+            or os.getenv("WHATSAPP_GROUP_POLICY", "open")
         ).strip().lower()
-        self._group_allow_from: set[str] = self._coerce_allow_list(
-            extra.get("group_allow_from") or extra.get("groupAllowFrom")
+        self._group_allow_from: set[str] = self._normalize_allow_ids(
+            self._coerce_allow_list(
+                extra.get("group_allow_from")
+                or extra.get("groupAllowFrom")
+                or os.getenv("WHATSAPP_CLOUD_GROUP_ALLOW_FROM")
+            )
         )
         self._mention_patterns = self._compile_mention_patterns()
 
@@ -249,21 +267,25 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         # threading an extra kwarg through the gateway's base contract.
         # In-memory only; on gateway restart the next inbound message
         # repopulates it.
-        self._last_inbound_wamid_by_chat: Dict[str, str] = {}
+        self._last_inbound_wamid_by_chat: "OrderedDict[str, str]" = OrderedDict()
 
         # Interactive-button state. Each maps a short id (embedded in the
         # outbound button payload) → the session/correlation key needed
         # by the gateway's resolver. See ``_handle_interactive_reply`` for
-        # the dispatch table.
+        # the dispatch table. Entries are popped when the user taps a
+        # button; ignored prompts would otherwise accumulate forever, so
+        # each dict is FIFO-capped via _bounded_put (oldest pending prompt
+        # evicted first — an evicted button tap degrades to the plain-text
+        # fallback path, same as after a gateway restart).
         #   _clarify_state:        clarify_id → session_key (resolves via
         #                          tools.clarify_gateway.resolve_gateway_clarify)
         #   _exec_approval_state:  approval_id → session_key (resolves via
         #                          tools.approval.resolve_gateway_approval)
         #   _slash_confirm_state:  confirm_id → session_key (resolves via
         #                          tools.slash_confirm.resolve)
-        self._clarify_state: Dict[str, str] = {}
-        self._exec_approval_state: Dict[str, str] = {}
-        self._slash_confirm_state: Dict[str, str] = {}
+        self._clarify_state: "OrderedDict[str, str]" = OrderedDict()
+        self._exec_approval_state: "OrderedDict[str, str]" = OrderedDict()
+        self._slash_confirm_state: "OrderedDict[str, str]" = OrderedDict()
 
         # Runtime
         self._runner = None
@@ -281,6 +303,13 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             path = path[1:]
         return f"{GRAPH_API_BASE}/{self._api_version}/{self._phone_number_id}/{path}"
 
+    @staticmethod
+    def _bounded_put(cache: "OrderedDict[str, str]", key: str, value: str) -> None:
+        """Insert into a FIFO-capped OrderedDict, evicting oldest entries."""
+        cache[key] = value
+        while len(cache) > INTERACTIVE_STATE_CACHE_SIZE:
+            cache.popitem(last=False)
+
     def _effective_reply_prefix(self) -> str:
         """Cloud API has no self-chat concept — never prepend a reply prefix.
 
@@ -290,6 +319,30 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if self._reply_prefix is not None:
             return self._reply_prefix.replace("\\n", "\n")
         return ""
+
+    @staticmethod
+    def _normalize_allow_ids(ids: set[str]) -> set[str]:
+        """Normalize allowlist entries to bare wa_id form.
+
+        The Cloud API identifies users by bare wa_id (digits, no JID
+        suffix), while Baileys uses ``<digits>@s.whatsapp.net`` JIDs.
+        Users sharing an allowlist between both adapters (or pasting a
+        JID/phone number with ``+`` or separators) should still match,
+        so strip any ``@...`` suffix and non-digit characters.
+        """
+        normalized: set[str] = set()
+        for entry in ids:
+            bare = entry.split("@", 1)[0]
+            digits = re.sub(r"\D", "", bare)
+            normalized.add(digits or entry)
+        return normalized
+
+    def _is_dm_allowed(self, sender_id: str) -> bool:
+        """Allowlist check against the normalized bare wa_id."""
+        if self._dm_policy == "allowlist":
+            bare = re.sub(r"\D", "", str(sender_id).split("@", 1)[0])
+            return (bare or sender_id) in self._allow_from
+        return super()._is_dm_allowed(sender_id)
 
     # ------------------------------------------------------------------ lifecycle
     async def connect(self) -> bool:
@@ -687,7 +740,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         result = await self._post_interactive(chat_id, interactive, reply_to=reply_to)
         if result.success:
-            self._clarify_state[clarify_id] = session_key
+            self._bounded_put(self._clarify_state, clarify_id, session_key)
         return result
 
     async def send_exec_approval(
@@ -740,7 +793,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         result = await self._post_interactive(chat_id, interactive, reply_to=reply_to)
         if result.success:
-            self._exec_approval_state[approval_id] = session_key
+            self._bounded_put(self._exec_approval_state, approval_id, session_key)
         return result
 
     async def send_slash_confirm(
@@ -788,7 +841,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         result = await self._post_interactive(chat_id, interactive, reply_to=reply_to)
         if result.success:
-            self._slash_confirm_state[confirm_id] = session_key
+            self._bounded_put(self._slash_confirm_state, confirm_id, session_key)
         return result
 
     @staticmethod
@@ -1061,12 +1114,24 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if is_local_mp3:
             opus_path = await self._convert_to_opus(audio_path)
             if opus_path:
-                source = opus_path
-                mime_type = "audio/ogg; codecs=opus"
-            else:
-                # Will deliver as MP3 attachment, not voice bubble.
-                # Warn-once is logged inside _convert_to_opus.
-                mime_type = "audio/mpeg"
+                try:
+                    result = await self._send_media_from_path_or_link(
+                        chat_id, opus_path, "audio",
+                        caption=caption, reply_to=reply_to,
+                        mime_type="audio/ogg; codecs=opus",
+                    )
+                finally:
+                    # The .ogg is a transient conversion artifact next to
+                    # the source MP3 — clean it up after upload so voice
+                    # sends don't leak a file per message.
+                    try:
+                        os.unlink(opus_path)
+                    except OSError:
+                        pass
+                return result
+            # Will deliver as MP3 attachment, not voice bubble.
+            # Warn-once is logged inside _convert_to_opus.
+            mime_type = "audio/mpeg"
 
         return await self._send_media_from_path_or_link(
             chat_id, source, "audio",
@@ -1158,6 +1223,16 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         minutes; we download immediately and never persist the URL.
         """
         if self._http_client is None:
+            return None, None
+        # Defense in depth: media_id comes from the (signature-verified)
+        # webhook payload, but it's interpolated into both a Graph URL and
+        # a cache filename below — refuse anything that isn't a plain
+        # Meta-style media id so a hostile payload can't traverse paths.
+        media_id = str(media_id).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._-]+", media_id):
+            logger.warning(
+                "[whatsapp_cloud] refusing malformed media id %r", media_id[:64]
+            )
             return None, None
         headers = {"Authorization": f"Bearer {self._access_token}"}
 
@@ -1436,9 +1511,21 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                             wamid,
                         )
                         continue
-                    event = await self._build_message_event_from_cloud(
-                        raw_message, contacts_by_waid, metadata
-                    )
+                    try:
+                        event = await self._build_message_event_from_cloud(
+                            raw_message, contacts_by_waid, metadata
+                        )
+                    except Exception:
+                        # Build errors must not bubble out either: the wamid
+                        # is already dedup-marked above, so a 500 here would
+                        # make Meta retry the batch and every message in it
+                        # (including this one) would be silently dropped as
+                        # a duplicate. Log and move on to the next message.
+                        logger.exception(
+                            "[whatsapp_cloud] failed to build event for wamid %s",
+                            wamid,
+                        )
+                        continue
                     if event is None:
                         continue
                     self._accepted_count += 1
@@ -1855,7 +1942,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # to this message. Done HERE (after _should_process_message
             # gating) so filtered messages don't leak typing on
             # unwanted inbound traffic.
-            self._last_inbound_wamid_by_chat[chat_id] = wamid
+            self._bounded_put(self._last_inbound_wamid_by_chat, chat_id, wamid)
 
         return MessageEvent(
             text=body,

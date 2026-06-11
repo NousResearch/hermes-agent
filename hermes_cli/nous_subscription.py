@@ -226,6 +226,24 @@ def _stt_label(current_provider: str) -> str:
     return mapping.get(current_provider or "local", current_provider or "Local faster-whisper")
 
 
+def _local_stt_backend_available() -> bool:
+    """Whether a local STT backend could serve transcription right now.
+
+    True when faster-whisper is importable or a custom local STT command
+    is configured. Used both for feature detection and to stop
+    ``apply_nous_managed_defaults`` from flipping a working local setup
+    to the managed gateway.
+    """
+    if get_env_value("HERMES_LOCAL_STT_COMMAND"):
+        return True
+    try:
+        from tools.transcription_tools import _HAS_FASTER_WHISPER
+
+        return bool(_HAS_FASTER_WHISPER)
+    except Exception:
+        return False
+
+
 def _resolve_browser_feature_state(
     *,
     browser_tool_enabled: bool,
@@ -772,10 +790,22 @@ def apply_nous_managed_defaults(
     # (requires `pip install faster-whisper`); for Nous subscribers we
     # flip it to "openai" so the managed audio gateway handles transcription
     # via the same auth as TTS. Skipped when the user has explicitly
-    # configured STT or has direct credentials for a non-managed provider.
-    if not features.stt.explicit_configured and not (
-        get_env_value("GROQ_API_KEY")
-        or get_env_value("MISTRAL_API_KEY")
+    # configured STT, has direct credentials for a non-managed provider,
+    # has a working local backend (faster-whisper installed or a custom
+    # local command — strong intent signal that "local" was a choice, not
+    # just the DEFAULT_CONFIG seed), or isn't entitled to the managed
+    # "openai-audio" category (flipping would point at a gateway that
+    # refuses them, silently breaking voice transcription).
+    if (
+        not features.stt.explicit_configured
+        and not _local_stt_backend_available()
+        and not (
+            resolve_openai_audio_api_key()
+            or get_env_value("GROQ_API_KEY")
+            or get_env_value("MISTRAL_API_KEY")
+        )
+        and features.account_info is not None
+        and features.account_info.tool_gateway_entitled_for("openai-audio")
     ):
         stt_cfg["provider"] = "openai"
         changed.add("stt")

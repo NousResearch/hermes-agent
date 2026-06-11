@@ -53,6 +53,7 @@ from typing import Callable, Dict, Any, Optional
 from urllib.parse import urljoin
 
 from hermes_constants import display_hermes_home
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 logger = logging.getLogger(__name__)
 def get_env_value(name, default=None):
@@ -713,6 +714,7 @@ def _terminate_command_tts_process_tree(proc: subprocess.Popen) -> None:
                 stderr=subprocess.DEVNULL,
                 timeout=5,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
         except Exception:
             proc.kill()

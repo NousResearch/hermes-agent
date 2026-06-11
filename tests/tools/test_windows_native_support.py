@@ -1007,3 +1007,95 @@ class TestGatewayDetachedWatcherWindowsFlags:
             "CreateProcess and retry without the breakaway bit, matching "
             "gateway_windows._spawn_detached's fallback pattern."
         )
+
+
+# ---------------------------------------------------------------------------
+# Gateway-runtime subprocess spawns hide their console window (#43848)
+# ---------------------------------------------------------------------------
+
+
+class TestGatewayRuntimeSpawnsHideConsole:
+    """Per-agent-call subprocess spawns must pass CREATE_NO_WINDOW.
+
+    When the gateway runs without a console on Windows (Desktop app,
+    service), every console child it spawns — git/rg context probes,
+    shell hooks, runtime pip installs, taskkill, backend version probes —
+    opens a *visible* conhost window that flickers and steals focus on
+    each agent call (issue #43848).
+
+    Each test simulates Windows by flipping ``IS_WINDOWS`` in
+    ``hermes_cli._subprocess_compat`` (which ``windows_hide_flags()``
+    consults at call time) and asserts the CREATE_NO_WINDOW bit
+    (0x08000000) reaches ``subprocess.run``.
+    """
+
+    CREATE_NO_WINDOW = 0x08000000
+
+    @pytest.fixture(autouse=True)
+    def _simulate_windows(self, monkeypatch):
+        from hermes_cli import _subprocess_compat as sc
+        monkeypatch.setattr(sc, "IS_WINDOWS", True)
+
+    def _capture_run(self, monkeypatch):
+        import subprocess as sp
+        captured = {}
+
+        def fake_run(*args, **kwargs):
+            captured["kwargs"] = kwargs
+            return sp.CompletedProcess(args[0] if args else [], 0, "", "")
+
+        monkeypatch.setattr(sp, "run", fake_run)
+        return captured
+
+    def _assert_hidden(self, captured):
+        kwargs = captured["kwargs"]
+        assert kwargs.get("creationflags", 0) & self.CREATE_NO_WINDOW, (
+            "subprocess.run call is missing CREATE_NO_WINDOW — on a "
+            "console-less Windows gateway this child would open a visible "
+            "conhost window (#43848)."
+        )
+
+    def test_context_references_rg_files(self, monkeypatch, tmp_path):
+        from agent import context_references
+        captured = self._capture_run(monkeypatch)
+        context_references._rg_files(tmp_path / "src", tmp_path, 5)
+        self._assert_hidden(captured)
+
+    def test_skill_inline_shell(self, monkeypatch):
+        from agent import skill_preprocessing
+        captured = self._capture_run(monkeypatch)
+        skill_preprocessing.run_inline_shell("echo hi", None, 5)
+        self._assert_hidden(captured)
+
+    def test_env_probe_run(self, monkeypatch):
+        from tools import env_probe
+        captured = self._capture_run(monkeypatch)
+        env_probe._run(["echo", "hi"])
+        self._assert_hidden(captured)
+
+    def test_gateway_status_taskkill(self, monkeypatch):
+        from gateway import status as gw_status
+        captured = self._capture_run(monkeypatch)
+        monkeypatch.setattr(gw_status, "_IS_WINDOWS", True)
+        gw_status.terminate_pid(987654, force=True)
+        self._assert_hidden(captured)
+
+    def test_tts_process_tree_taskkill(self, monkeypatch):
+        from tools import tts_tool
+        captured = self._capture_run(monkeypatch)
+        monkeypatch.setattr(os, "name", "nt")
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.pid = 987654
+        tts_tool._terminate_command_tts_process_tree(proc)
+        self._assert_hidden(captured)
+
+    def test_transcription_process_tree_taskkill(self, monkeypatch):
+        from tools import transcription_tools
+        captured = self._capture_run(monkeypatch)
+        monkeypatch.setattr(os, "name", "nt")
+        proc = MagicMock()
+        proc.poll.return_value = None
+        proc.pid = 987654
+        transcription_tools._terminate_command_stt_process_tree(proc)
+        self._assert_hidden(captured)

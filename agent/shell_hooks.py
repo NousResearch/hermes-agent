@@ -70,6 +70,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 try:
     import fcntl  # POSIX only; Windows falls back to best-effort without flock.
 except ImportError:  # pragma: no cover
@@ -397,6 +399,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
             timeout=spec.timeout,
             text=True,
             shell=False,
+            creationflags=windows_hide_flags(),
         )
     except subprocess.TimeoutExpired:
         result["timed_out"] = True

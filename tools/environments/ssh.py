@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments.base import BaseEnvironment, _popen_bash
 from tools.environments.file_sync import (
     FileSyncManager,
@@ -107,6 +108,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True,
                 timeout=15,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode != 0:
                 error_msg = result.stderr.strip() or result.stdout.strip()
@@ -125,6 +127,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True,
                 timeout=10,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             home = result.stdout.strip()
             if home and result.returncode == 0:
@@ -152,6 +155,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
 
     # _get_sync_files provided via iter_sync_files in FileSyncManager init
@@ -167,6 +171,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
 
         scp_cmd = ["scp", "-o", f"ControlPath={self.control_socket}"]
@@ -181,6 +186,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True,
             timeout=30,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             raise RuntimeError(f"scp failed: {result.stderr.strip()}")
@@ -210,6 +216,7 @@ class SSHEnvironment(BaseEnvironment):
                 text=True,
                 timeout=30,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode != 0:
                 raise RuntimeError(f"remote mkdir failed: {result.stderr.strip()}")
@@ -255,6 +262,7 @@ class SSHEnvironment(BaseEnvironment):
             tar_proc = subprocess.Popen(
                 tar_cmd,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
@@ -262,6 +270,7 @@ class SSHEnvironment(BaseEnvironment):
                 ssh_proc = subprocess.Popen(
                     ssh_cmd, stdin=tar_proc.stdout, stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
+                    creationflags=windows_hide_flags(),
                 )
             except Exception:
                 tar_proc.kill()
@@ -311,6 +320,7 @@ class SSHEnvironment(BaseEnvironment):
             result = subprocess.run(
                 ssh_cmd,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
                 stdout=f,
                 stderr=subprocess.PIPE,
                 timeout=120,
@@ -328,6 +338,7 @@ class SSHEnvironment(BaseEnvironment):
             text=True,
             timeout=10,
             stdin=subprocess.DEVNULL,
+            creationflags=windows_hide_flags(),
         )
         if result.returncode != 0:
             raise RuntimeError(f"remote rm failed: {result.stderr.strip()}")
@@ -366,6 +377,7 @@ class SSHEnvironment(BaseEnvironment):
                     capture_output=True,
                     timeout=5,
                     stdin=subprocess.DEVNULL,
+                    creationflags=windows_hide_flags(),
                 )
             except (OSError, subprocess.SubprocessError):
                 pass

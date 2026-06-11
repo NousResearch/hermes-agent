@@ -382,7 +382,6 @@ async def test_connect_timeout_cancels_bot_task(monkeypatch):
         "leaving it alive creates a zombie Discord client that produces duplicate threads"
     )
 
-
 @pytest.mark.asyncio
 async def test_disconnect_cancels_running_bot_task(monkeypatch):
     """Regression: disconnect() must cancel _bot_task even when connect() timed out.
@@ -413,6 +412,42 @@ async def test_disconnect_cancels_running_bot_task(monkeypatch):
     assert adapter._bot_task is None, "disconnect() must clear _bot_task"
     assert zombie_task.done(), "disconnect() must have awaited the bot task to completion"
     assert zombie_task.cancelled(), "disconnect() must cancel the zombie bot task"
+
+
+@pytest.mark.asyncio
+async def test_connect_ready_wait_uses_gateway_platform_connect_timeout(monkeypatch):
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="test-token"))
+
+    monkeypatch.setenv("HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT", "90")
+    monkeypatch.setattr("gateway.status.acquire_scoped_lock", lambda scope, identity, metadata=None: (True, None))
+    monkeypatch.setattr("gateway.status.release_scoped_lock", lambda scope, identity: None)
+
+    intents = SimpleNamespace(message_content=False, dm_messages=False, guild_messages=False, members=False, voice_states=False)
+    monkeypatch.setattr(discord_platform.Intents, "default", lambda: intents)
+    monkeypatch.setattr(
+        discord_platform.commands,
+        "Bot",
+        lambda **kwargs: FakeBot(
+            intents=kwargs["intents"],
+            proxy=kwargs.get("proxy"),
+            allowed_mentions=kwargs.get("allowed_mentions"),
+        ),
+    )
+
+    seen_timeouts = []
+
+    async def fake_wait_for_ready(ready_event, bot_task, timeout):
+        seen_timeouts.append(timeout)
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setattr(
+        discord_platform, "_wait_for_ready_or_bot_exit", fake_wait_for_ready
+    )
+
+    ok = await adapter.connect()
+
+    assert ok is False
+    assert seen_timeouts == [90.0]
 
 
 @pytest.mark.asyncio

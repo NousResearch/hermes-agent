@@ -28,11 +28,8 @@ import {
   $composerAttachments,
   clearComposerAttachments,
   clearPersistedComposerDraft,
-  clearStashedComposerAttachments,
   type ComposerAttachment,
   readPersistedComposerDraft,
-  stashComposerAttachments,
-  takeComposerAttachments,
   writePersistedComposerDraft
 } from '@/store/composer'
 import {
@@ -174,7 +171,6 @@ export function ChatBar({
   const scrolledUp = useStore($threadScrolledUp)
   const sessionMessages = useStore($messages)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
-  const draftPersistenceScope = activeQueueSessionKey || null
 
   const queuedPrompts = useMemo(
     () => (activeQueueSessionKey ? (queuedPromptsBySession[activeQueueSessionKey] ?? []) : []),
@@ -186,12 +182,7 @@ export function ChatBar({
   const editorRef = useRef<HTMLDivElement | null>(null)
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
-  // `undefined` = no skip pending. The sentinel must be distinguishable from a
-  // real scope, and `null` IS a real scope (the unsaved-new-session draft):
-  // resetting to null made every persist run in a new chat match the consumed
-  // sentinel and bail, so new-chat drafts were never written at all.
-  const skipNextDraftPersistScopeRef = useRef<string | null | undefined>(undefined)
-  const pendingDraftPersistRef = useRef<{ scope: string | null; value: string } | null>(null)
+  const pendingDraftPersistRef = useRef<string | null>(null)
   const drainingQueueRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
@@ -1118,65 +1109,50 @@ export function ChatBar({
     }
   }
 
-  // Restore a scope's draft (persisted text + in-memory attachments) when we
-  // enter it, and stash the attachments back when we leave. Text rides through
-  // localStorage so it survives reloads; attachments carry live blobs/upload
-  // state that can't serialize, so they're retained in memory only — enough to
-  // survive a session switch, which is the case users actually hit.
+  // The composer deliberately does NOT react to session switches: it sits
+  // above the thread and its contents follow the user. The only restore is a
+  // one-shot on mount so an unsent draft survives an app reload.
   useEffect(() => {
-    const persisted = readPersistedComposerDraft(draftPersistenceScope)
-    const restoredAttachments = takeComposerAttachments(draftPersistenceScope)
-    skipNextDraftPersistScopeRef.current = draftPersistenceScope
-    loadIntoComposer(persisted, restoredAttachments)
+    const persisted = readPersistedComposerDraft()
 
-    return () => {
-      stashComposerAttachments(draftPersistenceScope, $composerAttachments.get())
+    if (persisted && !draftRef.current.trim()) {
+      loadIntoComposer(persisted, $composerAttachments.get())
     }
-  }, [draftPersistenceScope]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (skipNextDraftPersistScopeRef.current === draftPersistenceScope) {
-      skipNextDraftPersistScopeRef.current = undefined
-
-      return
-    }
-
     // Don't persist programmatically-loaded text: browsing sent-message
     // history or editing a queued prompt swaps the composer to recalled text,
     // and persisting that would clobber the genuine in-progress draft (which
-    // history keeps in its own snapshot and restores on the way back). Leaving
-    // the prior pending write untouched keeps the real draft in storage.
+    // history keeps in its own snapshot and restores on the way back).
     if (isBrowsingHistory(sessionId) || queueEdit) {
       return
     }
 
     // Debounce the localStorage write: the composer's per-keystroke path was
     // deliberately slimmed down (see the draftRef sync comment above), so we
-    // don't touch storage on every keypress. The pending ref below is flushed
-    // on scope change / unmount so a fast session switch can't drop the
-    // trailing keystrokes.
-    pendingDraftPersistRef.current = { scope: draftPersistenceScope, value: draft }
+    // don't touch storage on every keypress.
+    pendingDraftPersistRef.current = draft
 
     const handle = window.setTimeout(() => {
       pendingDraftPersistRef.current = null
-      writePersistedComposerDraft(draftPersistenceScope, draft)
+      writePersistedComposerDraft(draft)
     }, DRAFT_PERSIST_DEBOUNCE_MS)
 
     return () => window.clearTimeout(handle)
-  }, [draft, draftPersistenceScope, queueEdit, sessionId])
+  }, [draft, queueEdit, sessionId])
 
-  // Flush any pending debounced draft write when leaving a session scope,
-  // unmounting, or the window unloading, so the latest text is always
-  // persisted. The pagehide listener is load-bearing: React does NOT run
-  // effect cleanups on a page reload, so without it a Cmd+R inside the
-  // debounce window silently dropped everything typed in the last 400ms.
+  // Flush any pending debounced write on unmount or window unload. The
+  // pagehide listener is load-bearing: React does NOT run effect cleanups on
+  // a page reload, so without it a Cmd+R inside the debounce window would
+  // silently drop everything typed in the last 400ms.
   useEffect(() => {
     const flushPendingDraftPersist = () => {
       const pending = pendingDraftPersistRef.current
 
-      if (pending) {
+      if (pending !== null) {
         pendingDraftPersistRef.current = null
-        writePersistedComposerDraft(pending.scope, pending.value)
+        writePersistedComposerDraft(pending)
       }
     }
 
@@ -1186,7 +1162,7 @@ export function ChatBar({
       window.removeEventListener('pagehide', flushPendingDraftPersist)
       flushPendingDraftPersist()
     }
-  }, [draftPersistenceScope])
+  }, [])
 
   const beginQueuedEdit = (entry: QueuedPromptEntry) => {
     if (!activeQueueSessionKey || queueEdit) {
@@ -1444,14 +1420,13 @@ export function ChatBar({
         void Promise.resolve(onSubmit(submitted)).then(accepted => {
           if (accepted === false) {
             loadIntoComposer(submitted, [])
-            writePersistedComposerDraft(draftPersistenceScope, submitted)
+            writePersistedComposerDraft(submitted)
           } else {
-            clearPersistedComposerDraft(draftPersistenceScope)
-            clearStashedComposerAttachments(draftPersistenceScope)
+            clearPersistedComposerDraft()
           }
         }).catch(() => {
           loadIntoComposer(submitted, [])
-          writePersistedComposerDraft(draftPersistenceScope, submitted)
+          writePersistedComposerDraft(submitted)
         })
       } else if (payloadPresent) {
         queueCurrentDraft()
@@ -1473,14 +1448,13 @@ export function ChatBar({
       void Promise.resolve(onSubmit(submitted, { attachments: submittedAttachments })).then(accepted => {
         if (accepted === false) {
           loadIntoComposer(submitted, submittedAttachments)
-          writePersistedComposerDraft(draftPersistenceScope, submitted)
+          writePersistedComposerDraft(submitted)
         } else {
-          clearPersistedComposerDraft(draftPersistenceScope)
-          clearStashedComposerAttachments(draftPersistenceScope)
+          clearPersistedComposerDraft()
         }
       }).catch(() => {
         loadIntoComposer(submitted, submittedAttachments)
-        writePersistedComposerDraft(draftPersistenceScope, submitted)
+        writePersistedComposerDraft(submitted)
       })
     }
 

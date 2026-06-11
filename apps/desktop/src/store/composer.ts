@@ -21,14 +21,10 @@ export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
 
-const COMPOSER_DRAFT_STORAGE_PREFIX = 'hermes:composer-draft:v1:'
-const NEW_SESSION_DRAFT_SCOPE = '__new__'
-
-function storageScope(scope: string | null | undefined): string {
-  const trimmed = scope?.trim()
-
-  return trimmed || NEW_SESSION_DRAFT_SCOPE
-}
+// The composer is a single global surface that sits ABOVE the thread: its
+// contents follow the user across session switches and are never touched by
+// session lifecycle. One storage key makes the draft survive app reloads.
+export const COMPOSER_DRAFT_STORAGE_KEY = 'hermes:composer-draft:v2'
 
 function browserStorage(): Storage | null {
   if (typeof window === 'undefined') {
@@ -42,19 +38,15 @@ function browserStorage(): Storage | null {
   }
 }
 
-export function composerDraftStorageKey(scope: string | null | undefined): string {
-  return `${COMPOSER_DRAFT_STORAGE_PREFIX}${encodeURIComponent(storageScope(scope))}`
-}
-
-export function readPersistedComposerDraft(scope: string | null | undefined): string {
+export function readPersistedComposerDraft(): string {
   try {
-    return browserStorage()?.getItem(composerDraftStorageKey(scope)) ?? ''
+    return browserStorage()?.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? ''
   } catch {
     return ''
   }
 }
 
-export function writePersistedComposerDraft(scope: string | null | undefined, value: string) {
+export function writePersistedComposerDraft(value: string) {
   try {
     const storage = browserStorage()
 
@@ -62,12 +54,10 @@ export function writePersistedComposerDraft(scope: string | null | undefined, va
       return
     }
 
-    const key = composerDraftStorageKey(scope)
-
     if (value.length === 0) {
-      storage.removeItem(key)
+      storage.removeItem(COMPOSER_DRAFT_STORAGE_KEY)
     } else {
-      storage.setItem(key, value)
+      storage.setItem(COMPOSER_DRAFT_STORAGE_KEY, value)
     }
   } catch {
     // Draft persistence is a safety net only; storage quota/private-mode errors
@@ -75,44 +65,12 @@ export function writePersistedComposerDraft(scope: string | null | undefined, va
   }
 }
 
-export function clearPersistedComposerDraft(scope: string | null | undefined) {
+export function clearPersistedComposerDraft() {
   try {
-    browserStorage()?.removeItem(composerDraftStorageKey(scope))
+    browserStorage()?.removeItem(COMPOSER_DRAFT_STORAGE_KEY)
   } catch {
     // Best-effort only.
   }
-}
-
-// Attachments can't ride along in localStorage the way text does — they carry
-// live blobs, object URLs, and in-flight upload state that don't serialize and
-// are tied to the running app. So we retain them per scope in an in-memory map
-// instead: a session switch restores the chips you'd staged, even though they
-// (unlike text) cannot survive a full app reload.
-const composerAttachmentsByScope = new Map<string, ComposerAttachment[]>()
-
-const cloneComposerAttachments = (attachments: ComposerAttachment[]): ComposerAttachment[] =>
-  attachments.map(attachment => ({ ...attachment }))
-
-export function stashComposerAttachments(scope: string | null | undefined, attachments: ComposerAttachment[]) {
-  const key = storageScope(scope)
-
-  if (attachments.length === 0) {
-    composerAttachmentsByScope.delete(key)
-
-    return
-  }
-
-  composerAttachmentsByScope.set(key, cloneComposerAttachments(attachments))
-}
-
-export function takeComposerAttachments(scope: string | null | undefined): ComposerAttachment[] {
-  const stashed = composerAttachmentsByScope.get(storageScope(scope))
-
-  return stashed ? cloneComposerAttachments(stashed) : []
-}
-
-export function clearStashedComposerAttachments(scope: string | null | undefined) {
-  composerAttachmentsByScope.delete(storageScope(scope))
 }
 
 export function setComposerDraft(value: string) {

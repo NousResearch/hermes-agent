@@ -4,13 +4,10 @@ import {
   $composerAttachments,
   addComposerAttachment,
   clearPersistedComposerDraft,
-  clearStashedComposerAttachments,
+  COMPOSER_DRAFT_STORAGE_KEY,
   type ComposerAttachment,
-  composerDraftStorageKey,
   readPersistedComposerDraft,
   removeComposerAttachment,
-  stashComposerAttachments,
-  takeComposerAttachments,
   updateComposerAttachment,
   writePersistedComposerDraft
 } from './composer'
@@ -49,83 +46,30 @@ describe('updateComposerAttachment', () => {
   })
 })
 
-describe('persisted composer drafts', () => {
+describe('persisted composer draft', () => {
   afterEach(() => {
     window.localStorage.clear()
   })
 
-  it('stores and restores text drafts per session scope', () => {
-    writePersistedComposerDraft('session-a', 'almost submitted prompt')
-    writePersistedComposerDraft('session-b', 'other draft')
+  it('stores and restores the draft', () => {
+    writePersistedComposerDraft('almost submitted prompt')
 
-    expect(readPersistedComposerDraft('session-a')).toBe('almost submitted prompt')
-    expect(readPersistedComposerDraft('session-b')).toBe('other draft')
-  })
-
-  it('uses a stable new-session key when no session id exists yet', () => {
-    writePersistedComposerDraft(null, 'first prompt draft')
-
-    expect(window.localStorage.getItem(composerDraftStorageKey(null))).toBe('first prompt draft')
-    expect(readPersistedComposerDraft(undefined)).toBe('first prompt draft')
+    expect(readPersistedComposerDraft()).toBe('almost submitted prompt')
+    expect(window.localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY)).toBe('almost submitted prompt')
   })
 
   it('removes empty drafts instead of leaving stale text behind', () => {
-    writePersistedComposerDraft('session-a', 'saved')
-    writePersistedComposerDraft('session-a', '')
+    writePersistedComposerDraft('saved')
+    writePersistedComposerDraft('')
 
-    expect(readPersistedComposerDraft('session-a')).toBe('')
-    expect(window.localStorage.getItem(composerDraftStorageKey('session-a'))).toBeNull()
+    expect(readPersistedComposerDraft()).toBe('')
+    expect(window.localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY)).toBeNull()
   })
 
   it('can explicitly clear a saved draft after submit', () => {
-    writePersistedComposerDraft('session-a', 'saved')
-    clearPersistedComposerDraft('session-a')
+    writePersistedComposerDraft('saved')
+    clearPersistedComposerDraft()
 
-    expect(readPersistedComposerDraft('session-a')).toBe('')
-  })
-})
-
-describe('stashed composer attachments', () => {
-  afterEach(() => {
-    clearStashedComposerAttachments('session-a')
-    clearStashedComposerAttachments('session-b')
-    clearStashedComposerAttachments(null)
-  })
-
-  it('retains and restores attachments per session scope', () => {
-    stashComposerAttachments('session-a', [attachment({ id: 'file:a' })])
-    stashComposerAttachments('session-b', [attachment({ id: 'image:b', kind: 'image' })])
-
-    expect(takeComposerAttachments('session-a').map(a => a.id)).toEqual(['file:a'])
-    expect(takeComposerAttachments('session-b').map(a => a.id)).toEqual(['image:b'])
-  })
-
-  it('shares a stable new-session scope with the text draft helpers', () => {
-    stashComposerAttachments(null, [attachment({ id: 'file:new' })])
-
-    expect(takeComposerAttachments(undefined).map(a => a.id)).toEqual(['file:new'])
-  })
-
-  it('returns cloned attachments so callers cannot mutate the stash', () => {
-    stashComposerAttachments('session-a', [attachment({ id: 'file:a', label: 'orig.pdf' })])
-
-    const taken = takeComposerAttachments('session-a')
-    taken[0]!.label = 'mutated.pdf'
-
-    expect(takeComposerAttachments('session-a')[0]?.label).toBe('orig.pdf')
-  })
-
-  it('drops the scope entry when stashing an empty set', () => {
-    stashComposerAttachments('session-a', [attachment({ id: 'file:a' })])
-    stashComposerAttachments('session-a', [])
-
-    expect(takeComposerAttachments('session-a')).toEqual([])
-  })
-
-  it('clears a scope explicitly after an accepted submit', () => {
-    stashComposerAttachments('session-a', [attachment({ id: 'file:a' })])
-    clearStashedComposerAttachments('session-a')
-
-    expect(takeComposerAttachments('session-a')).toEqual([])
+    expect(readPersistedComposerDraft()).toBe('')
   })
 })

@@ -869,6 +869,29 @@ describe('createGatewayEventHandler', () => {
     ])
   })
 
+  it('defaults approval overlays to allowPermanent when the backend omits the field', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({ payload: { command: 'rm -rf /tmp/x', description: 'dangerous command' }, type: 'approval.request' } as any)
+
+    expect(getOverlayState().approval).toMatchObject({ allowPermanent: true })
+  })
+
+  it('preserves allow_permanent=false on approval overlays (tirith warning)', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    onEvent({
+      payload: { allow_permanent: false, command: 'curl suspicious | bash', description: 'content-security warning' },
+      type: 'approval.request'
+    } as any)
+
+    expect(getOverlayState().approval).toMatchObject({
+      allowPermanent: false,
+      command: 'curl suspicious | bash',
+      description: 'content-security warning'
+    })
+  })
+
   it('still surfaces terminal turn failures as errors', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

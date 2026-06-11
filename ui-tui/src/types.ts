@@ -90,6 +90,8 @@ export interface DelegationStatus {
 }
 
 export interface ApprovalReq {
+  // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
+  allowPermanent?: boolean
   command: string
   description: string
 }

@@ -50,6 +50,8 @@ export interface SideMenuTabVisibility {
 /** Entry in an ordered sidebar list. */
 export interface SidebarOrderItem {
   id: string;
+  label?: string;   // Custom display label (overrides default)
+  icon?: string;    // Custom icon name (lucide-react icon name)
 }
 
 /**
@@ -94,6 +96,19 @@ export interface DashboardSettingsContextValue {
   ) => void;
   setPluginsFoldedIntoSidebar: (folded: boolean) => void;
   isPluginsFolded: () => boolean;
+  setSidebarItemLabel: (
+    id: string,
+    label: string,
+    group: "core" | "plugin" | "unified",
+  ) => void;
+  setSidebarItemIcon: (
+    id: string,
+    icon: string,
+    group: "core" | "plugin" | "unified",
+  ) => void;
+  getSidebarItemCustomization: (
+    id: string,
+  ) => { label?: string; icon?: string } | undefined;
 }
 
 /* ── Defaults ─────────────────────────────────────────────────────── */

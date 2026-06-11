@@ -167,6 +167,8 @@ export default function DashboardSettingsPage() {
     isSideMenuTabVisible,
     setSidebarOrderAndFold,
     setPluginsFoldedIntoSidebar,
+    setSidebarItemLabel,
+    setSidebarItemIcon,
     settings,
   } = useDashboardSettings();
 
@@ -333,6 +335,36 @@ export default function DashboardSettingsPage() {
     }
   }, []);
 
+  // Build customizations map for all sidebar items
+  const customizationsMap = useMemo(() => {
+    const map = new Map<string, { label?: string; icon?: string }>();
+    const allItems = [
+      ...settings.sidebarItemOrder.coreOrder,
+      ...settings.sidebarItemOrder.pluginOrder,
+      ...settings.sidebarItemOrder.unifiedOrder,
+    ];
+    for (const item of allItems) {
+      if (item.label || item.icon) {
+        map.set(item.id, { label: item.label, icon: item.icon });
+      }
+    }
+    return map;
+  }, [settings.sidebarItemOrder]);
+
+  const handleLabelChange = useCallback(
+    (id: string, label: string, group: "core" | "plugin" | "unified") => {
+      setSidebarItemLabel(id, label, group);
+    },
+    [setSidebarItemLabel],
+  );
+
+  const handleIconChange = useCallback(
+    (id: string, icon: string, group: "core" | "plugin" | "unified") => {
+      setSidebarItemIcon(id, icon, group);
+    },
+    [setSidebarItemIcon],
+  );
+
   return (
     <div className="mx-auto grid max-w-5xl grid-cols-1 gap-6 p-4 md:grid-cols-2">
       <SettingsSection
@@ -406,6 +438,9 @@ export default function DashboardSettingsPage() {
             mainItemsLabel={t.dashboardSettings.sidebarOrder?.mainItems ?? "Main Items"}
             pluginItemsLabel={t.dashboardSettings.sidebarOrder?.pluginItems ?? "Plugin Items"}
             unifiedItemsLabel={t.dashboardSettings.sidebarOrder?.unifiedItems ?? "All Items"}
+            customizations={customizationsMap}
+            onLabelChange={handleLabelChange}
+            onIconChange={handleIconChange}
           />
         </SettingsSection>
       </div>

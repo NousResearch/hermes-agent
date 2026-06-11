@@ -180,6 +180,72 @@ export function DashboardSettingsProvider({
     [settings.sidebarItemOrder.pluginsFoldedIntoSidebar],
   );
 
+  const setSidebarItemLabel = useCallback(
+    (id: string, label: string, group: "core" | "plugin" | "unified") => {
+      setSettings((prev) => {
+        const key =
+          group === "core"
+            ? "coreOrder"
+            : group === "plugin"
+              ? "pluginOrder"
+              : "unifiedOrder";
+        const prevOrder = prev.sidebarItemOrder[key].map((item) =>
+          item.id === id ? { ...item, label: label || undefined } : item,
+        );
+        const next = {
+          ...prev,
+          sidebarItemOrder: {
+            ...prev.sidebarItemOrder,
+            [key]: prevOrder,
+          },
+        };
+        saveSettings(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const setSidebarItemIcon = useCallback(
+    (id: string, icon: string, group: "core" | "plugin" | "unified") => {
+      setSettings((prev) => {
+        const key =
+          group === "core"
+            ? "coreOrder"
+            : group === "plugin"
+              ? "pluginOrder"
+              : "unifiedOrder";
+        const prevOrder = prev.sidebarItemOrder[key].map((item) =>
+          item.id === id ? { ...item, icon: icon || undefined } : item,
+        );
+        const next = {
+          ...prev,
+          sidebarItemOrder: {
+            ...prev.sidebarItemOrder,
+            [key]: prevOrder,
+          },
+        };
+        saveSettings(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  const getSidebarItemCustomization = useCallback(
+    (id: string): { label?: string; icon?: string } | undefined => {
+      const { coreOrder, pluginOrder, unifiedOrder } =
+        settings.sidebarItemOrder;
+      const allItems = [...coreOrder, ...pluginOrder, ...unifiedOrder];
+      const item = allItems.find((i) => i.id === id);
+      if (item && (item.label || item.icon)) {
+        return { label: item.label, icon: item.icon };
+      }
+      return undefined;
+    },
+    [settings.sidebarItemOrder],
+  );
+
   const value = useMemo(
     () => ({
       settings,
@@ -192,6 +258,9 @@ export function DashboardSettingsProvider({
       setSidebarOrderAndFold,
       setPluginsFoldedIntoSidebar,
       isPluginsFolded,
+      setSidebarItemLabel,
+      setSidebarItemIcon,
+      getSidebarItemCustomization,
     }),
     [
       settings,
@@ -204,6 +273,9 @@ export function DashboardSettingsProvider({
       setSidebarOrderAndFold,
       setPluginsFoldedIntoSidebar,
       isPluginsFolded,
+      setSidebarItemLabel,
+      setSidebarItemIcon,
+      getSidebarItemCustomization,
     ],
   );
 

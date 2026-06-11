@@ -11,8 +11,11 @@ from gateway.runtime_footer import (
     _home_relative_cwd,
     _model_short,
     build_footer_line,
+    build_identity_prefix,
     format_runtime_footer,
+    format_runtime_identity_prefix,
     resolve_footer_config,
+    resolve_identity_prefix_config,
 )
 
 
@@ -147,6 +150,42 @@ def test_format_footer_unknown_field_silently_ignored():
     assert out == "gpt-5.4 · 50%"
 
 
+def test_format_identity_prefix_provider_and_model():
+    out = format_runtime_identity_prefix(
+        provider="openai-codex",
+        model="gpt-5.5",
+        fields=("provider", "model"),
+    )
+    assert out == "(openai-codex/gpt-5.5) "
+
+
+def test_format_identity_prefix_custom_separator_and_order():
+    out = format_runtime_identity_prefix(
+        provider="local-claude",
+        model="claude-opus-4-8",
+        fields=("model", "provider"),
+        separator=" via ",
+    )
+    assert out == "(claude-opus-4-8 via local-claude) "
+
+
+def test_format_identity_prefix_sanitizes_newlines():
+    out = format_runtime_identity_prefix(
+        provider="openai-codex\nextra",
+        model="gpt-5.5",
+    )
+    assert out == "(openai-codex extra/gpt-5.5) "
+
+
+def test_format_identity_prefix_empty_when_fields_missing():
+    out = format_runtime_identity_prefix(
+        provider="",
+        model=None,
+        fields=("provider", "model", "bogus"),
+    )
+    assert out == ""
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------
@@ -202,6 +241,39 @@ def test_resolve_ignores_malformed_config():
     assert cfg["enabled"] is False
 
 
+def test_resolve_identity_prefix_defaults_off_empty_config():
+    cfg = resolve_identity_prefix_config({}, "telegram")
+    assert cfg == {
+        "enabled": False,
+        "fields": ["provider", "model"],
+        "separator": "/",
+    }
+
+
+def test_resolve_identity_prefix_platform_override_wins():
+    user = {
+        "display": {
+            "runtime_identity_prefix": {"enabled": True, "fields": ["provider"]},
+            "platforms": {
+                "slack": {
+                    "runtime_identity_prefix": {
+                        "fields": ["provider", "model"],
+                        "separator": " | ",
+                    },
+                },
+            },
+        },
+    }
+    tg = resolve_identity_prefix_config(user, "telegram")
+    assert tg["enabled"] is True
+    assert tg["fields"] == ["provider"]
+    assert tg["separator"] == "/"
+    slack = resolve_identity_prefix_config(user, "slack")
+    assert slack["enabled"] is True
+    assert slack["fields"] == ["provider", "model"]
+    assert slack["separator"] == " | "
+
+
 # ---------------------------------------------------------------------------
 # build_footer_line — top-level entry point used by gateway/run.py
 # ---------------------------------------------------------------------------
@@ -246,6 +318,44 @@ def test_build_footer_per_platform_off_suppresses():
         cwd="/tmp",
     )
     assert out == ""
+
+
+def test_build_identity_prefix_empty_when_disabled():
+    out = build_identity_prefix(
+        user_config={},
+        platform_key="slack",
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    assert out == ""
+
+
+def test_build_identity_prefix_returns_rendered_when_enabled():
+    out = build_identity_prefix(
+        user_config={"display": {"runtime_identity_prefix": {"enabled": True}}},
+        platform_key="slack",
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    assert out == "(openai-codex/gpt-5.5) "
+
+
+def test_build_identity_prefix_per_platform_override():
+    user = {
+        "display": {
+            "runtime_identity_prefix": {"enabled": True, "fields": ["provider", "model"]},
+            "platforms": {
+                "slack": {"runtime_identity_prefix": {"fields": ["provider"]}},
+            },
+        },
+    }
+    out = build_identity_prefix(
+        user_config=user,
+        platform_key="slack",
+        provider="openai-codex",
+        model="gpt-5.5",
+    )
+    assert out == "(openai-codex) "
 
 
 def test_build_footer_no_data_returns_empty_even_when_enabled():

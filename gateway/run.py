@@ -8597,26 +8597,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
-            # Runtime-metadata footer — only on the FINAL message of the turn.
-            # Off by default (display.runtime_footer.enabled=false).  When
-            # streaming already delivered the body, we can't mutate the sent
-            # text, so we fire a separate trailing send below.
+            # Runtime identity prefix + metadata footer — only on the FINAL
+            # message of the turn. Both are off by default. When streaming
+            # already delivered the body, we can't mutate the sent text, so the
+            # footer is handled as a trailing send below and the prefix is skipped.
             _footer_line = ""
+            _identity_prefix = ""
             try:
-                from gateway.runtime_footer import build_footer_line as _bfl
+                from gateway.runtime_footer import (
+                    build_footer_line as _bfl,
+                    build_identity_prefix as _bip,
+                )
+                _runtime_cfg = _load_gateway_config()
+                _platform_key = _platform_config_key(source.platform)
+                _identity_prefix = _bip(
+                    user_config=_runtime_cfg,
+                    platform_key=_platform_key,
+                    provider=agent_result.get("provider"),
+                    model=agent_result.get("model"),
+                )
                 _footer_line = _bfl(
-                    user_config=_load_gateway_config(),
-                    platform_key=_platform_config_key(source.platform),
+                    user_config=_runtime_cfg,
+                    platform_key=_platform_key,
                     model=agent_result.get("model"),
                     context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
                     context_length=agent_result.get("context_length") or None,
                     cwd=os.environ.get("TERMINAL_CWD", ""),
                 )
-            except Exception as _footer_err:
-                logger.debug("runtime_footer build failed: %s", _footer_err)
+            except Exception as _runtime_meta_err:
+                logger.debug("runtime metadata build failed: %s", _runtime_meta_err)
                 _footer_line = ""
-            if _footer_line and response and not agent_result.get("already_sent"):
-                response = f"{response}\n\n{_footer_line}"
+                _identity_prefix = ""
+            if response and not agent_result.get("already_sent"):
+                if _identity_prefix and not response.startswith(_identity_prefix):
+                    response = f"{_identity_prefix}{response}"
+                if _footer_line:
+                    response = f"{response}\n\n{_footer_line}"
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {

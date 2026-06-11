@@ -1,8 +1,12 @@
-"""Gateway runtime-metadata footer.
+"""Gateway runtime-metadata footer and identity prefix.
 
 Renders a compact footer showing runtime state (model, context %, cwd) and
 appends it to the FINAL message of an agent turn when enabled.  Off by default
 to keep replies minimal.
+
+The optional runtime identity prefix prepends the active provider/model route
+to the FINAL message, e.g. ``(openai-codex/gpt-5.5) Done``.  It is also off by
+default and shares the same global + per-platform config shape as the footer.
 
 Config (``~/.hermes/config.yaml``)::
 
@@ -10,10 +14,15 @@ Config (``~/.hermes/config.yaml``)::
       runtime_footer:
         enabled: true                       # off by default
         fields: [model, context_pct, cwd]   # order shown; drop any to hide
+      runtime_identity_prefix:
+        enabled: true                       # off by default
+        fields: [provider, model]           # renders (provider/model)
+        separator: "/"
 
-Per-platform overrides live under ``display.platforms.<platform>.runtime_footer``.
-Users can toggle the global setting with ``/footer on|off`` from both the CLI
-and any gateway platform.
+Per-platform overrides live under ``display.platforms.<platform_key>.runtime_footer``
+and ``display.platforms.<platform_key>.runtime_identity_prefix``. Users can
+toggle the global footer setting with ``/footer on|off`` from both the CLI and
+any gateway platform.
 
 The footer is appended to the final response text in ``gateway/run.py`` right
 before returning the response to the adapter send path — so it only lands on
@@ -29,7 +38,9 @@ import os
 from typing import Any, Iterable, Optional
 
 _DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_DEFAULT_PREFIX_FIELDS: tuple[str, ...] = ("provider", "model")
 _SEP = " · "
+_PREFIX_SEP = "/"
 
 
 def _home_relative_cwd(cwd: str) -> str:
@@ -51,6 +62,13 @@ def _model_short(model: Optional[str]) -> str:
     if not model:
         return ""
     return model.rsplit("/", 1)[-1]
+
+
+def _identity_part(value: Optional[str]) -> str:
+    """Return a single-line provider/model identifier safe for inline display."""
+    if not value:
+        return ""
+    return " ".join(str(value).strip().split())
 
 
 def resolve_footer_config(
@@ -84,6 +102,46 @@ def resolve_footer_config(
                     resolved["enabled"] = bool(plat_footer.get("enabled"))
                 if isinstance(plat_footer.get("fields"), list) and plat_footer["fields"]:
                     resolved["fields"] = [str(f) for f in plat_footer["fields"]]
+
+    return resolved
+
+
+def resolve_identity_prefix_config(
+    user_config: dict[str, Any] | None,
+    platform_key: str | None = None,
+) -> dict[str, Any]:
+    """Resolve effective runtime identity-prefix config for *platform_key*.
+
+    Merge order mirrors :func:`resolve_footer_config`:
+        1. Built-in defaults (enabled=False)
+        2. ``display.runtime_identity_prefix``
+        3. ``display.platforms.<platform_key>.runtime_identity_prefix``
+    """
+    resolved = {
+        "enabled": False,
+        "fields": list(_DEFAULT_PREFIX_FIELDS),
+        "separator": _PREFIX_SEP,
+    }
+    cfg = (user_config or {}).get("display") or {}
+
+    def _apply(prefix_cfg: Any) -> None:
+        if not isinstance(prefix_cfg, dict):
+            return
+        if "enabled" in prefix_cfg:
+            resolved["enabled"] = bool(prefix_cfg.get("enabled"))
+        if isinstance(prefix_cfg.get("fields"), list) and prefix_cfg["fields"]:
+            resolved["fields"] = [str(f) for f in prefix_cfg["fields"]]
+        if "separator" in prefix_cfg:
+            sep = str(prefix_cfg.get("separator") or "")
+            resolved["separator"] = sep if sep else _PREFIX_SEP
+
+    _apply(cfg.get("runtime_identity_prefix"))
+
+    if platform_key:
+        platforms = cfg.get("platforms") or {}
+        plat_cfg = platforms.get(platform_key)
+        if isinstance(plat_cfg, dict):
+            _apply(plat_cfg.get("runtime_identity_prefix"))
 
     return resolved
 
@@ -122,6 +180,32 @@ def format_runtime_footer(
     return _SEP.join(parts)
 
 
+def format_runtime_identity_prefix(
+    *,
+    provider: Optional[str],
+    model: Optional[str],
+    fields: Iterable[str] = _DEFAULT_PREFIX_FIELDS,
+    separator: str = _PREFIX_SEP,
+) -> str:
+    """Render an inline identity prefix, or return "" if no fields have data."""
+    parts: list[str] = []
+    for field in fields:
+        if field == "provider":
+            part = _identity_part(provider)
+            if part:
+                parts.append(part)
+        elif field == "model":
+            part = _identity_part(model)
+            if part:
+                parts.append(part)
+        # Unknown field names are silently ignored.
+
+    if not parts:
+        return ""
+    sep = separator if separator else _PREFIX_SEP
+    return f"({sep.join(parts)}) "
+
+
 def build_footer_line(
     *,
     user_config: dict[str, Any] | None,
@@ -146,4 +230,23 @@ def build_footer_line(
         context_length=context_length,
         cwd=cwd,
         fields=cfg.get("fields") or _DEFAULT_FIELDS,
+    )
+
+
+def build_identity_prefix(
+    *,
+    user_config: dict[str, Any] | None,
+    platform_key: str | None,
+    provider: Optional[str],
+    model: Optional[str],
+) -> str:
+    """Top-level identity-prefix entry point used by gateway/run.py."""
+    cfg = resolve_identity_prefix_config(user_config, platform_key)
+    if not cfg.get("enabled"):
+        return ""
+    return format_runtime_identity_prefix(
+        provider=provider,
+        model=model,
+        fields=cfg.get("fields") or _DEFAULT_PREFIX_FIELDS,
+        separator=str(cfg.get("separator") or _PREFIX_SEP),
     )

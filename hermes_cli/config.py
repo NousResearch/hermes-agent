@@ -1484,6 +1484,15 @@ DEFAULT_CONFIG = {
             "enabled": False,
             "fields": ["model", "context_pct", "cwd"],  # Order shown; drop any to hide
         },
+        # Gateway runtime identity prefix prepended to the FINAL message of a
+        # turn (disabled by default). When enabled, renders e.g.
+        # `(openai-codex/gpt-5.5) response text`. Per-platform overrides go
+        # under display.platforms.<platform>.runtime_identity_prefix.
+        "runtime_identity_prefix": {
+            "enabled": False,
+            "fields": ["provider", "model"],
+            "separator": "/",
+        },
         "copy_shortcut": "auto",  # "auto" (platform default) | "ctrl_c" | "ctrl_shift_c" | "disabled"
     },
 

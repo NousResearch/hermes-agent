@@ -113,9 +113,9 @@ class TestUpstageReasoning:
         _, top_level = upstage_profile.build_api_kwargs_extras(model=model)
         assert top_level == {"reasoning_effort": "medium"}
 
-    @pytest.mark.parametrize("model", ["solar-mini", "syn-pro"])
-    def test_no_config_non_pro_still_omits(self, upstage_profile, model):
-        # Default-on must not leak to non-reasoning models.
+    @pytest.mark.parametrize("model", ["solar-mini", "solar-mini-202610", "syn-pro"])
+    def test_no_config_deny_listed_still_omits(self, upstage_profile, model):
+        # Default-on must not leak to the deny-listed non-reasoning models.
         _, top_level = upstage_profile.build_api_kwargs_extras(model=model)
         assert top_level == {}
 
@@ -137,14 +137,35 @@ class TestUpstageReasoning:
         )
         assert top_level == {"reasoning_effort": "high"}
 
-    @pytest.mark.parametrize("model", ["solar-mini", "syn-pro"])
-    def test_non_pro_models_never_send_reasoning(self, upstage_profile, model):
-        # solar-mini / syn-pro ignore reasoning_effort, so never send it.
+    @pytest.mark.parametrize("model", ["solar-mini", "solar-mini-202610", "syn-pro"])
+    def test_deny_listed_models_never_send_reasoning(self, upstage_profile, model):
+        # solar-mini / syn-pro ignore reasoning_effort, so never send it —
+        # even when the user explicitly enables reasoning.
         extra_body, top_level = upstage_profile.build_api_kwargs_extras(
             reasoning_config={"enabled": True, "effort": "high"}, model=model
         )
         assert extra_body == {}
         assert top_level == {}
+
+    @pytest.mark.parametrize("model", ["solar-future", "solar-future-260601"])
+    def test_unknown_future_models_default_to_reasoning(self, upstage_profile, model):
+        # Deny-list semantics: a future Solar model we've never heard of is
+        # assumed reasoning-capable, so reasoning_effort is sent instead of
+        # being silently dropped (the old allow-list failure mode).
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "high"}, model=model
+        )
+        assert top_level == {"reasoning_effort": "high"}
+
+        # And the unset-config default-on path applies to it too.
+        _, top_level = upstage_profile.build_api_kwargs_extras(model=model)
+        assert top_level == {"reasoning_effort": "medium"}
+
+    def test_none_model_defaults_to_reasoning(self, upstage_profile):
+        # No model in context → treated as reasoning-capable, consistent with
+        # the provider default (fallback_models[0] == "solar-pro").
+        _, top_level = upstage_profile.build_api_kwargs_extras(model=None)
+        assert top_level == {"reasoning_effort": "medium"}
 
 
 def upstage_profile_singleton():

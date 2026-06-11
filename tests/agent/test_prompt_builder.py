@@ -264,6 +264,26 @@ class TestBuildSkillsSystemPrompt:
         assert "python-debug" in result
         assert "Debug Python scripts" in result
         assert "available_skills" in result
+        assert "skill_view(name)" in result
+
+    def test_omits_category_descriptions_from_index(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        category_dir = tmp_path / "skills" / "coding"
+        category_dir.mkdir(parents=True)
+        (category_dir / "DESCRIPTION.md").write_text(
+            "---\ndescription: Long category prose that duplicates the skill list\n---\n"
+        )
+        skill_dir = category_dir / "python-debug"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            "---\nname: python-debug\ndescription: Debug Python scripts\n---\n"
+        )
+
+        result = build_skills_system_prompt()
+
+        assert "  coding:" in result
+        assert "Long category prose" not in result
+        assert "python-debug: Debug Python scripts" in result
 
     def test_deduplicates_skills(self, monkeypatch, tmp_path):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

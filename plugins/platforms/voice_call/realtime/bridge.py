@@ -207,6 +207,10 @@ class RealtimeCallBridge:
         # would collide with the active response, so they flush on
         # response_done instead.
         self._deferred_tool_results: list = []
+        # While an agent_consult routes through the gateway, the agent's
+        # reply arrives via adapter.send() → runtime.speak_for_chat() →
+        # deliver_agent_text(); this future hands it back to the consult.
+        self._consult_future: Optional[asyncio.Future] = None
 
     async def run(self, ws) -> None:
         self._ws = ws
@@ -307,13 +311,22 @@ class RealtimeCallBridge:
             elif event.type == "transcript":
                 self._record_transcript(event.role, event.text)
             elif event.type == "tool_call":
+                logger.info(
+                    "voice_call realtime: tool call %s id=%s call=%s args=%.200s",
+                    event.tool_name, event.tool_call_id,
+                    self.record.call_id, event.tool_args,
+                )
                 asyncio.get_running_loop().create_task(
                     self._handle_tool_call(event)
                 )
             elif event.type == "response_done":
                 await self._flush_deferred_tool_results()
             elif event.type == "error":
-                logger.warning("voice_call realtime: model error: %s", event.text)
+                # A cancel racing a just-finished response is benign noise.
+                if "no active response" in (event.text or "").lower():
+                    logger.debug("voice_call realtime: %s", event.text)
+                else:
+                    logger.warning("voice_call realtime: model error: %s", event.text)
             elif event.type == "closed":
                 return
 
@@ -359,7 +372,8 @@ class RealtimeCallBridge:
 
     async def _handle_tool_call(self, event) -> None:
         question = str(event.tool_args.get("question", "")).strip()
-        # Consults take seconds (full agent model) — speak a filler so the
+        started_at = time.time()
+        # Consults take seconds (full agent run) — speak a filler so the
         # caller isn't sitting in silence wondering if the call dropped
         # (silence provokes "hello?", which used to barge-in the answer).
         phrase = self.runtime.config.responder.thinking_phrase
@@ -369,16 +383,44 @@ class RealtimeCallBridge:
             except Exception:  # noqa: BLE001
                 logger.debug("voice_call realtime: filler inject failed",
                              exc_info=True)
+        timeout = max(15.0, float(self.runtime.config.responder.response_timeout_s))
         try:
             answer = await asyncio.wait_for(
-                self._consult_agent(question), timeout=CONSULT_TIMEOUT_S
+                self._consult_agent(question), timeout=timeout
             )
+            status = "ok"
         except asyncio.TimeoutError:
             answer = "Sorry, looking that up took too long."
+            status = "timeout"
         except Exception as e:  # noqa: BLE001
             logger.exception("voice_call realtime: agent_consult failed")
             answer = f"Sorry, I could not check that: {e}"
+            status = "error"
+        logger.info(
+            "voice_call realtime: consult completed call=%s status=%s "
+            "elapsed=%.1fs answer_chars=%d",
+            self.record.call_id, status, time.time() - started_at, len(answer),
+        )
         await self._deliver_tool_result(event.tool_call_id, answer)
+
+    async def deliver_agent_text(self, text: str) -> bool:
+        """Agent output routed to a realtime call (via adapter.send()).
+
+        A pending consult consumes it as the tool result; otherwise the
+        realtime model is asked to speak it (e.g. cron/agent-initiated
+        messages while a realtime call is live — carrier TTS would talk
+        over the media stream)."""
+        fut = self._consult_future
+        if fut is not None and not fut.done():
+            fut.set_result(text)
+            return True
+        try:
+            await self.session.inject_text(text)
+            return True
+        except Exception:  # noqa: BLE001
+            logger.warning("voice_call realtime: inject of agent text failed",
+                           exc_info=True)
+            return False
 
     async def _deliver_tool_result(self, tool_call_id: str, answer: str) -> None:
         """Send now, or defer until the in-flight utterance (filler) ends —
@@ -410,6 +452,39 @@ class RealtimeCallBridge:
     async def _consult_agent(self, question: str) -> str:
         if not question:
             return "No question was provided."
+        # Preferred: route through the gateway as a normal message so the
+        # full Hermes agent answers — with its real tools (web search,
+        # weather, memory, ...) and the same per-phone session as
+        # turn-based calls. This mirrors OpenClaw, whose consult runs the
+        # embedded agent with the tool catalog rather than a bare LLM.
+        if self.runtime.adapter is not None:
+            logger.info(
+                "voice_call realtime: consulting gateway agent call=%s "
+                "question=%.200s", self.record.call_id, question,
+            )
+            return await self._consult_via_gateway(question)
+        # Headless fallback: tool-less host completion (can only answer
+        # from model knowledge).
+        logger.info(
+            "voice_call realtime: consulting plugin LLM (no gateway adapter) "
+            "call=%s question=%.200s", self.record.call_id, question,
+        )
+        return await self._consult_via_completion(question)
+
+    async def _consult_via_gateway(self, question: str) -> str:
+        from ..responder import dispatch_transcript
+
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._consult_future = fut
+        try:
+            await dispatch_transcript(self.runtime, self.record, question)
+            answer = (await fut).strip()
+            return answer[:CONSULT_MAX_CHARS] or "I could not find an answer."
+        finally:
+            if self._consult_future is fut:
+                self._consult_future = None
+
+    async def _consult_via_completion(self, question: str) -> str:
         llm = _plugin_llm_factory() if _plugin_llm_factory is not None else None
         if llm is None:
             return "The agent is not available right now."

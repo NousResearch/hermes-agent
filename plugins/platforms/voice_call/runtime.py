@@ -262,6 +262,19 @@ class VoiceCallRuntime:
         spoken = strip_for_speech(content)
         if not spoken:
             return False, "nothing speakable in message"
+        # Realtime calls: the model owns the audio. Agent output goes to the
+        # bridge (pending consults consume it as the tool result; anything
+        # else is spoken by the realtime voice) — carrier TTS would talk
+        # over the media stream.
+        bridge = (
+            self.bridge_manager.active_bridges.get(record.call_id)
+            if self.bridge_manager is not None
+            else None
+        )
+        if bridge is not None:
+            if await bridge.deliver_agent_text(spoken):
+                return True, record.call_id
+            return False, "realtime bridge could not deliver the message"
         try:
             await self.manager.speak(record.call_id, spoken)
         except Exception as e:  # noqa: BLE001 — surface as failed SendResult

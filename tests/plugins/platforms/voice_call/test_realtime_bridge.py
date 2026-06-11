@@ -135,6 +135,7 @@ class _FakeRuntime:
         self.public_url = "https://hooks.example"
         self.provider = None
         self.manager = manager
+        self.adapter = None  # consults fall back to the plugin LLM path
 
 
 @pytest.fixture
@@ -347,6 +348,75 @@ async def test_bridge_consult_tool_roundtrip(fake_runtime, monkeypatch):
     ]
     # The caller heard a filler while the consult ran.
     assert fake_runtime.config.responder.thinking_phrase in session.injected_text
+
+
+@pytest.mark.asyncio
+async def test_consult_routes_through_gateway_agent(fake_runtime):
+    """With a gateway adapter attached, consults become normal gateway
+    messages (full agent with tools); the reply comes back through
+    deliver_agent_text as the tool result — the openclaw-equivalent path."""
+    ws = FakeCarrierWs([])
+    session = FakeSession()
+    record = _record()
+    bridge = _bridge(fake_runtime, record, session)
+    seen_events = []
+
+    class FakeAdapter:
+        def build_source(self, **kwargs):
+            return kwargs
+
+        async def handle_message(self, event):
+            seen_events.append(event)
+            # Simulate gateway agent turn → adapter.send → speak_for_chat
+            # → bridge.deliver_agent_text with the tool-using answer.
+            asyncio.get_running_loop().create_task(
+                bridge.deliver_agent_text("It is 14 degrees and raining in Dublin.")
+            )
+
+    fake_runtime.adapter = FakeAdapter()
+    run = asyncio.create_task(bridge.run(ws))
+    await asyncio.sleep(0.02)
+    session.push(RealtimeEvent(
+        type="tool_call", tool_call_id="call-w", tool_name="agent_consult",
+        tool_args={"question": "what's the weather in Dublin?"},
+    ))
+    await asyncio.sleep(0.15)
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
+
+    assert seen_events and seen_events[0].text == "what's the weather in Dublin?"
+    assert session.tool_results == [
+        ("call-w", "It is 14 degrees and raining in Dublin.")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_speak_for_chat_routes_to_bridge_for_realtime_calls(
+    tmp_path, make_config
+):
+    """Agent replies to a realtime-bridged call go to the bridge (consult
+    result or model speech), never carrier TTS over the media stream."""
+    cfg = make_config()
+    cfg.serve.port = 0
+    cfg.realtime.enabled = True
+    runtime = await runtime_mod.ensure_runtime(cfg, store_dir=tmp_path)
+    try:
+        record = await runtime.manager.initiate_call("+15555550001")
+        delivered = []
+
+        class FakeBridge:
+            async def deliver_agent_text(self, text):
+                delivered.append(text)
+                return True
+
+        runtime.bridge_manager.active_bridges[record.call_id] = FakeBridge()
+        ok, call_id = await runtime.speak_for_chat("+15555550001", "agent says hi")
+        assert ok and call_id == record.call_id
+        assert delivered == ["agent says hi"]
+        # Carrier TTS was bypassed entirely.
+        assert runtime.provider.spoken == []
+    finally:
+        await runtime_mod.stop_runtime()
 
 
 @pytest.mark.asyncio

@@ -192,6 +192,57 @@ pub fn satisfied_tool_stage_skip_result_from_env(
     )
 }
 
+/// Return a Rust-side skip result when the required Python runtime exists.
+pub fn python_stage_skip_result(
+    stage: &StageInfo,
+    hermes_home: &Path,
+) -> Option<crate::events::StageResultPayload> {
+    python_stage_skip_result_with_probe(stage, || python_runtime_available(hermes_home))
+}
+
+fn python_stage_skip_result_with_probe<F>(
+    stage: &StageInfo,
+    python_runtime_available: F,
+) -> Option<crate::events::StageResultPayload>
+where
+    F: FnOnce() -> bool,
+{
+    if !stage.name.eq_ignore_ascii_case("python") {
+        return None;
+    }
+    if !python_runtime_available() {
+        return None;
+    }
+    Some(crate::events::StageResultPayload {
+        stage: stage.name.clone(),
+        ok: true,
+        skipped: true,
+        reason: Some("required Python runtime already available".to_string()),
+        data: None,
+    })
+}
+
+fn python_runtime_available(hermes_home: &Path) -> bool {
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let uv = managed_tool_path(hermes_home, "uv");
+    let uv = if uv.is_file() {
+        uv
+    } else {
+        match find_executable_on_path("uv", path_env, &pathext) {
+            Some(path) => path,
+            None => return false,
+        }
+    };
+    Command::new(uv)
+        .args(["python", "find", "3.11"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
+}
+
 /// Return a Rust-side skip result for Windows node-deps when npm is absent.
 pub fn windows_node_deps_skip_result<P>(
     stage: &StageInfo,
@@ -1241,6 +1292,24 @@ mod tests {
         assert!(windows_node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD").is_none());
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_stage_skip_result_uses_probe_without_affecting_other_stages() {
+        let python = stage_info("python", "Verifying Python 3.11", "prereqs", false);
+        let uv = stage_info("uv", "Installing uv package manager", "prereqs", false);
+
+        let skipped = python_stage_skip_result_with_probe(&python, || true).unwrap();
+
+        assert_eq!(skipped.stage, "python");
+        assert_eq!(skipped.ok, true);
+        assert_eq!(skipped.skipped, true);
+        assert_eq!(
+            skipped.reason.as_deref(),
+            Some("required Python runtime already available")
+        );
+        assert!(python_stage_skip_result_with_probe(&python, || false).is_none());
+        assert!(python_stage_skip_result_with_probe(&uv, || true).is_none());
     }
 
     #[test]

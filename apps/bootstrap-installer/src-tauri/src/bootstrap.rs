@@ -548,6 +548,20 @@ async fn run_bootstrap(
             continue;
         }
 
+        if let Some(frame) = crate::orchestrator::python_stage_skip_result(stage, &hermes_home) {
+            emit_event(
+                &app,
+                BootstrapEvent::Stage {
+                    name: stage.name.clone(),
+                    state: StageState::Skipped,
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                    result: Some(frame),
+                    error: None,
+                },
+            );
+            continue;
+        }
+
         if let Some(frame) = crate::orchestrator::platform_sdks_skip_result(stage, &hermes_home) {
             emit_event(
                 &app,

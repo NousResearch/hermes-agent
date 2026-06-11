@@ -54,6 +54,7 @@ SCHEMA_VERSION = 15
 _WAL_INCOMPAT_MARKERS = (
     "locking protocol",       # SQLITE_PROTOCOL on NFS/SMB
     "not authorized",         # Some FUSE mounts block WAL pragma outright
+    "disk i/o error",         # Filesystems/containers can surface WAL setup this way
 )
 
 # Last SessionDB() init error, per-process.  Surfaced in /resume and

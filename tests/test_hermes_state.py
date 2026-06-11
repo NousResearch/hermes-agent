@@ -3756,32 +3756,27 @@ class TestApplyWalProbe:
         # Despite probe failure, set-pragma must still run and succeed.
         assert result == "wal"
 
-    def test_no_downgrade_from_wal_to_delete_on_eio(self, tmp_path):
-        """OperationalError NOT in _WAL_INCOMPAT_MARKERS must propagate, not downgrade."""
+    def test_disk_io_error_falls_back_to_delete(self, tmp_path):
+        """disk I/O errors during WAL setup are treated as WAL-incompat errors."""
         import sqlite3
-        import pytest
         from hermes_state import apply_wal_with_fallback
 
         class _EIOConn(sqlite3.Connection):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-                self._first = True
-
             def execute(self, sql, params=()):
-                # Let the probe succeed (returns "delete" for fresh DB).
+                # Let the probe succeed (returns "delete" for fresh DB), then
+                # raise the real-world error shape while trying to enable WAL.
                 if "journal_mode=WAL" in sql:
-                    raise sqlite3.OperationalError("some unexpected hardware failure")
+                    raise sqlite3.OperationalError("disk I/O error")
                 return super().execute(sql, params)
 
         db_path = tmp_path / "eio.db"
         conn = _EIOConn(str(db_path))
         try:
-            with pytest.raises(
-                sqlite3.OperationalError, match="some unexpected hardware failure"
-            ):
-                apply_wal_with_fallback(conn)
+            result = apply_wal_with_fallback(conn)
         finally:
             conn.close()
+
+        assert result == "delete"
 
     def test_returns_wal_not_delete_from_probe(self, tmp_path):
         """Early-return only on 'wal'; 'delete' or 'memory' must fall through to set-pragma."""

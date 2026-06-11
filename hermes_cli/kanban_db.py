@@ -1419,8 +1419,9 @@ def connect(
 ) -> sqlite3.Connection:
     """Open (and initialize if needed) the kanban DB.
 
-    WAL mode is enabled on every connection; it's a no-op after the first
-    time but keeps the code robust if the DB file is ever re-created.
+    DELETE journal mode is selected on every connection so kanban.db avoids
+    WAL sidecar files on filesystems where shared-memory coordination is
+    unreliable.
 
     The first connection to a given path auto-runs :func:`init_db` so
     fresh installs and test harnesses that construct `connect()`
@@ -1453,18 +1454,17 @@ def connect(
         try:
             conn.row_factory = sqlite3.Row
             with _INIT_LOCK:
-                # WAL activation can take an exclusive lock while SQLite creates the
-                # sidecar files for a fresh database. Keep it in the same process-local
-                # critical section as schema initialization so concurrent gateway
-                # startup threads do not race before _INITIALIZED_PATHS is populated.
-                # WAL doesn't work on network filesystems (NFS/SMB/FUSE). Shared helper
-                # falls back to DELETE with one WARNING so kanban stays usable there.
-                # See hermes_state._WAL_INCOMPAT_MARKERS for detection logic.
-                from hermes_state import apply_wal_with_fallback
-                apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
-                # FULL (was NORMAL): fsync before each checkpoint to narrow the
-                # crash window that can leave a b-tree page header torn.
+                # Keep journal-mode selection in the same process-local critical
+                # section as schema initialization so concurrent gateway startup
+                # threads do not race before _INITIALIZED_PATHS is populated.
+                # kanban.db deliberately uses DELETE mode to avoid WAL sidecar
+                # corruption on filesystems where shared-memory coordination is
+                # unreliable.
+                conn.execute("PRAGMA journal_mode=DELETE")
+                # FULL keeps rollback-journal commits durable in DELETE mode.
                 conn.execute("PRAGMA synchronous=FULL")
+                # Harmless no-op while DELETE mode is active; retained so this
+                # connection stays bounded if a caller ever switches to WAL.
                 conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 # Zero freed pages so a later torn write cannot expose stale

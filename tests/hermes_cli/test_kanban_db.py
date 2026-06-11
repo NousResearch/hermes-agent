@@ -2638,26 +2638,11 @@ def test_latest_summaries_batch_omits_tasks_without_summary(kanban_home):
 
 
 # ---------------------------------------------------------------------------
-# NFS / network-filesystem fallback (see hermes_state.apply_wal_with_fallback)
+# kanban.db journal mode
 # ---------------------------------------------------------------------------
 
-def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch, caplog):
-    """kanban_db.connect() must handle ``locking protocol`` on NFS/SMB.
-
-    Without this fallback, the gateway's kanban dispatcher crashes every
-    60s and the kanban migration (``consecutive_failures`` ADD COLUMN) is
-    retried forever — which is what the real-world user report shows
-    (see hermes-agent issue #22032).
-
-    NOTE: We do NOT use the ``kanban_home`` fixture here because that
-    fixture pre-initializes the DB via ``kb.init_db()`` — putting the
-    file in WAL on disk. The Bug D safety guard now refuses to downgrade
-    to DELETE when the on-disk header is already WAL, so testing the
-    NFS-fallback path requires a truly-fresh DB file (NFS scenario in
-    production: first connection of the first process ever to touch the
-    file, where downgrading is safe because nobody else has WAL state
-    yet).
-    """
+def test_connect_uses_delete_journal_mode_without_wal_fallback(tmp_path, monkeypatch, caplog):
+    """kanban_db.connect() selects DELETE directly and never attempts WAL."""
     import sqlite3 as _sqlite3
     from unittest.mock import patch as _patch
 
@@ -2666,40 +2651,51 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
 
-    # Clear module cache so a fresh connect() is attempted
+    # Clear module cache so a fresh connect() is attempted.
     kb._INITIALIZED_PATHS.clear()
 
     real_connect = _sqlite3.connect
+    traced_connections = []
 
     class _WalBlockingConnection(_sqlite3.Connection):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.executed = []
+            traced_connections.append(self)
+
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            self.executed.append(sql)
             if "journal_mode=wal" in sql.lower().replace(" ", ""):
                 raise _sqlite3.OperationalError("locking protocol")
             return super().execute(sql, *args, **kwargs)
 
     def wal_blocking_connect(*args, **kwargs):
-        return real_connect(
-            *args, factory=_WalBlockingConnection, **kwargs
-        )
+        return real_connect(*args, factory=_WalBlockingConnection, **kwargs)
 
     with _patch("hermes_cli.kanban_db.sqlite3.connect", side_effect=wal_blocking_connect):
         with caplog.at_level("WARNING", logger="hermes_state"):
             conn = kb.connect()
 
-    # One fallback warning, naming kanban.db
-    warnings = [
-        r for r in caplog.records
-        if r.levelname == "WARNING" and "kanban.db" in r.getMessage()
-    ]
-    assert len(warnings) >= 1, (
-        f"Expected a kanban.db WARNING, got: {[r.getMessage() for r in caplog.records]}"
-    )
+    try:
+        warnings = [
+            r for r in caplog.records
+            if r.levelname == "WARNING" and "kanban.db" in r.getMessage()
+        ]
+        assert warnings == []
+        assert traced_connections
+        executed = traced_connections[-1].executed
+        assert any("journal_mode=DELETE" in sql for sql in executed)
+        assert not any("journal_mode=WAL" in sql for sql in executed)
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
+        assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2  # FULL
+        assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 100
 
-    # DB still usable end-to-end — create + list a task
-    t = kb.create_task(conn, title="post-fallback task")
-    tasks = kb.list_tasks(conn)
-    assert any(row.id == t for row in tasks)
-    conn.close()
+        # DB still usable end-to-end — create + list a task.
+        t = kb.create_task(conn, title="delete-mode task")
+        tasks = kb.list_tasks(conn)
+        assert any(row.id == t for row in tasks)
+    finally:
+        conn.close()
 
 
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):

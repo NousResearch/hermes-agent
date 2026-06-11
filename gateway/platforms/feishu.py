@@ -4680,10 +4680,9 @@ class FeishuAdapter(BasePlatformAdapter):
                         )
                     self._bot_name = bot_name
                     logger.info("[Feishu] Bot identity hydrated: bot_name=%r open_id=%r", bot_name, open_id[:8] if open_id else "")
-        except Exception:
-            logger.debug(
-                "[Feishu] /bot/v3/info probe failed during hydration",
-                exc_info=True,
+        except Exception as exc:
+            logger.warning(
+                "[Feishu] /bot/v3/info probe failed during hydration: %s", exc,
             )
 
         # Fallback probe for _bot_name only: application info endpoint. Needs

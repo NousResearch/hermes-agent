@@ -15,6 +15,7 @@ from hermes_cli.plugins import (
     PluginContext,
     PluginManager,
     PluginManifest,
+    call_plugin_command_handler,
     get_plugin_command_handler,
     get_plugin_commands,
     get_pre_tool_call_block_message,
@@ -1587,6 +1588,71 @@ class TestPluginCommandResultResolution:
 
         with pytest.raises(TimeoutError):
             resolve_plugin_command_result(_slow_handler())
+
+
+# ── TestCallPluginCommandHandler ──────────────────────────────────────────
+
+
+class TestCallPluginCommandHandler:
+    """Tests for call_plugin_command_handler() — session context pass-through."""
+
+    def test_legacy_handler_called_with_args_only(self):
+        def handler(raw_args):
+            return f"legacy:{raw_args}"
+
+        result = call_plugin_command_handler(
+            handler, "hello", session_id="sess-1", session_key="sess-1"
+        )
+        assert result == "legacy:hello"
+
+    def test_declared_kwargs_receive_session_context(self):
+        seen = {}
+
+        def handler(raw_args, *, session_id="", session_key=""):
+            seen.update(session_id=session_id, session_key=session_key)
+            return raw_args
+
+        call_plugin_command_handler(handler, "x", session_id="s-1", session_key="s-1")
+        assert seen == {"session_id": "s-1", "session_key": "s-1"}
+
+    def test_var_keyword_handler_receives_session_context(self):
+        seen = {}
+
+        def handler(raw_args, **kwargs):
+            seen.update(kwargs)
+            return raw_args
+
+        call_plugin_command_handler(handler, "x", session_id="s-2", session_key="s-2")
+        assert seen == {"session_id": "s-2", "session_key": "s-2"}
+
+    def test_empty_context_values_are_not_passed(self):
+        """No session ⇒ handler defaults apply instead of explicit empty strings."""
+        seen = {}
+
+        def handler(raw_args, **kwargs):
+            seen.update(kwargs)
+            return raw_args
+
+        call_plugin_command_handler(handler, "x")
+        assert seen == {}
+
+    def test_uninspectable_handler_falls_back_to_args_only(self, monkeypatch):
+        def handler(raw_args):
+            return f"bare:{raw_args}"
+
+        def _raise(_):
+            raise ValueError("no signature")
+
+        monkeypatch.setattr("hermes_cli.plugins.inspect.signature", _raise)
+        result = call_plugin_command_handler(handler, "x", session_id="s-3")
+        assert result == "bare:x"
+
+    def test_async_handler_result_resolves(self):
+        async def handler(raw_args, *, session_key=""):
+            return f"{raw_args}:{session_key}"
+
+        result = call_plugin_command_handler(handler, "x", session_key="s-4")
+        assert resolve_plugin_command_result(result) == "x:s-4"
 
 
 # ── TestPluginDispatchTool ────────────────────────────────────────────────

@@ -74,3 +74,7 @@ optional_env:
     description: "Human label for the home channel"
     prompt: "Home channel display name"
     password: false
+  - name: PHOTON_TELEMETRY
+    description: "Enable Spectrum SDK telemetry in the sidecar (true/false, default false; toggle with `hermes photon telemetry on|off`)"
+    prompt: "Enable Spectrum telemetry? (true/false)"
+    password: false

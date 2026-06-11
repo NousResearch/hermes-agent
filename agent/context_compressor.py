@@ -1881,7 +1881,18 @@ This compaction should PRIORITISE preserving all information related to the focu
                             f"[SKILL_PRUNED: content lost in compression; "
                             f"reload with skill_view(name='{sn}')"
                         )
+                    # Dedup note: across multiple compactions, the same skill
+                    # may appear as [SKILL_PRUNED] in head/tail/summary.
+                    # One reload is enough — the skill stays in context.
                     summary += "\n## Pruned Skills\n" + "\n".join(_ps)
+                    summary += (
+                        "\n\n**Note:** The same skill may appear as [SKILL_PRUNED] "
+                        "multiple times across this summary and the protected "
+                        "messages above/below (successive compactions). "
+                        "Reloading a skill **once** is sufficient — it remains "
+                        "in context for the rest of the session. Do not reload "
+                        "the same skill multiple times."
+                    )
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0

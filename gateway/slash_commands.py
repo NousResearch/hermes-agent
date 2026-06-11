@@ -97,6 +97,15 @@ class GatewaySlashCommandsMixin:
         _qe = getattr(self, "_queued_events", None)
         if _qe is not None:
             _qe.pop(session_key, None)
+        # Drop the SQLite-backed crash-recovery rows too — they're keyed by
+        # session_key, not by conversation, but the *next* /new for this
+        # session should start from a clean slate.  Best-effort, never raises.
+        _clear_persisted = getattr(self, "_clear_persisted_queue", None)
+        if callable(_clear_persisted):
+            try:
+                _clear_persisted(session_key)
+            except Exception as _exc:
+                logger.debug("queue persistence clear on /new failed: %s", _exc)
 
         try:
             from tools.env_passthrough import clear_env_passthrough
@@ -448,6 +457,21 @@ class GatewaySlashCommandsMixin:
         ])
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
+            # Follow-up 2 (and Quick-Win 1): show a numbered preview of what's
+            # queued so the user can see "what's pending" without needing to
+            # type /queue.  Capped to 5 lines so a huge queue doesn't blow up
+            # the status output.
+            _inventory = getattr(self, "_queue_inventory", None)
+            if callable(_inventory):
+                try:
+                    _items = _inventory(session_key, adapter=adapter, max_preview=50)
+                    if _items:
+                        for _item in _items[:5]:
+                            lines.append(_item)
+                        if len(_items) > 5:
+                            lines.append(f"  …and {len(_items) - 5} more")
+                except Exception as _exc:
+                    logger.debug("queue inventory in /status failed: %s", _exc)
         if source.platform == Platform.MATRIX:
             adapter = self.adapters.get(Platform.MATRIX)
             scope = getattr(adapter, "_matrix_session_scope", os.getenv("MATRIX_SESSION_SCOPE", "auto"))
@@ -501,6 +525,108 @@ class GatewaySlashCommandsMixin:
             and current.platform == Platform.MATRIX
             and origin.chat_id == current.chat_id
         )
+
+    async def _handle_queue_command(self, event: MessageEvent) -> str:
+        """Handle /queue command.
+
+        Quick-Wins 1-4 from PR #44177, ported to main:
+
+        - ``/queue`` (no args) -> show numbered preview of all pending items
+        - ``/queue drop [N]`` -> drop the last (or last N) queued items
+        - ``/queue clear`` -> wipe the entire queue for this session
+        - ``/queue <text>`` -> append ``<text>`` to the queue, useful when the
+          agent is busy and you want to make sure the next-turn message gets
+          processed in FIFO order even if more messages arrive in between.
+
+        Returns a user-facing string in all cases.  Never raises.
+        """
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        adapter = self.adapters.get(source.platform) if source else None
+
+        # Parse subcommand.  event.get_command_args() returns the string after
+        # the /queue keyword (with leading whitespace trimmed).  We split on
+        # the FIRST token for the subcommand to allow drop-with-arg syntax.
+        raw_args = (event.get_command_args() or "").strip()
+        subcommand, _, rest = raw_args.partition(" ")
+
+        inventory_fn = getattr(self, "_queue_inventory_message", None)
+        drop_fn = getattr(self, "_queue_drop_command", None)
+        clear_fn = getattr(self, "_queue_clear_command", None)
+        enqueue_fn = getattr(self, "_enqueue_fifo", None)
+
+        # --- /queue (no args) — inventory preview ---------------------
+        if not subcommand:
+            if callable(inventory_fn):
+                return inventory_fn(session_key, adapter)
+            return "Queue is empty. Use `/queue <text>` to add one."
+
+        # --- /queue drop [N] -------------------------------------------
+        if subcommand.lower() == "drop":
+            if not callable(drop_fn):
+                return "Drop not supported in this build."
+            count = 1
+            if rest.strip():
+                try:
+                    count = int(rest.strip().split()[0])
+                except ValueError:
+                    return f"Invalid drop count: {rest.strip()!r} — expected a number."
+            return drop_fn(session_key, adapter, count=count)
+
+        # --- /queue clear ----------------------------------------------
+        if subcommand.lower() == "clear":
+            if not callable(clear_fn):
+                return "Clear not supported in this build."
+            return clear_fn(session_key, adapter)
+
+        # --- /queue <text> — explicit enqueue --------------------------
+        # Capacity check first so the user gets a clear error before we
+        # touch any state.
+        cap_fn = getattr(self, "_check_queue_capacity", None)
+        if callable(cap_fn):
+            _err = cap_fn(session_key, adapter=adapter)
+            if _err:
+                return _err
+        if not callable(enqueue_fn) or adapter is None:
+            return "Queueing is not available in this build."
+
+        # Build a minimal MessageEvent-shaped object.  We use a SimpleNamespace
+        # so the FIFO path can read .text and .source without us instantiating
+        # the full Pydantic event class (the FIFO path only reads those two).
+        from types import SimpleNamespace
+
+        text = raw_args  # the full text, not just the first token
+        if not text:
+            return "Use `/queue <text>` to add a message to the queue."
+        queued_event = SimpleNamespace(
+            text=text,
+            source=source,
+            message_id=None,
+            channel_prompt=None,
+            message_type=None,
+        )
+        # Stamp the queued_at for TTL tracking; FIFO does this too but
+        # doing it here means the timestamp is set before the depth check
+        # in case the FIFO path is short-circuited.
+        try:
+            queued_event._queued_at = time.time()  # type: ignore[attr-defined]
+        except (AttributeError, TypeError):
+            pass
+        enqueue_fn(session_key, queued_event, adapter)
+        # Follow-up 1 — amortized TTL sweep.
+        ttl_fn = getattr(self, "_maybe_run_ttl_check", None)
+        if callable(ttl_fn):
+            try:
+                ttl_fn(session_key, adapter=adapter)
+            except Exception as _exc:
+                logger.debug("queue TTL check after explicit enqueue failed: %s", _exc)
+        depth = self._queue_depth(session_key, adapter=adapter)
+        soft = ""
+        soft_fn = getattr(self, "_queue_soft_warning", None)
+        if callable(soft_fn):
+            soft = soft_fn(session_key, adapter=adapter)
+        preview = text[:50] + ("..." if len(text) > 50 else "")
+        return f"📥 Queued ({depth}): '{preview}'{soft}"
 
     async def _handle_agents_command(self, event: MessageEvent) -> str:
         """Handle /agents command - list active agents and running tasks."""
@@ -597,17 +723,47 @@ class GatewaySlashCommandsMixin:
         """Handle /stop command - interrupt a running agent.
 
         When an agent is truly hung (blocked thread that never checks
-        _interrupt_requested), the early intercept in _handle_message()
+        _interrupt_requested), the early intercept in _handle_message()/
         handles /stop before this method is reached.  This handler fires
         only through normal command dispatch (no running agent) or as a
         fallback.  Force-clean the session lock in all cases for safety.
 
         The session is preserved so the user can continue the conversation.
+
+        Follow-up 3: every return message in this handler is augmented
+        with a queue-position line so the user knows whether their queued
+        follow-ups will run after the stop and where in line the next one
+        is.  Best-effort — never raises.
         """
         from gateway.run import _AGENT_PENDING_SENTINEL, _INTERRUPT_REASON_STOP
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+
+        def _queue_position_line() -> str:
+            """Follow-up 3 helper: append a queue-position note to the ack."""
+            try:
+                adapter = self.adapters.get(source.platform) if source else None
+                depth = self._queue_depth(session_key, adapter=adapter)
+            except Exception:
+                return ""
+            if depth <= 0:
+                return ""
+            tail_preview_fn = getattr(self, "_queue_inventory", None)
+            tail_text = ""
+            if callable(tail_preview_fn):
+                try:
+                    items = tail_preview_fn(session_key, adapter=adapter, max_preview=40)
+                    if items:
+                        # Strip the leading "  N. " from the inventory helper.
+                        tail_text = items[-1].lstrip()
+                        # The format from _queue_inventory is "  N. <text>" — strip the index.
+                        if tail_text[:1].isdigit():
+                            tail_text = tail_text.split(". ", 1)[-1]
+                except Exception:
+                    tail_text = ""
+            suffix = f" · next: '{tail_text}'" if tail_text else ""
+            return f" ({depth} queued, next will run after this turn{suffix})"
 
         agent = self._running_agents.get(session_key)
         if agent is _AGENT_PENDING_SENTINEL:
@@ -619,7 +775,7 @@ class GatewaySlashCommandsMixin:
                 invalidation_reason="stop_command_pending",
             )
             logger.info("STOP (pending) for session %s — sentinel cleared", session_key)
-            return EphemeralReply(t("gateway.stop.stopped_pending"))
+            return EphemeralReply(t("gateway.stop.stopped_pending") + _queue_position_line())
         if agent:
             # Force-clean the session lock so a truly hung agent doesn't
             # keep it locked forever.
@@ -629,7 +785,7 @@ class GatewaySlashCommandsMixin:
                 interrupt_reason=_INTERRUPT_REASON_STOP,
                 invalidation_reason="stop_command_handler",
             )
-            return EphemeralReply(t("gateway.stop.stopped"))
+            return EphemeralReply(t("gateway.stop.stopped") + _queue_position_line())
 
         # No run under the caller's own session key.  In a per-user thread
         # (thread_sessions_per_user=True) each participant is isolated even
@@ -652,9 +808,9 @@ class GatewaySlashCommandsMixin:
                 len(sibling_keys),
                 ", ".join(sibling_keys),
             )
-            return EphemeralReply(t("gateway.stop.stopped"))
+            return EphemeralReply(t("gateway.stop.stopped") + _queue_position_line())
 
-        return t("gateway.stop.no_active")
+        return t("gateway.stop.no_active") + _queue_position_line()
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
         """Handle ``/platform list|pause|resume [name]`` — surface and
@@ -2534,6 +2690,21 @@ class GatewaySlashCommandsMixin:
             lines.append(summary["token_line"])
             if summary["note"]:
                 lines.append(summary["note"])
+            # Follow-up 2: surface the queue so the user knows what's pending
+            # and won't be carried into the compressed context.  Best-effort,
+            # never raises — if persistence/inventory isn't available, we
+            # just skip the note.
+            _queue_summary_fn = getattr(self, "get_queue_for_compact", None)
+            if callable(_queue_summary_fn):
+                try:
+                    _adapter = self.adapters.get(source.platform) if source else None
+                    _queue_summary = _queue_summary_fn(session_key, adapter=_adapter)
+                    if _queue_summary:
+                        # Indent so it visually associates with the headline.
+                        for _qline in _queue_summary.splitlines():
+                            lines.append("  " + _qline)
+                except Exception as _qexc:
+                    logger.debug("queue summary in /compress failed: %s", _qexc)
             if _summary_aborted:
                 lines.append(
                     t(

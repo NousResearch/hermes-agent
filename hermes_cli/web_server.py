@@ -1638,6 +1638,49 @@ async def get_status():
     }
 
 
+_WINDOWS_11_MIN_BUILD = 22000
+
+
+def _windows_build_number(version: str, platform_label: str) -> Optional[int]:
+    """Extract the Windows NT build number from stdlib platform strings."""
+    for value in (version or "", platform_label or ""):
+        match = re.search(r"(?:^|[^\d])10\.0\.(\d{5,})(?:[^\d]|$)", value)
+        if not match:
+            continue
+        try:
+            return int(match.group(1))
+        except ValueError:
+            continue
+    return None
+
+
+def _display_system_platform(
+    *,
+    system: str,
+    release: str,
+    version: str,
+    platform_label: str,
+) -> Dict[str, str]:
+    """Return host OS fields for display while preserving stdlib detail."""
+    if system == "Windows" and release == "10":
+        build = _windows_build_number(version, platform_label)
+        if build is not None and build >= _WINDOWS_11_MIN_BUILD:
+            platform_label = re.sub(
+                r"^Windows-10(?=-)",
+                "Windows-11",
+                platform_label,
+                count=1,
+            )
+            release = "11"
+
+    return {
+        "os": system,
+        "os_release": release,
+        "os_version": version,
+        "platform": platform_label,
+    }
+
+
 @app.get("/api/system/stats")
 async def get_system_stats():
     """Host + process system stats for the System page.
@@ -1649,10 +1692,12 @@ async def get_system_stats():
     import platform as _platform
 
     info: Dict[str, Any] = {
-        "os": _platform.system(),
-        "os_release": _platform.release(),
-        "os_version": _platform.version(),
-        "platform": _platform.platform(),
+        **_display_system_platform(
+            system=_platform.system(),
+            release=_platform.release(),
+            version=_platform.version(),
+            platform_label=_platform.platform(),
+        ),
         "arch": _platform.machine(),
         "hostname": _platform.node(),
         "python_version": _platform.python_version(),

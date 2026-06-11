@@ -240,7 +240,40 @@ def test_repo_manager_reuses_existing_worktree_for_retry(tmp_path):
     assert worktree.branch_name == "monica/MOB-123-checkout-crash"
     assert worktree.path == existing
     assert not any(cmd[:4] == ["git", "-C", str(tmp_path / "repos" / "mobile-app"), "worktree"] for cmd in commands)
-    assert commands[-1] == ["git", "-C", str(existing), "branch", "--show-current"]
+    assert commands[-2:] == [
+        ["git", "-C", str(existing), "branch", "--show-current"],
+        ["git", "-C", str(existing), "status", "--porcelain"],
+    ]
+
+
+def test_repo_manager_rejects_dirty_existing_worktree_for_retry(tmp_path):
+    commands: list[list[str]] = []
+    (tmp_path / "repos" / "mobile-app").mkdir(parents=True)
+    existing = tmp_path / "worktrees" / "monica-MOB-123-checkout-crash"
+    existing.mkdir(parents=True)
+    (existing / ".git").write_text("gitdir: /tmp/fake-worktree-git-dir")
+
+    def run(cmd: list[str], cwd: Path | None = None) -> str:
+        commands.append(cmd)
+        if cmd == ["git", "-C", str(existing), "branch", "--show-current"]:
+            return "monica/MOB-123-checkout-crash\n"
+        if cmd == ["git", "-C", str(existing), "status", "--porcelain"]:
+            return " M android/app/build.gradle\n"
+        return ""
+
+    manager = RepoManager(
+        config=RepoConfig(url="git@github.com:acme/mobile-app.git", local_name="mobile-app"),
+        workspace_root=tmp_path,
+        run_command=run,
+    )
+
+    with pytest.raises(RepoManagerError, match="worktree has uncommitted changes"):
+        manager.prepare_worktree(linear_identifier="MOB-123", summary="Checkout crash")
+
+    assert commands[-2:] == [
+        ["git", "-C", str(existing), "branch", "--show-current"],
+        ["git", "-C", str(existing), "status", "--porcelain"],
+    ]
 
 
 def test_repo_manager_rejects_existing_worktree_on_unexpected_branch(tmp_path):

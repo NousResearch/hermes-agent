@@ -245,6 +245,48 @@ def test_retry_failed_approved_run_resumes_from_approval_gate(tmp_path, capsys, 
     assert f"Retried Monica run {run.id}" in capsys.readouterr().out
 
 
+def test_retry_proof_blocked_run_resumes_from_approval_gate(tmp_path, capsys, monkeypatch):
+    state = MonicaState.open(tmp_path / "state.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C123",
+        thread_ts="T1",
+        message_ts="T1",
+        user_id="U1",
+        request_text="@monica checkout crash",
+    )
+    state.update_run(
+        run.id,
+        status="proof_blocked",
+        failure_reason="proof_unavailable: simulator not configured",
+        branch_name="monica/MOB-123-checkout-crash",
+        approved_by_user_id="U_APPROVER",
+    )
+    launched: list[str] = []
+
+    def fake_loop(run_id: str, *, state: MonicaState) -> None:
+        relaunched = state.get_run(run_id)
+        assert relaunched is not None
+        assert relaunched.status == "approved"
+        assert relaunched.failure_reason == ""
+        assert relaunched.branch_name == ""
+        assert relaunched.pr_url == ""
+        launched.append(run_id)
+
+    monkeypatch.setattr(cli, "_run_loop", fake_loop)
+
+    exit_code = run_retry_command(state=state, run_id=run.id)
+
+    updated = state.get_run(run.id)
+    assert updated is not None
+    assert exit_code == 0
+    assert updated.status == "approved"
+    assert updated.failure_reason == ""
+    assert updated.approved_by_user_id == "U_APPROVER"
+    assert launched == [run.id]
+    assert f"Retried Monica run {run.id}" in capsys.readouterr().out
+
+
 def test_retry_json_success_outputs_updated_run(tmp_path, capsys, monkeypatch):
     state = MonicaState.open(tmp_path / "state.sqlite")
     run = state.create_run(

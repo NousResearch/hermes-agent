@@ -89,6 +89,7 @@ def test_config_loads_nested_values():
                 "commands": ["npm run proof:ios"],
                 "ios_simulator_udid": "SIM-UDID",
                 "android_serial": "emulator-5554",
+                "android_avd": "MonicaPixel",
                 "timeout_minutes": 8,
             },
         }
@@ -122,6 +123,7 @@ def test_config_loads_nested_values():
     assert cfg.proof.commands == ("npm run proof:ios",)
     assert cfg.proof.ios_simulator_udid == "SIM-UDID"
     assert cfg.proof.android_serial == "emulator-5554"
+    assert cfg.proof.android_avd == "MonicaPixel"
     assert cfg.proof.timeout_minutes == 8
 
 

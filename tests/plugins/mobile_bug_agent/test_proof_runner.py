@@ -49,12 +49,29 @@ def test_proof_runner_passes_when_command_creates_artifact(tmp_path):
     calls = []
 
     def run(command, cwd, timeout, env):
-        calls.append((command, cwd, timeout, env["MONICA_PROOF_DIR"]))
+        calls.append(
+            (
+                command,
+                cwd,
+                timeout,
+                env["MONICA_PROOF_DIR"],
+                env["MONICA_ANDROID_SERIAL"],
+                env["MONICA_ANDROID_AVD"],
+            )
+        )
         proof_path = tmp_path / "monica-runtime" / "proof" / "run-123" / "screenshot.png"
         proof_path.write_text("image bytes", encoding="utf-8")
         return 0, "captured", ""
 
-    runner = ProofRunner(config=_config(tmp_path, timeout_minutes=3), run_command=run)
+    runner = ProofRunner(
+        config=_config(
+            tmp_path,
+            timeout_minutes=3,
+            android_serial="emulator-5554",
+            android_avd="MonicaPixel",
+        ),
+        run_command=run,
+    )
 
     result = runner.run(run=FakeRun(), worktree=_mark_git_worktree(tmp_path / "worktree"))
 
@@ -79,6 +96,8 @@ def test_proof_runner_passes_when_command_creates_artifact(tmp_path):
             tmp_path / "worktree",
             180,
             str(tmp_path / "monica-runtime" / "proof" / "run-123"),
+            "emulator-5554",
+            "MonicaPixel",
         )
     ]
 

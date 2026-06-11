@@ -85,6 +85,15 @@ class RepoManager:
                 raise RepoManagerError(
                     f"worktree branch mismatch: expected {branch_name}, got {current_branch or 'detached HEAD'}"
                 )
+            status = self._run_command(
+                ["git", "-C", str(worktree_path), "status", "--porcelain"],
+                None,
+            ).strip()
+            if status:
+                raise RepoManagerError(
+                    "worktree has uncommitted changes; clean or archive the existing Monica "
+                    f"worktree before retrying: {worktree_path}"
+                )
             return Worktree(branch_name=branch_name, path=worktree_path)
 
         self._run_command(

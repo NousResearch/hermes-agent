@@ -55,6 +55,7 @@ class ProofConfig:
     commands: tuple[str, ...] = ()
     ios_simulator_udid: str = ""
     android_serial: str = ""
+    android_avd: str = ""
     timeout_minutes: int = 10
 
 
@@ -181,6 +182,7 @@ def config_from_mapping(data: Mapping[str, Any] | None) -> MonicaConfig:
             commands=_as_tuple(proof.get("commands")),
             ios_simulator_udid=str(proof.get("ios_simulator_udid") or "").strip(),
             android_serial=str(proof.get("android_serial") or "").strip(),
+            android_avd=str(proof.get("android_avd") or "").strip(),
             timeout_minutes=_as_int(proof.get("timeout_minutes"), 10),
         ),
         runtime=RuntimeConfig(

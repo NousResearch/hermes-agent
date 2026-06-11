@@ -153,6 +153,7 @@ class ProofRunner:
                 "MONICA_PROOF_PLATFORM_ORDER": ",".join(self.config.proof.platform_order),
                 "MONICA_IOS_SIMULATOR_UDID": self.config.proof.ios_simulator_udid,
                 "MONICA_ANDROID_SERIAL": self.config.proof.android_serial,
+                "MONICA_ANDROID_AVD": self.config.proof.android_avd,
                 "PYTHONPATH": os.pathsep.join(pythonpath_parts),
             }
         )

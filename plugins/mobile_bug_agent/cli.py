@@ -22,7 +22,7 @@ from .skills import DefaultMonicaSkills
 from .slack_client import SlackClientError, SlackThreadClient
 from .state import MonicaState
 
-RETRYABLE_STATUSES = {"blocked", "failed", "needs_clarification"}
+RETRYABLE_STATUSES = {"blocked", "failed", "needs_clarification", "proof_blocked"}
 _SIMULATION_THREAD_SEQUENCE = 0
 
 

@@ -229,6 +229,119 @@ def test_android_foreground_detector_accepts_focused_app(monkeypatch, tmp_path):
     assert simulator_proof._android_package_is_foreground(("adb",), tmp_path, "com.elixir.card.staging")
 
 
+def test_launch_android_package_prefers_resolved_activity(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((tuple(args), kwargs))
+        if "resolve-activity" in args:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="priority=0 preferredOrder=0 match=0x108000 specificIndex=-1 isDefault=false\n"
+                "com.example.app/.MainActivity\n",
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(simulator_proof.subprocess, "run", fake_run)
+
+    simulator_proof._launch_android_package(("adb", "-s", "emulator-5554"), tmp_path, "com.example.app")
+
+    assert calls == [
+        (
+            (
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "cmd",
+                "package",
+                "resolve-activity",
+                "--brief",
+                "com.example.app",
+            ),
+            {
+                "cwd": str(tmp_path),
+                "text": True,
+                "capture_output": True,
+                "timeout": 15,
+                "check": False,
+            },
+        ),
+        (
+            (
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "am",
+                "start",
+                "-n",
+                "com.example.app/.MainActivity",
+            ),
+            {
+                "cwd": str(tmp_path),
+                "text": True,
+                "capture_output": True,
+                "timeout": 15,
+                "check": False,
+            },
+        ),
+    ]
+
+
+def test_launch_android_package_falls_back_to_monkey(monkeypatch, tmp_path):
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((tuple(args), kwargs))
+        return SimpleNamespace(returncode=1, stdout="", stderr="")
+
+    monkeypatch.setattr(simulator_proof.subprocess, "run", fake_run)
+
+    simulator_proof._launch_android_package(("adb", "-s", "emulator-5554"), tmp_path, "com.example.app")
+
+    assert calls[-1] == (
+        (
+            "adb",
+            "-s",
+            "emulator-5554",
+            "shell",
+            "monkey",
+            "-p",
+            "com.example.app",
+            "-c",
+            "android.intent.category.LAUNCHER",
+            "1",
+        ),
+        {
+            "cwd": str(tmp_path),
+            "text": True,
+            "capture_output": True,
+            "timeout": 15,
+            "check": False,
+        },
+    )
+
+
+def test_resolve_android_launch_activity_ignores_metadata(monkeypatch, tmp_path):
+    def fake_run(*args, **kwargs):
+        return SimpleNamespace(
+            returncode=0,
+            stdout="priority=0 preferredOrder=0\ncom.example.app/.MainActivity\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(simulator_proof.subprocess, "run", fake_run)
+
+    assert (
+        simulator_proof._resolve_android_launch_activity(
+            ("adb", "-s", "emulator-5554"), tmp_path, "com.example.app"
+        )
+        == "com.example.app/.MainActivity"
+    )
+
+
 def test_android_screenshot_validation_rejects_blank_image(tmp_path):
     screenshot = tmp_path / "blank.png"
 
@@ -245,6 +358,34 @@ def test_android_screenshot_validation_rejects_blank_image(tmp_path):
         assert "appears blank" in str(exc)
     else:
         raise AssertionError("expected blank screenshot to fail validation")
+
+
+def test_prepare_android_worktree_links_sibling_node_modules(tmp_path):
+    workspace = tmp_path / "workspace"
+    worktree = workspace / "worktrees" / "monica-ENG-123"
+    source = workspace / "repos" / "elixir-card-app" / "node_modules"
+    worktree.mkdir(parents=True)
+    source.mkdir(parents=True)
+
+    simulator_proof._prepare_android_worktree(worktree)
+
+    assert (worktree / "node_modules").is_symlink()
+    assert (worktree / "node_modules").resolve() == source
+
+
+def test_android_run_env_uses_default_sdk_dir(monkeypatch, tmp_path):
+    fake_home = tmp_path / "home"
+    sdk = fake_home / "Library" / "Android" / "sdk"
+    sdk.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(fake_home))
+    monkeypatch.delenv("ANDROID_HOME", raising=False)
+    monkeypatch.delenv("ANDROID_SDK_ROOT", raising=False)
+    monkeypatch.delenv("MONICA_ANDROID_SDK_DIR", raising=False)
+
+    env = simulator_proof._android_run_env()
+
+    assert env["ANDROID_HOME"] == str(sdk)
+    assert env["ANDROID_SDK_ROOT"] == str(sdk)
 
 
 def test_required_env_keys_accept_local_env_file(monkeypatch, tmp_path):

@@ -22,7 +22,7 @@ from .skills import DefaultMonicaSkills
 from .slack_client import SlackClientError, SlackThreadClient
 from .state import MonicaState
 
-RETRYABLE_STATUSES = {"blocked", "failed", "needs_clarification", "proof_blocked"}
+RETRYABLE_STATUSES = {"blocked", "failed", "needs_clarification", "proof_blocked", "proofing"}
 _SIMULATION_THREAD_SEQUENCE = 0
 
 
@@ -1549,7 +1549,10 @@ def run_retry_command(
             return 1
         print(message)
         return 1
-    next_status = "approved" if run.approved_by_user_id else "queued"
+    is_proof_resume = run.status in {"proof_blocked", "proofing"} and bool(
+        str(run.branch_name or "").strip()
+    )
+    next_status = "proof_blocked" if is_proof_resume else ("approved" if run.approved_by_user_id else "queued")
     if (
         next_status == "approved"
         and config is not None
@@ -1601,7 +1604,7 @@ def run_retry_command(
         run.id,
         status=next_status,
         failure_reason="",
-        branch_name="",
+        branch_name=run.branch_name if is_proof_resume else "",
         pr_url="",
     )
     _run_loop(run.id, state=state)

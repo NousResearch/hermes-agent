@@ -119,6 +119,7 @@ class SimulatorProofHarness:
         deep_link: str,
         timeout_seconds: int,
     ) -> str:
+        _prepare_android_worktree(worktree)
         screenshot = proof_dir / "android-screenshot.png"
         serial = android_serial.strip() or ("emulator-5554" if android_avd.strip() else "")
         adb = ("adb", "-s", serial) if serial else ("adb",)
@@ -367,6 +368,8 @@ def _run_android_until_foreground(
 
             try:
                 deadline = time.monotonic() + timeout
+                started = time.monotonic()
+                last_direct_launch = 0.0
                 while time.monotonic() < deadline:
                     if _android_package_is_foreground(adb, cwd, package):
                         time.sleep(min(_android_settle_seconds(), max(deadline - time.monotonic(), 0)))
@@ -385,6 +388,11 @@ def _run_android_until_foreground(
                                 )
                             )
                         return
+
+                    now = time.monotonic()
+                    if now - started >= 5 and now - last_direct_launch >= 5:
+                        _launch_android_package(adb, cwd, package)
+                        last_direct_launch = now
 
                     returncode = proc.poll()
                     if returncode is not None:
@@ -453,6 +461,66 @@ def _android_package_is_foreground(adb: tuple[str, ...], cwd: Path, package: str
     )
 
 
+def _launch_android_package(adb: tuple[str, ...], cwd: Path, package: str) -> None:
+    activity = _resolve_android_launch_activity(adb, cwd, package)
+    if activity:
+        try:
+            proc = subprocess.run(
+                [*adb, "shell", "am", "start", "-n", activity],
+                cwd=str(cwd),
+                text=True,
+                capture_output=True,
+                timeout=15,
+                check=False,
+            )
+            if proc.returncode == 0:
+                return
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+
+    try:
+        subprocess.run(
+            [
+                *adb,
+                "shell",
+                "monkey",
+                "-p",
+                package,
+                "-c",
+                "android.intent.category.LAUNCHER",
+                "1",
+            ],
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+
+
+def _resolve_android_launch_activity(adb: tuple[str, ...], cwd: Path, package: str) -> str:
+    try:
+        proc = subprocess.run(
+            [*adb, "shell", "cmd", "package", "resolve-activity", "--brief", package],
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    for line in reversed(str(proc.stdout or "").splitlines()):
+        value = line.strip()
+        if "/" in value and not value.startswith("priority="):
+            return value
+    return ""
+
+
 def _terminate_process(proc: subprocess.Popen[str]) -> None:
     if proc.poll() is not None:
         return
@@ -477,7 +545,56 @@ def _start_log_files() -> tuple[Path, Path]:
 def _android_run_env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("REACT_NATIVE_PACKAGER_HOSTNAME", "127.0.0.1")
+    android_sdk = (
+        env.get("ANDROID_HOME", "").strip()
+        or env.get("ANDROID_SDK_ROOT", "").strip()
+        or env.get("MONICA_ANDROID_SDK_DIR", "").strip()
+        or _default_android_sdk_dir()
+    )
+    if android_sdk:
+        env.setdefault("ANDROID_HOME", android_sdk)
+        env.setdefault("ANDROID_SDK_ROOT", android_sdk)
     return env
+
+
+def _prepare_android_worktree(worktree: Path) -> None:
+    node_modules = worktree / "node_modules"
+    if node_modules.exists() or node_modules.is_symlink():
+        return
+
+    source = _node_modules_source(worktree)
+    if not source:
+        return
+    try:
+        node_modules.symlink_to(source, target_is_directory=True)
+    except FileExistsError:
+        return
+    except OSError as exc:
+        raise RuntimeError(f"failed to link node_modules for Android proof: {source}") from exc
+
+
+def _node_modules_source(worktree: Path) -> Path | None:
+    configured = os.environ.get("MONICA_NODE_MODULES_SOURCE", "").strip()
+    if configured:
+        source = Path(configured).expanduser()
+        return source if source.is_dir() else None
+
+    try:
+        workspace = worktree.parent.parent
+    except IndexError:
+        return None
+    repos = workspace / "repos"
+    if not repos.is_dir():
+        return None
+    candidates = [path for path in sorted(repos.glob("*/node_modules")) if path.is_dir()]
+    if len(candidates) == 1:
+        return candidates[0]
+    return None
+
+
+def _default_android_sdk_dir() -> str:
+    candidate = Path.home() / "Library" / "Android" / "sdk"
+    return str(candidate) if candidate.is_dir() else ""
 
 
 def _android_settle_seconds() -> int:

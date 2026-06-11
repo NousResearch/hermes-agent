@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
-from .config import MonicaConfig
+from .config import MonicaConfig, runtime_root
+from .repo_manager import is_safe_git_branch_name
 from .state import MonicaState
 
 SUPPORTED_ROLLOUT_MODES = {"dry_run", "linear_only", "local_fix_only", "approved_pr"}
@@ -98,6 +99,10 @@ class MonicaLoop:
 
         if run.status == "approved":
             self._run_approved_fix(run)
+            return
+
+        if run.status in {"proof_blocked", "proofing"}:
+            self._resume_after_proof_blocked(run)
             return
 
         if run.status not in {"queued", "needs_clarification"}:
@@ -265,6 +270,83 @@ class MonicaLoop:
             )
             return
 
+        self._run_post_worker_gates(run, worker_result)
+
+    def _resume_after_proof_blocked(self, run: Any) -> None:
+        if self.config.rollout_mode not in CODE_ROLLOUT_MODES:
+            blocked = self.state.update_run(
+                run.id,
+                status="blocked",
+                failure_reason="proof_retry_rollout_not_enabled",
+            )
+            self._log_run("blocked", blocked, stage="preflight")
+            self._post_status(
+                blocked,
+                "I have a proof-blocked code branch, but code rollout is not enabled. "
+                "Set `mobile_bug_agent.rollout_mode` to `local_fix_only` or `approved_pr` before retrying.",
+            )
+            return
+
+        branch_name = str(getattr(run, "branch_name", "") or "").strip()
+        if not branch_name:
+            blocked = self.state.update_run(
+                run.id,
+                status="blocked",
+                failure_reason="proof_retry_branch_missing",
+            )
+            self._log_run("blocked", blocked, stage="preflight")
+            self._post_status(
+                blocked,
+                "I cannot retry proof because this Monica run does not have a stored branch name.",
+            )
+            return
+        if not is_safe_git_branch_name(branch_name) or not self._is_expected_worker_branch(
+            run=run, branch_name=branch_name
+        ):
+            blocked = self.state.update_run(
+                run.id,
+                status="blocked",
+                failure_reason="proof_retry_branch_mismatch",
+            )
+            self._log_run("blocked", blocked, stage="preflight")
+            self._post_status(
+                blocked,
+                "I cannot retry proof because the stored branch does not look like the expected Monica branch "
+                f"for this run: `{branch_name}`.",
+            )
+            return
+
+        worktree_path = (
+            runtime_root(self.config)
+            / "workspace"
+            / "worktrees"
+            / branch_name.replace("/", "-")
+        )
+        if not worktree_path.is_dir() or not (worktree_path / ".git").exists():
+            blocked = self.state.update_run(
+                run.id,
+                status="blocked",
+                failure_reason="proof_retry_worktree_missing",
+            )
+            self._log_run("blocked", blocked, stage="preflight")
+            self._post_status(
+                blocked,
+                "I cannot retry proof because the stored Monica worktree is missing: "
+                f"`{worktree_path}`.",
+            )
+            return
+
+        worker_result = {
+            "branch_name": branch_name,
+            "worktree_path": str(worktree_path),
+            "changed": True,
+            "slack_permalink": self._run_permalink(run),
+            "summary": "Resuming Monica from the existing proof-blocked branch.",
+            "evidence": [],
+        }
+        self._run_post_worker_gates(run, worker_result)
+
+    def _run_post_worker_gates(self, run: Any, worker_result: dict[str, Any]) -> None:
         run = self.state.update_run(run.id, status="verifying")
         verification = self.skills.run_verification(run, worker_result)
         if self._is_cancelled(run.id):
@@ -343,6 +425,13 @@ class MonicaLoop:
         )
         self._log_run("done", completed, stage="opening_pr")
         self._post_status(completed, f"Draft PR is ready: {pr_url}")
+
+    @staticmethod
+    def _run_permalink(run: Any) -> str:
+        raw_event = getattr(run, "raw_event", None)
+        if isinstance(raw_event, dict):
+            return str(raw_event.get("permalink") or "").strip()
+        return ""
 
     def _is_cancelled(self, run_id: str) -> bool:
         run = self.state.get_run(run_id)

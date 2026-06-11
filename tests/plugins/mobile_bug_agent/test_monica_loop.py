@@ -3257,6 +3257,50 @@ def test_local_fix_only_requires_proof_before_done_when_configured(tmp_path):
     assert "not mark this run done" in skills.status_posts[0]
 
 
+def test_proof_blocked_run_resumes_existing_branch_without_worker(tmp_path):
+    runtime = tmp_path / "runtime"
+    worktree = runtime / "workspace" / "worktrees" / "monica-MOB-123-checkout-crash"
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: /tmp/fake\n", encoding="utf-8")
+    config = MonicaConfig(
+        enabled=True,
+        rollout_mode="approved_pr",
+        repo=RepoConfig(branch_prefix="monica"),
+        runtime=RuntimeConfig(home_subdir=str(runtime)),
+        verification=VerificationConfig(commands=("npm test",)),
+        proof=ProofConfig(enabled=True, required_for_done=True),
+    )
+    state = MonicaState.open(tmp_path / "monica.sqlite")
+    run = state.create_run(
+        platform="slack",
+        channel_id="C_MOBILE",
+        thread_ts="1710000000.000100",
+        message_ts="1710000000.000200",
+        user_id="U_TAGGER",
+        request_text="can you fix this Android checkout crash?",
+        raw_event={"permalink": "https://slack.example/archives/C_MOBILE/p1710000000000100"},
+    )
+    state.update_run(
+        run.id,
+        status="proof_blocked",
+        linear_identifier="MOB-123",
+        linear_url="https://linear.example/MOB-123",
+        branch_name="monica/MOB-123-checkout-crash",
+        failure_reason="proof_unavailable: simulator not configured",
+        approved_by_user_id="U_TAGGER",
+    )
+    skills = ApprovedFixSkills()
+
+    MonicaLoop(config=config, state=state, skills=skills).run(run.id)
+
+    updated = state.get_run(run.id)
+    assert updated is not None
+    assert updated.status == "done"
+    assert updated.branch_name == "monica/MOB-123-checkout-crash"
+    assert updated.pr_url == "https://github.com/example/mobile/pull/123"
+    assert skills.calls == ["run_verification", "run_proof", "open_draft_pr"]
+
+
 def test_local_fix_only_marks_done_after_required_proof_artifact(tmp_path):
     config = MonicaConfig(
         enabled=True,

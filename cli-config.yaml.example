@@ -210,7 +210,7 @@ terminal:
 # -----------------------------------------------------------------------------
 # terminal:
 #   backend: "wsl"
-#   cwd: "~"                         # WSL Linux home; use /home/<user> for explicit
+#   cwd: "~"                         # WSL Linux home (probed at startup via wsl -e echo $HOME)
 #   timeout: 180
 #   # Optional: specify a WSL distribution (default: system default)
 #   wsl_distro: "Debian"

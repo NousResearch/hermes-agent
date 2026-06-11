@@ -163,3 +163,9 @@ def test_kill_process_terminate_then_kill():
     env._kill_process(proc)
     proc.terminate.assert_called_once()
     proc.kill.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# _get_env_config WSL CWD conversion (terminal_tool.py logic)
+# ---------------------------------------------------------------------------
+

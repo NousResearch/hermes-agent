@@ -127,6 +127,10 @@ class WslEnvironment(BaseEnvironment):
         )
 
     def _kill_process(self, proc):
+        # Windows: terminate() sends Ctrl+C to wsl.exe.  If wsl.exe
+        # itself is the process, this should propagate to the bash
+        # session inside WSL.  For orphaned grandchildren, WSL's own
+        # process tree will clean up when the session exits.
         try:
             proc.terminate()
         except Exception:

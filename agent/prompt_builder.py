@@ -1470,7 +1470,13 @@ def load_soul_md() -> Optional[str]:
         if not content:
             return None
         content = _scan_context_content(content, "SOUL.md")
-        content = _truncate_content(content, "SOUL.md")
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            max_chars = int(cfg.get("agent", {}).get("soul_max_chars", CONTEXT_FILE_MAX_CHARS))
+        except Exception:
+            max_chars = CONTEXT_FILE_MAX_CHARS
+        content = _truncate_content(content, "SOUL.md", max_chars=max_chars)
         return content
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)

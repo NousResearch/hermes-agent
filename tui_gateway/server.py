@@ -3708,16 +3708,27 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
                 {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
             )
             continue
-        if not content_text.strip():
+        # An assistant turn may carry only reasoning/thinking content with no
+        # visible text (extended-thinking turns, thinking-only recovery
+        # responses). Such a turn is persisted with its reasoning fields and is
+        # recallable from the transcript, but dropping it here as "empty" makes
+        # it vanish from the resumed/reloaded session view while the desktop's
+        # reasoning disclosure has nothing to render. Keep it when it carries
+        # reasoning so the "Thinking…" block still shows. (#44022)
+        reasoning_keys = (
+            "reasoning",
+            "reasoning_content",
+            "reasoning_details",
+            "codex_reasoning_items",
+        )
+        has_reasoning = role == "assistant" and any(
+            m.get(key) for key in reasoning_keys
+        )
+        if not content_text.strip() and not has_reasoning:
             continue
         msg = {"role": role, "text": content_text}
         if role == "assistant":
-            for key in (
-                "reasoning",
-                "reasoning_content",
-                "reasoning_details",
-                "codex_reasoning_items",
-            ):
+            for key in reasoning_keys:
                 if key in m and m.get(key) is not None:
                     msg[key] = m.get(key)
         messages.append(msg)

@@ -8,7 +8,6 @@ import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChat
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { setSessionYolo } from '@/lib/yolo-session'
-import { clearComposerAttachments, clearComposerDraft } from '@/store/composer'
 import { clearQueuedPrompts } from '@/store/composer-queue'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
@@ -19,7 +18,6 @@ import {
   $messages,
   $sessions,
   $yoloActive,
-  workspaceCwdForNewSession,
   sessionPinId,
   setActiveSessionId,
   setAwaitingResponse,
@@ -41,7 +39,8 @@ import {
   setSessionStartedAt,
   setSessionsTotal,
   setTurnStartedAt,
-  setYoloActive
+  setYoloActive,
+  workspaceCwdForNewSession
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, UsageStats } from '@/types/hermes'
@@ -329,8 +328,10 @@ export function useSessionActions({
       setYoloActive(false)
       setCurrentCwd(workspaceCwdForNewSession())
       setCurrentBranch('')
-      clearComposerDraft()
-      clearComposerAttachments()
+      // Composer contents are owned by ChatBar's per-scope draft persistence:
+      // the scope change triggered by the session-id updates above stashes the
+      // departing session's attachments and restores this scope's draft.
+      // Clearing here would wipe the departing stash before it's saved.
       setFreshDraftReady(true)
     },
     [activeSessionIdRef, busyRef, navigate, selectedStoredSessionIdRef]
@@ -352,11 +353,13 @@ export function useSessionActions({
         // Pass the owning profile so a new chat under a non-launch profile (global
         // remote mode) builds its agent + persists against THAT profile's home/db.
         const newChatProfile = $newChatProfile.get()
+
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,
           ...(cwd && { cwd }),
           ...(newChatProfile ? { profile: newChatProfile } : {})
         })
+
         const stored = created.stored_session_id ?? null
 
         if (
@@ -475,8 +478,6 @@ export function useSessionActions({
         setCurrentCwd(cachedState.cwd)
         setCurrentBranch(cachedState.branch)
         setSessionStartedAt(Date.now())
-        clearComposerDraft()
-        clearComposerAttachments()
 
         try {
           const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
@@ -606,8 +607,6 @@ export function useSessionActions({
           }),
           storedSessionId
         )
-        clearComposerDraft()
-        clearComposerAttachments()
       } catch (err) {
         if (!isCurrentResume()) {
           return
@@ -730,8 +729,6 @@ export function useSessionActions({
         selectedStoredSessionIdRef.current = routedSessionId
         navigate(sessionRoute(routedSessionId))
 
-        clearComposerDraft()
-        clearComposerAttachments()
         const runtimeInfo = applyRuntimeInfo(branched.info)
 
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)

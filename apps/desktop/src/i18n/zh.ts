@@ -800,6 +800,7 @@ export const zh: Translations = {
     close: '关闭代理',
     title: '派生树',
     subtitle: '当前回合的子代理实时活动。',
+    tasksTitle: '任务',
     emptyTitle: '暂无活跃子代理',
     emptyDesc: '当某个回合派发任务时，子代理会在此实时显示进度。',
     running: '运行中',

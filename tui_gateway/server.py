@@ -9392,7 +9392,12 @@ def _task_submit_delegate(
         try:
             from tools.delegate_tool import delegate_task
 
-            raw = delegate_task(tasks=tasks, parent_agent=agent)
+            # Task 2.3 (doc Step 5 ruling): children registered during this
+            # run link to THIS parent record's task_id, not the engine's
+            # internal _parent_subagent_id.
+            raw = delegate_task(
+                tasks=tasks, parent_agent=agent, registry_parent_task_id=task_id
+            )
             result = _delegate_aggregate_to_result(task_id, raw)
         except Exception as e:
             result = ExecutionResult(

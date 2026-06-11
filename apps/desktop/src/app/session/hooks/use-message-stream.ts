@@ -37,6 +37,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { handleAgentTaskEvent } from '@/store/tasks'
 import { recordToolDiff } from '@/store/tool-diffs'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -616,9 +617,11 @@ export function useMessageStream({
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+
       if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
         return
       }
+
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
@@ -839,6 +842,11 @@ export function useMessageStream({
             event.type
           )
         }
+      } else if (event.type === 'task.started' || event.type === 'task.completed') {
+        // Action Runtime registry push events. The payload is the registry
+        // snapshot itself and carries its own session_id, so the store never
+        // needs the focused-chat fallback computed above.
+        handleAgentTaskEvent(event)
       } else if (event.type === 'clarify.request') {
         // Surface the clarify tool's overlay. The Python side is blocked on
         // `clarify.respond`, so without this handler the agent would hang

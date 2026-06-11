@@ -1659,6 +1659,73 @@ def test_task_submit_delegate_all_success_returns_succeeded(
     assert server._sessions[sid]["running"] is False
 
 
+def test_task_submit_delegate_links_children_to_submitted_task_id(
+    server, registry, monkeypatch
+):
+    """Task 2.3 (doc Step 5 ruling): the gateway hands its parent record's
+    task_id to the engine as registry_parent_task_id, so children registered
+    during the run link to the submitted task_id — not the engine-internal
+    _parent_subagent_id."""
+    from action_runtime.contract import ExecutionResult, Status
+    from action_runtime.task_registry import AgentTaskRecord
+
+    sid = "test-session"
+    _delegate_session(server, sid)
+    seen = {}
+
+    def fake_delegate_task(tasks=None, parent_agent=None, **kwargs):
+        # Register a child mid-run through the REAL registry register path,
+        # with parent_task_id from the caller-supplied kwarg — the same
+        # record shape _run_single_child produces (the engine side of this
+        # contract is pinned in tests/tools/test_delegate_registry_dualwrite.py).
+        seen["registry_parent_task_id"] = kwargs.get("registry_parent_task_id")
+        registry.register(AgentTaskRecord(
+            task_id="sa-0-child001",
+            parent_task_id=kwargs.get("registry_parent_task_id"),
+            goal="task a",
+            label="task a",
+            intent="delegate",
+        ))
+        registry.complete(
+            "sa-0-child001",
+            ExecutionResult(
+                task_id="sa-0-child001",
+                status=Status.SUCCEEDED,
+                outputs={"summary": "a done"},
+            ),
+        )
+        return json.dumps({
+            "results": [
+                {"task_index": 0, "status": "completed", "summary": "a done",
+                 "error": None},
+            ],
+            "total_duration_seconds": 0.5,
+        })
+
+    _stub_delegate_engine(monkeypatch, fake_delegate_task)
+
+    resp = server.handle_request({
+        "id": "r-del-link",
+        "method": "task.submit",
+        "params": {
+            "session_id": sid,
+            "intent": "delegate",
+            "inputs": {"tasks": ["task a"]},
+            "task_id": "task-del-link",
+        },
+    })
+
+    assert "error" not in resp
+    assert resp["result"]["status"] == "succeeded"
+    # The engine received the parent record's id...
+    assert seen["registry_parent_task_id"] == "task-del-link"
+    # ...so the child record links to the submitted parent task_id.
+    child = registry.get("sa-0-child001")
+    assert child is not None
+    assert child.parent_task_id == "task-del-link"
+    assert registry.get("task-del-link").status.value == "succeeded"
+
+
 def test_task_submit_delegate_echoes_trace_id(server, registry, monkeypatch):
     """Task 2.1 (§12): intent=delegate threads trace_id onto the parent
     AgentTaskRecord AND the final ExecutionResult before complete(), so the

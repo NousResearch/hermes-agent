@@ -20,6 +20,8 @@ import {
 
 import { OverlayView } from '../overlays/overlay-view'
 
+import { TaskBoard } from './task-board'
+
 // Mirrors statusGlyph() in tool-fallback.tsx so subagent rows speak the
 // same visual vocabulary as the chat tool blocks.
 function statusGlyph(status: SubagentStatus, a: Translations['agents']): ReactNode {
@@ -98,6 +100,7 @@ export function AgentsView({ onClose }: AgentsViewProps) {
         <h2 className="text-sm font-semibold text-foreground">{t.agents.title}</h2>
         <p className="text-xs text-muted-foreground/80">{t.agents.subtitle}</p>
       </header>
+      <TaskBoard sessionId={activeSessionId} />
       <SubagentTree tree={tree} />
     </OverlayView>
   )

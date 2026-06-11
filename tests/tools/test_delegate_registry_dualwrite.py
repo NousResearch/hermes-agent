@@ -150,6 +150,209 @@ def test_no_registration_without_stable_subagent_id(registry):
     assert registry.list_active() == []
 
 
+# ── caller-supplied parent task id (Task 2.3, doc Step 5 ruling) ────────
+
+
+def test_caller_parent_task_id_overrides_engine_default(registry):
+    """registry_parent_task_id relabels ONLY the registry record's
+    parent_task_id; the legacy _active_subagents dict keeps the engine's
+    _parent_subagent_id (engine behavior unchanged)."""
+    from tools import delegate_tool
+
+    sid = "sa-0-23parent"
+    child = _make_child(sid)
+    child._parent_subagent_id = "sa-engine-parent"
+    seen = {}
+
+    def _capture(user_message=None, task_id=None):
+        rec = registry.get(sid)
+        seen["parent_task_id"] = rec.parent_task_id if rec else "MISSING"
+        seen["legacy_parent_id"] = next(
+            (
+                r["parent_id"]
+                for r in delegate_tool.list_active_subagents()
+                if r["subagent_id"] == sid
+            ),
+            "MISSING",
+        )
+        return {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+    child.run_conversation.side_effect = _capture
+    result = _run_single_child(
+        task_index=0,
+        goal="link to caller",
+        child=child,
+        parent_agent=_make_parent(),
+        registry_parent_task_id="task-caller-1",
+    )
+
+    assert result["status"] == "completed"
+    assert seen["parent_task_id"] == "task-caller-1"
+    assert seen["legacy_parent_id"] == "sa-engine-parent"
+    # The terminal record keeps the caller link for snapshot/persistence.
+    assert registry.get(sid).parent_task_id == "task-caller-1"
+
+
+def test_engine_default_parent_when_caller_id_absent(registry):
+    """Without registry_parent_task_id, today's default is byte-identical:
+    the record's parent_task_id is the spawning agent's _parent_subagent_id."""
+    sid = "sa-0-23dfault"
+    child = _make_child(sid)
+    child._parent_subagent_id = "sa-engine-parent"
+
+    result = _run_single_child(
+        task_index=0, goal="engine default", child=child, parent_agent=_make_parent()
+    )
+
+    assert result["status"] == "completed"
+    assert registry.get(sid).parent_task_id == "sa-engine-parent"
+
+
+def test_delegate_task_threads_caller_parent_id_to_child_record(
+    registry, monkeypatch
+):
+    """End-to-end through the real engine: delegate_task(...,
+    registry_parent_task_id=...) reaches _run_single_child's register site,
+    so the child record links to the caller's task_id (the gateway's
+    task.submit intent="delegate" parent record)."""
+    import sys
+    import types
+
+    from tools import delegate_tool
+
+    sid = "sa-0-23e2echd"
+    child = _make_child(sid, summary="linked")
+    child._delegate_saved_tool_names = []
+    monkeypatch.setattr(
+        delegate_tool, "_build_child_agent", lambda **kwargs: child
+    )
+    # Keep MagicMock parent attrs out of credential resolution.
+    monkeypatch.setattr(
+        delegate_tool,
+        "_resolve_delegation_credentials",
+        lambda cfg, parent: {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+        },
+    )
+    # Keep the subagent_stop hook plumbing out of this pin.
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(invoke_hook=lambda *a, **k: None),
+    )
+    parent = _make_parent()
+    parent._memory_manager = None
+
+    raw = delegate_tool.delegate_task(
+        goal="link me",
+        parent_agent=parent,
+        registry_parent_task_id="task-caller-e2e",
+    )
+
+    import json
+
+    assert json.loads(raw)["results"][0]["status"] == "completed"
+    rec = registry.get(sid)
+    assert rec is not None
+    assert rec.parent_task_id == "task-caller-e2e"
+
+
+def test_delegate_task_threads_caller_parent_id_to_parallel_child_records(
+    registry, monkeypatch
+):
+    """The batch/parallel path must thread the caller task_id to every
+    child record, not only the single-task fast path."""
+    import json
+    import sys
+    import types
+
+    from tools import delegate_tool
+
+    children = [
+        _make_child("sa-0-batchaa", summary="linked A"),
+        _make_child("sa-1-batchbb", summary="linked B"),
+    ]
+    for child in children:
+        child._delegate_role = "leaf"
+        child._delegate_saved_tool_names = []
+
+    monkeypatch.setattr(
+        delegate_tool,
+        "_build_child_agent",
+        lambda **kwargs: children[kwargs["task_index"]],
+    )
+    monkeypatch.setattr(delegate_tool, "_get_max_concurrent_children", lambda: 2)
+    monkeypatch.setattr(
+        delegate_tool,
+        "_resolve_delegation_credentials",
+        lambda cfg, parent: {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+        },
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.plugins",
+        types.SimpleNamespace(invoke_hook=lambda *a, **k: None),
+    )
+    parent = _make_parent()
+    parent._delegate_spinner = None
+    parent._interrupt_requested = False
+    parent._memory_manager = None
+
+    raw = delegate_tool.delegate_task(
+        tasks=[{"goal": "link batch A"}, {"goal": "link batch B"}],
+        parent_agent=parent,
+        registry_parent_task_id="task-caller-batch",
+    )
+
+    assert [r["status"] for r in json.loads(raw)["results"]] == [
+        "completed",
+        "completed",
+    ]
+    for child in children:
+        rec = registry.get(child._subagent_id)
+        assert rec is not None
+        assert rec.parent_task_id == "task-caller-batch"
+
+
+def test_registry_parent_task_id_stays_out_of_model_schema():
+    """registry_parent_task_id is internal gateway plumbing; models must
+    never see it as a callable tool parameter."""
+    from tools import delegate_tool
+
+    static_props = delegate_tool.DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+    dynamic_props = delegate_tool._build_dynamic_schema_overrides()["parameters"][
+        "properties"
+    ]
+
+    assert "registry_parent_task_id" not in static_props
+    assert "registry_parent_task_id" not in dynamic_props
+    assert "registry_parent_task_id" not in static_props["tasks"]["items"][
+        "properties"
+    ]
+    assert "registry_parent_task_id" not in dynamic_props["tasks"]["items"][
+        "properties"
+    ]
+
+
 # ── complete on normal exit ─────────────────────────────────────────────
 
 

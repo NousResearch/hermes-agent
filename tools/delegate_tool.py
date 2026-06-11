@@ -1437,11 +1437,19 @@ def _run_single_child(
     goal: str,
     child=None,
     parent_agent=None,
+    registry_parent_task_id: Optional[str] = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
     Run a pre-built child agent. Called from within a thread.
     Returns a structured result dict.
+
+    ``registry_parent_task_id`` (Phase 5 Task 2.3, doc Step 5 ruling) only
+    relabels the AgentTaskRegistry record's parent_task_id — a task.submit
+    intent="delegate" batch passes its caller-supplied task_id so children
+    link to the parent record. The legacy _register_subagent dict and the
+    engine's behavior are untouched; None keeps today's engine default
+    (the spawning agent's _parent_subagent_id).
     """
     child_start = time.monotonic()
 
@@ -1572,8 +1580,12 @@ def _run_single_child(
             get_registry().register(
                 AgentTaskRecord(
                     task_id=_subagent_id,
+                    # Step 5 ruling: a caller-supplied parent task_id (the
+                    # gateway batch record) beats the engine default.
                     parent_task_id=(
-                        _parent_sid if isinstance(_parent_sid, str) else None
+                        registry_parent_task_id
+                        if isinstance(registry_parent_task_id, str)
+                        else (_parent_sid if isinstance(_parent_sid, str) else None)
                     ),
                     session_id=(
                         _raw_session if isinstance(_raw_session, str) else None
@@ -2074,6 +2086,7 @@ def delegate_task(
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
     parent_agent=None,
+    registry_parent_task_id: Optional[str] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -2086,6 +2099,11 @@ def delegate_task(
     'leaf' (default) cannot; 'orchestrator' retains the delegation
     toolset and can spawn its own workers, bounded by
     delegation.max_spawn_depth.  Per-task role beats the top-level one.
+
+    'registry_parent_task_id' (Phase 5 Task 2.3) is registry-only plumbing
+    for task.submit intent="delegate": when set, each child's
+    AgentTaskRecord links to that caller-supplied parent task_id instead of
+    the engine-internal _parent_subagent_id. None keeps today's behavior.
 
     Returns JSON with results array, one entry per task.
     """
@@ -2241,7 +2259,13 @@ def delegate_task(
     if n_tasks == 1:
         # Single task -- run directly (no thread pool overhead)
         _i, _t, child = children[0]
-        result = _run_single_child(0, _t["goal"], child, parent_agent)
+        result = _run_single_child(
+            0,
+            _t["goal"],
+            child,
+            parent_agent,
+            registry_parent_task_id=registry_parent_task_id,
+        )
         results.append(result)
     else:
         # Batch -- run in parallel with per-task progress lines
@@ -2257,6 +2281,7 @@ def delegate_task(
                     goal=t["goal"],
                     child=child,
                     parent_agent=parent_agent,
+                    registry_parent_task_id=registry_parent_task_id,
                 )
                 futures[future] = i
 

@@ -291,6 +291,36 @@ class TestPermissionErrorHandling:
             assert result is None or isinstance(result, str)
 
 
+class TestExpanduserRuntimeError:
+    """Regression tests for RuntimeError from Path.expanduser() (ref #43963)."""
+
+    def test_add_path_candidate_unknown_user_tilde(self, tmp_path):
+        """~user for a non-existent account raises RuntimeError — must be swallowed."""
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        candidates = set()
+        tracker._add_path_candidate("~hermes_no_such_user_43963/notes.md", candidates)
+        assert candidates == set()
+
+    def test_add_path_candidate_expanduser_runtimeerror(self, tmp_path):
+        """Same path with expanduser patched, independent of the host passwd db."""
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        candidates = set()
+        with patch.object(
+            Path, "expanduser",
+            side_effect=RuntimeError("Could not determine home directory."),
+        ):
+            tracker._add_path_candidate("~foo/bar", candidates)
+        assert candidates == set()
+
+    def test_check_tool_call_survives_unknown_user_tilde_in_command(self, project):
+        """A ~nonexistentuser token in a terminal command must not abort the turn."""
+        tracker = SubdirectoryHintTracker(working_dir=str(project))
+        result = tracker.check_tool_call(
+            "terminal", {"command": "cat ~hermes_no_such_user_43963/config.yaml"}
+        )
+        assert result is None or isinstance(result, str)
+
+
 class TestOutsideWorkspaceRejection:
     """Direct tests for _is_valid_subdir rejecting outside-workspace paths."""
 

@@ -144,7 +144,10 @@ class SubdirectoryHintTracker:
                 if parent == p:
                     break  # filesystem root
                 p = parent
-        except (OSError, ValueError):
+        except (OSError, ValueError, RuntimeError):
+            # RuntimeError: Path("~nonexistentuser/...").expanduser() raises it
+            # when the ~user passwd lookup fails. Hints are best-effort —
+            # skip the candidate rather than aborting the agent turn.
             pass
 
     def _extract_paths_from_command(self, cmd: str, candidates: Set[Path]):

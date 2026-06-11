@@ -15,6 +15,7 @@ import {
   MoreVertical,
   Pencil,
   Package,
+  Search,
   Sparkles,
   Terminal,
   Trash2,
@@ -36,6 +37,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
+import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import {
   Select,
   SelectOption,
@@ -359,6 +361,7 @@ export default function ProfilesPage() {
   const [editingModelFor, setEditingModelFor] = useState<string | null>(null);
   const [modelEditChoice, setModelEditChoice] = useState("");
   const [modelSaving, setModelSaving] = useState(false);
+  const [modelSearch, setModelSearch] = useState("");
 
   // Per-profile "set active" in-flight name
   const [settingActive, setSettingActive] = useState<string | null>(null);
@@ -518,6 +521,7 @@ export default function ProfilesPage() {
     activeSoulRequest.current = null;
     activeDescRequest.current = null;
     setEditingModelFor(null);
+    setModelSearch("");
     setEditingDescFor(null);
     setEditingSoulFor(null);
   }, []);
@@ -655,6 +659,7 @@ export default function ProfilesPage() {
       setEditingDescFor(null);
       setEditingModelFor(p.name);
       setModelEditChoice(modelKey(p.provider, p.model));
+      setModelSearch("");
       loadModelChoices();
     },
     [closeEditor, editingModelFor, loadModelChoices],
@@ -1264,8 +1269,7 @@ export default function ProfilesPage() {
 
             <div
               className={cn(
-                "p-5 grid gap-4",
-                editorKind === "soul" && "min-h-0 overflow-y-auto",
+                "p-5 grid gap-4 flex-1 min-h-0 overflow-y-auto",
               )}
             >
               {editorKind === "model" &&
@@ -1273,24 +1277,57 @@ export default function ProfilesPage() {
                   <p className="text-xs text-muted-foreground">{L.modelNone}</p>
                 ) : (
                   <>
-                    <Select
-                      value={modelEditChoice}
-                      disabled={modelChoices === null}
-                      placeholder={
-                        modelChoices === null ? L.modelLoading : L.modelSelect
-                      }
-                      onValueChange={setModelEditChoice}
-                    >
-                      {(modelChoices ?? []).map((c) => (
-                        <SelectOption
-                          key={`${c.provider}\u0000${c.model}`}
-                          value={`${c.provider}\u0000${c.model}`}
-                        >
-                          {c.label}
-                        </SelectOption>
-                      ))}
-                    </Select>
-
+                    <div className="relative">
+                      <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+                      <Input
+                        placeholder="Filter models…"
+                        value={modelSearch}
+                        onChange={(e) => setModelSearch(e.target.value)}
+                        className="pl-7 h-8 text-sm"
+                      />
+                    </div>
+                    <div className="max-h-80 overflow-y-auto border border-border rounded">
+                      {modelChoices === null ? (
+                        <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
+                          <Spinner /> {L.modelLoading}
+                        </div>
+                      ) : (
+                        modelChoices
+                          .filter((c) => {
+                            if (!modelSearch.trim()) return true;
+                            const q = modelSearch.toLowerCase();
+                            return (
+                              c.label.toLowerCase().includes(q) ||
+                              c.model.toLowerCase().includes(q) ||
+                              c.provider.toLowerCase().includes(q)
+                            );
+                          })
+                          .map((c) => {
+                            const key = `${c.provider}\u0000${c.model}`;
+                            const active = modelEditChoice === key;
+                            return (
+                              <div
+                                key={key}
+                                className={cn(
+                                  "flex items-center gap-2 px-3 py-1.5 text-xs font-mono cursor-pointer transition-colors",
+                                  active
+                                    ? "bg-primary/10 text-primary"
+                                    : "hover:bg-muted/50 text-foreground",
+                                )}
+                                onClick={() => setModelEditChoice(key)}
+                              >
+                                <Check
+                                  className={cn(
+                                    "h-3 w-3 shrink-0",
+                                    active ? "text-primary" : "text-transparent",
+                                  )}
+                                />
+                                <span className="truncate">{c.label}</span>
+                              </div>
+                            );
+                          })
+                      )}
+                    </div>
                     <div className="flex justify-end">
                       <Button
                         size="sm"

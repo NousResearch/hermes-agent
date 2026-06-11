@@ -187,6 +187,20 @@ class TestPlatformDefaults:
         # Discord: pure tier_high.
         assert resolve_display_setting({}, "discord", "tool_progress") == "all"
 
+    def test_telegram_defaults_interim_assistant_messages_off(self):
+        """Telegram defaults to one final assistant response per user turn."""
+        from gateway.display_config import resolve_display_setting
+
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting({}, "telegram", "long_running_notifications") is True
+
+    def test_telegram_default_config_seeds_platform_interim_override(self):
+        """Default config carries the Telegram override for merged user configs."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        telegram = DEFAULT_CONFIG["display"]["platforms"]["telegram"]
+        assert telegram["interim_assistant_messages"] is False
+
     def test_medium_tier_platforms(self):
         """Mattermost, Matrix, Feishu, WhatsApp default to 'new' tool progress."""
         from gateway.display_config import resolve_display_setting
@@ -228,13 +242,12 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "telegram", "streaming") is None
 
     def test_telegram_mobile_chatter_defaults(self):
-        """Telegram keeps real mid-turn signal (interim commentary + heartbeats)
-        but skips the verbose busy-ack iteration counter by default."""
+        """Telegram keeps heartbeats but suppresses interim assistant commentary."""
         from gateway.display_config import resolve_display_setting
 
-        # Real model voice — keep on. Without this, Telegram users see
-        # "typing..." for the entire turn duration with no feedback.
-        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is True
+        # Model mid-turn commentary arrives as a separate Telegram message. Off
+        # by default so one user message produces one final assistant response.
+        assert resolve_display_setting({}, "telegram", "interim_assistant_messages") is False
         # Periodic "Working — N min" heartbeat — keep on. Otherwise long
         # turns appear completely silent.
         assert resolve_display_setting({}, "telegram", "long_running_notifications") is True
@@ -248,22 +261,21 @@ class TestPlatformDefaults:
         assert resolve_display_setting({}, "discord", "busy_ack_detail") is True
 
     def test_telegram_mobile_chatter_can_opt_in(self):
-        """Per-platform config can re-enable Telegram busy-ack detail
-        and re-disable the kept-on defaults."""
+        """Per-platform config can re-enable Telegram commentary and busy-ack detail."""
         from gateway.display_config import resolve_display_setting
 
         config = {
             "display": {
                 "platforms": {
                     "telegram": {
-                        "interim_assistant_messages": False,
+                        "interim_assistant_messages": True,
                         "long_running_notifications": False,
                         "busy_ack_detail": "on",
                     }
                 }
             }
         }
-        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is False
+        assert resolve_display_setting(config, "telegram", "interim_assistant_messages") is True
         assert resolve_display_setting(config, "telegram", "long_running_notifications") is False
         assert resolve_display_setting(config, "telegram", "busy_ack_detail") is True
 

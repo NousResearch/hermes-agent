@@ -27,6 +27,7 @@ import errno
 import json
 import logging
 import os
+import re
 import threading
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
 
@@ -41,6 +42,11 @@ _PEER_GONE_ERRNOS = frozenset({
     getattr(errno, "WSAECONNRESET", -1),  # win32 mapping (no-op on POSIX)
     getattr(errno, "WSAESHUTDOWN", -1),
 } - {-1})
+
+# Lone surrogate code points are invalid in UTF-8 and will crash
+# ``stream.write()`` when the stream is UTF-8 encoded (e.g. stdout).
+# Sanitize them before writing.  See issue #44287.
+_SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +140,12 @@ class StdioTransport:
         # block other threads emitting their own frames.  A non-JSON-safe
         # payload is a programming error: re-raise so the crash log
         # captures it instead of silently exiting via the False path.
+        # Sanitize surrogates that LLM APIs or WSL paths can inject;
+        # ensure_ascii=False passes them through, but stream.write()
+        # rejects them on UTF-8 streams (#44287).
         line = json.dumps(obj, ensure_ascii=False) + "\n"
+        if _SURROGATE_RE.search(line):
+            line = _SURROGATE_RE.sub('\ufffd', line)
 
         with self._lock:
             stream = self._stream_getter()

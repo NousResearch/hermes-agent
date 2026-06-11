@@ -1,7 +1,8 @@
 import { useStore } from '@nanostores/react'
+import { motion } from 'motion/react'
 import type * as React from 'react'
 
-import { writeSessionDrag } from '@/app/chat/composer/inline-refs'
+import { type SessionDragPayload, writeSessionDrag } from '@/app/chat/composer/inline-refs'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import type { SessionInfo } from '@/hermes'
@@ -26,7 +27,8 @@ export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   onResume: () => void
   reorderable?: boolean
   dragging?: boolean
-  dropIndicator?: 'after' | 'before'
+  onSessionDragEnd?: () => void
+  onSessionDragStart?: (payload: SessionDragPayload) => void
   /** Presence record for this session (from another device) — indicates live/active state. */
   presence?: SessionPresenceRecord
   /** Row renders in the Archived section: menus swap Archive→Restore, pin
@@ -74,7 +76,8 @@ export function SidebarSessionRow({
   presence,
   reorderable = false,
   dragging = false,
-  dropIndicator,
+  onSessionDragEnd,
+  onSessionDragStart,
   archived = false,
   onRestore,
   selectable = false,
@@ -114,38 +117,41 @@ export function SidebarSessionRow({
       title={title}
     >
       <div
-        className={cn(
-          'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center rounded-md transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
-          reorderable && 'active:cursor-grabbing',
-          (isSelected || checked) && 'bg-(--ui-row-active-background)',
-          isWorking && 'text-foreground',
-          dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
-          dropIndicator === 'before' &&
-            "before:absolute before:inset-x-1 before:top-[-0.1875rem] before:z-20 before:h-0.5 before:rounded-full before:bg-(--ui-accent-secondary) before:content-['']",
-          dropIndicator === 'after' &&
-            "after:absolute after:inset-x-1 after:bottom-[-0.1875rem] after:z-20 after:h-0.5 after:rounded-full after:bg-(--ui-accent-secondary) after:content-['']",
-          className
-        )}
-        data-drop-indicator={dropIndicator}
-        data-selected={checked ? 'true' : undefined}
         data-session-id={session.id}
-        data-working={isWorking ? 'true' : undefined}
         draggable
-        onDoubleClick={selectionActive ? () => onResume() : undefined}
+        onDragEnd={() => onSessionDragEnd?.()}
         onDragStart={event => {
-          writeSessionDrag(event.dataTransfer, {
+          const payload: SessionDragPayload = {
             archived,
             id: session.id,
             pinId: sessionPinId(session),
             pinned: isPinned,
             profile: session.profile || 'default',
             title
-          })
+          }
+
+          writeSessionDrag(event.dataTransfer, payload)
+          onSessionDragStart?.(payload)
         }}
         ref={ref}
         style={style}
         {...rest}
       >
+        <motion.div
+          className={cn(
+            'group relative grid min-h-[1.625rem] cursor-pointer grid-cols-[minmax(0,1fr)_auto] items-center rounded-md transition-[background-color,color,opacity,box-shadow] duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:transition-none',
+            reorderable && 'active:cursor-grabbing',
+            (isSelected || checked) && 'bg-(--ui-row-active-background)',
+            isWorking && 'text-foreground',
+            dragging && 'z-10 cursor-grabbing opacity-60 shadow-sm',
+            className
+          )}
+          data-selected={checked ? 'true' : undefined}
+          data-working={isWorking ? 'true' : undefined}
+          layout="position"
+          onDoubleClick={selectionActive ? () => onResume() : undefined}
+          transition={{ layout: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}
+        >
         {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
         <button
           className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-2 text-left"
@@ -297,6 +303,7 @@ export function SidebarSessionRow({
             </SessionActionsMenu>
           </div>
         </div>
+        </motion.div>
       </div>
     </SessionContextMenu>
   )

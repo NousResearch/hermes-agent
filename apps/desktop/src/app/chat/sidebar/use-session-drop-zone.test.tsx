@@ -13,6 +13,7 @@ import {
 
 import {
   placeSessionIdAtAnchor,
+  previewItemsAtAnchor,
   type SessionDragFlags,
   sessionDropAnchor,
   useSessionDropZone
@@ -345,5 +346,36 @@ describe('placeSessionIdAtAnchor', () => {
     expect(placeSessionIdAtAnchor(['a', 'b'], 'a', { before: true, sessionId: 'a' })).toBeNull()
     expect(placeSessionIdAtAnchor(['a', 'b'], 'c', null)).toBeNull()
     expect(placeSessionIdAtAnchor(['a', 'b'], 'c', { before: false, sessionId: 'missing' })).toBeNull()
+  })
+})
+
+describe('previewItemsAtAnchor', () => {
+  const items = [{ id: 'a' }, { id: 'b' }, { id: 'c' }]
+
+  it('previews same-section reorder by moving the dragged item before the anchor', () => {
+    expect(previewItemsAtAnchor(items, items[2], { before: true, sessionId: 'a' })).toEqual([
+      { id: 'c' },
+      { id: 'a' },
+      { id: 'b' }
+    ])
+  })
+
+  it('previews a cross-section insert without mutating the original list', () => {
+    const moving = { id: 'pinned-row' }
+
+    expect(previewItemsAtAnchor(items, moving, { before: false, sessionId: 'b' })).toEqual([
+      { id: 'a' },
+      { id: 'b' },
+      moving,
+      { id: 'c' }
+    ])
+    expect(items).toEqual([{ id: 'a' }, { id: 'b' }, { id: 'c' }])
+  })
+
+  it('leaves the list unchanged when no usable preview target exists', () => {
+    expect(previewItemsAtAnchor(items, null, { before: true, sessionId: 'a' })).toBe(items)
+    expect(previewItemsAtAnchor(items, items[0], null)).toBe(items)
+    expect(previewItemsAtAnchor(items, items[0], { before: true, sessionId: 'missing' })).toBe(items)
+    expect(previewItemsAtAnchor(items, items[0], { before: false, sessionId: 'a' })).toBe(items)
   })
 })

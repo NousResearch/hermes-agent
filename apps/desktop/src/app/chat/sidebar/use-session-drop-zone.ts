@@ -52,6 +52,31 @@ export function placeSessionIdAtAnchor(
   return next
 }
 
+export function previewItemsAtAnchor<T extends { id: string }>(
+  items: T[],
+  movingItem: null | T | undefined,
+  anchor: null | SessionDropAnchor
+): T[] {
+  if (!movingItem || !anchor) {
+    return items
+  }
+
+  const nextIds = placeSessionIdAtAnchor(
+    items.map(item => item.id),
+    movingItem.id,
+    anchor
+  )
+
+  if (!nextIds) {
+    return items
+  }
+
+  const byId = new Map(items.map(item => [item.id, item]))
+  byId.set(movingItem.id, movingItem)
+
+  return nextIds.map(id => byId.get(id)).filter((item): item is T => Boolean(item))
+}
+
 /**
  * Resolve the session row under a drop point (rows carry `data-session-id`)
  * so drop handlers can insert at the pointer position instead of appending.

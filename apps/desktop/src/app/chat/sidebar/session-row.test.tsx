@@ -172,10 +172,13 @@ describe('SidebarSessionRow gestures', () => {
   })
 
   it('starts a session drag from the row body without rendering a separate reorder handle', () => {
-    const { container, rowButton } = renderRow({ isPinned: true, reorderable: true })
+    const onSessionDragEnd = vi.fn()
+    const onSessionDragStart = vi.fn()
+    const { container, rowButton } = renderRow({ isPinned: true, onSessionDragEnd, onSessionDragStart, reorderable: true })
     const transfer = fakeTransfer()
 
     expect(container.querySelector('[data-reorder-handle]')).toBeNull()
+    expect(container.querySelector('[data-drop-indicator]')).toBeNull()
 
     fireEvent.dragStart(rowButton, { dataTransfer: transfer })
 
@@ -187,12 +190,14 @@ describe('SidebarSessionRow gestures', () => {
       profile: 'default',
       title: 'Test session'
     })
-  })
+    expect(onSessionDragStart).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 's1',
+        pinned: true
+      })
+    )
 
-  it('marks the row edge that will receive a drop', () => {
-    const { container } = renderRow({ dropIndicator: 'before' })
-    const row = container.querySelector('[data-session-id]')
-
-    expect(row?.getAttribute('data-drop-indicator')).toBe('before')
+    fireEvent.dragEnd(rowButton)
+    expect(onSessionDragEnd).toHaveBeenCalledTimes(1)
   })
 })

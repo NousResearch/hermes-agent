@@ -1,13 +1,13 @@
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { type FC, useRef } from 'react'
 
+import type { SessionDragPayload } from '@/app/chat/composer/inline-refs'
 import type { SessionInfo } from '@/hermes'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 import type { SessionPresenceRecord } from '@/types/hermes'
 
 import { SidebarSessionRow } from './session-row'
-import type { SessionDropAnchor } from './use-session-drop-zone'
 
 interface SessionRowCommonProps {
   isPinned: boolean
@@ -22,7 +22,9 @@ interface SessionRowCommonProps {
   selectable?: boolean
   selectionActive?: boolean
   checked?: boolean
-  dropIndicator?: 'after' | 'before'
+  dragging?: boolean
+  onSessionDragEnd?: () => void
+  onSessionDragStart?: (payload: SessionDragPayload) => void
   onToggleSelect?: (mode: 'range' | 'single') => void
 }
 
@@ -37,7 +39,9 @@ interface VirtualSessionListProps {
   reorderable?: boolean
   sessions: SessionInfo[]
   workingSessionIdSet: Set<string>
-  dropAnchor?: null | SessionDropAnchor
+  draggingSessionId?: string
+  onSessionDragEnd?: () => void
+  onSessionDragStart?: (payload: SessionDragPayload) => void
   /** Presence lookup map — flags rows live on another device/client. */
   presenceBySession?: Map<string, SessionPresenceRecord>
   /** Rows belong to the Archived section (restore instead of archive). */
@@ -64,7 +68,9 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   reorderable = false,
   sessions,
   workingSessionIdSet,
-  dropAnchor,
+  draggingSessionId,
+  onSessionDragEnd,
+  onSessionDragStart,
   presenceBySession,
   archived = false,
   onRestoreSession,
@@ -100,7 +106,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     const commonProps: SessionRowCommonProps = {
       archived,
       checked: selectedIds?.has(session.id) ?? false,
-      dropIndicator: dropAnchor?.sessionId === session.id ? (dropAnchor.before ? 'before' : 'after') : undefined,
+      dragging: draggingSessionId === session.id,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       isWorking: workingSessionIdSet.has(session.id),
@@ -109,6 +115,8 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onPin: () => onTogglePin(sessionPinId(session)),
       onRestore: onRestoreSession ? () => onRestoreSession(session.id) : undefined,
       onResume: () => onResumeSession(session.id),
+      onSessionDragEnd,
+      onSessionDragStart,
       onToggleSelect: onToggleSelect ? mode => onToggleSelect(session.id, mode) : undefined,
       selectable,
       selectionActive

@@ -23,20 +23,31 @@ def test_protocol_sample_passes():
 
 
 def test_stock_and_etf_samples_pass():
-    assert _errors(sample_research_envelope("stock")) == []
+    stock = sample_research_envelope("stock")
+    assert stock["asset_class"] == "DRAFT:us_stock"
+    assert _errors(stock) == []
     assert _errors(sample_research_envelope("etf")) == []
 
 
 def test_commodity_theme_sample_passes():
-    assert _errors(sample_research_envelope("commodity_theme")) == []
+    envelope = sample_research_envelope("commodity_theme")
+    assert envelope["kind"] == "commodity_theme"
+    assert envelope["asset_class"] == "commodity"
+    assert _errors(envelope) == []
 
 
 def test_macro_event_sample_passes():
-    assert _errors(sample_research_envelope("macro_event")) == []
+    envelope = sample_research_envelope("macro_event")
+    assert envelope["kind"] == "macro_event"
+    assert envelope["asset_class"] == "macro_theme"
+    assert _errors(envelope) == []
 
 
 def test_market_sample_passes():
-    assert _errors(sample_research_envelope("market")) == []
+    envelope = sample_research_envelope("market")
+    assert envelope["kind"] == "market"
+    assert envelope["asset_class"] == "DRAFT:prediction_market"
+    assert _errors(envelope) == []
 
 
 def test_dump_and_load_round_trip():
@@ -121,6 +132,14 @@ def test_unknown_asset_class_without_draft_prefix_fails():
     envelope["asset_class"] = "new_vertical"
 
     assert any("DRAFT:<name>" in error for error in _errors(envelope))
+
+
+def test_kind_values_are_not_implicitly_authorized_asset_classes():
+    for asset_class in ["stock", "commodity_theme", "macro_event", "prediction_market"]:
+        envelope = sample_research_envelope("protocol")
+        envelope["asset_class"] = asset_class
+
+        assert any("DRAFT:<name>" in error for error in _errors(envelope))
 
 
 def test_draft_asset_class_passes():

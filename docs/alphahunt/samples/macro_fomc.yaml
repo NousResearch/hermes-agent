@@ -1,6 +1,6 @@
 subject: FOMC policy path research
 kind: macro_event
-asset_class: macro_event
+asset_class: macro_theme
 aliases:
 - FOMC
 - Federal Reserve

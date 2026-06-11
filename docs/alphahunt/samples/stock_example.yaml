@@ -1,6 +1,6 @@
 subject: Example Semiconductor Inc research
 kind: stock
-asset_class: stock
+asset_class: DRAFT:us_stock
 tickers:
 - EXSM
 aliases:

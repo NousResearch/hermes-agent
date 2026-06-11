@@ -16,7 +16,7 @@ place orders, sign transactions, place wagers, or manage funds.
 ```yaml
 subject: "<human-readable name and idempotency anchor>"
 kind: <stock|etf|protocol|commodity_theme|macro_event|industry_theme|market>
-asset_class: "<known class or DRAFT:new_class>"
+asset_class: "<authorized production enum or DRAFT:new_class>"
 tickers: ["..."]
 chain: "<chain>"
 contract_addresses: ["0x..."]
@@ -67,6 +67,11 @@ Validation must fail when any of these are missing or empty:
 
 `note.next_check_at` must be parseable ISO8601.
 
+`asset_class` must be an AlphaHunt authorized production enum. If it is an
+unauthorized new category, use `DRAFT:<name>`. DRAFT values only go into the
+research note / raw_json and must not be written into the
+`projects.asset_class` production enum column.
+
 `source_references` belongs under `note.source_references`. Top-level
 `source_references` must fail validation so the envelope stays aligned with the
 AlphaHunt `project_research_note` contract.
@@ -87,8 +92,8 @@ Unknown kinds must fail validation.
 
 ## Asset Class
 
-`asset_class` must be one of the known Hermes/AlphaHunt classes accepted by
-`gateway.alphahunt.research_yaml`, or it must use the draft form:
+`asset_class` must be one of the AlphaHunt authorized production enums accepted
+by `gateway.alphahunt.research_yaml`, or it must use the draft form:
 
 ```yaml
 asset_class: "DRAFT:new_class_name"

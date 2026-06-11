@@ -24,7 +24,7 @@ export class KeyboardEvent extends TerminalEvent {
     this.key = keyFromParsed(parsedKey)
     this.ctrl = parsedKey.ctrl
     this.shift = parsedKey.shift
-    this.meta = parsedKey.meta || parsedKey.option
+    this.meta = Boolean(parsedKey.meta)
     this.superKey = parsedKey.super
     this.fn = parsedKey.fn
   }

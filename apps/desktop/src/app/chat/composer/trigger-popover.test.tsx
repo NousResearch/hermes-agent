@@ -34,9 +34,17 @@ describe('ComposerTriggerPopover i18n', () => {
   })
 
   it('renders localized loading copy for slash commands', () => {
-    const { container } = renderPopover('/', true)
+    renderPopover('/', true)
 
+    // While loading the popover shows only the spinner + loading copy — the
+    // `/help` empty-state hint is reserved for the resolved (not-loading) state.
     expect(screen.getByText('查找中…')).toBeTruthy()
+  })
+
+  it('renders the slash empty-state hint when not loading', () => {
+    const { container } = renderPopover('/')
+
+    expect(screen.getByText('没有匹配项。')).toBeTruthy()
     expect(container.textContent).toContain('/help')
   })
 })

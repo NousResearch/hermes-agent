@@ -1,6 +1,6 @@
 import { cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
@@ -55,6 +55,7 @@ function Harness({
   onSeedState,
   refreshSessions,
   requestGateway,
+  resumeStoredSession,
   storedSessionId
 }: {
   busyRef?: MutableRefObject<boolean>
@@ -62,6 +63,7 @@ function Harness({
   onSeedState?: (state: Record<string, unknown>) => void
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   storedSessionId?: null | string
 }) {
   const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
@@ -69,6 +71,12 @@ function Harness({
     current: storedSessionId === undefined ? RUNTIME_SESSION_ID : storedSessionId
   }
   const localBusyRef = busyRef ?? { current: false }
+  const stateRef = useRef({
+    messages: [],
+    busy: false,
+    awaitingResponse: false,
+    interrupted: true
+  } as never)
 
   const actions = usePromptActions({
     activeSessionId: RUNTIME_SESSION_ID,
@@ -79,17 +87,14 @@ function Harness({
     handleSkinCommand: () => '',
     refreshSessions,
     requestGateway,
+    resumeStoredSession: resumeStoredSession ?? (() => undefined),
     selectedStoredSessionIdRef,
     startFreshSessionDraft: () => undefined,
     sttEnabled: false,
     updateSessionState: (_sessionId, updater) => {
       // Seed with interrupted:true so we can prove a fresh submit clears it.
-      const next = updater({
-        messages: [],
-        busy: false,
-        awaitingResponse: false,
-        interrupted: true
-      } as never) as unknown as Record<string, unknown>
+      const next = updater(stateRef.current) as unknown as Record<string, unknown>
+      stateRef.current = next as never
       onSeedState?.(next)
 
       return next as never
@@ -187,6 +192,68 @@ describe('usePromptActions /title', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.title', expect.objectContaining({ title: 'way too long title' }))
     expect(refreshSessions).not.toHaveBeenCalled()
     expect($sessions.get()[0]?.title).toBe('Old title')
+  })
+})
+
+describe('usePromptActions desktop slash pickers', () => {
+  beforeEach(() => {
+    setSessions(() => [sessionInfo({ id: '20260610_120000_abcdef', title: 'Loaded session' })])
+  })
+
+  afterEach(() => {
+    cleanup()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
+  })
+
+  it('resumes an exact session id even when it is not in the loaded sidebar cache', async () => {
+    const resumeStoredSession = vi.fn(async () => undefined)
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        resumeStoredSession={resumeStoredSession}
+      />
+    )
+
+    await handle!.submitText('/resume 20260610_130000_123abc')
+
+    expect(resumeStoredSession).toHaveBeenCalledWith('20260610_130000_123abc')
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+
+  it('marks a timed-out handoff as failed so the next attempt can retry', async () => {
+    vi.useFakeTimers()
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'handoff.state') {
+        return { state: 'pending' } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(<Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />)
+
+    const result = handle!.submitText('/handoff telegram')
+    await vi.advanceTimersByTimeAsync(61_000)
+    await result
+
+    expect(calls.some(call => call.method === 'handoff.request')).toBe(true)
+    expect(calls).toContainEqual({
+      method: 'handoff.fail',
+      params: {
+        error: expect.stringContaining('Timed out'),
+        session_id: RUNTIME_SESSION_ID
+      }
+    })
   })
 })
 

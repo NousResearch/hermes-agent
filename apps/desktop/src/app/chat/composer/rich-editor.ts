@@ -10,7 +10,10 @@ import {
   DIRECTIVE_CHIP_CLASS,
   directiveIconElement,
   directiveIconSvg,
-  formatRefValue
+  formatRefValue,
+  slashChipClass,
+  type SlashChipKind,
+  slashIconElement
 } from '@/components/assistant-ui/directive-text'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
@@ -73,6 +76,24 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   label.className = 'truncate'
   label.textContent = displayLabel || refLabel(id)
   chip.append(directiveIconElement(kind), label)
+
+  return chip
+}
+
+/** A non-editable pill for a picked slash command (`/skin nous`, `/tropes`).
+ *  `data-ref-text` carries the literal command so `composerPlainText` round-trips
+ *  it back to the exact text that gets submitted. */
+export function slashChipElement(command: string, kind: SlashChipKind, label?: string) {
+  const chip = document.createElement('span')
+  const text = document.createElement('span')
+
+  chip.contentEditable = 'false'
+  chip.dataset.refText = command
+  chip.dataset.slashKind = kind
+  chip.className = slashChipClass(kind)
+  text.className = 'truncate'
+  text.textContent = label || command
+  chip.append(slashIconElement(kind), text)
 
   return chip
 }

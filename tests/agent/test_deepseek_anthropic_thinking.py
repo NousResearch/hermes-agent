@@ -208,8 +208,14 @@ class TestDeepSeekAnthropicPreservesThinking:
         assert _is_deepseek_anthropic_endpoint("https://api.deepseek.com/anthropic/v1") is True
 
     def test_non_deepseek_third_party_still_strips_all_thinking(self) -> None:
-        """MiniMax and other third-party Anthropic endpoints must keep the
-        generic strip-all behaviour (they reject unsigned blocks outright).
+        """Third-party endpoints that have NOT returned ``reasoning_content``
+        keep the generic strip-all behaviour: Anthropic-signed thinking blocks
+        can't be validated upstream and must not be replayed.
+
+        When the endpoint *has* returned ``reasoning_content``, it is in
+        thinking mode and requires the synthesised unsigned blocks to
+        round-trip — that path is covered by
+        tests/agent/test_third_party_reasoning_autodetect.py.
         """
         from agent.anthropic_adapter import convert_messages_to_anthropic
 
@@ -217,7 +223,14 @@ class TestDeepSeekAnthropicPreservesThinking:
             {"role": "user", "content": "hi"},
             {
                 "role": "assistant",
-                "reasoning_content": "r1",
+                "content": "calling tool",
+                "reasoning_details": [
+                    {
+                        "type": "thinking",
+                        "thinking": "anthropic-signed reasoning",
+                        "signature": "sig-from-anthropic",
+                    }
+                ],
                 "tool_calls": [
                     {
                         "id": "call_1",
@@ -234,9 +247,10 @@ class TestDeepSeekAnthropicPreservesThinking:
         assistant_msg = next(m for m in converted if m["role"] == "assistant")
         thinking_blocks = [
             b for b in assistant_msg["content"]
-            if isinstance(b, dict) and b.get("type") == "thinking"
+            if isinstance(b, dict) and b.get("type") in {"thinking", "redacted_thinking"}
         ]
         assert thinking_blocks == [], (
-            "Non-DeepSeek third-party endpoints must keep the generic "
-            "strip-all-thinking behaviour — unsigned blocks get rejected."
+            "Without reasoning_content in the conversation, third-party "
+            "endpoints must keep the generic strip-all-thinking behaviour — "
+            "Anthropic signatures can't be validated upstream."
         )

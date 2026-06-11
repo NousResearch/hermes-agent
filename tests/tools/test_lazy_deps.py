@@ -206,6 +206,74 @@ class TestEnsure:
         with pytest.raises(ld.FeatureUnavailable, match="still not importable"):
             ld.ensure("test.cache", prompt=False)
 
+    @staticmethod
+    def _successful_install(monkeypatch, feature, spec):
+        # Shared setup: pip succeeds and the metadata version check passes
+        # (missing on first probe, satisfied after "install").
+        monkeypatch.setitem(ld.LAZY_DEPS, feature, (spec,))
+        call_count = {"n": 0}
+
+        def fake_satisfied(_spec):
+            call_count["n"] += 1
+            return call_count["n"] > 1
+
+        monkeypatch.setattr(ld, "_is_satisfied", fake_satisfied)
+        monkeypatch.setattr(ld, "_allow_lazy_installs", lambda: True)
+        monkeypatch.setattr(
+            ld, "_venv_pip_install",
+            lambda specs, **kw: ld._InstallResult(True, "ok", ""),
+        )
+
+    def test_install_metadata_ok_but_import_broken_raises(self, monkeypatch):
+        # Regression for the gap behind #44403: pip succeeds and the
+        # metadata version check passes, but the dist's files are broken —
+        # none of its declared top-level modules can be found.
+        import importlib.metadata
+        import importlib.util
+
+        self._successful_install(monkeypatch, "test.broken", "zzzfake>=1")
+        monkeypatch.setattr(
+            importlib.metadata, "packages_distributions",
+            lambda: {"zzzfake_mod": ["zzzfake"]},
+        )
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        with pytest.raises(ld.FeatureUnavailable, match="import check failed"):
+            ld.ensure("test.broken", prompt=False)
+
+    def test_import_smoke_test_uses_real_import_names(self, monkeypatch):
+        # Dist name and import name routinely differ (Pillow → PIL,
+        # discord.py → discord, google-api-python-client →
+        # googleapiclient). The smoke test must resolve names from the
+        # dist's own metadata, never from the dist name.
+        import importlib.metadata
+        import importlib.util
+
+        self._successful_install(monkeypatch, "test.renamed", "zzzfake-py>=1")
+        monkeypatch.setattr(
+            importlib.metadata, "packages_distributions",
+            lambda: {"zzzfake": ["zzzfake-py"]},
+        )
+        monkeypatch.setattr(
+            importlib.util, "find_spec",
+            lambda name: object() if name == "zzzfake" else None,
+        )
+        ld.ensure("test.renamed", prompt=False)  # no exception
+
+    def test_import_smoke_test_skips_dists_without_metadata(self, monkeypatch):
+        # A dist that declares no importable top-level modules (or path-like
+        # junk only) can't be verified — skip it rather than guess and
+        # fail a working install.
+        import importlib.metadata
+        import importlib.util
+
+        self._successful_install(monkeypatch, "test.opaque", "zzzfake>=1")
+        monkeypatch.setattr(
+            importlib.metadata, "packages_distributions",
+            lambda: {"zzzfake/subdir": ["zzzfake"]},
+        )
+        monkeypatch.setattr(importlib.util, "find_spec", lambda name: None)
+        ld.ensure("test.opaque", prompt=False)  # no exception
+
 
 # ---------------------------------------------------------------------------
 # is_available

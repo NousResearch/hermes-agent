@@ -4,10 +4,13 @@ import {
   $composerAttachments,
   addComposerAttachment,
   clearPersistedComposerDraft,
+  clearStashedComposerAttachments,
   type ComposerAttachment,
   composerDraftStorageKey,
   readPersistedComposerDraft,
   removeComposerAttachment,
+  stashComposerAttachments,
+  takeComposerAttachments,
   updateComposerAttachment,
   writePersistedComposerDraft
 } from './composer'
@@ -79,5 +82,50 @@ describe('persisted composer drafts', () => {
     clearPersistedComposerDraft('session-a')
 
     expect(readPersistedComposerDraft('session-a')).toBe('')
+  })
+})
+
+describe('stashed composer attachments', () => {
+  afterEach(() => {
+    clearStashedComposerAttachments('session-a')
+    clearStashedComposerAttachments('session-b')
+    clearStashedComposerAttachments(null)
+  })
+
+  it('retains and restores attachments per session scope', () => {
+    stashComposerAttachments('session-a', [attachment({ id: 'file:a' })])
+    stashComposerAttachments('session-b', [attachment({ id: 'image:b', kind: 'image' })])
+
+    expect(takeComposerAttachments('session-a').map(a => a.id)).toEqual(['file:a'])
+    expect(takeComposerAttachments('session-b').map(a => a.id)).toEqual(['image:b'])
+  })
+
+  it('shares a stable new-session scope with the text draft helpers', () => {
+    stashComposerAttachments(null, [attachment({ id: 'file:new' })])
+
+    expect(takeComposerAttachments(undefined).map(a => a.id)).toEqual(['file:new'])
+  })
+
+  it('returns cloned attachments so callers cannot mutate the stash', () => {
+    stashComposerAttachments('session-a', [attachment({ id: 'file:a', label: 'orig.pdf' })])
+
+    const taken = takeComposerAttachments('session-a')
+    taken[0]!.label = 'mutated.pdf'
+
+    expect(takeComposerAttachments('session-a')[0]?.label).toBe('orig.pdf')
+  })
+
+  it('drops the scope entry when stashing an empty set', () => {
+    stashComposerAttachments('session-a', [attachment({ id: 'file:a' })])
+    stashComposerAttachments('session-a', [])
+
+    expect(takeComposerAttachments('session-a')).toEqual([])
+  })
+
+  it('clears a scope explicitly after an accepted submit', () => {
+    stashComposerAttachments('session-a', [attachment({ id: 'file:a' })])
+    clearStashedComposerAttachments('session-a')
+
+    expect(takeComposerAttachments('session-a')).toEqual([])
   })
 })

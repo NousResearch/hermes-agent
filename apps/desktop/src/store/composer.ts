@@ -83,6 +83,38 @@ export function clearPersistedComposerDraft(scope: string | null | undefined) {
   }
 }
 
+// Attachments can't ride along in localStorage the way text does — they carry
+// live blobs, object URLs, and in-flight upload state that don't serialize and
+// are tied to the running app. So we retain them per scope in an in-memory map
+// instead: a session switch restores the chips you'd staged, even though they
+// (unlike text) cannot survive a full app reload.
+const composerAttachmentsByScope = new Map<string, ComposerAttachment[]>()
+
+const cloneComposerAttachments = (attachments: ComposerAttachment[]): ComposerAttachment[] =>
+  attachments.map(attachment => ({ ...attachment }))
+
+export function stashComposerAttachments(scope: string | null | undefined, attachments: ComposerAttachment[]) {
+  const key = storageScope(scope)
+
+  if (attachments.length === 0) {
+    composerAttachmentsByScope.delete(key)
+
+    return
+  }
+
+  composerAttachmentsByScope.set(key, cloneComposerAttachments(attachments))
+}
+
+export function takeComposerAttachments(scope: string | null | undefined): ComposerAttachment[] {
+  const stashed = composerAttachmentsByScope.get(storageScope(scope))
+
+  return stashed ? cloneComposerAttachments(stashed) : []
+}
+
+export function clearStashedComposerAttachments(scope: string | null | undefined) {
+  composerAttachmentsByScope.delete(storageScope(scope))
+}
+
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)
 }

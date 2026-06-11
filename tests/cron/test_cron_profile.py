@@ -406,6 +406,39 @@ class TestTickProfilePartition:
         assert os.environ["HERMES_HOME"] == str(root)
         assert sched._get_hermes_home() == root
 
+    def test_profile_delivery_uses_profile_context_but_marks_scheduler_store(
+        self, isolated_cron_profile_home, monkeypatch
+    ):
+        import cron.scheduler as sched
+        from hermes_constants import get_hermes_home
+
+        root, profile_home = isolated_cron_profile_home
+        job = {"id": "deliver-profile", "name": "Delivery", "profile": "support"}
+        observed: dict = {}
+
+        monkeypatch.setattr(sched, "get_due_jobs", lambda: [job])
+        monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "run_job", lambda _job: (True, "output", "response", None))
+        monkeypatch.setattr(sched, "save_job_output", lambda _jid, _o: observed.setdefault("save_home", str(get_hermes_home())))
+
+        def fake_deliver(_job, _content, **_kw):
+            observed["deliver_home"] = str(get_hermes_home())
+            observed["scheduler_home_during_delivery"] = str(sched._get_hermes_home())
+            return None
+
+        def fake_mark(*_a, **_kw):
+            observed["mark_home"] = str(get_hermes_home())
+
+        monkeypatch.setattr(sched, "_deliver_result", fake_deliver)
+        monkeypatch.setattr(sched, "mark_job_run", fake_mark)
+        monkeypatch.setattr(sched, "_hermes_home", None)
+
+        assert sched.tick(verbose=False) == 1
+        assert observed["save_home"] == str(root)
+        assert observed["deliver_home"] == str(profile_home.resolve())
+        assert observed["scheduler_home_during_delivery"] == str(profile_home.resolve())
+        assert observed["mark_home"] == str(root)
+
     def test_profile_jobs_run_sequentially(self, isolated_cron_profile_home, monkeypatch):
         import threading
         import cron.scheduler as sched

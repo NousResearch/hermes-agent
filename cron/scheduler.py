@@ -2153,7 +2153,12 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                 delivery_error = None
                 if should_deliver:
                     try:
-                        delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                        # Delivery also needs the job profile's gateway config/env
+                        # (for example, profile-specific Telegram bot tokens).
+                        # Keep output persistence and mark_job_run in the scheduler
+                        # store, but resolve/send delivery inside the profile context.
+                        with _job_profile_context(job["id"], job.get("profile")):
+                            delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                     except Exception as de:
                         delivery_error = str(de)
                         logger.error("Delivery failed for job %s: %s", job["id"], de)

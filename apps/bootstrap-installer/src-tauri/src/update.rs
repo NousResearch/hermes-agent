@@ -138,14 +138,23 @@ async fn run_update(app: AppHandle) -> Result<()> {
         );
         anyhow!(msg)
     })?;
-    if needs_archive_git_checkout_prepare(&install_root) {
-        emit_log(
-            &app,
-            Some("update"),
-            LogStream::Stdout,
-            "[update] archive-created checkout is missing .git; Git checkout preparation is required",
-        );
-        prepare_archive_git_checkout(&app, &install_root, &update_branch).await?;
+    if archive_checkout_without_git(&install_root) {
+        if needs_archive_git_checkout_prepare(&install_root, &update_branch) {
+            emit_log(
+                &app,
+                Some("update"),
+                LogStream::Stdout,
+                "[update] archive-created checkout is missing .git; Git checkout preparation is required",
+            );
+            prepare_archive_git_checkout(&app, &install_root, &update_branch).await?;
+        } else {
+            emit_log(
+                &app,
+                Some("update"),
+                LogStream::Stdout,
+                "[update] archive-created checkout is missing .git; using ZIP update path for main",
+            );
+        }
     }
 
     // Synthetic manifest so the existing progress UI renders our two stages.
@@ -635,12 +644,19 @@ fn resolve_hermes(install_root: &Path) -> Option<PathBuf> {
     None
 }
 
-fn needs_archive_git_checkout_prepare(install_root: &Path) -> bool {
+fn archive_checkout_without_git(install_root: &Path) -> bool {
     !install_root.join(".git").exists()
         && matches!(
             crate::repo_archive::read_archive_source_marker(install_root),
             Ok(Some(_))
         )
+}
+
+fn needs_archive_git_checkout_prepare(install_root: &Path, update_branch: &str) -> bool {
+    if !archive_checkout_without_git(install_root) {
+        return false;
+    }
+    !(cfg!(target_os = "windows") && update_branch.trim() == "main")
 }
 
 fn archive_git_prepare_plan(marker: &serde_json::Value) -> Result<ArchiveGitPreparePlan> {
@@ -1187,18 +1203,49 @@ mod tests {
         let install_root = root.join("hermes-agent");
         std::fs::create_dir_all(&install_root).unwrap();
 
-        assert!(!needs_archive_git_checkout_prepare(&install_root));
+        assert!(!needs_archive_git_checkout_prepare(
+            &install_root,
+            "feature/rust-release"
+        ));
 
         std::fs::write(
             install_root.join(crate::repo_archive::SOURCE_MARKER_NAME),
             r#"{"schemaVersion":1,"method":"github_archive","ref":"main"}"#,
         )
         .unwrap();
-        assert!(needs_archive_git_checkout_prepare(&install_root));
+        assert!(needs_archive_git_checkout_prepare(
+            &install_root,
+            "feature/rust-release"
+        ));
 
         std::fs::create_dir_all(install_root.join(".git")).unwrap();
-        assert!(!needs_archive_git_checkout_prepare(&install_root));
+        assert!(!needs_archive_git_checkout_prepare(
+            &install_root,
+            "feature/rust-release"
+        ));
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn archive_checkout_on_windows_main_uses_zip_update_without_git_prepare() {
+        let root = unique_tmp_dir("archive-main-zip-update");
+        let install_root = root.join("hermes-agent");
+        std::fs::create_dir_all(&install_root).unwrap();
+        std::fs::write(
+            install_root.join(crate::repo_archive::SOURCE_MARKER_NAME),
+            r#"{"schemaVersion":1,"method":"github_archive","ref":"main","branch":"main"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            needs_archive_git_checkout_prepare(&install_root, "main"),
+            !cfg!(target_os = "windows")
+        );
+        assert!(needs_archive_git_checkout_prepare(
+            &install_root,
+            "feature/rust-release"
+        ));
         let _ = std::fs::remove_dir_all(&root);
     }
 

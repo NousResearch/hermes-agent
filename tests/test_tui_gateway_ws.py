@@ -1,7 +1,33 @@
 import asyncio
+import time
 
 from tui_gateway import server
 from tui_gateway import ws as ws_mod
+from tui_gateway.session_state import SessionState
+
+
+def _fresh_session(**fields):
+    """Session seeded like every real creation site: a SessionState with timestamps.
+
+    Two reasons this must be a SessionState (not a bare dict), each a real
+    contract the production disconnect path now relies on:
+
+    * Timestamps — importing tui_gateway.server starts a module-level
+      idle-reaper thread (_start_idle_reaper) that scans _sessions every 300s
+      and evicts sessions whose transport is dead and whose
+      created_at/last_active are older than the 6h TTL. A seed missing those
+      keys reads as 0.0 ("idle since the epoch") and becomes evictable the
+      instant handle_ws's finally closes the transport; in a process that
+      outlives the reaper's first tick, a tick in the close→assert window
+      pops the session (KeyError). Real creation sites always stamp both.
+    * Attribute access — the repoint path sets ``session.transport =
+      _detached_ws_transport`` (server.py, Phase 3 Step 3 attribute style);
+      that assignment raises AttributeError on a plain dict, silently
+      skipping the repoint so the session keeps its live WSTransport. Real
+      sessions are SessionState, so the test must be too.
+    """
+    now = time.time()
+    return SessionState({"created_at": now, "last_active": now, **fields})
 
 
 def _run_disconnect(monkeypatch, seed):
@@ -61,12 +87,12 @@ def test_ws_disconnect_reaps_flagged_session_and_closes_worker(monkeypatch):
         _run_disconnect(
             monkeypatch,
             lambda t: server._sessions.update(
-                flagged={
-                    "transport": t,
-                    "close_on_disconnect": True,
-                    "slash_worker": FakeWorker(),
-                    "session_key": "k",
-                }
+                flagged=_fresh_session(
+                    transport=t,
+                    close_on_disconnect=True,
+                    slash_worker=FakeWorker(),
+                    session_key="k",
+                )
             ),
         )
         assert "flagged" not in server._sessions
@@ -81,7 +107,9 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
         _run_disconnect(
             monkeypatch,
             lambda t: server._sessions.update(
-                plain={"transport": t, "close_on_disconnect": False, "session_key": "k"}
+                plain=_fresh_session(
+                    transport=t, close_on_disconnect=False, session_key="k"
+                )
             ),
         )
         assert server._sessions["plain"]["transport"] is server._detached_ws_transport

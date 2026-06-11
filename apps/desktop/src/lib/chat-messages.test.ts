@@ -28,7 +28,50 @@ describe('toChatMessages', () => {
     expect(chatMessageText(messages[0])).toBe('Planning.Done.')
   })
 
-  it('keeps assistant tool-call iterations in one loaded assistant bubble', () => {
+  it('preserves intermediate assistant text when message has both text and tool_calls', () => {
+    // Reproducer for: intermediate text lost when messages have both content and tool_calls
+    // Only the last text-only assistant message was visible; earlier text+tool_calls were merged away.
+    const messages = toChatMessages([
+      {
+        role: 'assistant',
+        content: 'Analyzing issue A: the config key is misspelled.',
+        timestamp: 1,
+        tool_calls: [{ id: 'tc-a', function: { name: 'read_file', arguments: '{"path":"config.yaml"}' } }]
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'tc-a',
+        tool_name: 'read_file',
+        content: '{"content":"key: val"}',
+        timestamp: 2
+      },
+      {
+        role: 'assistant',
+        content: 'Analyzing issue B: the import path is wrong.',
+        timestamp: 3,
+        tool_calls: [{ id: 'tc-b', function: { name: 'search_files', arguments: '{"pattern":"import"}' } }]
+      },
+      {
+        role: 'tool',
+        tool_call_id: 'tc-b',
+        tool_name: 'search_files',
+        content: '{"matches":[]}',
+        timestamp: 4
+      },
+      { role: 'assistant', content: 'Summary: fixed both issues.', timestamp: 5 }
+    ])
+
+    const assistantMessages = messages.filter(m => m.role === 'assistant')
+
+    // Text+tool_calls messages are preserved as separate messages.
+    // The final summary merges into the last text+tc message.
+    expect(assistantMessages).toHaveLength(2)
+    expect(chatMessageText(assistantMessages[0])).toContain('Analyzing issue A')
+    expect(chatMessageText(assistantMessages[1])).toContain('Analyzing issue B')
+    expect(chatMessageText(assistantMessages[1])).toContain('Summary: fixed both issues.')
+  })
+
+  it('preserves intermediate text+tool_calls as separate messages', () => {
     const messages = toChatMessages([
       { role: 'user', content: 'check this repo', timestamp: 1 },
       {
@@ -62,10 +105,12 @@ describe('toChatMessages', () => {
 
     const assistantMessages = messages.filter(message => message.role === 'assistant')
 
-    expect(assistantMessages).toHaveLength(1)
-    expect(assistantMessages[0].parts.filter(part => part.type === 'tool-call')).toHaveLength(2)
+    // Text+tool_calls messages are preserved as separate visible messages.
+    // The final text-only message merges into the last text+tc message.
+    expect(assistantMessages).toHaveLength(2)
     expect(chatMessageText(assistantMessages[0])).toContain("Let me also check if there's a top-level lint workflow.")
-    expect(chatMessageText(assistantMessages[0])).toContain('Now let me check git status and commit.')
+    expect(chatMessageText(assistantMessages[1])).toContain('No CI in this repo. Build is enough.')
+    expect(chatMessageText(assistantMessages[1])).toContain('Now let me check git status and commit.')
   })
 
   it('hides attached context payloads from user message display', () => {

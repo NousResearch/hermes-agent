@@ -786,7 +786,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       const currentHasToolCall = parts.some(part => part.type === 'tool-call')
       const activeHasToolCall = Boolean(activeAssistant?.parts.some(part => part.type === 'tool-call'))
 
-      if (activeAssistant && (currentHasToolCall || activeHasToolCall)) {
+      if (activeAssistant && (currentHasToolCall || activeHasToolCall) && !(displayContent && currentHasToolCall)) {
         activeAssistant.parts = [...activeAssistant.parts, ...parts]
         activeAssistant.timestamp = message.timestamp ?? activeAssistant.timestamp
 

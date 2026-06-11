@@ -1,9 +1,9 @@
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { act, cleanup, fireEvent, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { $paneStates, setPaneOpen, setPaneWidthOverride } from '@/store/panes'
 
-import { Pane, PaneMain, PaneShell } from './pane-shell'
+import { Pane, PANE_TOGGLE_REVEAL_EVENT, PaneMain, PaneShell } from './pane-shell'
 
 function gridContainer(rendered: ReturnType<typeof render>): HTMLElement {
   const root = rendered.container.firstElementChild
@@ -145,6 +145,54 @@ describe('PaneShell composition', () => {
     )
 
     expect($paneStates.get().files?.open).toBe(true)
+  })
+
+  it('force-collapses without mutating the store-persisted open state', () => {
+    setPaneOpen('files', true)
+
+    const rendered = render(
+      <PaneShell>
+        <Pane forceCollapsed id="files" side="left" width="240px">
+          files
+        </Pane>
+        <PaneMain>main</PaneMain>
+      </PaneShell>
+    )
+
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['0px', 'minmax(0,1fr)'])
+    expect($paneStates.get().files?.open).toBe(true)
+  })
+
+  it('renders a force-collapsed hover reveal pane and toggles it from the keyboard event', () => {
+    const overlayStates: boolean[] = []
+
+    const rendered = render(
+      <PaneShell>
+        <Pane
+          forceCollapsed
+          hoverReveal
+          id="files"
+          onOverlayActiveChange={active => overlayStates.push(active)}
+          side="left"
+          width="240px"
+        >
+          <span data-testid="files-content">files</span>
+        </Pane>
+        <PaneMain>main</PaneMain>
+      </PaneShell>
+    )
+
+    const pane = rendered.getByTestId('files-content').closest('[data-pane-id="files"]')
+
+    expect(getColumnTemplate(gridContainer(rendered))).toEqual(['0px', 'minmax(0,1fr)'])
+    expect(pane?.getAttribute('data-pane-hover-reveal')).toBe('closed')
+    expect(overlayStates).toContain(true)
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(PANE_TOGGLE_REVEAL_EVENT, { detail: { id: 'files' } }))
+    })
+
+    expect(pane?.getAttribute('data-pane-hover-reveal')).toBe('open')
   })
 
   it('uses widthOverride from the store when set', () => {

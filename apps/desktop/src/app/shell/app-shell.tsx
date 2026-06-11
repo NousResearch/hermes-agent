@@ -5,6 +5,7 @@ import { useSyncExternalStore } from 'react'
 import { NotificationStack } from '@/components/notifications'
 import { PaneShell } from '@/components/pane-shell'
 import { SidebarProvider } from '@/components/ui/sidebar'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -15,6 +16,9 @@ import {
 } from '@/store/layout'
 import { $paneWidthOverride } from '@/store/panes'
 import { $connection } from '@/store/session'
+import { isSecondaryWindow } from '@/store/windows'
+
+import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
 
 import { KeybindPanel } from './keybind-panel'
 import { StatusbarControls, type StatusbarItem } from './statusbar-controls'
@@ -27,6 +31,7 @@ interface AppShellProps {
   leftTitlebarTools?: readonly TitlebarTool[]
   onOpenSettings: () => void
   overlays?: ReactNode
+  previewPaneOpen?: boolean
   statusbarItems?: readonly StatusbarItem[]
   titlebarTools?: readonly TitlebarTool[]
 }
@@ -52,12 +57,14 @@ export function AppShell({
   leftTitlebarTools,
   onOpenSettings,
   overlays,
+  previewPaneOpen = false,
   statusbarItems,
   titlebarTools
 }: AppShellProps) {
   const sidebarOpen = useStore($sidebarOpen)
   const fileBrowserOpen = useStore($fileBrowserOpen)
   const panesFlipped = useStore($panesFlipped)
+  const narrowViewport = useMediaQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
   const fileBrowserWidthOverride = useStore($paneWidthOverride(FILE_BROWSER_PANE_ID))
   const connection = useStore($connection)
   const viewportFullscreen = useSyncExternalStore(subscribeWindowSize, viewportIsFullscreen, () => false)
@@ -71,8 +78,12 @@ export function AppShell({
 
   // The inset clears the top-left titlebar buttons when nothing covers the
   // window's left edge. Default layout: the sessions sidebar sits there.
-  // Flipped layout: the file browser does instead.
-  const leftEdgePaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
+  // Flipped layout: the file browser does instead. Both force-collapse below
+  // the breakpoint, so they no longer cover the edge in narrow windows.
+  const collapsibleLeftPaneOpen = panesFlipped ? fileBrowserOpen : sidebarOpen
+  const persistentLeftPaneOpen = panesFlipped && previewPaneOpen
+  const leftEdgePaneOpen =
+    !isSecondaryWindow() && ((!narrowViewport && collapsibleLeftPaneOpen) || persistentLeftPaneOpen)
 
   const titlebarContentInset = leftEdgePaneOpen
     ? 0

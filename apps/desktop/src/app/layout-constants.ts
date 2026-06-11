@@ -11,3 +11,8 @@ export const PAGE_INSET_X = 'px-[clamp(1.25rem,4vw,4rem)]'
 // Matching negative inline-margin to bleed an element (e.g. a sticky header bar)
 // out to the gutter edges before re-applying PAGE_INSET_X.
 export const PAGE_INSET_NEG_X = '-mx-[clamp(1.25rem,4vw,4rem)]'
+
+// Below this viewport width a docked sidebar leaves no room for content, so
+// collapsible rails become hover-reveal overlays instead of taking layout space.
+export const SIDEBAR_COLLAPSE_BREAKPOINT_PX = 768
+export const SIDEBAR_COLLAPSE_MEDIA_QUERY = `(max-width: ${SIDEBAR_COLLAPSE_BREAKPOINT_PX}px)`

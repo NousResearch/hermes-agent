@@ -157,13 +157,14 @@ class ServerDef:
 class ServerContext:
     """Context passed into :meth:`ServerDef.build_spawn`.
 
-    Carries the user's auto-install policy, any user-overridden
-    binary paths, and helpers the spawn builder needs.  All fields
-    are optional; defaults yield "auto-install allowed, no overrides".
+    Carries the workspace root, the user's auto-install policy,
+    any user-overridden binary paths, and helpers the spawn builder
+    needs.  The workspace root is required; the install policy defaults
+    to never installing language servers.
     """
 
     workspace_root: str
-    install_strategy: str = "auto"  # "auto" | "manual" | "off"
+    install_strategy: str = "manual"  # "auto" | "manual" | "off"
     binary_overrides: Dict[str, List[str]] = field(default_factory=dict)
     env_overrides: Dict[str, Dict[str, str]] = field(default_factory=dict)
     init_overrides: Dict[str, Dict[str, Any]] = field(default_factory=dict)

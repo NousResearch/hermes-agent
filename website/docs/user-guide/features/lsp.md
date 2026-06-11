@@ -6,25 +6,27 @@ description: "Real language servers (pyright, gopls, rust-analyzer, …) wired i
 
 # Language Server Protocol (LSP)
 
-Hermes runs full language servers — pyright, gopls, rust-analyzer,
+Hermes can run full language servers — pyright, gopls, rust-analyzer,
 typescript-language-server, clangd, and ~20 more — as background
-subprocesses and feeds their semantic diagnostics into the post-write
-lint check used by `write_file` and `patch`. When the agent edits a
-file, it sees exactly the errors that edit introduced — not just
-syntax errors, but **type errors, undefined names, missing imports,
-and project-wide semantic issues** the language server detects.
+subprocesses and feed their semantic diagnostics into the post-write
+lint check used by `write_file` and `patch`. When enabled and the agent
+edits a file, it sees exactly the errors that edit introduced — not just
+syntax errors, but **type errors, undefined names, missing imports, and
+project-wide semantic issues** the language server detects.
 
 This is the same architecture top-tier coding agents use. Hermes
-ships it self-contained: no editor host required, no plugins to
-install, no separate daemon to manage.
+ships it self-contained: no editor host required, no plugins to install,
+no separate daemon to manage. It is opt-in so Hermes does not install
+language-server packages without explicit user configuration.
 
 ## When LSP runs
 
-LSP is gated on **git workspace detection**. When the agent's working
-directory (or the file being edited) is inside a git repository, LSP
-runs against that workspace. When neither is in a git repo, LSP
-stays dormant — useful for messaging gateways where the cwd is the
-user's home directory and there's no project to diagnose.
+LSP is disabled by default. After you set `lsp.enabled: true`, it is
+gated on **git workspace detection**. When the agent's working directory
+(or the file being edited) is inside a git repository, LSP runs against
+that workspace. When neither is in a git repo, LSP stays dormant —
+useful for messaging gateways where the cwd is the user's home directory
+and there's no project to diagnose.
 
 The check is layered: in-process syntax check first (microseconds),
 then LSP diagnostics second when syntax is clean. A flaky or missing
@@ -139,15 +141,17 @@ binary installed.
 
 ## Configuration
 
-The defaults work for typical setups; nothing to set if the binaries
-are on PATH.
+LSP is opt-in. Set `enabled: true` to use language servers that are
+already on PATH or in `<HERMES_HOME>/lsp/bin/`, and set
+`install_strategy: auto` only if Hermes should install missing server
+packages into its own profile directory.
 
 ```yaml
 # config.yaml
 lsp:
   # Master toggle. Disabling skips the entire subsystem — no servers
   # spawn, no background event loop runs.
-  enabled: true
+  enabled: false
 
   # How long to wait for diagnostics after each write.
   wait_mode: document      # "document" or "full"
@@ -162,7 +166,7 @@ lsp:
   # How to handle missing server binaries.
   #   auto    — install via npm/pip/go install into <HERMES_HOME>/lsp/bin
   #   manual  — only use binaries already on PATH
-  install_strategy: auto
+  install_strategy: manual
 
   # Per-server overrides (all optional).
   servers:
@@ -191,7 +195,7 @@ lsp:
 
 ## Installation locations
 
-When `install_strategy: auto`, Hermes installs binaries into
+When you explicitly set `install_strategy: auto`, Hermes installs binaries into
 `<HERMES_HOME>/lsp/bin/`. NPM packages land in
 `<HERMES_HOME>/lsp/node_modules/` with bin symlinks one level up.
 Go binaries come from `go install` with `GOBIN` pointed at the

@@ -11397,6 +11397,7 @@ class GatewayRunner:
             )
         model, runtime_kwargs = self._resolve_session_agent_runtime(source=source)
         turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
+        loop = asyncio.get_running_loop()
 
         def _run_sync() -> str:
             agent = AIAgent(
@@ -11406,13 +11407,22 @@ class GatewayRunner:
                 quiet_mode=True,
                 platform=Platform.DISCORD.value,
                 session_id=f"realtime-voice:{guild_id}",
+                local_tools=[
+                    self._make_realtime_task_update_local_tool(
+                        guild_id=guild_id,
+                        text_channel_id=text_channel_id,
+                        adapter=adapter,
+                        loop=loop,
+                    )
+                ],
             )
             try:
                 result = agent.run_conversation(
                     user_message=prompt,
                     system_message=(
                         "You are answering a realtime Discord voice tool call. "
-                        "Be concise and do not claim file/system side effects unless tools actually performed them."
+                        "Be concise and do not claim file/system side effects unless tools actually performed them. "
+                        "For meaningful progress while working, call realtime_task_update with a one-line summary."
                     ),
                     task_id=f"realtime_voice_{guild_id}",
                 )
@@ -11425,6 +11435,51 @@ class GatewayRunner:
             return str(result or "")
 
         return await asyncio.to_thread(_run_sync)
+
+    def _make_realtime_task_update_local_tool(self, *, guild_id: int, text_channel_id: str, adapter: Any, loop: asyncio.AbstractEventLoop) -> dict[str, Any]:
+        """Build the private progress-update tool for a realtime inner agent."""
+
+        def _handler(args: dict[str, Any]) -> str:
+            summary = str((args or {}).get("summary") or "").strip()
+            status = str((args or {}).get("status") or "running").strip() or "running"
+            if not summary:
+                return json.dumps({"ok": False, "error": "summary is required"})
+            update = {
+                "task_id": f"realtime_voice_{guild_id}",
+                "title": "Realtime agent task",
+                "status": status,
+                "summary": summary,
+            }
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._send_realtime_voice_task_update(adapter, text_channel_id, update),
+                    loop,
+                )
+            except Exception:
+                logger.debug("Failed to schedule realtime task progress update", exc_info=True)
+                return json.dumps({"ok": False, "error": "failed to schedule update"})
+            return json.dumps({"ok": True})
+
+        return {
+            "name": "realtime_task_update",
+            "description": "Send a one-line progress update for the current realtime voice agent task to Discord text chat. Use this only for meaningful progress, not every minor step.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "summary": {
+                        "type": "string",
+                        "description": "One short user-facing progress summary.",
+                    },
+                    "status": {
+                        "type": "string",
+                        "description": "Optional status such as running, blocked, or completed.",
+                    },
+                },
+                "required": ["summary"],
+                "additionalProperties": False,
+            },
+            "handler": _handler,
+        }
 
     async def _send_realtime_voice_transcript(self, adapter: Any, text_channel_id: str, role: str, text: str) -> None:
         clean = str(text or "").strip()

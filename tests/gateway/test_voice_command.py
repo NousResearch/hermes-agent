@@ -1226,6 +1226,34 @@ class TestVoiceChannelCommands:
         assert message.startswith("**[Realtime display]**")
         assert "https://example.com/reference" in message
 
+    @pytest.mark.asyncio
+    async def test_realtime_task_update_local_tool_posts_progress(self, runner, monkeypatch):
+        """Inner realtime agents get a private progress tool that posts Discord status."""
+        sent_updates = []
+        delivered = asyncio.Event()
+
+        async def fake_send_update(adapter, text_channel_id, update):
+            sent_updates.append((adapter, text_channel_id, update))
+            delivered.set()
+
+        monkeypatch.setattr(runner, "_send_realtime_voice_task_update", fake_send_update)
+        tool = runner._make_realtime_task_update_local_tool(
+            guild_id=7,
+            text_channel_id="123",
+            adapter=object(),
+            loop=asyncio.get_running_loop(),
+        )
+
+        result = tool["handler"]({"summary": "wired the progress hook", "status": "running"})
+        await asyncio.wait_for(delivered.wait(), timeout=1)
+
+        assert result == '{"ok": true}'
+        assert tool["name"] == "realtime_task_update"
+        assert sent_updates[0][1] == "123"
+        assert sent_updates[0][2]["title"] == "Realtime agent task"
+        assert sent_updates[0][2]["status"] == "running"
+        assert sent_updates[0][2]["summary"] == "wired the progress hook"
+
     # -- _handle_voice_channel_input --
 
     @pytest.mark.asyncio

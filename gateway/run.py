@@ -3212,25 +3212,8 @@ class GatewayRunner:
         # queueing + interrupting.  If the agent isn't running yet
         # (sentinel) or lacks steer(), or the payload is empty, fall back
         # to queue semantics so nothing is lost.
-        # #30170 — Subagent protection. ``AIAgent.interrupt()`` cascades
-        # to every entry in the parent's ``_active_children`` list and
-        # aborts in-flight ``delegate_task`` work. Demote ``interrupt``
-        # to ``queue`` when the parent is currently driving subagents so
-        # a conversational follow-up doesn't destroy minutes of subagent
-        # work. Explicit ``/stop`` and ``/new`` slash commands go through
-        # ``_interrupt_and_clear_session`` and are unaffected — the
-        # operator still has a way to force-cancel everything.
-        demoted_for_subagents = (
-            effective_mode == "interrupt"
-            and self._agent_has_active_subagents(running_agent)
-        )
-        if demoted_for_subagents:
-            logger.info(
-                "Demoting busy_input_mode 'interrupt' to 'queue' for session %s "
-                "because the running agent has active subagents (#30170)",
-                session_key,
-            )
-            effective_mode = "queue"
+        # NOTE: Subagent protection (#30170) removed by BOY directive.
+        # BOY wants strong interrupt regardless of active subagents.
         steered = False
         if effective_mode == "steer":
             steer_text = (event.text or "").strip()
@@ -3329,14 +3312,6 @@ class GatewayRunner:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
                 f"Your message arrives after the next tool call."
-            )
-        elif is_queue_mode and demoted_for_subagents:
-            # #30170 — explain the demotion so the user knows their
-            # follow-up didn't accidentally kill the subagent and
-            # discovers `/stop` as the explicit escape hatch.
-            message = (
-                f"⏳ Subagent working{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
             message = (
@@ -7541,22 +7516,8 @@ class GatewayRunner:
                 logger.debug("PRIORITY steer-fallback-to-queue for session %s", _quick_key)
                 self._queue_or_replace_pending_event(_quick_key, event)
                 return None
-            # #30170 — Subagent protection (PRIORITY path). Same rationale
-            # as ``_handle_active_session_busy_message``: an interrupt
-            # cascades through ``_active_children`` and aborts in-flight
-            # delegate_task work. Demote to queue semantics when the
-            # parent is currently driving subagents so a conversational
-            # follow-up doesn't destroy minutes of subagent progress.
-            # /stop reaches its dedicated handler above, so the operator
-            # still has a clean escape hatch.
-            if self._agent_has_active_subagents(running_agent):
-                logger.info(
-                    "PRIORITY interrupt demoted to queue for session %s "
-                    "because the running agent has active subagents (#30170)",
-                    _quick_key,
-                )
-                self._queue_or_replace_pending_event(_quick_key, event)
-                return None
+            # NOTE: Subagent protection (#30170) removed by BOY directive.
+            # BOY wants strong interrupt regardless of active subagents.
             logger.debug("PRIORITY interrupt for session %s", _quick_key)
             running_agent.interrupt(event.text)
             # NOTE: self._pending_messages was write-only (never consumed).

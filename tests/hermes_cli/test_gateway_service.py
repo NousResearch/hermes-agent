@@ -774,7 +774,7 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch):
+    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch, capsys):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
@@ -799,6 +799,12 @@ class TestLaunchdServiceRecovery:
             ("term", 321, False),
             ["launchctl", "kickstart", "-k", target],
         ]
+        # The drain can silently hold for the full budget (180s default); the
+        # desktop updater streams this output as its only progress feedback,
+        # so the stop must be announced BEFORE the wait (#44515).
+        out = capsys.readouterr().out
+        assert "draining in-flight runs" in out
+        assert "up to 12s" in out
 
     def test_launchd_restart_self_requests_graceful_restart_without_kickstart(self, monkeypatch, capsys):
         calls = []

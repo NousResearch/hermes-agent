@@ -10178,6 +10178,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 # gateway doesn't support SIGUSR1 or doesn't exit within
                 # the drain budget, fall back to SIGTERM — the watcher
                 # still sees the exit and relaunches either way.
+                # Announce the drain first: this wait can hold for the full
+                # budget per gateway with no other output, and on surfaces
+                # that stream update progress (the desktop updater most of
+                # all) the silence reads as a hung update (#44515).
+                print(
+                    f"  → {proc.profile}: draining gateway PID {pid} "
+                    f"(up to {int(_drain_budget)}s)..."
+                )
                 drained = _graceful_restart_via_sigusr1(
                     pid,
                     drain_timeout=_drain_budget,

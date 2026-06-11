@@ -201,6 +201,91 @@ class TestWebhookEndpoints:
         r = self.client.post("/api/webhooks", json={"name": "gh", "deliver": "log"})
         assert r.status_code == 400
 
+    def test_enable_platform_starts_gateway_restart(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config
+
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+        restart_calls = []
+
+        class FakeRestartProc:
+            pid = 4242
+
+        def fake_spawn_action(subcommand, name):
+            restart_calls.append((subcommand, name))
+            return FakeRestartProc()
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fake_spawn_action)
+
+        r = self.client.post("/api/webhooks/enable")
+
+        assert r.status_code == 200
+        assert r.json() == {
+            "ok": True,
+            "platform": "webhook",
+            "enabled": True,
+            "needs_restart": False,
+            "restart_started": True,
+            "restart_action": "gateway-restart",
+            "restart_pid": 4242,
+        }
+        assert restart_calls == [(["gateway", "restart"], "gateway-restart")]
+        assert load_config()["platforms"]["webhook"]["enabled"] is True
+        assert self.client.get("/api/webhooks").json()["enabled"] is True
+
+    def test_enable_platform_reports_restart_failure_after_save(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config
+
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+
+        def fail_spawn_action(subcommand, name):
+            assert subcommand == ["gateway", "restart"]
+            assert name == "gateway-restart"
+            raise RuntimeError("supervisor unavailable")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+
+        r = self.client.post("/api/webhooks/enable")
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["ok"] is True
+        assert data["platform"] == "webhook"
+        assert data["enabled"] is True
+        assert data["needs_restart"] is True
+        assert data["restart_started"] is False
+        assert "supervisor unavailable" in data["restart_error"]
+        assert load_config()["platforms"]["webhook"]["enabled"] is True
+
+    def test_enable_platform_reuses_inflight_gateway_restart(self, monkeypatch):
+        import hermes_cli.web_server as ws
+        from hermes_cli.config import load_config
+
+        ws._ACTION_PROCS.pop("gateway-restart", None)
+
+        class FakeRunningProc:
+            pid = 5151
+
+            def poll(self):
+                return None
+
+        monkeypatch.setitem(ws._ACTION_PROCS, "gateway-restart", FakeRunningProc())
+
+        def fail_spawn_action(subcommand, name):
+            raise AssertionError("must not spawn a second concurrent restart")
+
+        monkeypatch.setattr(ws, "_spawn_hermes_action", fail_spawn_action)
+
+        r = self.client.post("/api/webhooks/enable")
+
+        assert r.status_code == 200
+        data = r.json()
+        assert data["needs_restart"] is False
+        assert data["restart_started"] is True
+        assert data["restart_pid"] == 5151
+        assert load_config()["platforms"]["webhook"]["enabled"] is True
+
 
 class TestOpsEndpoints:
     @pytest.fixture(autouse=True)
@@ -622,6 +707,10 @@ class TestAdminEndpointsAuthGate:
         resp = self.client.get(path)
         assert resp.status_code in (401, 403)
 
+    def test_webhooks_enable_post_gated(self):
+        resp = self.client.post("/api/webhooks/enable")
+        assert resp.status_code in (401, 403)
+
 
 class TestUpdateCheckEndpoint:
     """``GET /api/hermes/update/check`` reports availability without applying.
@@ -953,4 +1042,3 @@ class TestToolsConfigEndpoints:
                 kwargs["json"] = payload
             r = fn(path, **kwargs)
             assert r.status_code == 401, f"{method} {path} not gated"
-

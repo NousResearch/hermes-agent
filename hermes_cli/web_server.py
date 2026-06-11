@@ -1707,6 +1707,28 @@ def _spawn_gateway_restart() -> Tuple[subprocess.Popen, bool]:
     return _spawn_hermes_action(["gateway", "restart"], "gateway-restart"), False
 
 
+def _restart_gateway_after_webhook_enable() -> dict[str, Any]:
+    """Best-effort gateway restart after enabling the webhook platform."""
+    try:
+        proc, reused = _spawn_gateway_restart()
+    except Exception as exc:
+        _log.exception("Failed to auto-restart gateway after enabling webhooks")
+        return {
+            "restart_started": False,
+            "restart_error": str(exc),
+        }
+    if reused:
+        _log.info(
+            "Webhook enable: reusing in-flight gateway restart (pid %s)",
+            proc.pid,
+        )
+    return {
+        "restart_started": True,
+        "restart_action": "gateway-restart",
+        "restart_pid": proc.pid,
+    }
+
+
 @app.post("/api/gateway/restart")
 async def restart_gateway():
     """Kick off a ``hermes gateway restart`` in the background."""
@@ -6753,6 +6775,27 @@ async def list_webhooks():
     }
 
 
+@app.post("/api/webhooks/enable")
+async def enable_webhooks():
+    try:
+        _write_platform_enabled("webhook", True)
+    except Exception as exc:
+        _log.exception("Failed to enable webhook platform from dashboard")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to enable webhook platform.",
+        ) from exc
+
+    restart_result = _restart_gateway_after_webhook_enable()
+    return {
+        "ok": True,
+        "platform": "webhook",
+        "enabled": True,
+        "needs_restart": not restart_result["restart_started"],
+        **restart_result,
+    }
+
+
 @app.post("/api/webhooks")
 async def create_webhook(body: WebhookCreate):
     import re as _re
@@ -6763,7 +6806,7 @@ async def create_webhook(body: WebhookCreate):
     if not wh._is_webhook_enabled():
         raise HTTPException(
             status_code=400,
-            detail="Webhook platform is not enabled. Enable it in messaging settings first.",
+            detail="Webhook platform is not enabled. Enable it from the Webhooks page first.",
         )
 
     name = (body.name or "").strip().lower().replace(" ", "-")

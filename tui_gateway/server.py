@@ -186,6 +186,15 @@ _LEONIDAS_PLAN_ERROR_CODES = frozenset(
         "timeout",
     }
 )
+_LEONIDAS_PLAN_SMOKE_MODES = frozenset(
+    {
+        "success",
+        "structured_error",
+        "malformed_response",
+        "invalid_decision",
+    }
+)
+_LEONIDAS_CAPABILITIES_SMOKE_MODES = frozenset({"no_plan"})
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -825,6 +834,9 @@ def _leonidas_capabilities_payload() -> dict:
     """Build the Leonidas gateway capability envelope."""
     methods = {_LEONIDAS_PLAN_METHOD: [_LEONIDAS_PLAN_PROTOCOL_V1]}
     features = dict(_LEONIDAS_FEATURE_FLAGS)
+    smoke_mode = _leonidas_capabilities_smoke_mode()
+    if smoke_mode == "no_plan":
+        methods = {}
 
     if not all(
         isinstance(method_name, str)
@@ -845,6 +857,98 @@ def _leonidas_capabilities_payload() -> dict:
         raise ValueError("invalid Leonidas capability features")
 
     return {"methods": methods, "features": features}
+
+
+def _leonidas_plan_smoke_mode() -> str | None:
+    raw = (os.environ.get("HERMES_LEONIDAS_PLAN_SMOKE_MODE") or "").strip().lower()
+    return raw if raw in _LEONIDAS_PLAN_SMOKE_MODES else None
+
+
+def _leonidas_capabilities_smoke_mode() -> str | None:
+    raw = (os.environ.get("HERMES_LEONIDAS_CAPABILITIES_SMOKE_MODE") or "").strip().lower()
+    return raw if raw in _LEONIDAS_CAPABILITIES_SMOKE_MODES else None
+
+
+def _smoke_plan_success_envelope(request: dict) -> dict:
+    request_kind = request["request_kind"]
+    if request_kind == "hermes_shell_prompt_plan":
+        planning_request = request.get("planning_context", {}).get("request", {})
+        request_path = planning_request.get("prompt_artifact_path") or "prompt-source.json"
+        decision_type = "normalize_prompt"
+        action = {
+            "action_kind": "normalize_prompt",
+            "request_path": request_path,
+        }
+        reason = "deterministic Leonidas shell prompt smoke fixture"
+    elif request_kind == "hermes_run_followup_plan":
+        run_id = (
+            request.get("planning_context", {})
+            .get("request", {})
+            .get("run_id")
+            or "smoke-run"
+        )
+        decision_type = "approve_run"
+        action = {
+            "action_kind": "approve_run",
+            "run_id": run_id,
+        }
+        reason = "deterministic Leonidas run follow-up smoke fixture"
+    else:
+        decision_type = "stop"
+        action = {"action_kind": "stop"}
+        reason = "deterministic Leonidas next-action smoke fixture"
+
+    return {
+        "contract_version": _LEONIDAS_PLAN_CONTRACT_VERSION,
+        "summary": f"{request_kind} smoke success",
+        "decisions": [
+            {
+                "decision_type": decision_type,
+                "action": action,
+                "reason": reason,
+            }
+        ],
+    }
+
+
+def _smoke_plan_invalid_decision_envelope(request: dict) -> dict:
+    return {
+        "contract_version": _LEONIDAS_PLAN_CONTRACT_VERSION,
+        "summary": f'{request["request_kind"]} smoke invalid decision',
+        "decisions": [
+            {
+                "decision_type": "unsupported_action",
+                "action": {"action_kind": "unsupported_action"},
+                "reason": "deterministic Leonidas invalid decision smoke fixture",
+            }
+        ],
+    }
+
+
+def _smoke_plan_malformed_payload(request: dict) -> dict:
+    return {
+        "contract_version": _LEONIDAS_PLAN_CONTRACT_VERSION,
+        "summary": 7,
+        "decisions": [],
+        "request_kind": request["request_kind"],
+    }
+
+
+def _smoke_plan_response(request: dict) -> dict | None:
+    smoke_mode = _leonidas_plan_smoke_mode()
+    if smoke_mode is None:
+        return None
+    if smoke_mode == "success":
+        return _smoke_plan_success_envelope(request)
+    if smoke_mode == "structured_error":
+        return _plan_error_envelope(
+            "planning_refused", "deterministic Leonidas smoke planning refusal"
+        )
+    if smoke_mode == "malformed_response":
+        return _smoke_plan_malformed_payload(request)
+    if smoke_mode == "invalid_decision":
+        return _smoke_plan_invalid_decision_envelope(request)
+    return None
 
 
 _JSON_FENCE_RE = re.compile(r"^\s*```(?:json)?\s*|\s*```\s*$", re.IGNORECASE | re.MULTILINE)
@@ -8238,6 +8342,10 @@ def _(rid, params: dict) -> dict:
     request, envelope = _validate_leonidas_plan_request(params)
     if envelope is not None:
         return _ok(rid, envelope)
+
+    smoke_response = _smoke_plan_response(request)
+    if smoke_response is not None:
+        return _ok(rid, smoke_response)
 
     session, err = _sess_nowait(params, rid)
     if err:

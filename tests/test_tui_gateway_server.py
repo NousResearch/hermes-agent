@@ -404,6 +404,24 @@ def test_leonidas_capabilities_fails_closed_when_payload_build_fails(monkeypatch
     }
 
 
+def test_leonidas_capabilities_smoke_mode_can_hide_plan(monkeypatch):
+    monkeypatch.setenv("HERMES_LEONIDAS_CAPABILITIES_SMOKE_MODE", "no_plan")
+
+    resp = server.dispatch({"id": "1", "method": "leonidas.capabilities"})
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {
+            "methods": {},
+            "features": {
+                "semantic_projection_input": False,
+                "improvement_propose": False,
+            },
+        },
+    }
+
+
 def test_dispatch_routes_leonidas_plan_through_async_pool(monkeypatch):
     server._sessions["plan-sid"] = {
         "session_key": "plan-key",
@@ -533,6 +551,132 @@ def test_leonidas_plan_returns_structured_result_for_supported_kinds(
         }
     finally:
         server._sessions.pop("plan-sid", None)
+
+
+def test_leonidas_plan_smoke_success_bypasses_llm(monkeypatch):
+    monkeypatch.setenv("HERMES_LEONIDAS_PLAN_SMOKE_MODE", "success")
+    monkeypatch.setattr(
+        server,
+        "_plan_with_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "leonidas.plan",
+            "params": _base_leonidas_plan_request("hermes_shell_prompt_plan"),
+        }
+    )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {
+            "contract_version": "leonidas.hermes.plan.v1",
+            "summary": "hermes_shell_prompt_plan smoke success",
+            "decisions": [
+                {
+                    "decision_type": "normalize_prompt",
+                    "action": {
+                        "action_kind": "normalize_prompt",
+                        "request_path": "prompt-source.json",
+                    },
+                    "reason": "deterministic Leonidas shell prompt smoke fixture",
+                }
+            ],
+        },
+    }
+
+
+def test_leonidas_plan_smoke_structured_error_bypasses_llm(monkeypatch):
+    monkeypatch.setenv("HERMES_LEONIDAS_PLAN_SMOKE_MODE", "structured_error")
+    monkeypatch.setattr(
+        server,
+        "_plan_with_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "leonidas.plan",
+            "params": _base_leonidas_plan_request("hermes_shell_prompt_plan"),
+        }
+    )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {
+            "contract_version": "leonidas.hermes.plan.v1",
+            "error": {
+                "code": "planning_refused",
+                "message": "deterministic Leonidas smoke planning refusal",
+            },
+        },
+    }
+
+
+def test_leonidas_plan_smoke_malformed_response_bypasses_llm(monkeypatch):
+    monkeypatch.setenv("HERMES_LEONIDAS_PLAN_SMOKE_MODE", "malformed_response")
+    monkeypatch.setattr(
+        server,
+        "_plan_with_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "leonidas.plan",
+            "params": _base_leonidas_plan_request("hermes_next_action_plan"),
+        }
+    )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {
+            "contract_version": "leonidas.hermes.plan.v1",
+            "summary": 7,
+            "decisions": [],
+            "request_kind": "hermes_next_action_plan",
+        },
+    }
+
+
+def test_leonidas_plan_smoke_invalid_decision_bypasses_llm(monkeypatch):
+    monkeypatch.setenv("HERMES_LEONIDAS_PLAN_SMOKE_MODE", "invalid_decision")
+    monkeypatch.setattr(
+        server,
+        "_plan_with_llm",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("should not run")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "leonidas.plan",
+            "params": _base_leonidas_plan_request("hermes_next_action_plan"),
+        }
+    )
+
+    assert resp == {
+        "jsonrpc": "2.0",
+        "id": "1",
+        "result": {
+            "contract_version": "leonidas.hermes.plan.v1",
+            "summary": "hermes_next_action_plan smoke invalid decision",
+            "decisions": [
+                {
+                    "decision_type": "unsupported_action",
+                    "action": {"action_kind": "unsupported_action"},
+                    "reason": "deterministic Leonidas invalid decision smoke fixture",
+                }
+            ],
+        },
+    }
 
 
 def test_leonidas_plan_normalizes_legacy_policy_refusal_error_code():

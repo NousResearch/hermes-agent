@@ -12,7 +12,6 @@ or rewrite request/response bodies. It's a credential-attaching forwarder.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import signal
 from typing import Optional
@@ -102,17 +101,6 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 "status": "ok",
                 "upstream": adapter.display_name,
                 "authenticated": adapter.is_authenticated(),
-            }
-        )
-
-    async def handle_models_fallback(request: "web.Request") -> "web.Response":
-        # Most clients hit /v1/models on startup. If the upstream doesn't
-        # serve /models, synthesize a minimal response so clients don't
-        # crash. The actual forwarding path handles /models when allowed.
-        return web.json_response(
-            {
-                "object": "list",
-                "data": [],
             }
         )
 
@@ -206,7 +194,7 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
             return session_or_response
         session = session_or_response
 
-        if upstream_resp.status == 401:
+        if upstream_resp.status in {401, 429}:
             try:
                 retry_cred = adapter.get_retry_credential(
                     failed_credential=cred,

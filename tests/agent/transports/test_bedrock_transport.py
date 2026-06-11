@@ -1,11 +1,10 @@
 """Tests for the BedrockTransport."""
 
-import json
 import pytest
 from types import SimpleNamespace
 
 from agent.transports import get_transport
-from agent.transports.types import NormalizedResponse, ToolCall
+from agent.transports.types import NormalizedResponse
 
 
 @pytest.fixture

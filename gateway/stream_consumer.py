@@ -26,6 +26,7 @@ from typing import Any, Callable, Optional
 
 from gateway.platforms.base import BasePlatformAdapter as _BasePlatformAdapter
 from gateway.platforms.base import _custom_unit_to_cp
+from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
 from gateway.config import (
     DEFAULT_STREAMING_EDIT_INTERVAL as _DEFAULT_STREAMING_EDIT_INTERVAL,
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
@@ -146,8 +147,15 @@ class GatewayStreamConsumer:
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
         self._last_sent_text = ""   # Track last-sent text to skip redundant edits
+        # True when the most recent _send_or_edit split-and-delivered across
+        # continuation messages (the adapter adopted a new message id).
+        self._last_edit_overflowed = False
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        # True when fallback is sending only the missing tail after a partial
+        # Telegram overflow delivery.  In that case the already-visible prefix
+        # is intentional content, not a stale preview to delete.
+        self._fallback_preserve_partial_messages = False
         self._flood_strikes = 0         # Consecutive flood-control edit failures
         self._current_edit_interval = self.cfg.edit_interval  # Adaptive backoff
         self._final_response_sent = False
@@ -191,6 +199,11 @@ class GatewayStreamConsumer:
     def final_response_sent(self) -> bool:
         """True when the stream consumer delivered the final assistant reply."""
         return self._final_response_sent
+
+    @property
+    def message_id(self) -> str | None:
+        """The Discord/chat message ID of the last-sent or edited message."""
+        return self._message_id
 
     @property
     def final_content_delivered(self) -> bool:
@@ -255,6 +268,13 @@ class GatewayStreamConsumer:
         self._last_sent_text = ""
         self._fallback_final_send = False
         self._fallback_prefix = ""
+        self._fallback_preserve_partial_messages = False
+        # #29346: a tool/segment boundary means what we delivered was an interim
+        # preamble, not the final answer — clear the flags so a premature setter
+        # can't fool the gateway. Safe: got_done returns before any reset, and
+        # run.py reads these only after the consumer task exits.
+        self._final_response_sent = False
+        self._final_content_delivered = False
         # Native draft streaming: bump the draft_id so the next text segment
         # animates as a fresh preview below the tool-progress bubbles, not
         # over the prior segment's already-finalized draft.  This is how
@@ -518,7 +538,19 @@ class GatewayStreamConsumer:
                         if split_at < _safe_limit // 2:
                             split_at = _safe_limit
                         chunk = self._accumulated[:split_at]
-                        ok = await self._send_or_edit(chunk)
+                        # finalize=True so the adapter applies platform-specific
+                        # rich-text markup (e.g. Telegram MarkdownV2). This
+                        # sealed chunk will never be edited again — _message_id
+                        # is reset to None right below — so it must receive its
+                        # final formatting pass now, or early split messages
+                        # render raw markdown while only the last chunk renders.
+                        # is_turn_final=False: this is the first of several split
+                        # messages, NOT the turn-final answer, so the fresh-final
+                        # path (opt-in fresh_final_after_seconds) must not mark
+                        # the turn delivered on it (#29346 semantics).
+                        ok = await self._send_or_edit(
+                            chunk, finalize=True, is_turn_final=False,
+                        )
                         if self._fallback_final_send or not ok:
                             # Edit failed (or backed off due to flood control)
                             # while attempting to split an oversized message.
@@ -543,15 +575,13 @@ class GatewayStreamConsumer:
                     current_update_visible = await self._send_or_edit(
                         display_text,
                         finalize=(got_done or got_segment_break),
+                        # A segment-break finalize closes a preamble, not the
+                        # turn-final answer — only got_done marks delivered (#29346).
+                        is_turn_final=got_done,
                     )
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
-                    # Record that the final content reached the user even
-                    # if the cosmetic final edit below fails.
-                    if current_update_visible and self._accumulated:
-                        self._final_content_delivered = True
-
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -559,15 +589,22 @@ class GatewayStreamConsumer:
                     if self._accumulated:
                         if self._fallback_final_send:
                             await self._send_fallback_final(self._accumulated)
-                        elif (
-                            current_update_visible
-                            and not self._adapter_requires_finalize
+                        elif current_update_visible and (
+                            not self._adapter_requires_finalize
+                            or self._last_edit_overflowed
                         ):
                             # Mid-stream edit above already delivered the
                             # final accumulated content.  Skip the redundant
-                            # final edit — but only for adapters that don't
-                            # need an explicit finalize signal.
+                            # final edit for adapters that don't need an
+                            # explicit finalize signal, and for any adapter
+                            # when that edit split-and-delivered across
+                            # continuations: the split edit carried
+                            # finalize=True itself, and re-finalizing with
+                            # the full text would overflow-split again into
+                            # the adopted continuation, duplicating chunks
+                            # on screen.
                             self._final_response_sent = True
+                            self._final_content_delivered = True
                         elif self._message_id:
                             # Either the mid-stream edit didn't run (no
                             # visible update this tick) OR the adapter needs
@@ -575,8 +612,12 @@ class GatewayStreamConsumer:
                             self._final_response_sent = await self._send_or_edit(
                                 self._accumulated, finalize=True,
                             )
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+                            if self._final_response_sent:
+                                self._final_content_delivered = True
                     return
 
                 if commentary_text is not None:
@@ -620,11 +661,21 @@ class GatewayStreamConsumer:
                 await asyncio.sleep(0.05)  # Small yield to not busy-loop
 
         except asyncio.CancelledError:
-            # Best-effort final edit on cancellation
+            # Best-effort final edit on cancellation.  finalize=True so
+            # REQUIRES_EDIT_FINALIZE platforms (Telegram) apply final
+            # formatting — a plain edit here would leave the entire reply
+            # rendered as a raw streaming preview while the success flags
+            # below suppress the gateway's formatted re-send.
+            # is_turn_final=False keeps _try_fresh_final from setting
+            # _final_response_sent itself; this handler owns the flags.
             _best_effort_ok = False
             if self._accumulated and self._message_id:
                 try:
-                    _best_effort_ok = bool(await self._send_or_edit(self._accumulated))
+                    _best_effort_ok = bool(
+                        await self._send_or_edit(
+                            self._accumulated, finalize=True, is_turn_final=False,
+                        )
+                    )
                 except Exception:
                     pass
             # Only confirm final delivery if the best-effort send above
@@ -636,13 +687,17 @@ class GatewayStreamConsumer:
             # "Let me search…") had been delivered, not the real answer.
             if _best_effort_ok and not self._final_response_sent:
                 self._final_response_sent = True
+                self._final_content_delivered = True
         except Exception as e:
             logger.error("Stream consumer error: %s", e)
 
-    # Pattern to strip MEDIA:<path> tags (including optional surrounding quotes).
-    # Matches the simple cleanup regex used by the non-streaming path in
-    # gateway/platforms/base.py for post-processing.
-    _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    # Strip MEDIA:<path> tags before display. Uses the shared anchored
+    # MEDIA_TAG_CLEANUP_RE from gateway/platforms/base.py — only tags whose
+    # path ends in a deliverable extension are removed, so an unknown-extension
+    # path stays visible instead of being silently dropped (issue #34517).
+    # Streaming and non-streaming paths share the same regex, so a tag is
+    # treated identically whichever path delivered the text.
+    _MEDIA_RE = MEDIA_TAG_CLEANUP_RE
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
@@ -773,6 +828,7 @@ class GatewayStreamConsumer:
                         pass
                 self._already_sent = True
                 self._final_response_sent = True
+                self._final_content_delivered = True
                 return
 
         raw_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
@@ -809,11 +865,13 @@ class GatewayStreamConsumer:
 
             if not result or not result.success:
                 if sent_any_chunk:
-                    # Some continuation text already reached the user. Suppress
-                    # the base gateway final-send path so we don't resend the
-                    # full response and create another duplicate.
+                    # Some continuation text already reached the user, but not
+                    # the full response. Do NOT set _final_response_sent — the
+                    # base gateway final-send path should still deliver the
+                    # complete response so the user gets the full answer.
+                    # Suppress only _already_sent to avoid a duplicate send
+                    # of the same partial content.
                     self._already_sent = True
-                    self._final_response_sent = True
                     self._message_id = last_message_id
                     self._last_sent_text = last_successful_chunk
                     self._fallback_prefix = ""
@@ -833,11 +891,21 @@ class GatewayStreamConsumer:
             self._notify_new_message()
 
         # Remove the frozen partial message so the user only sees the
-        # complete fallback response.  Best-effort — if the platform doesn't
+        # complete fallback response.  ONLY safe when the fallback re-sent
+        # the FULL final text (continuation == final_text).  When the
+        # prefix-based dedup above sent only the missing TAIL, the partial
+        # message IS the head of the answer — deleting it leaves the user
+        # with only the last part of the response (the "Gemini sent only
+        # the second half" symptom).  Best-effort — if the platform doesn't
         # implement ``delete_message``, the delete fails (flood control still
         # active, bot lacks permission, message too old to delete), the
         # partial remains but at least the full answer was delivered.
-        if stale_message_id and stale_message_id != last_message_id:
+        if (
+            stale_message_id
+            and stale_message_id != last_message_id
+            and not self._fallback_preserve_partial_messages
+            and continuation == final_text
+        ):
             delete_fn = getattr(self.adapter, "delete_message", None)
             if delete_fn is not None:
                 try:
@@ -851,8 +919,10 @@ class GatewayStreamConsumer:
         self._message_id = last_message_id
         self._already_sent = True
         self._final_response_sent = True
+        self._final_content_delivered = True
         self._last_sent_text = chunks[-1]
         self._fallback_prefix = ""
+        self._fallback_preserve_partial_messages = False
 
     def _is_flood_error(self, result) -> bool:
         """Check if a SendResult failure is due to flood control / rate limiting."""
@@ -1044,11 +1114,16 @@ class GatewayStreamConsumer:
         age = time.monotonic() - self._message_created_ts
         return age >= threshold
 
-    async def _try_fresh_final(self, text: str) -> bool:
+    async def _try_fresh_final(self, text: str, *, is_turn_final: bool = True) -> bool:
         """Send ``text`` as a brand-new message (best-effort delete the old
         preview) so the platform's visible timestamp reflects completion
         time.  Returns True on successful delivery, False on any failure so
         the caller falls back to the normal edit path.
+
+        ``is_turn_final`` is False when finalizing an interim segment at a tool
+        boundary (a preamble) rather than the turn-final answer; the
+        final-delivery flag is then left unset so the gateway still delivers the
+        real answer from the next API call (#29346).
 
         Ported from openclaw/openclaw#72038.
         """
@@ -1094,10 +1169,13 @@ class GatewayStreamConsumer:
             self._message_created_ts = None
         self._already_sent = True
         self._last_sent_text = text
-        self._final_response_sent = True
+        if is_turn_final:
+            self._final_response_sent = True
         return True
 
-    async def _send_or_edit(self, text: str, *, finalize: bool = False) -> bool:
+    async def _send_or_edit(
+        self, text: str, *, finalize: bool = False, is_turn_final: bool = True,
+    ) -> bool:
         """Send or edit the streaming message.
 
         Returns True if the text was successfully delivered (sent or edited),
@@ -1165,6 +1243,7 @@ class GatewayStreamConsumer:
                 return True
             # Failure already disabled drafts for this run; fall through to
             # the regular edit/send path below.
+        self._last_edit_overflowed = False
         try:
             if self._message_id is not None:
                 if self._edit_supported:
@@ -1191,7 +1270,9 @@ class GatewayStreamConsumer:
                     if (
                         finalize
                         and self._should_send_fresh_final()
-                        and await self._try_fresh_final(text)
+                        and await self._try_fresh_final(
+                            text, is_turn_final=is_turn_final,
+                        )
                     ):
                         return True
                     # Edit existing message
@@ -1219,6 +1300,7 @@ class GatewayStreamConsumer:
                             and result.message_id
                             and result.message_id != self._message_id
                         ):
+                            self._last_edit_overflowed = True
                             self._message_id = str(result.message_id)
                             self._message_created_ts = time.monotonic()
                             self._last_sent_text = ""
@@ -1229,6 +1311,35 @@ class GatewayStreamConsumer:
                         self._flood_strikes = 0
                         return True
                     else:
+                        raw_response = getattr(result, "raw_response", None)
+                        if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
+                            # Telegram edited/sent one or more overflow chunks,
+                            # but not the complete response.  Preserve the
+                            # visible prefix so the got_done fallback sends the
+                            # missing tail instead of marking a clipped topic
+                            # reply as final delivery.
+                            self._message_id = str(
+                                raw_response.get("last_message_id")
+                                or result.message_id
+                                or self._message_id
+                            )
+                            delivered_prefix = raw_response.get("delivered_prefix")
+                            if isinstance(delivered_prefix, str) and delivered_prefix:
+                                self._last_sent_text = delivered_prefix
+                                self._fallback_prefix = delivered_prefix
+                                self._fallback_preserve_partial_messages = text.startswith(
+                                    delivered_prefix
+                                )
+                            else:
+                                self._fallback_prefix = self._visible_prefix()
+                                self._fallback_preserve_partial_messages = False
+                            self._fallback_final_send = True
+                            self._edit_supported = False
+                            self._already_sent = True
+                            if getattr(result, "continuation_message_ids", ()):
+                                self._notify_new_message()
+                            return False
+
                         # Edit failed.  If this looks like flood control / rate
                         # limiting, use adaptive backoff: double the edit interval
                         # and retry on the next cycle.  Only permanently disable

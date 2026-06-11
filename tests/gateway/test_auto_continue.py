@@ -6,7 +6,6 @@ this and prepends a system note to the next user message so the model
 finishes the interrupted work before addressing the new input.
 """
 
-import pytest
 
 
 def _simulate_auto_continue(agent_history: list, user_message: str) -> str:

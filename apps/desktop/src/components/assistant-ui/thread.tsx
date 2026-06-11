@@ -37,7 +37,12 @@ import {
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
-import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from '@/app/chat/composer/inline-refs'
+import {
+  dragHasAttachments,
+  droppedFileInlineRefs,
+  type InlineRefInput,
+  insertInlineRefsIntoEditor
+} from '@/app/chat/composer/inline-refs'
 import {
   composerPlainText,
   placeCaretEnd,
@@ -47,7 +52,8 @@ import {
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
-import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { extractDroppedFiles, HERMES_PATHS_MIME, isImagePath, partitionDroppedFiles } from '@/app/chat/hooks/use-composer-actions'
+import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
@@ -76,6 +82,7 @@ import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
+import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
@@ -84,7 +91,9 @@ import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
 type ThreadLoadingState = 'response' | 'session'
@@ -468,7 +477,9 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     s =>
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
-      s.message.parts.slice(Math.max(0, startIndex)).some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
+      s.message.parts
+        .slice(Math.max(0, startIndex), endIndex + 1)
+        .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
 
   // A reasoning group with no actual text is pure noise — drop the whole
@@ -711,8 +722,14 @@ function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
 // edit composer render the same bubble surface (rounded glass card);
 // they only differ in border weight, cursor, and padding-right (the
 // read-only view reserves room for the restore icon).
+//
+// no-drag: sticky bubbles park at --sticky-human-top (~4px), sliding under the
+// titlebar's [-webkit-app-region:drag] strips (app-shell.tsx). Electron resolves
+// drag regions at the compositor level — z-index and pointer-events don't help —
+// so without the carve-out, clicking a stuck bubble drags the window instead of
+// opening the edit composer.
 const USER_BUBBLE_BASE_CLASS =
-  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left'
+  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
   'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
@@ -912,22 +929,42 @@ const SystemMessage: FC = () => {
   const slashStatus = text.match(SLASH_STATUS_RE)
 
   if (slashStatus?.groups) {
+    const output = slashStatus.groups.output.trim()
+    // Single-line status (e.g. "model → x") reads best centered inline; padded
+    // multiline output (catalogs, usage tables) needs left-aligned, wider room
+    // or the column alignment breaks.
+    const multiline = output.includes('\n')
+
     return (
       <MessagePrimitive.Root
-        className="max-w-[min(86%,44rem)] self-center px-2 py-0.5 text-center text-[0.6875rem] leading-5 text-muted-foreground/60"
+        className={cn(
+          'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60',
+          multiline ? 'text-left' : 'text-center'
+        )}
         data-role="system"
         data-slot="aui_system-message-root"
       >
         <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
-        <span className="mx-1.5 text-muted-foreground/35">·</span>
-        <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={slashStatus.groups.output.trim()} />
+        {multiline ? (
+          <LinkifiedText className="mt-0.5 block whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+        ) : (
+          <>
+            <span className="mx-1.5 text-muted-foreground/35">·</span>
+            <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+          </>
+        )}
       </MessagePrimitive.Root>
     )
   }
 
+  const multiline = text.includes('\n')
+
   return (
     <MessagePrimitive.Root
-      className="max-w-[min(86%,44rem)] self-center px-2 py-0.5 text-center text-[0.6875rem] leading-5 text-muted-foreground/55"
+      className={cn(
+        'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/55',
+        multiline ? 'text-left' : 'text-center'
+      )}
       data-role="system"
       data-slot="aui_system-message-root"
     >
@@ -962,6 +999,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
+  // True while OS-drop files are being staged/uploaded into the session. Blocks
+  // submit and shows a spinner so confirming the edit can't race the async
+  // upload and drop the gateway-side ref before it lands in the draft.
+  const [staging, setStaging] = useState(false)
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
@@ -1178,17 +1219,13 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     [aui, closeTrigger, refreshTrigger, requestEditFocus, trigger]
   )
 
-  const insertDroppedRefs = useCallback(
-    (candidates: ReturnType<typeof extractDroppedFiles>) => {
+  const insertRefStrings = useCallback(
+    (refs: InlineRefInput[]) => {
       const editor = editorRef.current
 
-      if (!editor) {
+      if (!editor || refs.length === 0) {
         return false
       }
-
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, cwd))
-        .filter((ref): ref is string => Boolean(ref))
 
       const nextDraft = insertInlineRefsIntoEditor(editor, refs)
 
@@ -1202,7 +1239,60 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       return true
     },
-    [aui, cwd, requestEditFocus]
+    [aui, requestEditFocus]
+  )
+
+  const insertDroppedRefs = useCallback(
+    (candidates: ReturnType<typeof extractDroppedFiles>) => insertRefStrings(droppedFileInlineRefs(candidates, cwd)),
+    [cwd, insertRefStrings]
+  )
+
+  // OS/Finder drops carry an absolute path on THIS machine — the gateway can't
+  // read it in remote mode, and an image needs its bytes uploaded for vision.
+  // Stage each through the same file.attach/image.attach_bytes pipeline the main
+  // composer uses, then insert the *gateway-side* ref the agent can resolve —
+  // never the raw local path (the MahmoudR remote-attach bug, which the main
+  // composer fixes but this edit composer used to reproduce).
+  const uploadOsDropRefs = useCallback(
+    async (osDrops: ReturnType<typeof extractDroppedFiles>): Promise<InlineRefInput[]> => {
+      if (!gateway || !sessionId) {
+        // No session to stage into — best-effort inline refs (matches old path).
+        return droppedFileInlineRefs(osDrops, cwd)
+      }
+
+      const remote = $connection.get()?.mode === 'remote'
+      const requestGateway = <T,>(method: string, params?: Record<string, unknown>) => gateway.request<T>(method, params)
+      const refs: InlineRefInput[] = []
+
+      for (const candidate of osDrops) {
+        const path = candidate.path || ''
+
+        if (!path) {
+          continue
+        }
+
+        const kind: ComposerAttachment['kind'] =
+          candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
+
+        try {
+          const uploaded = await uploadComposerAttachment(
+            { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
+            { remote, requestGateway, sessionId }
+          )
+
+          const ref = attachmentDisplayText(uploaded)
+
+          if (ref) {
+            refs.push(ref)
+          }
+        } catch (err) {
+          notifyError(err, t.desktop.dropFiles)
+        }
+      }
+
+      return refs
+    },
+    [cwd, gateway, sessionId, t.desktop.dropFiles]
   )
 
   const resetDragState = useCallback(() => {
@@ -1256,8 +1346,24 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     event.stopPropagation()
     resetDragState()
 
-    if (insertDroppedRefs(candidates)) {
+    // In-app drags (project tree / gutter) are workspace-relative paths that
+    // resolve on the gateway as-is, so they stay inline refs. OS drops need to
+    // be staged + uploaded first, then their gateway-side ref is inserted.
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+
+    if (insertDroppedRefs(inAppRefs)) {
       triggerHaptic('selection')
+    }
+
+    if (osDrops.length) {
+      setStaging(true)
+      void uploadOsDropRefs(osDrops)
+        .then(refs => {
+          if (insertRefStrings(refs)) {
+            triggerHaptic('selection')
+          }
+        })
+        .finally(() => setStaging(false))
     }
   }
 
@@ -1289,7 +1395,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const submitEdit = (editor: HTMLDivElement) => {
     const nextDraft = syncDraftFromEditor(editor)
 
-    if (submitting || !nextDraft.trim()) {
+    if (submitting || staging || !nextDraft.trim()) {
       return
     }
 
@@ -1446,10 +1552,19 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               suppressContentEditableWarning
             />
             <ComposerPrimitive.Input className="sr-only" tabIndex={-1} unstable_focusOnScrollToBottom={false} />
+            {staging && (
+              <span
+                className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-background/80 px-1.5 py-0.5 text-[0.62rem] text-muted-foreground backdrop-blur-[1px]"
+                data-slot="aui_edit-staging"
+              >
+                <Loader2Icon className="size-3 animate-spin" />
+                {copy.attachingFile}
+              </span>
+            )}
             <button
               aria-label={copy.sendEdited}
               className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
-              disabled={!canSubmit || submitting}
+              disabled={!canSubmit || submitting || staging}
               onClick={() => {
                 const editor = editorRef.current
 

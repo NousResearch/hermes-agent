@@ -175,6 +175,15 @@ export const zh: Translations = {
       'session.new': '新建会话',
       'session.next': '下一个会话',
       'session.prev': '上一个会话',
+      'session.slot.1': '切换到最近会话 1',
+      'session.slot.2': '切换到最近会话 2',
+      'session.slot.3': '切换到最近会话 3',
+      'session.slot.4': '切换到最近会话 4',
+      'session.slot.5': '切换到最近会话 5',
+      'session.slot.6': '切换到最近会话 6',
+      'session.slot.7': '切换到最近会话 7',
+      'session.slot.8': '切换到最近会话 8',
+      'session.slot.9': '切换到最近会话 9',
       'session.focusSearch': '搜索会话',
       'session.togglePin': '固定/取消固定当前会话',
       'composer.focus': '聚焦输入框',
@@ -288,7 +297,16 @@ export const zh: Translations = {
       technicalDesc: '包含原始工具参数/结果及底层细节。',
       themeTitle: '主题',
       themeDesc: '仅桌面端调色板。所选模式叠加其上。',
-      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`
+      themeProfileNote: profile => `已为「${profile}」配置文件保存——每个配置文件保留各自的主题。`,
+      installTitle: '从 VS Code 安装',
+      installDesc: '粘贴 Marketplace 扩展 ID（例如 dracula-theme.theme-dracula），将其配色主题转换为桌面调色板。',
+      installPlaceholder: 'publisher.extension',
+      installButton: '安装',
+      installing: '安装中…',
+      installError: '无法安装该主题。',
+      installed: name => `已安装「${name}」。`,
+      removeTheme: '移除主题',
+      importedBadge: '已导入'
     },
     fieldLabels: defineFieldCopy({
       model: '默认模型',
@@ -820,6 +838,17 @@ export const zh: Translations = {
     settings: '设置',
     changeTheme: '更改主题...',
     changeColorMode: '更改颜色模式...',
+    installTheme: {
+      title: '安装主题...',
+      placeholder: '搜索 VS Code Marketplace...',
+      loading: '正在搜索 Marketplace...',
+      error: '无法连接到 Marketplace。',
+      empty: '没有匹配的主题。',
+      install: '安装',
+      installing: '安装中...',
+      installed: '已安装',
+      installs: count => `${count} 次安装`
+    },
     settingsFields: '设置字段',
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',
@@ -1262,12 +1291,14 @@ export const zh: Translations = {
       export: '导出',
       rename: '重命名',
       archive: '归档',
+      newWindow: '新窗口',
       copyIdFailed: '无法复制会话 ID',
       actionsFor: title => `${title} 的操作`,
       sessionActions: '会话操作',
       sessionRunning: '会话运行中',
       needsInput: '需要你输入',
       waitingForAnswer: '正在等待你的回答',
+      handoffOrigin: platform => `从 ${platform} 转接`,
       renamed: '已重命名',
       renameFailed: '重命名失败',
       renameTitle: '重命名会话',
@@ -1306,7 +1337,7 @@ export const zh: Translations = {
     ],
     startVoice: '开始语音对话',
     queueMessage: '排队消息',
-    steer: '引导当前运行 (⌘⏎)',
+    steer: '引导当前运行',
     stop: '停止',
     send: '发送',
     speaking: '讲话中',
@@ -1641,6 +1672,8 @@ export const zh: Translations = {
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '关闭命令中心',
       openCommandCenter: '打开命令中心',
+      showTerminal: '显示终端',
+      hideTerminal: '隐藏终端',
       gateway: '网关',
       gatewayReady: '就绪',
       gatewayNeedsSetup: '需要设置',
@@ -1696,8 +1729,7 @@ export const zh: Translations = {
     tryAgain: '重试',
     loadingTree: '正在加载文件树',
     loadingFiles: '正在加载文件',
-    terminalFocus: '聚焦终端视图',
-    terminalSplit: '返回分栏视图',
+    terminalHide: '隐藏终端',
     addToChat: '添加到对话'
   },
 
@@ -1801,7 +1833,8 @@ export const zh: Translations = {
       restoreCheckpoint: '恢复检查点',
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
-      sendEdited: '发送编辑后的消息'
+      sendEdited: '发送编辑后的消息',
+      attachingFile: '正在附加…'
     },
     approval: {
       gatewayDisconnected: 'Hermes 网关未连接',
@@ -1923,7 +1956,14 @@ export const zh: Translations = {
     clipboard: '剪贴板',
     noClipboardImage: '剪贴板中没有图片',
     clipboardPasteFailed: '粘贴剪贴板失败',
-    dropFiles: '拖放文件'
+    dropFiles: '拖放文件',
+    handoff: {
+      pickPlatform: '选择目标平台',
+      success: platform => `已移交到 ${platform}。随时可在此处恢复。`,
+      systemNote: platform => `↻ 已移交到 ${platform} — 随时可在此处恢复。`,
+      failed: error => `移交失败：${error}`,
+      timedOut: '等待网关超时。`hermes gateway` 是否正在运行？'
+    }
   },
 
   errors: {

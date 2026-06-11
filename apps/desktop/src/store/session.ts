@@ -10,7 +10,70 @@ type Updater<T> = T | ((current: T) => T)
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
+// Cached copy of Settings → Sessions → Default project directory. The main
+// process persists this in project-dir.json, but the renderer must also honor it
+// when seeding $currentCwd — otherwise PR #37586's sticky localStorage home dir
+// wins and new sessions ignore the user's explicit picker choice.
+let configuredDefaultProjectDir = ''
+
 export const getRememberedWorkspaceCwd = (): string => storedString(WORKSPACE_CWD_KEY)?.trim() || ''
+
+export const getConfiguredDefaultProjectDir = (): string => configuredDefaultProjectDir
+
+export async function syncConfiguredDefaultProjectDir(): Promise<string> {
+  const settings = window.hermesDesktop?.settings?.getDefaultProjectDir
+
+  if (!settings) {
+    configuredDefaultProjectDir = ''
+
+    return ''
+  }
+
+  const { dir } = await settings()
+  configuredDefaultProjectDir = dir?.trim() || ''
+
+  return configuredDefaultProjectDir
+}
+
+/** Align the renderer workspace with the main-process default (home dir when
+ *  packaged, optional Settings override). Clears stale install-dir paths that
+ *  PR #37586's localStorage stickiness can preserve across the #37536 fix. */
+export async function ensureDefaultWorkspaceCwd(): Promise<void> {
+  const sanitize = window.hermesDesktop?.sanitizeWorkspaceCwd
+
+  if (!sanitize) {
+    return
+  }
+
+  await syncConfiguredDefaultProjectDir()
+  const configured = getConfiguredDefaultProjectDir()
+
+  const seedLiveCwd = (cwd: string) => {
+    if (cwd && !$activeSessionId.get()) {
+      setCurrentCwd(cwd)
+    }
+  }
+
+  if (configured) {
+    const { cwd } = await sanitize(configured)
+    seedLiveCwd(cwd)
+
+    return
+  }
+
+  const { cwd } = await sanitize(getRememberedWorkspaceCwd())
+  seedLiveCwd(cwd)
+}
+
+export function applyConfiguredDefaultProjectDir(dir: null | string | undefined): void {
+  configuredDefaultProjectDir = dir?.trim() || ''
+
+  // Cache only — new chats read this via workspaceCwdForNewSession(). Do not
+  // rewrite the live workspace (or localStorage) while a session is active.
+  if (configuredDefaultProjectDir && !$activeSessionId.get()) {
+    setCurrentCwd(configuredDefaultProjectDir)
+  }
+}
 
 interface AppAtom<T> {
   get: () => T
@@ -62,10 +125,18 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
+  // Deduplicate by compression lineage: when auto-compression rotates the tip
+  // id (old #4 → new #5), the incoming page carries the new tip but the
+  // previous list still holds the old one.  Without lineage-level dedup both
+  // rows survive as separate sidebar entries (fixes #43483).
+  const incomingLineageKeys = new Set(
+    incoming.map(session => session._lineage_root_id ?? session.id)
+  )
 
   const survivors = previous.filter(
     session =>
       !incomingIds.has(session.id) &&
+      !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
@@ -85,6 +156,20 @@ export const $cronSessions = atom<SessionInfo[]>([])
 // badge renders "N+". Lives here so the controller (fetch) and sidebar (badge)
 // share one source of truth without a circular import.
 export const CRON_SECTION_LIMIT = 50
+// Messaging-platform sessions (telegram/discord/...) are fetched as their own
+// slice — separate from local recents — so each platform renders a
+// self-managed sidebar section and never interleaves with (or buries) local
+// chats in the recents page. One combined fetch seeds every platform; a
+// platform that exceeds this cap gets its own per-platform "load more".
+export const $messagingSessions = atom<SessionInfo[]>([])
+export const MESSAGING_SECTION_LIMIT = 100
+// Exact per-platform conversation totals, keyed by source id. Empty until a
+// per-platform "load more" fetch resolves it (the combined seed fetch only
+// knows the aggregate), so sections fall back to their loaded count.
+export const $messagingPlatformTotals = atom<Record<string, number>>({})
+// True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least
+// one platform may have more rows on disk than were loaded.
+export const $messagingTruncated = atom<boolean>(false)
 // Listable conversation count per profile (children excluded), keyed by profile
 // name. Lets the sidebar scope its "Load more" footer to the active profile so a
 // huge default profile doesn't keep "Load more" visible while browsing a small
@@ -123,12 +208,17 @@ export const $availablePersonalities = atom<string[]>([])
 export const $introSeed = atom(0)
 export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
+export const $sessionPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setSessionsTotal = (next: Updater<number>) => updateAtom($sessionsTotal, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
+export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
+export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>
+  updateAtom($messagingPlatformTotals, next)
+export const setMessagingTruncated = (next: Updater<boolean>) => updateAtom($messagingTruncated, next)
 export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =>
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
@@ -153,6 +243,11 @@ export const setCurrentCwd = (next: Updater<string>) => {
   persistString(WORKSPACE_CWD_KEY, $currentCwd.get().trim() || null)
 }
 
+/** Workspace for a brand-new chat. Explicit Settings override wins; otherwise
+ *  fall back to the sticky last-used folder, then whatever is already live. */
+export const workspaceCwdForNewSession = (): string =>
+  getConfiguredDefaultProjectDir() || getRememberedWorkspaceCwd() || $currentCwd.get().trim()
+
 export const setCurrentBranch = (next: Updater<string>) => updateAtom($currentBranch, next)
 export const setCurrentUsage = (next: Updater<UsageStats>) => updateAtom($currentUsage, next)
 export const setSessionStartedAt = (next: Updater<number | null>) => updateAtom($sessionStartedAt, next)
@@ -163,6 +258,7 @@ export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom
 export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, next)
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
+export const setSessionPickerOpen = (next: Updater<boolean>) => updateAtom($sessionPickerOpen, next)
 
 // Watchdog tracking — when does a "working" session count as stuck?
 // Long-running tool calls (LLM inference, long shell commands, web fetches)

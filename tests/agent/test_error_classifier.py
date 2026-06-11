@@ -661,6 +661,42 @@ class TestClassifyApiError:
         # Without "thinking" in the message, it shouldn't be thinking_signature
         assert result.reason != FailoverReason.thinking_signature
 
+    def test_anthropic_thinking_blocks_cannot_be_modified(self):
+        """Frozen-block mutation 400 (no 'signature' token) must route to
+        thinking_signature recovery, not hard-abort. Regression for the
+        real-world error: latest-assistant thinking blocks 'cannot be
+        modified' after upstream message mutation."""
+        e = MockAPIError(
+            "messages.73.content.10: `thinking` or `redacted_thinking` blocks "
+            "in the latest assistant message cannot be modified. These blocks "
+            "must remain as they were in the original response.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_anthropic_thinking_cannot_be_modified_via_openrouter(self):
+        """Same frozen-block error proxied through OpenRouter must also be
+        caught (provider is not gated)."""
+        e = MockAPIError(
+            "`thinking` or `redacted_thinking` blocks in the latest assistant "
+            "message cannot be modified.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.thinking_signature
+        assert result.retryable is True
+
+    def test_400_cannot_be_modified_without_thinking_not_classified(self):
+        """A 400 'cannot be modified' that has nothing to do with thinking
+        blocks must NOT be swept into thinking_signature recovery."""
+        e = MockAPIError(
+            "this field cannot be modified after creation", status_code=400,
+        )
+        result = classify_api_error(e, provider="anthropic", approx_tokens=0)
+        assert result.reason != FailoverReason.thinking_signature
+
     def test_invalid_encrypted_content_classified_as_retryable_replay_failure(self):
         body = {
             "error": {
@@ -963,6 +999,57 @@ class TestClassifyApiError:
         result = classify_api_error(e, approx_tokens=1000)
         assert result.reason == FailoverReason.format_error
         assert result.retryable is False
+
+    def test_400_unsupported_max_tokens_param_not_context_overflow(self):
+        """A GPT-5 model rejecting max_tokens must NOT be misclassified as
+        context overflow. The OpenAI error string contains the literal
+        'max_tokens' (a _CONTEXT_OVERFLOW_PATTERNS entry), so without the
+        request-validation guard it was routed into the compression loop,
+        re-sent with the same bad param, and ended in "Cannot compress
+        further". Regression for gpt-5-context-overflow-misclassification."""
+        msg = ("Unsupported parameter: 'max_tokens' is not supported with this "
+               "model. Use 'max_completion_tokens' instead.")
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"message": msg, "type": "invalid_request_error",
+                            "code": "unsupported_parameter"}},
+        )
+        # Tiny context against a huge window — definitely not a real overflow.
+        result = classify_api_error(e, model="gpt-5.4",
+                                    approx_tokens=6962, context_length=1050000)
+        assert result.reason == FailoverReason.format_error
+        assert result.retryable is False
+        assert result.should_compress is False
+
+    def test_400_unknown_parameter_not_context_overflow(self):
+        """'Unknown parameter' 400s are deterministic request-validation
+        failures, not overflows."""
+        e = MockAPIError(
+            "Unknown parameter: 'foo'.",
+            status_code=400,
+            body={"error": {"message": "Unknown parameter: 'foo'.",
+                            "code": "unknown_parameter"}},
+        )
+        result = classify_api_error(e, approx_tokens=1000)
+        assert result.reason == FailoverReason.format_error
+        assert result.should_compress is False
+
+    def test_400_real_overflow_with_invalid_request_error_code_still_compresses(self):
+        """Guard the guard: OpenAI stamps genuine context-overflow 400s with
+        the generic 'invalid_request_error' code. The request-validation guard
+        must NOT key off that code, or real overflows stop compressing."""
+        msg = ("This model's maximum context length is 128000 tokens, however "
+               "you requested 150000 tokens.")
+        e = MockAPIError(
+            msg,
+            status_code=400,
+            body={"error": {"message": msg, "type": "invalid_request_error"}},
+        )
+        result = classify_api_error(e, model="gpt-5.4",
+                                    approx_tokens=150000, context_length=128000)
+        assert result.reason == FailoverReason.context_overflow
+        assert result.should_compress is True
 
     def test_422_format_error(self):
         e = MockAPIError("Unprocessable Entity", status_code=422)

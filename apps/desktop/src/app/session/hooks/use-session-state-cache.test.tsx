@@ -2,7 +2,20 @@ import { act, cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $turnStartedAt, setTurnStartedAt } from '@/store/session'
+import {
+  $currentFastMode,
+  $currentModel,
+  $currentProvider,
+  $currentReasoningEffort,
+  $currentServiceTier,
+  $turnStartedAt,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
+  setCurrentServiceTier,
+  setTurnStartedAt
+} from '@/store/session'
 
 import { useSessionStateCache } from './use-session-state-cache'
 
@@ -46,12 +59,22 @@ describe('useSessionStateCache — per-session turn timer', () => {
       return null as unknown as number
     })
     setTurnStartedAt(null)
+    setCurrentModel('')
+    setCurrentProvider('')
+    setCurrentReasoningEffort('')
+    setCurrentServiceTier('')
+    setCurrentFastMode(false)
   })
 
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
     setTurnStartedAt(null)
+    setCurrentModel('')
+    setCurrentProvider('')
+    setCurrentReasoningEffort('')
+    setCurrentServiceTier('')
+    setCurrentFastMode(false)
   })
 
   it("keeps a background session's running turn clock and never mirrors it to the view", () => {
@@ -114,5 +137,79 @@ describe('useSessionStateCache — per-session turn timer', () => {
       cache.updateSessionState('fg-runtime', state => ({ ...state, busy: false, turnStartedAt: null }))
     })
     expect($turnStartedAt.get()).toBeNull()
+  })
+
+  it('mirrors the focused session model metadata when switching from a cached session', () => {
+    let cache!: Cache
+    const { rerender } = render(
+      <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
+    )
+
+    act(() => {
+      cache.updateSessionState(
+        'bg-runtime',
+        state => ({
+          ...state,
+          fast: true,
+          model: 'anthropic/claude-opus-4.8',
+          provider: 'anthropic',
+          reasoningEffort: 'high',
+          serviceTier: 'priority'
+        }),
+        'bg-stored'
+      )
+    })
+
+    // Background metadata is cached but must not bleed into the visible statusbar.
+    expect($currentModel.get()).toBe('')
+    expect($currentReasoningEffort.get()).toBe('')
+    expect($currentFastMode.get()).toBe(false)
+
+    rerender(<Harness activeSessionId="bg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="bg-stored" />)
+
+    const bgState = cache.sessionStateByRuntimeIdRef.current.get('bg-runtime')
+    expect(bgState).toBeTruthy()
+
+    act(() => {
+      cache.syncSessionStateToView('bg-runtime', bgState!)
+    })
+
+    expect($currentModel.get()).toBe('anthropic/claude-opus-4.8')
+    expect($currentProvider.get()).toBe('anthropic')
+    expect($currentReasoningEffort.get()).toBe('high')
+    expect($currentServiceTier.get()).toBe('priority')
+    expect($currentFastMode.get()).toBe(true)
+  })
+
+  it('clears stale model metadata when the newly focused session has no cached value', () => {
+    setCurrentModel('previous-model')
+    setCurrentProvider('previous-provider')
+    setCurrentReasoningEffort('high')
+    setCurrentServiceTier('priority')
+    setCurrentFastMode(true)
+
+    let cache!: Cache
+    const { rerender } = render(
+      <Harness activeSessionId="fg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="fg-stored" />
+    )
+
+    act(() => {
+      cache.updateSessionState('bg-runtime', state => ({ ...state }), 'bg-stored')
+    })
+
+    rerender(<Harness activeSessionId="bg-runtime" onReady={c => (cache = c)} selectedStoredSessionId="bg-stored" />)
+
+    const bgState = cache.sessionStateByRuntimeIdRef.current.get('bg-runtime')
+    expect(bgState).toBeTruthy()
+
+    act(() => {
+      cache.syncSessionStateToView('bg-runtime', bgState!)
+    })
+
+    expect($currentModel.get()).toBe('')
+    expect($currentProvider.get()).toBe('')
+    expect($currentReasoningEffort.get()).toBe('')
+    expect($currentServiceTier.get()).toBe('')
+    expect($currentFastMode.get()).toBe(false)
   })
 })

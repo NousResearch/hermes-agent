@@ -46,6 +46,7 @@ export function createClientSessionState(
     serviceTier: '',
     fast: false,
     yolo: false,
+    personality: '',
     busy: false,
     awaitingResponse: false,
     streamId: null,

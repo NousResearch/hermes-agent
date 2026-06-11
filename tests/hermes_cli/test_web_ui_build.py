@@ -140,8 +140,29 @@ class TestBuildWebUISkipsWhenFresh:
         assert kwargs["encoding"] == "utf-8"
         assert kwargs["errors"] == "replace"
 
+    def test_npm_install_sets_ci_to_suppress_postinstall_tty_output(self, tmp_path):
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+
+        mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.subprocess.run", return_value=mock_cp) as mock_run:
+            _run_npm_install_deterministic(
+                "/usr/bin/npm",
+                web_dir,
+                env={"PYTHON": "/nix/store/python"},
+            )
+
+        _, kwargs = mock_run.call_args
+        assert kwargs["env"]["CI"] == "1"
+        assert kwargs["env"]["PYTHON"] == "/nix/store/python"
+
     def test_npm_install_uses_workspace_web_scope(self, tmp_path):
         web_dir, _ = _make_web_dir(tmp_path)
+        # Real workspace checkout: the single lockfile lives at the root, so
+        # _workspace_root(web_dir) resolves to the parent and --workspace web
+        # scopes the install. (Without a root lockfile, web_dir IS the root and
+        # --workspace would be dropped — see test below and #42973.)
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
         mock_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         build_ok = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
         with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
@@ -152,6 +173,36 @@ class TestBuildWebUISkipsWhenFresh:
         install_cmd = mock_run.call_args[0][0]
         assert "--workspace" in install_cmd
         assert install_cmd[install_cmd.index("--workspace") + 1] == "web"
+
+    def test_web_install_omits_workspace_when_web_has_own_lockfile(
+        self, tmp_path, monkeypatch
+    ):
+        """web/ with its own lockfile => _workspace_root returns web_dir, so
+        --workspace web would fail (npm can't find that workspace from inside
+        web/). The flag must be dropped and the install run plainly from web_dir.
+        Symmetric to the TUI fix in test_tui_npm_install.py. See #42973.
+
+        With web's own lockfile present at cwd, _run_npm_install_deterministic
+        uses ``npm ci`` (not ``npm install``).
+        """
+        web_dir, _ = _make_web_dir(tmp_path)
+        (web_dir / "package-lock.json").write_text("{}", encoding="utf-8")
+        (tmp_path / "package-lock.json").write_text("{}", encoding="utf-8")
+        monkeypatch.delenv("TERMUX_VERSION", raising=False)
+        monkeypatch.setenv("PREFIX", "/usr")
+
+        install_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        build_cp = __import__("subprocess").CompletedProcess([], 0, stdout="", stderr="")
+        with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+             patch("hermes_cli.main.subprocess.run", return_value=install_cp) as mock_run, \
+             patch("hermes_cli.main._run_with_idle_timeout", return_value=build_cp):
+            result = _build_web_ui(web_dir)
+
+        assert result is True
+        args, kwargs = mock_run.call_args
+        assert "--workspace" not in args[0]
+        assert args[0] == ["/usr/bin/npm", "ci", "--silent"]
+        assert kwargs["cwd"] == web_dir
 
     def test_web_build_uses_idle_timeout_helper(self, tmp_path):
         """npm run build now goes through _run_with_idle_timeout (issue #33788).

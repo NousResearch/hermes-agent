@@ -11,6 +11,16 @@ Hermes uses two kinds of model slots:
 
 This page covers configuring both from the dashboard. If you prefer config files or the CLI, jump to [Alternative methods](#alternative-methods) at the bottom.
 
+:::tip Fastest path: Nous Portal
+[Nous Portal](/user-guide/features/tool-gateway) provides 300+ models under one subscription. On a fresh install, run `hermes setup --portal` to log in and set Nous as your provider in one command. Inspect what's wired up with `hermes portal info`.
+
+- Portal subscribers also get **10% off token-billed providers**.
+:::
+
+:::note `model:` schema — empty string vs. mapping
+On a brand-new install the bundled default config has `model: ""` (an empty string sentinel meaning "not configured yet"). The first time you run `hermes setup` or `hermes model`, that key is upgraded in-place to a mapping with `provider`, `default`, `base_url`, and `api_mode` sub-keys — the shape shown throughout this page and in [`profiles.md`](./profiles.md) / [`configuration.md`](./configuration.md). If you ever see an empty string in `config.yaml`, run `hermes model` (or click **Change** in the dashboard) and Hermes will write the dict form for you.
+:::
+
 ## The Models page
 
 Open the dashboard and click **Models** in the sidebar. You get two sections:
@@ -39,7 +49,7 @@ Pick a model, hit **Switch**, and Hermes writes it to `~/.hermes/config.yaml` un
 
 ## Setting auxiliary models
 
-Click **Show auxiliary** to reveal the eight task slots:
+Click **Show auxiliary** to reveal the 11 task slots:
 
 ![Auxiliary panel expanded](/img/docs/dashboard-models/auxiliary-expanded.png)
 
@@ -50,12 +60,16 @@ Every auxiliary task defaults to `auto` — meaning Hermes uses your main model 
 | Task | When to override |
 |---|---|
 | **Title Gen** | Almost always. A $0.10/M flash model writes session titles as well as Opus. Default config sets this to `google/gemini-3-flash-preview` on OpenRouter. |
-| **Vision** | When your main model is a coding model without vision (e.g. Kimi, DeepSeek). Point it at `google/gemini-2.5-flash` or `gpt-4o-mini`. |
+| **Vision** | When your main model lacks vision support. Point it at `google/gemini-2.5-flash` or `gpt-4o-mini`. |
 | **Compression** | When you're burning reasoning tokens on Opus/M2.7 just to summarize context. A fast chat model does the job at 1/50th the cost. |
 | **Approval** | For `approval_mode: smart` — a fast/cheap model (haiku, flash, gpt-5-mini) decides whether to auto-approve low-risk commands. Expensive models here are waste. |
 | **Web Extract** | When you use `web_extract` heavily. Same logic as compression — summarization doesn't need reasoning. |
 | **Skills Hub** | `hermes skills search` uses this. Usually fine at `auto`. |
 | **MCP** | MCP tool routing. Usually fine at `auto`. |
+| **Triage Specifier** | Routes the Kanban triage specifier (`hermes kanban specify`) that expands a rough one-liner into a concrete spec. A cheap, capable model works well. |
+| **Kanban Decomposer** | Routes Kanban task decomposition — splits a triage task into a graph of child tasks for specialist profiles. |
+| **Profile Describer** | Routes profile-description generation (`hermes profile describe --auto` / the dashboard auto-generate button). Short, cheap call. |
+| **Curator** | Routes the curator skill-usage review pass. Can run for minutes on reasoning models, so a cheaper aux model is often worthwhile. |
 
 ### Per-task override
 
@@ -74,7 +88,7 @@ Every model card on the page has a **Use as** dropdown. This is the fast path �
 The dropdown has:
 
 - **Main model** — same as clicking Change on the main row.
-- **All auxiliary tasks** — assigns this model to all 8 aux slots at once. Useful when you just want every side-job on a cheap flash model.
+- **All auxiliary tasks** — assigns this model to all 11 aux slots at once. Useful when you just want every side-job on a cheap flash model.
 - **Individual task options** — Vision, Web Extract, Compression, etc. The currently-assigned model for each task is marked `current`.
 
 Cards are badged with `main` or `aux · <task>` when they're currently assigned to something — so you can see at a glance which of your historical models are wired in where.
@@ -162,7 +176,9 @@ Inside any `hermes chat` session:
 
 ### Custom aliases
 
-Define your own short names for models you reach for often, then use `/model <alias>` in the CLI or any messaging platform:
+Define your own short names for models you reach for often, then use `/model <alias>` in the CLI or any messaging platform. There are two equivalent formats — pick whichever fits your workflow.
+
+**Canonical (top-level `model_aliases:`)** — full control over provider + base_url:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -175,14 +191,16 @@ model_aliases:
     provider: x-ai
 ```
 
-Or from the shell (short form, `provider/model`):
+**Short string form (`model.aliases.<name>: provider/model`)** — convenient from the shell because `hermes config set` only writes scalar values, but it can't carry a custom `base_url`:
 
 ```bash
 hermes config set model.aliases.fav anthropic/claude-opus-4.6
 hermes config set model.aliases.grok x-ai/grok-4
 ```
 
-Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](/docs/reference/slash-commands#custom-model-aliases) for the full reference.
+Both paths feed the same loader (`hermes_cli/model_switch.py`). Entries declared in `model_aliases:` take precedence over `model.aliases:` entries with the same name.
+
+Then `/model fav` or `/model grok` in chat. User aliases shadow built-in short names (`sonnet`, `kimi`, `opus`, etc.). See [Custom model aliases](/reference/slash-commands#custom-model-aliases) for the full reference.
 
 ### `hermes model` subcommand
 
@@ -192,7 +210,7 @@ hermes model            # Interactive provider + model picker (the canonical way
 
 `hermes model` walks you through picking a provider, authenticating (OAuth flows open a browser; API-key providers prompt for the key), and then choosing a specific model from that provider's curated catalog. The choice is written to `model.provider` and `model.model` in `~/.hermes/config.yaml`.
 
-To list providers/models without launching the picker, use the dashboard or the REST endpoints below. To inspect what the CLI will actually use right now: `hermes config get model` and `hermes status`.
+To list providers/models without launching the picker, use the dashboard or the REST endpoints below. To inspect what the CLI will actually use right now: `hermes config show | grep '^model\.'` and `hermes status`.
 
 ### Direct config edit
 

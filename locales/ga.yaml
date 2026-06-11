@@ -226,9 +226,12 @@ gateway:
     no_named_sessions:     "Níor aimsíodh aon seisiún ainmnithe.\nÚsáid `/title M'Ainm Seisiúin` chun do sheisiún reatha a ainmniú, ansin `/resume M'Ainm Seisiúin` chun filleadh air níos déanaí."
     list_header:           "📋 **Seisiúin Ainmnithe**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\nÚsáid: `/resume <session name>`"
+    list_footer_numbered:  "\nÚsáid: `/resume <ainm seisiúin>` nó `/resume <uimhir>` (m.sh. `/resume 1` don cheann is déanaí)"
     list_failed:           "Níorbh fhéidir seisiúin a liostáil: {error}"
+    out_of_range:          "Tá an t-innéacs atosaithe {index} as raon.\nÚsáid `/resume` gan argóintí chun na seisiúin atá ar fáil a fheiceáil."
     not_found:             "Níor aimsíodh aon seisiún ag teacht le '**{name}**'.\nÚsáid `/resume` gan argóintí chun seisiúin atá ar fáil a fheiceáil."
     already_on:            "📌 Cheana ar an seisiún **{name}**."
     switch_failed:         "Theip ar athrú seisiúin."
@@ -291,7 +294,8 @@ gateway:
 
   undo:
     nothing:               "Níl aon rud le cealú."
-    removed:               "↩️ Cealaíodh {count} teachtaireacht.\nBaineadh: \"{preview}\""
+    removed:               "↩️ Cealaíodh {turns} seal ({count} teachtaireacht).\nCúltacaíodh chuig: \"{preview}\"\nCóipeáil/cuir an téacs thuas in eagar agus seol é chun athleideadh ón áit seo."
+    invalid_count:         "Líon neamhbhailí \"{arg}\" — úsáid /undo nó /undo N."
 
   update:
     platform_not_messaging:  "✗ Tá /update ar fáil amháin ó ardáin teachtaireachtaí. Rith `hermes update` ón teirminéal."
@@ -343,6 +347,8 @@ gateway:
     label_off:             "As (téacs amháin)"
     label_voice_only:      "Ar (freagra gutha do theachtaireachtaí gutha)"
     label_all:             "TTS (freagra gutha do gach teachtaireacht)"
+    help:                  "{toggle}\n\n**Conas a oibríonn /voice**\n• `/voice on` — freagra gutha nuair a sheolann tú teachtaireacht gutha\n• `/voice tts` — freagra gutha do *gach* teachtaireacht\n• `/voice off` — ar ais go freagraí téacs amháin\n• `/voice status` — taispeáin an mód reatha\n• `/voice` (gan argóint) — scoránaigh go tapa idir air agus as{channels}"
+    help_channels:         "\n\n**Cainéil gutha bheo (Discord)**\n• Téigh isteach i gcainéal gutha ar dtús, ansin `/voice channel` — téim isteach, éistim agus labhraím mo fhreagraí\n• `/voice leave` — dícheangail ón gcainéal gutha"
 
   yolo:
     disabled:                   "⚠️ Mód YOLO **AS** don seisiún seo — beidh cead de dhíth d'orduithe contúirteacha."

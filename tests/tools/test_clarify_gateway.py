@@ -12,7 +12,6 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-import pytest
 
 
 def _clear_clarify_state():

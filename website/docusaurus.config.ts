@@ -24,7 +24,7 @@ const config: Config = {
 
   i18n: {
     defaultLocale: 'en',
-    locales: ['en', 'zh-Hans', 'ko'],
+    locales: ['en', 'zh-Hans'],
     localeConfigs: {
       en: {
         label: 'English',
@@ -32,10 +32,6 @@ const config: Config = {
       'zh-Hans': {
         label: '简体中文',
         htmlLang: 'zh-Hans',
-      },
-      ko: {
-        label: '한국어',
-        htmlLang: 'ko',
       },
     },
   },
@@ -118,6 +114,11 @@ const config: Config = {
           position: 'left',
         },
         {
+          href: 'https://hermes-agent.nousresearch.com/desktop',
+          label: 'Download',
+          position: 'left',
+        },
+        {
           type: 'localeDropdown',
           position: 'right',
         },
@@ -154,13 +155,14 @@ const config: Config = {
           title: 'Community',
           items: [
             { label: 'Discord', href: 'https://discord.gg/NousResearch' },
-            { label: 'GitHub Discussions', href: 'https://github.com/NousResearch/hermes-agent/discussions' },
+            { label: 'GitHub Issues', href: 'https://github.com/NousResearch/hermes-agent/issues' },
             { label: 'Skills Hub', href: 'https://agentskills.io' },
           ],
         },
         {
           title: 'More',
           items: [
+            { label: 'Desktop Download', href: 'https://hermes-agent.nousresearch.com/desktop' },
             { label: 'GitHub', href: 'https://github.com/NousResearch/hermes-agent' },
             { label: 'Nous Research', href: 'https://nousresearch.com' },
           ],

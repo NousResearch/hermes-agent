@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
 
 from hermes_cli.session_recap import build_recap
 

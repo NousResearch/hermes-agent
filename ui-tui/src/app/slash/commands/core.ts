@@ -110,7 +110,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    aliases: ['exit', 'q'],
+    aliases: ['exit'],
     help: 'exit hermes',
     name: 'quit',
     run: (_arg, ctx) => ctx.session.die()
@@ -201,18 +201,6 @@ export const coreCommands: SlashCommand[] = [
         .rpc<SessionStatusResponse>('session.status', { session_id: ctx.sid })
         .then(ctx.guarded<SessionStatusResponse>(r => ctx.transcript.page(r.output || '(no status)', 'Status')))
         .catch(ctx.guardedErr)
-    }
-  },
-
-  {
-    help: 'resume a prior session',
-    name: 'resume',
-    run: (arg, ctx) => {
-      if (ctx.session.guardBusySessionSwitch('switch sessions')) {
-        return
-      }
-
-      arg ? ctx.session.resumeById(arg) : patchOverlayState({ picker: true })
     }
   },
 
@@ -547,6 +535,7 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['q'],
     help: 'inspect or enqueue a message',
     name: 'queue',
     run: (arg, ctx) => {

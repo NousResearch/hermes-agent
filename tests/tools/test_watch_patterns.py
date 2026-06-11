@@ -11,7 +11,6 @@ Covers:
 """
 
 import json
-import queue
 import time
 import pytest
 from unittest.mock import patch
@@ -19,11 +18,8 @@ from unittest.mock import patch
 from tools.process_registry import (
     ProcessRegistry,
     ProcessSession,
-    WATCH_MIN_INTERVAL_SECONDS,
     WATCH_STRIKE_LIMIT,
     WATCH_GLOBAL_MAX_PER_WINDOW,
-    WATCH_GLOBAL_WINDOW_SECONDS,
-    WATCH_GLOBAL_COOLDOWN_SECONDS,
 )
 
 

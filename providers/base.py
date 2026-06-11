@@ -56,6 +56,22 @@ class ProviderProfile:
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
     supports_health_check: bool = True  # False → doctor skips /models probe for this provider
 
+    # ── Vision support ────────────────────────────────────────
+    # True when the provider's API accepts image content inside
+    # tool-result messages natively.  Set on providers that expose
+    # multimodal models via tool results (Anthropic Messages API,
+    # OpenAI Chat Completions, Gemini, MiniMax, etc.).
+    # Falls back to model-catalog lookup when False and the provider
+    # has no registered profile.
+    supports_vision: bool = False
+
+    # True when the provider's API accepts list-type tool message
+    # content (multipart with image_url parts).  Defaults to True for
+    # backward compatibility.  Set to False for providers that accept
+    # multimodal user messages but reject list-type tool content
+    # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
+    supports_vision_tool_messages: bool = True
+
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
@@ -128,6 +144,20 @@ class ProviderProfile:
         Default: ({}, {}).
         """
         return {}, {}
+
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Return the default max_tokens cap for *model*.
+
+        Overrideable hook for providers that need per-model output caps —
+        e.g. a relay that fronts several upstream backends, each with a
+        different completion-token limit. The transport calls this when
+        the user hasn't set an explicit max_tokens.
+
+        Default: return self.default_max_tokens (the static profile field),
+        ignoring the model name. Override in a subclass to vary the cap
+        per-model.
+        """
+        return self.default_max_tokens
 
     def fetch_models(
         self,

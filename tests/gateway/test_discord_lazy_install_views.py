@@ -15,10 +15,8 @@ Fixes: lazy-install path NameError for ExecApprovalView, SlashConfirmView,
 UpdatePromptView, ModelPickerView, ClarifyChoiceView.
 """
 import importlib
-import sys
 from unittest.mock import patch
 
-import pytest
 
 _VIEW_NAMES = [
     "ExecApprovalView",
@@ -34,7 +32,7 @@ class TestDefineDiscordViewClasses:
 
     def test_registers_all_five_view_classes(self, monkeypatch):
         """Calling _define_discord_view_classes() must (re)define all 5 view classes."""
-        dp = importlib.import_module("gateway.platforms.discord")
+        dp = importlib.import_module("plugins.platforms.discord.adapter")
 
         # Remove the classes to simulate the state where the module was loaded
         # with DISCORD_AVAILABLE=False (the lazy-install scenario).
@@ -54,7 +52,7 @@ class TestDefineDiscordViewClasses:
     def test_check_discord_requirements_calls_define_on_lazy_install(self, monkeypatch):
         """check_discord_requirements() must call _define_discord_view_classes() on
         a successful lazy install so view classes exist when DISCORD_AVAILABLE=True."""
-        dp = importlib.import_module("gateway.platforms.discord")
+        dp = importlib.import_module("plugins.platforms.discord.adapter")
 
         # Simulate discord not yet available at module load.
         monkeypatch.setattr(dp, "DISCORD_AVAILABLE", False)

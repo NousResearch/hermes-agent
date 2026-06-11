@@ -19,7 +19,6 @@ import threading
 from datetime import datetime, timedelta
 from unittest.mock import patch
 
-import pytest
 
 from gateway.config import GatewayConfig, Platform, SessionResetPolicy
 from gateway.session import SessionEntry, SessionStore

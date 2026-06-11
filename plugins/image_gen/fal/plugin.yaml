@@ -1,0 +1,7 @@
+name: fal
+version: 1.0.0
+description: "FAL.ai image generation backend (flux-2-klein, flux-2-pro, nano-banana, gpt-image-1.5, recraft-v3, etc.)."
+author: NousResearch
+kind: backend
+requires_env:
+  - FAL_KEY

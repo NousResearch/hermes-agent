@@ -47,7 +47,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "openrouter": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
-        extra_env_vars=("OPENAI_API_KEY",),
         base_url_env_var="OPENROUTER_BASE_URL",
     ),
     "nous": HermesOverlay(
@@ -59,6 +58,11 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="codex_responses",
         auth_type="oauth_external",
         base_url_override="https://chatgpt.com/backend-api/codex",
+    ),
+    "openai-api": HermesOverlay(
+        transport="codex_responses",
+        base_url_override="https://api.openai.com/v1",
+        base_url_env_var="OPENAI_BASE_URL",
     ),
     "xai-oauth": HermesOverlay(
         transport="codex_responses",
@@ -137,10 +141,6 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "alibaba-coding-plan": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
-    ),
-    "vercel": HermesOverlay(
-        transport="openai_chat",
-        is_aggregator=True,
     ),
     "opencode": HermesOverlay(
         transport="openai_chat",
@@ -285,11 +285,6 @@ ALIASES: Dict[str, str] = {
     "github": "github-copilot",
     "github-copilot-acp": "copilot-acp",
 
-    # vercel (models.dev ID for AI Gateway)
-    "ai-gateway": "vercel",
-    "aigateway": "vercel",
-    "vercel-ai-gateway": "vercel",
-
     # opencode (models.dev ID for OpenCode Zen)
     "opencode-zen": "opencode",
     "zen": "opencode",
@@ -381,6 +376,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "local": "Local endpoint",
     "bedrock": "AWS Bedrock",
     "ollama-cloud": "Ollama Cloud",
+    "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
 
 
@@ -496,7 +492,10 @@ def get_label(provider_id: str) -> str:
 
 def is_aggregator(provider: str) -> bool:
     """Return True when the provider is a multi-model aggregator."""
-    pdef = get_provider(provider)
+    provider_norm = normalize_provider(provider or "")
+    if provider_norm.startswith("custom:"):
+        return True
+    pdef = get_provider(provider_norm)
     return pdef.is_aggregator if pdef else False
 
 
@@ -680,6 +679,20 @@ def resolve_provider_full(
         ProviderDef if found, else None.
     """
     canonical = normalize_provider(name)
+    raw = name.strip().lower()
+
+    # 0. User-defined config providers win over the built-in alias table.
+    #    A user who declares ``providers.<name>`` in config.yaml has stated
+    #    explicit intent for that name — it must not be hijacked by a legacy
+    #    vendor alias (e.g. bare "openai" → "openrouter"). Resolve the raw
+    #    name against user config FIRST so a configured ``providers.openai``
+    #    (pointing at api.openai.com) beats the alias that would otherwise
+    #    silently route to OpenRouter. Only the raw (pre-alias) name is tried
+    #    here; canonical/alias resolution still happens below.
+    if user_providers:
+        user_pdef = resolve_user_provider(raw, user_providers)
+        if user_pdef is not None:
+            return user_pdef
 
     # 1. Built-in (models.dev + overlays)
     pdef = get_provider(canonical)
@@ -693,7 +706,7 @@ def resolve_provider_full(
         if user_pdef is not None:
             return user_pdef
         # Try original name (in case alias didn't match)
-        user_pdef = resolve_user_provider(name.strip().lower(), user_providers)
+        user_pdef = resolve_user_provider(raw, user_providers)
         if user_pdef is not None:
             return user_pdef
 

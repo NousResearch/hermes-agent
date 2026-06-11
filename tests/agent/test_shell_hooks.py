@@ -9,10 +9,7 @@ covered in ``test_shell_hooks_consent.py``.
 from __future__ import annotations
 
 import json
-import os
-import stat
 from pathlib import Path
-from typing import Any, Dict
 
 import pytest
 

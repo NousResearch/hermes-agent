@@ -19,7 +19,6 @@ leaving WAL locks in place until Python actually exited.
 import threading
 from unittest.mock import MagicMock
 
-import pytest
 
 
 def _make_runner():
@@ -229,3 +228,54 @@ class TestSessionDbCloseOnShutdown:
 
         flaky_db.close.assert_called_once()
         healthy_db.close.assert_called_once()
+
+
+class TestSessionResetZombieRace:
+    """Regression for #28686 — a session_reset racing the in-flight run's
+    guarded release must not leave a dead agent locking the slot forever.
+    """
+
+    def test_generation_guard_blocks_then_unconditional_release_evicts(self):
+        runner = _make_runner()
+        runner._session_run_generation = {}
+        key = "agent:main:telegram:private:1"
+
+        gen_n = runner._begin_session_run_generation(key)
+        dead_agent = MagicMock()
+        runner._running_agents[key] = dead_agent
+        runner._running_agents_ts[key] = 1.0
+        runner._busy_ack_ts[key] = 1.0
+
+        # session_reset bumps the generation while gen-N is still in flight.
+        runner._invalidate_session_run_generation(key, reason="session_reset")
+
+        # gen-N's own guarded release is correctly blocked — slot would be a
+        # zombie if nothing else cleared it (the pre-fix behaviour).
+        assert runner._release_running_agent_state(key, run_generation=gen_n) is False
+        assert runner._running_agents.get(key) is dead_agent
+
+        # The fix: unconditional release (no run_generation) always clears it.
+        assert runner._release_running_agent_state(key) is True
+        assert key not in runner._running_agents
+        assert key not in runner._running_agents_ts
+        assert key not in runner._busy_ack_ts
+
+    def test_normal_completion_is_not_evicted_by_outer_release(self):
+        """Guarded release with the current generation succeeds; the outer
+        unconditional release that follows is a harmless no-op.
+        """
+        runner = _make_runner()
+        runner._session_run_generation = {}
+        key = "agent:main:telegram:private:2"
+
+        gen = runner._begin_session_run_generation(key)
+        runner._running_agents[key] = MagicMock()
+        runner._running_agents_ts[key] = 1.0
+        runner._busy_ack_ts[key] = 1.0
+
+        assert runner._release_running_agent_state(key, run_generation=gen) is True
+        assert key not in runner._running_agents
+        # Outer finally runs the unconditional release after — nothing stranded.
+        assert runner._release_running_agent_state(key) is True
+        assert key not in runner._running_agents_ts
+        assert key not in runner._busy_ack_ts

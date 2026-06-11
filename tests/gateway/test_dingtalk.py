@@ -1,9 +1,8 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
-import json
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -405,6 +404,36 @@ class TestConnect:
         await adapter.disconnect()
         assert len(adapter._session_webhooks) == 0
         assert len(adapter._dedup._seen) == 0
+        assert adapter._http_client is None
+
+    @pytest.mark.asyncio
+    async def test_disconnect_finalizes_open_streaming_cards(self):
+        """Streaming cards must be finalized before HTTP client closes."""
+        from unittest.mock import AsyncMock, patch
+        from gateway.platforms.dingtalk import DingTalkAdapter
+        adapter = DingTalkAdapter(PlatformConfig(enabled=True))
+        adapter._http_client = AsyncMock()
+        adapter._stream_task = None
+        adapter._streaming_cards = {
+            "chat-1": {"track-a": "last content"},
+            "chat-2": {"track-b": "other"},
+        }
+
+        close_calls = []
+
+        async def fake_close_siblings(chat_id):
+            # HTTP client must still be alive at call time.
+            assert adapter._http_client is not None, (
+                "HTTP client was already closed before card finalization"
+            )
+            close_calls.append(chat_id)
+            adapter._streaming_cards.pop(chat_id, None)
+
+        with patch.object(adapter, "_close_streaming_siblings", side_effect=fake_close_siblings):
+            await adapter.disconnect()
+
+        assert set(close_calls) == {"chat-1", "chat-2"}
+        assert adapter._streaming_cards == {}
         assert adapter._http_client is None
 
 

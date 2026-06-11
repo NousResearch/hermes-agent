@@ -13,9 +13,7 @@ These tests assert both gates now pass a bot message through when
 DISCORD_ALLOW_BOTS permits it AND no user allowlist entry exists.
 """
 
-import os
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 
@@ -172,42 +170,49 @@ def test_bot_bypass_does_not_leak_to_other_platforms(monkeypatch):
 
 
 # -----------------------------------------------------------------------------
-# DISCORD_ALLOWED_ROLES gateway-layer bypass (#7871)
+# DISCORD_ALLOWED_ROLES no longer bypasses the gateway allowlist (#30742)
+#
+# Prior behavior: setting DISCORD_ALLOWED_ROLES caused _is_user_authorized
+# to return True for ANY Discord event, on the assumption that the adapter
+# pre-filter had already validated role membership.  That allowed slash
+# commands and synthetic voice events to bypass role checks.  PR #30742
+# removed the shortcut — Discord auth now flows through the same allowlist
+# / pairing / allow-all path as every other platform.
 # -----------------------------------------------------------------------------
 
 
-def test_discord_role_config_bypasses_gateway_allowlist(monkeypatch):
-    """When DISCORD_ALLOWED_ROLES is set, _is_user_authorized must trust
-    the adapter's pre-filter and authorize. Without this, role-only setups
-    (DISCORD_ALLOWED_ROLES populated, DISCORD_ALLOWED_USERS empty) would
-    hit the 'no allowlists configured' branch and get rejected.
+def test_discord_role_config_does_not_bypass_gateway_allowlist(monkeypatch):
+    """DISCORD_ALLOWED_ROLES alone must NOT authorize at the gateway layer
+    (regression guard for #30742).  Role-based access is enforced by the
+    adapter pre-filter on real message events; the gateway layer requires
+    an explicit allowlist hit or pairing approval.
     """
     runner = _make_bare_runner()
 
     monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "1493705176387948674")
-    # Note: DISCORD_ALLOWED_USERS is NOT set — the entire point.
+    # DISCORD_ALLOWED_USERS deliberately NOT set — verifies the role
+    # config alone no longer grants authorization.
 
     source = _make_discord_human_source(user_id="999888777")
-    assert runner._is_user_authorized(source) is True
+    assert runner._is_user_authorized(source) is False
 
 
-def test_discord_role_config_still_authorizes_alongside_users(monkeypatch):
-    """Sanity: setting both DISCORD_ALLOWED_ROLES and DISCORD_ALLOWED_USERS
-    doesn't break the user-id path. Users in the allowlist should still be
-    authorized even if they don't have a role. (OR semantics.)
+def test_discord_user_allowlist_still_authorizes_when_role_is_also_configured(monkeypatch):
+    """Sanity: DISCORD_ALLOWED_USERS still authorizes users on the list,
+    independent of DISCORD_ALLOWED_ROLES.  This guards against a future
+    regression that ties the user-allowlist check to the (now-removed)
+    role bypass.
     """
     runner = _make_bare_runner()
 
     monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "1493705176387948674")
     monkeypatch.setenv("DISCORD_ALLOWED_USERS", "100200300")
 
-    # User on the user allowlist, no role → still authorized at gateway
-    # level via the role bypass (adapter already approved them).
     source = _make_discord_human_source(user_id="100200300")
     assert runner._is_user_authorized(source) is True
 
 
-def test_discord_role_bypass_does_not_leak_to_other_platforms(monkeypatch):
+def test_discord_role_config_does_not_leak_to_other_platforms(monkeypatch):
     """DISCORD_ALLOWED_ROLES must only affect Discord. Setting it should
     not suddenly start authorizing Telegram users whose platform has its
     own empty allowlist.

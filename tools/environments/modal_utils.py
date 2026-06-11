@@ -79,7 +79,12 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         *,
         timeout: int | None = None,
         stdin_data: str | None = None,
+        rewrite_compound_background: bool = True,
     ) -> dict:
+        # Managed/remote modal transports execute commands via explicit transport
+        # and do not rely on shell background rewriters. Keep parameter for
+        # compatibility with BaseEnvironment callers.
+        _ = rewrite_compound_background
         self._before_execute()
         prepared = self._prepare_modal_exec(
             command,

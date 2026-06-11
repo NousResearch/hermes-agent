@@ -42,7 +42,8 @@ const stdoutOnly = (diff: ReturnType<LogUpdate['render']>) =>
     .map(p => (p as { type: 'stdout'; content: string }).content)
     .join('')
 
-const hasDecstbm = (text: string) => /\x1b\[\d+;\d+r/.test(text)
+const ESC = '\u001b'
+const hasDecstbm = (text: string) => new RegExp(`${ESC}\\[\\d+;\\d+r`).test(text)
 
 describe('LogUpdate.render diff contract', () => {
   it('emits only changed cells when most rows match', () => {
@@ -85,6 +86,25 @@ describe('LogUpdate.render diff contract', () => {
 
     expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
     expect(stdoutOnly(diff)).toContain('shorterrownow')
+  })
+
+  it('height growth emits a clearTerminal patch before repainting', () => {
+    const w = 20
+    const prevH = 3
+    const nextH = 6
+
+    const prev = mkScreen(w, prevH)
+    paint(prev, 0, 'old rows')
+
+    const next = mkScreen(w, nextH)
+    paint(next, 0, 'new rows')
+    next.damage = { x: 0, y: 0, width: w, height: nextH }
+
+    const log = new LogUpdate({ isTTY: true, stylePool })
+    const diff = log.render(mkFrame(prev, w, prevH), mkFrame(next, w, nextH), true, false)
+
+    expect(diff.some(p => p.type === 'clearTerminal')).toBe(true)
+    expect(stdoutOnly(diff)).toContain('newrows')
   })
 
   it('drift repro: identical prev/next emits no heal, even when the physical terminal is stale', () => {
@@ -167,10 +187,12 @@ describe('LogUpdate.render diff contract', () => {
     paint(next, 1, 'row one')
 
     const prevFrame = mkFrame(prev, w, h)
+
     const nextFrame: Frame = {
       ...mkFrame(next, w, h),
       scrollHint: { top: 1, bottom: 4, delta: 1 }
     }
+
     const log = new LogUpdate({ isTTY: true, stylePool })
     const diff = log.render(prevFrame, nextFrame, true, true)
 
@@ -187,10 +209,12 @@ describe('LogUpdate.render diff contract', () => {
     paint(next, 1, 'row one')
 
     const prevFrame = mkFrame(prev, w, h)
+
     const nextFrame: Frame = {
       ...mkFrame(next, w, h),
       scrollHint: { top: 1, bottom: 5, delta: 1 }
     }
+
     const log = new LogUpdate({ isTTY: true, stylePool })
     const diff = log.render(prevFrame, nextFrame, true, true)
 

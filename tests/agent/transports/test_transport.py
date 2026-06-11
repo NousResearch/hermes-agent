@@ -2,10 +2,9 @@
 
 import pytest
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 from agent.transports.base import ProviderTransport
-from agent.transports.types import NormalizedResponse, ToolCall, Usage
+from agent.transports.types import NormalizedResponse
 from agent.transports import get_transport, register_transport, _REGISTRY
 
 

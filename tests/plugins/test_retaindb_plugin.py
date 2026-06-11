@@ -5,13 +5,10 @@ RetainDBMemoryProvider lifecycle/tools/prefetch, thread management, connection p
 """
 
 import json
-import os
 import sqlite3
-import tempfile
-import threading
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -67,8 +64,6 @@ from plugins.memory.retaindb import (
     _WriteQueue,
     _build_overlay,
     RetainDBMemoryProvider,
-    _ASYNC_SHUTDOWN,
-    _DEFAULT_BASE_URL,
 )
 
 

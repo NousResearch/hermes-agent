@@ -2,7 +2,6 @@
 
 import contextvars
 
-import pytest
 
 
 

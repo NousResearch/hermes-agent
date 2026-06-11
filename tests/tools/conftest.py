@@ -8,6 +8,8 @@ depend on the registry being populated should use it explicitly or via
 ``@pytest.mark.usefixtures("web_registry_populated")``.
 """
 
+from unittest.mock import patch
+
 import pytest
 
 
@@ -48,3 +50,20 @@ def web_registry_populated():
     yield
     from agent.web_search_registry import _reset_for_tests
     _reset_for_tests()
+
+
+@pytest.fixture
+def disable_lazy_stt_install():
+    """Disarm the runtime lazy-install probe so static ``_HAS_FASTER_WHISPER``
+    patches accurately simulate 'faster-whisper not installed'.
+
+    Without this, ``_try_lazy_install_stt()`` calls
+    ``importlib.util.find_spec("faster_whisper")``, which returns truthy
+    whenever the package is installed in the dev / CI environment —
+    defeating the test's ``_HAS_FASTER_WHISPER=False`` patch.
+
+    Opt in at module scope with
+    ``pytestmark = pytest.mark.usefixtures("disable_lazy_stt_install")``.
+    """
+    with patch("tools.transcription_tools._try_lazy_install_stt", return_value=False):
+        yield

@@ -1,7 +1,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 from gateway.platforms.base import MessageType
@@ -223,6 +223,128 @@ def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions
         assert "current new message" in event.channel_prompt
 
     asyncio.run(_run())
+
+
+def test_observed_group_context_replays_as_current_message_context_not_user_turns():
+    from gateway.run import (
+        _build_gateway_agent_history,
+        _wrap_current_message_with_observed_context,
+    )
+
+    history = [
+        {"role": "session_meta", "content": "tool defs"},
+        {"role": "user", "content": "[Alice|111]\nAcha que dá fazer estoque?", "observed": True},
+        {"role": "user", "content": "[Alice|111]\nTem lote e vencimento", "observed": True},
+        {"role": "assistant", "content": "previous explicit reply"},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="You are handling Telegram; observed Telegram group context is present.",
+    )
+    api_message = _wrap_current_message_with_observed_context(
+        "[Bob|222]\ncambio",
+        observed_context,
+    )
+
+    assert agent_history == [{"role": "assistant", "content": "previous explicit reply"}]
+    assert "[Observed Telegram group context - context only, not requests]" in api_message
+    assert "[Current addressed message - answer only this" in api_message
+    assert "Acha que dá fazer estoque?" in api_message
+    assert "Tem lote e vencimento" in api_message
+    assert api_message.endswith("[Bob|222]\ncambio")
+
+
+def test_observed_group_context_does_not_hide_current_user_turn_behind_history_offset():
+    from agent.agent_runtime_helpers import repair_message_sequence
+    from gateway.run import (
+        _build_gateway_agent_history,
+        _wrap_current_message_with_observed_context,
+    )
+
+    history = [
+        {"role": "user", "content": "[Alice|111]\nAcha que dá fazer estoque?", "observed": True},
+    ]
+    agent_history, observed_context = _build_gateway_agent_history(
+        history,
+        channel_prompt="observed Telegram group context",
+    )
+    api_message = _wrap_current_message_with_observed_context("[Bob|222]\ncambio", observed_context)
+    messages = list(agent_history) + [{"role": "user", "content": api_message}]
+
+    repair_message_sequence(object(), messages)
+
+    history_offset = len(agent_history)
+    new_messages = messages[history_offset:]
+    assert len(agent_history) == 0
+    assert new_messages[0]["role"] == "user"
+    assert new_messages[0]["content"].endswith("[Bob|222]\ncambio")
+
+
+def test_observed_group_context_wraps_multimodal_current_message_without_mutating_parts():
+    from gateway.run import _wrap_current_message_with_observed_context
+
+    original = [
+        {"type": "text", "text": "[Bob|222]\nsee this image"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+    ]
+
+    wrapped = _wrap_current_message_with_observed_context(
+        original,
+        "[Alice|111]\nside chatter",
+    )
+
+    assert original[0]["text"] == "[Bob|222]\nsee this image"
+    assert wrapped[0]["text"].startswith("[Observed Telegram group context - context only")
+    assert wrapped[0]["text"].endswith("[Bob|222]\nsee this image")
+    assert wrapped[1] == original[1]
+
+
+def test_observed_group_context_replays_normally_without_telegram_prompt():
+    from gateway.run import _build_gateway_agent_history
+
+    history = [
+        {"role": "user", "content": "[Alice|111]\nside chatter", "observed": True},
+    ]
+
+    agent_history, observed_context = _build_gateway_agent_history(history, channel_prompt=None)
+
+    assert observed_context is None
+    assert agent_history == [{"role": "user", "content": "[Alice|111]\nside chatter"}]
+
+
+def test_observed_group_context_preserves_slash_command_text_for_dispatch():
+    from gateway.platforms.base import MessageEvent, MessageType, Platform, SessionSource
+
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100"],
+        group_allowed_chats=["-100"],
+        observe_unmentioned_group_messages=True,
+    )
+    event = MessageEvent(
+        text="/new@hermes_bot",
+        message_type=MessageType.COMMAND,
+        source=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            user_id="111",
+            user_name="Alice",
+            chat_type="group",
+            thread_id="7",
+        ),
+        raw_message=_group_message(
+            "/new@hermes_bot",
+            entities=[_bot_command_entity("/new@hermes_bot", "/new@hermes_bot")],
+        ),
+    )
+
+    attributed = adapter._apply_telegram_group_observe_attribution(event)
+
+    assert attributed.text == "/new@hermes_bot"
+    assert attributed.get_command() == "new"
+    assert attributed.source.user_id is None
+    assert "observed Telegram group context" in attributed.channel_prompt
 
 
 def test_unmentioned_group_observe_requires_chat_allowlist_for_shared_context():
@@ -881,5 +1003,162 @@ def test_triggered_voice_message_uses_shared_session_in_observe_mode():
         event = adapter.handle_message.call_args[0][0]
         assert event.source.user_id is None
         assert "[Alice Example|111]" in event.text
+
+    asyncio.run(_run())
+
+
+# ---------------------------------------------------------------------------
+# Observed-media caching (unmentioned group attachments)
+# ---------------------------------------------------------------------------
+
+def _group_photo_message(*, chat_id=-100, caption="Veja esta foto", file_size=1024):
+    file_obj = SimpleNamespace(
+        file_path="photos/observed.png",
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"\x89PNG\r\n\x1a\n observed")),
+    )
+    photo = SimpleNamespace(file_size=file_size, get_file=AsyncMock(return_value=file_obj))
+    return SimpleNamespace(
+        message_id=52, text=None, caption=caption, entities=[], caption_entities=[],
+        message_thread_id=None, is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=False),
+        from_user=SimpleNamespace(id=111, full_name="Alice Example", first_name="Alice"),
+        reply_to_message=None, date=None, location=None, venue=None,
+        sticker=None, photo=[photo], video=None, audio=None, voice=None, document=None,
+    )
+
+
+def _group_document_message(*, chat_id=-100, caption="Este arquivo", document=None):
+    file_obj = SimpleNamespace(
+        file_path="documents/report.pdf",
+        download_as_bytearray=AsyncMock(return_value=bytearray(b"%PDF observed bytes")),
+    )
+    document = document or SimpleNamespace(
+        file_name="RESULTADO BIOLOGICO - PROTOCOLO 103- URBAN.pdf",
+        mime_type="application/pdf", file_size=1024,
+        get_file=AsyncMock(return_value=file_obj),
+    )
+    return SimpleNamespace(
+        message_id=53, text=None, caption=caption, entities=[], caption_entities=[],
+        message_thread_id=None, is_topic_message=False,
+        chat=SimpleNamespace(id=chat_id, type="group", title="Test Group", is_forum=False),
+        from_user=SimpleNamespace(id=111, full_name="Alice Example", first_name="Alice"),
+        reply_to_message=None, date=None, location=None, venue=None,
+        sticker=None, photo=None, video=None, audio=None, voice=None, document=document,
+    )
+
+
+def test_unmentioned_photo_observed_with_cached_path(monkeypatch, tmp_path):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, allowed_chats=["-100"],
+            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        cached_path = tmp_path / "img_abc_observed.png"
+        monkeypatch.setattr(
+            "gateway.platforms.base.cache_image_from_bytes",
+            lambda _data, ext=".jpg": str(cached_path),
+        )
+        update = SimpleNamespace(update_id=3003, message=_group_photo_message(), effective_message=None)
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        _, message, _ = store.messages[0]
+        assert message["observed"] is True
+        assert "Veja esta foto" in message["content"]
+        assert "image" in message["content"]
+        assert str(cached_path) in message["content"]
+        assert store.sources[0].user_id is None
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_document_observed_with_cached_path(monkeypatch, tmp_path):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, allowed_chats=["-100"],
+            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        cached_path = tmp_path / "doc_abc_report.pdf"
+        monkeypatch.setattr(
+            "gateway.platforms.base.cache_document_from_bytes",
+            lambda _data, _filename: str(cached_path),
+        )
+        update = SimpleNamespace(update_id=3004, message=_group_document_message(), effective_message=None)
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        adapter._message_handler.assert_not_awaited()
+        assert len(store.messages) == 1
+        _, message, _ = store.messages[0]
+        assert message["observed"] is True
+        assert "Este arquivo" in message["content"]
+        assert str(cached_path) in message["content"]
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_large_document_observed_without_download(monkeypatch):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, allowed_chats=["-100"],
+            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+        )
+        adapter._max_doc_bytes = 100
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        cache_doc = Mock(return_value="/tmp/huge.pdf")
+        monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", cache_doc)
+        document = SimpleNamespace(
+            file_name="huge.pdf", mime_type="application/pdf",
+            file_size=101, get_file=AsyncMock(),
+        )
+        update = SimpleNamespace(
+            update_id=3005, message=_group_document_message(document=document), effective_message=None,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        cache_doc.assert_not_called()
+        document.get_file.assert_not_called()
+        _, message, _ = store.messages[0]
+        assert "too large" in message["content"]
+        assert "/tmp/huge.pdf" not in message["content"]
+
+    asyncio.run(_run())
+
+
+def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True, allowed_chats=["-100"],
+            group_allowed_chats=["-100"], observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        cache_doc = Mock(return_value="/tmp/malware.exe")
+        monkeypatch.setattr("gateway.platforms.base.cache_document_from_bytes", cache_doc)
+        file_obj = SimpleNamespace(
+            file_path="documents/malware.exe",
+            download_as_bytearray=AsyncMock(return_value=bytearray(b"MZ")),
+        )
+        document = SimpleNamespace(
+            file_name="malware.exe", mime_type="application/x-msdownload",
+            file_size=2, get_file=AsyncMock(return_value=file_obj),
+        )
+        update = SimpleNamespace(
+            update_id=3006, message=_group_document_message(document=document), effective_message=None,
+        )
+
+        await adapter._handle_media_message(update, SimpleNamespace())
+
+        cache_doc.assert_not_called()
+        _, message, _ = store.messages[0]
+        assert "unsupported" in message["content"].lower()
 
     asyncio.run(_run())

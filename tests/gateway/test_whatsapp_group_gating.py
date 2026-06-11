@@ -306,7 +306,6 @@ def test_status_broadcast_chats_are_always_dropped():
     (a contact's WhatsApp Story update). These pseudo-chats aren't real
     conversations and the adapter must drop them regardless of dm_policy.
     """
-    from gateway.platforms.whatsapp import WhatsAppAdapter
 
     # Even on the most permissive config — open DMs, no allowlist — Stories
     # and Channel posts must not reach the agent.

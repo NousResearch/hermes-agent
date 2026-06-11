@@ -7,15 +7,12 @@ suspend_recently_active() is skipped so users don't lose their sessions.
 After a crash (no marker), suspension still fires as a safety net for stuck sessions.
 """
 
-import os
 from datetime import datetime, timedelta
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
-from gateway.config import GatewayConfig, Platform, PlatformConfig, SessionResetPolicy
-from gateway.session import SessionEntry, SessionSource, SessionStore
+from gateway.config import GatewayConfig, Platform
+from gateway.session import SessionSource, SessionStore
 
 
 # ---------------------------------------------------------------------------

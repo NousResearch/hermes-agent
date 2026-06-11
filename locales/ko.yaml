@@ -222,9 +222,12 @@ gateway:
     no_named_sessions:     "이름이 지정된 세션이 없습니다.\n현재 세션에 이름을 지정하려면 `/title 내 세션`을 사용하고, 나중에 `/resume 내 세션`으로 돌아오세요."
     list_header:           "📋 **이름이 지정된 세션**\n"
     list_item:             "• **{title}**{preview_part}"
+    list_item_numbered:    "{index}. **{title}**{preview_part}"
     list_preview_suffix:   " — _{preview}_"
     list_footer:           "\n사용법: `/resume <session name>`"
+    list_footer_numbered:  "\n사용법: `/resume <세션 이름>` 또는 `/resume <번호>` (예: 가장 최근 세션은 `/resume 1`)"
     list_failed:           "세션 목록을 가져올 수 없습니다: {error}"
+    out_of_range:          "재개 인덱스 {index}이(가) 범위를 벗어났습니다.\n인자 없이 `/resume`을 실행하면 사용 가능한 세션이 표시됩니다."
     not_found:             "'**{name}**'와 일치하는 세션이 없습니다.\n사용 가능한 세션을 보려면 인수 없이 `/resume`을 사용하세요."
     already_on:            "📌 이미 **{name}** 세션에 있습니다."
     switch_failed:         "세션 전환에 실패했습니다."
@@ -287,7 +290,8 @@ gateway:
 
   undo:
     nothing:               "되돌릴 내용이 없습니다."
-    removed:               "↩️ 메시지 {count}개를 되돌렸습니다.\n제거됨: \"{preview}\""
+    removed:               "↩️ {turns}개 턴을 되돌렸습니다 (메시지 {count}개).\n백업 위치: \"{preview}\"\n위 텍스트를 복사/편집한 후 보내면 여기서 다시 프롬프트할 수 있습니다."
+    invalid_count:         "잘못된 개수 \"{arg}\" — /undo 또는 /undo N을 사용하세요."
 
   update:
     platform_not_messaging:  "✗ /update는 메시징 플랫폼에서만 사용할 수 있습니다. 터미널에서 `hermes update`를 실행하세요."
@@ -339,6 +343,8 @@ gateway:
     label_off:             "꺼짐 (텍스트 전용)"
     label_voice_only:      "켜짐 (음성 메시지에 음성으로 응답)"
     label_all:             "TTS (모든 메시지에 음성으로 응답)"
+    help:                  "{toggle}\n\n**/voice 사용법**\n• `/voice on` — 음성 메시지를 보내면 음성으로 답변\n• `/voice tts` — *모든* 메시지에 음성으로 답변\n• `/voice off` — 텍스트 전용 답변으로 복귀\n• `/voice status` — 현재 모드 표시\n• `/voice` (인자 없음) — 켜기와 끄기를 빠르게 전환{channels}"
+    help_channels:         "\n\n**라이브 음성 채널 (Discord)**\n• 먼저 음성 채널에 들어간 다음 `/voice channel` — 제가 참여해 듣고 음성으로 답변합니다\n• `/voice leave` — 음성 채널에서 연결 해제"
 
   yolo:
     disabled:                   "⚠️ 이 세션에서 YOLO 모드 **꺼짐** — 위험한 명령은 승인이 필요합니다."

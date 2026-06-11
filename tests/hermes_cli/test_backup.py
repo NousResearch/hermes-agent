@@ -68,6 +68,13 @@ def _make_hermes_tree(root: Path) -> None:
     (root / "logs" / "agent.log").write_text("log line\n")
 
 
+def _symlink_file_or_skip(link: Path, target: Path) -> None:
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable in test environment: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # _should_exclude tests
 # ---------------------------------------------------------------------------
@@ -256,6 +263,29 @@ class TestBackup:
         # Should exist in home dir
         zips = list(tmp_path.glob("hermes-backup-*.zip"))
         assert len(zips) == 1
+
+    def test_skips_symlinked_files(self, tmp_path, monkeypatch):
+        """Backup must not dereference symlinks and leak files outside HERMES_HOME."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        _make_hermes_tree(hermes_home)
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_text("outside secret\n")
+        _symlink_file_or_skip(hermes_home / "skills" / "outside-link.txt", outside)
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "backup.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "skills/outside-link.txt" not in names
+            assert all(zf.read(name) != b"outside secret\n" for name in names)
 
 
 # ---------------------------------------------------------------------------
@@ -999,7 +1029,6 @@ class TestProfileRestoration:
         args = Namespace(zipfile=str(zip_path), force=True)
 
         # Simulate profiles module not being available
-        import hermes_cli.backup as backup_mod
         original_import = __builtins__.__import__ if hasattr(__builtins__, '__import__') else __import__
 
         def fake_import(name, *a, **kw):
@@ -1421,6 +1450,21 @@ class TestPreUpdateBackup:
             f"remaining={remaining}"
         )
 
+    def test_skips_symlinked_files(self, hermes_home, tmp_path):
+        """Pre-update backups must not dereference symlinks outside HERMES_HOME."""
+        from hermes_cli.backup import create_pre_update_backup
+
+        outside = tmp_path / "outside-secret.txt"
+        outside.write_text("outside secret\n")
+        _symlink_file_or_skip(hermes_home / "skills" / "outside-link.txt", outside)
+
+        out = create_pre_update_backup(hermes_home=hermes_home)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            names = zf.namelist()
+            assert "skills/outside-link.txt" not in names
+            assert all(zf.read(name) != b"outside secret\n" for name in names)
+
 
 class TestRunPreUpdateBackup:
     """Tests for the ``_run_pre_update_backup`` wrapper in main.py —
@@ -1635,3 +1679,105 @@ class TestPreMigrationBackup:
             _t.sleep(1.05)
         # Update backup must still be there
         assert update_backup.exists(), "pre-migration rotation wrongly pruned the pre-update backup"
+
+
+# ---------------------------------------------------------------------------
+# Cron jobs auto-restore after silent migration loss (issue #34600)
+# ---------------------------------------------------------------------------
+
+class TestRestoreCronJobsIfEmptied:
+    """`hermes update` config migration can leave cron/jobs.json valid-but-empty,
+    silently dropping every scheduled job. `restore_cron_jobs_if_emptied` is the
+    post-migration safety net that restores from the pre-update snapshot."""
+
+    @staticmethod
+    def _seed_jobs(path: Path, jobs):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"jobs": jobs}))
+
+    def _make_snapshot(self, hermes_home: Path, label="pre-update"):
+        from hermes_cli.backup import create_quick_snapshot
+        return create_quick_snapshot(label=label, hermes_home=hermes_home, keep=5)
+
+    def test_restores_when_emptied_after_migration(self, tmp_path):
+        from hermes_cli.backup import restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        # Pre-update: 3 real jobs.
+        self._seed_jobs(jobs_path, [{"id": "a"}, {"id": "b"}, {"id": "c"}])
+        snap_id = self._make_snapshot(hermes_home)
+        assert snap_id
+
+        # Migration silently empties the file (valid JSON, zero jobs).
+        jobs_path.write_text(json.dumps({"jobs": []}))
+
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["restored"] is True
+        assert result["job_count"] == 3
+        assert result["snapshot_id"] == snap_id
+
+        # The live file now has the jobs back.
+        restored = json.loads(jobs_path.read_text())
+        assert len(restored["jobs"]) == 3
+
+    def test_noop_when_live_file_still_has_jobs(self, tmp_path):
+        from hermes_cli.backup import restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [{"id": "a"}, {"id": "b"}])
+        snap_id = self._make_snapshot(hermes_home)
+
+        # Healthy path: file unchanged after update.
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is None
+
+    def test_noop_when_snapshot_had_no_jobs(self, tmp_path):
+        from hermes_cli.backup import restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        # Pre-update genuinely had zero jobs; current is also empty.
+        self._seed_jobs(jobs_path, [])
+        snap_id = self._make_snapshot(hermes_home)
+        jobs_path.write_text(json.dumps({"jobs": []}))
+
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is None
+
+    def test_noop_when_live_file_unreadable(self, tmp_path):
+        """An unparseable live file is left alone — that's a different failure
+        mode the user should see, not silently overwrite."""
+        from hermes_cli.backup import restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [{"id": "a"}])
+        snap_id = self._make_snapshot(hermes_home)
+        jobs_path.write_text("{ this is not valid json")
+
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is None
+        # File left untouched.
+        assert jobs_path.read_text() == "{ this is not valid json"
+
+    def test_noop_when_snapshot_id_missing(self, tmp_path):
+        from hermes_cli.backup import restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        self._seed_jobs(jobs_path, [])
+        assert restore_cron_jobs_if_emptied(None, hermes_home=hermes_home) is None
+        assert restore_cron_jobs_if_emptied("", hermes_home=hermes_home) is None
+
+    def test_restores_legacy_bare_list_snapshot_shape(self, tmp_path):
+        """A legacy snapshot storing a bare JSON list (not {"jobs": [...]}) is
+        still counted and restored."""
+        from hermes_cli.backup import restore_cron_jobs_if_emptied
+        hermes_home = tmp_path / ".hermes"
+        jobs_path = hermes_home / "cron" / "jobs.json"
+        jobs_path.parent.mkdir(parents=True, exist_ok=True)
+        jobs_path.write_text(json.dumps([{"id": "a"}, {"id": "b"}]))
+        snap_id = self._make_snapshot(hermes_home)
+
+        jobs_path.write_text(json.dumps({"jobs": []}))
+        result = restore_cron_jobs_if_emptied(snap_id, hermes_home=hermes_home)
+        assert result is not None
+        assert result["job_count"] == 2

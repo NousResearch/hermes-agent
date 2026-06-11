@@ -319,7 +319,7 @@ With STT disabled, the gateway still downloads the voice/audio attachment into H
 
 Your tools or skills can then read that path directly (e.g., hand it off to a local diarization pipeline, a richer transcription model, or upload it to long-term storage). The file extension reflects the original format Telegram delivered (`.ogg` for voice notes, `.mp3`/`.m4a`/etc. for audio attachments).
 
-This pairs naturally with the [local Bot API server](#large-files-20mb--via-local-bot-api-server) section below, which lifts Telegram's 20MB getFile ceiling to 2GB — useful when the recordings you want to process are longer than a couple of minutes.
+This pairs naturally with the [local Bot API server](#large-files-20mb-via-local-bot-api-server) section below, which lifts Telegram's 20MB getFile ceiling to 2GB — useful when the recordings you want to process are longer than a couple of minutes.
 
 ### Outgoing Voice (Text-to-Speech)
 
@@ -876,9 +876,9 @@ When streaming is enabled (`gateway.streaming.enabled: true`), Hermes picks one 
 
 | Value | Behaviour |
 |---|---|
-| `auto` | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
+| `auto` (default) | Native draft streaming on supported chats (currently Telegram DMs); legacy edit-based path otherwise. Falls back gracefully if a draft frame fails. |
 | `draft` | Force native drafts. Logs a downgrade and falls back to edit if the chat doesn't support drafts (e.g. groups/topics). |
-| `edit` (default) | Legacy progressive `editMessageText` polling for every chat type. |
+| `edit` | Legacy progressive `editMessageText` polling for every chat type. |
 | `off` | Disable streaming entirely (final reply only, no progressive updates). |
 
 In `~/.hermes/config.yaml`:
@@ -887,7 +887,7 @@ In `~/.hermes/config.yaml`:
 gateway:
   streaming:
     enabled: true
-    transport: edit    # edit | auto | draft | off
+    transport: auto    # auto | draft | edit | off
 ```
 
 **What you'll see in DMs with `edit` (default)** — the gateway sends a normal preview message and progressively updates it via `editMessageText`, avoiding Telegram's draft-preview collapse/rollback effect.
@@ -1232,6 +1232,14 @@ HERMES_TELEGRAM_NOTIFICATIONS=all
 ```
 
 Unknown values log a warning and fall back to `important`.
+
+## Status messages edited in place
+
+The Telegram adapter routes recurring agent status callbacks (e.g. "Compressing context…", "Calling tool…") through `send_or_update_status()`, which keeps a `{(chat_id, status_key) → message_id}` cache and **edits the existing bubble** on subsequent emits instead of appending a new one each time. Distinct `status_key` values get their own messages; distinct chats never collide. If the edit fails (e.g. the user deleted the message, or it's older than Telegram allows for edits), the cache entry is dropped and the next emit posts a fresh message and re-caches its ID. No config required — this is the default Telegram behavior. Other adapters that don't implement `send_or_update_status` fall through to plain `send()` unchanged.
+
+## Pin incoming user message during agent turn
+
+When a user sends a message that triggers an agent turn, the Telegram adapter pins that incoming message for the duration of the turn and unpins it when the response is finished — a lightweight visual indicator that the bot is actively working on the message rather than ignoring it. The pin uses `disable_notification=true` to avoid extra pings. No config required.
 
 ## Security
 

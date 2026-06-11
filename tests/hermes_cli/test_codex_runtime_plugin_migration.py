@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 
 import pytest
 
 from hermes_cli.codex_runtime_plugin_migration import (
     MIGRATION_MARKER,
     MIGRATION_END_MARKER,
-    MigrationReport,
     _build_hermes_tools_mcp_entry,
     _format_toml_value,
     _looks_like_test_tempdir,

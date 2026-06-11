@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import yaml
-import pytest
 
 from agent.onboarding import (
     BUSY_INPUT_FLAG,
@@ -237,3 +236,76 @@ class TestOpenclawResidueSeenFlag:
         assert mark_seen(cfg_path, OPENCLAW_RESIDUE_FLAG) is True
         loaded = yaml.safe_load(cfg_path.read_text())
         assert is_seen(loaded, OPENCLAW_RESIDUE_FLAG) is True
+
+
+class TestProfileBuildMode:
+    def test_default_is_ask(self):
+        from agent.onboarding import profile_build_mode
+
+        assert profile_build_mode({}) == "ask"
+        assert profile_build_mode({"onboarding": {}}) == "ask"
+        assert profile_build_mode({"onboarding": {"profile_build": "ask"}}) == "ask"
+
+    def test_off_disables(self):
+        from agent.onboarding import profile_build_mode
+
+        assert profile_build_mode({"onboarding": {"profile_build": "off"}}) == "off"
+        assert profile_build_mode({"onboarding": {"profile_build": "OFF"}}) == "off"
+
+    def test_unknown_value_falls_back_to_ask(self):
+        from agent.onboarding import profile_build_mode
+
+        assert profile_build_mode({"onboarding": {"profile_build": "banana"}}) == "ask"
+
+    def test_non_mapping_config_safe(self):
+        from agent.onboarding import profile_build_mode
+
+        assert profile_build_mode("not a dict") == "ask"  # type: ignore[arg-type]
+        assert profile_build_mode({"onboarding": "nope"}) == "ask"
+
+
+class TestProfileBuildDirective:
+    def test_directive_is_opt_in_and_consent_gated(self):
+        from agent.onboarding import profile_build_directive
+
+        d = profile_build_directive()
+        # Must OFFER, not assume.
+        assert "OFFER" in d
+        # Must require consent before external lookups.
+        assert "consent" in d.lower()
+        # Must forbid silently reading connected accounts.
+        assert "silently" in d.lower()
+        # Must persist via the user-profile memory store.
+        assert 'target="user"' in d
+        # Must allow declining.
+        assert "decline" in d.lower()
+
+    def test_directive_mentions_first_message(self):
+        from agent.onboarding import profile_build_directive
+
+        assert "first message ever" in profile_build_directive()
+
+
+class TestProfileBuildSeenFlag:
+    def test_flag_round_trips(self, tmp_path):
+        from agent.onboarding import PROFILE_BUILD_FLAG
+
+        cfg_path = tmp_path / "config.yaml"
+        assert mark_seen(cfg_path, PROFILE_BUILD_FLAG) is True
+        loaded = yaml.safe_load(cfg_path.read_text())
+        assert is_seen(loaded, PROFILE_BUILD_FLAG) is True
+
+    def test_flag_independent_of_busy_input(self, tmp_path):
+        from agent.onboarding import PROFILE_BUILD_FLAG
+
+        cfg_path = tmp_path / "config.yaml"
+        mark_seen(cfg_path, BUSY_INPUT_FLAG)
+        loaded = yaml.safe_load(cfg_path.read_text())
+        assert is_seen(loaded, PROFILE_BUILD_FLAG) is False
+
+
+class TestProfileBuildConfigDefault:
+    def test_default_config_carries_ask(self):
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["onboarding"]["profile_build"] == "ask"

@@ -189,14 +189,11 @@ class TestAgentIntegration:
 
     def test_capture_rate_limits_from_headers(self):
         """Simulate the header capture path without a real API call."""
-        import sys
-        import os
         # Use a mock httpx-like response
         class MockResponse:
             headers = NOUS_HEADERS
 
         # Import AIAgent minimally
-        from unittest.mock import MagicMock, patch
 
         # Test the parsing directly
         state = parse_rate_limit_headers(MockResponse.headers, provider="nous")

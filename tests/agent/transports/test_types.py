@@ -1,7 +1,6 @@
 """Tests for agent/transports/types.py — dataclass construction + helpers."""
 
 import json
-import pytest
 
 from agent.transports.types import (
     NormalizedResponse,

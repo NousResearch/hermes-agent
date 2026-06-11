@@ -1167,18 +1167,6 @@ def _extract_provider_from_arn(arn: str) -> str:
     """
     match = re.search(r"foundation-model/([^.]+)", arn)
     return match.group(1) if match else ""
-
-
-def get_bedrock_model_ids(region: str) -> List[str]:
-    """Return a flat list of available Bedrock model IDs for the given region.
-
-    Convenience wrapper around ``discover_bedrock_models()`` for use in
-    the model selection UI.
-    """
-    models = discover_bedrock_models(region)
-    return [m["id"] for m in models]
-
-
 # ---------------------------------------------------------------------------
 # Error classification — Bedrock-specific exceptions
 # ---------------------------------------------------------------------------

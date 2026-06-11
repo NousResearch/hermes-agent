@@ -8,10 +8,7 @@ Covers:
 - Profile-scoped reset (uses HERMES_HOME)
 """
 
-import os
 import pytest
-from argparse import Namespace
-from pathlib import Path
 
 
 @pytest.fixture
@@ -39,7 +36,7 @@ def _run_memory_reset(target="all", yes=False, monkeypatch=None, confirm_input="
 
     Simulates what happens when `hermes memory reset` is run.
     """
-    from hermes_constants import get_hermes_home, display_hermes_home
+    from hermes_constants import get_hermes_home
 
     mem_dir = get_hermes_home() / "memories"
     files_to_reset = []

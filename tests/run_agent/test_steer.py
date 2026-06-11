@@ -11,6 +11,7 @@ import threading
 
 import pytest
 
+from agent.prompt_builder import STEER_MARKER_OPEN, format_steer_marker
 from run_agent import AIAgent
 
 
@@ -85,7 +86,7 @@ class TestSteerInjection:
         # The LAST tool result is modified; earlier ones are untouched.
         assert messages[2]["content"] == "ls output A"
         assert "ls output B" in messages[3]["content"]
-        assert "User guidance:" in messages[3]["content"]
+        assert STEER_MARKER_OPEN in messages[3]["content"]
         assert "please also check auth.log" in messages[3]["content"]
         # And pending_steer is consumed.
         assert agent._pending_steer is None
@@ -107,18 +108,19 @@ class TestSteerInjection:
         # Steer should remain pending (nothing to drain into)
         assert agent._pending_steer == "steer"
 
-    def test_marker_labels_text_as_user_guidance(self):
-        """The injection marker must label the appended text as user
-        guidance so the model attributes it to the user rather than
-        confusing it with tool output.  This is the cache-safe way to
-        signal provenance without violating message-role alternation.
+    def test_marker_labels_text_as_out_of_band_user_message(self):
+        """The injection marker must attribute the appended text to the user
+        via the explicit out-of-band marker (which the system prompt tells the
+        model to trust) — otherwise the model reads it as untrusted tool output
+        and refuses it as suspected prompt injection.  Cache-safe: it only
+        rewrites existing tool content, never the message-role sequence.
         """
         agent = _bare_agent()
         agent.steer("stop after next step")
         messages = [{"role": "tool", "content": "x", "tool_call_id": "1"}]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
         content = messages[-1]["content"]
-        assert "User guidance:" in content
+        assert STEER_MARKER_OPEN in content
         assert "stop after next step" in content
 
     def test_multimodal_content_list_preserved(self):
@@ -227,9 +229,9 @@ class TestPreApiCallSteerDrain:
         # Inject into last tool msg (mirrors the new code in run_conversation)
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += f"\n\nUser guidance: {_pre_api_steer}"
+                messages[_si]["content"] += format_steer_marker(_pre_api_steer)
                 break
-        assert "User guidance:" in messages[-1]["content"]
+        assert STEER_MARKER_OPEN in messages[-1]["content"]
         assert "focus on error handling" in messages[-1]["content"]
         assert agent._pending_steer is None
 
@@ -271,9 +273,26 @@ class TestPreApiCallSteerDrain:
         assert _pre_api_steer is not None
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += f"\n\nUser guidance: {_pre_api_steer}"
+                messages[_si]["content"] += format_steer_marker(_pre_api_steer)
                 break
         assert "change approach" in messages[2]["content"]
+
+
+class TestSteerMarkerContract:
+    def test_system_prompt_note_describes_the_real_marker(self):
+        """The system-prompt note tells the model which marker to trust; it
+        must reference the exact open/close the injector emits, or the model
+        trusts a marker that never appears (and vice-versa)."""
+        from agent.prompt_builder import STEER_CHANNEL_NOTE, STEER_MARKER_CLOSE
+
+        emitted = format_steer_marker("hi")
+        assert STEER_MARKER_OPEN in emitted and STEER_MARKER_CLOSE in emitted
+        assert STEER_MARKER_OPEN in STEER_CHANNEL_NOTE and STEER_MARKER_CLOSE in STEER_CHANNEL_NOTE
+
+    def test_marker_no_longer_uses_the_distrusted_label(self):
+        """Regression: the bare 'User guidance:' line read as tool content and
+        got refused as injection — it must not come back."""
+        assert "User guidance:" not in format_steer_marker("hi")
 
 
 class TestSteerCommandRegistry:
@@ -281,7 +300,7 @@ class TestSteerCommandRegistry:
         """The /steer slash command must be registered so it reaches all
         platforms (CLI, gateway, TUI autocomplete, Telegram/Slack menus).
         """
-        from hermes_cli.commands import resolve_command, ACTIVE_SESSION_BYPASS_COMMANDS
+        from hermes_cli.commands import resolve_command
 
         cmd = resolve_command("steer")
         assert cmd is not None

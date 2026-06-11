@@ -269,6 +269,37 @@ async def test_process_message_unwraps_ephemeral_before_send():
 
 
 @pytest.mark.asyncio
+async def test_process_message_ephemeral_reply_does_not_auto_upload_bare_paths(tmp_path):
+    """Tips/system notices may mention local paths; they must remain text."""
+    adapter = _delete_adapter()
+    adapter._send_with_retry = AsyncMock(
+        return_value=SendResult(success=True, message_id="sent-1")
+    )
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=True, message_id="doc-1")
+    )
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("model:\n  provider: test\n", encoding="utf-8")
+    reply_text = f"Tip: hermes chat --ignore-user-config skips {config_path}"
+
+    async def _handler(evt):
+        return EphemeralReply(reply_text, ttl_seconds=0)
+
+    adapter.set_message_handler(_handler)
+
+    event = _make_event(text="/new")
+    session_key = "agent:main:telegram:private:42"
+    with patch("gateway.platforms.base.asyncio.sleep", AsyncMock()), patch.object(
+        adapter, "_keep_typing", new=AsyncMock()
+    ):
+        await adapter._process_message_background(event, session_key)
+
+    adapter._send_with_retry.assert_called_once()
+    assert adapter._send_with_retry.call_args.kwargs["content"] == reply_text
+    adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_process_message_incapable_platform_does_not_schedule_delete():
     adapter = _no_delete_adapter()
     adapter._send_with_retry = AsyncMock(

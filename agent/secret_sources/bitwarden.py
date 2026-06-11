@@ -37,7 +37,6 @@ import platform
 import shutil
 import stat
 import subprocess
-import sys
 import tempfile
 import time
 import urllib.error
@@ -70,8 +69,104 @@ _BWS_RUN_TIMEOUT = 30
 
 # In-process cache so repeated load_hermes_dotenv() calls (CLI startup,
 # gateway hot-reload, test suites) don't re-fetch from BSM.
-_CacheKey = Tuple[str, str]  # (access_token_fingerprint, project_id)
+_CacheKey = Tuple[str, str, str]  # (access_token_fingerprint, project_id, server_url)
 _CACHE: Dict[_CacheKey, "_CachedFetch"] = {}
+
+# Disk-persisted cache so back-to-back CLI invocations (e.g. `hermes chat -q ...`
+# called from scripts, cron, the gateway forking new agents) don't each pay the
+# ~380ms `bws secret list` tax. The in-process _CACHE above only saves repeated
+# fetches WITHIN one process; this saves repeated fetches ACROSS processes.
+#
+# Layout: one JSON object per cache key, written atomically with mode 0600 in
+# <hermes_home>/cache/bws_cache.json. The file holds only the secret VALUES,
+# never the access token. It's plaintext-equivalent to ~/.hermes/.env (which
+# we already accept) but kept out of the .env file so users editing it won't
+# accidentally commit BSM-sourced secrets.
+_DISK_CACHE_BASENAME = "bws_cache.json"
+
+
+def _disk_cache_path(home_path: Optional[Path] = None) -> Path:
+    """Return the disk cache path under hermes_home/cache/.
+
+    `home_path` is what `load_hermes_dotenv()` already resolved; falling back
+    to `$HERMES_HOME` / `~/.hermes` keeps direct callers working too.
+    """
+    if home_path is None:
+        home_path = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    return home_path / "cache" / _DISK_CACHE_BASENAME
+
+
+def _cache_key_str(cache_key: _CacheKey) -> str:
+    """Serialize a cache key to a stable string for JSON storage."""
+    token_fp, project_id, server_url = cache_key
+    return f"{token_fp}|{project_id}|{server_url}"
+
+
+def _read_disk_cache(cache_key: _CacheKey, ttl_seconds: float,
+                     home_path: Optional[Path] = None) -> Optional["_CachedFetch"]:
+    """Return a cached entry from disk if fresh, else None.
+
+    Best-effort: any I/O or parse error returns None and we re-fetch.
+    """
+    if ttl_seconds <= 0:
+        return None
+    path = _disk_cache_path(home_path)
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("key") != _cache_key_str(cache_key):
+        return None
+    secrets = payload.get("secrets")
+    fetched_at = payload.get("fetched_at")
+    if not isinstance(secrets, dict) or not isinstance(fetched_at, (int, float)):
+        return None
+    # Coerce all values to strings — JSON allows numbers but env vars need strings
+    typed_secrets: Dict[str, str] = {
+        k: v for k, v in secrets.items() if isinstance(k, str) and isinstance(v, str)
+    }
+    entry = _CachedFetch(secrets=typed_secrets, fetched_at=float(fetched_at))
+    if not entry.is_fresh(ttl_seconds):
+        return None
+    return entry
+
+
+def _write_disk_cache(cache_key: _CacheKey, entry: "_CachedFetch",
+                      home_path: Optional[Path] = None) -> None:
+    """Persist a cache entry to disk atomically with mode 0600.
+
+    Best-effort: any I/O error is swallowed (the next invocation will just
+    re-fetch). We never want disk cache failures to break startup.
+    """
+    path = _disk_cache_path(home_path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "key": _cache_key_str(cache_key),
+            "secrets": entry.secrets,
+            "fetched_at": entry.fetched_at,
+        }
+        # Write to a temp file in the same directory and atomic-rename.
+        # tempfile honors os.umask, so we explicitly chmod 0600 before rename.
+        fd, tmp = tempfile.mkstemp(
+            prefix=".bws_cache_", suffix=".tmp", dir=str(path.parent)
+        )
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+            os.chmod(tmp, 0o600)
+            os.replace(tmp, path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+    except OSError:
+        pass  # best-effort — disk cache miss on next invocation is fine
 
 
 @dataclass
@@ -179,6 +274,7 @@ def _platform_asset_name() -> str:
                 capture_output=True,
                 text=True,
                 timeout=2,
+                stdin=subprocess.DEVNULL,
             )
             if "musl" in (res.stdout + res.stderr).lower():
                 libc = "musl"
@@ -229,8 +325,11 @@ def install_bws(*, force: bool = False) -> Path:
 
         with zipfile.ZipFile(zip_path) as zf:
             member = _pick_zip_member(zf, _platform_binary_name())
-            zf.extract(member, tmp)
-            extracted = tmp / member
+            # Zip-slip guard: a malicious archive can carry member names like
+            # ``../../etc/cron.d/x`` or absolute paths.  ``ZipFile.extract``
+            # joins the member onto ``tmp`` without verifying the result stays
+            # inside it, so validate containment before touching the disk.
+            extracted = _safe_extract_member(zf, member, tmp)
 
         # Move into place atomically.  We write to a sibling tempfile in
         # the final directory so the rename can't cross filesystems.
@@ -300,6 +399,33 @@ def _pick_zip_member(zf: zipfile.ZipFile, binary_name: str) -> str:
     return candidates[0]
 
 
+def _safe_extract_member(
+    zf: zipfile.ZipFile, member: str, dest_dir: Path
+) -> Path:
+    """Extract a single archive member, refusing path traversal.
+
+    ``ZipFile.extract`` will happily honour member names containing
+    ``../`` or absolute paths, letting a malicious archive write outside
+    ``dest_dir`` (a "zip-slip").  We resolve the would-be target and
+    confirm it stays within ``dest_dir`` before extracting.
+    """
+    dest_root = os.path.realpath(dest_dir)
+    target = os.path.realpath(os.path.join(dest_root, member))
+    # ``commonpath`` raises ValueError for e.g. different drives on
+    # Windows; treat that as an escape too.
+    try:
+        contained = os.path.commonpath([dest_root, target]) == dest_root
+    except ValueError:
+        contained = False
+    if not contained or target == dest_root:
+        raise RuntimeError(
+            f"Refusing to extract unsafe archive member {member!r}: "
+            f"it escapes the extraction directory"
+        )
+    zf.extract(member, dest_root)
+    return Path(target)
+
+
 # ---------------------------------------------------------------------------
 # Secret fetch + apply
 # ---------------------------------------------------------------------------
@@ -317,10 +443,25 @@ def fetch_bitwarden_secrets(
     binary: Optional[Path] = None,
     cache_ttl_seconds: float = 300,
     use_cache: bool = True,
+    server_url: str = "",
+    home_path: Optional[Path] = None,
 ) -> Tuple[Dict[str, str], List[str]]:
     """Pull the secrets for ``project_id`` from Bitwarden Secrets Manager.
 
     Returns ``(secrets_dict, warnings_list)``.
+
+    Set ``server_url`` to point at a non-default Bitwarden region or a
+    self-hosted instance — e.g. ``https://vault.bitwarden.eu`` for EU
+    Cloud accounts.  When empty, ``bws`` uses its built-in default
+    (``https://vault.bitwarden.com``, US Cloud).  This is plumbed into
+    the subprocess as ``BWS_SERVER_URL``.
+
+    Caching is a two-layer LRU: an in-process dict (for hot-reload paths
+    inside one process) and a disk-persisted JSON file under
+    ``<hermes_home>/cache/bws_cache.json`` (for back-to-back CLI invocations).
+    Both share the same TTL.  Pass ``home_path`` so disk cache lookups find
+    the right directory in tests / non-standard installs; otherwise we fall
+    back to ``$HERMES_HOME`` / ``~/.hermes``.
 
     Raises :class:`RuntimeError` for fatal conditions (missing binary,
     auth failure, unparseable output).  Callers in the env_loader path
@@ -332,11 +473,18 @@ def fetch_bitwarden_secrets(
     if not project_id:
         raise RuntimeError("Bitwarden project_id is empty")
 
-    cache_key = (_token_fingerprint(access_token), project_id)
+    cache_key = (_token_fingerprint(access_token), project_id, server_url or "")
     if use_cache:
         cached = _CACHE.get(cache_key)
         if cached and cached.is_fresh(cache_ttl_seconds):
             return cached.secrets, []
+        # L2: disk cache. ~5ms on cache hit vs ~380ms for `bws secret list`.
+        disk_cached = _read_disk_cache(cache_key, cache_ttl_seconds, home_path)
+        if disk_cached is not None:
+            # Promote into in-process cache so subsequent fetches in the
+            # same process skip the disk read too.
+            _CACHE[cache_key] = disk_cached
+            return disk_cached.secrets, []
 
     bws = binary or find_bws(install_if_missing=True)
     if bws is None:
@@ -347,19 +495,29 @@ def fetch_bitwarden_secrets(
             "`hermes secrets bitwarden setup`."
         )
 
-    secrets, warnings = _run_bws_list(bws, access_token, project_id)
-    _CACHE[cache_key] = _CachedFetch(secrets=secrets, fetched_at=time.time())
+    secrets, warnings = _run_bws_list(bws, access_token, project_id, server_url)
+    entry = _CachedFetch(secrets=secrets, fetched_at=time.time())
+    _CACHE[cache_key] = entry
+    if use_cache:
+        _write_disk_cache(cache_key, entry, home_path)
     return secrets, warnings
 
 
 def _run_bws_list(
-    bws: Path, access_token: str, project_id: str
+    bws: Path, access_token: str, project_id: str, server_url: str = ""
 ) -> Tuple[Dict[str, str], List[str]]:
     cmd = [str(bws), "secret", "list", project_id, "--output", "json"]
     env = os.environ.copy()
     env["BWS_ACCESS_TOKEN"] = access_token
     # Make sure we're not echoing telemetry / colour codes into json.
     env.setdefault("NO_COLOR", "1")
+    # Region / self-hosted support.  bws defaults to https://vault.bitwarden.com
+    # (US Cloud); EU Cloud users need https://vault.bitwarden.eu, and
+    # self-hosted users need their own URL.  When unset, fall back to whatever
+    # BWS_SERVER_URL the caller already had in their shell env (preserved by
+    # the copy above) so manual overrides keep working too.
+    if server_url:
+        env["BWS_SERVER_URL"] = server_url
 
     try:
         proc = subprocess.run(  # noqa: S603 — bws path is trusted
@@ -368,6 +526,7 @@ def _run_bws_list(
             capture_output=True,
             text=True,
             timeout=_BWS_RUN_TIMEOUT,
+            stdin=subprocess.DEVNULL,
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError(
@@ -437,12 +596,18 @@ def apply_bitwarden_secrets(
     override_existing: bool = False,
     cache_ttl_seconds: float = 300,
     auto_install: bool = True,
+    server_url: str = "",
+    home_path: Optional[Path] = None,
 ) -> FetchResult:
     """Pull secrets from BSM and set them on ``os.environ``.
 
     This is the function ``load_hermes_dotenv()`` calls after the .env
     files have loaded.  It is intentionally defensive — any failure
     returns a :class:`FetchResult` with ``error`` set; it never raises.
+
+    ``server_url`` selects the Bitwarden region or self-hosted endpoint
+    (e.g. ``https://vault.bitwarden.eu`` for EU Cloud).  Empty string
+    means use ``bws``'s default (US Cloud).
 
     Parameters mirror the ``secrets.bitwarden.*`` config keys so the
     caller can just splat the dict in.
@@ -482,6 +647,8 @@ def apply_bitwarden_secrets(
             project_id=project_id,
             binary=binary,
             cache_ttl_seconds=cache_ttl_seconds,
+            server_url=server_url,
+            home_path=home_path,
         )
     except RuntimeError as exc:
         result.error = str(exc)
@@ -511,5 +678,15 @@ def apply_bitwarden_secrets(
 # ---------------------------------------------------------------------------
 
 
-def _reset_cache_for_tests() -> None:
+def _reset_cache_for_tests(home_path: Optional[Path] = None) -> None:
+    """Clear in-process AND disk caches.
+
+    Tests can pass ``home_path`` to scope the disk cleanup to a tmpdir.
+    Without it we fall back to the same default resolution as the cache
+    writer itself.
+    """
     _CACHE.clear()
+    try:
+        _disk_cache_path(home_path).unlink()
+    except (FileNotFoundError, OSError):
+        pass

@@ -1,9 +1,8 @@
 """Tests for Discord bot message filtering (DISCORD_ALLOW_BOTS)."""
 
-import asyncio
 import os
 import unittest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):

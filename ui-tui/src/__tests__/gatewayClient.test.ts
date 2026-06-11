@@ -34,6 +34,7 @@ class FakeWebSocket {
       options !== null &&
       'once' in options &&
       Boolean((options as { once?: unknown }).once)
+
     const entries = this.listeners.get(type) ?? []
 
     entries.push({ callback, once })
@@ -84,6 +85,7 @@ class FakeWebSocket {
 
     for (const entry of entries) {
       entry.callback(event)
+
       if (entry.once) {
         this.removeEventListener(type, entry.callback)
       }
@@ -170,6 +172,7 @@ describe('GatewayClient websocket attach mode', () => {
       method: 'event',
       params: { type: 'tool.start', payload: { tool_id: 't1' } }
     })
+
     gatewaySocket.message(eventFrame)
 
     expect(seen).toContain('tool.start')
@@ -193,6 +196,8 @@ describe('GatewayClient websocket attach mode', () => {
     gatewaySocket.close(1011)
 
     expect(exits).toEqual([1011])
+    expect(gw.getLogTail(20)).toContain('[lifecycle] websocket close code=1011')
+    expect(gw.getLogTail(20)).toContain('[lifecycle] transport exit code=1011')
   })
 
   it('rejects pending RPCs with websocket wording when the attached socket closes', async () => {
@@ -226,9 +231,10 @@ describe('GatewayClient websocket attach mode', () => {
     const req = gw.request('session.create', {})
     await vi.waitFor(() => expect(gatewaySocket.sent.length).toBeGreaterThan(0))
 
-    gw.kill()
+    gw.kill('test.shutdown')
 
     await expect(req).rejects.toThrow(/gateway closed/)
+    expect(gw.getLogTail(20)).toContain('[lifecycle] GatewayClient.kill reason=test.shutdown')
   })
 
   it('reattaches when HERMES_TUI_GATEWAY_URL rotates between requests', async () => {
@@ -279,6 +285,7 @@ describe('GatewayClient websocket attach mode', () => {
     gw.drain()
 
     expect(stderrLines.length).toBeGreaterThan(0)
+
     for (const line of stderrLines) {
       expect(line).not.toContain('hunter2')
       expect(line).not.toContain('channel=secret')
@@ -370,6 +377,7 @@ describe('GatewayClient websocket attach mode', () => {
     gw.drain()
 
     expect(stderrLines.length).toBeGreaterThan(0)
+
     for (const line of stderrLines) {
       expect(line).not.toContain('alice')
       expect(line).not.toContain('hunter2')

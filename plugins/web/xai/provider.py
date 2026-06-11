@@ -143,9 +143,6 @@ class XAIWebSearchProvider(WebSearchProvider):
     def supports_extract(self) -> bool:
         return False
 
-    def supports_crawl(self) -> bool:
-        return False
-
     # -- Search -----------------------------------------------------------
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:

@@ -1,7 +1,6 @@
 """Tests for gateway/mirror.py — session mirroring."""
 
 import json
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import gateway.mirror as mirror_mod

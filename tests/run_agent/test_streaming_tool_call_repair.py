@@ -12,7 +12,6 @@ unclosed brackets, Python None) don't kill the session.
 """
 
 import json
-import pytest
 
 from run_agent import _repair_tool_call_arguments
 

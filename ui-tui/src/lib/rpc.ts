@@ -34,6 +34,14 @@ export const asCommandDispatch = (value: unknown): CommandDispatchResponse | nul
     }
   }
 
+  if (t === 'prefill' && typeof o.message === 'string') {
+    return {
+      type: 'prefill',
+      message: o.message,
+      notice: typeof o.notice === 'string' ? o.notice : undefined,
+    }
+  }
+
   return null
 }
 

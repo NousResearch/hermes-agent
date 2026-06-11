@@ -45,8 +45,8 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-import gateway.platforms.discord as discord_platform  # noqa: E402
-from gateway.platforms.discord import DiscordAdapter  # noqa: E402
+import plugins.platforms.discord.adapter as discord_platform  # noqa: E402
+from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
 class FakeDMChannel:
@@ -852,6 +852,27 @@ async def test_discord_per_user_channel_backfills_too(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_discord_participated_thread_backfills_without_mention(adapter, monkeypatch):
+    """Known threads still need recent thread context when mention gating is bypassed."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_THREAD_REQUIRE_MENTION", raising=False)
+    adapter.config.extra["history_backfill"] = True
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] thread context")
+
+    thread = FakeThread(channel_id=456, name="follow-up")
+    adapter._threads.mark("456")
+
+    message = make_message(channel=thread, content="follow-up without mention")
+    await adapter._handle_message(message)
+
+    adapter._fetch_channel_context.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == "follow-up without mention"
+    assert event.channel_context == "[Recent channel messages]\n[Alice] thread context"
+
+
+@pytest.mark.asyncio
 async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
     """DMs skip backfill — every DM triggers the bot, so there's no mention gap."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
@@ -882,5 +903,27 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
     if adapter.handle_message.await_args is not None:
         event = adapter.handle_message.await_args.args[0]
         assert event.channel_context is None
+
+
+@pytest.mark.asyncio
+async def test_discord_auto_thread_skips_backfill(adapter, monkeypatch):
+    """Auto-created threads skip backfill — the thread is brand new with no prior context."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "true")
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    adapter.config.extra["history_backfill"] = True
+
+    fake_thread = FakeThread(channel_id=777, name="auto-thread")
+    adapter._auto_create_thread = AsyncMock(return_value=fake_thread)
+    adapter._fetch_channel_context = AsyncMock(return_value="[Recent channel messages]\n[Alice] noise")
+
+    bot_user = adapter._client.user
+    parent = FakeTextChannel(channel_id=200, name="general")
+    message = make_message(channel=parent, content="hello", mentions=[bot_user])
+    await adapter._handle_message(message)
+
+    adapter._auto_create_thread.assert_awaited_once()
+    adapter._fetch_channel_context.assert_not_awaited()
 
 

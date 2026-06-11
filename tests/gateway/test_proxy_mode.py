@@ -1,8 +1,5 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
-import asyncio
-import json
-import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

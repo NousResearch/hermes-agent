@@ -198,7 +198,6 @@ class TestTerminalIntegration:
     def test_make_run_env_blocklist_override_rejected(self):
         """_make_run_env must NOT expose a blocklisted var to subprocess env
         even after a skill attempts to register it via passthrough."""
-        import os
         from tools.environments.local import (
             _make_run_env,
             _HERMES_PROVIDER_ENV_BLOCKLIST,

@@ -24,7 +24,6 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -37,9 +36,12 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
+    STEER_CHANNEL_NOTE,
+    TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
+from agent.runtime_cwd import resolve_context_cwd
 
 
 def _ra():
@@ -100,6 +102,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
     stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
 
+    # Universal task-completion / no-fabrication guidance.  Applied to ALL
+    # models regardless of tool_use_enforcement gating — the failure modes
+    # this targets (stopping after a stub; fabricating output when a real
+    # path is blocked) are not model-family specific.  Gated only by
+    # config.yaml ``agent.task_completion_guidance`` (default True) so
+    # users who want a leaner prompt can turn it off.
+    if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
+        stable_parts.append(TASK_COMPLETION_GUIDANCE)
+
     # Tool-aware behavioral guidance: only inject when the tools are loaded
     tool_guidance = []
     if "memory" in agent.valid_tool_names:
@@ -120,6 +131,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
+
+    # Steering only lands inside tool results, so it's only reachable when the
+    # agent has tools. Static text → byte-stable prompt (no cache hit).
+    if agent.valid_tool_names:
+        stable_parts.append(STEER_CHANNEL_NOTE)
 
     # Computer-use (macOS) — goes in as its own block rather than being
     # merged into tool_guidance because the content is multi-paragraph.
@@ -205,6 +221,57 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if _env_hints:
         stable_parts.append(_env_hints)
 
+    # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
+    # something is non-default so the model can pick the right install
+    # strategy without discovering by failure.  Emits a single line; emits
+    # NOTHING when the environment is clean (no token cost).  Skipped
+    # entirely for remote terminal backends (the host's Python state is
+    # irrelevant when tools run inside docker/modal/ssh).  Gated by
+    # config.yaml ``agent.environment_probe`` (default True).
+    if getattr(agent, "_environment_probe", True):
+        try:
+            from tools.env_probe import get_environment_probe_line
+            _probe_line = get_environment_probe_line()
+            if _probe_line:
+                stable_parts.append(_probe_line)
+        except Exception:
+            # Probe failure must never block prompt build.
+            pass
+
+    # Active-profile hint — names the Hermes profile the agent is running
+    # under so it doesn't conflate ~/.hermes/skills/ (default profile) with
+    # ~/.hermes/profiles/<active>/skills/ (this profile's). Deterministic
+    # for the lifetime of the agent — profile name doesn't change
+    # mid-session, so this doesn't break the prompt cache.
+    # See file_safety._resolve_active_profile_name + classify_cross_profile_target
+    # for the matching tool-side guard.
+    try:
+        from agent.file_safety import _resolve_active_profile_name
+        active_profile = _resolve_active_profile_name()
+    except Exception:
+        active_profile = "default"
+    if active_profile == "default":
+        stable_parts.append(
+            "Active Hermes profile: default. Other profiles (if any) live "
+            "under ~/.hermes/profiles/<name>/. Each profile has its own "
+            "skills/, plugins/, cron/, and memories/ that affect a different "
+            "session than this one. Do not modify another profile's "
+            "skills/plugins/cron/memories unless the user explicitly directs "
+            "you to."
+        )
+    else:
+        stable_parts.append(
+            f"Active Hermes profile: {active_profile}. This session reads "
+            f"and writes ~/.hermes/profiles/{active_profile}/. The default "
+            f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
+            f"~/.hermes/cron/, ~/.hermes/memories/ — those belong to a "
+            f"different session run from a different shell. Do NOT modify "
+            f"another profile's skills/plugins/cron/memories unless the user "
+            f"explicitly directs you to. The cross-profile write guard will "
+            f"refuse such writes by default; pass cross_profile=True only "
+            f"after explicit direction."
+        )
+
     platform_key = (agent.platform or "").lower().strip()
     if platform_key in PLATFORM_HINTS:
         stable_parts.append(PLATFORM_HINTS[platform_key])
@@ -227,13 +294,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         context_parts.append(system_message)
 
     if not agent.skip_context_files:
-        # Use TERMINAL_CWD for context file discovery when set (gateway
-        # mode).  The gateway process runs from the hermes-agent install
-        # dir, so os.getcwd() would pick up the repo's AGENTS.md and
-        # other dev files — inflating token usage by ~10k for no benefit.
-        _context_cwd = os.getenv("TERMINAL_CWD") or None
+        # Prefer the configured TERMINAL_CWD (gateway mode). When unset (local
+        # CLI), None lets build_context_files_prompt fall back to the launch
+        # dir — the user's real cwd there, but the install dir for the gateway
+        # daemon, which is why the gateway sets TERMINAL_CWD.
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=_context_cwd, skip_soul=_soul_loaded)
+            cwd=resolve_context_cwd(), skip_soul=_soul_loaded)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

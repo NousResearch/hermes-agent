@@ -134,7 +134,9 @@ MAX_DEPTH = 1  # flat by default: parent (0) -> child (1); grandchild rejected u
 # Configurable depth cap consulted by _get_max_spawn_depth; MAX_DEPTH
 # stays as the default fallback and is still the symbol tests import.
 _MIN_SPAWN_DEPTH = 1
-_MAX_SPAWN_DEPTH_CAP = 3
+# No upper ceiling on spawn depth — like max_concurrent_children, depth has a
+# floor of 1 and no ceiling. Deeper trees multiply API cost, so the default
+# stays flat (MAX_DEPTH = 1); raising the config knob is an explicit opt-in.
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +261,11 @@ def _extract_output_tail(
             break
         if not isinstance(msg, dict) or msg.get("role") != "tool":
             continue
-        content = msg.get("content") or ""
-        if not isinstance(content, str):
-            content = str(content)
+        # Flatten content-block lists/dicts to text so the overlay shows real
+        # output (not a "[{'type': 'text'...}]" blob) and error detection can
+        # see markers buried inside content blocks. Crude str() here would
+        # mislabel a block-wrapped "Error: ..." result as is_error=False.
+        content = _stringify_tool_content(msg.get("content") or "")
         is_error = _looks_like_error_output(content)
         tool_name = pending_call_by_id.get(msg.get("tool_call_id") or "", "tool")
         # Preserve line structure so the overlay's wrapped scroll region can
@@ -274,7 +278,35 @@ def _extract_output_tail(
     return tail
 
 
-def _looks_like_error_output(content: str) -> bool:
+def _stringify_tool_content(content: Any) -> str:
+    """Return a stable text representation for tool-result content.
+
+    Most providers store tool results as strings, but some OpenAI-compatible
+    paths can return content-block lists. Delegate observability must never
+    crash while summarising a child run just because the transport used blocks.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+                else:
+                    parts.append(json.dumps(item, ensure_ascii=False, default=str))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+    if isinstance(content, dict):
+        return json.dumps(content, ensure_ascii=False, default=str)
+    return str(content)
+
+
+def _looks_like_error_output(content: Any) -> bool:
     """Conservative stderr/error detector for tool-result previews.
 
     The old heuristic flagged any preview containing the substring "error",
@@ -284,6 +316,7 @@ def _looks_like_error_output(content: str) -> bool:
       - structured JSON with ``status`` of error/failed
       - first line starts with a classic error marker
     """
+    content = _stringify_tool_content(content)
     if not content:
         return False
 
@@ -392,7 +425,7 @@ def _get_child_timeout() -> float:
 
 
 def _get_max_spawn_depth() -> int:
-    """Read delegation.max_spawn_depth from config, clamped to [1, 3].
+    """Read delegation.max_spawn_depth from config, floored at 1 (no ceiling).
 
     depth 0 = parent agent.  max_spawn_depth = N means agents at depths
     0..N-1 can spawn; depth N is the leaf floor.  Default 1 is flat:
@@ -400,9 +433,11 @@ def _get_max_spawn_depth() -> int:
     (blocked by this guard AND, for leaf children, by the delegation
     toolset strip in _strip_blocked_tools).
 
-    Raise to 2 or 3 to unlock nested orchestration. role="orchestrator"
-    removes the toolset strip for depth-1 children when
+    Raise to 2+ to unlock nested orchestration. role="orchestrator"
+    removes the toolset strip for spawning children when
     max_spawn_depth >= 2, enabling them to spawn their own workers.
+    Like max_concurrent_children, there is no upper ceiling — but each
+    extra level multiplies API cost, so raise it deliberately.
     """
     cfg = _load_config()
     val = cfg.get("max_spawn_depth")
@@ -417,16 +452,15 @@ def _get_max_spawn_depth() -> int:
             MAX_DEPTH,
         )
         return MAX_DEPTH
-    clamped = max(_MIN_SPAWN_DEPTH, min(_MAX_SPAWN_DEPTH_CAP, ival))
-    if clamped != ival:
+    floored = max(_MIN_SPAWN_DEPTH, ival)
+    if floored != ival:
         logger.warning(
-            "delegation.max_spawn_depth=%d out of range [%d, %d]; " "clamping to %d",
+            "delegation.max_spawn_depth=%d below floor %d; using %d",
             ival,
             _MIN_SPAWN_DEPTH,
-            _MAX_SPAWN_DEPTH_CAP,
-            clamped,
+            floored,
         )
-    return clamped
+    return floored
 
 
 def _get_orchestrator_enabled() -> bool:
@@ -1146,10 +1180,13 @@ def _build_child_agent(
     child._subagent_id = subagent_id
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
+    child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+    child_pool = _resolve_child_credential_pool(
+        effective_provider, parent_agent, effective_base_url
+    )
     if child_pool is not None:
         child._credential_pool = child_pool
 
@@ -1170,6 +1207,21 @@ def _build_child_agent(
             child_progress_cb("subagent.spawn_requested", preview=goal)
         except Exception as exc:
             logger.debug("spawn_requested relay failed: %s", exc)
+
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        _invoke_hook(
+            "subagent_start",
+            parent_session_id=getattr(parent_agent, "session_id", None),
+            parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+            parent_subagent_id=parent_subagent_id,
+            child_session_id=getattr(child, "session_id", None),
+            child_subagent_id=subagent_id,
+            child_role=effective_role,
+            child_goal=goal,
+        )
+    except Exception:
+        logger.debug("subagent_start hook invocation failed", exc_info=True)
 
     return child
 
@@ -1653,7 +1705,7 @@ def _run_single_child(
                         if tc_id:
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
-                    content = msg.get("content", "")
+                    content = _stringify_tool_content(msg.get("content", ""))
                     is_error = _looks_like_error_output(content)
                     result_meta = {
                         "result_bytes": len(content),
@@ -1966,7 +2018,8 @@ def delegate_task(
                     f"Delegation depth limit reached (depth={depth}, "
                     f"max_spawn_depth={max_spawn}). Raise "
                     f"delegation.max_spawn_depth in config.yaml if deeper "
-                    f"nesting is required (cap: {_MAX_SPAWN_DEPTH_CAP})."
+                    f"nesting is required (no hard ceiling, but each level "
+                    f"multiplies API cost)."
                 )
             }
         )
@@ -2265,9 +2318,17 @@ def delegate_task(
         if _invoke_hook is None:
             continue
         try:
+            _child_index = entry.get("task_index", -1)
+            _child_agent = (
+                children[_child_index][2]
+                if isinstance(_child_index, int) and 0 <= _child_index < len(children)
+                else None
+            )
             _invoke_hook(
                 "subagent_stop",
                 parent_session_id=_parent_session_id,
+                parent_turn_id=getattr(parent_agent, "_current_turn_id", "") or "",
+                child_session_id=getattr(_child_agent, "session_id", None),
                 child_role=child_role,
                 child_summary=entry.get("summary"),
                 child_status=entry.get("status"),
@@ -2309,7 +2370,11 @@ def delegate_task(
     )
 
 
-def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
+def _resolve_child_credential_pool(
+    effective_provider: Optional[str],
+    parent_agent,
+    effective_base_url: Optional[str] = None,
+):
     """Resolve a credential pool for the child agent.
 
     Rules:
@@ -2318,12 +2383,60 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     2. Different provider -> try to load that provider's own pool.
     3. No pool available -> return None and let the child keep the inherited
        fixed credential behavior.
+
+    Custom endpoints are a special case: every direct ``delegation.base_url``
+    runtime collapses to ``provider="custom"``, so bare provider equality would
+    treat two *different* custom endpoints as interchangeable and let the child
+    inherit the parent's pool. Leasing from that pool then overwrites the
+    child's delegated ``base_url`` with the parent's endpoint (issue #7833).
+    We therefore resolve custom runtimes by endpoint identity (the
+    ``custom:<name>`` pool key derived from the base_url) and only share the
+    parent's pool when both resolve to the *same* custom endpoint.
     """
     if not effective_provider:
         return getattr(parent_agent, "_credential_pool", None)
 
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
+
+    # Custom endpoints: distinguish by endpoint identity, not the bare "custom"
+    # provider string. Two custom runtimes are only interchangeable when they
+    # resolve to the same custom:<name> pool key.
+    if effective_provider == "custom":
+        try:
+            from agent.credential_pool import get_custom_provider_pool_key, load_pool
+
+            child_key = get_custom_provider_pool_key(effective_base_url)
+            if child_key is None:
+                # Unregistered endpoint (raw delegation.base_url with no
+                # matching custom_providers entry) -> no shared pool exists.
+                # Keep the child's fixed delegated credential rather than
+                # risk inheriting the parent's custom endpoint.
+                return None
+
+            # Reuse the parent's pool only when it is the same custom endpoint.
+            parent_key = get_custom_provider_pool_key(
+                getattr(parent_agent, "base_url", None)
+            )
+            if (
+                parent_pool is not None
+                and parent_provider == "custom"
+                and parent_key is not None
+                and parent_key == child_key
+            ):
+                return parent_pool
+
+            pool = load_pool(child_key)
+            if pool is not None and pool.has_credentials():
+                return pool
+        except Exception as exc:
+            logger.debug(
+                "Could not resolve custom credential pool for child endpoint '%s': %s",
+                effective_base_url,
+                exc,
+            )
+        return None
+
     if parent_pool is not None and effective_provider == parent_provider:
         return parent_pool
 

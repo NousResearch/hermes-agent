@@ -8,13 +8,9 @@ Covers:
   - Honcho register_cli() builds correct argparse tree
 """
 
-import argparse
-import os
 import sys
-from pathlib import Path
 from unittest.mock import MagicMock
 
-import pytest
 
 from hermes_cli.plugins import (
     PluginContext,

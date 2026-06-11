@@ -13,9 +13,6 @@ import pytest
 import tools.approval as approval_module
 from tools.approval import (
     check_all_command_guards,
-    register_gateway_notify,
-    unregister_gateway_notify,
-    resolve_gateway_approval,
     set_current_session_key,
     clear_session,
 )

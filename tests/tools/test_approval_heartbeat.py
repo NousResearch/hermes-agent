@@ -12,9 +12,6 @@ between slices, mirroring ``_wait_for_process`` in ``tools/environments/base.py`
 """
 
 import os
-import threading
-import time
-from unittest.mock import patch
 
 
 def _clear_approval_state():

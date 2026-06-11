@@ -1,9 +1,8 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
-import os
 import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from agent.display import (
     build_tool_preview,

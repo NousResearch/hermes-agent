@@ -183,6 +183,39 @@ async def test_send_image_url_fetch_failure_falls_back_to_text(
 
 
 @pytest.mark.asyncio
+async def test_send_poll_hits_poll_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send_poll(
+        "any;-;+1",
+        "Pick one",
+        ["  Alpha ", "", "Beta"],
+    )
+
+    assert result.success is True
+    assert result.message_id == "msg-123"
+    assert calls == [
+        (
+            "/send-poll",
+            {"spaceId": "any;-;+1", "title": "Pick one", "options": ["Alpha", "Beta"]},
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_send_poll_requires_two_options(monkeypatch: pytest.MonkeyPatch) -> None:
+    adapter = _make_adapter(monkeypatch)
+    calls = _capture_sidecar(adapter)
+
+    result = await adapter.send_poll("any;-;+1", "Pick one", ["Alpha", " "])
+
+    assert result.success is False
+    assert "at least two" in (result.error or "")
+    assert calls == []
+
+
+@pytest.mark.asyncio
 async def test_send_attachment_rejects_unsafe_path(
     monkeypatch: pytest.MonkeyPatch
 ) -> None:

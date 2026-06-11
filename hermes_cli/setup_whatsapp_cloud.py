@@ -162,17 +162,25 @@ def _validate_access_token(value: str) -> tuple[bool, Optional[str]]:
 # ---------------------------------------------------------------------------
 
 
-def _prompt(message: str, default: Optional[str] = None) -> str:
+def _prompt(message: str, default: Optional[str] = None, secret: bool = False) -> str:
     """Read one line of input. Returns "" on EOF / Ctrl+C / empty input.
 
     The ``default`` parameter is shown to the user but NOT auto-applied
     on empty input — callers handle the "user kept existing" case
     explicitly so they can distinguish between a real value and a
     display preview (e.g. ``"abc12345..."`` for masked secrets).
+
+    ``secret=True`` reads via ``getpass`` so credentials are not echoed
+    to the terminal (or left in scrollback).
     """
     try:
         suffix = f" [{default}]" if default else ""
-        raw = input(f"{message}{suffix}: ").strip()
+        if secret and sys.stdin.isatty():
+            import getpass
+
+            raw = getpass.getpass(f"{message}{suffix} (input hidden): ").strip()
+        else:
+            raw = input(f"{message}{suffix}: ").strip()
     except (EOFError, KeyboardInterrupt):
         print()
         return ""
@@ -185,6 +193,7 @@ def _prompt_validated(
     *,
     current: Optional[str] = None,
     help_text: Optional[str] = None,
+    secret: bool = False,
 ) -> Optional[str]:
     """Repeat the prompt until the user enters a valid value or aborts.
 
@@ -198,7 +207,7 @@ def _prompt_validated(
     attempts = 0
     while True:
         attempts += 1
-        value = _prompt(f"  → {message}", default=current)
+        value = _prompt(f"  → {message}", default=current, secret=secret)
         if not value:
             return None
         ok, reason = validator(value)
@@ -295,6 +304,7 @@ def run_whatsapp_cloud_setup() -> int:
         "Access Token",
         _validate_access_token,
         current=current_display,
+        secret=True,
         help_text=(
             "Two options for getting one:\n\n"
             "  (a) TEMP — App Dashboard → WhatsApp → API Setup →\n"
@@ -335,6 +345,7 @@ def run_whatsapp_cloud_setup() -> int:
         "App Secret",
         _validate_app_secret,
         current=current_secret_display,
+        secret=True,
         help_text=(
             "Found in: App Dashboard → Settings → Basic →\n"
             "'App secret' field (click 'Show', enter your Facebook password).\n\n"

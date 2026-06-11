@@ -2248,3 +2248,74 @@ class TestSendTyping:
         await adapter.send_typing("15551234567")
         headers = adapter._http_client.post.call_args.kwargs["headers"]
         assert headers["Authorization"] == "Bearer my-test-token"
+
+
+# ---------------------------------------------------------------------------
+# Allowlist normalization + env decoupling (salvage follow-up)
+# ---------------------------------------------------------------------------
+
+class TestAllowlistNormalization:
+    def test_normalize_allow_ids_strips_jid_suffix_and_punctuation(self):
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        ids = {"15551234567@s.whatsapp.net", "+1 (555) 765-4321", "15550000000"}
+        normalized = WhatsAppCloudAdapter._normalize_allow_ids(ids)
+        assert normalized == {"15551234567", "15557654321", "15550000000"}
+
+    def test_dm_allowlist_matches_bare_wa_id_against_jid_entry(self):
+        """A Baileys-style JID in the allowlist must match the Cloud API's
+        bare wa_id sender — users share allowlists between both adapters."""
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        adapter = _make_adapter()
+        adapter._dm_policy = "allowlist"
+        adapter._allow_from = WhatsAppCloudAdapter._normalize_allow_ids(
+            {"15551234567@s.whatsapp.net"}
+        )
+        assert adapter._is_dm_allowed("15551234567") is True
+        assert adapter._is_dm_allowed("19998887777") is False
+
+    def test_cloud_env_overrides_take_precedence(self, monkeypatch):
+        """WHATSAPP_CLOUD_DM_POLICY wins over the shared WHATSAPP_DM_POLICY
+        so both adapters can run in parallel with independent policies."""
+        from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+        monkeypatch.setenv("WHATSAPP_DM_POLICY", "allowlist")
+        monkeypatch.setenv("WHATSAPP_CLOUD_DM_POLICY", "open")
+        monkeypatch.setenv("WHATSAPP_CLOUD_ALLOW_FROM", "+1 555 123 4567")
+
+        config = MagicMock()
+        config.extra = {
+            "phone_number_id": "123",
+            "access_token": "tok",
+        }
+        adapter = WhatsAppCloudAdapter(config)
+        assert adapter._dm_policy == "open"
+        assert adapter._allow_from == {"15551234567"}
+
+
+class TestBoundedInteractiveState:
+    def test_bounded_put_evicts_oldest(self):
+        from collections import OrderedDict
+
+        from gateway.platforms.whatsapp_cloud import (
+            INTERACTIVE_STATE_CACHE_SIZE,
+            WhatsAppCloudAdapter,
+        )
+
+        cache: OrderedDict = OrderedDict()
+        for i in range(INTERACTIVE_STATE_CACHE_SIZE + 10):
+            WhatsAppCloudAdapter._bounded_put(cache, f"id-{i}", "sess")
+        assert len(cache) == INTERACTIVE_STATE_CACHE_SIZE
+        assert "id-0" not in cache
+        assert f"id-{INTERACTIVE_STATE_CACHE_SIZE + 9}" in cache
+
+
+class TestMediaIdValidation:
+    @pytest.mark.asyncio
+    async def test_traversal_media_id_refused(self):
+        adapter = _make_adapter()
+        adapter._http_client = MagicMock()  # would be used if not refused
+        path, mime = await adapter._download_media_to_cache("../../etc/passwd")
+        assert path is None and mime is None
+        adapter._http_client.get.assert_not_called()

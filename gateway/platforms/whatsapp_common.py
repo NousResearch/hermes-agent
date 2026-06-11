@@ -342,8 +342,18 @@ class WhatsAppBehaviorMixin:
         # _text_ is already WhatsApp italic — leave as-is
 
         # --- 4. Convert markdown headers to bold text ---
-        # # Header → *Header*
-        result = re.sub(r"^#{1,6}\s+(.+)$", r"*\1*", result, flags=re.MULTILINE)
+        # # Header → *Header*. Strip any *...* wrapping already produced
+        # by step 3 (e.g. "# **Title**" → "*Title*", not "**Title**",
+        # which WhatsApp renders with literal asterisks).
+        def _header_to_bold(m: re.Match) -> str:
+            inner = m.group(1).strip()
+            while len(inner) > 1 and inner.startswith("*") and inner.endswith("*"):
+                inner = inner[1:-1].strip()
+            return f"*{inner}*"
+
+        result = re.sub(
+            r"^#{1,6}\s+(.+)$", _header_to_bold, result, flags=re.MULTILINE
+        )
 
         # --- 5. Convert markdown links: [text](url) → text (url) ---
         result = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1 (\2)", result)

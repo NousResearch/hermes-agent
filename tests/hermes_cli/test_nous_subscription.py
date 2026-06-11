@@ -723,6 +723,10 @@ def test_apply_nous_managed_defaults_flips_stt_provider_to_openai_for_nous_users
     gateway transcribes their voice notes without needing faster-whisper
     installed."""
     monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    # CI installs [all] extras, so faster-whisper is importable there —
+    # force the "no local backend" case this test is about.
+    monkeypatch.setattr(ns, "_local_stt_backend_available", lambda: False)
     # Avoid the heavy real probing in get_nous_subscription_features.
     monkeypatch.setattr(
         ns,
@@ -749,6 +753,66 @@ def test_apply_nous_managed_defaults_flips_stt_provider_to_openai_for_nous_users
 
     assert "stt" in changed
     assert config["stt"]["provider"] == "openai"
+
+
+def _stt_features_stub(*, account_info):
+    return ns.NousSubscriptionFeatures(
+        subscribed=True,
+        nous_auth_present=True,
+        provider_is_nous=True,
+        account_info=account_info,
+        features={
+            key: ns.NousFeatureState(
+                key=key, label=key, included_by_default=True,
+                available=False, active=False, managed_by_nous=False,
+                direct_override=False, toolset_enabled=False,
+                explicit_configured=False,
+            )
+            for key in ("web", "image_gen", "video_gen", "tts", "stt", "browser", "modal")
+        },
+    )
+
+
+def test_apply_nous_managed_defaults_keeps_local_stt_when_backend_works(monkeypatch):
+    """A working local backend (faster-whisper installed or custom command)
+    is a strong intent signal — never flip it to the managed gateway."""
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "_local_stt_backend_available", lambda: True)
+    monkeypatch.setattr(
+        ns,
+        "get_nous_subscription_features",
+        lambda config, **kw: _stt_features_stub(
+            account_info=_account(logged_in=True, paid=True)
+        ),
+    )
+
+    config = {"stt": {"provider": "local"}}
+    changed = ns.apply_nous_managed_defaults(config, enabled_toolsets=[])
+
+    assert "stt" not in changed
+    assert config["stt"]["provider"] == "local"
+
+
+def test_apply_nous_managed_defaults_skips_stt_when_not_entitled(monkeypatch):
+    """A subscriber whose tool pool doesn't cover openai-audio must not be
+    pointed at a managed gateway that will refuse them."""
+    monkeypatch.setattr(ns, "get_env_value", lambda name: "")
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "_local_stt_backend_available", lambda: False)
+    monkeypatch.setattr(
+        ns,
+        "get_nous_subscription_features",
+        lambda config, **kw: _stt_features_stub(
+            account_info=_account(logged_in=True, paid=False)
+        ),
+    )
+
+    config = {"stt": {"provider": "local"}}
+    changed = ns.apply_nous_managed_defaults(config, enabled_toolsets=[])
+
+    assert "stt" not in changed
+    assert config["stt"]["provider"] == "local"
 
 
 def test_apply_nous_managed_defaults_skips_stt_when_groq_key_present(monkeypatch):

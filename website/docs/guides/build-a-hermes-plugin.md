@@ -225,6 +225,46 @@ def unit_convert(args: dict, **kwargs) -> str:
 3. **Never raise:** Catch all exceptions, return error JSON instead.
 4. **Accept `**kwargs`:** Hermes may pass additional context in the future.
 
+### Resolving the working directory
+
+If your tool receives a filename from the model, resolve it the same way every
+built-in tool does — against the configured working directory, not the process
+CWD. The working directory is `terminal.cwd` in `config.yaml`, which the gateway
+bridges to the `TERMINAL_CWD` environment variable. Hermes sets that env var; it
+does **not** `chdir`, so a plain `os.getcwd()` in the gateway returns the
+container's launch directory (often `/`), not your workspace.
+
+```python
+import os
+from pathlib import Path
+
+
+def _workspace() -> Path:
+    # Same resolution the built-in tools use (see agent/tool_executor.py).
+    return Path(os.environ.get("TERMINAL_CWD") or os.getcwd())
+
+
+def _resolve(p: str) -> str:
+    path = Path(p)
+    return str(path if path.is_absolute() else (_workspace() / path).resolve())
+```
+
+Set `terminal.cwd: /workspace` (or wherever your files live) in `config.yaml` so
+`TERMINAL_CWD` points at the right place — don't hardcode `/workspace` in the
+plugin. There is no `hermes.utils.config` module; if you need config or the
+Hermes home directory, import `from hermes_cli.config import load_config` and
+`from hermes_constants import get_hermes_home`.
+
+:::tip Plugin edits not taking effect?
+Plugins are re-discovered on every start, so there's no stale on-disk cache to
+clear. If an edit doesn't show up after a restart, the running copy is coming
+from somewhere other than the file you edited: confirm the plugin lives under
+`$HERMES_HOME/plugins/<name>/` (in Docker, that's inside your mounted
+`HERMES_HOME`, e.g. `/opt/data/plugins/...`) and isn't baked into the image at
+build time — a `COPY`'d plugin needs a `docker compose build`, not just a
+container restart.
+:::
+
 ## Step 5: Write the registration
 
 Create `__init__.py` — this wires schemas to handlers:

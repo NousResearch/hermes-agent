@@ -5160,7 +5160,17 @@ def cmd_gui(args: argparse.Namespace):
         if not npm:
             print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
             print("Install Node.js, then run:  hermes gui")
-            sys.exit(1)
+            # The updater's headless rebuild (`hermes desktop --build-only`,
+            # invoked from apps/bootstrap-installer .../update.rs) runs this
+            # right after a successful code update. A missing Node toolchain is
+            # NOT a failed update — the code already updated and the existing
+            # packaged app keeps running — so degrade to a non-fatal skip
+            # (exit 0), mirroring the web-UI build's behaviour during update
+            # (`_build_web_ui(fatal=False)`). Otherwise the bootstrap turns an
+            # optional, recoverable rebuild into a red "UPDATE DIDN'T FINISH"
+            # for CLI-only / Node-less hosts. An interactive launch still fails:
+            # the user explicitly asked to run the app and it can't be built.
+            sys.exit(0 if getattr(args, "build_only", False) else 1)
     else:
         npm = None
 

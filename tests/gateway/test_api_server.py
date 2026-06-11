@@ -1604,6 +1604,57 @@ class TestResponsesEndpoint:
             assert len(call_kwargs["conversation_history"]) == 1
 
     @pytest.mark.asyncio
+    async def test_responses_input_preserves_function_call_output_items(self, adapter):
+        """Client-side Responses history must keep tool-call outputs."""
+        mock_result = {"final_response": "Done", "messages": [], "api_calls": 1}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": [
+                            {"role": "user", "content": "Read /tmp/example.txt"},
+                            {
+                                "type": "function_call",
+                                "call_id": "call_read",
+                                "name": "read_file",
+                                "arguments": '{"path":"/tmp/example.txt"}',
+                            },
+                            {
+                                "type": "function_call_output",
+                                "call_id": "call_read",
+                                "output": [{"type": "input_text", "text": '{"content":"hello"}'}],
+                            },
+                            {"role": "user", "content": "What did the file say?"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 200
+            call_kwargs = mock_run.call_args.kwargs
+            assert call_kwargs["user_message"] == "What did the file say?"
+            assert call_kwargs["conversation_history"] == [
+                {"role": "user", "content": "Read /tmp/example.txt"},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_read",
+                            "function": {
+                                "name": "read_file",
+                                "arguments": '{"path":"/tmp/example.txt"}',
+                            },
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_read", "content": '{"content":"hello"}'},
+            ]
+
+    @pytest.mark.asyncio
     async def test_instructions_as_ephemeral_prompt(self, adapter):
         """The instructions field maps to ephemeral_system_prompt."""
         mock_result = {"final_response": "Ahoy!", "messages": [], "api_calls": 1}

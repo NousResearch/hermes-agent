@@ -2836,12 +2836,39 @@ class APIServerAdapter(BasePlatformAdapter):
                 if isinstance(item, str):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
-                    role = item.get("role", "user")
-                    try:
-                        content = _normalize_multimodal_content(item.get("content", ""))
-                    except ValueError as exc:
-                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
-                    input_messages.append({"role": role, "content": content})
+                    item_type = str(item.get("type") or "").strip().lower()
+                    if item_type == "function_call":
+                        call_id = item.get("call_id") or item.get("tool_call_id") or item.get("id") or ""
+                        arguments = item.get("arguments", "")
+                        if not isinstance(arguments, str):
+                            arguments = json.dumps(arguments, default=str)
+                        input_messages.append({
+                            "role": "assistant",
+                            "tool_calls": [
+                                {
+                                    "id": str(call_id),
+                                    "function": {
+                                        "name": str(item.get("name") or ""),
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ],
+                        })
+                    elif item_type == "function_call_output":
+                        call_id = item.get("call_id") or item.get("tool_call_id") or ""
+                        output = item.get("output", item.get("content", ""))
+                        input_messages.append({
+                            "role": "tool",
+                            "tool_call_id": str(call_id),
+                            "content": _normalize_chat_content(output),
+                        })
+                    else:
+                        role = item.get("role", "user")
+                        try:
+                            content = _normalize_multimodal_content(item.get("content", ""))
+                        except ValueError as exc:
+                            return _multimodal_validation_error(exc, param=f"input[{idx}].content")
+                        input_messages.append({"role": role, "content": content})
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
 

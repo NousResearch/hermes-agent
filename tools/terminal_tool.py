@@ -1107,6 +1107,8 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type == "wsl":
+        default_cwd = ""  # WslEnvironment probes $HOME at init
     else:
         default_cwd = "/root"
 
@@ -1128,7 +1130,7 @@ def _get_env_config() -> Dict[str, Any]:
         ):
             host_cwd = candidate
             cwd = "/workspace"
-    elif env_type in {"modal", "docker", "singularity", "daytona"} and cwd:
+    elif env_type in {"modal", "docker", "singularity", "daytona", "wsl"} and cwd:
         # Host paths and relative paths that won't work inside containers
         is_host_path = any(cwd.startswith(p) for p in host_prefixes)
         is_relative = not os.path.isabs(cwd)  # e.g. "." or "src/"
@@ -1211,7 +1213,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     Create an execution environment for sandboxed command execution.
     
     Args:
-        env_type: One of "local", "docker", "singularity", "modal",
+        env_type: One of "local", "docker", "singularity", "modal", "wsl",
             "daytona", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh)
         cwd: Working directory
@@ -1333,6 +1335,13 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             persistent_filesystem=persistent, task_id=task_id,
         )
 
+    elif env_type == "wsl":
+        from tools.environments.wsl import WslEnvironment as _WslEnvironment
+        return _WslEnvironment(
+            cwd=cwd,
+            timeout=timeout,
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1348,7 +1357,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'wsl', or 'ssh'"
         )
 
 

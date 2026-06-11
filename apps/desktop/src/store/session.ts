@@ -125,10 +125,18 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
+  // Deduplicate by compression lineage: when auto-compression rotates the tip
+  // id (old #4 → new #5), the incoming page carries the new tip but the
+  // previous list still holds the old one.  Without lineage-level dedup both
+  // rows survive as separate sidebar entries (fixes #43483).
+  const incomingLineageKeys = new Set(
+    incoming.map(session => session._lineage_root_id ?? session.id)
+  )
 
   const survivors = previous.filter(
     session =>
       !incomingIds.has(session.id) &&
+      !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 
@@ -200,6 +208,7 @@ export const $availablePersonalities = atom<string[]>([])
 export const $introSeed = atom(0)
 export const $contextSuggestions = atom<ContextSuggestion[]>([])
 export const $modelPickerOpen = atom(false)
+export const $sessionPickerOpen = atom(false)
 
 export const setConnection = (next: Updater<HermesConnection | null>) => updateAtom($connection, next)
 export const setGatewayState = (next: Updater<string>) => updateAtom($gatewayState, next)
@@ -249,6 +258,7 @@ export const setAvailablePersonalities = (next: Updater<string[]>) => updateAtom
 export const setIntroSeed = (next: Updater<number>) => updateAtom($introSeed, next)
 export const setContextSuggestions = (next: Updater<ContextSuggestion[]>) => updateAtom($contextSuggestions, next)
 export const setModelPickerOpen = (next: Updater<boolean>) => updateAtom($modelPickerOpen, next)
+export const setSessionPickerOpen = (next: Updater<boolean>) => updateAtom($sessionPickerOpen, next)
 
 // Watchdog tracking — when does a "working" session count as stuck?
 // Long-running tool calls (LLM inference, long shell commands, web fetches)

@@ -41,11 +41,54 @@ function setSessionHeader(headers: Headers, token: string): void {
   }
 }
 
+// ── Global management-profile scope ──────────────────────────────────
+// The dashboard is a machine-level management surface: one header switcher
+// (ProfileProvider in App.tsx) decides which profile the management pages
+// read/write, and fetchJSON transparently appends ?profile=<name> to the
+// profile-scoped endpoint families below. "" = the dashboard process's own
+// profile (legacy behavior). Calls that already carry an explicit profile
+// (e.g. ProfileBuilder writes) are left untouched — explicit beats global.
+let _managementProfile = "";
+
+export function setManagementProfile(name: string): void {
+  _managementProfile = (name || "").trim();
+}
+
+export function getManagementProfile(): string {
+  return _managementProfile;
+}
+
+// Endpoint families that honor ?profile= on the backend (web_server.py
+// _profile_scope). Anything else — sessions, analytics, ops, pairing,
+// channels, cron (which has its own per-job profile params), profiles
+// themselves — is machine-global or self-scoped and must NOT be rewritten.
+const PROFILE_SCOPED_PREFIXES = [
+  "/api/skills",
+  "/api/tools/toolsets",
+  "/api/config",
+  "/api/env",
+  "/api/mcp",
+  "/api/model/info",
+  "/api/model/set",
+  "/api/model/auxiliary",
+  "/api/model/options",
+];
+
+function withManagementProfile(url: string): string {
+  if (!_managementProfile) return url;
+  if (url.includes("profile=")) return url; // explicit param wins
+  const path = url.split("?")[0];
+  if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+}
+
 export async function fetchJSON<T>(
   url: string,
   init?: RequestInit,
   options?: FetchJSONOptions,
 ): Promise<T> {
+  url = withManagementProfile(url);
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
@@ -249,6 +292,14 @@ export async function buildWsUrl(
   return `${proto}//${window.location.host}${BASE}${path}?${qs}`;
 }
 
+/** Build a ``?profile=<name>`` query suffix, or "" when unset.
+ *
+ * Used by the skills/toolsets endpoints so the dashboard can manage a
+ * profile other than the one the server process runs under. */
+function profileQuery(profile?: string): string {
+  return profile ? `?profile=${encodeURIComponent(profile)}` : "";
+}
+
 export const api = {
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
@@ -418,7 +469,7 @@ export const api = {
     fetchJSON<CronJob[]>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`),
   getCronDeliveryTargets: () =>
     fetchJSON<{ targets: CronDeliveryTarget[] }>("/api/cron/delivery-targets"),
-  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string }, profile = "default") =>
+  createCronJob: (job: { prompt: string; schedule: string; name?: string; deliver?: string; skills?: string[] }, profile = "default") =>
     fetchJSON<CronJob>(`/api/cron/jobs?profile=${encodeURIComponent(profile)}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -428,7 +479,7 @@ export const api = {
     fetchJSON<CronJob>(`/api/cron/jobs/${encodeURIComponent(id)}/pause?profile=${encodeURIComponent(profile)}`, { method: "POST" }),
   updateCronJob: (
     id: string,
-    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string },
+    updates: { prompt?: string; schedule?: string; name?: string; deliver?: string; skills?: string[] },
     profile = "default",
   ) =>
     fetchJSON<CronJob>(
@@ -542,52 +593,74 @@ export const api = {
     ),
 
   // Skills & Toolsets
-  getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
-  toggleSkill: (name: string, enabled: boolean) =>
+  //
+  // All calls accept an optional ``profile`` so the Skills page can manage
+  // any profile's skills/toolsets — not just the one the dashboard process
+  // runs under. Omitted/empty profile = the dashboard's own profile.
+  getSkills: (profile?: string) =>
+    fetchJSON<SkillInfo[]>(`/api/skills${profileQuery(profile)}`),
+  toggleSkill: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean }>("/api/skills/toggle", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, enabled }),
+      body: JSON.stringify({ name, enabled, profile: profile || undefined }),
     }),
-  getToolsets: () => fetchJSON<ToolsetInfo[]>("/api/tools/toolsets"),
-  toggleToolset: (name: string, enabled: boolean) =>
+  getSkillContent: (name: string, profile?: string) =>
+    fetchJSON<SkillContent>(
+      `/api/skills/content?name=${encodeURIComponent(name)}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
+    ),
+  createSkill: (skill: { name: string; content: string; category?: string }, profile?: string) =>
+    fetchJSON<SkillWriteResult>("/api/skills", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...skill, profile: profile || undefined }),
+    }),
+  updateSkillContent: (name: string, content: string, profile?: string) =>
+    fetchJSON<SkillWriteResult>("/api/skills/content", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, content, profile: profile || undefined }),
+    }),
+  getToolsets: (profile?: string) =>
+    fetchJSON<ToolsetInfo[]>(`/api/tools/toolsets${profileQuery(profile)}`),
+  toggleToolset: (name: string, enabled: boolean, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; enabled: boolean }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ enabled }),
+        body: JSON.stringify({ enabled, profile: profile || undefined }),
       },
     ),
-  getToolsetConfig: (name: string) =>
+  getToolsetConfig: (name: string, profile?: string) =>
     fetchJSON<ToolsetConfig>(
-      `/api/tools/toolsets/${encodeURIComponent(name)}/config`,
+      `/api/tools/toolsets/${encodeURIComponent(name)}/config${profileQuery(profile)}`,
     ),
-  selectToolsetProvider: (name: string, provider: string) =>
+  selectToolsetProvider: (name: string, provider: string, profile?: string) =>
     fetchJSON<{ ok: boolean; name: string; provider: string }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/provider`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider }),
+        body: JSON.stringify({ provider, profile: profile || undefined }),
       },
     ),
-  saveToolsetEnv: (name: string, env: Record<string, string>) =>
+  saveToolsetEnv: (name: string, env: Record<string, string>, profile?: string) =>
     fetchJSON<ToolsetEnvResult>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/env`,
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ env }),
+        body: JSON.stringify({ env, profile: profile || undefined }),
       },
     ),
-  runToolsetPostSetup: (name: string, key: string) =>
+  runToolsetPostSetup: (name: string, key: string, profile?: string) =>
     fetchJSON<ActionResponse & { key: string }>(
       `/api/tools/toolsets/${encodeURIComponent(name)}/post-setup`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key }),
+        body: JSON.stringify({ key, profile: profile || undefined }),
       },
     ),
 
@@ -852,6 +925,8 @@ export const api = {
 
   // ── Admin: Webhooks ─────────────────────────────────────────────────
   getWebhooks: () => fetchJSON<WebhooksResponse>("/api/webhooks"),
+  enableWebhooks: () =>
+    fetchJSON<WebhookEnableResponse>("/api/webhooks/enable", { method: "POST" }),
   createWebhook: (body: WebhookCreate) =>
     fetchJSON<WebhookRoute & { secret: string }>("/api/webhooks", {
       method: "POST",
@@ -926,11 +1001,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ output }),
     }),
-  runImport: (archive: string) =>
+  runImport: (archive: string, force = false) =>
     fetchJSON<ActionResponse>("/api/ops/import", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ archive }),
+      body: JSON.stringify({ archive, force }),
     }),
   getHooks: () => fetchJSON<HooksResponse>("/api/ops/hooks"),
   createHook: (body: HookCreate) =>
@@ -986,26 +1061,34 @@ export const api = {
     fetchJSON<ActionResponse>("/api/ops/checkpoints/prune", { method: "POST" }),
 
   // ── Admin: Skills hub ───────────────────────────────────────────────
-  installSkillFromHub: (identifier: string) =>
+  // ``profile`` scopes install/uninstall/update and the installed-state
+  // annotations to that profile (omitted = the dashboard's own profile).
+  installSkillFromHub: (identifier: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/install", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ identifier }),
+      body: JSON.stringify({ identifier, profile: profile || undefined }),
     }),
-  uninstallSkillFromHub: (name: string) =>
+  uninstallSkillFromHub: (name: string, profile?: string) =>
     fetchJSON<ActionResponse>("/api/skills/hub/uninstall", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
+      body: JSON.stringify({ name, profile: profile || undefined }),
     }),
-  updateSkillsFromHub: () =>
-    fetchJSON<ActionResponse>("/api/skills/hub/update", { method: "POST" }),
-  searchSkillsHub: (q: string, source = "all", limit = 20) =>
+  updateSkillsFromHub: (profile?: string) =>
+    fetchJSON<ActionResponse>("/api/skills/hub/update", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ profile: profile || undefined }),
+    }),
+  searchSkillsHub: (q: string, source = "all", limit = 20, profile?: string) =>
     fetchJSON<SkillHubSearchResponse>(
-      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}`,
+      `/api/skills/hub/search?q=${encodeURIComponent(q)}&source=${encodeURIComponent(source)}&limit=${limit}${profile ? `&profile=${encodeURIComponent(profile)}` : ""}`,
     ),
-  getSkillHubSources: () =>
-    fetchJSON<SkillHubSourcesResponse>("/api/skills/hub/sources"),
+  getSkillHubSources: (profile?: string) =>
+    fetchJSON<SkillHubSourcesResponse>(
+      `/api/skills/hub/sources${profileQuery(profile)}`,
+    ),
   previewSkillFromHub: (identifier: string) =>
     fetchJSON<SkillHubPreview>(
       `/api/skills/hub/preview?identifier=${encodeURIComponent(identifier)}`,
@@ -1264,6 +1347,17 @@ export interface WebhooksResponse {
   enabled: boolean;
   base_url: string;
   subscriptions: WebhookRoute[];
+}
+
+export interface WebhookEnableResponse {
+  ok: boolean;
+  platform: "webhook";
+  enabled: true;
+  needs_restart: boolean;
+  restart_started?: boolean;
+  restart_action?: string;
+  restart_pid?: number | null;
+  restart_error?: string;
 }
 
 export interface WebhookCreate {
@@ -1713,6 +1807,7 @@ export interface CronJob {
   name?: string | null;
   prompt?: string | null;
   script?: string | null;
+  skills?: string[] | null;
   schedule?: { kind?: string; expr?: string; display?: string };
   schedule_display?: string | null;
   enabled: boolean;
@@ -1735,6 +1830,19 @@ export interface SkillInfo {
   description: string;
   category: string;
   enabled: boolean;
+}
+
+export interface SkillContent {
+  name: string;
+  content: string;
+  path: string;
+}
+
+export interface SkillWriteResult {
+  success: boolean;
+  message?: string;
+  path?: string;
+  error?: string;
 }
 
 export interface ToolsetInfo {

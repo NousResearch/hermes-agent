@@ -22,7 +22,7 @@ const http = require('node:http')
 const https = require('node:https')
 const net = require('node:net')
 const path = require('node:path')
-const { fileURLToPath, pathToFileURL } = require('node:url')
+const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
@@ -31,6 +31,12 @@ const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
+const { readDirForIpc } = require('./fs-read-dir.cjs')
+const { gitRootForIpc } = require('./git-root.cjs')
+const {
+  OFFICIAL_REPO_HTTPS_URL,
+  isOfficialSshRemote
+} = require('./update-remote.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -61,6 +67,7 @@ const {
   TEXT_PREVIEW_SOURCE_MAX_BYTES,
   encryptDesktopSecret: encryptDesktopSecretStrict,
   resolveReadableFileForIpc,
+  resolveRequestedPathForIpc,
   resolveTimeoutMs
 } = require('./hardening.cjs')
 
@@ -726,7 +733,7 @@ function openExternalUrl(rawUrl) {
   if (parsed.protocol === 'file:') {
     let localPath
     try {
-      localPath = fileURLToPath(parsed.toString())
+      localPath = resolveRequestedPathForIpc(parsed.toString(), { purpose: 'Open external file' })
     } catch {
       return false
     }
@@ -1312,6 +1319,11 @@ function runGit(args, options = {}) {
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
+async function getOriginUrl(updateRoot) {
+  const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
+  return origin.code === 0 ? origin.stdout.trim() : ''
+}
+
 function emitUpdateProgress(payload) {
   const merged = { stage: 'idle', message: '', percent: null, error: null, ...payload, at: Date.now() }
   rememberLog(`[updates] ${merged.stage}: ${merged.message || merged.error || ''}`)
@@ -1331,7 +1343,9 @@ async function resolveHealedBranch(updateRoot, branch) {
     return branch || 'main'
   }
 
-  const probe = await runGit(['ls-remote', '--exit-code', '--heads', 'origin', branch], { cwd: updateRoot })
+  const originUrl = await getOriginUrl(updateRoot)
+  const remote = isOfficialSshRemote(originUrl) ? OFFICIAL_REPO_HTTPS_URL : 'origin'
+  const probe = await runGit(['ls-remote', '--exit-code', '--heads', remote, branch], { cwd: updateRoot })
   if (probe.code !== 2) {
     return branch
   }
@@ -1359,6 +1373,40 @@ async function checkUpdates() {
   }
 
   branch = await resolveHealedBranch(updateRoot, branch)
+  const originUrl = await getOriginUrl(updateRoot)
+  if (isOfficialSshRemote(originUrl)) {
+    const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+    const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
+      git(['rev-parse', 'HEAD']),
+      runGit(['ls-remote', OFFICIAL_REPO_HTTPS_URL, `refs/heads/${branch}`], { cwd: updateRoot }),
+      git(['status', '--porcelain']),
+      git(['rev-parse', '--abbrev-ref', 'HEAD'])
+    ])
+    const targetSha = firstLine(target.stdout).split(/\s+/)[0] || ''
+    if (target.code !== 0 || !targetSha) {
+      return {
+        supported: true,
+        branch,
+        error: 'fetch-failed',
+        message: firstLine(target.stderr) || 'git ls-remote failed.',
+        hermesRoot: updateRoot,
+        fetchedAt: Date.now()
+      }
+    }
+    return {
+      supported: true,
+      branch,
+      currentBranch,
+      behind: currentSha && currentSha === targetSha ? 0 : 1,
+      currentSha,
+      targetSha,
+      commits: [],
+      dirty: dirtyStr.length > 0,
+      hermesRoot: updateRoot,
+      fetchedAt: Date.now()
+    }
+  }
+
   const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
   if (fetched.code !== 0) {
     return {
@@ -2833,10 +2881,10 @@ async function resourceBufferFromUrl(rawUrl) {
     const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
     return { buffer, mimeType }
   }
-  if (rawUrl.startsWith('file:')) {
-    const filePath = fileURLToPath(rawUrl)
-    const buffer = await fs.promises.readFile(filePath)
-    return { buffer, mimeType: mimeTypeForPath(filePath) }
+  if (/^file:/i.test(rawUrl)) {
+    const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, { purpose: 'Image file' })
+    const buffer = await fs.promises.readFile(resolvedPath)
+    return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
   }
 
   const parsed = new URL(rawUrl)
@@ -2914,11 +2962,13 @@ function expandUserPath(filePath) {
   return value
 }
 
-function previewFileTarget(rawTarget, baseDir) {
+async function previewFileTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
   const base = baseDir ? path.resolve(expandUserPath(baseDir)) : resolveHermesCwd()
-  const filePath = raw.startsWith('file:') ? fileURLToPath(raw) : path.resolve(base, expandUserPath(raw))
-  let resolved = filePath
+  let resolved = resolveRequestedPathForIpc(/^file:/i.test(raw) ? raw : expandUserPath(raw), {
+    baseDir: base,
+    purpose: 'Preview target'
+  })
 
   if (directoryExists(resolved)) {
     resolved = path.join(resolved, 'index.html')
@@ -2928,6 +2978,8 @@ function previewFileTarget(rawTarget, baseDir) {
   if (!fileExists(resolved)) {
     return null
   }
+
+  ;({ resolvedPath: resolved } = await resolveReadableFileForIpc(resolved, { purpose: 'Preview target' }))
 
   const mimeType = mimeTypeForPath(resolved)
   const metadata = previewFileMetadata(resolved, mimeType)
@@ -2974,7 +3026,7 @@ function previewUrlTarget(rawTarget) {
   }
 }
 
-function normalizePreviewTarget(rawTarget, baseDir) {
+async function normalizePreviewTarget(rawTarget, baseDir) {
   const raw = String(rawTarget || '').trim()
 
   if (!raw) {
@@ -2986,20 +3038,15 @@ function normalizePreviewTarget(rawTarget, baseDir) {
       return previewUrlTarget(raw)
     }
 
-    return previewFileTarget(raw, baseDir)
+    return await previewFileTarget(raw, baseDir)
   } catch {
     return null
   }
 }
 
-function filePathFromPreviewUrl(rawUrl) {
-  const filePath = fileURLToPath(String(rawUrl || ''))
-
-  if (!fileExists(filePath)) {
-    throw new Error('Preview file is not readable')
-  }
-
-  return filePath
+async function filePathFromPreviewUrl(rawUrl) {
+  const { resolvedPath } = await resolveReadableFileForIpc(String(rawUrl || ''), { purpose: 'Preview file' })
+  return resolvedPath
 }
 
 function sendPreviewFileChanged(payload) {
@@ -3009,8 +3056,8 @@ function sendPreviewFileChanged(payload) {
   webContents.send('hermes:preview-file-changed', payload)
 }
 
-function watchPreviewFile(rawUrl) {
-  const filePath = filePathFromPreviewUrl(rawUrl)
+async function watchPreviewFile(rawUrl) {
+  const filePath = await filePathFromPreviewUrl(rawUrl)
   const watchDir = path.dirname(filePath)
   const targetName = path.basename(filePath)
   const id = crypto.randomBytes(12).toString('base64url')
@@ -5542,48 +5589,6 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
 
-// Always-hidden noise (covers non-git projects too — gitignore would catch
-// these anyway when present, but we want the same hygiene without one).
-const FS_READDIR_HIDDEN = new Set([
-  '.git',
-  '.hg',
-  '.svn',
-  '.cache',
-  '.next',
-  '.turbo',
-  '.venv',
-  '__pycache__',
-  'build',
-  'dist',
-  'node_modules',
-  'target',
-  'venv'
-])
-
-function findGitRoot(start) {
-  let dir = start
-
-  for (let i = 0; i < 50; i += 1) {
-    try {
-      if (fs.existsSync(path.join(dir, '.git'))) {
-        return dir
-      }
-    } catch {
-      return null
-    }
-
-    const parent = path.dirname(dir)
-
-    if (parent === dir) {
-      return null
-    }
-
-    dir = parent
-  }
-
-  return null
-}
-
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {
     return false
@@ -5766,46 +5771,9 @@ function disposeTerminalSession(id) {
   return true
 }
 
-ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => {
-  const resolved = path.resolve(String(dirPath || ''))
+ipcMain.handle('hermes:fs:readDir', async (_event, dirPath) => readDirForIpc(dirPath))
 
-  if (!resolved) {
-    return { entries: [], error: 'invalid-path' }
-  }
-
-  try {
-    const dirents = await fs.promises.readdir(resolved, { withFileTypes: true })
-
-    const entries = dirents
-      .filter(d => {
-        if (FS_READDIR_HIDDEN.has(d.name)) {
-          return false
-        }
-
-        return true
-      })
-      .map(d => ({ name: d.name, path: path.join(resolved, d.name), isDirectory: d.isDirectory() }))
-      .sort((a, b) => Number(b.isDirectory) - Number(a.isDirectory) || a.name.localeCompare(b.name))
-
-    return { entries }
-  } catch (error) {
-    return { entries: [], error: error?.code || 'read-error' }
-  }
-})
-
-ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => {
-  const input = String(startPath || '')
-  const resolved = input.startsWith('file:') ? fileURLToPath(input) : path.resolve(input)
-
-  try {
-    const stat = await fs.promises.stat(resolved)
-    const start = stat.isDirectory() ? resolved : path.dirname(resolved)
-
-    return findGitRoot(start)
-  } catch {
-    return findGitRoot(resolved)
-  }
-})
+ipcMain.handle('hermes:fs:gitRoot', async (_event, startPath) => gitRootForIpc(startPath))
 
 ipcMain.handle('hermes:terminal:start', async (event, payload = {}) => {
   if (!nodePty) {

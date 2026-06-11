@@ -1,14 +1,16 @@
 ---
 sidebar_position: 15
-title: "自动化模板"
-description: "开箱即用的自动化配方——定时任务、GitHub 事件触发、API webhook 及多技能工作流"
+title: "自动化蓝图"
+description: "开箱即用的自动化蓝图——定时任务、GitHub 事件触发、API webhook 及多技能工作流"
 ---
 
-# 自动化模板
+# 自动化蓝图
 
-常见自动化模式的复制粘贴配方。每个模板使用 Hermes 内置的 [cron 调度器](/user-guide/features/cron) 实现基于时间的触发，使用 [webhook 平台](/user-guide/messaging/webhooks) 实现事件驱动触发。
+常见自动化模式的复制粘贴蓝图。每个蓝图使用 Hermes 内置的 [cron 调度器](/user-guide/features/cron) 实现基于时间的触发，使用 [webhook 平台](/user-guide/messaging/webhooks) 实现事件驱动触发。
 
-所有模板适用于**任意模型**——不绑定单一提供商。
+所有蓝图适用于**任意模型**——不绑定单一提供商。
+
+如需带表单的参数化蓝图（无需手写 cron 语法），请参阅[自动化蓝图目录](/reference/automation-blueprints-catalog)。
 
 :::tip 三种触发类型
 | 触发方式 | 方式 | 工具 |

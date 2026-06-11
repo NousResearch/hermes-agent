@@ -1101,14 +1101,27 @@ def _get_env_config() -> Dict[str, Any]:
         docker_extra_args = []
 
     # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home, and everything else starts in the backend's default
-    # root-like cwd.
+    # ── Per-backend default CWD ──────────────────────────────────────
+    # When no per-backend CWD is saved yet, these defaults are used.
+    # Users can reset any backend's CWD by clearing its terminal.<name>_cwd
+    # key in config.yaml or setting it to one of these defaults.
+    #
+    #   local         current OS working directory
+    #   wsl           probed $HOME via wsl -e echo $HOME
+    #   ssh           ~ (remote home)
+    #   docker        /root
+    #   singularity   /root
+    #   modal         /root
+    #   daytona       /workspace  (Daytona's standard workspace)
+    # ─────────────────────────────────────────────────────────────────
     if env_type == "local":
         default_cwd = _safe_getcwd()
-    elif env_type == "ssh":
-        default_cwd = "~"
     elif env_type == "wsl":
         default_cwd = ""  # WslEnvironment probes $HOME at init
+    elif env_type == "ssh":
+        default_cwd = "~"
+    elif env_type == "daytona":
+        default_cwd = "/workspace"
     else:
         default_cwd = "/root"
 

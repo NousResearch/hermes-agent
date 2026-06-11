@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
@@ -357,18 +358,20 @@ def run_codex_app_server_turn(
         should_review_skills = True
         agent._iters_since_skill = 0
 
-    # External memory provider sync (mirrors line ~15439). Skipped on
-    # interrupt/error to avoid feeding partial transcripts to memory.
+    # External memory provider: sync in background to unblock the Codex
+    # Responses stream (#24453). The method's internal try/except is sufficient.
     if not turn.interrupted and turn.error is None:
-        try:
-            agent._sync_external_memory_for_turn(
+        threading.Thread(
+            target=agent._sync_external_memory_for_turn,
+            kwargs=dict(
                 original_user_message=original_user_message,
                 final_response=turn.final_text,
                 interrupted=False,
                 messages=messages,
-            )
-        except Exception:
-            logger.debug("external memory sync raised", exc_info=True)
+            ),
+            daemon=True,
+            name="memory-sync-turn-codex",
+        ).start()
 
     # Background review fork — same cadence + signature as the default
     # path (line ~15449). Only fires when a trigger actually tripped AND

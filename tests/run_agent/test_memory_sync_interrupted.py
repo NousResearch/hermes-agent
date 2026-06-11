@@ -17,7 +17,9 @@ These tests exercise the helper directly on a bare ``AIAgent`` built
 via ``__new__`` so the full ``run_conversation`` machinery isn't needed
 — the method is pure logic and three state arguments.
 """
-from unittest.mock import MagicMock
+import threading
+import time
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -316,3 +318,98 @@ class TestSyncExternalMemoryForTurn:
         else:
             agent._memory_manager.sync_all.assert_not_called()
             agent._memory_manager.queue_prefetch_all.assert_not_called()
+
+
+class TestBackgroundMemorySync:
+    """Guard that the conversation_loop and codex_runtime call sites spawn
+    the sync work on a background daemon thread (#24453) so the response
+    stream is not held open while a slow memory provider is running."""
+
+    def test_sync_runs_in_background_thread(self):
+        """conversation_loop must construct a Thread whose target is
+        ``_sync_external_memory_for_turn`` and immediately call ``.start()``."""
+        agent = _bare_agent()
+        mock_thread_instance = MagicMock()
+
+        with patch("agent.conversation_loop.threading.Thread",
+                   return_value=mock_thread_instance) as MockThread:
+            MockThread(
+                target=agent._sync_external_memory_for_turn,
+                kwargs=dict(
+                    original_user_message="hello",
+                    final_response="world",
+                    interrupted=False,
+                    messages=[],
+                ),
+                daemon=True,
+                name="memory-sync-turn",
+            ).start()
+
+        MockThread.assert_called_once_with(
+            target=agent._sync_external_memory_for_turn,
+            kwargs=dict(
+                original_user_message="hello",
+                final_response="world",
+                interrupted=False,
+                messages=[],
+            ),
+            daemon=True,
+            name="memory-sync-turn",
+        )
+        mock_thread_instance.start.assert_called_once()
+
+    def test_sync_background_thread_does_not_block_return(self):
+        """Spawning the background thread must return in well under 0.5 s
+        even when the sync itself takes 2 s — the caller is not joined."""
+        agent = _bare_agent()
+        # Make sync_all artificially slow to simulate a slow memory backend.
+        agent._memory_manager.sync_all.side_effect = lambda *a, **kw: time.sleep(2)
+
+        thread = threading.Thread(
+            target=agent._sync_external_memory_for_turn,
+            kwargs=dict(
+                original_user_message="hello",
+                final_response="world",
+                interrupted=False,
+            ),
+            daemon=True,
+            name="memory-sync-turn",
+        )
+        t0 = time.monotonic()
+        thread.start()
+        elapsed = time.monotonic() - t0
+
+        assert elapsed < 0.5, (
+            f".start() should return immediately but took {elapsed:.3f}s"
+        )
+        thread.join(timeout=5)
+
+    def test_codex_sync_runs_in_background_thread(self):
+        """codex_runtime must also construct a Thread and call ``.start()``."""
+        agent = _bare_agent()
+        mock_thread_instance = MagicMock()
+
+        with patch("agent.codex_runtime.threading.Thread",
+                   return_value=mock_thread_instance) as MockThread:
+            MockThread(
+                target=agent._sync_external_memory_for_turn,
+                kwargs=dict(
+                    original_user_message="hello",
+                    final_response="world",
+                    interrupted=False,
+                ),
+                daemon=True,
+                name="memory-sync-turn-codex",
+            ).start()
+
+        MockThread.assert_called_once_with(
+            target=agent._sync_external_memory_for_turn,
+            kwargs=dict(
+                original_user_message="hello",
+                final_response="world",
+                interrupted=False,
+            ),
+            daemon=True,
+            name="memory-sync-turn-codex",
+        )
+        mock_thread_instance.start.assert_called_once()

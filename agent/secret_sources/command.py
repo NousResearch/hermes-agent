@@ -262,7 +262,15 @@ def _parse_dotenv_map(stdout: str) -> Dict[str, str]:
         m = _ENV_LINE.match(line)
         if not m:
             continue
-        out[m.group(1)] = unquote_dotenv_value(m.group(2))
+        value = unquote_dotenv_value(m.group(2))
+        # Whitespace-only entries (e.g. a quoted `K="  "` placeholder) are
+        # "no value" — get_command_secret()/parse_secret_output already
+        # resolve them to None, so the list/enumerate path must omit them too
+        # or list_command_secrets() and get_command_secret() disagree on
+        # whether a quoted-blank vault entry counts as a configured key.
+        if value.strip() == "":
+            continue
+        out[m.group(1)] = value
     return out
 
 

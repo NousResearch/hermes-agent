@@ -137,6 +137,27 @@ def test_dotenv_blob_helper_resolves_multiple_keys(tmp_path):
     assert set(listed) == {"CMDTEST_API_KEY", "CMDTEST_TOKEN"}
 
 
+def test_list_omits_quoted_whitespace_only_entries(tmp_path):
+    # Parity with the desktop TS provider (Greptile review on hermes-desktop
+    # PR #644): the list/enumerate path stored whitespace-only unquoted values
+    # while get()/parse_secret_output resolves them to None, so a quoted-blank
+    # vault placeholder (BLANK="   ") would appear as a configured key in
+    # list_command_secrets() but resolve None on read — the two disagreed.
+    helper = _write_helper(
+        tmp_path,
+        "cat <<'EOF'\n"
+        "CMDTEST_REAL=value\n"
+        'CMDTEST_BLANK="   "\n'
+        "EOF",
+    )
+    listed = list_command_secrets(command=str(helper))
+    assert set(listed) == {"CMDTEST_REAL"}
+    assert "CMDTEST_BLANK" not in listed
+    # The invariant: list() membership matches get() resolving to a value.
+    assert get_command_secret(command=str(helper), key="CMDTEST_BLANK") is None
+    assert get_command_secret(command=str(helper), key="CMDTEST_REAL") == "value"
+
+
 def test_base64_padding_value_roundtrips_through_real_helper(tmp_path):
     helper = _write_helper(tmp_path, "printf 'dGVzdA=='")
     assert get_command_secret(command=str(helper), key="CMDTEST_API_KEY") == "dGVzdA=="

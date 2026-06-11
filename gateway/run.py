@@ -15541,6 +15541,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     """
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
+    from gateway.status import write_cron_ticker_heartbeat
     from hermes_cli.debug import _sweep_expired_pastes
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
@@ -15550,71 +15551,98 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
+    # Record an initial heartbeat so `hermes cron status` doesn't report the
+    # ticker as dead during the first tick window.
+    write_cron_ticker_heartbeat()
     while not stop_event.is_set():
+        # Outer ``BaseException`` wrap so anything raised inside this tick —
+        # including ``SystemExit``/``KeyboardInterrupt`` smuggled out by a
+        # C extension — gets logged with a traceback and the loop survives
+        # instead of the ticker dying silently. See #32612.
         try:
-            cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
-        except Exception as e:
-            logger.debug("Cron tick error: %s", e)
-
-        tick_count += 1
-
-        if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
             try:
-                from gateway.channel_directory import build_channel_directory
-                if loop is not None:
-                    # build_channel_directory is async (Slack web calls), and
-                    # this ticker runs in a background thread. Schedule onto
-                    # the gateway event loop and wait briefly for completion
-                    # so refresh failures are still logged via the except.
-                    fut = safe_schedule_threadsafe(
-                        build_channel_directory(adapters), loop,
-                        logger=logger,
-                        log_message="Channel directory refresh scheduling error",
+                cron_tick(verbose=False, adapters=adapters, loop=loop, sync=False)
+            except Exception as e:
+                # Promoted from DEBUG → WARNING so operators actually see
+                # transient tick failures in the default INFO-level log.
+                logger.warning("Cron tick error: %s", e, exc_info=True)
+
+            tick_count += 1
+
+            if tick_count % CHANNEL_DIR_EVERY == 0 and adapters:
+                try:
+                    from gateway.channel_directory import build_channel_directory
+                    if loop is not None:
+                        # build_channel_directory is async (Slack web calls), and
+                        # this ticker runs in a background thread. Schedule onto
+                        # the gateway event loop and wait briefly for completion
+                        # so refresh failures are still logged via the except.
+                        fut = safe_schedule_threadsafe(
+                            build_channel_directory(adapters), loop,
+                            logger=logger,
+                            log_message="Channel directory refresh scheduling error",
+                        )
+                        if fut is not None:
+                            fut.result(timeout=30)
+                except Exception as e:
+                    logger.debug("Channel directory refresh error: %s", e)
+
+            if tick_count % IMAGE_CACHE_EVERY == 0:
+                try:
+                    removed = cleanup_image_cache(max_age_hours=24)
+                    if removed:
+                        logger.info("Image cache cleanup: removed %d stale file(s)", removed)
+                except Exception as e:
+                    logger.debug("Image cache cleanup error: %s", e)
+                try:
+                    removed = cleanup_document_cache(max_age_hours=24)
+                    if removed:
+                        logger.info("Document cache cleanup: removed %d stale file(s)", removed)
+                except Exception as e:
+                    logger.debug("Document cache cleanup error: %s", e)
+
+            if tick_count % PASTE_SWEEP_EVERY == 0:
+                try:
+                    deleted, remaining = _sweep_expired_pastes()
+                    if deleted:
+                        logger.info(
+                            "Paste sweep: deleted %d expired paste(s), %d pending",
+                            deleted, remaining,
+                        )
+                except Exception as e:
+                    logger.debug("Paste sweep error: %s", e)
+
+            # Curator — piggy-back on the existing cron ticker so long-running
+            # gateways get weekly skill maintenance without needing restarts.
+            # maybe_run_curator() is internally gated by config.interval_hours
+            # (7 days by default), so CURATOR_EVERY is just the poll rate — the
+            # real work only fires once per config interval.
+            if tick_count % CURATOR_EVERY == 0:
+                try:
+                    from agent.curator import maybe_run_curator
+                    maybe_run_curator(
+                        idle_for_seconds=float("inf"),
+                        on_summary=lambda msg: logger.info("curator: %s", msg),
                     )
-                    if fut is not None:
-                        fut.result(timeout=30)
-            except Exception as e:
-                logger.debug("Channel directory refresh error: %s", e)
+                except Exception as e:
+                    logger.debug("Curator tick error: %s", e)
+        except BaseException as e:
+            # Catch BaseException (SystemExit, KeyboardInterrupt, anything a
+            # C extension raises through Python) so a transient fault inside
+            # a tick can't permanently kill the ticker thread without leaving
+            # a trace. The thread re-enters the loop on the next interval.
+            # See #32612 for the silent-death scenario this guards against.
+            logger.error(
+                "Cron ticker recovered from fatal error: %s", e, exc_info=True,
+            )
 
-        if tick_count % IMAGE_CACHE_EVERY == 0:
-            try:
-                removed = cleanup_image_cache(max_age_hours=24)
-                if removed:
-                    logger.info("Image cache cleanup: removed %d stale file(s)", removed)
-            except Exception as e:
-                logger.debug("Image cache cleanup error: %s", e)
-            try:
-                removed = cleanup_document_cache(max_age_hours=24)
-                if removed:
-                    logger.info("Document cache cleanup: removed %d stale file(s)", removed)
-            except Exception as e:
-                logger.debug("Document cache cleanup error: %s", e)
-
-        if tick_count % PASTE_SWEEP_EVERY == 0:
-            try:
-                deleted, remaining = _sweep_expired_pastes()
-                if deleted:
-                    logger.info(
-                        "Paste sweep: deleted %d expired paste(s), %d pending",
-                        deleted, remaining,
-                    )
-            except Exception as e:
-                logger.debug("Paste sweep error: %s", e)
-
-        # Curator — piggy-back on the existing cron ticker so long-running
-        # gateways get weekly skill maintenance without needing restarts.
-        # maybe_run_curator() is internally gated by config.interval_hours
-        # (7 days by default), so CURATOR_EVERY is just the poll rate — the
-        # real work only fires once per config interval.
-        if tick_count % CURATOR_EVERY == 0:
-            try:
-                from agent.curator import maybe_run_curator
-                maybe_run_curator(
-                    idle_for_seconds=float("inf"),
-                    on_summary=lambda msg: logger.info("curator: %s", msg),
-                )
-            except Exception as e:
-                logger.debug("Curator tick error: %s", e)
+        # Refresh heartbeat after the tick body completes (whether it raised
+        # or not). This lets `hermes cron status` distinguish "ticker thread
+        # is alive" from "gateway process is alive" — see #32612.
+        try:
+            write_cron_ticker_heartbeat()
+        except Exception as e:  # pragma: no cover - heartbeat is best-effort
+            logger.debug("Cron ticker heartbeat write failed: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")

@@ -30,6 +30,7 @@ else:
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
+_CRON_TICKER_HEARTBEAT_FILE = "cron_ticker.heartbeat"
 _LOCKS_DIRNAME = "gateway-locks"
 _IS_WINDOWS = sys.platform == "win32"
 _UNSET = object()
@@ -58,6 +59,32 @@ def _get_gateway_lock_path(pid_path: Optional[Path] = None) -> Path:
 def _get_runtime_status_path() -> Path:
     """Return the persisted runtime health/status file path."""
     return _get_pid_path().with_name(_RUNTIME_STATUS_FILE)
+
+
+def _get_cron_ticker_heartbeat_path() -> Path:
+    """Return the path to the cron-ticker heartbeat file.
+
+    The ticker writes its last-tick timestamp here so external readers
+    (``hermes cron status``) can tell whether the ticker thread is still
+    alive, separate from whether the gateway *process* is alive.
+    """
+    return _get_pid_path().with_name(_CRON_TICKER_HEARTBEAT_FILE)
+
+
+def write_cron_ticker_heartbeat() -> None:
+    """Persist a heartbeat marker showing the ticker is alive."""
+    path = _get_cron_ticker_heartbeat_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        _write_json_file(path, {"last_tick_at": _utc_now_iso()})
+    except OSError:
+        # Heartbeat is best-effort; never let it kill the ticker.
+        pass
+
+
+def read_cron_ticker_heartbeat() -> Optional[dict[str, Any]]:
+    """Read the cron-ticker heartbeat, returning ``None`` if missing/unreadable."""
+    return _read_json_file(_get_cron_ticker_heartbeat_path())
 
 
 def _get_lock_dir() -> Path:

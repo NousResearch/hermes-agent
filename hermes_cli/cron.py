@@ -151,6 +151,41 @@ def cron_tick():
     tick(verbose=True)
 
 
+def _cron_ticker_liveness(interval_seconds: int = 60):
+    """Return ``(is_alive, last_tick_at, age_seconds)`` for the cron ticker.
+
+    Reads the heartbeat file the gateway's ticker thread writes after every
+    tick. If the file is missing or older than ``2 * interval_seconds``, the
+    ticker is considered dead — covers the silent-death case in #32612 where
+    the gateway process is alive but the ticker thread is not.
+    """
+    from datetime import datetime, timezone
+
+    try:
+        from gateway.status import read_cron_ticker_heartbeat
+    except ImportError:
+        return None, None, None
+
+    record = read_cron_ticker_heartbeat()
+    if not record:
+        return False, None, None
+
+    raw = record.get("last_tick_at")
+    if not isinstance(raw, str):
+        return False, None, None
+
+    try:
+        last_tick = datetime.fromisoformat(raw)
+    except ValueError:
+        return False, raw, None
+
+    if last_tick.tzinfo is None:
+        last_tick = last_tick.replace(tzinfo=timezone.utc)
+    age = (datetime.now(timezone.utc) - last_tick).total_seconds()
+    is_alive = age <= max(2 * interval_seconds, 5)
+    return is_alive, raw, age
+
+
 def cron_status():
     """Show cron execution status."""
     from cron.jobs import list_jobs
@@ -160,8 +195,25 @@ def cron_status():
 
     pids = find_gateway_pids()
     if pids:
-        print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
-        print(f"  PID: {', '.join(map(str, pids))}")
+        ticker_alive, last_tick_at, age = _cron_ticker_liveness()
+        if ticker_alive:
+            print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            if last_tick_at:
+                print(color(f"  Ticker: alive (last tick {last_tick_at})", Colors.DIM))
+        else:
+            # Gateway process exists but the ticker thread isn't ticking. This
+            # is the silent-failure mode from #32612 — call it out loudly so
+            # the operator doesn't see a green check while jobs aren't firing.
+            print(color("⚠ Gateway is running but cron ticker is NOT alive — jobs are NOT firing", Colors.YELLOW))
+            print(f"  PID: {', '.join(map(str, pids))}")
+            if last_tick_at:
+                age_display = f"{age:.0f}s ago" if isinstance(age, (int, float)) else last_tick_at
+                print(color(f"  Last tick: {last_tick_at} ({age_display})", Colors.YELLOW))
+            else:
+                print(color("  Last tick: never (no heartbeat written)", Colors.YELLOW))
+            print(color("  Restart the gateway to revive the ticker:", Colors.DIM))
+            print(color("    hermes gateway restart", Colors.DIM))
     else:
         print(color("✗ Gateway is not running — cron jobs will NOT fire", Colors.RED))
         print()

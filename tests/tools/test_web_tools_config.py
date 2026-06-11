@@ -260,7 +260,6 @@ class TestBackendSelection:
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
         "YDC_API_KEY",
-        "YDC_API_KEY",
     )
 
     def setup_method(self):

@@ -20,6 +20,8 @@ interface CloudInviteResult {
   permission?: string
 }
 
+export type CloudChannelPermission = 'admin' | 'post' | 'read'
+
 export interface CloudChannel {
   created_at?: string | null
   history_floor_seq?: number | null
@@ -113,6 +115,13 @@ export interface CloudMembersResult {
   members?: CloudChannelMember[]
   owner_account_id?: string
   your_permission?: string
+}
+
+interface CloudMemberMutationResult {
+  account_id?: string
+  ok?: boolean
+  permission?: string
+  removed?: string
 }
 
 // "Share to cloud" (channels slice 4.0): promote the session to a cloud
@@ -286,6 +295,79 @@ export async function loadCloudChannelMembers(sessionId: string): Promise<CloudM
     notifyError(err, 'Could not load cloud members')
 
     return null
+  }
+}
+
+export async function setCloudChannelMemberPermission(
+  sessionId: string,
+  accountId: string,
+  permission: CloudChannelPermission
+): Promise<boolean> {
+  const gateway = activeGateway()
+  const trimmedAccount = accountId.trim()
+
+  if (!gateway) {
+    notify({ kind: 'error', title: 'Cloud members', message: 'Not connected yet — try again in a moment.' })
+
+    return false
+  }
+
+  if (!trimmedAccount) {
+    notify({ kind: 'error', title: 'Cloud members', message: 'Account ID is required.' })
+
+    return false
+  }
+
+  try {
+    const result = await gateway.request<CloudMemberMutationResult>('session.cloud_member_permission', {
+      account_id: trimmedAccount,
+      permission,
+      session_id: sessionId
+    })
+
+    notify({
+      kind: 'success',
+      title: 'Cloud member updated',
+      message: `Permission set to ${result.permission || permission}.`
+    })
+
+    return true
+  } catch (err) {
+    notifyError(err, 'Could not update cloud member')
+
+    return false
+  }
+}
+
+export async function removeCloudChannelMember(sessionId: string, accountId: string): Promise<boolean> {
+  const gateway = activeGateway()
+  const trimmedAccount = accountId.trim()
+
+  if (!gateway) {
+    notify({ kind: 'error', title: 'Cloud members', message: 'Not connected yet — try again in a moment.' })
+
+    return false
+  }
+
+  if (!trimmedAccount) {
+    notify({ kind: 'error', title: 'Cloud members', message: 'Account ID is required.' })
+
+    return false
+  }
+
+  try {
+    await gateway.request<CloudMemberMutationResult>('session.cloud_member_remove', {
+      account_id: trimmedAccount,
+      session_id: sessionId
+    })
+
+    notify({ kind: 'success', title: 'Cloud member removed', message: trimmedAccount })
+
+    return true
+  } catch (err) {
+    notifyError(err, 'Could not remove cloud member')
+
+    return false
   }
 }
 

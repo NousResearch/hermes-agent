@@ -110,6 +110,23 @@ def list_members(channel_id: str) -> dict:
     return _request("GET", f"/v1/channels/{channel}/members")
 
 
+def set_member_permission(channel_id: str, account_id: str, permission: str = "read") -> dict:
+    """Change a cloud-channel member's permission."""
+    channel = urllib.parse.quote(str(channel_id), safe="")
+    account = urllib.parse.quote(str(account_id), safe="")
+    perm = permission if permission in _PERMISSIONS else "read"
+    return _request("PATCH", f"/v1/channels/{channel}/members/{account}", {
+        "permission": perm,
+    })
+
+
+def remove_member(channel_id: str, account_id: str) -> dict:
+    """Revoke a cloud-channel member grant."""
+    channel = urllib.parse.quote(str(channel_id), safe="")
+    account = urllib.parse.quote(str(account_id), safe="")
+    return _request("DELETE", f"/v1/channels/{channel}/members/{account}")
+
+
 def accept_invite(token: str) -> dict:
     """Redeem a cloud-channel invite token for the configured account."""
     invite_token = str(token or "").strip()

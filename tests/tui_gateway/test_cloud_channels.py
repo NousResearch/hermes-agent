@@ -89,6 +89,50 @@ def test_list_members_gets_channel_members(monkeypatch):
     assert sent == [("GET", "/v1/channels/chan%2F1/members", None)]
 
 
+def test_set_member_permission_patches_member(monkeypatch):
+    sent = []
+
+    def fake_request(method, path, body=None, timeout=15.0):
+        sent.append((method, path, body))
+        return {"account_id": "acct/1", "permission": body["permission"]}
+
+    monkeypatch.setattr(cloud_channels, "_request", fake_request)
+
+    result = cloud_channels.set_member_permission("chan/1", "acct/1", "post")
+
+    assert result["permission"] == "post"
+    assert sent == [("PATCH", "/v1/channels/chan%2F1/members/acct%2F1", {"permission": "post"})]
+
+
+def test_set_member_permission_falls_back_to_read(monkeypatch):
+    bodies = []
+
+    def fake_request(method, path, body=None, timeout=15.0):
+        bodies.append(body)
+        return {}
+
+    monkeypatch.setattr(cloud_channels, "_request", fake_request)
+
+    cloud_channels.set_member_permission("chan_1", "acct_1", "owner")
+
+    assert bodies == [{"permission": "read"}]
+
+
+def test_remove_member_deletes_member(monkeypatch):
+    sent = []
+
+    def fake_request(method, path, body=None, timeout=15.0):
+        sent.append((method, path, body))
+        return {"ok": True, "removed": "acct/1"}
+
+    monkeypatch.setattr(cloud_channels, "_request", fake_request)
+
+    result = cloud_channels.remove_member("chan/1", "acct/1")
+
+    assert result["ok"] is True
+    assert sent == [("DELETE", "/v1/channels/chan%2F1/members/acct%2F1", None)]
+
+
 def test_accept_invite_posts_token_to_accept_endpoint(monkeypatch):
     sent = []
 

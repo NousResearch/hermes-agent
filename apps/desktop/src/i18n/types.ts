@@ -943,6 +943,11 @@ export interface Translations {
       cloudMembersDesc: string
       cloudMembersEmpty: string
       cloudMembersRefresh: string
+      cloudMembersPermissionLabel: string
+      cloudMembersPermission: (permission: string) => string
+      cloudMembersRevoke: string
+      cloudMembersRevokeConfirm: (member: string) => string
+      cloudMembersSaving: string
       untitledPlaceholder: string
       ageNow: string
       ageDay: string

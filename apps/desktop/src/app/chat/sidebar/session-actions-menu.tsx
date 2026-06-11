@@ -1,5 +1,5 @@
 import type * as React from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -15,13 +15,19 @@ import {
 } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { Tip } from '@/components/ui/tooltip'
 import { renameSession } from '@/hermes'
 import { useI18n } from '@/i18n'
 import {
+  type CloudChannelMember,
+  type CloudChannelPermission,
   type CloudMembersResult,
   copyCloudChannelId,
   inviteCloudChannelMember,
   loadCloudChannelMembers,
+  removeCloudChannelMember,
+  setCloudChannelMemberPermission,
   shareSessionToCloud
 } from '@/lib/cloud-share'
 import { triggerHaptic } from '@/lib/haptics'
@@ -316,37 +322,76 @@ interface CloudMembersDialogProps {
   sessionId: string
 }
 
+const CLOUD_MEMBER_PERMISSIONS: CloudChannelPermission[] = ['read', 'post', 'admin']
+
+const cloudMemberPermission = (permission: string | null | undefined): CloudChannelPermission =>
+  permission === 'post' || permission === 'admin' ? permission : 'read'
+
 function CloudMembersDialog({ open, onOpenChange, sessionId }: CloudMembersDialogProps) {
   const { t } = useI18n()
   const r = t.sidebar.row
   const [loading, setLoading] = useState(false)
+  const [pendingMemberId, setPendingMemberId] = useState<string | null>(null)
   const [result, setResult] = useState<CloudMembersResult | null>(null)
 
+  const refreshMembers = useCallback(async () => {
+    setLoading(true)
+
+    try {
+      setResult(await loadCloudChannelMembers(sessionId))
+    } finally {
+      setLoading(false)
+    }
+  }, [sessionId])
+
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      void refreshMembers()
+    }
+  }, [open, refreshMembers])
+
+  const updatePermission = async (member: CloudChannelMember, permission: CloudChannelPermission) => {
+    const current = cloudMemberPermission(member.permission)
+
+    if (permission === current || pendingMemberId) {
       return
     }
 
-    let active = true
-    setLoading(true)
-    void loadCloudChannelMembers(sessionId)
-      .then(next => {
-        if (active) {
-          setResult(next)
-        }
-      })
-      .finally(() => {
-        if (active) {
-          setLoading(false)
-        }
-      })
+    setPendingMemberId(`permission:${member.account_id}`)
 
-    return () => {
-      active = false
+    try {
+      if (await setCloudChannelMemberPermission(sessionId, member.account_id, permission)) {
+        await refreshMembers()
+      }
+    } finally {
+      setPendingMemberId(null)
     }
-  }, [open, sessionId])
+  }
+
+  const removeMember = async (member: CloudChannelMember) => {
+    if (pendingMemberId) {
+      return
+    }
+
+    const label = member.display_name || member.email || member.account_id
+
+    if (!window.confirm(r.cloudMembersRevokeConfirm(label))) {
+      return
+    }
+
+    setPendingMemberId(`remove:${member.account_id}`)
+
+    try {
+      if (await removeCloudChannelMember(sessionId, member.account_id)) {
+        await refreshMembers()
+      }
+    } finally {
+      setPendingMemberId(null)
+    }
+  }
 
   const members = result?.members ?? []
+  const canManage = result?.your_permission === 'admin'
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -361,24 +406,66 @@ function CloudMembersDialog({ open, onOpenChange, sessionId }: CloudMembersDialo
           ) : members.length === 0 ? (
             <div className="text-sm text-muted-foreground">{r.cloudMembersEmpty}</div>
           ) : (
-            members.map(member => (
-              <div className="rounded-md border border-border/70 px-3 py-2" key={member.account_id}>
-                <div className="truncate text-sm font-medium">
-                  {member.display_name || member.email || member.account_id}
+            members.map(member => {
+              const permission = cloudMemberPermission(member.permission)
+              const busy =
+                pendingMemberId === `permission:${member.account_id}` ||
+                pendingMemberId === `remove:${member.account_id}`
+
+              return (
+                <div className="rounded-md border border-border/70 px-3 py-2" key={member.account_id}>
+                  <div className="truncate text-sm font-medium">
+                    {member.display_name || member.email || member.account_id}
+                  </div>
+                  <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
+                    {member.email ? <span className="min-w-0 truncate">{member.email}</span> : null}
+                    <span className="shrink-0">{member.granted_via || 'invite'}</span>
+                  </div>
+                  <div className="mt-2 flex items-center gap-2">
+                    <Select
+                      disabled={!canManage || busy}
+                      onValueChange={value => void updatePermission(member, value as CloudChannelPermission)}
+                      value={permission}
+                    >
+                      <SelectTrigger
+                        aria-label={r.cloudMembersPermissionLabel}
+                        className="h-7 w-28"
+                        size="sm"
+                      >
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {CLOUD_MEMBER_PERMISSIONS.map(option => (
+                          <SelectItem key={option} value={option}>
+                            {r.cloudMembersPermission(option)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Tip label={r.cloudMembersRevoke}>
+                      <Button
+                        aria-label={r.cloudMembersRevoke}
+                        disabled={!canManage || busy}
+                        onClick={() => void removeMember(member)}
+                        size="icon-xs"
+                        type="button"
+                        variant="ghost"
+                      >
+                        <Codicon name="trash" />
+                      </Button>
+                    </Tip>
+                    {busy ? <span className="text-xs text-muted-foreground">{r.cloudMembersSaving}</span> : null}
+                  </div>
                 </div>
-                <div className="mt-0.5 flex items-center gap-2 text-xs text-muted-foreground">
-                  <span>{member.permission || 'read'}</span>
-                  {member.email ? <span className="truncate">{member.email}</span> : null}
-                </div>
-              </div>
-            ))
+              )
+            })
           )}
         </div>
         <DialogFooter>
           <Button disabled={loading} onClick={() => onOpenChange(false)} type="button" variant="ghost">
             {t.common.close}
           </Button>
-          <Button disabled={loading} onClick={() => void loadCloudChannelMembers(sessionId).then(setResult)} type="button">
+          <Button disabled={loading} onClick={() => void refreshMembers()} type="button">
             {r.cloudMembersRefresh}
           </Button>
         </DialogFooter>

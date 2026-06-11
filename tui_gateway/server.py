@@ -4145,6 +4145,55 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, result)
 
 
+@method("session.cloud_member_permission")
+def _(rid, params: dict) -> dict:
+    """Change a member permission for an already-shared cloud channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    if not status or not status.get("channel_id"):
+        return _err(rid, 4008, "session is not shared to cloud")
+
+    account_id = str(params.get("account_id") or "").strip()
+    if not account_id:
+        return _err(rid, 4006, "account_id required")
+
+    permission = str(params.get("permission") or "read").strip().lower() or "read"
+    try:
+        result = cloud_channels.set_member_permission(str(status["channel_id"]), account_id, permission)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud member permission failed: {e}")
+    return _ok(rid, result)
+
+
+@method("session.cloud_member_remove")
+def _(rid, params: dict) -> dict:
+    """Remove a member from an already-shared cloud channel."""
+    from tui_gateway import cloud_channels
+
+    if not cloud_channels.cloud_enabled():
+        return _err(rid, 4030, "cloud sharing is not configured (set HERMES_CLOUD_TOKEN)")
+
+    key = _cloud_share_key(params)
+    status = cloud_channels.shared_status(key)
+    if not status or not status.get("channel_id"):
+        return _err(rid, 4008, "session is not shared to cloud")
+
+    account_id = str(params.get("account_id") or "").strip()
+    if not account_id:
+        return _err(rid, 4006, "account_id required")
+
+    try:
+        result = cloud_channels.remove_member(str(status["channel_id"]), account_id)
+    except Exception as e:
+        return _err(rid, 5040, f"cloud member remove failed: {e}")
+    return _ok(rid, result)
+
+
 @method("session.cloud_unshare")
 def _(rid, params: dict) -> dict:
     """Stop pushing this session to the cloud (the cloud log is kept;

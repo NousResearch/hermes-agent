@@ -4468,22 +4468,27 @@ def _truncate_token(value: Optional[str], visible: int = 6) -> str:
 
 
 def _anthropic_oauth_status() -> Dict[str, Any]:
-    """Combined status across the three Anthropic credential sources we read.
+    """Status for the "Anthropic API Key" catalog entry.
 
-    Hermes resolves Anthropic creds in this order at runtime:
-    1. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow
-    2. ``~/.claude/.credentials.json`` — Claude Code CLI credentials (auto)
-    3. ``ANTHROPIC_TOKEN`` / ``ANTHROPIC_API_KEY`` env vars
-    The dashboard reports the highest-priority source that's actually present.
+    Two sources, in priority order:
+    1. ``~/.hermes/.anthropic_oauth.json`` — Hermes-managed PKCE flow (what
+       this entry's Connect button writes)
+    2. ``ANTHROPIC_API_KEY`` → ``ANTHROPIC_TOKEN`` → ``CLAUDE_CODE_OAUTH_TOKEN``
+       env vars (registry order) — from ``.env``, the shell, or an external
+       secret source like Bitwarden (whose keys are injected into the process
+       env during ``load_hermes_dotenv()``, so the same check covers them)
+
+    Claude Code's ``~/.claude/.credentials.json`` is deliberately NOT read
+    here — it has its own dedicated catalog entry (``claude-code`` →
+    ``_claude_code_only_status``). Reporting it under the API-key entry
+    double-counts the token and shadows a real ANTHROPIC_API_KEY.
     """
     try:
         from agent.anthropic_adapter import (
             read_hermes_oauth_credentials,
-            read_claude_code_credentials,
             _HERMES_OAUTH_FILE,
         )
     except ImportError:
-        read_claude_code_credentials = None  # type: ignore
         read_hermes_oauth_credentials = None  # type: ignore
         _HERMES_OAUTH_FILE = None  # type: ignore
 
@@ -4503,29 +4508,33 @@ def _anthropic_oauth_status() -> Dict[str, Any]:
             "has_refresh_token": bool(hermes_creds.get("refreshToken")),
         }
 
-    cc_creds = None
-    if read_claude_code_credentials:
-        try:
-            cc_creds = read_claude_code_credentials()
-        except Exception:
-            cc_creds = None
-    if cc_creds and cc_creds.get("accessToken"):
-        return {
-            "logged_in": True,
-            "source": "claude_code",
-            "source_label": "Claude Code (~/.claude/.credentials.json)",
-            "token_preview": _truncate_token(cc_creds.get("accessToken")),
-            "expires_at": cc_creds.get("expiresAt"),
-            "has_refresh_token": bool(cc_creds.get("refreshToken")),
-        }
+    # Env-var / secret-source path. ``get_env_value`` checks the process
+    # environment first (where Bitwarden-sourced secrets land) then .env.
+    env_var_order: tuple = ("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN")
+    try:
+        from hermes_cli.auth import PROVIDER_REGISTRY
+        env_var_order = PROVIDER_REGISTRY["anthropic"].api_key_env_vars
+    except (ImportError, KeyError):
+        pass
+    try:
+        from hermes_cli.config import get_env_value
+    except ImportError:
+        get_env_value = None  # type: ignore
+    try:
+        from hermes_cli.env_loader import format_secret_source_suffix
+    except ImportError:
+        format_secret_source_suffix = None  # type: ignore
 
-    env_token = os.getenv("ANTHROPIC_TOKEN") or os.getenv("CLAUDE_CODE_OAUTH_TOKEN")
-    if env_token:
+    for var in env_var_order:
+        value = (get_env_value(var) if get_env_value else None) or os.getenv(var)
+        if not value:
+            continue
+        suffix = format_secret_source_suffix(var) if format_secret_source_suffix else ""
         return {
             "logged_in": True,
             "source": "env_var",
-            "source_label": "ANTHROPIC_TOKEN environment variable",
-            "token_preview": _truncate_token(env_token),
+            "source_label": f"{var}{suffix}",
+            "token_preview": _truncate_token(value),
             "expires_at": None,
             "has_refresh_token": False,
         }

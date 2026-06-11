@@ -1,12 +1,11 @@
 import { useStore } from '@nanostores/react'
 
 import { Codicon } from '@/components/ui/codicon'
-import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { cn } from '@/lib/utils'
 import { $remoteDevices, $remoteSessions, type RemoteDevice } from '@/store/remote-sessions'
 
-import { SidebarPanelLabel } from '../../shell/sidebar-label'
+import { SidebarSectionHeader } from './section-header'
 
 interface SidebarRemoteSessionsSectionProps {
   label: string
@@ -58,25 +57,13 @@ export function SidebarRemoteSessionsSection({
 
   return (
     <SidebarGroup className="shrink-0 p-0">
-      <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
-        <button
-          className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
-          onClick={onToggle}
-          type="button"
-        >
-          <SidebarPanelLabel>{label}</SidebarPanelLabel>
-          <span className="text-[0.625rem] leading-none text-(--ui-text-quaternary)">{remotes.length}</span>
-          <DisclosureCaret
-            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
-            open={open}
-          />
-        </button>
-      </div>
+      <SidebarSectionHeader label={label} meta={String(remotes.length)} onToggle={onToggle} open={open} />
       {open && (
         <SidebarGroupContent>
           <div className="grid gap-px">
             {remotes.map(remote => {
               const active = remote.status === 'working' || remote.status === 'busy'
+
               return (
                 <button
                   className="group grid min-h-[2.375rem] w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-1.5 rounded-md bg-transparent py-1 pl-2 pr-2 text-left transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background)"
@@ -111,6 +98,7 @@ export function SidebarRemoteSessionsSection({
             })}
             {devices.map(device => {
               const target = deviceLabel(device)
+
               return (
                 <button
                   className="group grid w-full cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-center gap-1.5 rounded-md bg-transparent py-1 pl-2 pr-2 text-left text-(--ui-text-tertiary) transition-colors duration-100 ease-out hover:bg-(--ui-row-hover-background) hover:text-foreground"

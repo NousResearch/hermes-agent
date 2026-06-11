@@ -12,9 +12,9 @@ import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
 import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
-import { SidebarPanelLabel } from '../../shell/sidebar-label'
 
 import { SidebarLoadMoreRow } from './load-more-row'
+import { SidebarSectionHeader } from './section-header'
 
 const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused'])
 
@@ -153,20 +153,7 @@ export function SidebarCronJobsSection({
 
   return (
     <SidebarGroup className="shrink-0 p-0 pb-1">
-      <div className="group/section flex shrink-0 items-center justify-between pb-1 pt-1.5">
-        <button
-          className="group/section-label flex w-fit items-center gap-1 bg-transparent text-left leading-none"
-          onClick={onToggle}
-          type="button"
-        >
-          <SidebarPanelLabel>{label}</SidebarPanelLabel>
-          <span className="text-[0.6875rem] font-medium text-(--ui-text-quaternary)">{countLabel}</span>
-          <DisclosureCaret
-            className="text-(--ui-text-tertiary) opacity-0 transition group-hover/section-label:opacity-100"
-            open={open}
-          />
-        </button>
-      </div>
+      <SidebarSectionHeader label={label} meta={countLabel} onToggle={onToggle} open={open} />
       {open && (
         <SidebarGroupContent className="flex max-h-72 flex-col gap-px overflow-y-auto overscroll-contain pb-1.75 compact:max-h-none compact:overflow-visible">
           {shown.map(job => (
@@ -254,9 +241,11 @@ function CronJobSidebarRow({
             open={expanded}
           />
         </button>
-        {/* Trailing cluster: countdown by default, quick actions on hover. */}
-        <div className="flex items-center gap-0.5 justify-self-end pr-1">
-          <span className="text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums group-hover/cron:hidden">
+        {/* Trailing cluster: countdown by default, quick actions on hover.
+            pr-1.5 + the timestamp type ramp match the session rows' age column
+            so the right rail reads as one line down the sidebar. */}
+        <div className="flex items-center gap-0.5 justify-self-end pr-1.5">
+          <span className="text-[0.625rem] leading-none text-(--ui-text-tertiary) tabular-nums group-hover/cron:hidden">
             {meta}
           </span>
           <div className="hidden items-center gap-0.5 group-hover/cron:flex">

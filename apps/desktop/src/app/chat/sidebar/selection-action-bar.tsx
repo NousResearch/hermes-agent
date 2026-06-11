@@ -142,27 +142,32 @@ export function SelectionActionBar({
         aria-label={label}
         className={
           destructive
-            ? 'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-destructive'
-            : 'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
+            ? 'size-5 text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-destructive'
+            : 'size-5 text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
         }
         disabled={pending !== null}
         onClick={onClick}
         size="icon-xs"
         variant="ghost"
       >
-        <Codicon
-          name={pending === action ? 'loading' : icon}
-          size="0.8125rem"
-          spinning={pending === action}
-        />
+        <Codicon name={pending === action ? 'loading' : icon} size="0.8125rem" spinning={pending === action} />
       </Button>
     </Tip>
   )
 
   return (
-    <div className="flex shrink-0 items-center gap-0.5 pb-1 pt-1.5" data-selection-bar>
-      <span className="min-w-0 flex-1 truncate text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-secondary)">
-        {s.selectedCount(count)}
+    // Same geometry contract as SidebarSectionHeader (pl-2 + w-3.5 slot +
+    // gap-1.5 lead, min-h-[1.875rem], pr-0.5 trailing) so swapping the header
+    // for this bar moves nothing: the count sits on the section-label edge and
+    // the verbs land where the header actions were.
+    <div className="flex min-h-[1.875rem] shrink-0 items-center gap-0.5 pb-1 pr-0.5 pt-1.5" data-selection-bar>
+      <span className="flex min-w-0 flex-1 items-center gap-1.5 pl-2">
+        <span aria-hidden="true" className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-secondary)">
+          <Codicon name="check" size="0.75rem" />
+        </span>
+        <span className="min-w-0 truncate text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-secondary)">
+          {s.selectedCount(count)}
+        </span>
       </span>
       {!isArchivedSection &&
         actionButton(isPinnedSection ? s.unpin : s.pin, isPinnedSection ? 'pinned' : 'pin', togglePins, 'pin')}
@@ -172,7 +177,7 @@ export function SelectionActionBar({
       <Tip label={s.clearSelection}>
         <Button
           aria-label={s.clearSelection}
-          className="text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
+          className="size-5 text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground"
           disabled={pending !== null}
           onClick={() => clearSidebarSelection()}
           size="icon-xs"

@@ -33,6 +33,7 @@ import type {
 import { useModalBehavior } from "@/hooks/useModalBehavior";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
+import { PageShell } from "@/components/PageShell";
 
 // State → badge mapping. The backend emits a small, fixed vocabulary plus
 // whatever the live gateway runtime reports (connected/disconnected/fatal).
@@ -221,7 +222,8 @@ export default function ChannelsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <PageShell title="Channels">
+      <div className="flex flex-col gap-6">
       <Toast toast={toast} />
 
       {/* Restart banner */}
@@ -456,7 +458,8 @@ export default function ChannelsPage() {
           );
         })}
       </div>
-    </div>
+      </div>
+    </PageShell>
   );
 }
 

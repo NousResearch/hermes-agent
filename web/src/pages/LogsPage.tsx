@@ -17,6 +17,7 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { PageShell } from "@/components/PageShell";
 
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
@@ -154,7 +155,8 @@ export default function LogsPage() {
   }, [autoRefresh, fetchLogs]);
 
   return (
-    <div className="flex min-w-0 max-w-full flex-col gap-4">
+    <PageShell title={t.logs.title}>
+      <div className="flex min-w-0 max-w-full flex-col gap-6">
       <PluginSlot name="logs:top" />
       <div
         role="toolbar"
@@ -241,6 +243,7 @@ export default function LogsPage() {
         </CardContent>
       </Card>
       <PluginSlot name="logs:bottom" />
-    </div>
+      </div>
+    </PageShell>
   );
 }

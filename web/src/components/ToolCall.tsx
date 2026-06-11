@@ -1,4 +1,3 @@
-import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import {
   AlertCircle,
   Check,
@@ -38,13 +37,13 @@ export interface ToolEntry {
 
 const STATUS_TONE: Record<ToolEntry["status"], string> = {
   running: "border-primary/40 bg-primary/[0.04]",
-  done: "border-border bg-muted/20",
-  error: "border-destructive/50 bg-destructive/[0.04]",
+  done: "border-border/30 bg-muted/10",
+  error: "border-destructive/40 bg-destructive/[0.04]",
 };
 
 const BULLET_TONE: Record<ToolEntry["status"], string> = {
   running: "text-primary",
-  done: "text-primary/80",
+  done: "text-primary/70",
   error: "text-destructive",
 };
 
@@ -52,9 +51,6 @@ const TICK_MS = 500;
 
 export function ToolCall({ tool }: { tool: ToolEntry }) {
   // `open` is derived: errors default-expanded, everything else collapsed.
-  // `null` means "follow the default"; any explicit bool is the user's override.
-  // This lets a running tool flip to expanded automatically when it errors,
-  // without mirroring state in an effect.
   const [userOverride, setUserOverride] = useState<boolean | null>(null);
   const open = userOverride ?? tool.status === "error";
 
@@ -66,9 +62,6 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
     return () => window.clearInterval(id);
   }, [tool.status]);
 
-  // Historical tools (hydrated from session.resume) signal missing timestamps
-  // with `startedAt === 0`; we hide the elapsed badge for those rather than
-  // rendering a misleading "0ms".
   const hasTimestamps = tool.startedAt > 0;
   const elapsed = hasTimestamps
     ? fmtElapsed((tool.completedAt ?? now) - tool.startedAt)
@@ -86,13 +79,13 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
 
   return (
     <div
-      className={`rounded-md border overflow-hidden ${STATUS_TONE[tool.status]}`}
+      className={`rounded-lg border overflow-hidden transition-colors ${STATUS_TONE[tool.status]}`}
     >
-      <ListItem
+      <button
         onClick={() => setUserOverride(!open)}
         disabled={!hasBody}
         aria-expanded={open}
-        className="px-2.5 py-1.5 text-xs hover:bg-foreground/2 disabled:cursor-default"
+        className="flex w-full items-center gap-2 px-3 py-1.5 text-xs hover:bg-foreground/5 disabled:cursor-default transition-colors"
       >
         {hasBody ? (
           <Chevron className="h-3 w-3 shrink-0 text-muted-foreground" />
@@ -104,13 +97,15 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
 
         <span className="font-mono font-medium shrink-0">{tool.name}</span>
 
-        <span className="font-mono text-text-secondary truncate min-w-0 flex-1">
-          {tool.context ?? ""}
-        </span>
+        {tool.context && (
+          <span className="font-mono text-text-secondary truncate min-w-0 flex-1">
+            {tool.context}
+          </span>
+        )}
 
         {tool.status === "running" && (
           <span
-            className="inline-block h-2 w-2 rounded-full bg-primary animate-pulse shrink-0"
+            className="inline-block h-1.5 w-1.5 rounded-full bg-primary animate-pulse shrink-0"
             title="running"
           />
         )}
@@ -122,7 +117,7 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
         )}
         {tool.status === "done" && (
           <Check
-            className="h-3 w-3 shrink-0 text-primary/80"
+            className="h-3 w-3 shrink-0 text-primary/70"
             aria-label="done"
           />
         )}
@@ -132,16 +127,16 @@ export function ToolCall({ tool }: { tool: ToolEntry }) {
             {elapsed}
           </span>
         )}
-      </ListItem>
+      </button>
 
       {open && hasBody && (
-        <div className="border-t border-border/60 px-3 py-2 space-y-2 text-xs font-mono">
+        <div className="border-t border-border/30 px-3 py-2.5 space-y-2 text-xs font-mono">
           {tool.context && <Section label="context">{tool.context}</Section>}
 
           {tool.preview && tool.status === "running" && (
             <Section label="streaming">
               {tool.preview}
-              <span className="inline-block w-1.5 h-3 align-middle bg-foreground/40 ml-0.5 animate-pulse" />
+              <span className="inline-block w-1 h-2.5 align-middle bg-foreground/40 ml-0.5 animate-pulse" />
             </Section>
           )}
 
@@ -186,7 +181,7 @@ function Section({
   return (
     <div className="flex gap-3">
       <span
-        className={`text-display font-mondwest tracking-wider text-xs shrink-0 w-20 pt-0.5 ${
+        className={`text-xs font-medium tracking-wide shrink-0 w-16 pt-0.5 ${
           tone === "error" ? "text-destructive" : "text-text-tertiary"
         }`}
       >

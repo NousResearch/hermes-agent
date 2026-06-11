@@ -919,15 +919,23 @@ export const api = {
       body: JSON.stringify({ provider }),
     }),
   resetMemory: (target: "all" | "memory" | "user") =>
-    fetchJSON<{ ok: boolean; deleted: string[] }>("/api/memory/reset", {
+    fetchJSON<{ ok: boolean; deleted: string[] }>(`/api/memory/reset`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ target }),
     }),
+  getMemoryContent: () =>
+    fetchJSON<{ memory: string; user: string }>("/api/memory/content"),
+  putMemoryContent: (data: { memory?: string; user?: string }) =>
+    fetchJSON<{ ok: boolean; written: string[] }>("/api/memory/content", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    }),
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
   startGateway: () =>
-    fetchJSON<ActionResponse>("/api/gateway/start", { method: "POST" }),
+    fetchJSON<ActionResponse>(`/api/gateway/start`, { method: "POST" }),
   stopGateway: () =>
     fetchJSON<ActionResponse>("/api/gateway/stop", { method: "POST" }),
 

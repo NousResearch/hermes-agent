@@ -32,7 +32,11 @@
     "react-router-dom": "^7.17.0",
     "tailwind-merge": "^3.5.0",
     "tailwindcss": "^4.2.1",
-    "unicode-animations": "^1.0.3"
+    "unicode-animations": "^1.0.3",
+    "@nanostores/react": "^1.1.0",
+    "@tailwindcss/typography": "^0.5.19",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

@@ -26,12 +26,13 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, LayoutList, PanelRight, Terminal as TerminalIcon, X, Brain } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
+import { RichChatPanel } from "@/components/RichChatPanel";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -158,6 +159,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       ? window.matchMedia("(max-width: 1023px)").matches
       : false,
   );
+  // View mode for the terminal pane: xterm.js host or rich markdown panel.
+  const [viewMode, setViewMode] = useState<"terminal" | "rich">("terminal");
+  // Memory inspector overlay (rich mode only).
+  const [memoryOpen, setMemoryOpen] = useState(false);
 
   const { theme } = useTheme();
   const terminalBg = theme.terminalBackground ?? "#000000";
@@ -174,6 +179,37 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
   const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  // Track the current PTY session ID so RichChatPanel can show subagent children.
+  // The PTY session is the root TUI session (source=tui, no parent). We fetch
+  // the latest few sessions and pick the most recent root TUI session — not
+  // just sessions[0], which could be a child/subagent session.
+  const [chatSessionId, setChatSessionId] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const res = await api.getSessions(20, 0);
+        const sessions = res.sessions ?? [];
+        // Find the most recent root TUI session (the dashboard's PTY child)
+        const rootTui = sessions.find(
+          (s) =>
+            (s.source === "tui" || s.source === "cli") &&
+            !s.parent_session_id,
+        );
+        if (rootTui && !cancelled) {
+          setChatSessionId(rootTui.id);
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    void poll();
+    const id = setInterval(poll, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, []);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -769,6 +805,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     term.options.theme = { ...TERMINAL_THEME_STATIC, background: terminalBg };
   }, [terminalBg]);
 
+  // Re-fit terminal when switching back from rich mode.
+  // The host div is always in DOM but hidden via CSS; switching back to
+  // terminal mode makes it visible again, so we need to refit the grid.
+  useEffect(() => {
+    if (viewMode !== "terminal") return;
+    const id = window.setTimeout(() => {
+      fitRef.current?.fit();
+      termRef.current?.focus();
+    }, 50);
+    return () => window.clearTimeout(id);
+  }, [viewMode]);
+
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
   //   row split — terminal pane (flex-1) + sidebar (fixed width, lg+)
@@ -873,42 +921,117 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         <div
           className={cn(
             "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
+            viewMode === "terminal" && "p-2 sm:p-3",
           )}
-          style={{
-            backgroundColor: terminalBg,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
-          }}
+          style={
+            viewMode === "terminal"
+              ? {
+                  backgroundColor: terminalBg,
+                  boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+                }
+              : undefined
+          }
         >
+          {/* Toolbar — view toggle + copy button (terminal only) */}
+          <div className="absolute right-2 top-2 z-10 flex items-center gap-1.5">
+            <Button
+              ghost
+              size="sm"
+              onClick={() =>
+                setViewMode((v) => (v === "terminal" ? "rich" : "terminal"))
+              }
+              className={cn(
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20 backdrop-blur-sm",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+                "px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
+              )}
+              style={
+                viewMode === "terminal"
+                  ? { color: TERMINAL_THEME_STATIC.foreground }
+                  : undefined
+              }
+            >
+              <span className="inline-flex items-center gap-1.5">
+                {viewMode === "terminal" ? (
+                  <LayoutList className="h-3 w-3 shrink-0" />
+                ) : (
+                  <TerminalIcon className="h-3 w-3 shrink-0" />
+                )}
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  {viewMode === "terminal" ? "rich" : "terminal"}
+                </span>
+              </span>
+            </Button>
+
+            {viewMode === "terminal" && (
+              <Button
+                ghost
+                onClick={handleCopyLast}
+                title="Copy last assistant response as raw markdown"
+                aria-label="Copy last assistant response"
+                className={cn(
+                  "normal-case tracking-normal font-normal",
+                  "rounded border border-current/30",
+                  "bg-black/20 backdrop-blur-sm",
+                  "opacity-70 hover:opacity-100 hover:border-current/60",
+                  "transition-opacity duration-150",
+                  "px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
+                )}
+                style={{ color: TERMINAL_THEME_STATIC.foreground }}
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Copy className="h-3 w-3 shrink-0" />
+                  <span className="hidden min-[400px]:inline tracking-wide">
+                    {copyState === "copied" ? "copied" : "copy last response"}
+                  </span>
+                </span>
+              </Button>
+            )}
+
+            {viewMode === "rich" && (
+              <Button
+                ghost
+                size="sm"
+                onClick={() => setMemoryOpen((v) => !v)}
+                className={cn(
+                  "normal-case tracking-normal font-normal",
+                  "rounded border",
+                  memoryOpen ? "border-primary/60 text-primary" : "border-border text-text-secondary hover:text-foreground hover:border-border",
+                  "bg-background/80 backdrop-blur-sm",
+                  "px-2 py-1 text-xs sm:px-2.5 sm:py-1.5",
+                )}
+                title="Memory Inspector"
+                aria-label="Memory Inspector"
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  <Brain className="h-3 w-3 shrink-0" />
+                  <span className="hidden min-[400px]:inline tracking-wide">Memory</span>
+                </span>
+              </Button>
+            )}
+          </div>
+
+          {/* Terminal host — always in DOM, hidden in rich mode */}
           <div
             ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            className={cn(
+              "hermes-chat-xterm-host min-h-0 min-w-0 flex-1",
+              viewMode !== "terminal" && "hidden",
+            )}
           />
 
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
-            className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
-            )}
-            style={{ color: TERMINAL_THEME_STATIC.foreground }}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
-              </span>
-            </span>
-          </Button>
+          {/* Rich chat panel (visible only in rich mode) */}
+          <RichChatPanel
+            channel={channel}
+            ptyWs={wsRef.current}
+            sessionId={chatSessionId}
+            memoryOpen={memoryOpen}
+            onToggleMemory={() => setMemoryOpen((v) => !v)}
+            className={cn("flex min-h-0 min-w-0 flex-1", viewMode !== "rich" && "hidden")}
+          />
         </div>
 
         {!narrow && (

@@ -34,6 +34,12 @@ export type GatewayEventName =
   | "sudo.request"
   | "secret.request"
   | "background.complete"
+  | "subagent.spawn_requested"
+  | "subagent.start"
+  | "subagent.thinking"
+  | "subagent.tool"
+  | "subagent.progress"
+  | "subagent.complete"
   | "error"
   | "skin.changed"
   | (string & {});
@@ -242,6 +248,53 @@ export class GatewayClient {
         reject(e instanceof Error ? e : new Error(String(e)));
       }
     });
+  }
+
+  /** Interrupt a running subagent. Returns { found, subagent_id }. */
+  async interruptSubagent(
+    subagentId: string,
+  ): Promise<{ found: boolean; subagent_id: string }> {
+    return this.request("subagent.interrupt", { subagent_id: subagentId });
+  }
+
+  /** Save current subagent tree to disk. */
+  async saveSpawnTree(params: {
+    session_id: string;
+    started_at: number;
+    finished_at: number;
+    label: string;
+    subagents: object[];
+  }): Promise<{ path: string }> {
+    return this.request("spawn_tree.save", params);
+  }
+
+  /** List saved spawn trees for a session. */
+  async listSpawnTrees(
+    sessionId: string,
+  ): Promise<{
+    entries: Array<{
+      path: string;
+      session_id: string;
+      started_at: number;
+      finished_at: number;
+      label: string;
+      count: number;
+    }>;
+  }> {
+    return this.request("spawn_tree.list", { session_id: sessionId });
+  }
+
+  /** Load a saved spawn tree. */
+  async loadSpawnTree(
+    path: string,
+  ): Promise<{
+    session_id: string;
+    started_at: number;
+    finished_at: number;
+    label: string;
+    subagents: object[];
+  }> {
+    return this.request("spawn_tree.load", { path });
   }
 }
 

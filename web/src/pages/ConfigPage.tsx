@@ -51,6 +51,7 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
+import { PageShell } from "@/components/PageShell";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -412,7 +413,8 @@ export default function ConfigPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <PageShell title="Config">
+      <div className="flex flex-col gap-6">
       <PluginSlot name="config:top" />
       <Toast toast={toast} />
 
@@ -655,6 +657,7 @@ export default function ConfigPage() {
         destructive
         confirmLabel={t.config.resetDefaults}
       />
-    </div>
+      </div>
+    </PageShell>
   );
 }

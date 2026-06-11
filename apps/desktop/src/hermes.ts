@@ -134,7 +134,7 @@ export function setApiRequestProfile(profile: null | string): void {
   _apiProfile = profile || null
 }
 
-function profileScoped(): { profile?: string } {
+export function profileScoped(): { profile?: string } {
   return _apiProfile ? { profile: _apiProfile } : {}
 }
 

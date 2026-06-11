@@ -951,7 +951,7 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "exclusive_bot_mentions" in platform_cfg:
                     bridged["exclusive_bot_mentions"] = platform_cfg["exclusive_bot_mentions"]
-                if plat == Platform.TELEGRAM and "observe_unmentioned_group_messages" in platform_cfg:
+                if plat in {Platform.TELEGRAM, Platform.WHATSAPP} and "observe_unmentioned_group_messages" in platform_cfg:
                     bridged["observe_unmentioned_group_messages"] = platform_cfg["observe_unmentioned_group_messages"]
                 if "dm_policy" in platform_cfg:
                     bridged["dm_policy"] = platform_cfg["dm_policy"]
@@ -1158,6 +1158,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(whatsapp_cfg, dict):
                 if "require_mention" in whatsapp_cfg and not os.getenv("WHATSAPP_REQUIRE_MENTION"):
                     os.environ["WHATSAPP_REQUIRE_MENTION"] = str(whatsapp_cfg["require_mention"]).lower()
+                if "observe_unmentioned_group_messages" in whatsapp_cfg and not os.getenv("WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES"):
+                    os.environ["WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] = str(whatsapp_cfg["observe_unmentioned_group_messages"]).lower()
                 if "mention_patterns" in whatsapp_cfg and not os.getenv("WHATSAPP_MENTION_PATTERNS"):
                     os.environ["WHATSAPP_MENTION_PATTERNS"] = json.dumps(whatsapp_cfg["mention_patterns"])
                 frc = whatsapp_cfg.get("free_response_chats")

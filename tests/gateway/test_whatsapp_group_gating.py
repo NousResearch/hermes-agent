@@ -1,11 +1,13 @@
 import json
+import asyncio
 from unittest.mock import AsyncMock
 
 from gateway.config import Platform, PlatformConfig, load_gateway_config
 
 
 def _make_adapter(require_mention=None, mention_patterns=None, free_response_chats=None,
-                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None):
+                  dm_policy=None, allow_from=None, group_policy=None, group_allow_from=None,
+                  observe_unmentioned_group_messages=None):
     from gateway.platforms.whatsapp import WhatsAppAdapter
 
     extra = {}
@@ -23,6 +25,8 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
         extra["group_policy"] = group_policy
     if group_allow_from is not None:
         extra["group_allow_from"] = group_allow_from
+    if observe_unmentioned_group_messages is not None:
+        extra["observe_unmentioned_group_messages"] = observe_unmentioned_group_messages
 
     adapter = object.__new__(WhatsAppAdapter)
     adapter.platform = Platform.WHATSAPP
@@ -63,6 +67,23 @@ def _dm_message(body="hello", **overrides):
     return data
 
 
+class _FakeSessionEntry:
+    session_id = "whatsapp-group-session"
+
+
+class _FakeSessionStore:
+    def __init__(self):
+        self.sources = []
+        self.messages = []
+
+    def get_or_create_session(self, source):
+        self.sources.append(source)
+        return _FakeSessionEntry()
+
+    def append_to_transcript(self, session_id, message, skip_db=False):
+        self.messages.append((session_id, message, skip_db))
+
+
 # --- Existing tests (unchanged logic, updated helper) ---
 
 def test_group_messages_can_be_opened_via_config():
@@ -90,6 +111,114 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("/status")) is True
 
 
+def test_unmentioned_group_messages_can_be_observed_without_dispatching():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+
+        event = await adapter._build_message_event(
+            _group_message(
+                "side chatter",
+                senderId="6281234567890@s.whatsapp.net",
+                senderName="Alice Example",
+                messageId="msg-42",
+            )
+        )
+
+        assert event is None
+        assert len(store.messages) == 1
+        session_id, message, skip_db = store.messages[0]
+        assert session_id == "whatsapp-group-session"
+        assert skip_db is False
+        assert message["role"] == "user"
+        assert message["content"] == "[Alice Example|6281234567890@s.whatsapp.net]\nside chatter"
+        assert message["observed"] is True
+        assert message["message_id"] == "msg-42"
+        assert store.sources[0].chat_id == "120363001234567890@g.us"
+        assert store.sources[0].chat_type == "group"
+        assert store.sources[0].user_id is None
+        assert store.sources[0].user_name is None
+
+    asyncio.run(_run())
+
+
+def test_observed_group_context_uses_shared_source_for_later_mentions():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            observe_unmentioned_group_messages=True,
+        )
+
+        event = await adapter._build_message_event(
+            _group_message(
+                "@15551230000 what did Alice say?",
+                mentionedIds=["15551230000@s.whatsapp.net"],
+                senderId="6289999999999@s.whatsapp.net",
+                senderName="Bob Example",
+            )
+        )
+
+        assert event is not None
+        assert event.source.chat_id == "120363001234567890@g.us"
+        assert event.source.chat_type == "group"
+        assert event.source.user_id is None
+        assert event.source.user_name is None
+        assert event.text == "[Bob Example|6289999999999@s.whatsapp.net]\nwhat did Alice say?"
+
+    asyncio.run(_run())
+
+
+def test_observe_flag_without_mention_gating_keeps_normal_group_event_source():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=False,
+            observe_unmentioned_group_messages=True,
+        )
+
+        event = await adapter._build_message_event(
+            _group_message(
+                "hello everyone",
+                senderId="6281234567890@s.whatsapp.net",
+                senderName="Alice Example",
+            )
+        )
+
+        assert event is not None
+        assert event.source.user_id == "6281234567890@s.whatsapp.net"
+        assert event.source.user_name == "Alice Example"
+        assert event.text == "hello everyone"
+
+    asyncio.run(_run())
+
+
+def test_observe_flag_keeps_free_response_group_event_source():
+    async def _run():
+        adapter = _make_adapter(
+            require_mention=True,
+            free_response_chats=["120363001234567890@g.us"],
+            observe_unmentioned_group_messages=True,
+        )
+
+        event = await adapter._build_message_event(
+            _group_message(
+                "hello everyone",
+                senderId="6281234567890@s.whatsapp.net",
+                senderName="Alice Example",
+            )
+        )
+
+        assert event is not None
+        assert event.source.user_id == "6281234567890@s.whatsapp.net"
+        assert event.source.user_name == "Alice Example"
+        assert event.text == "hello everyone"
+
+    asyncio.run(_run())
+
+
 def test_regex_mention_patterns_allow_custom_wake_words():
     adapter = _make_adapter(require_mention=True, mention_patterns=[r"^\s*chompy\b"])
 
@@ -111,6 +240,7 @@ def test_config_bridges_whatsapp_group_settings(monkeypatch, tmp_path):
     (hermes_home / "config.yaml").write_text(
         "whatsapp:\n"
         "  require_mention: true\n"
+        "  observe_unmentioned_group_messages: true\n"
         "  mention_patterns:\n"
         "    - \"^\\\\s*chompy\\\\b\"\n",
         encoding="utf-8",
@@ -118,14 +248,17 @@ def test_config_bridges_whatsapp_group_settings(monkeypatch, tmp_path):
 
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
     monkeypatch.delenv("WHATSAPP_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES", raising=False)
     monkeypatch.delenv("WHATSAPP_MENTION_PATTERNS", raising=False)
 
     config = load_gateway_config()
 
     assert config is not None
     assert config.platforms[Platform.WHATSAPP].extra["require_mention"] is True
+    assert config.platforms[Platform.WHATSAPP].extra["observe_unmentioned_group_messages"] is True
     assert config.platforms[Platform.WHATSAPP].extra["mention_patterns"] == [r"^\s*chompy\b"]
     assert __import__("os").environ["WHATSAPP_REQUIRE_MENTION"] == "true"
+    assert __import__("os").environ["WHATSAPP_OBSERVE_UNMENTIONED_GROUP_MESSAGES"] == "true"
     assert json.loads(__import__("os").environ["WHATSAPP_MENTION_PATTERNS"]) == [r"^\s*chompy\b"]
 
 

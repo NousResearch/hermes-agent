@@ -17,9 +17,27 @@ These tests exercise the helper directly on a bare ``AIAgent`` built
 via ``__new__`` so the full ``run_conversation`` machinery isn't needed
 — the method is pure logic and three state arguments.
 """
+from contextlib import contextmanager
 from unittest.mock import MagicMock
+import logging
+import logging.handlers
 
 import pytest
+
+
+@contextmanager
+def _capture_logs(logger_name: str, level: int = logging.DEBUG):
+    """Capture log records from *logger_name* at *level* or above."""
+    lg = logging.getLogger(logger_name)
+    handler = logging.handlers.MemoryHandler(capacity=100)
+    handler.setLevel(level)
+    records: list[logging.LogRecord] = []
+    handler.emit = records.append  # type: ignore[assignment]
+    lg.addHandler(handler)
+    try:
+        yield records
+    finally:
+        lg.removeHandler(handler)
 
 
 def _bare_agent():
@@ -189,6 +207,40 @@ class TestSyncExternalMemoryForTurn:
         )
         # sync_all was attempted.
         agent._memory_manager.sync_all.assert_called_once()
+        # queue_prefetch_all is still attempted (independent failure domain).
+        agent._memory_manager.queue_prefetch_all.assert_called_once()
+
+    def test_sync_exception_logs_warning(self):
+        """sync_all failure must produce a WARNING log so that silent
+        failures are visible at default log level (#44055)."""
+        import logging
+        agent = _bare_agent()
+        agent._memory_manager.sync_all.side_effect = RuntimeError("boom")
+
+        with _capture_logs("run_agent", logging.WARNING) as records:
+            agent._sync_external_memory_for_turn(
+                original_user_message="hi",
+                final_response="hey",
+                interrupted=False,
+            )
+
+        assert any("External memory sync failed" in r.getMessage() for r in records)
+
+    def test_prefetch_exception_logs_warning(self):
+        """queue_prefetch_all failure must produce a WARNING log
+        (#44055)."""
+        import logging
+        agent = _bare_agent()
+        agent._memory_manager.queue_prefetch_all.side_effect = RuntimeError("dead")
+
+        with _capture_logs("run_agent", logging.WARNING) as records:
+            agent._sync_external_memory_for_turn(
+                original_user_message="hi",
+                final_response="hey",
+                interrupted=False,
+            )
+
+        assert any("External memory prefetch queue failed" in r.getMessage() for r in records)
 
     def test_prefetch_exception_is_swallowed(self):
         """Same best-effort contract applies to the prefetch step — a

@@ -36,6 +36,7 @@ import logging
 import os
 import queue
 import threading
+import time
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List
@@ -548,6 +549,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
+        self._last_prefetch_warn = 0.0
         # Single-writer model for retain. sync_turn() enqueues; the writer
         # thread drains sequentially. Avoids spawning ad-hoc threads that
         # can race the interpreter shutdown and emit "cannot schedule new
@@ -1363,7 +1365,12 @@ class HindsightMemoryProvider(MemoryProvider):
                     with self._prefetch_lock:
                         self._prefetch_result = text
             except Exception as e:
-                logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
+                now = time.monotonic()
+                if now - self._last_prefetch_warn > 300:
+                    self._last_prefetch_warn = now
+                    logger.warning("Hindsight prefetch failed: %s", e, exc_info=True)
+                else:
+                    logger.debug("Hindsight prefetch failed: %s", e, exc_info=True)
 
         self._prefetch_thread = threading.Thread(target=_run, daemon=True, name="hindsight-prefetch")
         self._prefetch_thread.start()

@@ -6,14 +6,32 @@ turn counting, tags), and schema completeness.
 """
 
 import json
+import logging
+import logging.handlers
 import os
 import re
 import stat
 import sys
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+
+@contextmanager
+def _capture_logs(logger_name: str, level: int = logging.DEBUG):
+    """Capture log records from *logger_name* at *level* or above."""
+    lg = logging.getLogger(logger_name)
+    handler = logging.handlers.MemoryHandler(capacity=100)
+    handler.setLevel(level)
+    records: list[logging.LogRecord] = []
+    handler.emit = records.append  # type: ignore[assignment]
+    lg.addHandler(handler)
+    try:
+        yield records
+    finally:
+        lg.removeHandler(handler)
 
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
@@ -664,6 +682,50 @@ class TestPrefetch:
         assert call_kwargs["tags"] == ["t1"]
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
+
+    def test_prefetch_failure_logs_warning_on_first_failure(self, provider):
+        """First prefetch failure should log at WARNING level (#44055)."""
+        import logging
+        from unittest.mock import patch as mock_patch
+
+        p = provider
+        p._prefetch_method = "recall"
+        # Make arecall raise to trigger the failure path
+        p._client.arecall = AsyncMock(side_effect=RuntimeError("connection refused"))
+
+        with _capture_logs("plugins.memory.hindsight", logging.WARNING) as records:
+            p.queue_prefetch("test query")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
+
+        assert any("Hindsight prefetch failed" in r.getMessage() for r in records)
+
+    def test_prefetch_failure_rate_limits_warnings(self, provider):
+        """Subsequent prefetch failures within 5 minutes should log at
+        DEBUG, not WARNING (#44055)."""
+        import logging
+
+        p = provider
+        p._prefetch_method = "recall"
+        p._client.arecall = AsyncMock(side_effect=RuntimeError("connection refused"))
+
+        # First failure — WARNING
+        with _capture_logs("plugins.memory.hindsight", logging.WARNING) as records:
+            p.queue_prefetch("query 1")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
+
+        first_warnings = [r for r in records if "Hindsight prefetch failed" in r.getMessage()]
+        assert len(first_warnings) >= 1
+
+        # Second failure immediately after — should NOT produce WARNING
+        with _capture_logs("plugins.memory.hindsight", logging.WARNING) as records:
+            p.queue_prefetch("query 2")
+            if p._prefetch_thread:
+                p._prefetch_thread.join(timeout=5.0)
+
+        second_warnings = [r for r in records if "Hindsight prefetch failed" in r.getMessage()]
+        assert len(second_warnings) == 0, "Rate-limited: no WARNING expected within 5 min"
 
 
 # ---------------------------------------------------------------------------

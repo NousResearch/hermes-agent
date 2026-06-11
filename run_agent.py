@@ -2990,21 +2990,26 @@ class AIAgent:
             return
         if not (self._memory_manager and final_response and original_user_message):
             return
+        sync_kwargs = {"session_id": self.session_id or ""}
+        if messages is not None:
+            sync_kwargs["messages"] = messages
         try:
-            sync_kwargs = {"session_id": self.session_id or ""}
-            if messages is not None:
-                sync_kwargs["messages"] = messages
             self._memory_manager.sync_all(
                 original_user_message,
                 final_response,
                 **sync_kwargs,
             )
+        except Exception as e:
+            logger.warning("External memory sync failed: %s", e)
+            logger.debug("External memory sync failed", exc_info=True)
+        try:
             self._memory_manager.queue_prefetch_all(
                 original_user_message,
                 session_id=self.session_id or "",
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("External memory prefetch queue failed: %s", e)
+            logger.debug("External memory prefetch queue failed", exc_info=True)
 
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.

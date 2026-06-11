@@ -13,31 +13,39 @@ import {
   useState
 } from 'react'
 
-import { hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
+import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
+import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
+import { desktopSlashCommandTakesArgs } from '@/lib/desktop-slash-commands'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
+import { $composerAttachments, clearComposerAttachments, type ComposerAttachment } from '@/store/composer'
 import {
-  $composerAttachments,
-  clearComposerAttachments,
-  type ComposerAttachment
-} from '@/store/composer'
+  browseBackward,
+  browseForward,
+  deriveUserHistory,
+  isBrowsingHistory,
+  resetBrowseState
+} from '@/store/composer-input-history'
 import {
   $queuedPromptsBySession,
   enqueueQueuedPrompt,
+  promoteQueuedPrompt,
   type QueuedPromptEntry,
   removeQueuedPrompt,
   shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
-import { $gatewayState, $messages } from '@/store/session'
+import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { useTheme } from '@/themes'
 
-import { extractDroppedFiles, HERMES_PATHS_MIME } from '../hooks/use-composer-actions'
+import { extractDroppedFiles, HERMES_PATHS_MIME, partitionDroppedFiles } from '../hooks/use-composer-actions'
 
 import { AttachmentList } from './attachments'
 import { ContextMenu } from './context-menu'
@@ -48,6 +56,7 @@ import {
   focusComposerInput,
   markActiveComposer,
   onComposerFocusRequest,
+  onComposerInsertRefsRequest,
   onComposerInsertRequest
 } from './focus'
 import { HelpHint } from './help-hint'
@@ -55,16 +64,21 @@ import { useAtCompletions } from './hooks/use-at-completions'
 import { useSlashCompletions } from './hooks/use-slash-completions'
 import { useVoiceConversation } from './hooks/use-voice-conversation'
 import { useVoiceRecorder } from './hooks/use-voice-recorder'
-import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from './inline-refs'
+import {
+  dragHasAttachments,
+  droppedFileInlineRefs,
+  type InlineRefInput,
+  insertInlineRefsIntoEditor
+} from './inline-refs'
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
-  RICH_INPUT_SLOT
+  RICH_INPUT_SLOT,
+  slashChipElement
 } from './rich-editor'
-import { SkinSlashPopover } from './skin-slash-popover'
 import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -81,30 +95,31 @@ const COMPOSER_SINGLE_LINE_MAX_PX = 36
 const COMPOSER_FADE_BACKGROUND =
   'linear-gradient(to bottom, transparent, color-mix(in srgb, var(--dt-background) 10%, transparent))'
 
-// Resting composer placeholders. New sessions get open-ended starters; an
-// existing chat gets phrasings that read as a continuation of the thread.
-// One is picked at random per session (stable until the session changes).
-const NEW_SESSION_PLACEHOLDERS = [
-  'What are we building?',
-  'Give Hermes a task',
-  "What's on your mind?",
-  'Describe what you need',
-  'What should we tackle?',
-  'Ask anything',
-  'Start with a goal'
-]
-
-const FOLLOW_UP_PLACEHOLDERS = [
-  'Send a follow-up',
-  'Add more context',
-  'Refine the request',
-  "What's next?",
-  'Keep it going',
-  'Push it further',
-  'Adjust or continue'
-]
-
 const pickPlaceholder = (pool: readonly string[]) => pool[Math.floor(Math.random() * pool.length)]
+
+/** Completion items can carry an `action` (set in use-slash-completions) that
+ *  runs a side effect on pick instead of inserting a chip — e.g. the session
+ *  picker's "Browse all…" entry opens the overlay. Table-driven so new action
+ *  items are a registry row, not a composer branch. */
+const COMPLETION_ACTIONS: Record<string, () => void> = {
+  'session-picker': () => setSessionPickerOpen(true)
+}
+
+/** Map a picked `/` completion to its pill accent. Driven by the completion
+ *  group set in use-slash-completions (Skills / Themes / Commands|Options). */
+function slashChipKindForItem(item: Unstable_TriggerItem): SlashChipKind {
+  const group = (item.metadata as { group?: unknown } | undefined)?.group
+
+  if (group === 'Skills') {
+    return 'skill'
+  }
+
+  if (group === 'Themes') {
+    return 'theme'
+  }
+
+  return 'command'
+}
 
 interface QueueEditState {
   attachments: ComposerAttachment[]
@@ -134,6 +149,7 @@ export function ChatBar({
   onPickFolders,
   onPickImages,
   onRemoveAttachment,
+  onSteer,
   onSubmit,
   onTranscribeAudio
 }: ChatBarProps) {
@@ -142,6 +158,7 @@ export function ChatBar({
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const scrolledUp = useStore($threadScrolledUp)
+  const sessionMessages = useStore($messages)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   const queuedPrompts = useMemo(
@@ -155,12 +172,6 @@ export function ChatBar({
   const draftRef = useRef(draft)
   const previousBusyRef = useRef(busy)
   const drainingQueueRef = useRef(false)
-  // Set when the user explicitly interrupts the running turn via the Stop
-  // button (busy + empty composer). It suppresses the next busy→false
-  // auto-drain so an explicit Stop actually halts instead of immediately
-  // firing the head of the queue. The queue is preserved; the user resumes
-  // it deliberately via Cmd/Ctrl+K, Enter, or the per-row "send now" arrow.
-  const userInterruptedRef = useRef(false)
   const urlInputRef = useRef<HTMLInputElement | null>(null)
 
   const [urlOpen, setUrlOpen] = useState(false)
@@ -172,22 +183,33 @@ export function ChatBar({
   const [queueEdit, setQueueEdit] = useState<QueueEditState | null>(null)
   const [focusRequestId, setFocusRequestId] = useState(0)
   const dragDepthRef = useRef(0)
-  const composingRef = useRef(false)  // true during IME composition (CJK input)
+  const composingRef = useRef(false) // true during IME composition (CJK input)
   const lastSpokenIdRef = useRef<string | null>(null)
 
   const narrow = useMediaQuery('(max-width: 30rem)')
 
+  const { availableThemes, themeName } = useTheme()
   const at = useAtCompletions({ gateway: gateway ?? null, sessionId: sessionId ?? null, cwd: cwd ?? null })
-  const slash = useSlashCompletions({ gateway: gateway ?? null })
+  const slash = useSlashCompletions({ activeSkin: themeName, gateway: gateway ?? null, skinThemes: availableThemes })
 
   const stacked = expanded || narrow || tight
-  const hasComposerPayload = draft.trim().length > 0 || attachments.length > 0
+  const trimmedDraft = draft.trim()
+  const hasComposerPayload = trimmedDraft.length > 0 || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   const editingQueuedPrompt = queueEdit ? (queuedPrompts.find(entry => entry.id === queueEdit.entryId) ?? null) : null
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
+
+  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
+  // into a tool result) and never for a slash command (those execute inline).
+  const canSteer =
+    busy && !!onSteer && attachments.length === 0 && trimmedDraft.length > 0 && !SLASH_COMMAND_RE.test(trimmedDraft)
+
   const showHelpHint = draft === '?'
 
+  const { t } = useI18n()
   const gatewayState = useStore($gatewayState)
+  const newSessionPlaceholders = t.composer.newSessionPlaceholders
+  const followUpPlaceholders = t.composer.followUpPlaceholders
 
   // Resting placeholder: a starter for brand-new sessions, a continuation for
   // existing ones. Picked once and only re-rolled when we genuinely move to a
@@ -195,7 +217,7 @@ export function ChatBar({
   // started session (null → id, on the first send) is treated as the same
   // conversation so the placeholder doesn't visibly flip mid-stream.
   const [restingPlaceholder, setRestingPlaceholder] = useState(() =>
-    pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS)
+    pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders)
   )
 
   const prevSessionIdRef = useRef(sessionId)
@@ -214,16 +236,17 @@ export function ChatBar({
       return
     }
 
-    setRestingPlaceholder(pickPlaceholder(sessionId ? FOLLOW_UP_PLACEHOLDERS : NEW_SESSION_PLACEHOLDERS))
-  }, [sessionId])
+    resetBrowseState(prev)
+    setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
+  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
 
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to
   // restore (e.g. after the Mac slept) so the stuck state reads as recoverable.
   const placeholder = disabled
     ? gatewayState === 'closed' || gatewayState === 'error'
-      ? 'Reconnecting to Hermes…'
-      : 'Starting Hermes...'
+      ? t.composer.placeholderReconnecting
+      : t.composer.placeholderStarting
     : restingPlaceholder
 
   const focusInput = useCallback(() => {
@@ -435,7 +458,7 @@ export function ChatBar({
     requestMainFocus()
   }
 
-  const insertInlineRefs = (refs: string[]) => {
+  const insertInlineRefs = (refs: InlineRefInput[]) => {
     const editor = editorRef.current
 
     if (!editor) {
@@ -455,11 +478,18 @@ export function ChatBar({
     return true
   }
 
-  const selectSkinSlashCommand = (command: string) => {
-    draftRef.current = command
-    aui.composer().setText(command)
-    requestMainFocus()
-  }
+  // Latest-closure ref so the (once-only) subscription always calls the current
+  // insertInlineRefs without re-subscribing every render.
+  const insertInlineRefsRef = useRef(insertInlineRefs)
+  insertInlineRefsRef.current = insertInlineRefs
+
+  useEffect(() => {
+    return onComposerInsertRefsRequest(({ refs, target }) => {
+      if (target === 'main') {
+        insertInlineRefsRef.current(refs)
+      }
+    })
+  }, [])
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
     const imageBlobs = extractClipboardImageBlobs(event.clipboardData)
@@ -552,16 +582,10 @@ export function ChatBar({
     }
   }, [trigger])
 
-  const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
-    // During IME composition the DOM contains uncommitted preedit text
-    // mixed with real content.  Skip state writes — compositionend will
-    // deliver the finalized text via a clean input event.
-    if (composingRef.current) {
-      return
-    }
-
-    const editor = event.currentTarget
-
+  // Pull the live contentEditable text into draftRef + the AUI composer state
+  // (which drives `hasComposerPayload` → the send button). Shared by the input
+  // and compositionend paths so committed IME text reaches state through either.
+  const flushEditorToDraft = (editor: HTMLDivElement) => {
     if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
       editor.replaceChildren()
     }
@@ -574,6 +598,17 @@ export function ChatBar({
     }
 
     window.setTimeout(refreshTrigger, 0)
+  }
+
+  const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
+    // During IME composition the DOM contains uncommitted preedit text
+    // mixed with real content.  Skip state writes — compositionend flushes
+    // the finalized text (see onCompositionEnd).
+    if (composingRef.current) {
+      return
+    }
+
+    flushEditorToDraft(event.currentTarget)
   }
 
   const triggerAdapter: Unstable_TriggerAdapter | null =
@@ -608,16 +643,50 @@ export function ChatBar({
       return
     }
 
+    // Action items (e.g. "Browse all sessions…") run a side effect instead of
+    // inserting a chip: strip the typed trigger token, then fire the action.
+    const completionAction = (item.metadata as { action?: unknown } | undefined)?.action
+    const runAction = typeof completionAction === 'string' ? COMPLETION_ACTIONS[completionAction] : undefined
+
+    if (runAction) {
+      const current = composerPlainText(editor)
+      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+
+      renderComposerContents(editor, prefix)
+      placeCaretEnd(editor)
+      draftRef.current = composerPlainText(editor)
+      aui.composer().setText(draftRef.current)
+      closeTrigger()
+      runAction()
+      requestMainFocus()
+
+      return
+    }
+
     const serialized = hermesDirectiveFormatter.serialize(item)
     const starter = serialized.endsWith(':')
+
+    // Picking a bare arg-taking command (e.g. `/personality`) shouldn't commit
+    // it — expand to its options step so the popover shows the inline list, just
+    // as typing `/personality ` by hand would. A serialized value with a space is
+    // already an arg pick (`/personality alice`), so it commits normally.
+    const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
+
+    const expandsToArgs =
+      trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
+    // No pill while expanding — the bare command stays plain text until an arg
+    // is picked, at which point a single pill is emitted for the full command.
+    const slashKind = !expandsToArgs && trigger.kind === '/' ? slashChipKindForItem(item) : null
+    const keepTriggerOpen = starter || expandsToArgs
 
     const finish = () => {
       draftRef.current = composerPlainText(editor)
       aui.composer().setText(draftRef.current)
       requestMainFocus()
-      starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
+      keepTriggerOpen ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
     }
 
     const sel = window.getSelection()
@@ -627,7 +696,20 @@ export function ChatBar({
 
     if (!sel || !range || node?.nodeType !== Node.TEXT_NODE || offset < trigger.tokenLength) {
       const current = composerPlainText(editor)
-      renderComposerContents(editor, `${current.slice(0, Math.max(0, current.length - trigger.tokenLength))}${text}`)
+      const prefix = current.slice(0, Math.max(0, current.length - trigger.tokenLength))
+
+      if (slashKind) {
+        // Two-step arg picks (e.g. `/handoff` pill already inserted, now picking
+        // the platform) land here because the caret sits past a contenteditable
+        // chip. Rebuild the prefix and re-emit a single pill for the full command.
+        renderComposerContents(editor, prefix)
+        editor.append(slashChipElement(serialized, slashKind), document.createTextNode(' '))
+        placeCaretEnd(editor)
+
+        return finish()
+      }
+
+      renderComposerContents(editor, `${prefix}${text}`)
       placeCaretEnd(editor)
 
       return finish()
@@ -638,8 +720,13 @@ export function ChatBar({
     replaceRange.setEnd(node, offset)
     replaceRange.deleteContents()
 
-    if (directive) {
-      const chip = refChipElement(directive[1], directive[2])
+    const chip = slashKind
+      ? slashChipElement(serialized, slashKind)
+      : directive
+        ? refChipElement(directive[1], directive[2])
+        : null
+
+    if (chip) {
       const space = document.createTextNode(' ')
       const fragment = document.createDocumentFragment()
       fragment.append(chip, space)
@@ -718,16 +805,134 @@ export function ChatBar({
       }
     }
 
+    // ArrowUp/ArrowDown navigate, in priority order: the queue (edit entries in
+    // place) then sent-message history. The history ring is derived from live
+    // session messages each press — single source of truth, no mirror.
+    if (event.key === 'ArrowUp') {
+      const currentDraft = draftRef.current
+
+      // Editing a queued turn → walk to the older entry.
+      if (queueEdit && stepQueuedEdit(-1)) {
+        event.preventDefault()
+        triggerKeyConsumedRef.current = true
+
+        return
+      }
+
+      // Empty composer + a queued turn → open the newest queued entry for edit
+      // (the row's pencil), not a text recall. Enter saves it back to the queue.
+      if (!currentDraft.trim() && !queueEdit && queuedPrompts.length > 0) {
+        event.preventDefault()
+        triggerKeyConsumedRef.current = true
+        beginQueuedEdit(queuedPrompts[queuedPrompts.length - 1]!)
+
+        return
+      }
+
+      // Don't hijack a typed draft unless already browsing — they'd lose it.
+      if (currentDraft.trim() && !isBrowsingHistory(sessionId)) {
+        return
+      }
+
+      event.preventDefault()
+      triggerKeyConsumedRef.current = true
+
+      const history = deriveUserHistory(sessionMessages, chatMessageText)
+      const entry = browseBackward(sessionId, currentDraft, history)
+
+      if (entry !== null) {
+        loadIntoComposer(entry, $composerAttachments.get())
+      }
+
+      return
+    }
+
+    if (event.key === 'ArrowDown') {
+      // Editing a queued turn → walk to the newer entry (past the newest exits).
+      if (queueEdit) {
+        event.preventDefault()
+        triggerKeyConsumedRef.current = true
+        stepQueuedEdit(1)
+
+        return
+      }
+
+      // Browsing sent history → step toward the present, restoring the draft.
+      if (isBrowsingHistory(sessionId)) {
+        event.preventDefault()
+        triggerKeyConsumedRef.current = true
+
+        const history = deriveUserHistory(sessionMessages, chatMessageText)
+        const result = browseForward(sessionId, history)
+
+        if (result !== null) {
+          loadIntoComposer(result.text, $composerAttachments.get())
+        }
+      }
+
+      return
+    }
+
+    // Cmd/Ctrl+Enter is reserved for steering the live run — never a send.
+    // Steer when there's a steerable draft, otherwise swallow it so it can't
+    // surprise-send. (Plain Enter still queues while busy / sends when idle.)
+    if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && !event.shiftKey) {
+      event.preventDefault()
+
+      if (canSteer) {
+        steerDraft()
+      }
+
+      return
+    }
+
     if (event.key === 'Enter' && !event.shiftKey) {
       event.preventDefault()
 
-      if (!busy && !hasComposerPayload && queuedPrompts.length > 0) {
+      // Decide from the DOM, not React state. `hasComposerPayload` is derived
+      // from the AUI composer state, which lags the latest keystroke by a
+      // render, so on fast typing / IME the just-typed text isn't in state yet.
+      // Without the live read, a real message typed while prompts are queued
+      // would drain the queue instead of sending. submitDraft() re-syncs and
+      // sends the live editor text.
+      const editorText = editorRef.current ? composerPlainText(editorRef.current) : draftRef.current
+      const hasLivePayload = editorText.trim().length > 0 || attachments.length > 0
+
+      if (!busy && !hasLivePayload && queuedPrompts.length > 0) {
         void drainNextQueued()
 
         return
       }
 
+      // Empty Enter while busy is a no-op — interrupting is explicit (Stop/Esc),
+      // never a stray Enter after sending. With a payload, submitDraft queues it.
+      // Gate on the live DOM payload (not the render-lagged composer state) so a
+      // message typed fast / via IME while busy still reaches submitDraft() and
+      // gets queued instead of being mistaken for an empty Enter.
+      if (busy && !hasLivePayload) {
+        return
+      }
+
       submitDraft()
+
+      return
+    }
+
+    if (event.key === 'Escape') {
+      // Editing a queued turn → Esc cancels the edit, restoring the prior draft.
+      if (queueEdit) {
+        event.preventDefault()
+        exitQueuedEdit('cancel')
+
+        return
+      }
+
+      // Otherwise Esc interrupts the running turn (Stop-button parity).
+      if (busy) {
+        event.preventDefault()
+        triggerHaptic('cancel')
+        void Promise.resolve(onCancel())
+      }
     }
   }
 
@@ -801,24 +1006,25 @@ export function ChatBar({
       return
     }
 
-    if (Array.from(event.dataTransfer.types || []).includes(HERMES_PATHS_MIME)) {
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, cwd))
-        .filter((ref): ref is string => Boolean(ref))
+    // In-app drags (project tree / gutter) are workspace-relative paths the
+    // gateway resolves directly, so they stay inline @file:/@line: refs. OS
+    // drops are absolute local paths a remote gateway can't read (and images
+    // need byte upload for vision), so route them through the upload pipeline.
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    const refs = droppedFileInlineRefs(inAppRefs, cwd)
 
-      if (insertInlineRefs(refs)) {
-        triggerHaptic('selection')
-      }
-
-      return
+    if (refs.length && insertInlineRefs(refs)) {
+      triggerHaptic('selection')
     }
 
-    void Promise.resolve(onAttachDroppedItems(candidates)).then(attached => {
-      if (attached) {
-        triggerHaptic('selection')
-        requestMainFocus()
-      }
-    })
+    if (osDrops.length) {
+      void Promise.resolve(onAttachDroppedItems(osDrops)).then(attached => {
+        if (attached) {
+          triggerHaptic('selection')
+          requestMainFocus()
+        }
+      })
+    }
   }
 
   const handleInputDragOver = (event: ReactDragEvent<HTMLDivElement>) => {
@@ -838,11 +1044,7 @@ export function ChatBar({
 
     const candidates = extractDroppedFiles(event.dataTransfer)
 
-    const refs = candidates
-      .map(candidate => droppedFileInlineRef(candidate, cwd))
-      .filter((ref): ref is string => Boolean(ref))
-
-    if (!refs.length) {
+    if (!candidates.length) {
       return
     }
 
@@ -850,8 +1052,26 @@ export function ChatBar({
     event.stopPropagation()
     resetDragState()
 
-    if (insertInlineRefs(refs)) {
+    // Dropping straight onto the text box used to inline-ref *every* file —
+    // including OS/Finder drops, whose absolute local path a remote gateway
+    // can't read and whose image bytes never reached vision. Split by origin:
+    // in-app drags stay inline refs; OS drops go through the upload pipeline.
+    // (When no upload handler is wired, fall back to inline refs for all.)
+    const attach = onAttachDroppedItems
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+    const refs = droppedFileInlineRefs(attach ? inAppRefs : candidates, cwd)
+
+    if (refs.length && insertInlineRefs(refs)) {
       triggerHaptic('selection')
+    }
+
+    if (attach && osDrops.length) {
+      void Promise.resolve(attach(osDrops)).then(attached => {
+        if (attached) {
+          triggerHaptic('selection')
+          requestMainFocus()
+        }
+      })
     }
   }
 
@@ -891,6 +1111,42 @@ export function ChatBar({
     loadIntoComposer(entry.text, entry.attachments)
     triggerHaptic('selection')
     focusInput()
+  }
+
+  // Walk queued entries while editing (ArrowUp = older, ArrowDown = newer),
+  // saving the in-progress edit on each step. Stepping newer past the last
+  // entry exits edit mode and restores the pre-edit draft.
+  const stepQueuedEdit = (direction: -1 | 1) => {
+    if (!queueEdit) {
+      return false
+    }
+
+    const index = queuedPrompts.findIndex(e => e.id === queueEdit.entryId)
+    const target = index + direction
+
+    if (index < 0 || target < 0) {
+      return index >= 0 // at the oldest: swallow; missing entry: let it fall through
+    }
+
+    const saved = updateQueuedPrompt(queueEdit.sessionKey, queueEdit.entryId, {
+      attachments: cloneAttachments($composerAttachments.get()),
+      text: draftRef.current
+    })
+
+    const next = queuedPrompts[target]
+
+    if (next) {
+      setQueueEdit({ ...queueEdit, entryId: next.id })
+      loadIntoComposer(next.text, next.attachments)
+    } else {
+      setQueueEdit(null)
+      loadIntoComposer(queueEdit.draft, queueEdit.attachments)
+    }
+
+    triggerHaptic(saved ? 'success' : 'selection')
+    focusInput()
+
+    return true
   }
 
   const exitQueuedEdit = (action: 'cancel' | 'save'): boolean => {
@@ -935,6 +1191,26 @@ export function ChatBar({
     return true
   }, [activeQueueSessionKey, attachments, clearDraft, draft])
 
+  // Steer the live turn (nudge without interrupting). Clears the draft up front
+  // for snappy feedback; if the gateway rejects (no live tool window) the words
+  // are re-queued so nothing is lost — same safety net as a plain queue.
+  const steerDraft = useCallback(() => {
+    if (!onSteer || !canSteer) {
+      return
+    }
+
+    const text = draftRef.current.trim()
+
+    triggerHaptic('submit')
+    clearDraft()
+
+    void Promise.resolve(onSteer(text)).then(accepted => {
+      if (!accepted && activeQueueSessionKey) {
+        enqueueQueuedPrompt(activeQueueSessionKey, { text, attachments: [] })
+      }
+    })
+  }, [activeQueueSessionKey, canSteer, clearDraft, onSteer])
+
   // All queue drain paths share one lock + send-then-remove sequence.
   // `pickEntry` lets each caller choose head, by-id, or skip-edited.
   const runDrain = useCallback(
@@ -961,13 +1237,14 @@ export function ChatBar({
         }
 
         removeQueuedPrompt(activeQueueSessionKey, entry.id)
+        resetBrowseState(sessionId)
 
         return true
       } finally {
         drainingQueueRef.current = false
       }
     },
-    [activeQueueSessionKey, onSubmit, queuedPrompts]
+    [activeQueueSessionKey, onSubmit, queuedPrompts, sessionId]
   )
 
   const drainNextQueued = useCallback(
@@ -981,41 +1258,40 @@ export function ChatBar({
   )
 
   const sendQueuedNow = useCallback(
-    (id: string) => runDrain(entries => entries.find(e => e.id === id && id !== queueEdit?.entryId)),
-    [queueEdit, runDrain]
+    (id: string) => {
+      if (!activeQueueSessionKey || id === queueEdit?.entryId) {
+        return false
+      }
+
+      if (busy) {
+        // Promote to the head, then interrupt. The gateway always emits a
+        // settle (message.complete + session.info running:false) when the
+        // turn unwinds, and the busy→false auto-drain below sends this entry.
+        promoteQueuedPrompt(activeQueueSessionKey, id)
+        triggerHaptic('selection')
+        void Promise.resolve(onCancel())
+
+        return true
+      }
+
+      return runDrain(entries => entries.find(e => e.id === id))
+    },
+    [activeQueueSessionKey, busy, onCancel, queueEdit, runDrain]
   )
 
-  // Auto-drain on busy → false (turn settled). An explicit user interrupt
-  // (Stop button) sets userInterruptedRef so we skip exactly one auto-drain:
-  // the user asked to halt, so we must not immediately re-send the queue.
-  // The queued turns stay intact and the user resumes them on demand.
+  // Auto-drain on busy → false (turn settled). Queued turns always flow once
+  // the session is idle again — whether the turn finished naturally or the
+  // user interrupted it. Interrupting to reach a queued message is the whole
+  // point of the queue, so we never suppress the drain. To cancel queued
+  // turns, the user deletes them from the panel.
   useEffect(() => {
     const wasBusy = previousBusyRef.current
     previousBusyRef.current = busy
-
-    // Clear the interrupt latch when a new turn starts (false → true). This
-    // guards the sub-frame race where a Stop click lands after busy already
-    // flipped false (button not yet unmounted): the stale latch can no longer
-    // survive into the next turn and wrongly suppress its natural auto-drain.
-    if (busy && !wasBusy) {
-      userInterruptedRef.current = false
-
-      return
-    }
-
-    const interrupted = userInterruptedRef.current
-
-    // Consume the interrupt latch on any settle so a later natural completion
-    // is not wrongly suppressed.
-    if (!busy && wasBusy && interrupted) {
-      userInterruptedRef.current = false
-    }
 
     if (
       shouldAutoDrainOnSettle({
         isBusy: busy,
         queueLength: queuedPrompts.length,
-        userInterrupted: interrupted,
         wasBusy
       })
     ) {
@@ -1038,26 +1314,55 @@ export function ChatBar({
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const submitDraft = () => {
+    // Source the text from the DOM editor, not React state. The AUI composer
+    // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
+    // render, so on fast typing or IME composition the final keystroke(s) may
+    // not have synced yet — reading state here drops the message (Enter looks
+    // like it does nothing; typing a trailing space only "fixes" it because the
+    // extra input event forces a state sync). draftRef is updated on every
+    // input event; refresh it from the editor once more to also cover an
+    // in-flight keystroke that hasn't fired its input event yet.
+    const editor = editorRef.current
+    if (editor) {
+      const domText = composerPlainText(editor)
+      if (domText !== draftRef.current) {
+        draftRef.current = domText
+        aui.composer().setText(domText)
+      }
+    }
+
+    const text = draftRef.current
+    const payloadPresent = text.trim().length > 0 || attachments.length > 0
+
     if (queueEdit) {
       exitQueuedEdit('save')
     } else if (busy) {
-      if (hasComposerPayload) {
+      // Slash commands should execute immediately even while the agent is
+      // busy — they're client-side operations (/yolo, /skin, /new, /help,
+      // etc.) or self-contained gateway RPCs (/status, /compress).  onSubmit
+      // routes them to executeSlashCommand, which has its own per-command
+      // busy guard for commands that genuinely need an idle session (skill
+      // /send directives).  Queuing them would make every slash command wait
+      // for the current turn to finish, which is how the TUI never behaves.
+      if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
+        const submitted = text
+        triggerHaptic('submit')
+        clearDraft()
+        void onSubmit(submitted)
+      } else if (payloadPresent) {
         queueCurrentDraft()
       } else {
-        // Stop button: an explicit interrupt must actually halt the running
-        // turn. Mark the interrupt so the busy→false auto-drain effect skips
-        // re-sending the queue — otherwise a queued follow-up would fire the
-        // instant we cancel and Stop would appear to "never work". Queued
-        // turns are preserved; the user sends them on demand.
-        userInterruptedRef.current = true
+        // Stop button (the only way to reach here while busy with an empty
+        // composer — empty Enter is short-circuited in the keydown handler).
         triggerHaptic('cancel')
         void Promise.resolve(onCancel())
       }
-    } else if (!hasComposerPayload && queuedPrompts.length > 0) {
+    } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()
-    } else if (draft.trim() || attachments.length > 0) {
-      const submitted = draft
+    } else if (payloadPresent) {
+      const submitted = text
       triggerHaptic('submit')
+      resetBrowseState(sessionId)
       clearDraft()
       clearComposerAttachments()
       void onSubmit(submitted, { attachments })
@@ -1127,6 +1432,7 @@ export function ChatBar({
     }
 
     triggerHaptic('submit')
+    resetBrowseState(sessionId)
     clearDraft()
     await onSubmit(text)
   }
@@ -1160,6 +1466,7 @@ export function ChatBar({
     <ComposerControls
       busy={busy}
       busyAction={busyAction}
+      canSteer={canSteer}
       canSubmit={canSubmit}
       conversation={{
         active: voiceConversationActive,
@@ -1177,6 +1484,7 @@ export function ChatBar({
       disabled={disabled}
       hasComposerPayload={hasComposerPayload}
       onDictate={dictate}
+      onSteer={steerDraft}
       state={state}
       voiceStatus={voiceStatus}
     />
@@ -1185,7 +1493,7 @@ export function ChatBar({
   const input = (
     <div className={cn('relative', stacked ? 'w-full' : 'min-w-(--composer-input-inline-min-width) flex-1')}>
       <div
-        aria-label="Message"
+        aria-label={t.composer.message}
         autoCapitalize="off"
         autoCorrect="off"
         className={cn(
@@ -1199,8 +1507,17 @@ export function ChatBar({
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
         onBlur={() => window.setTimeout(closeTrigger, 80)}
-        onCompositionEnd={() => {
+        onCompositionEnd={event => {
           composingRef.current = false
+
+          // The input events fired *during* composition were skipped (they
+          // carried uncommitted preedit text), and Chromium does NOT reliably
+          // emit a trailing input event after compositionend on Windows IMEs.
+          // Without flushing here, committed multi-character IME input (e.g.
+          // Chinese "你好", Japanese, Korean) never reaches composer state, so
+          // `hasComposerPayload` stays false and the send button stays hidden
+          // until an unrelated edit forces a sync (#39614).
+          flushEditorToDraft(event.currentTarget)
         }}
         onCompositionStart={() => {
           composingRef.current = true
@@ -1253,9 +1570,11 @@ export function ChatBar({
           onDrop={handleDrop}
           onSubmit={e => {
             e.preventDefault()
+
             if (composingRef.current) {
               return
             }
+
             submitDraft()
           }}
           ref={composerRef}
@@ -1271,9 +1590,12 @@ export function ChatBar({
               onPick={replaceTriggerWithChip}
             />
           )}
-          <SkinSlashPopover draft={draft} onSelect={selectSkinSlashCommand} />
           {activeQueueSessionKey && queuedPrompts.length > 0 && (
-            <div className="relative z-6 mb-1 px-0.5">
+            // Out of flow so the queue never inflates the composer's measured
+            // height (that drives thread bottom padding → chat resizes on
+            // queue). Overlaps -mb-2 onto the surface's top border for a shared
+            // edge; capped + scrollable. Overlays the chat instead of pushing it.
+            <div className="absolute inset-x-0 bottom-full z-6 -mb-2 max-h-[40vh] overflow-y-auto">
               <QueuePanel
                 busy={busy}
                 editingId={queueEdit?.entryId ?? null}
@@ -1295,11 +1617,10 @@ export function ChatBar({
           <div className="relative w-full rounded-[inherit]">
             <div
               className={cn(
-                'relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] shadow-composer transition-[border-color,box-shadow] duration-200 ease-out',
+                'relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out',
                 COMPOSER_DROP_FADE_CLASS,
-                'group-focus-within/composer:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)] group-focus-within/composer:shadow-composer-focus',
+                'group-focus-within/composer:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
                 'group-has-data-[state=open]/composer:border-t-transparent',
-                'group-has-data-[state=open]/composer:shadow-[0_0.0625rem_0_0.0625rem_color-mix(in_srgb,var(--dt-composer-ring)_calc(35%*var(--composer-ring-strength)),transparent),0_0.5rem_1.5rem_color-mix(in_srgb,var(--shadow-ink)_6%,transparent)]',
                 dragActive && COMPOSER_DROP_ACTIVE_CLASS
               )}
               data-slot="composer-surface"
@@ -1331,7 +1652,7 @@ export function ChatBar({
                 {queueEdit && editingQueuedPrompt && (
                   <div className="flex items-center justify-between gap-2 rounded-lg border border-[color-mix(in_srgb,var(--dt-composer-ring)_32%,transparent)] bg-accent/18 px-2 py-1">
                     <div className="min-w-0 text-[0.7rem] text-muted-foreground/88">
-                      Editing queued turn in composer
+                      {t.composer.editingQueuedInComposer}
                     </div>
                     <div className="flex shrink-0 items-center gap-1">
                       <Button
@@ -1340,14 +1661,14 @@ export function ChatBar({
                         type="button"
                         variant="ghost"
                       >
-                        Cancel
+                        {t.common.cancel}
                       </Button>
                       <Button
                         className="h-6 rounded-md px-2 text-[0.68rem]"
                         onClick={() => exitQueuedEdit('save')}
                         type="button"
                       >
-                        Save
+                        {t.common.save}
                       </Button>
                     </div>
                   </div>
@@ -1392,7 +1713,7 @@ export function ChatBarFallback() {
       )}
       data-slot="composer-root"
     >
-      <div className="composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] shadow-composer">
+      <div className="composer-fallback-surface relative isolate h-(--composer-fallback-height) w-full rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))]">
         <div
           aria-hidden
           className={cn(

@@ -172,6 +172,99 @@ def test_make_tui_argv_skips_build_only_on_termux_when_fresh(
     assert cwd == tmp_path
 
 
+def test_make_tui_argv_skips_install_on_termux_when_bundle_fresh(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    _touch_tui_entry(tmp_path)
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("fresh Termux TUI launch must not run npm")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
+
+    argv, cwd = main_mod._make_tui_argv(tmp_path, tui_dev=False)
+
+    assert argv == ["/bin/node", "--expose-gc", str(tmp_path / "dist" / "entry.js")]
+    assert cwd == tmp_path
+
+
+def test_make_tui_argv_scopes_npm_install_on_termux_workspace(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    ink_dir = tui_dir / "packages" / "hermes-ink"
+    ink_dir.mkdir(parents=True)
+    (ink_dir / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.setenv("TERMUX_VERSION", "1")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    install_cmd = calls[0][0][0]
+    assert install_cmd[:7] == [
+        "/bin/npm",
+        "install",
+        "--workspace",
+        "ui-tui",
+        "--workspace",
+        "ui-tui/packages/hermes-ink",
+        "--include-workspace-root=false",
+    ]
+    assert calls[0][1]["cwd"] == str(tmp_path)
+
+
+def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.delenv("TERMUX_VERSION", raising=False)
+    monkeypatch.setenv("PREFIX", "/usr")
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/bin/{name}")
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert calls[0][0][0] == [
+        "/bin/npm",
+        "install",
+        "--workspace",
+        "ui-tui",
+        "--silent",
+        "--no-fund",
+        "--no-audit",
+        "--progress=false",
+    ]
+    assert calls[0][1]["cwd"] == str(tmp_path)
+
+
 def test_make_tui_argv_keeps_desktop_always_build_behaviour(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
@@ -299,3 +392,36 @@ def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
         "delete them and run `npm install` from the repo root instead: "
         + ", ".join(str(d / "package-lock.json") for d in stray)
     )
+
+
+def test_tui_launch_install_uses_workspace_scope(
+    tmp_path: Path, main_mod, monkeypatch
+) -> None:
+    """TUI launch npm install must pass --workspace ui-tui to avoid pulling apps/desktop."""
+    tui_dir = tmp_path / "ui-tui"
+    tui_dir.mkdir()
+    (tui_dir / "package.json").write_text("{}")
+    (tui_dir / "dist" / "entry.js").parent.mkdir(parents=True)
+    (tui_dir / "dist" / "entry.js").write_text("console.log('tui')")
+    # workspace root: parent has lockfile, tui_dir does not
+    (tmp_path / "package-lock.json").write_text("{}")
+
+    monkeypatch.setattr(main_mod, "_tui_need_npm_install", lambda _root: True)
+    monkeypatch.setattr(main_mod, "_tui_need_rebuild", lambda _root: False)
+    monkeypatch.setattr(main_mod.shutil, "which", lambda name: f"/usr/bin/{name}")
+
+    npm_calls = []
+
+    def fake_run(cmd, **kwargs):
+        if cmd[0].endswith("npm"):
+            npm_calls.append(cmd)
+        return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fake_run)
+
+    main_mod._make_tui_argv(tui_dir, tui_dev=False)
+
+    assert npm_calls, "expected npm install to be called"
+    install_cmd = npm_calls[0]
+    assert "--workspace" in install_cmd
+    assert "ui-tui" in install_cmd

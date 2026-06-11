@@ -1,9 +1,8 @@
 import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react'
+import { type CSSProperties, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { TerminalTab } from './index'
-import { TERMINAL_BG } from './selection'
 
 /**
  * One xterm Terminal mounted at the layout root and CSS-overlayed onto
@@ -21,11 +20,17 @@ export function TerminalSlot({ className = SLOT_CLASS }: { className?: string })
 
   useEffect(() => {
     const el = ref.current
-    if (!el) return
+
+    if (!el) {
+      return
+    }
 
     $slot.set(el)
+
     return () => {
-      if ($slot.get() === el) $slot.set(null)
+      if ($slot.get() === el) {
+        $slot.set(null)
+      }
     }
   }, [])
 
@@ -55,6 +60,7 @@ export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerm
   useLayoutEffect(() => {
     if (!slot) {
       setRect(null)
+
       return
     }
 
@@ -72,13 +78,17 @@ export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerm
       if (!sameRect(prev, next)) {
         prev = next
         setRect(next)
-        if (next.width > 0 && next.height > 0) setReady(true)
+
+        if (next.width > 0 && next.height > 0) {
+          setReady(true)
+        }
       }
 
       frame = requestAnimationFrame(tick)
     }
 
     tick()
+
     return () => cancelAnimationFrame(frame)
   }, [slot])
 
@@ -95,7 +105,9 @@ export function PersistentTerminal({ cwd, onAddSelectionToChat }: PersistentTerm
     visibility: visible ? 'visible' : 'hidden',
     pointerEvents: visible ? 'auto' : 'none',
     zIndex: 4,
-    backgroundColor: TERMINAL_BG,
+    // Match the live skin surface so the header strip (transparent) and body
+    // read as one cohesive pane instead of revealing a near-black slab behind.
+    backgroundColor: 'var(--ui-editor-surface-background)',
     contain: 'layout size paint'
   }
 

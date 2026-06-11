@@ -231,3 +231,53 @@ class TestOpenVikingBrowse:
             "/api/v1/fs/ls",
             {"uri": "viking://user/hermes"},
         )]
+
+
+class TestOpenVikingMemoryUriBuilder:
+    """Regression tests for _build_memory_uri — fixes #36969.
+
+    Before the fix the URI omitted /agent/{agent}/, causing all agents
+    under the same user to share the same memory namespace.
+    """
+
+    def _make_provider(self, user="alice", agent="coder"):
+        p = OpenVikingMemoryProvider.__new__(OpenVikingMemoryProvider)
+        p._user = user
+        p._agent = agent
+        return p
+
+    def test_uri_layout_includes_agent_segment(self):
+        """URI must contain /agent/{agent}/ between user and memories."""
+        p = self._make_provider(user="alice", agent="coder")
+        uri = p._build_memory_uri("preferences")
+        assert uri.startswith("viking://user/alice/agent/coder/memories/preferences/mem_")
+        assert uri.endswith(".md")
+
+    def test_uri_uses_configured_agent_not_default(self):
+        """_agent value must be interpolated — not hardcoded to 'hermes'."""
+        p = self._make_provider(user="alice", agent="research-bot")
+        uri = p._build_memory_uri("entities")
+        assert "/agent/research-bot/" in uri
+        assert "/agent/hermes/" not in uri
+
+    def test_uri_slug_is_twelve_hex_chars_and_unique(self):
+        """Slug must be 12 hex chars and differ between calls."""
+        import re
+        p = self._make_provider()
+        uri1 = p._build_memory_uri("preferences")
+        uri2 = p._build_memory_uri("preferences")
+        slug1 = uri1.split("/mem_")[1].replace(".md", "")
+        slug2 = uri2.split("/mem_")[1].replace(".md", "")
+        assert re.fullmatch(r"[0-9a-f]{12}", slug1)
+        assert re.fullmatch(r"[0-9a-f]{12}", slug2)
+        assert slug1 != slug2
+
+    def test_uri_subdir_placed_correctly_for_all_categories(self):
+        """All five category subdirs must appear between memories/ and slug."""
+        p = self._make_provider(user="u", agent="a")
+        subdirs = ["preferences", "entities", "events", "cases", "patterns"]
+        for subdir in subdirs:
+            uri = p._build_memory_uri(subdir)
+            assert f"/memories/{subdir}/mem_" in uri, (
+                f"subdir '{subdir}' not placed correctly in URI: {uri}"
+            )

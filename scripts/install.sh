@@ -6,7 +6,7 @@
 # Uses uv for desktop/server installs and Python's stdlib venv + pip on Termux.
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
+#   curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash
 #
 # Or with options:
 #   curl -fsSL ... | bash -s -- --no-venv --skip-setup
@@ -451,7 +451,7 @@ detect_os() {
             OS="windows"
             DISTRO="windows"
             log_error "Windows detected. Please use the PowerShell installer:"
-            log_info "  iex (irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1)"
+            log_info "  iex (irm https://hermes-agent.nousresearch.com/install.ps1)"
             exit 1
             ;;
         *)
@@ -1092,29 +1092,72 @@ show_manual_install_hint() {
 clone_repo() {
     log_info "Installing to $INSTALL_DIR..."
 
+    # An interrupted previous clone leaves a .git with no initial commit, where
+    # the update path's `git stash` / `git checkout` abort with "You do not
+    # have the initial commit yet" and fail the install (#40998). Move such a
+    # partial checkout aside -- never delete it, in case it holds something the
+    # user wants -- so the fresh-clone path below can proceed.
+    if [ -d "$INSTALL_DIR/.git" ] && ! git -C "$INSTALL_DIR" rev-parse --verify HEAD >/dev/null 2>&1; then
+        backup_dir="${INSTALL_DIR}.broken-$(date -u +%Y%m%d-%H%M%S)"
+        log_warn "Existing checkout at $INSTALL_DIR has no commits (interrupted clone)."
+        log_warn "Moving it aside to $backup_dir before re-cloning."
+        mv "$INSTALL_DIR" "$backup_dir"
+    fi
+
     if [ -d "$INSTALL_DIR" ]; then
         if [ -d "$INSTALL_DIR/.git" ]; then
             log_info "Existing installation found, updating..."
             cd "$INSTALL_DIR"
 
-            # This is a managed clone the user never edits, so any working-tree
-            # dirt is git artifact (CRLF renormalization, npm lockfile churn,
-            # files left behind when a directory was deleted upstream such as
-            # apps/bootstrap-installer/). The old path stashed that dirt and
-            # re-applied it after the pull, but the stash/restore cycle has
-            # clobbered freshly-pulled source files (apps/desktop/ →
-            # "[UNRESOLVED_ENTRY] Cannot resolve entry module index.html").
-            # Discard the dirt with a hard reset instead — mirrors install.ps1's
-            # update path. Fork users customize via `hermes update`, which keeps
-            # the stash machinery; the installer is a managed-only entry point.
-            git fetch origin
+            local autostash_ref=""
             if [ -n "$(git status --porcelain)" ]; then
-                log_info "Discarding working-tree changes on managed clone before update..."
-                git reset --hard HEAD >/dev/null 2>&1 || true
-                git clean -fd >/dev/null 2>&1 || true
+                local stash_name
+                stash_name="hermes-install-autostash-$(date -u +%Y%m%d-%H%M%S)"
+                log_info "Local changes detected, stashing before update..."
+                git stash push --include-untracked -m "$stash_name"
+                autostash_ref="stash@{0}"
             fi
+
+            # Fetch only the target branch. A bare `git fetch origin` pulls
+            # every ref, and this repo carries thousands of auto-generated
+            # branches — on a non-single-branch checkout that turns each update
+            # into a multi-minute download that can stall the installer.
+            git remote set-branches origin "$BRANCH" 2>/dev/null || true
+            git fetch origin "$BRANCH"
             git checkout "$BRANCH"
-            git reset --hard "origin/$BRANCH"
+            git pull --ff-only origin "$BRANCH"
+
+            if [ -n "$autostash_ref" ]; then
+                local restore_now="yes"
+                if [ -t 0 ] && [ -t 1 ]; then
+                    echo
+                    log_warn "Local changes were stashed before updating."
+                    log_warn "Restoring them may reapply local customizations onto the updated codebase."
+                    printf "Restore local changes now? [Y/n] "
+                    read -r restore_answer
+                    case "$restore_answer" in
+                        ""|y|Y|yes|YES|Yes) restore_now="yes" ;;
+                        *) restore_now="no" ;;
+                    esac
+                fi
+
+                if [ "$restore_now" = "yes" ]; then
+                    log_info "Restoring local changes..."
+                    if git stash apply "$autostash_ref"; then
+                        git stash drop "$autostash_ref" >/dev/null
+                        log_warn "Local changes were restored on top of the updated codebase."
+                        log_warn "Review git diff / git status if Hermes behaves unexpectedly."
+                    else
+                        log_error "Update succeeded, but restoring local changes failed. Your changes are still preserved in git stash."
+                        log_info "Resolve manually with: git stash apply $autostash_ref"
+                        exit 1
+                    fi
+                else
+                    log_info "Skipped restoring local changes."
+                    log_info "Your changes are still preserved in git stash."
+                    log_info "Restore manually with: git stash apply $autostash_ref"
+                fi
+            fi
         else
             log_error "Directory exists but is not a git repository: $INSTALL_DIR"
             log_info "Remove it or choose a different directory with --dir"
@@ -1126,12 +1169,12 @@ clone_repo() {
         # so SSH fails fast instead of hanging when no key is configured.
         log_info "Trying SSH clone..."
         if GIT_SSH_COMMAND="ssh -o BatchMode=yes -o ConnectTimeout=5" \
-           git clone --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
+           git clone --depth 1 --branch "$BRANCH" "$REPO_URL_SSH" "$INSTALL_DIR" 2>/dev/null; then
             log_success "Cloned via SSH"
         else
             rm -rf "$INSTALL_DIR" 2>/dev/null  # Clean up partial SSH clone
             log_info "SSH failed, trying HTTPS..."
-            if git clone --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
+            if git clone --depth 1 --branch "$BRANCH" "$REPO_URL_HTTPS" "$INSTALL_DIR"; then
                 log_success "Cloned via HTTPS"
             else
                 log_error "Failed to clone repository"
@@ -2238,6 +2281,93 @@ postinstall_mode() {
     fi
 }
 
+# Clear the cached Electron download + any half-written unpacked output so the
+# next `npm run pack` re-downloads and re-stages from scratch. A corrupt zip in
+# the per-user Electron download cache - most often a partial/resumed download
+# that leaves concatenated junk - makes electron-builder's `unpack-electron`
+# extract a tree MISSING the electron binary, so the `electron`->`Hermes` rename
+# dies with ENOENT and every re-run repeats the broken extraction forever. This
+# is the bash sibling of install.ps1's Clear-ElectronBuildCache and the Python
+# _purge_electron_build_cache() used by `hermes desktop`; install.sh was the only
+# build path lacking it. Echoes the removed paths (one per line); best-effort.
+clear_electron_build_cache() {
+    local desktop_dir="$1"
+    local removed=""
+
+    # Per-user Electron download cache dirs, honoring the overrides @electron/get
+    # respects, then the platform defaults (macOS: ~/Library/Caches/electron,
+    # Linux: $XDG_CACHE_HOME/electron or ~/.cache/electron).
+    local cache_dirs=()
+    [ -n "${electron_config_cache:-}" ] && cache_dirs+=("$electron_config_cache")
+    [ -n "${ELECTRON_CACHE:-}" ] && cache_dirs+=("$ELECTRON_CACHE")
+    if [ "$OS" = "macos" ]; then
+        cache_dirs+=("$HOME/Library/Caches/electron")
+    else
+        [ -n "${XDG_CACHE_HOME:-}" ] && cache_dirs+=("$XDG_CACHE_HOME/electron")
+        cache_dirs+=("$HOME/.cache/electron")
+    fi
+
+    local dir zip
+    for dir in "${cache_dirs[@]}"; do
+        [ -d "$dir" ] || continue
+        # Recurse: the bad copy may be the top-level zip OR a copy inside an
+        # @electron/get hash subdir.
+        while IFS= read -r zip; do
+            [ -n "$zip" ] || continue
+            if rm -f "$zip" 2>/dev/null; then
+                removed="$removed$zip
+"
+            fi
+        done <<EOF
+$(find "$dir" -type f -name 'electron-*.zip' 2>/dev/null)
+EOF
+    done
+
+    # A half-written unpacked dir from an interrupted prior pack poisons the
+    # rename even after the zip is fixed (mac-arm64-unpacked / linux-unpacked).
+    local release_dir="$desktop_dir/release"
+    if [ -d "$release_dir" ]; then
+        local unpacked
+        while IFS= read -r unpacked; do
+            [ -n "$unpacked" ] || continue
+            if rm -rf "$unpacked" 2>/dev/null; then
+                removed="$removed$unpacked
+"
+            fi
+        done <<EOF
+$(find "$release_dir" -maxdepth 1 -type d -name '*-unpacked' 2>/dev/null)
+EOF
+    fi
+
+    printf '%s' "$removed"
+}
+
+# Run the desktop pack in $1 (the apps/desktop dir). `npm run pack` = tsc +
+# vite build + electron-builder --dir, producing an unpacked app for the
+# current OS. Signing auto-discovery is disabled so electron-builder falls back
+# to an ad-hoc signature instead of grabbing an unrelated Developer ID from the
+# keychain (a real signed/notarized .dmg needs Apple credentials — a separate
+# release concern). Optional $2 = an ELECTRON_MIRROR base URL for this attempt,
+# used as a fallback when the default GitHub release download is blocked.
+_desktop_pack() {
+    local desktop_dir="$1"
+    local mirror="${2:-}"
+    if [ -n "$mirror" ]; then
+        ( cd "$desktop_dir" && ELECTRON_MIRROR="$mirror" CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+    else
+        ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack )
+    fi
+}
+
+# Public Electron mirror used as a last-resort fallback when GitHub's release
+# host is blocked/throttled (the repeating "retrying" symptom). npmmirror.com is
+# the de-facto Electron community mirror (Alibaba). @electron/get SHASUM-checks
+# the download, but the SHASUMS come from the same mirror — that guards against a
+# corrupt/partial download, NOT a compromised mirror. Reaching for it is an
+# explicit trust trade-off we only make AFTER the canonical GitHub download has
+# failed, and we never override a user-pinned ELECTRON_MIRROR.
+DESKTOP_ELECTRON_FALLBACK_MIRROR="https://npmmirror.com/mirrors/electron/"
+
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
@@ -2281,22 +2411,67 @@ install_desktop() {
     log_info "Installing desktop workspace dependencies (includes Electron ~150MB, 1-3min)..."
     ( cd "$INSTALL_DIR" && npm ci ) || ( cd "$INSTALL_DIR" && npm install ) || {
         log_error "Desktop workspace npm install failed"
+        # Common cause: a previous 'sudo npm'/'sudo npx' left root-owned files in
+        # ~/.npm, so this non-root install can't write the shared cache. npm hides
+        # it behind a confusing EEXIST / "File exists" message while the real errno
+        # is EACCES (-13). Point the user at the fix instead of a raw npm trace.
+        log_info "If the errors above mention EACCES / 'permission denied' / EEXIST while"
+        log_info "writing the npm cache, your ~/.npm likely holds root-owned files from an"
+        log_info "earlier 'sudo npm' or 'sudo npx'. Reclaim ownership and retry:"
+        log_info "  sudo chown -R \"\$(id -un)\" ~/.npm && npm cache verify"
+        log_info "Then re-run this installer, or build manually:"
+        log_info "  cd \"$INSTALL_DIR\" && npm ci && cd apps/desktop && npm run pack"
         return 1
     }
     log_success "Desktop workspace dependencies installed"
 
-    # 2. Build. `npm run pack` = tsc + vite build + electron-builder --dir,
-    #    producing an unpacked app for the current OS. We disable signing
-    #    auto-discovery so electron-builder falls back to an ad-hoc signature
-    #    instead of grabbing an unrelated Developer ID from the keychain; a
-    #    real signed/notarized .dmg needs Apple credentials and is a separate
-    #    release concern.
+    # 2. Build, with up to three escalating attempts so a transient/blocked
+    #    Electron download self-heals instead of failing the whole install:
+    #      a) plain `npm run pack` (downloads Electron from GitHub),
+    #      b) on failure, purge a corrupt cached zip + stale unpacked dir and
+    #         retry (matches install.ps1 / `hermes desktop`),
+    #      c) on still-failing, fall back to a public Electron mirror — this is
+    #         the GitHub-blocked/throttled case (the repeating "retrying" log).
     log_info "Building desktop app (this takes 1-3 minutes)..."
-    ( cd "$desktop_dir" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack ) || {
+    local pack_ok=false
+    if _desktop_pack "$desktop_dir"; then
+        pack_ok=true
+    else
+        # (b) Corrupt cached Electron zip is the most common self-healable cause.
+        local purged
+        purged="$(clear_electron_build_cache "$desktop_dir")"
+        if [ -n "$purged" ]; then
+            log_warn "Desktop build failed; cleared cached Electron download and retrying once..."
+            if _desktop_pack "$desktop_dir"; then
+                pack_ok=true
+            fi
+        fi
+    fi
+
+    # (c) Still failing and the user hasn't pinned their own mirror: the GitHub
+    #     release host is likely blocked/throttled. Retry once via a public
+    #     Electron mirror (@electron/get still SHASUM-verifies the download).
+    if [ "$pack_ok" = false ] && [ -z "${ELECTRON_MIRROR:-}" ]; then
+        log_warn "Desktop build still failing — the Electron download from GitHub looks blocked."
+        log_warn "Retrying once via a public Electron mirror ($DESKTOP_ELECTRON_FALLBACK_MIRROR)..."
+        log_warn "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+        if _desktop_pack "$desktop_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; then
+            pack_ok=true
+        fi
+    fi
+
+    if [ "$pack_ok" = false ]; then
         log_error "Desktop app build failed"
-        log_info "Run manually: cd $desktop_dir && npm run pack"
+        # If the log shows repeated "retrying" lines fetching the Electron zip,
+        # the binary download is blocked/throttled (firewall, proxy, region) and
+        # the mirror fallback above also couldn't reach a host. Try a mirror you
+        # trust and rebuild (@electron/get honors ELECTRON_MIRROR):
+        log_info "If the log shows Electron download retries, rebuild via a reachable mirror:"
+        log_info "  ELECTRON_MIRROR=<mirror-base-url> \\"
+        log_info "    bash -c 'cd \"$desktop_dir\" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'"
+        log_info "Otherwise build manually: cd $desktop_dir && npm run pack"
         return 1
-    }
+    fi
 
     local app=""
     if [ "$OS" = "linux" ]; then

@@ -10,12 +10,15 @@ import {
   DIRECTIVE_CHIP_CLASS,
   directiveIconElement,
   directiveIconSvg,
-  formatRefValue
+  formatRefValue,
+  slashChipClass,
+  type SlashChipKind,
+  slashIconElement
 } from '@/components/assistant-ui/directive-text'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
 
-export const REF_RE = /@(file|folder|url|image|tool|line|terminal):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
+export const REF_RE = /@(file|folder|url|image|tool|line|terminal|session):(`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)/g
 
 const ESC: Record<string, string> = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }
 
@@ -52,14 +55,14 @@ export function quoteRefValue(value: string) {
   return formatRefValue(value)
 }
 
-export function refChipHtml(kind: string, rawValue: string) {
+export function refChipHtml(kind: string, rawValue: string, displayLabel?: string) {
   const id = unquoteRef(rawValue)
   const text = `@${kind}:${quoteRefValue(id)}`
 
-  return `<span contenteditable="false" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(refLabel(id))}</span></span>`
+  return `<span contenteditable="false" data-ref-text="${escapeHtml(text)}" data-ref-id="${escapeHtml(id)}" data-ref-kind="${escapeHtml(kind)}" class="${DIRECTIVE_CHIP_CLASS}">${directiveIconSvg(kind)}<span class="truncate">${escapeHtml(displayLabel || refLabel(id))}</span></span>`
 }
 
-export function refChipElement(kind: string, rawValue: string) {
+export function refChipElement(kind: string, rawValue: string, displayLabel?: string) {
   const id = unquoteRef(rawValue)
   const text = `@${kind}:${quoteRefValue(id)}`
   const chip = document.createElement('span')
@@ -71,8 +74,26 @@ export function refChipElement(kind: string, rawValue: string) {
   chip.dataset.refKind = kind
   chip.className = DIRECTIVE_CHIP_CLASS
   label.className = 'truncate'
-  label.textContent = refLabel(id)
+  label.textContent = displayLabel || refLabel(id)
   chip.append(directiveIconElement(kind), label)
+
+  return chip
+}
+
+/** A non-editable pill for a picked slash command (`/skin nous`, `/tropes`).
+ *  `data-ref-text` carries the literal command so `composerPlainText` round-trips
+ *  it back to the exact text that gets submitted. */
+export function slashChipElement(command: string, kind: SlashChipKind, label?: string) {
+  const chip = document.createElement('span')
+  const text = document.createElement('span')
+
+  chip.contentEditable = 'false'
+  chip.dataset.refText = command
+  chip.dataset.slashKind = kind
+  chip.className = slashChipClass(kind)
+  text.className = 'truncate'
+  text.textContent = label || command
+  chip.append(slashIconElement(kind), text)
 
   return chip
 }

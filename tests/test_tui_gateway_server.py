@@ -847,6 +847,41 @@ def test_history_to_messages_preserves_tool_calls_for_resume_display():
     ]
 
 
+def test_history_to_messages_keeps_reasoning_only_assistant_turn():
+    # A thinking-only assistant turn (reasoning present, no visible text) is
+    # persisted and recallable, but was dropped from the resumed session view
+    # as "empty" -- so it vanished while the agent could still recall it from
+    # the transcript. Keep it (with reasoning) so the desktop "Thinking…"
+    # disclosure renders. (#44022)
+    history = [
+        {"role": "user", "content": "think about this"},
+        {"role": "assistant", "content": "", "reasoning": "step-by-step thoughts"},
+        {"role": "assistant", "content": "here is the answer"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "think about this"},
+        {"role": "assistant", "text": "", "reasoning": "step-by-step thoughts"},
+        {"role": "assistant", "text": "here is the answer"},
+    ]
+
+
+def test_history_to_messages_still_drops_empty_assistant_without_reasoning():
+    # A genuinely empty assistant turn (no text, no reasoning, no tool calls)
+    # remains filtered out -- the fix only spares reasoning-bearing turns.
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "", "reasoning": ""},
+        {"role": "assistant", "content": "   "},
+        {"role": "assistant", "content": "real reply"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "hi"},
+        {"role": "assistant", "text": "real reply"},
+    ]
+
+
 def test_history_to_messages_renders_multimodal_content():
     # bb/gui preserves image URLs in the resume payload so the desktop
     # renderer's extractEmbeddedImages can pull them back out and display

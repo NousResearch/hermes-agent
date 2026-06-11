@@ -53,9 +53,15 @@ import {
 // would otherwise attribute the message to the remote host. Local prompts
 // omit it; the local auto-stamp is already correct.
 function remoteSenderParams(): { sender_device?: string } {
-  const deviceName = $localDeviceName.get()
+  const deviceName = localSenderDevice()
 
   return activeBackendIsRemote() && deviceName ? { sender_device: deviceName } : {}
+}
+
+function localSenderDevice(): string | undefined {
+  const deviceName = $localDeviceName.get().trim()
+
+  return deviceName || undefined
 }
 
 import type {
@@ -511,12 +517,14 @@ export function usePromptActions({
       }
 
       const optimisticId = `user-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+      const optimisticSenderDevice = localSenderDevice()
 
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
         role: 'user',
         parts: [textPart(visibleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
-        attachmentRefs
+        attachmentRefs,
+        ...(optimisticSenderDevice ? { senderDevice: optimisticSenderDevice } : {})
       })
 
       const releaseBusy = () => {

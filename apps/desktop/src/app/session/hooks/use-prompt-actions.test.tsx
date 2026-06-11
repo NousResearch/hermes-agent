@@ -4,7 +4,7 @@ import { useEffect } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
-import { $connection, $sessions, setSessions } from '@/store/session'
+import { $connection, $localDeviceName, $sessions, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from './use-prompt-actions'
@@ -193,7 +193,34 @@ describe('usePromptActions /title', () => {
 describe('usePromptActions submit / queue drain semantics', () => {
   afterEach(() => {
     cleanup()
+    $localDeviceName.set('')
     vi.restoreAllMocks()
+  })
+
+  it('stamps the optimistic user message with the local device name immediately', async () => {
+    $localDeviceName.set(' Omar MacBook Pro ')
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async () => ({}) as never)
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('continue')
+
+    const firstSeededMessage = (seeds[0]?.messages as Array<{ senderDevice?: string }> | undefined)?.[0]
+
+    expect(firstSeededMessage?.senderDevice).toBe('Omar MacBook Pro')
+    expect(requestGateway).toHaveBeenCalledWith('prompt.submit', {
+      session_id: RUNTIME_SESSION_ID,
+      text: 'continue'
+    })
   })
 
   it('clears a leftover interrupted flag on a fresh submit (so the new turn streams)', async () => {
@@ -751,4 +778,3 @@ describe('uploadComposerAttachment remote read failures', () => {
     ).rejects.toThrow('ENOENT: no such file')
   })
 })
-

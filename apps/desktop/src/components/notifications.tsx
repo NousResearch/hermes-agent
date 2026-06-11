@@ -132,7 +132,7 @@ function NotificationItem({ notification }: { notification: AppNotification }) {
           )}
         </AlertDescription>
       </div>
-      <button
+      <Button
         aria-label={copy.dismiss}
         className="col-start-3 -mr-1 grid size-6 place-items-center rounded-md bg-transparent text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         onClick={() => dismissNotification(notification.id)}

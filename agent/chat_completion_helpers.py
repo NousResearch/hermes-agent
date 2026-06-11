@@ -1058,10 +1058,17 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             # case where a model accidentally inlines a secret into a tool
             # call (e.g. `terminal(command="curl -H 'Authorization: Bearer
             # sk-...'")`). (#19798)
+            #
+            # Use the JSON-preserving helper, NOT redact_sensitive_text
+            # directly: a naive regex over the raw JSON string can corrupt
+            # it (the env-assignment regex eats the closing quote of any
+            # JSON string that contains a KEY=*** # value, leaving invalid JSON). The helper defends with three layers
+            # (structural, string-literal-aware, last-resort) and never
+            # produces invalid JSON from valid input.
             if isinstance(tc_dict["function"]["arguments"], str):
-                from agent.redact import redact_sensitive_text
-                tc_dict["function"]["arguments"] = redact_sensitive_text(
-                    tc_dict["function"]["arguments"], force=True
+                from agent.redact import _redact_json_arguments
+                tc_dict["function"]["arguments"] = _redact_json_arguments(
+                    tc_dict["function"]["arguments"]
                 )
             # Preserve extra_content (e.g. Gemini thought_signature) so it
             # is sent back on subsequent API calls.  Without this, Gemini 3

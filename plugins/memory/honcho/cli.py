@@ -413,7 +413,7 @@ def _collect_operator_aliases(existing: dict, peer_target: str) -> dict:
     print(f"\n  Add runtime IDs that should alias to peer '{peer_target}'.")
     print("  Leave blank to skip a platform.  Existing aliases are preserved.")
     for platform_label, alias_hint in (
-        ("Telegram UID", "e.g. 86701400"),
+        ("Telegram UID", "e.g. 7654321"),
         ("Discord snowflake", "e.g. 491827364"),
         ("Slack user ID", "e.g. U04ABCDEF"),
         ("Matrix MXID", "e.g. @you:matrix.org"),

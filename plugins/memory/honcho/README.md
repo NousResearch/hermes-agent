@@ -138,8 +138,8 @@ In gateway deployments (Telegram, Discord, Slack, etc.) each user arrives with a
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `pinUserPeer` | bool | `false` | When `true`, every gateway runtime user collapses to `peerName`. Single-operator deployments where you want all your platforms (and any other users) to share one peer |
-| `userPeerAliases` | object | `{}` | Map of runtime IDs to peer IDs (`{"86701400": "alice"}`). Many-to-one is the intended pattern — alias all your runtime IDs to one peer name. One-to-many is not supported; one runtime ID resolves to exactly one peer |
-| `runtimePeerPrefix` | string | `""` | Prepended to unknown runtime IDs to namespace them (e.g. `"telegram_"` → `telegram_86701400`). Used only when no alias matches. Prevents collisions between platforms whose runtime IDs share the same shape |
+| `userPeerAliases` | object | `{}` | Map of runtime IDs to peer IDs (`{"7654321": "alice"}`). Many-to-one is the intended pattern — alias all your runtime IDs to one peer name. One-to-many is not supported; one runtime ID resolves to exactly one peer |
+| `runtimePeerPrefix` | string | `""` | Prepended to unknown runtime IDs to namespace them (e.g. `"telegram_"` → `telegram_7654321`). Used only when no alias matches. Prevents collisions between platforms whose runtime IDs share the same shape |
 
 > **Deprecated:** `pinPeerName` is a legacy alias for `pinUserPeer`, still read for back-compat (`pinUserPeer` wins where both are set). `hermes honcho setup` migrates it onto `pinUserPeer` on touch and never writes it.
 

@@ -263,7 +263,7 @@ class TestCloneHonchoForProfile:
             "apiKey": "***",
             "hosts": {
                 "hermes": {
-                    "userPeerAliases": {"86701400": "eri", "discord-491827364": "eri"},
+                    "userPeerAliases": {"7654321": "eri", "discord-491827364": "eri"},
                     "peerName": "eri",
                 },
             },
@@ -272,7 +272,7 @@ class TestCloneHonchoForProfile:
         ok = honcho_cli.clone_honcho_for_profile("coder")
         assert ok is True
         new_block = written["cfg"]["hosts"]["hermes_coder"]
-        assert new_block["userPeerAliases"] == {"86701400": "eri", "discord-491827364": "eri"}
+        assert new_block["userPeerAliases"] == {"7654321": "eri", "discord-491827364": "eri"}
 
     def test_runtime_peer_prefix_carries_into_cloned_profile(self, monkeypatch, tmp_path):
         cfg = {
@@ -447,7 +447,7 @@ class TestSetupWizardDeploymentShape:
             "hermes",          # workspace
             "2",               # tree: me + other people
             "y",               # keep my memory pooled? → hybrid
-            "86701400",        # telegram uid
+            "7654321",        # telegram uid
             "491827364",       # discord snowflake
             "",                # slack (skip)
             "",                # matrix (skip)
@@ -456,7 +456,7 @@ class TestSetupWizardDeploymentShape:
         host = self._run_setup(monkeypatch, tmp_path, answers=answers)
         assert host["pinUserPeer"] is False
         assert host["userPeerAliases"] == {
-            "86701400": "eri",
+            "7654321": "eri",
             "491827364": "eri",
         }
         assert "runtimePeerPrefix" not in host
@@ -498,7 +498,7 @@ class TestSetupWizardDeploymentShape:
             "hermes",          # workspace
             "3",               # tree: only others — triggers the orphan guard
             "y",               # pool my own memory instead? → hybrid
-            "86701400",        # telegram uid
+            "7654321",        # telegram uid
             "",                # discord (skip)
             "",                # slack (skip)
             "",                # matrix (skip)
@@ -506,7 +506,7 @@ class TestSetupWizardDeploymentShape:
         ]
         host = self._run_setup(monkeypatch, tmp_path, answers=answers, initial_cfg=initial_cfg)
         assert host["pinUserPeer"] is False
-        assert host["userPeerAliases"] == {"86701400": "eri"}
+        assert host["userPeerAliases"] == {"7654321": "eri"}
 
     def test_unpin_decline_steer_keeps_per_user(self, monkeypatch, tmp_path):
         """Operator can decline the steer ('n') and accept orphaning, ending
@@ -575,7 +575,7 @@ class TestSetupWizardDeploymentShape:
         """
         initial_cfg = {
             "apiKey": "***",
-            "userPeerAliases": {"86701400": "eri"},
+            "userPeerAliases": {"7654321": "eri"},
             "hosts": {"hermes": {"peerName": "eri"}},
         }
         answers = ["cloud", "", "eri", "hermetika", "hermes"]
@@ -583,7 +583,7 @@ class TestSetupWizardDeploymentShape:
         assert host["pinUserPeer"] is False
         # Hybrid materialises the root aliases into the host so subsequent
         # operator edits live on the host block they're inspecting.
-        assert host["userPeerAliases"] == {"86701400": "eri"}
+        assert host["userPeerAliases"] == {"7654321": "eri"}
 
     def test_only_others_does_not_override_root_user_peer_aliases(self, monkeypatch, tmp_path):
         """Explicitly choosing 'only other people' must leave the host

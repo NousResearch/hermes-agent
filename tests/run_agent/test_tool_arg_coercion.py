@@ -6,6 +6,7 @@ coerce_tool_args() fixes these type mismatches by comparing argument values
 against the tool's JSON Schema before dispatch.
 """
 
+import logging
 from unittest.mock import patch
 
 from model_tools import (
@@ -311,6 +312,19 @@ class TestCoerceToolArgs:
             args = {"items": "not-json"}
             result = coerce_tool_args("test_tool", args)
             assert result["items"] == ["not-json"]
+
+    def test_malformed_json_like_array_warns_before_wrapping(self, caplog):
+        """JSON-looking array strings are wrapped only with explicit diagnostics."""
+        schema = self._mock_schema({"items": {"type": "array"}})
+        with patch("model_tools.registry.get_schema", return_value=schema), \
+             caplog.at_level(logging.WARNING, logger="model_tools"):
+            args = {"items": "[a, b"}
+            result = coerce_tool_args("test_tool", args)
+
+        assert result["items"] == ["[a, b"]
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("failed to parse string as JSON" in message for message in messages)
+        assert any("looks like a JSON array string" in message for message in messages)
 
     def test_bare_string_wrapped_as_array(self):
         """Bare string on array field → single-element list."""

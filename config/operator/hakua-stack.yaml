@@ -1,0 +1,65 @@
+# Operator stack defaults for zapabob Windows fork.
+# Applied to ~/.hermes/config.yaml by scripts/apply_operator_stack.py
+
+model:
+  provider: openai-codex
+  default: gpt-5.5-low
+
+agent:
+  reasoning_effort: low
+
+# Sub-agent / delegation model (xAI OAuth Grok Build)
+delegation:
+  provider: xai-oauth
+  model: grok-build-0.1
+  reasoning_effort: low
+
+# Primary failover chain when Codex main errors out
+fallback_providers:
+  - provider: xai-oauth
+    model: grok-build-0.1
+
+memory:
+  memory_enabled: true
+  provider: ebbinghaus
+  sleep:
+    enabled: true
+    idle_after_seconds: 300
+    sleep:
+      rehearse_threshold: 0.45
+      forget_threshold: 0.08
+      salience_keep_threshold: 0.7
+      prune: true
+      limit: 200
+
+plugins:
+  enabled:
+    - ebbinghaus
+    - lm-twitterer
+    - irodori-tts
+  ebbinghaus:
+    auto_encode_turns: false
+    base_stability_days: 3.0
+    db_path: $HERMES_HOME/ebbinghaus_memory.db
+    decay_threshold: 0.08
+    max_prefetch: 5
+    min_prefetch_score: 0.16
+
+secrets:
+  bitwarden:
+    enabled: true
+    access_token_env: BWS_ACCESS_TOKEN
+    auto_install: true
+    cache_ttl_seconds: 300
+    override_existing: true
+    project_id: ""
+    server_url: ""
+
+memory_vault:
+  enabled: true
+  local_path: $HERMES_HOME/memory-vault
+  remote: https://github.com/zapabob/hermes-memory-vault.git
+  encryption: aes-256-gcm
+  sync_brain: true
+  sync_ebbinghaus_snapshot: true
+  auto_push: true

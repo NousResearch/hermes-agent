@@ -64,8 +64,9 @@ class FakeMemoryProvider(MemoryProvider):
     def shutdown(self):
         self.shutdown_called = True
 
-    def on_turn_start(self, turn_number, message):
+    def on_turn_start(self, turn_number, message, **kwargs):
         self.turn_starts.append((turn_number, message))
+        self.turn_start_kwargs = kwargs
 
     def on_session_end(self, messages):
         self.session_end_called = True
@@ -343,6 +344,21 @@ class TestMemoryManager:
         mgr.add_provider(p)
         mgr.on_turn_start(3, "hello")
         assert p.turn_starts == [(3, "hello")]
+
+    def test_on_turn_start_forwards_kwargs_to_providers(self):
+        """Manager forwards optional kwargs (e.g. model) through to providers.
+
+        The MemoryProvider.on_turn_start contract documents `model` among the
+        kwargs a provider may receive. Providers that record which model is
+        conversing (for attribution / per-model memory) depend on this being
+        forwarded rather than dropped. Asserts the contract, not a snapshot.
+        """
+        mgr = MemoryManager()
+        p = FakeMemoryProvider("p")
+        mgr.add_provider(p)
+        mgr.on_turn_start(3, "hello", model="anthropic/claude-opus-4")
+        assert p.turn_starts == [(3, "hello")]
+        assert p.turn_start_kwargs.get("model") == "anthropic/claude-opus-4"
 
     def test_on_session_end(self):
         mgr = MemoryManager()

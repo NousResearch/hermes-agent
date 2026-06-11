@@ -191,21 +191,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
-        # Coding posture prunes non-coding skill categories from the index
-        # (discovery-only — skills_list/skill_view still reach everything).
-        _hidden_cats = frozenset()
+        # Coding posture demotes non-coding skill categories to names-only in
+        # the index (never hidden — skill_view/skills_list reach everything,
+        # and every name stays visible for memory-anchored recall).
+        _compact_cats = frozenset()
         try:
-            from agent.coding_context import coding_hidden_skill_categories
+            from agent.coding_context import coding_compact_skill_categories
 
-            _hidden_cats = coding_hidden_skill_categories(
+            _compact_cats = coding_compact_skill_categories(
                 platform=agent.platform, cwd=resolve_context_cwd()
             )
         except Exception:
-            _hidden_cats = frozenset()
+            _compact_cats = frozenset()
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
-            hidden_categories=_hidden_cats or None,
+            compact_categories=_compact_cats or None,
         )
     else:
         skills_prompt = ""

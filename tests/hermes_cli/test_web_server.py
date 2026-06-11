@@ -5070,14 +5070,8 @@ class TestPluginAPIAuth:
     """Tests that plugin API routes require the session token (issue #19533)."""
 
     @pytest.fixture(autouse=True)
-    def _setup_test_client(self, monkeypatch, _isolate_hermes_home, _install_example_plugin):
-        """Create a TestClient without the session token header.
-
-        Pulls in ``_install_example_plugin`` so ``test_plugin_route_allows_auth``
-        has the ``/api/plugins/example/hello`` endpoint available — the
-        example plugin is no longer a bundled plugin, so the fixture
-        installs it into the per-test ``HERMES_HOME``.
-        """
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        """Create TestClients with and without the session token header."""
         try:
             from starlette.testclient import TestClient
         except ImportError:
@@ -5102,19 +5096,15 @@ class TestPluginAPIAuth:
     def test_plugin_route_allows_auth(self):
         """Plugin API routes should work with a valid session token.
 
-        Uses ``/api/plugins/example/hello`` from the example-dashboard
-        test fixture (installed into HERMES_HOME by the class-level
-        ``_install_example_plugin`` fixture) — a stable, side-effect-free
-        GET that's only loaded for tests. With a valid token the handler
-        should run (200); without one the middleware should 401 before
-        the handler is reached.
+        Uses a bundled plugin route so the test covers authenticated plugin
+        API access without relying on user-installed plugin backend imports.
         """
         # Without auth: middleware blocks before reaching the handler.
-        resp = self.client.get("/api/plugins/example/hello")
+        resp = self.client.get("/api/plugins/kanban/board")
         assert resp.status_code == 401
 
         # With auth: handler runs.
-        resp = self.auth_client.get("/api/plugins/example/hello")
+        resp = self.auth_client.get("/api/plugins/kanban/board")
         assert resp.status_code == 200
 
     def test_plugin_post_requires_auth(self):

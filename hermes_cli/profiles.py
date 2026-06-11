@@ -452,6 +452,14 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
             continue
         if not is_windows and entry.suffix:
             continue
+        # Skip large files — Hermes wrappers are tiny shell/batch scripts.
+        # Large extensionless binaries in ~/.local/bin would be expensive to
+        # read and decode as text (issue #44032).
+        try:
+            if entry.stat().st_size > 65536:
+                continue
+        except OSError:
+            continue
         try:
             content = entry.read_text()
         except (OSError, UnicodeDecodeError):

@@ -756,6 +756,30 @@ class TestFindAliasForProfile:
         (wrapper_dir / "pip").write_text("#!/bin/sh\nexec python -m pip \"$@\"\n")
         assert find_alias_for_profile("steve") is None
 
+    def test_skips_large_extensionless_files(self, profile_env, monkeypatch):
+        # Large extensionless binaries in ~/.local/bin should not be read as
+        # text — only small wrapper scripts are inspected (issue #44032).
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        # Write a large file (> 64 KiB) that contains the needle — it must be
+        # skipped entirely, so it must NOT match.
+        large_content = b"\x00" * 70000 + b"hermes -p steve"
+        (wrapper_dir / "some-large-binary").write_bytes(large_content)
+        assert find_alias_for_profile("steve") is None
+
+    def test_reads_small_extensionless_wrappers(self, profile_env, monkeypatch):
+        # Small wrapper scripts must still be read and matched normally.
+        monkeypatch.setattr("sys.platform", "darwin")
+        from hermes_cli.profiles import _get_wrapper_dir, find_alias_for_profile
+        wrapper_dir = _get_wrapper_dir()
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        (wrapper_dir / "mysteve").write_text(
+            "#!/bin/sh\nexec hermes -p steve \"$@\"\n"
+        )
+        assert find_alias_for_profile("steve") == "mysteve"
+
     def test_custom_alias_on_windows(self, profile_env, monkeypatch):
         monkeypatch.setattr("sys.platform", "win32")
         from hermes_cli.profiles import create_wrapper_script, find_alias_for_profile

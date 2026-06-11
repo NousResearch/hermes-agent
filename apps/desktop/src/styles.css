@@ -909,6 +909,12 @@ canvas {
   line-height: 1.45;
 }
 
+[data-slot='aui_intro-wordmark'] > [aria-hidden='true'] {
+  position: absolute;
+  inset: 0 auto auto 0;
+  pointer-events: none;
+}
+
 .fit-text {
   display: flex;
   font-size: var(--fit-text-min, 1rem);

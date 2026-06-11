@@ -110,7 +110,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
     CommandDef("loop", "Create a persistent scheduled agent loop", "Session",
-               args_hint="[<interval> <prompt> | status | pause <id> | resume <id> | stop <id>]"),
+               args_hint="[<interval> <prompt> [--repeat N] | status | pause <id> | resume <id> | stop <id>]"),
     CommandDef("status", "Show session info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),

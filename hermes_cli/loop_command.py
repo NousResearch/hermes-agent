@@ -21,6 +21,13 @@ _INTERVAL_RE = re.compile(r"^\d+[mhd]$", re.IGNORECASE)
 # Sub-minute tokens ("30s") — detected only to reject with a clear error,
 # since the scheduler has no sub-minute granularity.
 _SUBMINUTE_RE = re.compile(r"^\d+s$", re.IGNORECASE)
+# Natural-language sub-minute cadence such as "every 5 seconds". The cron
+# scheduler ticks at minute granularity, so catch this before it becomes a
+# dynamic 5-minute loop that surprises the user.
+_NATURAL_SUBMINUTE_RE = re.compile(
+    r"\b(?:every\s+)?\d+\s*(?:s|sec|secs|second|seconds)\b",
+    re.IGNORECASE,
+)
 
 
 def _validate_verify_command(command: Optional[str]) -> Optional[str]:
@@ -118,7 +125,7 @@ def _usage() -> str:
     return json.dumps({
         "success": True,
         "message": (
-            "Usage: /loop [interval] <prompt> [--skills s1,s2] [--verify 'cmd'] [--name label]\n"
+            "Usage: /loop [interval] <prompt> [--repeat N] [--skills s1,s2] [--verify 'cmd'] [--name label]\n"
             "       /loop status\n"
             "       /loop pause <id>\n"
             "       /loop resume <id>\n"
@@ -128,11 +135,14 @@ def _usage() -> str:
             "  /loop 30m check deploy       → timed: runs every 30 minutes\n"
             "  /loop check deploy            → dynamic: starts at 5m, adapts to output\n"
             "\n"
+            "Notes:\n"
+            "  Intervals must be at the front and the minimum cadence is 1m.\n"
+            "  Use --repeat N to stop after exactly N completed runs.\n"
             "Partial IDs work — you can use the first few characters of a job ID.\n"
             "\n"
             "Examples:\n"
             "  /loop every 30m check the deployment status\n"
-            "  /loop 2h monitor disk usage --verify 'df -h /' --name disk-watch\n"
+            "  /loop 2h monitor disk usage --repeat 3 --verify 'df -h /' --name disk-watch\n"
             "  /loop check if tests are passing --verify pytest\n"
             "  /loop status\n"
             "  /loop pause abc123"
@@ -188,15 +198,16 @@ def _parse_create_args(text: str) -> dict:
     A bare duration is normalized to recurring form and sub-minute intervals are
     rejected — see _classify_schedule.
 
-    Returns dict with keys: schedule, prompt, skills, verify, name, dynamic, error.
+    Returns dict with keys: schedule, prompt, skills, verify, name, repeat, dynamic, error.
     """
     result = {
         "schedule": "", "prompt": "", "skills": None,
-        "verify": None, "name": None, "dynamic": False, "error": None,
+        "verify": None, "name": None, "repeat": None, "dynamic": False, "error": None,
     }
 
-    # Extract flags in order: --name first, then --skills, then --verify.
-    # This ordering prevents --verify's greedy match from eating other flags.
+    # Extract flags in order: --name, --skills, and --repeat first, then
+    # --verify. This ordering prevents --verify's greedy match from eating
+    # other flags.
 
     # --name label
     name_match = re.search(r"--name\s+(\S+)", text)
@@ -210,6 +221,16 @@ def _parse_create_args(text: str) -> dict:
         raw_skills = skills_match.group(1)
         result["skills"] = [s.strip() for s in raw_skills.split(",") if s.strip()]
         text = text[:skills_match.start()] + text[skills_match.end():]
+
+    # --repeat N
+    repeat_match = re.search(r"--repeat\s+(\S+)", text)
+    if repeat_match:
+        raw_repeat = repeat_match.group(1).strip()
+        if not raw_repeat.isdigit() or int(raw_repeat) <= 0:
+            result["error"] = "Invalid --repeat value: use a positive integer"
+            return result
+        result["repeat"] = int(raw_repeat)
+        text = text[:repeat_match.start()] + text[repeat_match.end():]
 
     # --verify 'command' or --verify "command" (quoted)
     verify_match = re.search(r"""--verify\s+(['"])(.*?)\1""", text, re.DOTALL)
@@ -232,6 +253,13 @@ def _parse_create_args(text: str) -> dict:
     text = text.strip()
     if not text:
         result["error"] = "Missing prompt text"
+        return result
+    subminute_match = _NATURAL_SUBMINUTE_RE.search(text)
+    if subminute_match:
+        result["error"] = (
+            f"Sub-minute intervals aren't supported (minimum 1m): {subminute_match.group(0)}. "
+            "Put the cadence at the front, for example: /loop every 1m <prompt>"
+        )
         return result
 
     schedule, prompt, dynamic, error = _classify_schedule(text)
@@ -269,9 +297,11 @@ def _handle_create(text: str, origin: Optional[dict] = None) -> str:
             loop_dynamic=dynamic,
             loop_verify=parsed.get("verify"),
             skills=parsed.get("skills"),
+            repeat=parsed.get("repeat"),
         )
         job_name = job.get("name", job["id"])
         verify_line = f"   Verify: {parsed['verify']}\n" if parsed.get("verify") else ""
+        repeat_line = f"   Repeat: 0/{parsed['repeat']}\n" if parsed.get("repeat") else ""
         mode_line = "   Mode: dynamic (starts at 5m, adapts to output changes)\n" if dynamic else ""
         return json.dumps({
             "success": True,
@@ -283,6 +313,7 @@ def _handle_create(text: str, origin: Optional[dict] = None) -> str:
             "next_run_at": job.get("next_run_at"),
             "skills": parsed.get("skills"),
             "verify": parsed.get("verify"),
+            "repeat": parsed.get("repeat"),
             "name": parsed.get("name"),
             "message": (
                 f"🔄 Loop created: {job['id']}\n"
@@ -290,6 +321,7 @@ def _handle_create(text: str, origin: Optional[dict] = None) -> str:
                 f"   Schedule: {job.get('schedule_display', schedule)}\n"
                 f"   Prompt: {parsed['prompt'][:80]}{'...' if len(parsed['prompt']) > 80 else ''}\n"
                 f"{mode_line}"
+                f"{repeat_line}"
                 f"{verify_line}"
                 f"   Next run: {job.get('next_run_at', 'unknown')}\n"
                 f"   Auto-pause: after 3 consecutive no-progress detections"
@@ -323,12 +355,17 @@ def _handle_status() -> str:
             verify = j.get("loop_verify")
             verify_err = j.get("loop_last_verify_error")
             dynamic = j.get("loop_dynamic", False)
+            repeat = j.get("repeat") or {}
+            repeat_times = repeat.get("times")
+            repeat_completed = repeat.get("completed", 0)
             mode_tag = " [dynamic]" if dynamic else ""
             lines.append(
                 f"  {'⏸' if state == 'paused' else '▶'} {j['id']} "
                 f"({state}) [{schedule}]{mode_tag} {name[:40]}"
             )
             lines.append(f"    no-progress: {count}/{threshold}")
+            if repeat_times:
+                lines.append(f"    repeat: {repeat_completed}/{repeat_times}")
             if verify:
                 status_icon = "❌" if verify_err else "✓"
                 lines.append(f"    verify: {status_icon} {verify[:60]}")
@@ -346,6 +383,7 @@ def _handle_status() -> str:
                     "threshold": j.get("loop_no_progress_threshold", 3),
                     "verify": j.get("loop_verify"),
                     "verify_error": j.get("loop_last_verify_error"),
+                    "repeat": j.get("repeat"),
                 }
                 for j in loop_jobs
             ],

@@ -71,6 +71,20 @@ class TestParseCreateArgsTimed:
         assert r["skills"] == ["devops", "networking"]
         assert r["prompt"] == "check logs"
 
+    def test_repeat_flag(self):
+        r = _parse_create_args("30m check logs --repeat 3")
+        assert r["schedule"] == "every 30m"
+        assert r["repeat"] == 3
+        assert r["prompt"] == "check logs"
+
+    def test_repeat_flag_rejects_zero(self):
+        r = _parse_create_args("30m check logs --repeat 0")
+        assert r["error"] == "Invalid --repeat value: use a positive integer"
+
+    def test_repeat_flag_rejects_non_integer(self):
+        r = _parse_create_args("30m check logs --repeat three")
+        assert r["error"] == "Invalid --repeat value: use a positive integer"
+
     def test_verify_flag_bare(self):
         r = _parse_create_args("5m fix tests --verify pytest")
         assert r["schedule"] == "every 5m"
@@ -137,6 +151,12 @@ class TestParseCreateArgsTimed:
         assert r["error"] is not None
         assert "Sub-minute" in r["error"]
 
+    def test_natural_language_seconds_rejected(self):
+        r = _parse_create_args("open TextEdit and write hello every 5 seconds, stop after 3 times")
+        assert r["error"] is not None
+        assert "Sub-minute" in r["error"]
+        assert "minimum 1m" in r["error"]
+
 
 # =========================================================================
 # _parse_create_args — dynamic mode (no interval)
@@ -163,10 +183,11 @@ class TestParseCreateArgsDynamic:
         assert r["skills"] == ["github-code-review"]
 
     def test_prompt_with_all_flags(self):
-        r = _parse_create_args("monitor disk --name disk-check --verify 'df -h' --skills devops")
+        r = _parse_create_args("monitor disk --name disk-check --repeat 4 --verify 'df -h' --skills devops")
         assert r["dynamic"] is True
         assert r["prompt"] == "monitor disk"
         assert r["name"] == "disk-check"
+        assert r["repeat"] == 4
         assert r["verify"] == "df -h"
         assert r["skills"] == ["devops"]
 
@@ -632,6 +653,21 @@ class TestCreatePathRecurring:
         result = json.loads(handle_loop_command("30s check deploy"))
         assert result["success"] is False
         assert "Sub-minute" in result["error"]
+
+    def test_natural_language_seconds_rejected_at_create(self, isolated_cron):
+        result = json.loads(handle_loop_command("open TextEdit and write hello every 5 seconds, stop after 3 times"))
+        assert result["success"] is False
+        assert "Sub-minute" in result["error"]
+        assert "minimum 1m" in result["error"]
+
+    def test_repeat_flag_creates_finite_loop(self, isolated_cron):
+        result = json.loads(handle_loop_command("1m check the deploy --repeat 3"))
+        assert result["success"] is True
+        assert result["repeat"] == 3
+        assert "Repeat: 0/3" in result["message"]
+        job = isolated_cron.resolve_job_ref(result["job_id"])
+        assert job["repeat"]["times"] == 3
+        assert job["repeat"]["completed"] == 0
 
     @patch("hermes_cli.goals.judge_goal", return_value=("continue", "still useful", False))
     def test_loop_evaluation_persists_state_in_real_store(self, mock_judge, isolated_cron):

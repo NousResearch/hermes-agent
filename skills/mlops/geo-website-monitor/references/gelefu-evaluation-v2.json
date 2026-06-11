@@ -1,0 +1,176 @@
+{
+  "metadata": {
+    "website": "http://www.gelefu.com",
+    "brand": "格莱富",
+    "paper_info": {
+      "title": "GEO: Generative Engine Optimization",
+      "authors": "Aggarwal, P., Murahari, V. S., Rajpurohit, S., Kalyan, A., Narasimhan, K., & Deshpande, A.",
+      "conference": "KDD 2024",
+      "arxiv": "2311.09735",
+      "url": "https://generative-engines.com/GEO/"
+    },
+    "tool_version": "2.0 (source-verified)"
+  },
+  "technical_audit": {
+    "https_ok": false,
+    "https_source": "URL协议检查: http://www.gelefu.com",
+    "robots_txt_exists": false,
+    "robots_txt_source": "HTTP请求 http://www.gelefu.com/robots.txt 返回状态码 200，但内容是HTML或不包含robots.txt关键词",
+    "robots_txt_allows_ai": true,
+    "robots_txt_ai_source": "",
+    "llms_txt_exists": false,
+    "llms_txt_source": "HTTP请求 http://www.gelefu.com/llms.txt 返回状态码 200，但内容是HTML或不包含llms.txt关键词",
+    "login_wall": false,
+    "login_wall_source": "HTML内容中同时包含'login'和'password': False",
+    "paywall": false,
+    "paywall_source": "HTML内容中包含'pay'或'subscribe': False",
+    "core_content_in_html": true,
+    "core_content_source": "检查noscript标签: 找到0个，其中提示需要JS: False",
+    "title_tag": true,
+    "title_source": "检查title标签: 存在且非空",
+    "meta_keywords": true,
+    "meta_keywords_source": "检查meta keywords: 存在",
+    "meta_description": true,
+    "meta_description_source": "检查meta description: 存在",
+    "schema_org": false,
+    "schema_source": "检查Schema.org (application/ld+json): 不存在",
+    "opengraph": false,
+    "opengraph_source": "检查OpenGraph (og:title): 不存在"
+  },
+  "content_evaluation": {
+    "methods_basis": "GEO论文表2，9种优化方法",
+    "quotation_addition": {
+      "score": 3,
+      "source": "默认值3/10",
+      "method_info": {
+        "id": "quotation_addition",
+        "name": "Quotation Addition",
+        "description": "添加可引用的直接引语",
+        "source": "GEO论文表2"
+      }
+    },
+    "statistics_addition": {
+      "score": 6,
+      "source": "内容中找到85个数字",
+      "method_info": {
+        "id": "statistics_addition",
+        "name": "Statistics Addition",
+        "description": "添加具体数字、百分比",
+        "source": "GEO论文表2"
+      }
+    },
+    "cite_sources": {
+      "score": 7,
+      "source": "内容中包含'ISO'、'CE'、'认证'或'权威'等关键词，且找到10个外部链接",
+      "method_info": {
+        "id": "cite_sources",
+        "name": "Cite Sources",
+        "description": "引用权威机构/来源",
+        "source": "GEO论文表2"
+      }
+    },
+    "fluency_optimization": {
+      "score": 7,
+      "source": "默认值7/10",
+      "method_info": {
+        "id": "fluency_optimization",
+        "name": "Fluency Optimization",
+        "description": "改进语法、表达",
+        "source": "GEO论文表2"
+      }
+    },
+    "authoritative_tone": {
+      "score": 6,
+      "source": "默认值6/10",
+      "method_info": {
+        "id": "authoritative_tone",
+        "name": "Authoritative Tone",
+        "description": "更自信、权威的语气",
+        "source": "GEO论文表2"
+      }
+    },
+    "easy_to_understand": {
+      "score": 8,
+      "source": "找到5个h1标签，15个h2标签，标题层级清晰",
+      "method_info": {
+        "id": "easy_to_understand",
+        "name": "Easy-to-Understand",
+        "description": "更易理解的表达",
+        "source": "GEO论文表2"
+      }
+    },
+    "unique_words": {
+      "score": 5,
+      "source": "默认值5/10",
+      "method_info": {
+        "id": "unique_words",
+        "name": "Unique Words",
+        "description": "添加领域特有术语",
+        "source": "GEO论文表2"
+      }
+    },
+    "technical_terms": {
+      "score": 5,
+      "source": "默认值5/10",
+      "method_info": {
+        "id": "technical_terms",
+        "name": "Technical Terms",
+        "description": "加入行业技术词汇",
+        "source": "GEO论文表2"
+      }
+    },
+    "keyword_stuffing": {
+      "risk_score": 2,
+      "source": "默认值2/10（低风险）",
+      "method_info": {
+        "id": "keyword_stuffing",
+        "name": "Keyword Stuffing",
+        "description": "传统SEO方法（不推荐）",
+        "source": "GEO论文表2"
+      }
+    }
+  },
+  "citation_tests": null,
+  "recommendations": [
+    {
+      "priority": 1,
+      "method": "Quotation Addition",
+      "method_source": "GEO论文表2，排名第1",
+      "description": "在'关于我们'中添加CEO引语、客户评价",
+      "description_source": "工具建议",
+      "evidence_source": "默认值3/10"
+    },
+    {
+      "priority": 4,
+      "method": "Add robots.txt",
+      "method_source": "SEO最佳实践",
+      "description": "创建robots.txt文件",
+      "description_source": "工具建议",
+      "evidence_source": "HTTP请求 http://www.gelefu.com/robots.txt 返回状态码 200，但内容是HTML或不包含robots.txt关键词"
+    },
+    {
+      "priority": 5,
+      "method": "Add llms.txt",
+      "method_source": "AI内容发现最佳实践",
+      "description": "创建llms.txt（AI发现文件）",
+      "description_source": "工具建议",
+      "evidence_source": "HTTP请求 http://www.gelefu.com/llms.txt 返回状态码 200，但内容是HTML或不包含llms.txt关键词"
+    },
+    {
+      "priority": 6,
+      "method": "Add Schema.org structured data",
+      "method_source": "SEO最佳实践",
+      "description": "添加Organization、Product等Schema标记",
+      "description_source": "工具建议",
+      "evidence_source": "检查Schema.org (application/ld+json): 不存在"
+    },
+    {
+      "priority": 7,
+      "method": "Enable HTTPS",
+      "method_source": "Web安全最佳实践",
+      "description": "配置HTTPS证书",
+      "description_source": "工具建议",
+      "evidence_source": "URL协议检查: http://www.gelefu.com"
+    }
+  ]
+}

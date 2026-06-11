@@ -1623,7 +1623,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         npm_cwd = _workspace_root(tui_dir)
         # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
         # See #38772.
-        npm_workspace_args: tuple[str, ...] = ("--workspace", "ui-tui")
+        # When ui-tui/ has its own package-lock.json (e.g. curl install),
+        # _workspace_root() returns tui_dir itself.  Passing --workspace in
+        # that case fails because npm cannot find a workspace named "ui-tui"
+        # inside ui-tui/.  See #42973.
+        npm_workspace_args: tuple[str, ...] = () if npm_cwd == tui_dir else ("--workspace", "ui-tui")
         if termux_startup:
             npm_cwd, npm_workspace_args = _termux_workspace_install_context(
                 tui_dir,
@@ -4642,7 +4646,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # graph (including apps/desktop with its Electron + node-pty deps) is never
     # resolved here.  Without --workspace the root package.json's apps/* glob
     # would pull in desktop on every web build. See #38772.
-    npm_workspace_args: tuple[str, ...] = ("--workspace", "web")
+    # When web/ has its own package-lock.json, _workspace_root() returns
+    # web_dir itself and --workspace would fail.  See #42973.
+    npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
     r1 = _run_npm_install_deterministic(

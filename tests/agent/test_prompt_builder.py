@@ -276,6 +276,42 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
+    def test_hidden_categories_pruned_with_note(self, monkeypatch, tmp_path):
+        """Posture-driven pruning drops whole categories and discloses it."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        for cat, name in (("social-media", "tweet-stuff"), ("github", "pr-review")):
+            d = tmp_path / "skills" / cat / name
+            d.mkdir(parents=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: Does {name} things\n---\n"
+            )
+
+        result = build_skills_system_prompt(
+            hidden_categories=frozenset({"social-media"})
+        )
+        assert "pr-review" in result
+        assert "tweet-stuff" not in result
+        # Disclosure note so the model knows the full catalog exists.
+        assert "skills_list" in result
+
+    def test_hidden_categories_prune_nested_and_miss_cache_separately(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "skills" / "social-media" / "twitter" / "thread-writer"
+        d.mkdir(parents=True)
+        (d / "SKILL.md").write_text(
+            "---\nname: thread-writer\ndescription: Write threads\n---\n"
+        )
+        # Nested category ("social-media/twitter") pruned via its parent.
+        pruned = build_skills_system_prompt(
+            hidden_categories=frozenset({"social-media"})
+        )
+        assert "thread-writer" not in pruned
+        # Unfiltered call must not be served from the filtered cache entry.
+        full = build_skills_system_prompt()
+        assert "thread-writer" in full
+
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))

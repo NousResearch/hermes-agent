@@ -270,6 +270,7 @@ inline, but the full diff stays out-of-band:
 On a messaging platform, approve a skill from its gist + metadata, or open
 `/skills diff` on the CLI / dashboard / the staged file under
 `~/.hermes/pending/skills/<id>.json` when you want to read the whole change.
+Full details in [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
 
 
 ## External Memory Providers

@@ -7,47 +7,26 @@
  * probes still pass while /api/ws rejects the renderer's token.
  */
 
-const http = require('node:http')
-const https = require('node:https')
-
 const DEFAULT_TOKEN_FETCH_TIMEOUT_MS = 3_000
 
-function fetchPublicText(url, options = {}) {
-  return new Promise((resolve, reject) => {
-    let parsed
-    try {
-      parsed = new URL(url)
-    } catch (error) {
-      reject(new Error(`Invalid URL: ${error.message}`))
-      return
+async function fetchPublicText(url, options = {}) {
+  const { protocol } = new URL(url)
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    throw new Error(`Unsupported Hermes backend URL protocol: ${protocol}`)
+  }
+
+  const timeoutMs = options.timeoutMs ?? DEFAULT_TOKEN_FETCH_TIMEOUT_MS
+  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) }).catch(error => {
+    if (error.name === 'TimeoutError') {
+      throw new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`)
     }
-
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-      reject(new Error(`Unsupported Hermes backend URL protocol: ${parsed.protocol}`))
-      return
-    }
-
-    const client = parsed.protocol === 'https:' ? https : http
-    const timeoutMs = options.timeoutMs ?? DEFAULT_TOKEN_FETCH_TIMEOUT_MS
-    const req = client.request(parsed, { method: options.method || 'GET' }, res => {
-      const chunks = []
-      res.on('data', chunk => chunks.push(chunk))
-      res.on('end', () => {
-        const text = Buffer.concat(chunks).toString('utf8')
-        if ((res.statusCode || 500) >= 400) {
-          reject(new Error(`${res.statusCode}: ${text || res.statusMessage}`))
-          return
-        }
-        resolve(text)
-      })
-    })
-
-    req.on('error', reject)
-    req.setTimeout(timeoutMs, () => {
-      req.destroy(new Error(`Timed out connecting to Hermes backend after ${timeoutMs}ms`))
-    })
-    req.end()
+    throw error
   })
+  const text = await res.text()
+
+  if (!res.ok) throw new Error(`${res.status}: ${text || res.statusText}`)
+
+  return text
 }
 
 function extractInjectedDashboardToken(html) {

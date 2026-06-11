@@ -34,6 +34,7 @@ import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { $processNotificationsMode, processCompletionToast } from '@/store/process-notifications'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   setCurrentBranch,
@@ -1076,10 +1077,24 @@ export function useMessageStream({
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
           compactedTurnRef.current.add(sessionId)
-        } else if (sessionId && payload?.kind === 'process') {
-          // The gateway's notification poller announces background process
-          // completions / watch matches here — re-sync the status stack.
-          void refreshBackgroundProcesses(sessionId)
+        } else if (payload?.kind === 'process') {
+          // Background process lifecycle from the gateway's notification poller
+          // (tui_gateway/server.py). Re-sync the status stack so the composer
+          // reflects the completion/watch-match.
+          if (sessionId) {
+            void refreshBackgroundProcesses(sessionId)
+          }
+
+          // The poller also chains an agent turn that surfaces the text
+          // in-chat; the native toast covers the hands-off case (#44201) —
+          // window hidden, or the process belongs to a chat the user isn't
+          // looking at. Gated by the same config the messaging gateways
+          // honor: display.background_process_notifications.
+          const toast = processCompletionToast(payload, $processNotificationsMode.get())
+
+          if (toast && (document.hidden || sessionId !== activeSessionIdRef.current)) {
+            void window.hermesDesktop?.notify(toast)
+          }
         }
       } else if (event.type === 'review.summary') {
         // Self-improvement background review saved something to memory/skills

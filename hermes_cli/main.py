@@ -10332,6 +10332,8 @@ def cmd_dashboard(args):
         _launch_profile not in ("default", "custom")
         and not getattr(args, "isolated", False)
         and not getattr(args, "open_profile", "")
+        # Desktop pool backends are intentionally per-profile.
+        and os.environ.get("HERMES_DESKTOP") != "1"
     ):
         url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
         if _dashboard_listening(args.host, args.port):

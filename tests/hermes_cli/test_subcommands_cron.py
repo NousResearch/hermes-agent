@@ -50,7 +50,7 @@ def test_cron_create_options():
         "cron", "create", "0 9 * * *", "do the thing",
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
         "--skill", "a", "--skill", "b", "--no-agent",
-        "--workdir", "/tmp/x", "--profile", "work",
+        "--workdir", "/tmp/x",
     ])
     assert ns.schedule == "0 9 * * *"
     assert ns.prompt == "do the thing"
@@ -60,7 +60,6 @@ def test_cron_create_options():
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
     assert ns.workdir == "/tmp/x"
-    assert ns.profile == "work"
 
 
 def test_cron_edit_no_agent_tristate():

@@ -228,6 +228,37 @@ def test_jarvis_transcribe_can_call_local_faster_whisper_adapter(agents_home, mo
     assert seen["language"] == "hr"
 
 
+def test_jarvis_transcribe_accepts_minimax_cleanup_but_preserves_raw_risk(agents_home):
+    paths = resolve_paths(None)
+
+    payload = jarvis_transcribe_payload(
+        paths,
+        {
+            "audio_base64": "UklGRg==",
+            "audio_mime": "audio/webm",
+            "stt_result": {"text": "Deployaj BP24", "provider": "local-faster-whisper", "confidence": 0.91},
+            "model_result": {
+                "normalized_transcript": "Prikaži zadnje BP24 stanje",
+                "semantic_intent": "status lookup",
+                "risk_class": "safe_local",
+                "voice_reply_short": "Prikazujem status.",
+            },
+            "advisor_provider": "minimax",
+            "advisor_model": "MiniMax-M3",
+        },
+    )
+
+    assert payload["execution_created"] is False
+    assert payload["transcript"]["text"] == "Deployaj BP24"
+    assert payload["transcript"]["cleaned_text"] == "Prikaži zadnje BP24 stanje"
+    assert payload["advisor"]["provider"] == "minimax"
+    assert payload["advisor"]["model"] == "MiniMax-M3"
+    assert payload["advisor"]["risk_disagreement"] is True
+    assert payload["command_card"]["risk_class"] == "public_gated"
+    assert payload["command_card"]["approval_required"] is True
+    assert "Deployaj BP24" in payload["command_card"]["gate_text"]
+
+
 def test_jarvis_model_advisor_keeps_deterministic_gate_authoritative(agents_home):
     paths = resolve_paths(None)
     deterministic = jarvis_preview_payload(paths, {"transcript_text": "Deployaj BP24"})

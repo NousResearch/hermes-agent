@@ -547,6 +547,25 @@ def _jarvis_voice_reply(command_card: dict[str, Any]) -> str:
     return "Ovo je sigurno lokalno. Pripremio sam preview, bez izvršavanja."
 
 
+def _jarvis_cleaned_transcript(raw_text: str, data: dict[str, Any]) -> str:
+    model_result = data.get("model_result") if isinstance(data.get("model_result"), dict) else {}
+    cleaned = (
+        model_result.get("normalized_transcript")
+        or model_result.get("cleaned_transcript")
+        or model_result.get("cleaned_text")
+        or data.get("cleaned_transcript")
+        or data.get("cleaned_text")
+        or raw_text
+    )
+    return str(cleaned).strip() or raw_text
+
+
+def _jarvis_gate_text(raw_text: str, cleaned_text: str) -> str:
+    if cleaned_text and cleaned_text != raw_text:
+        return f"{raw_text}\n{cleaned_text}"
+    return raw_text
+
+
 def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[str, Any]:
     """Persist a local push-to-talk artefact and return transcript + intent preview.
 
@@ -566,14 +585,28 @@ def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dic
     audio_path.write_bytes(audio_bytes)
     stt = _jarvis_stt_payload(data, audio_path)
     transcript_text = stt["text"]
-    preview = jarvis_preview_payload(paths, {"transcript_text": transcript_text})
-    advisor = jarvis_model_advisor_payload(paths, {"transcript_text": transcript_text, "deterministic_preview": preview})
+    cleaned_text = _jarvis_cleaned_transcript(transcript_text, data)
+    gate_text = _jarvis_gate_text(transcript_text, cleaned_text)
+    preview = jarvis_preview_payload(paths, {"transcript_text": gate_text})
+    preview["command_card"]["heard"] = transcript_text
+    preview["command_card"]["cleaned_text"] = cleaned_text
+    preview["command_card"]["gate_text"] = gate_text
+    advisor = jarvis_model_advisor_payload(
+        paths,
+        {
+            "transcript_text": transcript_text,
+            "deterministic_preview": preview,
+            "model_result": data.get("model_result") if isinstance(data.get("model_result"), dict) else {},
+            "provider": data.get("advisor_provider") or data.get("provider") or "deterministic",
+            "model": data.get("advisor_model") or data.get("model") or "none",
+        },
+    )
     transcript_body = {
         "local_only": True,
         "execution_created": False,
         "stt": stt,
         "advisor": {"provider": advisor["provider"], "model": advisor["model"], "risk_disagreement": advisor["risk_disagreement"]},
-        "transcript": {"text": transcript_text, "source": stt["provider"], "created_at": utc_now()},
+        "transcript": {"text": transcript_text, "cleaned_text": cleaned_text, "source": stt["provider"], "created_at": utc_now()},
         "intent_preview": advisor["command_card"],
         "audio_artifact_path": str(audio_path),
     }
@@ -718,7 +751,7 @@ main {{ padding:24px 34px 60px; }} section {{ display:none; }} section.active {{
 <section id=\"operator\"><h2>Operator Loop / Judge / Evidence</h2><pre id=\"operatorPayload\"></pre></section>
 <section id=\"media\"><h2>Media Studio Browser v0</h2><div class=\"kv\">Read-only. No generation. No posting.</div><div id=\"mediaList\" class=\"grid\"></div></section>
 <section id=\"manage\"><h2>Manage / Update / Status</h2><pre id=\"managePayload\"></pre></section>
-<section id=\"voice\"><h2>Voice / Jarvis gated panel</h2><div class=\"card\"><h3>Jarvis / Oracle Briefing</h3><div class=\"kv\">wake/show/build/act · dry-run only · no always-on microphone · no computer-control</div><pre id=\"jarvisPayload\"></pre></div><div class=\"card\"><h3>Push-to-talk v0.1</h3><div class=\"kv\">Record command captures local browser audio, stores local artefacts, returns transcript + intent preview. No execution.</div><p><button id=\"recordJarvis\">Record command</button> <button id=\"stopJarvis\" disabled>Stop</button> <button id=\"previewJarvis\">Preview typed command</button></p><textarea id=\"jarvisTranscript\">Prikaži zadnje BP24 stanje</textarea><h3>Command Preview</h3><pre id=\"jarvisCommandCard\"></pre></div><pre id=\"voicePayload\"></pre></section>
+<section id=\"voice\"><h2>Voice / Jarvis gated panel</h2><div class=\"card\"><h3>Jarvis / Oracle Briefing</h3><div class=\"kv\">wake/show/build/act · dry-run only · no always-on microphone · no computer-control</div><pre id=\"jarvisPayload\"></pre></div><div class=\"card\"><h3>Push-to-talk v0.1</h3><div class=\"kv\">Record command captures local browser audio, stores local artefacts, returns raw transcript + cleaned transcript + intent preview. Deterministic gate remains authority.</div><p><button id=\"recordJarvis\">Record command</button> <button id=\"stopJarvis\" disabled>Stop</button> <button id=\"previewJarvis\">Preview typed command</button></p><textarea id=\"jarvisTranscript\">Prikaži zadnje BP24 stanje</textarea><h3>Command Preview</h3><pre id=\"jarvisCommandCard\"></pre></div><pre id=\"voicePayload\"></pre></section>
 </main>
 <script id=\"bootstrap\" type=\"application/json\">{_json_safe(bootstrap)}</script>
 <script>

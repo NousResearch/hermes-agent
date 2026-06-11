@@ -145,18 +145,18 @@ fn ensure_lite_uninstall_entry_allowed(hermes_home: &Path, candidate: &Path) -> 
 /// Remove the runtime checkout and bootstrap marker so the next launch repairs it.
 pub fn repair_clean(hermes_home: &Path) -> Result<Vec<String>> {
     let mut removed = Vec::new();
-    let agent_root = paths::agent_root(hermes_home);
-    ensure_safe_to_delete(hermes_home, &agent_root)?;
-    if agent_root.exists() {
-        fs::remove_dir_all(&agent_root).map_err(|err| ManagerError::io(&agent_root, err))?;
-        removed.push(agent_root.display().to_string());
+    for runtime_root in paths::managed_runtime_roots(hermes_home) {
+        ensure_safe_to_delete(hermes_home, &runtime_root)?;
+        if runtime_root.exists() {
+            fs::remove_dir_all(&runtime_root)
+                .map_err(|err| ManagerError::io(&runtime_root, err))?;
+            removed.push(runtime_root.display().to_string());
+        }
     }
 
-    let marker = hermes_home
-        .join("hermes-agent")
-        .join(".hermes-bootstrap-complete");
+    let marker = paths::agent_root(hermes_home).join(".hermes-bootstrap-complete");
     ensure_safe_to_delete(hermes_home, &marker)?;
-    if marker.exists() {
+    if !paths::agent_root(hermes_home).exists() && marker.exists() {
         fs::remove_file(&marker).map_err(|err| ManagerError::io(&marker, err))?;
         removed.push(marker.display().to_string());
     }
@@ -167,17 +167,16 @@ pub fn repair_clean(hermes_home: &Path) -> Result<Vec<String>> {
 /// Report runtime checkout paths that repair cleanup would remove.
 pub fn repair_clean_plan(hermes_home: &Path) -> Result<Vec<String>> {
     let mut planned = Vec::new();
-    let agent_root = paths::agent_root(hermes_home);
-    ensure_safe_to_delete(hermes_home, &agent_root)?;
-    if agent_root.exists() {
-        planned.push(agent_root.display().to_string());
+    for runtime_root in paths::managed_runtime_roots(hermes_home) {
+        ensure_safe_to_delete(hermes_home, &runtime_root)?;
+        if runtime_root.exists() {
+            planned.push(runtime_root.display().to_string());
+        }
     }
 
-    let marker = hermes_home
-        .join("hermes-agent")
-        .join(".hermes-bootstrap-complete");
+    let marker = paths::agent_root(hermes_home).join(".hermes-bootstrap-complete");
     ensure_safe_to_delete(hermes_home, &marker)?;
-    if !agent_root.exists() && marker.exists() {
+    if !paths::agent_root(hermes_home).exists() && marker.exists() {
         planned.push(marker.display().to_string());
     }
 
@@ -336,6 +335,42 @@ mod tests {
         assert_eq!(planned, vec![agent_root.display().to_string()]);
         assert!(agent_root.exists());
         assert!(marker.exists());
+    }
+
+    #[test]
+    fn repair_clean_removes_managed_runtime_dirs_but_preserves_user_data() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let hermes_home = dir.path().join("hermes");
+        let agent_root = paths::agent_root(&hermes_home);
+        let bin_dir = hermes_home.join("bin");
+        let node_dir = hermes_home.join("node");
+        let git_dir = hermes_home.join("git");
+        let user_config = hermes_home.join("config.yaml");
+        fs::create_dir_all(&agent_root).expect("agent root should be created");
+        fs::create_dir_all(&bin_dir).expect("bin dir should be created");
+        fs::create_dir_all(&node_dir).expect("node dir should be created");
+        fs::create_dir_all(&git_dir).expect("git dir should be created");
+        fs::write(&user_config, "model: test").expect("user config should be created");
+
+        let planned = super::repair_clean_plan(&hermes_home).expect("plan should be created");
+        assert_eq!(
+            planned,
+            vec![
+                agent_root.display().to_string(),
+                bin_dir.display().to_string(),
+                node_dir.display().to_string(),
+                git_dir.display().to_string(),
+            ]
+        );
+
+        let removed = super::repair_clean(&hermes_home).expect("runtime dirs should be removed");
+
+        assert_eq!(removed, planned);
+        assert!(!agent_root.exists());
+        assert!(!bin_dir.exists());
+        assert!(!node_dir.exists());
+        assert!(!git_dir.exists());
+        assert!(user_config.exists());
     }
 
     #[test]

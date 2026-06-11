@@ -314,6 +314,8 @@ language-specific setup where needed.
 - `hermes-manager install-metadata` now records existing Hermes-managed runtime directories such as `bin`, `node`,
   and `git` in addition to the source checkout. Lite uninstall accepts only those runtime roots while continuing to
   reject user config and data paths.
+- `hermes-manager repair-clean` now removes the same Hermes-managed runtime roots as repairable install state, so
+  broken managed Node/uv/Git directories are recreated by the next bootstrap while user config and data stay intact.
 
 **Exit Criteria:**
 - Rust manager can perform platform cleanup with parity to Python/shell uninstall.

@@ -1520,34 +1520,43 @@ def _cmd_board(args: argparse.Namespace) -> int:
 
     console = Console()
 
-    def _render_once() -> None:
+    def _build_view():
         tasks = _fetch_tasks()
         use_stack = args.layout == "stack" or (
             args.layout == "auto"
             and should_stack(console.size.width, show_all=args.show_all)
         )
         renderer = render_board_stacked if use_stack else render_board
-        view = renderer(
+        return renderer(
             tasks,
             board_slug=board_slug,
             other_board_count=other_count,
             show_all=args.show_all,
             limit=limit,
         )
-        if args.tail:
-            console.clear()
-        console.print(view)
 
     if args.tail:
+        from rich.live import Live
+
+        # Smooth in-place updates on the alternate screen (like top/htop),
+        # re-querying and re-rendering every --refresh seconds. screen=True
+        # restores the prior terminal contents on exit; auto_refresh=False
+        # stops Rich from redrawing the unchanged view between our updates.
         try:
-            while True:
-                _render_once()
-                time.sleep(args.refresh)
+            with Live(
+                _build_view(),
+                console=console,
+                screen=True,
+                auto_refresh=False,
+            ) as live:
+                while True:
+                    time.sleep(args.refresh)
+                    live.update(_build_view(), refresh=True)
         except KeyboardInterrupt:
-            print()  # tidy newline after ^C
+            pass
         return 0
 
-    _render_once()
+    console.print(_build_view())
     return 0
 
 

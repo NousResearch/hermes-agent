@@ -12,6 +12,7 @@ const {
   dashboardIndexUrl,
   extractInjectedDashboardToken,
   fetchPublicText,
+  isForeignBackendToken,
   resolveServedDashboardToken
 } = require('./dashboard-token.cjs')
 
@@ -86,4 +87,24 @@ test('resolveServedDashboardToken propagates fetch errors so callers can fall ba
 
 test('fetchPublicText rejects unsupported protocols', async () => {
   await assert.rejects(() => fetchPublicText('file:///tmp/index.html'), /Unsupported Hermes backend URL protocol/)
+})
+
+test('isForeignBackendToken flags a mismatched token from a dead child', () => {
+  assert.equal(isForeignBackendToken({ servedToken: 'other', spawnToken: 'mine', childAlive: false }), true)
+})
+
+test('isForeignBackendToken trusts a mismatched token while our child is alive', () => {
+  // Live child + different token = our own backend regenerated the token
+  // because the env pin did not survive the spawn. Adopting it is correct.
+  assert.equal(isForeignBackendToken({ servedToken: 'other', spawnToken: 'mine', childAlive: true }), false)
+})
+
+test('isForeignBackendToken trusts a matching token regardless of liveness', () => {
+  assert.equal(isForeignBackendToken({ servedToken: 'mine', spawnToken: 'mine', childAlive: false }), false)
+  assert.equal(isForeignBackendToken({ servedToken: 'mine', spawnToken: 'mine', childAlive: true }), false)
+})
+
+test('isForeignBackendToken ignores an absent served token', () => {
+  assert.equal(isForeignBackendToken({ servedToken: null, spawnToken: 'mine', childAlive: false }), false)
+  assert.equal(isForeignBackendToken({ servedToken: '', spawnToken: 'mine', childAlive: false }), false)
 })

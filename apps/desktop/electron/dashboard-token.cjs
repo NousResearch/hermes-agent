@@ -78,10 +78,32 @@ async function resolveServedDashboardToken(baseUrl, fallbackToken, options = {})
   return servedToken || fallbackToken
 }
 
+/**
+ * Decide whether a served-token mismatch means we are talking to a backend we
+ * did NOT spawn.
+ *
+ * The desktop pins HERMES_DASHBOARD_SESSION_TOKEN on every backend it spawns,
+ * and the dashboard honors that env at import — so a LIVE child of ours always
+ * serves our token. The only way the served token differs while our child is
+ * dead is that the readiness probe (public /api/status) answered from a
+ * different process: an orphaned dashboard or port squatter that won the bind
+ * race while our child exited. Adopting that process's token would silently
+ * authenticate the renderer against a foreign backend (possibly the wrong
+ * profile), so callers must fail loudly instead.
+ *
+ * A mismatch with a live child is the benign case the served-token fallback
+ * exists for: our own child served a regenerated token because the env pin
+ * did not survive the spawn (e.g. shell-wrapped CLI shims).
+ */
+function isForeignBackendToken({ servedToken, spawnToken, childAlive }) {
+  return Boolean(servedToken) && servedToken !== spawnToken && !childAlive
+}
+
 module.exports = {
   DEFAULT_TOKEN_FETCH_TIMEOUT_MS,
   dashboardIndexUrl,
   extractInjectedDashboardToken,
   fetchPublicText,
+  isForeignBackendToken,
   resolveServedDashboardToken
 }

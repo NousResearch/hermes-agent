@@ -29,7 +29,7 @@ const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
-const { resolveServedDashboardToken } = require('./dashboard-token.cjs')
+const { isForeignBackendToken, resolveServedDashboardToken } = require('./dashboard-token.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
@@ -4599,6 +4599,21 @@ async function spawnPoolBackend(profile, entry) {
     rememberLog(`[boot] could not read served dashboard token for profile "${profile}": ${error.message}`)
     return token
   })
+  if (
+    isForeignBackendToken({
+      servedToken: authToken,
+      spawnToken: token,
+      childAlive: child.exitCode === null && !child.killed
+    })
+  ) {
+    // Our child is dead and the port answers with someone else's token:
+    // /api/status readiness was a false positive from a process we did not
+    // spawn. Fail loudly rather than authenticate against a foreign backend.
+    backendPool.delete(profile)
+    throw new Error(
+      `Hermes backend for profile "${profile}" exited and port ${port} is served by a different process; refusing its session token.`
+    )
+  }
   entry.token = authToken
 
   return {
@@ -4831,6 +4846,20 @@ async function startHermes() {
       rememberLog(`[boot] could not read served dashboard token: ${error.message}`)
       return token
     })
+    if (
+      isForeignBackendToken({
+        servedToken: authToken,
+        spawnToken: token,
+        childAlive: hermesProcess.exitCode === null && !hermesProcess.killed
+      })
+    ) {
+      // Our child is dead and the port answers with someone else's token:
+      // /api/status readiness was a false positive from a process we did not
+      // spawn. Fail loudly rather than authenticate against a foreign backend.
+      throw new Error(
+        `Hermes backend exited and port ${port} is served by a different process; refusing its session token.`
+      )
+    }
     updateBootProgress({
       phase: 'backend.ready',
       message: 'Hermes backend is ready. Finalizing desktop startup',

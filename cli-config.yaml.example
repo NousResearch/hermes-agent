@@ -1232,3 +1232,46 @@ updates:
 #   # default — works on Fly.io out of the box).
 #   #
 #   #   public_url: "https://example.com/hermes"
+
+# =============================================================================
+# Secrets — where Hermes resolves API keys / credentials from
+# =============================================================================
+# By default Hermes reads credentials only from ~/.hermes/.env (and the shell
+# environment). The optional `secrets` block lets you resolve them from an
+# external source at startup instead, so keys never have to live in plaintext
+# .env. process env and .env always win over a provider (non-destructive
+# overlay) — a provider only fills keys that aren't already set.
+#
+# secrets:
+#   # provider selects the backend: "env" (default) | "command" | "bitwarden".
+#   provider: "env"
+#
+#   # --- provider: "command" ---------------------------------------------
+#   # Run a user-configured helper that prints the secret(s) on stdout. The
+#   # helper gets the requested key in the HERMES_SECRET_KEY env var (never
+#   # interpolated into the shell string). It may print either a single bare
+#   # value, or a KEY=VALUE dotenv blob (one helper run enumerates everything
+#   # at startup). Works with any secret store that has a CLI: keepassxc-cli,
+#   # secret-tool, pass, gpg, or a script that cats a tmpfs env file.
+#   # POSIX-only (needs /bin/sh); on Windows it degrades to the env provider.
+#   # The helper must be fast and NON-interactive (hard 3s timeout, 1 MiB cap).
+#   #
+#   #   provider: "command"
+#   #   command: "keepassxc-cli show -a Password ~/secrets/hermes.kdbx \"$HERMES_SECRET_KEY\""
+#   #   # or a whole-vault dump for list-mode:
+#   #   command: "cat /run/user/1000/hermes-secrets.env"
+#
+#   # --- provider: "bitwarden" -------------------------------------------
+#   # Pull secrets from Bitwarden Secrets Manager (the `bws` CLI). Set up
+#   # interactively with `hermes secrets bitwarden setup`. (A bare
+#   # `bitwarden.enabled: true` with no top-level `provider` is still honored
+#   # for backward compatibility and is treated as provider: "bitwarden".)
+#   #
+#   #   provider: "bitwarden"
+#   #   bitwarden:
+#   #     enabled: true
+#   #     project_id: "<uuid>"
+#   #     server_url: "https://vault.bitwarden.com"   # US default; .eu / self-hosted ok
+#   #     access_token_env: "BWS_ACCESS_TOKEN"        # .env var holding the machine-account token
+#   #     override_existing: false                    # keep .env / shell values winning
+#   #     cache_ttl_seconds: 300

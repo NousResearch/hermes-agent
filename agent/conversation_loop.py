@@ -72,7 +72,6 @@ logger = logging.getLogger(__name__)
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
 
-
 def _image_error_max_dimension(error: Exception) -> Optional[int]:
     """Extract a provider-reported image dimension ceiling, if present."""
     parts = []
@@ -100,7 +99,6 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     if 512 <= max_dimension <= 8000:
         return max_dimension
     return None
-
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""

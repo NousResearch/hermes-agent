@@ -311,6 +311,9 @@ language-specific setup where needed.
 - Windows desktop lite uninstall now asks `hermes-manager uninstall-lite --shortcuts` to remove Rust-managed Start
   Menu/Desktop shortcuts. The manager only removes planned `.lnk` files whose shortcut target still points at the
   packaged Hermes desktop executable.
+- `hermes-manager install-metadata` now records existing Hermes-managed runtime directories such as `bin`, `node`,
+  and `git` in addition to the source checkout. Lite uninstall accepts only those runtime roots while continuing to
+  reject user config and data paths.
 
 **Exit Criteria:**
 - Rust manager can perform platform cleanup with parity to Python/shell uninstall.

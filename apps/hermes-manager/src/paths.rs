@@ -105,6 +105,16 @@ pub fn agent_root(hermes_home: &std::path::Path) -> PathBuf {
     hermes_home.join("hermes-agent")
 }
 
+/// Runtime directories that Hermes installers own and may recreate.
+pub fn managed_runtime_roots(hermes_home: &std::path::Path) -> Vec<PathBuf> {
+    vec![
+        agent_root(hermes_home),
+        hermes_home.join("bin"),
+        hermes_home.join("node"),
+        hermes_home.join("git"),
+    ]
+}
+
 /// Manager metadata directory.
 pub fn manager_state_dir(hermes_home: &std::path::Path) -> PathBuf {
     hermes_home.join("manager")
@@ -129,6 +139,20 @@ mod tests {
     fn agent_root_is_under_hermes_home() {
         let home = PathBuf::from("/tmp/hermes");
         assert_eq!(agent_root(&home), PathBuf::from("/tmp/hermes/hermes-agent"));
+    }
+
+    #[test]
+    fn managed_runtime_roots_are_under_hermes_home() {
+        let home = PathBuf::from("/tmp/hermes");
+        assert_eq!(
+            managed_runtime_roots(&home),
+            vec![
+                PathBuf::from("/tmp/hermes/hermes-agent"),
+                PathBuf::from("/tmp/hermes/bin"),
+                PathBuf::from("/tmp/hermes/node"),
+                PathBuf::from("/tmp/hermes/git"),
+            ]
+        );
     }
 
     #[test]

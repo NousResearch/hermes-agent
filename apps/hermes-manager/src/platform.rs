@@ -94,7 +94,10 @@ pub fn plan_windows_shortcuts(
     desktop_dir: &Path,
     icon_exists: bool,
 ) -> Vec<ShortcutPlan> {
-    let working_directory = target_exe.parent().unwrap_or_else(|| Path::new("")).to_path_buf();
+    let working_directory = target_exe
+        .parent()
+        .unwrap_or_else(|| Path::new(""))
+        .to_path_buf();
     let icon_path = working_directory.join("resources").join("icon.ico");
     let icon_location = if icon_exists {
         format!("{},0", icon_path.display())
@@ -183,7 +186,13 @@ fn write_one_windows_shortcut(plan: &ShortcutPlan) -> Result<()> {
 "#;
 
     let status = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
         .arg(&plan.path)
         .arg(&plan.target)
         .arg(&plan.working_directory)
@@ -222,7 +231,13 @@ fn remove_one_windows_shortcut(plan: &ShortcutPlan) -> Result<bool> {
 "#;
 
     let status = std::process::Command::new("powershell.exe")
-        .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script])
+        .args([
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            script,
+        ])
         .arg(&plan.path)
         .arg(&plan.target)
         .creation_flags(0x0800_0000)

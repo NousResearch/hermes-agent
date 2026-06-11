@@ -276,8 +276,7 @@ mod tests {
             resources: vec![BundledResource {
                 kind: ResourceKind::Tool,
                 path: "hermes-manager.exe".into(),
-                sha256: "6ee4a469cd4e91053847f5d3fcb61dbcc91e8f0ef10be7748da4c4a1ba382d17"
-                    .into(),
+                sha256: "6ee4a469cd4e91053847f5d3fcb61dbcc91e8f0ef10be7748da4c4a1ba382d17".into(),
             }],
             embedded_resources: Vec::new(),
         };
@@ -311,12 +310,16 @@ mod tests {
             sha256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".into(),
         });
 
-        manifest.validate().expect("embedded metadata should validate");
+        manifest
+            .validate()
+            .expect("embedded metadata should validate");
 
         manifest.embedded_resources[0].sha256 = "bad".into();
         let err = manifest
             .validate()
             .expect_err("invalid embedded sha should be rejected");
-        assert!(err.to_string().contains("embedded resource install.ps1 has invalid sha256"));
+        assert!(err
+            .to_string()
+            .contains("embedded resource install.ps1 has invalid sha256"));
     }
 }

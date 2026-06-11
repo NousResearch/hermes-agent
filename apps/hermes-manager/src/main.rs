@@ -266,7 +266,8 @@ fn run() -> hermes_manager::Result<()> {
             windows,
             unix,
         } => {
-            let install_root = install_root.unwrap_or_else(|| hermes_manager::paths::agent_root(&home));
+            let install_root =
+                install_root.unwrap_or_else(|| hermes_manager::paths::agent_root(&home));
             let current_path = current_path.or_else(|| std::env::var("PATH").ok());
             let use_windows = if windows {
                 true
@@ -275,18 +276,25 @@ fn run() -> hermes_manager::Result<()> {
             } else {
                 cfg!(target_os = "windows")
             };
-            let plan =
-                hermes_manager::platform::plan_path_update(&install_root, current_path, use_windows);
+            let plan = hermes_manager::platform::plan_path_update(
+                &install_root,
+                current_path,
+                use_windows,
+            );
             if cli.json {
-                let text = serde_json::to_string_pretty(&plan)
-                    .map_err(|err| hermes_manager::ManagerError::InvalidManifest(err.to_string()))?;
+                let text = serde_json::to_string_pretty(&plan).map_err(|err| {
+                    hermes_manager::ManagerError::InvalidManifest(err.to_string())
+                })?;
                 println!("{text}");
             } else {
                 println!("hermes_bin={}", plan.hermes_bin.display());
                 println!("path_changed={}", plan.changed);
                 println!("next_path={}", plan.next_path);
                 if !use_windows {
-                    println!("profile_hint={}", hermes_manager::platform::shell_profile_hint(&plan));
+                    println!(
+                        "profile_hint={}",
+                        hermes_manager::platform::shell_profile_hint(&plan)
+                    );
                 }
             }
         }
@@ -298,7 +306,8 @@ fn run() -> hermes_manager::Result<()> {
             let install_root =
                 install_root.unwrap_or_else(|| hermes_manager::paths::agent_root(&home));
             let current_path = std::env::var("PATH").ok();
-            let plan = hermes_manager::platform::plan_path_update(&install_root, current_path, false);
+            let plan =
+                hermes_manager::platform::plan_path_update(&install_root, current_path, false);
             if !dry_run {
                 hermes_manager::platform::write_shell_profile_update(&profile, &plan)?;
             }
@@ -316,7 +325,10 @@ fn run() -> hermes_manager::Result<()> {
             } else {
                 let action = if dry_run { "would_update" } else { "updated" };
                 println!("{action}={}", profile.display());
-                println!("profile_hint={}", hermes_manager::platform::shell_profile_hint(&plan));
+                println!(
+                    "profile_hint={}",
+                    hermes_manager::platform::shell_profile_hint(&plan)
+                );
             }
         }
         Command::WriteUserPath {
@@ -330,7 +342,8 @@ fn run() -> hermes_manager::Result<()> {
                 Some(value) => Some(value),
                 None => hermes_manager::platform::read_windows_user_path()?,
             };
-            let plan = hermes_manager::platform::plan_path_update(&install_root, current_path, true);
+            let plan =
+                hermes_manager::platform::plan_path_update(&install_root, current_path, true);
             let applied = if dry_run {
                 false
             } else {
@@ -366,10 +379,12 @@ fn run() -> hermes_manager::Result<()> {
             programs_dir,
             desktop_dir,
         } => {
-            let plans = resolve_shortcut_plans(&home, target_exe, install_root, programs_dir, desktop_dir);
+            let plans =
+                resolve_shortcut_plans(&home, target_exe, install_root, programs_dir, desktop_dir);
             if cli.json {
-                let text = serde_json::to_string_pretty(&plans)
-                    .map_err(|err| hermes_manager::ManagerError::InvalidManifest(err.to_string()))?;
+                let text = serde_json::to_string_pretty(&plans).map_err(|err| {
+                    hermes_manager::ManagerError::InvalidManifest(err.to_string())
+                })?;
                 println!("{text}");
             } else {
                 for plan in plans {
@@ -385,7 +400,8 @@ fn run() -> hermes_manager::Result<()> {
             desktop_dir,
             dry_run,
         } => {
-            let plans = resolve_shortcut_plans(&home, target_exe, install_root, programs_dir, desktop_dir);
+            let plans =
+                resolve_shortcut_plans(&home, target_exe, install_root, programs_dir, desktop_dir);
             if !dry_run {
                 hermes_manager::platform::write_windows_shortcuts(&plans)?;
             }
@@ -395,7 +411,10 @@ fn run() -> hermes_manager::Result<()> {
                     command: "write-shortcuts",
                     dry_run,
                     applied: !dry_run,
-                    shortcuts: plans.iter().map(|plan| plan.path.display().to_string()).collect(),
+                    shortcuts: plans
+                        .iter()
+                        .map(|plan| plan.path.display().to_string())
+                        .collect(),
                 })
                 .map_err(|err| hermes_manager::ManagerError::InvalidManifest(err.to_string()))?;
                 println!("{text}");

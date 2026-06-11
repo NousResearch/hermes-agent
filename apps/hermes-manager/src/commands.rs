@@ -28,7 +28,11 @@ pub fn install_metadata(hermes_home: &Path) -> Result<()> {
         return Ok(());
     }
     let mut manifest = InstalledManifest::new(hermes_home.to_path_buf());
-    manifest.add_entry(paths::agent_root(hermes_home), InstalledKind::Directory);
+    for runtime_root in paths::managed_runtime_roots(hermes_home) {
+        if runtime_root == paths::agent_root(hermes_home) || runtime_root.exists() {
+            manifest.add_entry(runtime_root, InstalledKind::Directory);
+        }
+    }
     manifest.write_atomic(&manifest_path)
 }
 
@@ -125,8 +129,10 @@ fn preflight_uninstall_lite_entries(
 }
 
 fn ensure_lite_uninstall_entry_allowed(hermes_home: &Path, candidate: &Path) -> Result<()> {
-    let agent_root = paths::agent_root(hermes_home);
-    if crate::ownership::is_inside_root(&agent_root, candidate) {
+    if paths::managed_runtime_roots(hermes_home)
+        .iter()
+        .any(|root| crate::ownership::is_inside_root(root, candidate))
+    {
         return Ok(());
     }
 
@@ -202,6 +208,71 @@ mod tests {
             paths::agent_root(&manifest.hermes_home)
         );
         assert_eq!(manifest.entries[0].kind, InstalledKind::Directory);
+    }
+
+    #[test]
+    fn install_metadata_records_existing_managed_runtime_dirs() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let hermes_home = dir.path().join("hermes");
+        let agent_root = paths::agent_root(&hermes_home);
+        let bin_dir = hermes_home.join("bin");
+        let node_dir = hermes_home.join("node");
+        let git_dir = hermes_home.join("git");
+        let user_config = hermes_home.join("config.yaml");
+        fs::create_dir_all(&agent_root).expect("agent root should be created");
+        fs::create_dir_all(&bin_dir).expect("bin dir should be created");
+        fs::create_dir_all(&node_dir).expect("node dir should be created");
+        fs::create_dir_all(&git_dir).expect("git dir should be created");
+        fs::write(&user_config, "model: test").expect("user config should be created");
+
+        super::install_metadata(&hermes_home).expect("install metadata should be created");
+
+        let manifest = InstalledManifest::read(&paths::installed_manifest_path(&hermes_home))
+            .expect("manifest should be read");
+        let paths = manifest
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(paths, vec![agent_root, bin_dir, node_dir, git_dir]);
+        assert!(!paths.contains(&user_config));
+    }
+
+    #[test]
+    fn uninstall_lite_removes_managed_runtime_dirs_outside_agent_root() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let hermes_home = dir.path().join("hermes");
+        let agent_root = paths::agent_root(&hermes_home);
+        let bin_dir = hermes_home.join("bin");
+        let node_dir = hermes_home.join("node");
+        let user_config = hermes_home.join("config.yaml");
+        fs::create_dir_all(&agent_root).expect("agent root should be created");
+        fs::create_dir_all(&bin_dir).expect("bin dir should be created");
+        fs::create_dir_all(&node_dir).expect("node dir should be created");
+        fs::write(&user_config, "model: test").expect("user config should be created");
+
+        let mut manifest = InstalledManifest::new(hermes_home.clone());
+        manifest.add_entry(agent_root.clone(), InstalledKind::Directory);
+        manifest.add_entry(bin_dir.clone(), InstalledKind::Directory);
+        manifest.add_entry(node_dir.clone(), InstalledKind::Directory);
+        manifest
+            .write_atomic(&paths::installed_manifest_path(&hermes_home))
+            .expect("manifest should be written");
+
+        let removed = super::uninstall_lite(&hermes_home).expect("runtime dirs should be removed");
+
+        assert_eq!(
+            removed,
+            vec![
+                node_dir.display().to_string(),
+                bin_dir.display().to_string(),
+                agent_root.display().to_string(),
+            ]
+        );
+        assert!(!agent_root.exists());
+        assert!(!bin_dir.exists());
+        assert!(!node_dir.exists());
+        assert!(user_config.exists());
     }
 
     #[test]

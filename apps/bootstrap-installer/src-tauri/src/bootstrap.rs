@@ -576,9 +576,8 @@ async fn run_bootstrap(
             continue;
         }
 
-        #[cfg(target_os = "windows")]
         if let Some(frame) =
-            crate::orchestrator::windows_node_deps_skip_result_from_env(stage, &hermes_home)
+            crate::orchestrator::node_deps_skip_result_from_env(stage, &hermes_home)
         {
             emit_event(
                 &app,

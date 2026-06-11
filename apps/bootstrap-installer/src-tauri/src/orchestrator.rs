@@ -243,8 +243,8 @@ fn python_runtime_available(hermes_home: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// Return a Rust-side skip result for Windows node-deps when npm is absent.
-pub fn windows_node_deps_skip_result<P>(
+/// Return a Rust-side skip result for node-deps when npm is absent.
+pub fn node_deps_skip_result<P>(
     stage: &StageInfo,
     hermes_home: &Path,
     path_env: P,
@@ -268,15 +268,14 @@ where
     })
 }
 
-/// Return a Rust-side skip result for Windows node-deps in this process.
-#[cfg(target_os = "windows")]
-pub fn windows_node_deps_skip_result_from_env(
+/// Return a Rust-side skip result for node-deps in this process.
+pub fn node_deps_skip_result_from_env(
     stage: &StageInfo,
     hermes_home: &Path,
 ) -> Option<crate::events::StageResultPayload> {
     let path_env = std::env::var_os("PATH").unwrap_or_default();
     let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
-    windows_node_deps_skip_result(stage, hermes_home, path_env, &pathext)
+    node_deps_skip_result(stage, hermes_home, path_env, &pathext)
 }
 
 /// Return a Rust-side skip result for platform SDK verification with no tokens.
@@ -985,7 +984,7 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     }
     if matches!(
         name.to_ascii_lowercase().as_str(),
-        "uv" | "python" | "git" | "node" | "system-packages" | "platform-sdks"
+        "uv" | "python" | "git" | "node" | "system-packages" | "platform-sdks" | "node-deps"
     ) {
         return StageExecutionMode::ProbeThenScript;
     }
@@ -1063,11 +1062,12 @@ mod tests {
             stage("path"),
             stage("uv"),
             stage("platform-sdks"),
+            stage("node-deps"),
             stage("venv"),
         ];
         let plan = build_stage_plan(&stages, false);
 
-        assert_eq!(plan.len(), 5);
+        assert_eq!(plan.len(), 6);
         assert_eq!(plan[0].name, "repository");
         assert_eq!(plan[0].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[0].script_fallback, true);
@@ -1080,9 +1080,12 @@ mod tests {
         assert_eq!(plan[3].name, "platform-sdks");
         assert_eq!(plan[3].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[3].rust_probe, true);
-        assert_eq!(plan[4].name, "venv");
-        assert_eq!(plan[4].execution, StageExecutionMode::Script);
-        assert_eq!(plan[4].rust_probe, false);
+        assert_eq!(plan[4].name, "node-deps");
+        assert_eq!(plan[4].execution, StageExecutionMode::ProbeThenScript);
+        assert_eq!(plan[4].rust_probe, true);
+        assert_eq!(plan[5].name, "venv");
+        assert_eq!(plan[5].execution, StageExecutionMode::Script);
+        assert_eq!(plan[5].rust_probe, false);
     }
 
     #[test]
@@ -1275,7 +1278,7 @@ mod tests {
     }
 
     #[test]
-    fn windows_node_deps_skip_result_skips_only_when_npm_is_absent() {
+    fn node_deps_skip_result_skips_only_when_npm_is_absent() {
         let root = std::env::temp_dir().join(format!(
             "hermes-node-deps-skip-test-{}",
             std::process::id()
@@ -1285,7 +1288,7 @@ mod tests {
         std::fs::create_dir_all(&tools).unwrap();
 
         let node_deps = stage_info("node-deps", "Installing Node.js dependencies", "install", false);
-        let skipped = windows_node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD")
+        let skipped = node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD")
             .unwrap();
 
         assert_eq!(skipped.stage, "node-deps");
@@ -1293,7 +1296,7 @@ mod tests {
         assert_eq!(skipped.skipped, true);
         assert_eq!(skipped.reason.as_deref(), Some("npm not available"));
         std::fs::write(tools.join("npm.cmd"), b"npm").unwrap();
-        assert!(windows_node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD").is_none());
+        assert!(node_deps_skip_result(&node_deps, &hermes_home, &tools, ".EXE;.CMD").is_none());
 
         let _ = std::fs::remove_dir_all(&root);
     }

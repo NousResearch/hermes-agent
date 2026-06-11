@@ -106,13 +106,19 @@ _GIT_TIMEOUT = 2.5
 # multi-file) and mode="replace" (find-and-swap). We nudge each family toward
 # its native format. Unknown families get nothing (the brief's neutral wording
 # stands). Substrings match the model id; aligned with TOOL_USE_ENFORCEMENT_MODELS.
+#
+# GPT/Codex get V4A for ALL edits, single-file included: in codex-rs,
+# apply_patch (V4A — apply_patch.lark) is the ONLY file editor, no
+# str_replace-style tool exists, and the shipped model prompts say to use
+# apply_patch even "for single file edits" — so a replace-mode nudge would
+# steer those models toward a format their first-party harness never taught
+# them.
 _EDIT_FORMAT_GUIDANCE: dict[str, tuple[tuple[str, ...], str]] = {
     "patch": (
         ("gpt", "codex"),
         "- Edit format: author new files with `write_file`; for edits to "
-        "existing code prefer `patch` with `mode='patch'` (V4A multi-file diff) "
-        "for structured or multi-file changes — it's the diff format you handle "
-        "most reliably. Use `mode='replace'` for a single small swap.",
+        "existing code use `patch` with `mode='patch'` (V4A diff) — including "
+        "single-file edits. It's the edit format you handle most reliably.",
     ),
     "replace": (
         ("claude", "sonnet", "opus", "haiku",

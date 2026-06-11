@@ -457,7 +457,7 @@ def jarvis_preview_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dict[s
     }
 
 
-def _jarvis_stt_payload(data: dict[str, Any]) -> dict[str, Any]:
+def _jarvis_stt_payload(data: dict[str, Any], audio_path: Path | None = None) -> dict[str, Any]:
     provided = (data.get("transcript_text") or data.get("text") or "").strip()
     if provided:
         return {"provider": "provided_transcript", "text": provided, "confidence": None, "status": "provided"}
@@ -470,11 +470,43 @@ def _jarvis_stt_payload(data: dict[str, Any]) -> dict[str, Any]:
             "confidence": stt_result.get("confidence"),
             "status": "transcribed",
         }
+    if data.get("use_local_stt") and audio_path is not None:
+        try:
+            return _transcribe_with_local_faster_whisper(
+                str(audio_path),
+                model=str(data.get("stt_model") or "base"),
+                language=str(data.get("stt_language") or "hr"),
+            )
+        except Exception as exc:
+            return {
+                "provider": "local-faster-whisper",
+                "text": "[stt_pending] Local STT failed; audio artifact was saved for retry.",
+                "confidence": None,
+                "status": "error",
+                "error": exc.__class__.__name__,
+                "message": str(exc),
+            }
     return {
         "provider": "stub_pending",
         "text": "[stt_pending] Audio captured; STT backend not connected in this local slice.",
         "confidence": None,
         "status": "pending",
+    }
+
+
+def _transcribe_with_local_faster_whisper(audio_path: str, *, model: str = "base", language: str = "hr") -> dict[str, Any]:
+    from faster_whisper import WhisperModel  # type: ignore[import-not-found]
+
+    whisper = WhisperModel(model, device="cpu", compute_type="int8")
+    segments, info = whisper.transcribe(audio_path, beam_size=5, language=language or None, vad_filter=True)
+    text = " ".join(segment.text.strip() for segment in segments).strip()
+    return {
+        "provider": "local-faster-whisper",
+        "text": text or "[stt_empty] Local STT produced no transcript.",
+        "confidence": getattr(info, "language_probability", None),
+        "status": "transcribed" if text else "empty",
+        "language": getattr(info, "language", None),
+        "model": model,
     }
 
 
@@ -522,8 +554,6 @@ def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dic
     deliberately does not execute commands; real STT can replace the transcript
     stub behind the same payload contract.
     """
-    stt = _jarvis_stt_payload(data)
-    transcript_text = stt["text"]
     stamp = _jarvis_slug_from_time()
     audio_bytes = _decode_optional_audio(data)
     suffix = _jarvis_audio_suffix(data.get("audio_mime"))
@@ -534,6 +564,8 @@ def jarvis_transcribe_payload(paths: AgentsOSPaths, data: dict[str, Any]) -> dic
     audio_path = audio_dir / f"{stamp}-jarvis-command{suffix}"
     transcript_path = transcript_dir / f"{stamp}-jarvis-transcript.md"
     audio_path.write_bytes(audio_bytes)
+    stt = _jarvis_stt_payload(data, audio_path)
+    transcript_text = stt["text"]
     preview = jarvis_preview_payload(paths, {"transcript_text": transcript_text})
     advisor = jarvis_model_advisor_payload(paths, {"transcript_text": transcript_text, "deterministic_preview": preview})
     transcript_body = {

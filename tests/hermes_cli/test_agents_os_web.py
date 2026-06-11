@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from hermes_cli import agents_os
+from hermes_cli import agents_os, agents_os_web
 from hermes_cli.agents_os import AgentsOSService, connect, log_event, resolve_paths, utc_now
 from hermes_cli.agents_os_web import (
     agents_registry_payload,
@@ -193,6 +193,39 @@ def test_jarvis_transcribe_uses_stt_adapter_when_transcript_missing(agents_home)
     assert payload["transcript"]["text"] == "Deployaj BP24"
     assert payload["command_card"]["risk_class"] == "public_gated"
     assert payload["command_card"]["approval_required"] is True
+
+
+def test_jarvis_transcribe_can_call_local_faster_whisper_adapter(agents_home, monkeypatch):
+    paths = resolve_paths(None)
+    seen = {}
+
+    def fake_transcribe(audio_path, *, model="base", language="hr"):
+        seen["audio_path"] = audio_path
+        seen["model"] = model
+        seen["language"] = language
+        return {"text": "Prikaži zadnje BP24 stanje", "provider": "local-faster-whisper", "confidence": 0.83, "language": "hr"}
+
+    monkeypatch.setattr(agents_os_web, "_transcribe_with_local_faster_whisper", fake_transcribe)
+
+    payload = jarvis_transcribe_payload(
+        paths,
+        {
+            "audio_base64": "UklGRg==",
+            "audio_mime": "audio/webm",
+            "use_local_stt": True,
+            "stt_model": "small",
+            "stt_language": "hr",
+        },
+    )
+
+    assert payload["execution_created"] is False
+    assert payload["stt"]["provider"] == "local-faster-whisper"
+    assert payload["stt"]["confidence"] == 0.83
+    assert payload["transcript"]["text"] == "Prikaži zadnje BP24 stanje"
+    assert payload["command_card"]["risk_class"] == "safe_local"
+    assert seen["audio_path"] == payload["audio_artifact_path"]
+    assert seen["model"] == "small"
+    assert seen["language"] == "hr"
 
 
 def test_jarvis_model_advisor_keeps_deterministic_gate_authoritative(agents_home):

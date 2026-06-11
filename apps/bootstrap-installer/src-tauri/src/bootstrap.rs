@@ -653,6 +653,14 @@ async fn run_bootstrap(
                     )
                     .await,
                 )
+            } else if !cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("uv") {
+                Some(
+                    crate::orchestrator::install_unix_uv_runtime_stage(
+                        &hermes_home,
+                        bundled_tools_dir.as_deref(),
+                    )
+                    .await,
+                )
             } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("git") {
                 Some(
                     crate::orchestrator::install_windows_git_runtime_stage(
@@ -1046,7 +1054,7 @@ fn should_fallback_repository_archive(stage_name: &str, install_root: &std::path
 fn should_fallback_native_stage(stage_name: &str, install_root: &std::path::Path) -> bool {
     should_fallback_repository_archive(stage_name, install_root)
         || stage_name.eq_ignore_ascii_case("venv")
-        || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("uv"))
+        || stage_name.eq_ignore_ascii_case("uv")
         || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("git"))
         || stage_name.eq_ignore_ascii_case("python")
         || (cfg!(target_os = "windows") && stage_name.eq_ignore_ascii_case("node"))

@@ -163,6 +163,9 @@ language-specific setup where needed.
   Successful preflight installs `$HERMES_HOME/node`, updates the bootstrap process PATH, and creates Node/npm/npx
   symlinks, so the script can skip its own Node curl/tar path while still owning uv, Python, Git, system package, and
   network fallback behavior.
+- Unix `uv` now has a Rust native-first GitHub release tarball path for Linux and macOS x64/arm64, installing `uv` and
+  `uvx` into `$HERMES_HOME/bin` while preserving `install.sh` fallback for unsupported platforms, Termux, download,
+  extraction, or version-check failures.
 - Windows `python` now uses a Rust `uv python find 3.11` preflight to skip the PowerShell stage when the required
   runtime is already available, while preserving script fallback so missing Python can still be installed by uv.
 - `python` now also runs native-first installation through Rust by invoking `uv python install 3.11`, with script
@@ -193,10 +196,10 @@ language-specific setup where needed.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
 
 **Still script-backed:**
-- Language/runtime setup: uv, Python dependency fallback tiers when `uv.lock` sync is unavailable, Linux npm dependency
+- Language/runtime setup: Python dependency fallback tiers when `uv.lock` sync is unavailable, Linux npm dependency
   installation when npm is available, Linux desktop build because it still owns `chrome-sandbox` permission fixups, and
-  script fallback for Unix Node, Windows/macOS npm, Windows uv, Windows Git, Windows Node, Windows/macOS desktop recovery,
-  and platform SDK recovery.
+  script fallback for Unix Node, Unix uv, Windows/macOS npm, Windows uv, Windows Git, Windows Node, Windows/macOS desktop
+  recovery, and platform SDK recovery.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

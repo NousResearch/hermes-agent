@@ -101,6 +101,17 @@ pub struct WindowsUvRuntimeStagePlan {
     pub uv_exe: PathBuf,
 }
 
+/// Native Unix uv runtime installation plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnixUvRuntimeStagePlan {
+    pub archive_name: String,
+    pub download_url: String,
+    pub archive_path: PathBuf,
+    pub install_dir: PathBuf,
+    pub uv_bin: PathBuf,
+    pub uvx_bin: PathBuf,
+}
+
 /// Native Windows Git runtime installation plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WindowsGitRuntimeStagePlan {
@@ -1120,6 +1131,29 @@ pub fn windows_uv_runtime_stage_plan(
     })
 }
 
+/// Build a Unix uv runtime plan from the GitHub release asset matrix.
+pub fn unix_uv_runtime_stage_plan(
+    hermes_home: &Path,
+    uv_os: &str,
+    arch: &str,
+) -> Result<UnixUvRuntimeStagePlan> {
+    let archive_name = unix_uv_archive_name(uv_os, arch)
+        .ok_or_else(|| anyhow!("unsupported Unix uv platform: {uv_os}-{arch}"))?
+        .to_string();
+    let download_url =
+        format!("https://github.com/astral-sh/uv/releases/latest/download/{archive_name}");
+    let archive_path = bootstrap_archive_cache_path(hermes_home, &archive_name);
+    let install_dir = hermes_home.join("bin");
+    Ok(UnixUvRuntimeStagePlan {
+        archive_name,
+        download_url,
+        archive_path,
+        uv_bin: install_dir.join("uv"),
+        uvx_bin: install_dir.join("uvx"),
+        install_dir,
+    })
+}
+
 /// Install uv natively on Windows from a bundled or official GitHub release ZIP.
 pub async fn install_windows_uv_runtime_stage(
     hermes_home: &Path,
@@ -1156,6 +1190,52 @@ pub async fn install_windows_uv_runtime_stage(
     }
     Ok(serde_json::json!({
         "uv": plan.uv_exe,
+        "archive": plan.archive_name,
+        "archiveSource": archive_source.kind.as_str(),
+    }))
+}
+
+/// Install uv natively on Unix from a bundled or official GitHub release tarball.
+pub async fn install_unix_uv_runtime_stage(
+    hermes_home: &Path,
+    bundled_tools_dir: Option<&Path>,
+) -> Result<serde_json::Value> {
+    if cfg!(target_os = "windows") {
+        return Err(anyhow!("native Unix uv stage is not available on Windows"));
+    }
+    if is_termux_environment() {
+        return Err(anyhow!("native uv stage is unavailable on Termux"));
+    }
+    let uv_os = unix_uv_os_slug()?;
+    let arch = current_unix_node_arch_slug()?;
+    let plan = unix_uv_runtime_stage_plan(hermes_home, &uv_os, &arch)?;
+    let archive_source =
+        resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
+    if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        crate::artifact::download_to_cache(
+            crate::artifact::DownloadSpec {
+                url: plan.download_url.clone(),
+                user_agent: "Hermes-Setup",
+                expected_sha256: None,
+            },
+            &archive_source.path,
+        )
+        .await
+        .with_context(|| format!("downloading {}", plan.archive_name))?;
+    }
+    install_unix_uv_archive(&archive_source.path, &plan.install_dir)?;
+    let status = Command::new(&plan.uv_bin)
+        .arg("--version")
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("checking {}", plan.uv_bin.display()))?;
+    if !status.success() {
+        return Err(anyhow!("installed uv failed version check"));
+    }
+    prepend_process_path(&plan.install_dir);
+    Ok(serde_json::json!({
+        "uv": plan.uv_bin,
         "archive": plan.archive_name,
         "archiveSource": archive_source.kind.as_str(),
     }))
@@ -1944,6 +2024,21 @@ fn unix_node_os_slug() -> Result<String> {
     }
 }
 
+fn unix_uv_os_slug() -> Result<String> {
+    match std::env::consts::OS {
+        "linux" => Ok("linux".to_string()),
+        "macos" => Ok("darwin".to_string()),
+        other => Err(anyhow!("unsupported Unix OS for uv: {other}")),
+    }
+}
+
+fn is_termux_environment() -> bool {
+    std::env::var_os("TERMUX_VERSION").is_some()
+        || std::env::var("PREFIX")
+            .map(|value| value.contains("com.termux/files/usr"))
+            .unwrap_or(false)
+}
+
 fn latest_bundled_windows_node_archive_name(
     bundled_tools_dir: Option<&Path>,
     version_major: u32,
@@ -1997,6 +2092,16 @@ fn windows_uv_archive_name(arch: &str) -> Option<&'static str> {
         "x64" => Some("uv-x86_64-pc-windows-msvc.zip"),
         "arm64" => Some("uv-aarch64-pc-windows-msvc.zip"),
         "x86" => Some("uv-i686-pc-windows-msvc.zip"),
+        _ => None,
+    }
+}
+
+fn unix_uv_archive_name(uv_os: &str, arch: &str) -> Option<&'static str> {
+    match (uv_os, arch) {
+        ("linux", "x64") => Some("uv-x86_64-unknown-linux-gnu.tar.gz"),
+        ("linux", "arm64") => Some("uv-aarch64-unknown-linux-gnu.tar.gz"),
+        ("darwin", "x64") => Some("uv-x86_64-apple-darwin.tar.gz"),
+        ("darwin", "arm64") => Some("uv-aarch64-apple-darwin.tar.gz"),
         _ => None,
     }
 }
@@ -2189,6 +2294,54 @@ fn install_windows_uv_archive(archive_path: &Path, install_dir: &Path) -> Result
     cleanup
 }
 
+fn install_unix_uv_archive(archive_path: &Path, install_dir: &Path) -> Result<()> {
+    fs::create_dir_all(install_dir)
+        .with_context(|| format!("creating uv install dir {}", install_dir.display()))?;
+    let tmp_dir = install_dir.join("uv-extracting");
+    remove_path_if_exists(&tmp_dir)?;
+    fs::create_dir_all(&tmp_dir)
+        .with_context(|| format!("creating uv extraction directory {}", tmp_dir.display()))?;
+
+    let result: Result<()> = (|| {
+        let status = Command::new("tar")
+            .args(["-xf"])
+            .arg(archive_path)
+            .arg("-C")
+            .arg(&tmp_dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .with_context(|| format!("extracting {}", archive_path.display()))?;
+        if !status.success() {
+            return Err(anyhow!(
+                "uv archive extraction failed with exit {:?}",
+                status.code()
+            ));
+        }
+        let uv = find_file_named(&tmp_dir, "uv")?;
+        let uv_dest = install_dir.join("uv");
+        fs::copy(&uv, &uv_dest).with_context(|| {
+            format!("copying uv binary {} to {}", uv.display(), uv_dest.display())
+        })?;
+        make_executable(&uv_dest)?;
+        if let Ok(uvx) = find_file_named(&tmp_dir, "uvx") {
+            let uvx_dest = install_dir.join("uvx");
+            fs::copy(&uvx, &uvx_dest).with_context(|| {
+                format!(
+                    "copying uvx binary {} to {}",
+                    uvx.display(),
+                    uvx_dest.display()
+                )
+            })?;
+            make_executable(&uvx_dest)?;
+        }
+        Ok(())
+    })();
+    let cleanup = remove_path_if_exists(&tmp_dir);
+    result?;
+    cleanup
+}
+
 fn install_windows_git_archive(plan: &WindowsGitRuntimeStagePlan) -> Result<()> {
     remove_path_if_exists(&plan.install_dir)?;
     fs::create_dir_all(&plan.install_dir)
@@ -2274,6 +2427,23 @@ fn remove_path_if_exists(path: &Path) -> Result<()> {
         fs::remove_file(path)
             .with_context(|| format!("removing file {}", path.display()))
     }
+}
+
+#[cfg(unix)]
+fn make_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut permissions = fs::metadata(path)
+        .with_context(|| format!("reading permissions for {}", path.display()))?
+        .permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions)
+        .with_context(|| format!("setting executable permissions on {}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) -> Result<()> {
+    Ok(())
 }
 
 fn windows_node_arch_slug() -> String {
@@ -2528,7 +2698,7 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("node") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
-    if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("uv") {
+    if name.eq_ignore_ascii_case("uv") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if cfg!(target_os = "windows") && name.eq_ignore_ascii_case("git") {
@@ -2545,7 +2715,7 @@ fn stage_execution_mode(name: &str) -> StageExecutionMode {
     }
     if matches!(
         name.to_ascii_lowercase().as_str(),
-        "uv" | "git" | "node" | "system-packages" | "node-deps" | "desktop"
+        "git" | "node" | "system-packages" | "node-deps" | "desktop"
     ) {
         return StageExecutionMode::ProbeThenScript;
     }
@@ -2644,14 +2814,9 @@ mod tests {
         assert_eq!(plan[2].name, "python");
         assert_eq!(plan[2].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[2].script_fallback, true);
-        let uv_execution = if cfg!(target_os = "windows") {
-            StageExecutionMode::NativeWithScriptFallback
-        } else {
-            StageExecutionMode::ProbeThenScript
-        };
         assert_eq!(plan[3].name, "uv");
-        assert_eq!(plan[3].execution, uv_execution);
-        assert_eq!(plan[3].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[3].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[3].rust_probe, false);
         assert_eq!(plan[3].script_fallback, true);
         let git_execution = if cfg!(target_os = "windows") {
             StageExecutionMode::NativeWithScriptFallback
@@ -2674,23 +2839,25 @@ mod tests {
         assert_eq!(plan[6].name, "platform-sdks");
         assert_eq!(plan[6].execution, StageExecutionMode::NativeWithScriptFallback);
         assert_eq!(plan[6].script_fallback, true);
-        let node_deps_execution = if cfg!(target_os = "windows") {
+        let node_deps_native = cfg!(target_os = "windows") || cfg!(target_os = "macos");
+        let node_deps_execution = if node_deps_native {
             StageExecutionMode::NativeWithScriptFallback
         } else {
             StageExecutionMode::ProbeThenScript
         };
         assert_eq!(plan[7].name, "node-deps");
         assert_eq!(plan[7].execution, node_deps_execution);
-        assert_eq!(plan[7].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[7].rust_probe, !node_deps_native);
         assert_eq!(plan[7].script_fallback, true);
         assert_eq!(plan[8].name, "desktop");
-        let desktop_execution = if cfg!(target_os = "windows") {
+        let desktop_native = cfg!(target_os = "windows") || cfg!(target_os = "macos");
+        let desktop_execution = if desktop_native {
             StageExecutionMode::NativeWithScriptFallback
         } else {
             StageExecutionMode::ProbeThenScript
         };
         assert_eq!(plan[8].execution, desktop_execution);
-        assert_eq!(plan[8].rust_probe, !cfg!(target_os = "windows"));
+        assert_eq!(plan[8].rust_probe, !desktop_native);
         assert_eq!(plan[8].script_fallback, true);
         assert_eq!(plan[9].name, "venv");
         assert_eq!(plan[9].execution, StageExecutionMode::NativeWithScriptFallback);
@@ -2728,8 +2895,8 @@ mod tests {
 
         let summary = summarize_plan(&report, &plan);
 
-        let native_count = if cfg!(target_os = "windows") { 4 } else { 3 };
-        let probe_count = if cfg!(target_os = "windows") { 0 } else { 1 };
+        let native_count = 4;
+        let probe_count = 0;
         assert!(summary.contains(&format!("native_stages={native_count}")));
         assert!(summary.contains(&format!("probe_stages={probe_count}")));
         assert!(summary.contains("script_stages=0"));
@@ -3301,6 +3468,34 @@ mod tests {
         assert_eq!(arm_plan.archive_name, "uv-aarch64-pc-windows-msvc.zip");
         let x86_plan = windows_uv_runtime_stage_plan(&hermes_home, "x86").unwrap();
         assert_eq!(x86_plan.archive_name, "uv-i686-pc-windows-msvc.zip");
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn unix_uv_runtime_stage_plan_maps_platform_release_assets() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-unix-uv-runtime-plan-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+
+        let linux_x64 = unix_uv_runtime_stage_plan(&hermes_home, "linux", "x64").unwrap();
+        assert_eq!(linux_x64.archive_name, "uv-x86_64-unknown-linux-gnu.tar.gz");
+        assert_eq!(
+            linux_x64.download_url,
+            "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz"
+        );
+        assert_eq!(linux_x64.install_dir, hermes_home.join("bin"));
+        assert_eq!(linux_x64.uv_bin, hermes_home.join("bin").join("uv"));
+
+        let linux_arm64 = unix_uv_runtime_stage_plan(&hermes_home, "linux", "arm64").unwrap();
+        assert_eq!(linux_arm64.archive_name, "uv-aarch64-unknown-linux-gnu.tar.gz");
+        let mac_arm64 = unix_uv_runtime_stage_plan(&hermes_home, "darwin", "arm64").unwrap();
+        assert_eq!(mac_arm64.archive_name, "uv-aarch64-apple-darwin.tar.gz");
+        let mac_x64 = unix_uv_runtime_stage_plan(&hermes_home, "darwin", "x64").unwrap();
+        assert_eq!(mac_x64.archive_name, "uv-x86_64-apple-darwin.tar.gz");
+        assert!(unix_uv_runtime_stage_plan(&hermes_home, "linux", "mips").is_err());
 
         let _ = std::fs::remove_dir_all(&root);
     }

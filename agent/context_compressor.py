@@ -1890,8 +1890,10 @@ This compaction should PRIORITISE preserving all information related to the focu
                         "multiple times across this summary and the protected "
                         "messages above/below (successive compactions). "
                         "Reloading a skill **once** is sufficient — it remains "
-                        "in context for the rest of the session. Do not reload "
-                        "the same skill multiple times."
+                        "in context for the rest of the session. "
+                        "After reloading, **ignore any remaining [SKILL_PRUNED] markers "
+                        "for that skill** — they are historical artifacts from previous "
+                        "compactions and do not need further action."
                     )
             # Store for iterative updates on next compaction
             self._previous_summary = summary

@@ -41,6 +41,7 @@ pub async fn run_script(
     args: &[String],
     sink: StreamSink,
     hermes_home_override: Option<&str>,
+    extra_env: &[(&str, &str)],
     mut cancel_rx: Option<CancelRx>,
 ) -> Result<ScriptResult> {
     let mut cmd = build_command(script_path, args);
@@ -55,6 +56,9 @@ pub async fn run_script(
 
     if let Some(home) = hermes_home_override {
         cmd.env("HERMES_HOME", home);
+    }
+    for (key, value) in extra_env {
+        cmd.env(key, value);
     }
 
     cmd.stdin(Stdio::null())
@@ -353,5 +357,40 @@ info line
             normalized.ends_with("System32/WindowsPowerShell/v1.0/powershell.exe"),
             "unexpected powershell path: {normalized}"
         );
+    }
+
+    #[tokio::test]
+    async fn run_script_propagates_extra_env() {
+        let root =
+            std::env::temp_dir().join(format!("hermes-run-script-env-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let script = root.join(if cfg!(target_os = "windows") {
+            "env-test.ps1"
+        } else {
+            "env-test.sh"
+        });
+        let script_text = if cfg!(target_os = "windows") {
+            "Write-Output $env:HERMES_NATIVE_REPOSITORY_ARCHIVE\n"
+        } else {
+            "printf '%s\\n' \"$HERMES_NATIVE_REPOSITORY_ARCHIVE\"\n"
+        };
+        std::fs::write(&script, script_text).unwrap();
+        let result = run_script(
+            &script,
+            &[],
+            StreamSink {
+                on_stdout_line: Box::new(|_| {}),
+                on_stderr_line: Box::new(|_| {}),
+            },
+            None,
+            &[("HERMES_NATIVE_REPOSITORY_ARCHIVE", "1")],
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.exit_code, Some(0));
+        assert_eq!(result.stdout.trim(), "1");
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

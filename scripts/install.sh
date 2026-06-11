@@ -2563,7 +2563,11 @@ run_stage_body() {
             resolve_install_layout
             install_uv
             check_python
-            check_git
+            if [ "${HERMES_NATIVE_REPOSITORY_ARCHIVE:-}" = "1" ]; then
+                log_info "Skipping Git check; native repository archive will fetch source"
+            else
+                check_git
+            fi
             check_node
             check_network_prerequisites
             install_system_packages
@@ -2571,6 +2575,10 @@ run_stage_body() {
         repository)
             detect_os
             resolve_install_layout
+            if [ "${HERMES_NATIVE_REPOSITORY_ARCHIVE:-}" = "1" ]; then
+                log_info "Repository stage handled by native bootstrap archive"
+                return 0
+            fi
             check_git
             clone_repo
             ;;

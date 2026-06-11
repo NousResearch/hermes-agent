@@ -874,7 +874,7 @@ async fn ensure_git_available_for_archive_update(
     };
     let hermes_home_text = hermes_home.to_string_lossy().to_string();
     let result =
-        crate::powershell::run_script(&script.path, &args, sink, Some(&hermes_home_text), None)
+        crate::powershell::run_script(&script.path, &args, sink, Some(&hermes_home_text), &[], None)
             .await?;
     let ok = crate::powershell::parse_stage_result(&result.stdout)
         .map(|frame| frame.ok)

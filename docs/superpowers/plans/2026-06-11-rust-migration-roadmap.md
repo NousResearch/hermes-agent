@@ -127,6 +127,11 @@ language-specific setup where needed.
 - For Windows archive-created checkouts, the Tauri updater now skips Git checkout preparation, refreshes the repository
   from a GitHub ZIP archive natively in Rust, and then calls `hermes update --finalize-only` so Python only refreshes
   dependencies, caches, and generated assets.
+- Fresh bootstrap repository stages now try the native Rust GitHub archive path before falling back to script-backed
+  clone behavior on every platform. On Unix bootstrap runs, `install.sh` receives an internal archive signal so the
+  prerequisites stage does not install or require Git when Rust will fetch the source archive.
+- Rust ZIP extraction now rejects symlink entries as well as path traversal entries before materializing repository
+  archive contents.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper.
 - `config-templates` now runs as a native Rust stage while preserving Python `tools/skills_sync.py` when available and
   retaining the existing bundled-skill copy fallback.

@@ -113,6 +113,7 @@ class TestCLIDiscardSessionIfEmpty:
 
         cli = HermesCLI.__new__(HermesCLI)
         cli._session_db = db
+        cli.conversation_history = []
         return cli
 
     def test_discards_empty(self, db):
@@ -146,3 +147,15 @@ class TestCLIDiscardSessionIfEmpty:
 
         cli = self._make_cli(Boom())
         assert cli._discard_session_if_empty("x") is False
+
+    def test_in_memory_history_blocks_prune(self, db):
+        """The live transcript is authoritative: even if the DB row has no
+        flushed messages yet, a CLI holding conversation history must not
+        prune the session (covers flush-failed / not-yet-flushed turns)."""
+        db.create_session(session_id="unflushed", source="cli", model="test")
+        db.end_session("unflushed", "new_session")
+
+        cli = self._make_cli(db)
+        cli.conversation_history = [{"role": "user", "content": "hello"}]
+        assert cli._discard_session_if_empty("unflushed") is False
+        assert db.get_session("unflushed") is not None

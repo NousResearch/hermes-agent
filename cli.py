@@ -5833,6 +5833,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """
         if not self._session_db or not session_id:
             return False
+        # In-memory transcript is authoritative: if this CLI object holds
+        # conversation messages (flushed to the DB or not), the session is
+        # not empty. Protects against pruning a real conversation whose DB
+        # flush failed or hasn't happened yet.
+        if getattr(self, "conversation_history", None):
+            return False
         try:
             from hermes_constants import get_hermes_home as _ghh
             return self._session_db.delete_session_if_empty(

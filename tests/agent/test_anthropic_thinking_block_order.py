@@ -176,59 +176,39 @@ class TestInterleavedThinkingBlockOrder:
             "in the latest assistant message cannot be modified'."
         )
 
-    def test_interleaved_order_survives_db_roundtrip(self, tmp_path):
-        """The ordered-block channel must survive SQLite persistence + reload.
+    def test_replay_falls_back_gracefully_without_ordered_blocks(self):
+        """Without the ordered-block channel, conversion must not crash.
 
-        This is the exact path that fails after a gateway crash: the session
-        is reloaded from state.db via get_messages_as_conversation, then
-        replayed. If the verbatim block list is dropped or not deserialized,
-        the reconstruction reorders signed thinking blocks -> HTTP 400.
+        The channel is intentionally NOT persisted to state.db (in-memory
+        only): a session reloaded from disk after a crash loses the field
+        and falls back to reconstruction. That replay may take one HTTP 400,
+        which the thinking-signature recovery (#43667) absorbs by stripping
+        reasoning_details and retrying. This test pins the fallback shape:
+        conversion still produces a valid assistant message from the
+        parallel reasoning_details + tool_calls fields.
         """
-        import hermes_state
-
         response = _interleaved_response()
-        original_order = _original_block_order(response)
-
         transport = get_transport("anthropic_messages")
         normalized = transport.normalize_response(response)
         assistant_msg = _stored_assistant_message(normalized)
+        # Simulate a disk reload: the in-memory-only channel is gone.
+        assistant_msg.pop("anthropic_content_blocks", None)
 
-        db = hermes_state.SessionDB(tmp_path / "state.db")
-        sid = "sess_roundtrip"
-        db.create_session(sid, source="test")
-        db.append_message(
-            session_id=sid,
-            role="assistant",
-            content=assistant_msg["content"],
-            tool_calls=assistant_msg["tool_calls"],
-            reasoning_details=assistant_msg.get("reasoning_details"),
-            anthropic_content_blocks=assistant_msg.get("anthropic_content_blocks"),
-        )
-        db.append_message(session_id=sid, role="tool", tool_call_id="toolu_1", content="a ok")
-        db.append_message(session_id=sid, role="tool", tool_call_id="toolu_2", content="b ok")
-
-        # Reload via the conversation-restore path used on resume / crash recovery.
-        loaded = db.get_messages_as_conversation(sid)
-        reloaded_assistant = [m for m in loaded if m.get("role") == "assistant"]
-        assert reloaded_assistant, "no assistant message after DB reload"
-        # The ordered-block channel must come back as a deserialized list.
-        blocks = reloaded_assistant[0].get("anthropic_content_blocks")
-        assert isinstance(blocks, list) and len(blocks) == 4, (
-            "anthropic_content_blocks was not persisted/deserialized correctly"
-        )
-
+        messages = [
+            assistant_msg,
+            {"role": "tool", "tool_call_id": "toolu_1", "content": "a ok"},
+            {"role": "tool", "tool_call_id": "toolu_2", "content": "b ok"},
+        ]
         _system, anthropic_messages = convert_messages_to_anthropic(
-            loaded, base_url=None, model="claude-opus-4-8",
+            messages, base_url=None, model="claude-opus-4-8",
         )
         assistant_out = [m for m in anthropic_messages if m.get("role") == "assistant"]
         assert assistant_out, "no assistant message in converted output"
-        replayed_order = _replayed_block_order(assistant_out[-1]["content"])
-
-        assert replayed_order == original_order, (
-            "Interleaved block order was lost across the SQLite round-trip.\n"
-            f"  original: {original_order}\n"
-            f"  replayed: {replayed_order}"
-        )
+        content = assistant_out[-1]["content"]
+        assert isinstance(content, list) and content, "fallback produced empty content"
+        # Reconstruction keeps both tool_use blocks (answered by results).
+        tool_ids = [b.get("id") for b in content if isinstance(b, dict) and b.get("type") == "tool_use"]
+        assert set(tool_ids) == {"toolu_1", "toolu_2"}
 
 
 class TestInterleavedReplayCredentialRedaction:

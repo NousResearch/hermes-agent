@@ -31,7 +31,7 @@ from hermes_cli.auth import (
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname
+from utils import base_url_host_matches, base_url_hostname, env_int
 
 
 def _normalize_custom_provider_name(value: str) -> str:
@@ -491,15 +491,27 @@ def _lift_max_output_tokens(entry: Dict[str, Any], result: Dict[str, Any]) -> No
 
 def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, Any]]:
     requested_norm = _normalize_custom_provider_name(requested_provider or "")
-    if not requested_norm or requested_norm == "custom":
+    if not requested_norm:
         return None
+
+    # Bare "custom" is normally an incomplete spec — the canonical form is
+    # "custom:<name>" — and is otherwise owned by the model.base_url "bare
+    # custom" trust path. BUT a user may literally name a ``providers:`` (or
+    # legacy ``custom_providers:``) entry "custom" (e.g. ``providers.custom``
+    # pointing at cliproxy). We used to return None here *before* scanning
+    # config, so such an entry was never matched and resolution fell through to
+    # the global default (Codex) — the cause of cron jobs with
+    # ``provider: "custom"`` failing with ``auth_unavailable: providers=codex``.
+    # Fall through to the config scan instead; if no entry is literally named
+    # "custom" it still returns None at the end, preserving the trust path.
 
     # Raw names should only map to custom providers when they are not already
     # valid built-in providers or aliases. Explicit menu keys like
-    # ``custom:local`` always target the saved custom provider.
+    # ``custom:local`` always target the saved custom provider. Bare "custom"
+    # is exempt from the shadow check — it is not a built-in to defer to.
     if requested_norm == "auto":
         return None
-    if not requested_norm.startswith("custom:"):
+    if requested_norm != "custom" and not requested_norm.startswith("custom:"):
         try:
             canonical = auth_mod.resolve_provider(requested_norm)
         except AuthError:
@@ -632,6 +644,20 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         return result
 
     return None
+
+
+def has_named_custom_provider(requested_provider: str) -> bool:
+    """Return True when config defines a custom provider matching the request.
+
+    Thin public wrapper around :func:`_get_named_custom_provider` so other
+    modules (e.g. the cronjob tool) can decide whether a provider name will
+    actually resolve to a configured ``providers:`` / ``custom_providers:``
+    entry — without reaching into a private helper or duplicating the scan.
+    """
+    try:
+        return _get_named_custom_provider(requested_provider) is not None
+    except Exception:
+        return False
 
 
 def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[str, Any]:
@@ -1144,7 +1170,7 @@ def _resolve_explicit_runtime(
             str(state.get("agent_key") or "").strip()
             if _agent_key_is_usable(
                 state,
-                max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
+                max(60, env_int("HERMES_NOUS_MIN_KEY_TTL_SECONDS", 1800)),
             )
             else ""
         )
@@ -1343,7 +1369,7 @@ def resolve_runtime_provider(
         # expired, clear pool_api_key so we fall through to
         # resolve_nous_runtime_credentials() which handles refresh.
         if provider == "nous" and entry is not None and pool_api_key:
-            min_ttl = max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800")))
+            min_ttl = max(60, env_int("HERMES_NOUS_MIN_KEY_TTL_SECONDS", 1800))
             nous_state = {
                 "agent_key": getattr(entry, "agent_key", None),
                 "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),

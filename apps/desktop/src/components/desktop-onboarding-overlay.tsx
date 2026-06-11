@@ -5,8 +5,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { ModelPickerDialog } from '@/components/model-picker'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { ErrorIcon } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
+import { Loader } from '@/components/ui/loader'
 import { getGlobalModelOptions } from '@/hermes'
+import { useI18n } from '@/i18n'
 import {
   Check,
   ChevronDown,
@@ -15,7 +18,6 @@ import {
   ExternalLink,
   KeyRound,
   Loader2,
-  Sparkles,
   Terminal
 } from '@/lib/icons'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -29,6 +31,8 @@ import {
   confirmOnboardingModel,
   copyDeviceCode,
   copyExternalCommand,
+  DEFAULT_MANUAL_ONBOARDING_REASON,
+  DEFAULT_ONBOARDING_REASON,
   dismissFirstRunOnboarding,
   type OnboardingContext,
   type OnboardingFlow,
@@ -42,7 +46,7 @@ import {
   startProviderOAuth,
   submitOnboardingCode
 } from '@/store/onboarding'
-import type { OAuthProvider } from '@/types/hermes'
+import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -51,7 +55,7 @@ interface DesktopOnboardingOverlayProps {
 }
 
 export interface ApiKeyOption {
-  description: string
+  description?: string
   docsUrl: string
   envKey: string
   id: string
@@ -64,45 +68,103 @@ const API_KEY_OPTIONS: ApiKeyOption[] = [
   {
     id: 'openrouter',
     name: 'OpenRouter',
-    short: 'one key, many models',
     envKey: 'OPENROUTER_API_KEY',
-    description: 'Hosts hundreds of models behind a single key. Good default for new installs.',
     docsUrl: 'https://openrouter.ai/keys'
   },
   {
     id: 'openai',
     name: 'OpenAI',
-    short: 'GPT-class models',
     envKey: 'OPENAI_API_KEY',
-    description: 'Direct access to OpenAI models.',
     docsUrl: 'https://platform.openai.com/api-keys'
   },
   {
     id: 'gemini',
     name: 'Google Gemini',
-    short: 'Gemini models',
     envKey: 'GEMINI_API_KEY',
-    description: 'Direct access to Google Gemini models.',
     docsUrl: 'https://aistudio.google.com/app/apikey'
   },
   {
     id: 'xai',
     name: 'xAI Grok',
-    short: 'Grok models',
     envKey: 'XAI_API_KEY',
-    description: 'Direct access to xAI Grok models.',
     docsUrl: 'https://console.x.ai/'
   },
   {
     id: 'local',
     name: 'Local / custom endpoint',
-    short: 'self-hosted',
     envKey: 'OPENAI_BASE_URL',
-    description: 'Point Hermes at a local or self-hosted OpenAI-compatible endpoint (vLLM, llama.cpp, Ollama, etc).',
     docsUrl: 'https://github.com/NousResearch/hermes-agent#bring-your-own-endpoint',
     placeholder: 'http://127.0.0.1:8000/v1'
   }
 ]
+
+// Build the FULL API-key provider catalog from the backend model options so the
+// onboarding / Providers key form lists every `api_key` provider `hermes model`
+// knows about — not just the hand-curated five. Curated entries keep their
+// richer copy + placeholders and float to the top (recommended defaults); every
+// other api_key provider is appended with a generic "paste {KEY}" affordance.
+// OAuth / external providers are intentionally excluded here — they go through
+// the OAuth picker / sign-in flow, not a pasted key.
+function useApiKeyCatalog(): ApiKeyOption[] {
+  const [rows, setRows] = useState<ModelOptionProvider[]>([])
+
+  useEffect(() => {
+    let cancelled = false
+
+    // Best-effort — on failure the curated defaults still render. Wrapped in
+    // Promise.resolve().then so a synchronous throw (e.g. no desktop bridge in
+    // tests) is funneled into the same .catch instead of escaping.
+    void Promise.resolve()
+      .then(() => getGlobalModelOptions())
+      .then(res => {
+        if (!cancelled) {
+          setRows(res.providers ?? [])
+        }
+      })
+      .catch(() => {
+        // Ignore — fall back to the curated API_KEY_OPTIONS only.
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  return useMemo(() => {
+    const curatedByEnv = new Map(API_KEY_OPTIONS.map(o => [o.envKey, o]))
+    const derived: ApiKeyOption[] = []
+    const seenEnv = new Set<string>(API_KEY_OPTIONS.map(o => o.envKey))
+
+    for (const row of rows) {
+      // Only api_key providers can be activated with a pasted key. Skip OAuth /
+      // external / managed flows and anything missing an env var to write to.
+      if (row.auth_type && row.auth_type !== 'api_key') {
+        continue
+      }
+
+      const envKey = row.key_env
+
+      if (!envKey || seenEnv.has(envKey)) {
+        continue
+      }
+
+      seenEnv.add(envKey)
+      derived.push({
+        id: row.slug,
+        name: row.name,
+        envKey,
+        description: `Direct API access to ${row.name}.`,
+        docsUrl: ''
+      })
+    }
+
+    // Curated first (recommended order), then the rest alphabetically so the
+    // long tail is scannable.
+    derived.sort((a, b) => a.name.localeCompare(b.name))
+
+    return [...API_KEY_OPTIONS.filter(o => curatedByEnv.has(o.envKey)), ...derived]
+  }, [rows])
+}
 
 const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
   nous: { order: 0, title: 'Nous Portal' },
@@ -118,20 +180,19 @@ const PROVIDER_DISPLAY: Record<string, { order: number; title: string }> = {
 
 const assetPath = (path: string) => `${import.meta.env.BASE_URL}${path.replace(/^\/+/, '')}`
 
-const FLOW_SUBTITLES: Record<OAuthProvider['flow'], string> = {
-  pkce: 'Opens your browser to sign in, then continues here',
-  device_code: 'Opens a verification page in your browser — Hermes connects automatically',
-  loopback: 'Opens your browser to sign in — Hermes connects automatically',
-  external: 'Sign in once in your terminal, then come back to chat'
-}
-
 const providerTitle = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.title ?? p.name
 const orderOf = (p: OAuthProvider) => PROVIDER_DISPLAY[p.id]?.order ?? 99
 
 export const sortProviders = (providers: OAuthProvider[]) =>
   [...providers].sort((a, b) => orderOf(a) - orderOf(b) || a.name.localeCompare(b.name))
 
+// Exit choreography, mirroring the gateway "connecting" overlay's timing:
+// text-out (360ms: CONNECTED fades down, rest scrambles+fades) → hold (300ms)
+// → surface-out (520ms, held back by [transition-delay:660ms]). Finalize after.
+const ONBOARDING_EXIT_MS = 1180
+
 export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway }: DesktopOnboardingOverlayProps) {
+  const { t } = useI18n()
   const onboarding = useStore($desktopOnboarding)
   const boot = useStore($desktopBoot)
   const ctxRef = useRef<OnboardingContext>({ requestGateway, onCompleted })
@@ -144,6 +205,29 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
     }),
     []
   )
+
+  // Cinematic exit on "Begin": dissolve the panel + overlay (revealing the chat
+  // behind), THEN finalize so the unmount lands after the fade — mirrors the
+  // connecting overlay's exit choreography instead of cutting instantly.
+  const [leaving, setLeaving] = useState(false)
+
+  const finalizeOnboarding = () => {
+    if (leaving) {
+      return
+    }
+
+    const reduce =
+      typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+
+    if (reduce) {
+      confirmOnboardingModel(ctx)
+
+      return
+    }
+
+    setLeaving(true)
+    window.setTimeout(() => confirmOnboardingModel(ctx), ONBOARDING_EXIT_MS)
+  }
 
   useEffect(() => {
     if (enabled || onboarding.requested) {
@@ -198,21 +282,55 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
   }
 
   const { flow } = onboarding
+  // Show the launch reason only when it's a meaningful, caller-supplied prompt —
+  // suppress the generic defaults (useless noise) and provider-setup errors
+  // (those are surfaced by FlowPanel, not as a banner).
   const rawReason = onboarding.reason?.trim() || null
-  const reason = rawReason && !isProviderSetupErrorMessage(rawReason) ? rawReason : null
+
+  const reason =
+    rawReason &&
+    !isProviderSetupErrorMessage(rawReason) &&
+    rawReason !== DEFAULT_ONBOARDING_REASON &&
+    rawReason !== DEFAULT_MANUAL_ONBOARDING_REASON
+      ? rawReason
+      : null
+
   // In manual mode the app is already configured, so the flow is "ready"
   // immediately — no runtime gate needed. Otherwise wait for the readiness
   // check (configured === false) before showing the picker.
   const ready = onboarding.manual || (enabled && onboarding.configured === false)
   const showPicker = flow.status === 'idle' || flow.status === 'success'
+  // The final "you're in" screen drops the card chrome and floats centered on
+  // the surface — same bare, cinematic treatment as the connecting overlay.
+  const bare = ready && !showPicker && flow.status === 'confirming_model'
 
   return (
-    <div className="fixed inset-0 z-1300 flex items-center justify-center bg-(--ui-chat-surface-background) p-6">
-      <div className="relative w-full max-w-[45rem] overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-bubble-background) shadow-sm">
-        <Header />
+    <div
+      className={cn(
+        'fixed inset-0 z-1300 flex items-center justify-center bg-(--ui-chat-surface-background) p-6 transition-opacity duration-[520ms] ease-out',
+        // On the bare confirm screen, hold the surface (text-out + hold) so the
+        // per-element exit plays before it dissolves.
+        bare && leaving ? '[transition-delay:660ms]' : '',
+        leaving ? 'pointer-events-none opacity-0' : 'opacity-100'
+      )}
+    >
+      <div
+        className={cn(
+          'relative w-full max-w-[45rem] transition-all duration-500 ease-out',
+          bare
+            ? ''
+            : 'overflow-hidden rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) shadow-nous',
+          // Bare confirm screen orchestrates its own per-element exit; the
+          // carded states use the simple lift/blur dissolve.
+          leaving && !bare
+            ? '-translate-y-1 scale-[0.985] opacity-0 blur-[2px]'
+            : 'translate-y-0 scale-100 opacity-100 blur-0'
+        )}
+      >
+        {showPicker || !ready ? <Header /> : null}
         {onboarding.manual ? (
           <Button
-            aria-label="Close"
+            aria-label={t.common.close}
             className="absolute right-3 top-3 z-10 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
             onClick={() => closeManualOnboarding()}
             size="icon-sm"
@@ -223,16 +341,24 @@ export function DesktopOnboardingOverlay({ enabled, onCompleted, requestGateway 
         ) : null}
         <div className="grid gap-3 p-5">
           {reason ? <ReasonNotice reason={reason} /> : null}
-          {ready ? showPicker ? <Picker ctx={ctx} /> : <FlowPanel ctx={ctx} flow={flow} /> : <Preparing boot={boot} />}
+          {ready ? (
+            showPicker ? (
+              <Picker ctx={ctx} />
+            ) : (
+              <FlowPanel ctx={ctx} flow={flow} leaving={leaving} onBegin={finalizeOnboarding} />
+            )
+          ) : (
+            <Preparing boot={boot} />
+          )}
         </div>
       </div>
     </div>
   )
 }
 
-// The launch reason is a prompt ("why am I seeing this"), not an error — real
-// provider-setup failures are filtered out upstream and surfaced by FlowPanel.
-// Keep it neutral so it never reads as a failure.
+// The launch reason is a prompt ("why am I seeing this"), not an error. Only
+// rendered for meaningful caller-supplied reasons (defaults are filtered out
+// upstream), so it never shows the generic "no provider configured" noise.
 function ReasonNotice({ reason }: { reason: string }) {
   return (
     <div className="rounded-2xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-tertiary)/40 px-4 py-3 text-sm text-muted-foreground">
@@ -242,6 +368,7 @@ function ReasonNotice({ reason }: { reason: string }) {
 }
 
 function Preparing({ boot }: { boot: DesktopBootState }) {
+  const { t } = useI18n()
   const progress = Math.max(2, Math.min(100, Math.round(boot.progress)))
   const hasError = Boolean(boot.error)
   const installing = boot.phase.startsWith('runtime.')
@@ -249,9 +376,7 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
   return (
     <div className="grid gap-3" role="status">
       <p className="text-sm text-muted-foreground">
-        {installing
-          ? 'Hermes is finishing install. This usually takes under a minute on first run.'
-          : 'Starting Hermes…'}
+        {installing ? t.onboarding.preparingInstall : t.onboarding.starting}
       </p>
       <div className="h-2 overflow-hidden rounded-full bg-muted">
         <div
@@ -272,25 +397,17 @@ function Preparing({ boot }: { boot: DesktopBootState }) {
 }
 
 function Header() {
+  const { t } = useI18n()
+
   return (
-    <div className="border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) px-5 py-4">
-      <div className="flex items-start gap-3">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-(--ui-bg-tertiary) text-(--ui-text-tertiary)">
-          <Sparkles className="size-5" />
-        </div>
-        <div>
-          <h2 className="text-[0.9375rem] font-semibold tracking-tight">Let's get you setup with Hermes Agent</h2>
-          <p className="mt-1 max-w-xl text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">
-            Connect a model provider to start chatting. Most options take one click.
-          </p>
-        </div>
-      </div>
+    <div className="bg-(--ui-chat-bubble-background) px-5 pt-5 pb-1">
+      <h2 className="text-[0.9375rem] font-semibold tracking-tight">{t.onboarding.headerTitle}</h2>
+      <p className="mt-1 max-w-xl text-[0.8125rem] leading-5 text-(--ui-text-tertiary)">{t.onboarding.headerDesc}</p>
     </div>
   )
 }
 
 export const FEATURED_ID = 'nous'
-const FEATURED_PITCH = 'One subscription, 300+ frontier models — the recommended way to run Hermes'
 const SHOW_ALL_KEY = 'hermes-onboarding-show-all-v1'
 
 const readShowAll = () => {
@@ -312,10 +429,12 @@ const persistShowAll = (value: boolean) => {
 }
 
 export function Picker({ ctx }: { ctx: OnboardingContext }) {
+  const { t } = useI18n()
   const { manual, mode, providers } = useStore($desktopOnboarding)
   const [showAll, setShowAll] = useState(readShowAll)
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
+  const apiKeyOptions = useApiKeyCatalog()
 
   if (mode === 'apikey' || !hasOauth) {
     return (
@@ -324,6 +443,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
           canGoBack={hasOauth}
           onBack={() => setOnboardingMode('oauth')}
           onSave={(envKey, value, name) => saveOnboardingApiKey(envKey, value, name, ctx)}
+          options={apiKeyOptions}
         />
         {manual ? null : (
           <div className="flex justify-center border-t border-(--ui-stroke-tertiary) pt-3">
@@ -335,7 +455,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   }
 
   if (providers === null) {
-    return <Status>Looking up providers...</Status>
+    return <Status>{t.onboarding.lookingUpProviders}</Status>
   }
 
   const select = (p: OAuthProvider) => void startProviderOAuth(p, ctx)
@@ -348,37 +468,43 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 
   return (
     <div className="grid gap-2">
-      {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
-      {showRest ? (
-        <>
-          {rest.map(p => (
-            <ProviderRow key={p.id} onSelect={select} provider={p} />
-          ))}
-          <KeyProviderRow onClick={() => setOnboardingMode('apikey')} />
-        </>
-      ) : null}
+      <div className="grid max-h-[60dvh] gap-2 overflow-y-auto p-1">
+        {featured ? <FeaturedProviderRow onSelect={select} provider={featured} /> : null}
+        {showRest ? (
+          <>
+            {rest.map(p => (
+              <ProviderRow key={p.id} onSelect={select} provider={p} />
+            ))}
+            <KeyProviderRow onClick={() => setOnboardingMode('apikey')} />
+          </>
+        ) : null}
+      </div>
       {collapsible ? (
-        <button
-          className="flex items-center justify-center gap-1.5 pt-1 text-xs font-medium text-muted-foreground transition hover:text-foreground"
+        <Button
+          className="mt-1 self-center font-medium"
           onClick={() => setShowAll(persistShowAll(!showAll))}
+          size="xs"
           type="button"
+          variant="text"
         >
-          {showAll ? 'Collapse' : 'Other providers'}
+          {showAll ? t.onboarding.collapse : t.onboarding.otherProviders}
           <ChevronDown className={cn('size-3.5 transition', showAll && 'rotate-180')} />
-        </button>
+        </Button>
       ) : null}
       <div className="flex items-center justify-between gap-3 pt-1">
         {/* First run only: let the user defer the choice and land in the app.
             In manual mode the overlay already has a close affordance, so the
             "choose later" escape would be redundant — hide it. */}
         {manual ? <span /> : <ChooseLaterLink />}
-        <button
-          className="text-xs font-medium text-muted-foreground hover:text-foreground"
+        <Button
+          className="-mr-2 font-medium"
           onClick={() => setOnboardingMode('apikey')}
+          size="xs"
           type="button"
+          variant="text"
         >
-          I have an API key
-        </button>
+          {t.onboarding.haveApiKey}
+        </Button>
       </div>
     </div>
   )
@@ -388,14 +514,18 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
 // the skip so it never re-nags. The user connects a provider any time from
 // Settings → Providers. Rendered only on the unconfigured first-run flow.
 function ChooseLaterLink() {
+  const { t } = useI18n()
+
   return (
-    <button
-      className="text-xs font-medium text-muted-foreground hover:text-foreground"
+    <Button
+      className="font-medium"
       onClick={() => dismissFirstRunOnboarding()}
+      size="xs"
       type="button"
+      variant="text"
     >
-      I'll choose a provider later
-    </button>
+      {t.onboarding.chooseLater}
+    </Button>
   )
 }
 
@@ -406,6 +536,7 @@ export function FeaturedProviderRow({
   onSelect: (provider: OAuthProvider) => void
   provider: OAuthProvider
 }) {
+  const { t } = useI18n()
   const loggedIn = provider.status?.logged_in
 
   return (
@@ -426,11 +557,11 @@ export function FeaturedProviderRow({
           ) : (
             <span className="inline-flex items-center gap-1.5 bg-primary px-2 py-0.5 text-[0.64rem] font-semibold uppercase tracking-[0.16em] text-primary-foreground">
               <span aria-hidden="true" className="dither inline-block size-2 shrink-0" />
-              Recommended
+              {t.onboarding.recommended}
             </span>
           )}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{FEATURED_PITCH}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.featuredPitch}</p>
       </div>
       <ChevronRight className="size-4 shrink-0 text-primary transition group-hover:translate-x-0.5" />
     </button>
@@ -438,24 +569,27 @@ export function FeaturedProviderRow({
 }
 
 function ConnectedTag() {
+  const { t } = useI18n()
+
   return (
     <span className="inline-flex items-center gap-1 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
       <Check className="size-3" />
-      Connected
+      {t.onboarding.connected}
     </span>
   )
 }
 
+const PROVIDER_ROW_CLASS =
+  'group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)'
+
 export function KeyProviderRow({ onClick }: { onClick: () => void }) {
+  const { t } = useI18n()
+
   return (
-    <button
-      className="group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
-      onClick={onClick}
-      type="button"
-    >
+    <button className={PROVIDER_ROW_CLASS} onClick={onClick} type="button">
       <div className="min-w-0">
         <span className="text-[length:var(--conversation-text-font-size)] font-semibold">OpenRouter</span>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">One key, hundreds of models — a solid default</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.openRouterPitch}</p>
       </div>
       <ChevronRight className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </button>
@@ -469,15 +603,12 @@ export function ProviderRow({
   onSelect: (provider: OAuthProvider) => void
   provider: OAuthProvider
 }) {
+  const { t } = useI18n()
   const loggedIn = provider.status?.logged_in
   const Trail = provider.flow === 'external' ? Terminal : ChevronRight
 
   return (
-    <button
-      className="group flex w-full items-center justify-between gap-3 rounded-[6px] px-3 py-2.5 text-left transition-colors hover:bg-(--ui-control-hover-background)"
-      onClick={() => onSelect(provider)}
-      type="button"
-    >
+    <button className={PROVIDER_ROW_CLASS} onClick={() => onSelect(provider)} type="button">
       <div className="min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-[length:var(--conversation-text-font-size)] font-semibold">
@@ -485,7 +616,7 @@ export function ProviderRow({
           </span>
           {loggedIn ? <ConnectedTag /> : null}
         </div>
-        <p className="mt-1 text-xs leading-5 text-muted-foreground">{FLOW_SUBTITLES[provider.flow]}</p>
+        <p className="mt-1 text-xs leading-5 text-muted-foreground">{t.onboarding.flowSubtitles[provider.flow]}</p>
       </div>
       <Trail className="size-4 text-muted-foreground transition group-hover:text-foreground" />
     </button>
@@ -514,6 +645,7 @@ export function ApiKeyForm({
   options?: ApiKeyOption[]
   redactedValue?: (envKey: string) => null | string | undefined
 }) {
+  const { t } = useI18n()
   const [option, setOption] = useState<ApiKeyOption>(options[0])
   const [value, setValue] = useState('')
   const [saving, setSaving] = useState(false)
@@ -522,12 +654,12 @@ export function ApiKeyForm({
   // Providers page wiring its search into this grid). Keep the selection valid
   // by snapping back to the first remaining option when the current one drops.
   useEffect(() => {
-    if (options.length > 0 && !options.some(o => o.id === option.id)) {
+    if (options.length > 0 && !options.some(o => o.envKey === option.envKey)) {
       setOption(options[0])
       setValue('')
       setError(null)
     }
-  }, [option.id, options])
+  }, [option.envKey, options])
   // The catalog grid can be tall, leaving the entry field far below the fold.
   // On selection we scroll the field into view and focus it so it's always
   // obvious where to paste next.
@@ -551,6 +683,8 @@ export function ApiKeyForm({
   // Only require a non-empty value — no length/format validation, so a short
   // or unusual key can't block the user from continuing.
   const canSave = value.trim().length >= 1
+  const optionCopy = t.onboarding.apiKeyOptions[option.id]
+  const optionDescription = optionCopy?.description ?? option.description
 
   const submit = async () => {
     if (!canSave || saving) {
@@ -564,7 +698,7 @@ export function ApiKeyForm({
     if (result.ok) {
       setValue('')
     } else {
-      setError(result.message ?? 'Could not save credential.')
+      setError(result.message ?? t.onboarding.couldNotSave)
     }
 
     setSaving(false)
@@ -573,44 +707,44 @@ export function ApiKeyForm({
   return (
     <div className="grid gap-4">
       {canGoBack ? (
-        <button
-          className="-mt-1 flex items-center gap-1 self-start text-xs font-medium text-muted-foreground hover:text-foreground"
+        <Button
+          className="-mt-1 self-start font-medium"
           onClick={onBack}
+          size="xs"
           type="button"
+          variant="text"
         >
           <ChevronLeft className="size-3" />
-          Back to sign in
-        </button>
+          {t.onboarding.backToSignIn}
+        </Button>
       ) : null}
 
-      <div className="grid gap-2 sm:grid-cols-2">
+      <div className="grid max-h-[42dvh] gap-2 overflow-y-auto p-1 sm:grid-cols-2">
         {options.map(o => (
           <button
             className={cn(
               'rounded-2xl border bg-background/60 p-3 text-left transition hover:bg-accent/50',
-              option.id === o.id ? 'border-primary ring-2 ring-primary/20' : 'border-border'
+              option.envKey === o.envKey ? 'border-primary ring-2 ring-primary/20' : 'border-transparent'
             )}
-            key={o.id}
+            key={o.envKey}
             onClick={() => pick(o)}
             type="button"
           >
             <div className="flex items-center justify-between gap-2">
               <span className="text-sm font-medium">{o.name}</span>
-              {option.id === o.id ? (
-                <Check className="size-4 text-primary" />
-              ) : isSet?.(o.envKey) ? (
-                <Check className="size-3.5 text-muted-foreground" />
-              ) : null}
+              {isSet?.(o.envKey) ? <Check className="size-3.5 text-muted-foreground" /> : null}
             </div>
-            {o.short ? <p className="mt-1 text-xs text-muted-foreground">{o.short}</p> : null}
+            {(t.onboarding.apiKeyOptions[o.id]?.short ?? o.short) ? (
+              <p className="mt-1 text-xs text-muted-foreground">{t.onboarding.apiKeyOptions[o.id]?.short ?? o.short}</p>
+            ) : null}
           </button>
         ))}
       </div>
 
       <div className="grid scroll-mt-4 gap-2" ref={entryRef}>
         <div className="flex items-center justify-between gap-3">
-          <p className="text-sm leading-6 text-muted-foreground">{option.description}</p>
-          {option.docsUrl ? <DocsLink href={option.docsUrl}>Get a key</DocsLink> : null}
+          <p className="text-sm leading-6 text-muted-foreground">{optionDescription}</p>
+          {option.docsUrl ? <DocsLink href={option.docsUrl}>{t.onboarding.getKey}</DocsLink> : null}
         </div>
         <Input
           autoComplete="off"
@@ -619,7 +753,8 @@ export function ApiKeyForm({
           onChange={e => setValue(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && void submit()}
           placeholder={
-            currentRedacted ?? (alreadySet ? 'Replace current value' : option.placeholder || 'Paste API key')
+            currentRedacted ??
+            (alreadySet ? t.onboarding.replaceCurrent : option.placeholder || t.onboarding.pasteApiKey)
           }
           type={isLocal ? 'text' : 'password'}
           value={value}
@@ -631,52 +766,61 @@ export function ApiKeyForm({
         <div>
           {alreadySet && onClear ? (
             <Button onClick={() => onClear(option.envKey)} size="sm" variant="ghost">
-              Remove
+              {t.common.remove}
             </Button>
           ) : null}
         </div>
         <Button disabled={!canSave || saving} onClick={() => void submit()}>
-          {saving ? <Loader2 className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
-          {saving ? 'Connecting' : alreadySet ? 'Update' : 'Connect'}
+          {saving ? <Loader2 className="animate-spin" /> : <KeyRound />}
+          {saving ? t.onboarding.connecting : alreadySet ? t.onboarding.update : t.common.connect}
         </Button>
       </div>
     </div>
   )
 }
 
-function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow }) {
+function FlowPanel({
+  ctx,
+  flow,
+  leaving,
+  onBegin
+}: {
+  ctx: OnboardingContext
+  flow: OnboardingFlow
+  leaving: boolean
+  onBegin: () => void
+}) {
+  const { t } = useI18n()
   const title = 'provider' in flow && flow.provider ? providerTitle(flow.provider) : ''
 
   if (flow.status === 'starting') {
-    return <Status>Starting sign-in for {title}...</Status>
+    return <Status>{t.onboarding.startingSignIn(title)}</Status>
   }
 
   if (flow.status === 'submitting') {
-    return <Status>Verifying your code with {title}...</Status>
+    return <Status>{t.onboarding.verifyingCode(title)}</Status>
   }
 
   if (flow.status === 'success') {
     return (
-      <div className="flex items-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary">
-        <Check className="size-4" />
-        {title} connected. Picking a default model...
-      </div>
+      <DecodedLabel text={t.onboarding.connectedPicking(title)} />
     )
   }
 
   if (flow.status === 'confirming_model') {
-    return <ConfirmingModelPanel ctx={ctx} flow={flow} />
+    return <ConfirmingModelPanel flow={flow} leaving={leaving} onBegin={onBegin} />
   }
 
   if (flow.status === 'error') {
     return (
       <div className="grid gap-3">
-        <div className="rounded-2xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          {flow.message || 'Sign-in failed. Try again.'}
+        <div className="flex items-center gap-1.5 text-sm text-destructive">
+          <ErrorIcon className="shrink-0" size="0.875rem" />
+          <span>{flow.message || t.onboarding.signInFailed}</span>
         </div>
         <div className="flex justify-end">
           <Button onClick={cancelOnboardingFlow} variant="outline">
-            Pick a different provider
+            {t.onboarding.pickDifferentProvider}
           </Button>
         </div>
       </div>
@@ -685,23 +829,23 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
 
   if (flow.status === 'awaiting_user') {
     return (
-      <Step title={`Sign in with ${title}`}>
+      <Step title={t.onboarding.signInWith(title)}>
         <ol className="list-decimal space-y-1 pl-5 text-sm text-muted-foreground">
-          <li>We opened {title} in your browser.</li>
-          <li>Authorize Hermes there.</li>
-          <li>Copy the authorization code and paste it below.</li>
+          <li>{t.onboarding.openedBrowser(title)}</li>
+          <li>{t.onboarding.authorizeThere}</li>
+          <li>{t.onboarding.copyAuthCode}</li>
         </ol>
         <Input
           autoFocus
           onChange={e => setOnboardingCode(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && void submitOnboardingCode(ctx)}
-          placeholder="Paste authorization code"
+          placeholder={t.onboarding.pasteAuthCode}
           value={flow.code}
         />
-        <FlowFooter left={<DocsLink href={flow.start.auth_url}>Re-open authorization page</DocsLink>}>
+        <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t.onboarding.reopenAuthPage}</DocsLink>}>
           <CancelBtn />
           <Button disabled={!flow.code.trim()} onClick={() => void submitOnboardingCode(ctx)}>
-            Continue
+            {t.common.continue}
           </Button>
         </FlowFooter>
       </Step>
@@ -710,15 +854,12 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
 
   if (flow.status === 'awaiting_browser') {
     return (
-      <Step title={`Sign in with ${title}`}>
-        <p className="text-sm text-muted-foreground">
-          We opened {title} in your browser. Authorize Hermes there and you'll be connected automatically — nothing to
-          copy or paste.
-        </p>
-        <FlowFooter left={<DocsLink href={flow.start.auth_url}>Re-open sign-in page</DocsLink>}>
+      <Step title={t.onboarding.signInWith(title)}>
+        <p className="text-sm text-muted-foreground">{t.onboarding.autoBrowser(title)}</p>
+        <FlowFooter left={<DocsLink href={flow.start.auth_url}>{t.onboarding.reopenSignInPage}</DocsLink>}>
           <span className="flex items-center gap-2 text-xs text-muted-foreground">
             <Loader2 className="size-3 animate-spin" />
-            Waiting for you to authorize...
+            {t.onboarding.waitingAuthorize}
           </span>
           <CancelBtn size="sm" />
         </FlowFooter>
@@ -728,20 +869,18 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
 
   if (flow.status === 'external_pending') {
     return (
-      <Step title={`Sign in with ${title}`}>
-        <p className="text-sm text-muted-foreground">
-          {title} signs in through its own CLI. Run this command in a terminal, then come back and pick "I've signed
-          in":
-        </p>
+      <Step title={t.onboarding.signInWith(title)}>
+        <p className="text-sm text-muted-foreground">{t.onboarding.externalPending(title)}</p>
         <CodeBlock copied={flow.copied} onCopy={() => void copyExternalCommand()} text={flow.provider.cli_command} />
         <FlowFooter
-          left={flow.provider.docs_url ? <DocsLink href={flow.provider.docs_url}>{title} docs</DocsLink> : null}
+          left={
+            flow.provider.docs_url ? (
+              <DocsLink href={flow.provider.docs_url}>{t.onboarding.docs(title)}</DocsLink>
+            ) : null
+          }
         >
           <CancelBtn />
-          <Button onClick={() => void recheckExternalSignin(ctx)}>
-            <Check className="size-4" />
-            I've signed in
-          </Button>
+          <Button onClick={() => void recheckExternalSignin(ctx)}>{t.onboarding.signedIn}</Button>
         </FlowFooter>
       </Step>
     )
@@ -752,13 +891,13 @@ function FlowPanel({ ctx, flow }: { ctx: OnboardingContext; flow: OnboardingFlow
   }
 
   return (
-    <Step title={`Sign in with ${title}`}>
-      <p className="text-sm text-muted-foreground">We opened {title} in your browser. Enter this code there:</p>
-      <CodeBlock copied={flow.copied} large onCopy={() => void copyDeviceCode()} text={flow.start.user_code} />
-      <FlowFooter left={<DocsLink href={flow.start.verification_url}>Re-open verification page</DocsLink>}>
+    <Step title={t.onboarding.signInWith(title)}>
+      <p className="text-sm text-muted-foreground">{t.onboarding.deviceCodeOpened(title)}</p>
+      <DeviceCode code={flow.start.user_code} copied={flow.copied} onCopy={() => void copyDeviceCode()} />
+      <FlowFooter left={<DocsLink href={flow.start.verification_url}>{t.onboarding.reopenVerification}</DocsLink>}>
         <span className="flex items-center gap-2 text-xs text-muted-foreground">
           <Loader2 className="size-3 animate-spin" />
-          Waiting for you to authorize...
+          {t.onboarding.waitingAuthorize}
         </span>
         <CancelBtn size="sm" />
       </FlowFooter>
@@ -775,22 +914,53 @@ function Step({ children, title }: { children: React.ReactNode; title: string })
   )
 }
 
-function CodeBlock({
-  copied,
-  large,
-  onCopy,
-  text
-}: {
-  copied: boolean
-  large?: boolean
-  onCopy: () => void
-  text: string
-}) {
+// Device-code display: OTP-style — each character in its own readonly cell.
+// The whole row is the copy button (no side button, no checkmark); on copy the
+// cells flash emerald for feedback. Dashes render as quiet separators.
+function DeviceCode({ code, copied, onCopy }: { code: string; copied: boolean; onCopy: () => void }) {
+  const { t } = useI18n()
+
   return (
-    <div className="flex items-center justify-between gap-3 rounded-2xl border border-border bg-secondary/30 px-4 py-3">
-      <code className={cn('font-mono', large ? 'text-2xl tracking-[0.4em]' : 'text-sm')}>{text}</code>
+    <button
+      aria-label={t.onboarding.copy}
+      className="group flex w-full items-center justify-center gap-1.5"
+      onClick={onCopy}
+      type="button"
+    >
+      {[...code].map((ch, i) =>
+        ch === '-' || ch === ' ' ? (
+          <span className="w-1.5 text-center text-lg text-muted-foreground" key={i}>
+            –
+          </span>
+        ) : (
+          <span
+            className={cn(
+              'flex size-10 items-center justify-center rounded-md border font-mono text-xl font-semibold uppercase transition-colors',
+              copied
+                ? 'border-primary/50 text-primary'
+                : 'border-(--stroke-nous) text-foreground group-hover:border-(--ui-stroke-secondary)'
+            )}
+            key={i}
+          >
+            {ch}
+          </span>
+        )
+      )}
+    </button>
+  )
+}
+
+function CodeBlock({ copied, onCopy, text }: { copied: boolean; onCopy: () => void; text: string }) {
+  const { t } = useI18n()
+
+  return (
+    <div className="flex items-center justify-between gap-3 rounded-md border border-(--stroke-nous) px-3 py-2">
+      <code className="min-w-0 flex-1 truncate font-mono text-sm">
+        <span className="mr-2 select-none text-muted-foreground">$</span>
+        {text}
+      </code>
       <Button onClick={onCopy} size="sm" variant="outline">
-        {copied ? <Check className="size-4" /> : 'Copy'}
+        {copied ? t.common.copied : t.onboarding.copy}
       </Button>
     </div>
   )
@@ -806,20 +976,193 @@ function FlowFooter({ children, left }: { children: React.ReactNode; left?: Reac
 }
 
 function CancelBtn({ size = 'default' }: { size?: 'default' | 'sm' }) {
+  const { t } = useI18n()
+
   return (
     <Button onClick={cancelOnboardingFlow} size={size} variant="ghost">
-      Cancel
+      {t.common.cancel}
     </Button>
   )
 }
 
-function ConfirmingModelPanel({
-  ctx,
-  flow
+// Borrowed from the gateway "connecting" overlay: a mono, letter-spaced label
+// that decodes left-to-right from scrambled glyphs into the real text, with a
+// blinking block cursor. Ties onboarding's success moment to that same motif.
+// Cuneiform glyphs (array, since each is a surrogate pair) for the scramble.
+// Hero "X CONNECTED" decode uses the SAME ascii map as the connecting overlay.
+const ASCII_GLYPHS = [...'/\\|-_=+<>~:*']
+const pickAscii = () => ASCII_GLYPHS[(Math.random() * ASCII_GLYPHS.length) | 0]
+// Cuneiform is reserved for the subtle "other text" (model name + BEGIN) easter egg.
+const SCRAMBLE_GLYPHS = [...'𒀀𒀁𒀂𒀅𒀊𒀖𒀜𒀭𒀲𒀸𒁀𒁉𒁒𒁕𒁹𒂊𒃻𒄆𒄴𒅀𒆍𒇽𒈨𒉡']
+const GLYPH_SET = new Set(SCRAMBLE_GLYPHS)
+const pickGlyph = () => SCRAMBLE_GLYPHS[(Math.random() * SCRAMBLE_GLYPHS.length) | 0]
+// How many trailing characters of each word scramble during decode-in.
+const DECODE_TAIL = 4
+
+// Renders text where cuneiform scramble-glyphs are dropped to a smaller em-size
+// (resolved Latin chars stay full size) — keeps the easter-egg glyphs subtle.
+function GlyphText({ text }: { text: string }) {
+  return (
+    <>
+      {Array.from(text, (ch, i) =>
+        GLYPH_SET.has(ch) ? (
+          <span className="text-[0.62em]" key={i}>
+            {ch}
+          </span>
+        ) : (
+          ch
+        )
+      )}
+    </>
+  )
+}
+
+function useDecoded(text: string): string {
+  const [out, setOut] = useState(text)
+
+  useEffect(() => {
+    if (typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      setOut(text)
+
+      return
+    }
+
+    // Each WORD keeps its head static and only churns its tail (last few chars),
+    // resolving left-to-right across all tails — same anchor-the-prefix trick the
+    // connecting overlay uses ("CONN" static, "ECTING" churns), applied per word
+    // so both the provider and "CONNECTED" decode and time stays constant.
+    const chars = [...text]
+    const scrambleable = chars.map(() => false)
+
+    for (let i = 0; i < chars.length; ) {
+      if (!/[a-z0-9]/i.test(chars[i])) {
+        i += 1
+
+        continue
+      }
+
+      let j = i
+
+      while (j < chars.length && /[a-z0-9]/i.test(chars[j])) {
+        j += 1
+      }
+
+      for (let k = Math.max(i, j - DECODE_TAIL); k < j; k += 1) {
+        scrambleable[k] = true
+      }
+
+      i = j
+    }
+
+    const tailIndices = chars.map((_, idx) => idx).filter(idx => scrambleable[idx])
+    let resolved = 0
+
+    const id = window.setInterval(() => {
+      resolved += 0.5
+      const settled = new Set(tailIndices.slice(0, Math.floor(resolved)))
+
+      setOut(chars.map((ch, idx) => (scrambleable[idx] && !settled.has(idx) ? pickAscii() : ch)).join(''))
+
+      if (Math.floor(resolved) >= tailIndices.length) {
+        window.clearInterval(id)
+      }
+    }, 45)
+
+    return () => window.clearInterval(id)
+  }, [text])
+
+  return out
+}
+
+// Continuously scrambles alphanumeric chars while `active` (used on exit so the
+// model name / button decay into ascii noise as they fade).
+function useScramble(text: string, active: boolean): string {
+  const [out, setOut] = useState(text)
+
+  useEffect(() => {
+    if (!active) {
+      setOut(text)
+
+      return
+    }
+
+    const id = window.setInterval(() => {
+      setOut(Array.from(text, ch => (/[a-z0-9]/i.test(ch) ? pickGlyph() : ch)).join(''))
+    }, 45)
+
+    return () => window.clearInterval(id)
+  }, [text, active])
+
+  return out
+}
+
+function DecodedLabel({ leaving, text }: { leaving?: boolean; text: string }) {
+  const decoded = useDecoded(text.toUpperCase())
+
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center font-mono text-xs font-semibold uppercase tracking-[0.28em] tabular-nums text-primary transition duration-[360ms] ease-out',
+        leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
+      )}
+    >
+      <GlyphText text={decoded} />
+      <span
+        aria-hidden="true"
+        className="dither ml-1.5 -mr-[0.875rem] inline-block size-2 shrink-0 -translate-y-px rounded-[1px] text-primary"
+        style={{ animation: 'ob-decode-cursor 1s step-end infinite' }}
+      />
+      <style>{'@keyframes ob-decode-cursor { 0%, 49% { opacity: 1 } 50%, 100% { opacity: 0 } }'}</style>
+    </span>
+  )
+}
+
+// Terminal-flavored CTA to match the connecting overlay's hacker aesthetic:
+// mono, uppercase, letter-spaced, wrapped in primary brackets that light up on
+// hover. The whole onboarding "you're in" moment leans into this motif.
+function HackeryButton({
+  disabled,
+  label,
+  loading,
+  onClick
 }: {
-  ctx: OnboardingContext
-  flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
+  disabled?: boolean
+  label: React.ReactNode
+  loading?: boolean
+  onClick: () => void
 }) {
+  return (
+    <button
+      className={cn(
+        'group inline-flex items-center gap-2 rounded-md border border-(--stroke-nous) px-6 py-2.5',
+        'font-mono text-xs font-semibold uppercase text-primary',
+        'transition-all duration-150 hover:border-primary/60 hover:bg-primary/[0.06]',
+        'disabled:pointer-events-none disabled:opacity-50'
+      )}
+      disabled={disabled}
+      onClick={onClick}
+      type="button"
+    >
+      <span className="text-primary/40 transition-colors group-hover:text-primary">[</span>
+      {loading ? <Loader2 className="size-3 animate-spin" /> : null}
+      <span className="-mr-[0.25em] pl-[0.25em] tracking-[0.25em]">{label}</span>
+      <span className="text-primary/40 transition-colors group-hover:text-primary">]</span>
+    </button>
+  )
+}
+
+function ConfirmingModelPanel({
+  flow,
+  leaving,
+  onBegin
+}: {
+  flow: Extract<OnboardingFlow, { status: 'confirming_model' }>
+  leaving: boolean
+  onBegin: () => void
+}) {
+  const { t } = useI18n()
+  const scrambledModel = useScramble(flow.currentModel, leaving)
+  const scrambledBegin = useScramble(t.onboarding.startChatting, leaving)
   // Local state controls whether the model picker dialog is open.
   // We reuse the existing ModelPickerDialog component (the same picker
   // available from the chat shell) rather than building an inline
@@ -842,46 +1185,61 @@ function ConfirmingModelPanel({
   const freeTier = providerRow?.free_tier
 
   return (
-    <div className="grid gap-4">
-      <div className="flex items-center gap-2 rounded-2xl border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-primary">
-        <Check className="size-4 shrink-0" />
-        <span>{flow.label} connected.</span>
-      </div>
+    <div className="grid place-items-center gap-7 py-6 text-center">
+      <DecodedLabel leaving={leaving} text={t.onboarding.connectedProvider(flow.label)} />
 
-      <div className="grid gap-3 rounded-2xl border border-border bg-background/60 p-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <p className="text-xs uppercase tracking-wide text-muted-foreground">Default model</p>
-              {freeTier === true && (
-                <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
-                  Free tier
-                </span>
-              )}
-              {freeTier === false && (
-                <span className="rounded-sm bg-primary/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-primary">
-                  Pro
-                </span>
-              )}
-            </div>
-            <p className="mt-1 truncate font-mono text-sm">{flow.currentModel}</p>
-            {price && (price.input || price.output) && (
-              <p className="mt-1 font-mono text-xs text-muted-foreground">
-                {price.free ? 'Free' : `${price.input || '?'} in / ${price.output || '?'} out per Mtok`}
-              </p>
-            )}
-          </div>
-          <Button disabled={flow.saving} onClick={() => setPickerOpen(true)} size="sm" variant="outline">
-            Change
-          </Button>
+      <div
+        className={cn(
+          'grid justify-items-center gap-1.5 transition duration-[360ms] ease-out',
+          leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
+        )}
+      >
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-[0.625rem] uppercase tracking-[0.2em] text-muted-foreground">
+            {t.onboarding.defaultModel}
+          </span>
+          {freeTier === true && (
+            <span className="rounded-sm bg-emerald-500/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-emerald-600 dark:text-emerald-400">
+              {t.onboarding.freeTier}
+            </span>
+          )}
+          {freeTier === false && (
+            <span className="rounded-sm bg-primary/15 px-1 py-0.5 text-[0.6rem] font-semibold uppercase tracking-wide text-primary">
+              {t.onboarding.pro}
+            </span>
+          )}
         </div>
+        <p className="font-mono text-base">
+          <GlyphText text={scrambledModel} />
+        </p>
+        {price && (price.input || price.output) && (
+          <p className="font-mono text-xs text-muted-foreground">
+            {price.free ? t.onboarding.free : t.onboarding.price(price.input || '?', price.output || '?')}
+          </p>
+        )}
+        <Button
+          className="mt-0.5 text-xs"
+          disabled={flow.saving}
+          onClick={() => setPickerOpen(true)}
+          size="inline"
+          variant="text"
+        >
+          {t.onboarding.change}
+        </Button>
       </div>
 
-      <div className="flex justify-end">
-        <Button disabled={flow.saving} onClick={() => confirmOnboardingModel(ctx)}>
-          {flow.saving ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
-          Start chatting
-        </Button>
+      <div
+        className={cn(
+          'transition duration-[360ms] ease-out',
+          leaving ? 'opacity-0 saturate-0' : 'opacity-100 saturate-100'
+        )}
+      >
+        <HackeryButton
+          disabled={flow.saving}
+          label={<GlyphText text={scrambledBegin} />}
+          loading={flow.saving}
+          onClick={onBegin}
+        />
       </div>
 
       {/*
@@ -909,7 +1267,7 @@ function ConfirmingModelPanel({
 
 function DocsLink({ children, href }: { children: React.ReactNode; href: string }) {
   return (
-    <Button asChild size="xs" variant="ghost">
+    <Button asChild size="xs" variant="text">
       <a href={href} rel="noreferrer" target="_blank">
         <ExternalLink className="size-3" />
         {children}
@@ -920,8 +1278,8 @@ function DocsLink({ children, href }: { children: React.ReactNode; href: string 
 
 function Status({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex items-center gap-3 rounded-2xl bg-muted/30 px-4 py-6 text-sm text-muted-foreground">
-      <Loader2 className="size-4 animate-spin" />
+    <div className="flex items-center gap-2.5 py-1 text-sm text-muted-foreground" role="status">
+      <Loader className="size-7" type="lemniscate-bloom" />
       {children}
     </div>
   )

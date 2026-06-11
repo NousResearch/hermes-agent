@@ -181,6 +181,8 @@ def _strip_mdv2(text: str) -> str:
     """
     # Remove escape backslashes before special characters
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
+    # Remove standard markdown bold (**text** → text) BEFORE MarkdownV2 bold
+    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
     # Remove MarkdownV2 italic markers that format_message converted from *italic*
@@ -344,6 +346,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
@@ -1142,7 +1145,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # gateway process is alive and reports "connected" but
                 # no messages are received or sent.
                 if self._polling_conflict_count < MAX_CONFLICT_RETRIES:
-                    loop = asyncio.get_event_loop()
+                    # We are inside a running coroutine, so the running loop is
+                    # guaranteed to exist. asyncio.get_event_loop() is deprecated
+                    # and raises "RuntimeError: There is no current event loop in
+                    # thread 'MainThread'" on Python 3.10+ when invoked from a
+                    # context without an attached loop (which can happen when PTB
+                    # dispatches this error callback). Use get_running_loop().
+                    loop = asyncio.get_running_loop()
                     self._polling_error_task = loop.create_task(
                         self._handle_polling_conflict(retry_err)
                     )
@@ -2201,11 +2210,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: retry without markdown formatting
+                # Fallback: strip MarkdownV2 escapes and retry as clean plain text
+                logger.warning(
+                    "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
+                    self.name,
+                    fmt_err,
+                )
+                _plain = _strip_mdv2(content) if content else content
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
-                    text=content,
+                    text=_plain,
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -2333,10 +2348,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        logger.warning(
+                            "[%s] Overflow split: MarkdownV2 first-chunk edit "
+                            "failed, falling back to plain text: %s",
+                            self.name, fmt_err,
+                        )
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
-                            text=first_chunk,
+                            text=_strip_mdv2(first_chunk),
                         )
             else:
                 await self._bot.edit_message_text(
@@ -2364,6 +2384,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # are already correctly sized).  Best-effort MarkdownV2 with plain
         # fallback, mirroring send().
         continuation_ids: list[str] = []
+        delivered_chunks = [first_chunk]
         prev_id = message_id
         thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
@@ -2377,7 +2398,14 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             for use_markdown in (True, False) if finalize else (False,):
                 try:
-                    text = self.format_message(chunk) if use_markdown else chunk
+                    if use_markdown:
+                        text = self.format_message(chunk)
+                    else:
+                        # Plain attempt: on finalize the MarkdownV2 attempt
+                        # failed, so degrade to clean stripped text, never
+                        # the raw chunk (raw ** / ``` markers would render
+                        # literally); streaming previews stay raw.
+                        text = _strip_mdv2(chunk) if finalize else chunk
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=text,
@@ -2403,7 +2431,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         try:
                             sent_msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
-                                text=chunk,
+                                text=_strip_mdv2(chunk) if finalize else chunk,
                                 **retry_thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -2427,17 +2455,37 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
             if sent_msg is None:
                 # Continuation failed — the user has chunk 1 + however many
-                # continuations succeeded.  Report success with what we got
-                # so the stream consumer knows the edit landed; the
-                # remaining tail is lost on this attempt and the next
-                # streaming tick may retry.
+                # continuations succeeded, but NOT the full response.  Do not
+                # report success: the stream consumer treats a successful edit
+                # as final delivery on got_done, which would suppress fallback
+                # delivery and leave the Telegram topic clipped after the last
+                # delivered chunk.
                 logger.warning(
                     "[%s] Overflow split: stopped at %d/%d chunks delivered",
                     self.name, 1 + len(continuation_ids), len(chunks),
                 )
-                break
+                delivered_prefix = "".join(
+                    re.sub(r" \(\d+/\d+\)$", "", delivered)
+                    for delivered in delivered_chunks
+                )
+                return SendResult(
+                    success=False,
+                    message_id=prev_id,
+                    error="overflow_continuation_failed",
+                    retryable=True,
+                    raw_response={
+                        "partial_overflow": True,
+                        "delivered_chunks": 1 + len(continuation_ids),
+                        "total_chunks": len(chunks),
+                        "last_message_id": prev_id,
+                        "delivered_prefix": delivered_prefix,
+                        "continuation_message_ids": tuple(continuation_ids),
+                    },
+                    continuation_message_ids=tuple(continuation_ids),
+                )
             new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
             continuation_ids.append(new_id)
+            delivered_chunks.append(chunk)
             prev_id = new_id
 
         last_id = continuation_ids[-1] if continuation_ids else message_id
@@ -3015,7 +3063,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
-        """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
+        """Handle model picker inline keyboard callbacks (mp:/mm:/mc:/mb:/mx:/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")
@@ -3100,6 +3148,55 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await query.answer()
 
+        elif data.startswith("mc:"):
+            # --- Expensive model confirmed: perform the switch ---
+            try:
+                idx = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+
+            model_list = state.get("model_list", [])
+            if idx < 0 or idx >= len(model_list):
+                await query.answer(text="Invalid model index.")
+                return
+
+            model_id = model_list[idx]
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_model_selected")
+
+            if not callback:
+                await query.answer(text="Picker expired.")
+                return
+
+            switch_failed = False
+            try:
+                result_text = await callback(chat_id, model_id, provider_slug)
+            except Exception as exc:
+                logger.error("Model picker switch failed: %s", exc)
+                result_text = f"Error switching model: {exc}"
+                switch_failed = True
+
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(result_text),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(
+                        text=result_text,
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            await query.answer(
+                text="Switch failed." if switch_failed else "Model switched!"
+            )
+            self._model_picker_state.pop(chat_id, None)
+
         elif data.startswith("mm:"):
             # --- Model selected: perform the switch ---
             try:
@@ -3122,10 +3219,42 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
+
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                warning = await asyncio.to_thread(
+                    expensive_model_warning,
+                    model_id,
+                    provider=provider_slug,
+                )
+            except Exception:
+                warning = None
+            if warning is not None:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Switch anyway", callback_data=f"mc:{idx}")],
+                    [
+                        InlineKeyboardButton("◀ Back", callback_data="mb"),
+                        InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+                    ],
+                ])
+                await query.edit_message_text(
+                    text=self.format_message(
+                        f"⚠ *Expensive Model Warning*\n\n{warning.message}"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                )
+                await query.answer(text="Confirm expensive model")
+                return
+
+            switch_failed = False
+            try:
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
                 result_text = f"Error switching model: {exc}"
+                switch_failed = True
 
             # Edit message to show confirmation, remove buttons
             try:
@@ -3144,7 +3273,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
-            await query.answer(text="Model switched!")
+            await query.answer(
+                text="Switch failed." if switch_failed else "Model switched!"
+            )
 
             # Clean up state
             self._model_picker_state.pop(chat_id, None)
@@ -3245,7 +3376,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name = getattr(query.from_user, "first_name", None)
 
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mpg:", "mm:", "mb", "mx", "mg:")):
+        if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
@@ -3705,6 +3836,33 @@ class TelegramAdapter(BasePlatformAdapter):
                 "path in MEDIA: for gateway file delivery.)"
             )
         return error
+
+    def _telegram_media_too_large_note(self, label: str, file_size: Any, max_bytes: int) -> str:
+        limit_mb = max(1, max_bytes // (1024 * 1024))
+        try:
+            size_mb = int(file_size or 0) / (1024 * 1024)
+            size_text = f"{size_mb:.1f} MB"
+        except (TypeError, ValueError):
+            size_text = "unknown size"
+        return (
+            f"[Telegram {label} skipped: file size {size_text} exceeds the "
+            f"{limit_mb} MB limit. Ask the user to send a shorter voice note "
+            "or a smaller audio file.]"
+        )
+
+    def _telegram_media_size_allowed(self, source: Any, label: str) -> tuple[bool, Optional[str]]:
+        """Validate Telegram media size before downloading into memory."""
+        max_bytes = int(getattr(self, "_max_doc_bytes", 20 * 1024 * 1024) or 20 * 1024 * 1024)
+        file_size = getattr(source, "file_size", None)
+        try:
+            size = int(file_size or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size <= 0:
+            return True, None
+        if size <= max_bytes:
+            return True, None
+        return False, self._telegram_media_too_large_note(label, size, max_bytes)
 
     async def send_voice(
         self,
@@ -5471,6 +5629,12 @@ class TelegramAdapter(BasePlatformAdapter):
         # Download voice/audio messages to cache for STT transcription
         if msg.voice:
             try:
+                allowed, note = self._telegram_media_size_allowed(msg.voice, "voice message")
+                if not allowed:
+                    event.text = self._append_observed_note(event.text, note or "")
+                    logger.info("[Telegram] Skipped oversized user voice (size=%s)", getattr(msg.voice, "file_size", None))
+                    await self.handle_message(event)
+                    return
                 file_obj = await msg.voice.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
@@ -5481,6 +5645,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
         elif msg.audio:
             try:
+                allowed, note = self._telegram_media_size_allowed(msg.audio, "audio file")
+                if not allowed:
+                    event.text = self._append_observed_note(event.text, note or "")
+                    logger.info("[Telegram] Skipped oversized user audio (size=%s)", getattr(msg.audio, "file_size", None))
+                    await self.handle_message(event)
+                    return
                 file_obj = await msg.audio.get_file()
                 audio_bytes = await file_obj.download_as_bytearray()
                 cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")

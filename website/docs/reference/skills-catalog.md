@@ -105,7 +105,6 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`huggingface-hub`](/docs/user-guide/skills/bundled/mlops/mlops-huggingface-hub) | HuggingFace hf CLI: search/download/upload models, datasets. | `mlops/huggingface-hub` |
 | [`llama-cpp`](/docs/user-guide/skills/bundled/mlops/mlops-inference-llama-cpp) | llama.cpp local GGUF inference + HF Hub model discovery. | `mlops/inference/llama-cpp` |
 | [`evaluating-llms-harness`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-lm-evaluation-harness) | lm-eval-harness: benchmark LLMs (MMLU, GSM8K, etc.). | `mlops/evaluation/lm-evaluation-harness` |
-| [`obliteratus`](/docs/user-guide/skills/bundled/mlops/mlops-inference-obliteratus) | OBLITERATUS: abliterate LLM refusals (diff-in-means). | `mlops/inference/obliteratus` |
 | [`segment-anything-model`](/docs/user-guide/skills/bundled/mlops/mlops-models-segment-anything) | SAM: zero-shot image segmentation via points, boxes, masks. | `mlops/models/segment-anything` |
 | [`serving-llms-vllm`](/docs/user-guide/skills/bundled/mlops/mlops-inference-vllm) | vLLM: high-throughput LLM serving, OpenAI API, quantization. | `mlops/inference/vllm` |
 | [`weights-and-biases`](/docs/user-guide/skills/bundled/mlops/mlops-evaluation-weights-and-biases) | W&B: log ML experiments, sweeps, model registry, dashboards. | `mlops/evaluation/weights-and-biases` |
@@ -128,12 +127,6 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`ocr-and-documents`](/docs/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) | Extract text from PDFs/scans (pymupdf, marker-pdf). | `productivity/ocr-and-documents` |
 | [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint) | Create, read, edit .pptx decks, slides, notes, templates. | `productivity/powerpoint` |
 | [`teams-meeting-pipeline`](/docs/user-guide/skills/bundled/productivity/productivity-teams-meeting-pipeline) | Operate the Teams meeting summary pipeline via Hermes CLI — summarize meetings, inspect pipeline status, replay jobs, manage Microsoft Graph subscriptions. | `productivity/teams-meeting-pipeline` |
-
-## red-teaming
-
-| Skill | Description | Path |
-|-------|-------------|------|
-| [`godmode`](/docs/user-guide/skills/bundled/red-teaming/red-teaming-godmode) | Jailbreak LLMs: Parseltongue, GODMODE, ULTRAPLINIAN. | `red-teaming/godmode` |
 
 ## research
 
@@ -166,6 +159,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 | [`plan`](/docs/user-guide/skills/bundled/software-development/software-development-plan) | Plan mode: write an actionable markdown plan to .hermes/plans/, no execution. Bite-sized tasks, exact paths, complete code. | `software-development/plan` |
 | [`python-debugpy`](/docs/user-guide/skills/bundled/software-development/software-development-python-debugpy) | Debug Python: pdb REPL + debugpy remote (DAP). | `software-development/python-debugpy` |
 | [`requesting-code-review`](/docs/user-guide/skills/bundled/software-development/software-development-requesting-code-review) | Pre-commit review: security scan, quality gates, auto-fix. | `software-development/requesting-code-review` |
+| [`simplify-code`](/docs/user-guide/skills/bundled/software-development/software-development-simplify-code) | Parallel 3-agent cleanup of recent code changes. | `software-development/simplify-code` |
 | [`spike`](/docs/user-guide/skills/bundled/software-development/software-development-spike) | Throwaway experiments to validate an idea before build. | `software-development/spike` |
 | [`systematic-debugging`](/docs/user-guide/skills/bundled/software-development/software-development-systematic-debugging) | 4-phase root cause debugging: understand bugs before fixing. | `software-development/systematic-debugging` |
 | [`test-driven-development`](/docs/user-guide/skills/bundled/software-development/software-development-test-driven-development) | TDD: enforce RED-GREEN-REFACTOR, tests before code. | `software-development/test-driven-development` |

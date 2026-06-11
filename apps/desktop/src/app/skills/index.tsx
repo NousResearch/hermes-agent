@@ -15,6 +15,7 @@ import type { SkillInfo, ToolsetInfo } from '@/types/hermes'
 
 import { useRefreshHotkey } from '../hooks/use-refresh-hotkey'
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
+import { PAGE_INSET_X } from '../layout-constants'
 import { PageSearchShell } from '../page-search-shell'
 import { asText, includesQuery, prettyName, toolNames, toolsetDisplayLabel } from '../settings/helpers'
 import { ToolsetConfigPanel } from '../settings/toolset-config-panel'
@@ -191,32 +192,22 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
     <PageSearchShell
       {...props}
       filters={
-        <>
-          <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
-            <TextTab active={mode === 'skills'} onClick={() => setMode('skills')}>
-              {t.skills.tabSkills}
+        mode === 'skills' && categories.length > 0 ? (
+          <>
+            <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
+              {t.skills.all} <TextTabMeta>{totalSkills}</TextTabMeta>
             </TextTab>
-            <TextTab active={mode === 'toolsets'} onClick={() => setMode('toolsets')}>
-              {t.skills.tabToolsets}
-            </TextTab>
-          </div>
-          {mode === 'skills' && categories.length > 0 && (
-            <div className="flex flex-wrap justify-center gap-x-2 gap-y-1">
-              <TextTab active={activeCategory === null} onClick={() => setActiveCategory(null)}>
-                {t.skills.all} <TextTabMeta>{totalSkills}</TextTabMeta>
+            {categories.map(category => (
+              <TextTab
+                active={activeCategory === category.key}
+                key={category.key}
+                onClick={() => setActiveCategory(activeCategory === category.key ? null : category.key)}
+              >
+                {prettyName(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
               </TextTab>
-              {categories.map(category => (
-                <TextTab
-                  active={activeCategory === category.key}
-                  key={category.key}
-                  onClick={() => setActiveCategory(activeCategory === category.key ? null : category.key)}
-                >
-                  {prettyName(category.key)} <TextTabMeta>{category.count}</TextTabMeta>
-                </TextTab>
-              ))}
-            </div>
-          )}
-        </>
+            ))}
+          </>
+        ) : undefined
       }
       onSearchChange={setQuery}
       searchHidden={mode === 'skills' ? (skills?.length ?? 0) === 0 : (toolsets?.length ?? 0) === 0}
@@ -236,21 +227,33 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
         </Button>
       }
       searchValue={query}
+      tabs={
+        <>
+          <TextTab active={mode === 'skills'} onClick={() => setMode('skills')}>
+            {t.skills.tabSkills}
+          </TextTab>
+          <TextTab active={mode === 'toolsets'} onClick={() => setMode('toolsets')}>
+            {t.skills.tabToolsets}
+          </TextTab>
+        </>
+      }
     >
       {!skills || !toolsets ? (
         <PageLoader label={t.skills.loading} />
       ) : mode === 'skills' ? (
-        <div className="h-full overflow-y-auto px-4 py-3">
+        <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
           {visibleSkills.length === 0 ? (
             <EmptyState description={t.skills.noSkillsDesc} title={t.skills.noSkillsTitle} />
           ) : (
             <div className="space-y-4">
               {skillGroups.map(([category, list]) => (
                 <div className="space-y-1.5" key={category}>
-                  <div className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-                    {prettyName(category)}
-                  </div>
-                  <div className="divide-y divide-(--ui-stroke-quaternary)">
+                  {activeCategory === null && (
+                    <div className="text-[0.68rem] font-semibold uppercase tracking-[0.12em] text-muted-foreground">
+                      {prettyName(category)}
+                    </div>
+                  )}
+                  <div>
                     {list.map(skill => (
                       <div
                         className="grid gap-3 px-0 py-2.5 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center"
@@ -276,7 +279,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
           )}
         </div>
       ) : (
-        <div className="h-full overflow-y-auto px-4 py-3">
+        <div className={cn('h-full overflow-y-auto py-3', PAGE_INSET_X)}>
           {visibleToolsets.length === 0 ? (
             <EmptyState description={t.skills.noToolsetsDesc} title={t.skills.noToolsetsTitle} />
           ) : (
@@ -284,7 +287,7 @@ export function SkillsView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...p
               <div className="text-xs text-muted-foreground">
                 {t.skills.toolsetsEnabled(enabledToolsets, toolsets.length)}
               </div>
-              <div className="divide-y divide-(--ui-stroke-quaternary)">
+              <div>
                 {visibleToolsets.map(toolset => {
                   const tools = toolNames(toolset)
                   const label = toolsetDisplayLabel(toolset)

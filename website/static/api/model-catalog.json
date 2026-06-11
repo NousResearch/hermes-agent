@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-06-04T23:57:51Z",
+  "updated_at": "2026-06-09T17:20:16Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -12,6 +12,10 @@
         "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5",
+          "description": ""
+        },
         {
           "id": "anthropic/claude-opus-4.8",
           "description": ""
@@ -117,11 +121,19 @@
           "description": "free"
         },
         {
+          "id": "poolside/laguna-m.1:free",
+          "description": "free"
+        },
+        {
           "id": "tencent/hy3-preview:free",
           "description": "free"
         },
         {
           "id": "nvidia/nemotron-3-super-120b-a12b:free",
+          "description": "free"
+        },
+        {
+          "id": "nvidia/nemotron-3-ultra-550b-a55b:free",
           "description": "free"
         },
         {
@@ -136,6 +148,9 @@
         "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest."
       },
       "models": [
+        {
+          "id": "anthropic/claude-fable-5"
+        },
         {
           "id": "anthropic/claude-opus-4.8"
         },

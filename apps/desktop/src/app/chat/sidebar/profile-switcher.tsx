@@ -27,12 +27,14 @@ import { Codicon } from '@/components/ui/codicon'
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@/components/ui/context-menu'
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import {
   $activeGatewayProfile,
   $profileColors,
+  $profileCreateRequest,
   $profileOrder,
   $profiles,
   $profileScope,
@@ -81,9 +83,12 @@ const stepThroughCells: Modifier = ({ containerNodeRect, draggingNodeRect, trans
 // Arc-Spaces-style profile rail at the sidebar foot: a default↔all toggle pinned
 // left, the colored named profiles scrolling between, and Manage pinned right.
 // The active profile pops in its own color — the "where am I" cue. Single-
-// profile users see only the "+" (create their first profile); everything else
-// appears once a second profile exists.
+// profile users see the "+" (create their first profile) and the Manage
+// overflow (edit the default profile's SOUL.md); the colored named squares
+// and the default↔all toggle only appear once a second profile exists.
 export function ProfileRail() {
+  const { t } = useI18n()
+  const p = t.profiles
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
   const gatewayProfile = useStore($activeGatewayProfile)
@@ -175,6 +180,20 @@ export function ProfileRail() {
     void refreshActiveProfile()
   }, [])
 
+  // Open the create dialog when the `profile.create` hotkey fires (the dialog
+  // state lives here, so the global keybind bumps a request atom we watch).
+  const createRequest = useStore($profileCreateRequest)
+  const lastCreateRef = useRef(createRequest)
+
+  useEffect(() => {
+    if (createRequest === lastCreateRef.current) {
+      return
+    }
+
+    lastCreateRef.current = createRequest
+    setCreateOpen(true)
+  }, [createRequest])
+
   return (
     <div aria-label="Profiles" className="flex items-center gap-0.5" role="tablist">
       {/* One button toggles default ↔ all: home face when scoped to a profile,
@@ -187,16 +206,21 @@ export function ProfileRail() {
           <ProfilePill
             active={isAll || onDefault}
             glyph={isAll ? 'layers' : 'home'}
-            label={onDefault ? 'Show all profiles' : `Switch to ${defaultProfile.name}`}
+            label={onDefault ? p.showAllProfiles : p.switchToProfile(defaultProfile.name)}
             onSelect={() => (onDefault ? setShowAllProfiles(true) : selectProfile(defaultProfile.name))}
           />
         ) : (
-          <ProfilePill active={isAll} glyph="layers" label="All profiles" onSelect={() => setShowAllProfiles(true)} />
+          <ProfilePill active={isAll} glyph="layers" label={p.allProfiles} onSelect={() => setShowAllProfiles(true)} />
         ))}
 
       {/* Single-profile: the active default's home icon next to the create +. */}
       {!multiProfile && defaultProfile && (
-        <ProfilePill active glyph="home" label={defaultProfile.name} onSelect={() => selectProfile(defaultProfile.name)} />
+        <ProfilePill
+          active
+          glyph="home"
+          label={defaultProfile.name}
+          onSelect={() => selectProfile(defaultProfile.name)}
+        />
       )}
 
       <div
@@ -233,9 +257,9 @@ export function ProfileRail() {
           </DndContext>
         )}
 
-        <Tip label="New profile">
+        <Tip label={p.newProfile}>
           <button
-            aria-label="New profile"
+            aria-label={p.newProfile}
             className="grid size-5 shrink-0 place-items-center rounded-[3px] text-(--ui-text-tertiary) opacity-55 transition hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100"
             onClick={() => setCreateOpen(true)}
             type="button"
@@ -245,9 +269,11 @@ export function ProfileRail() {
         </Tip>
       </div>
 
-      {multiProfile && (
-        <ProfilePill active={false} glyph="ellipsis" label="Manage profiles…" onSelect={() => navigate(PROFILES_ROUTE)} />
-      )}
+      {/* Always reachable, even with only the default profile: the manage
+          overlay is the only place to edit a profile's SOUL.md, and a
+          single-profile user must be able to edit the default's persona
+          without first creating a throwaway second profile. */}
+      <ProfilePill active={false} glyph="ellipsis" label={p.manageProfiles} onSelect={() => navigate(PROFILES_ROUTE)} />
 
       {/* Land in the new profile on a fresh chat (selectProfile triggers the
           new-session reset), not stuck on the session you were just in. */}
@@ -328,6 +354,8 @@ const LONG_PRESS_MS = 450
 // context-menu triggers via nested asChild Slots, so a single element keeps the
 // dnd listeners, hover tip, and right-click menu.
 function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, onSelect }: ProfileSquareProps) {
+  const { t } = useI18n()
+  const p = t.profiles
   const hue = color ?? 'var(--ui-text-quaternary)'
   const [pickerOpen, setPickerOpen] = useState(false)
   const pressTimer = useRef<null | number>(null)
@@ -436,27 +464,27 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
         {/* The rail sits at the very bottom, so pad off the chrome (esp. the
             statusbar) — Radix then flips the menu up instead of squishing it. */}
         <ContextMenuContent
-          aria-label={`Actions for ${label}`}
+          aria-label={p.actionsFor(label)}
           className="w-40"
           collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
         >
           <ContextMenuItem onSelect={() => setPickerOpen(true)}>
             <Codicon name="symbol-color" size="0.875rem" />
-            <span>Color…</span>
+            <span>{p.color}</span>
           </ContextMenuItem>
           <ContextMenuItem onSelect={onRename}>
             <Codicon name="edit" size="0.875rem" />
-            <span>Rename</span>
+            <span>{p.rename}</span>
           </ContextMenuItem>
           <ContextMenuItem className="text-destructive focus:text-destructive" onSelect={onDelete} variant="destructive">
             <Codicon name="trash" size="0.875rem" />
-            <span>Delete</span>
+            <span>{t.common.delete}</span>
           </ContextMenuItem>
         </ContextMenuContent>
       </ContextMenu>
 
       <PopoverContent
-        aria-label={`Color for ${label}`}
+        aria-label={p.colorFor(label)}
         className="w-auto p-2"
         collisionPadding={{ bottom: 44, left: 8, right: 8, top: 8 }}
         side="top"
@@ -464,7 +492,7 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
         <div className="grid grid-cols-6 gap-1.5">
           {PROFILE_SWATCHES.map(swatch => (
             <button
-              aria-label={`Set color ${swatch}`}
+              aria-label={p.setColor(swatch)}
               className="size-5 rounded-full transition-transform hover:scale-110"
               key={swatch}
               onClick={() => pickColor(swatch)}
@@ -483,7 +511,7 @@ function ProfileSquare({ active, color, label, onDelete, onRecolor, onRename, on
           type="button"
         >
           <Codicon name="sync" size="0.75rem" />
-          Auto
+          {p.autoColor}
         </button>
       </PopoverContent>
     </Popover>

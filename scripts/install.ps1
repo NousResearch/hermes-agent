@@ -185,6 +185,35 @@ function Write-Err {
     Write-Host "[X] $Message" -ForegroundColor Red
 }
 
+# Inspect npm output for a TLS-trust failure and, if found, print actionable
+# remediation. npm/Node surface corporate MITM proxies and missing root CAs as
+# "unable to get local issuer certificate" / "self-signed certificate in
+# certificate chain" / UNABLE_TO_GET_ISSUER_CERT_LOCALLY -- most commonly while
+# Electron's install.js postinstall downloads the Electron binary. The reporter
+# usually misreads this as an admin-rights or generic install failure (see
+# issue #38016), so detect it once here and route every npm stage through this
+# hint. Returns $true when a cert error was detected (caller may adjust its own
+# messaging), $false otherwise.
+function Show-NpmCertHint {
+    param([string]$NpmOutput)
+    if (-not $NpmOutput) { return $false }
+    $isCertError = $NpmOutput -match "unable to get local issuer certificate" `
+        -or $NpmOutput -match "self.signed certificate" `
+        -or $NpmOutput -match "UNABLE_TO_GET_ISSUER_CERT_LOCALLY" `
+        -or $NpmOutput -match "SELF_SIGNED_CERT_IN_CHAIN" `
+        -or $NpmOutput -match "CERT_HAS_EXPIRED"
+    if (-not $isCertError) { return $false }
+    Write-Warn "This looks like a TLS certificate-trust failure, not a permissions problem."
+    Write-Info "  A corporate proxy or antivirus is likely intercepting HTTPS and presenting a"
+    Write-Info "  certificate Node.js doesn't trust. To fix, point Node at your org's root CA:"
+    Write-Info "    1. Get the corporate root CA as a .pem/.crt from your IT team."
+    Write-Info "    2. setx NODE_EXTRA_CA_CERTS `"C:\path\to\corp-ca.pem`""
+    Write-Info "    3. Open a NEW terminal (so the env var takes effect) and re-run the installer."
+    Write-Info "  Quick (less secure) alternative -- disable TLS verification just for the install:"
+    Write-Info "    npm config set strict-ssl false   (re-enable afterwards: npm config set strict-ssl true)"
+    return $true
+}
+
 # --- Ensure-mode helpers ---
 
 function Resolve-NpmCmd {
@@ -252,6 +281,7 @@ function Install-AgentBrowser {
         $npmDetail = Get-Content $npmLog -Raw -ErrorAction SilentlyContinue
         Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
         Write-Err "npm install -g failed (exit $npmExit): $npmDetail"
+        Show-NpmCertHint $npmDetail | Out-Null
         throw "npm install failed"
     }
     Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
@@ -862,6 +892,42 @@ function Test-Node {
     return $true
 }
 
+function Update-ProcessPathForPackages {
+    # Make freshly-installed shims (rg.exe, ffmpeg.exe) visible to Get-Command in
+    # THIS process without spawning a new shell, by folding the persisted
+    # User+Machine hives plus winget's alias-shim directory into $env:Path.
+    # Called after every package-manager attempt (winget/choco/scoop): previously
+    # PATH was only refreshed inside the winget branch, so a successful
+    # choco/scoop fallback -- or any install on a box without winget -- could be
+    # misreported as "not installed".
+    #
+    # MERGE rather than overwrite: start from the existing process PATH so any
+    # process-only entries added earlier in this installer run survive, then
+    # APPEND hive/winget-Links entries not already present (case-insensitive,
+    # order-preserving dedupe). A wholesale replace would silently drop those
+    # process-only entries.
+    $candidates = @()
+    $candidates += $env:Path
+    $candidates += [Environment]::GetEnvironmentVariable("Path", "User")
+    $candidates += [Environment]::GetEnvironmentVariable("Path", "Machine")
+    $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
+    if (Test-Path $wingetLinks) {
+        $candidates += $wingetLinks
+    }
+    $seen = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    $ordered = New-Object System.Collections.Generic.List[string]
+    foreach ($chunk in $candidates) {
+        if ([string]::IsNullOrEmpty($chunk)) { continue }
+        foreach ($entry in $chunk.Split(';')) {
+            $trimmed = $entry.Trim()
+            if ($trimmed -and $seen.Add($trimmed)) {
+                $ordered.Add($trimmed)
+            }
+        }
+    }
+    $env:Path = [string]::Join(';', $ordered)
+}
+
 function Install-SystemPackages {
     $script:HasRipgrep = $false
     $script:HasFfmpeg = $false
@@ -931,25 +997,33 @@ function Install-SystemPackages {
             try {
                 $output = winget install --exact --id $pkg --source winget --silent `
                     --accept-package-agreements --accept-source-agreements 2>&1
+                $code = $LASTEXITCODE
                 $output | Out-File -FilePath $log -Encoding utf8
-                "winget exit: $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+                "winget exit: $code" | Out-File -FilePath $log -Encoding utf8 -Append
+                # 0x8A15002B (-1978335189) = APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE.
+                # winget treats `install` on a package it already has registered as
+                # an *upgrade*, finds no newer version, and bails with this code --
+                # even when the binary is gone from disk/PATH (stale registration,
+                # files removed outside winget, or a missing alias shim). We KNOW the
+                # command was missing (that's why we're here), so a plain install
+                # dead-ends forever. Force a reinstall to repair the registration so
+                # the shim reappears.
+                if ($code -eq -1978335189) {
+                    "-> already-installed/no-upgrade; retrying with --force" | Out-File -FilePath $log -Encoding utf8 -Append
+                    $output = winget install --exact --id $pkg --source winget --silent --force `
+                        --accept-package-agreements --accept-source-agreements 2>&1
+                    $output | Out-File -FilePath $log -Encoding utf8 -Append
+                    "winget exit (force): $LASTEXITCODE" | Out-File -FilePath $log -Encoding utf8 -Append
+                }
             } catch {
                 $_ | Out-File -FilePath $log -Encoding utf8 -Append
                 "winget exit: <exception>" | Out-File -FilePath $log -Encoding utf8 -Append
             }
         }
-        # Refresh PATH from both env-var hives AND winget's alias shim directory.
-        # winget exposes packages via "command line aliases" in %LOCALAPPDATA%\
-        # Microsoft\WinGet\Links, which is added to PATH by the AppExecutionAlias
-        # machinery only in *newly-spawned* shells -- not the current process.
-        # Without this addition, Get-Command rg below would falsely return null
-        # immediately after a successful install.
-        $wingetLinks = Join-Path $env:LOCALAPPDATA "Microsoft\WinGet\Links"
-        $envPath = [Environment]::GetEnvironmentVariable("Path", "User") + ";" + [Environment]::GetEnvironmentVariable("Path", "Machine")
-        if (Test-Path $wingetLinks) {
-            $envPath = "$envPath;$wingetLinks"
-        }
-        $env:Path = $envPath
+        # Refresh PATH so packages winget exposed via "command line aliases" in
+        # %LOCALAPPDATA%\Microsoft\WinGet\Links (added to PATH only in
+        # newly-spawned shells, not this process) are visible to Get-Command below.
+        Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed"
             $script:HasRipgrep = $true
@@ -975,6 +1049,7 @@ function Install-SystemPackages {
         foreach ($pkg in $chocoPkgs) {
             try { choco install $pkg -y 2>&1 | Out-Null } catch { }
         }
+        Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed via chocolatey"
             $script:HasRipgrep = $true
@@ -993,6 +1068,7 @@ function Install-SystemPackages {
         foreach ($pkg in $scoopPkgs) {
             try { scoop install $pkg 2>&1 | Out-Null } catch { }
         }
+        Update-ProcessPathForPackages
         if ($needRipgrep -and (Get-Command rg -ErrorAction SilentlyContinue)) {
             Write-Success "ripgrep installed via scoop"
             $script:HasRipgrep = $true
@@ -1030,9 +1106,10 @@ function Install-Repository {
         # directory OR a symlink OR a submodule-style gitfile -- and also when
         # it's a broken stub left over from a failed previous install (e.g.
         # a partial Remove-Item that couldn't delete a locked index.lock).
-        # Validate the repo properly by asking git itself.  Two checks
-        # belt-and-braces: rev-parse AND git status.  If either fails the
-        # repo is broken and we fall through to a fresh clone.
+        # Validate the repo properly by asking git itself.  Three checks
+        # belt-and-braces: rev-parse (work tree), git status, and a resolvable
+        # HEAD (an initial commit).  If any fails the repo is broken and we
+        # fall through to a fresh clone.
         $repoValid = $false
         if (Test-Path "$InstallDir\.git") {
             Push-Location $InstallDir
@@ -1047,7 +1124,17 @@ function Install-Repository {
                 $null = & git -c windows.appendAtomically=false status --short 2>&1
                 $statusOk = ($LASTEXITCODE -eq 0)
 
-                if ($revParseOk -and $statusOk) {
+                # An interrupted previous clone leaves a repo with NO initial
+                # commit. rev-parse/status still succeed there, but the update
+                # path's `git stash` (and later `git checkout`) abort with
+                # "You do not have the initial commit yet" and fail the install
+                # (#40998). Require a resolvable HEAD so such partial checkouts
+                # are treated as broken and re-cloned fresh below.
+                $global:LASTEXITCODE = 0
+                $null = & git -c windows.appendAtomically=false rev-parse --verify HEAD 2>&1
+                $hasCommit = ($LASTEXITCODE -eq 0)
+
+                if ($revParseOk -and $statusOk -and $hasCommit) {
                     $repoValid = $true
                 }
             } catch {}
@@ -1089,7 +1176,7 @@ function Install-Repository {
                     git -c windows.appendAtomically=false stash push --include-untracked -m "$stashName"
                     if ($LASTEXITCODE -eq 0) { $autostashRef = "stash@{0}" }
                 }
-                git -c windows.appendAtomically=false fetch origin
+                git -c windows.appendAtomically=false fetch origin $Branch
                 if ($LASTEXITCODE -ne 0) { throw "git fetch failed (exit $LASTEXITCODE)" }
                 # Precedence: Commit > Tag > Branch.  Commit and Tag check
                 # out as detached HEAD intentionally -- they're meant to be
@@ -1168,16 +1255,19 @@ function Install-Repository {
             }
             $didUpdate = $true
         } else {
-            # Directory exists but isn't a usable git repo.  Wipe it and
-            # fall through to a fresh clone.  A leftover ``.git`` stub from
-            # a partial uninstall used to lock the installer into the
-            # "update" branch forever, emitting three ``fatal: not a git
-            # repository`` errors and failing with "not in a git directory".
-            Write-Warn "Existing directory at $InstallDir is not a valid git repo -- replacing it."
+            # Directory exists but isn't a usable git repo -- e.g. an
+            # interrupted clone with no initial commit (#40998), or a leftover
+            # ``.git`` stub from a partial uninstall that used to lock the
+            # installer into the "update" branch forever. Move it aside rather
+            # than deleting it -- never destroy a directory the user might still
+            # want -- and fall through to a fresh clone.
+            $backupDir = "$InstallDir.broken-" + (Get-Date -Format "yyyyMMdd-HHmmss")
+            Write-Warn "Existing directory at $InstallDir is not a valid git repo."
+            Write-Warn "Moving it aside to $backupDir before re-cloning."
             try {
-                Remove-Item -Recurse -Force $InstallDir -ErrorAction Stop
+                Move-Item -LiteralPath $InstallDir -Destination $backupDir -ErrorAction Stop
             } catch {
-                Write-Err "Could not remove $InstallDir : $_"
+                Write-Err "Could not move $InstallDir aside : $_"
                 Write-Info "Close any programs that might be using files in $InstallDir (editors,"
                 Write-Info "terminals, running hermes processes) and try again."
                 throw
@@ -1681,7 +1771,7 @@ function Write-BootstrapMarker {
 function Copy-ConfigTemplates {
     Write-Info "Setting up configuration files..."
     
-    # Create ~/.hermes directory structure
+    # Create the HERMES_HOME directory structure ($HermesHome, default %LOCALAPPDATA%\hermes)
     New-Item -ItemType Directory -Force -Path "$HermesHome\cron" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\sessions" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\logs" | Out-Null
@@ -1699,13 +1789,13 @@ function Copy-ConfigTemplates {
         $examplePath = "$InstallDir\.env.example"
         if (Test-Path $examplePath) {
             Copy-Item $examplePath $envPath
-            Write-Success "Created ~/.hermes/.env from template"
+            Write-Success "Created $envPath from template"
         } else {
             New-Item -ItemType File -Force -Path $envPath | Out-Null
-            Write-Success "Created ~/.hermes/.env"
+            Write-Success "Created $envPath"
         }
     } else {
-        Write-Info "~/.hermes/.env already exists, keeping it"
+        Write-Info "$envPath already exists, keeping it"
     }
     
     # Create config.yaml
@@ -1714,10 +1804,10 @@ function Copy-ConfigTemplates {
         $examplePath = "$InstallDir\cli-config.yaml.example"
         if (Test-Path $examplePath) {
             Copy-Item $examplePath $configPath
-            Write-Success "Created ~/.hermes/config.yaml from template"
+            Write-Success "Created $configPath from template"
         }
     } else {
-        Write-Info "~/.hermes/config.yaml already exists, keeping it"
+        Write-Info "$configPath already exists, keeping it"
     }
     
     # Create SOUL.md if it doesn't exist (global persona file).
@@ -1750,25 +1840,25 @@ Delete the contents (or this file) to use the default personality.
 "@
         $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
         [System.IO.File]::WriteAllText($soulPath, $soulContent, $utf8NoBom)
-        Write-Success "Created ~/.hermes/SOUL.md (edit to customize personality)"
+        Write-Success "Created $soulPath (edit to customize personality)"
     }
     
-    Write-Success "Configuration directory ready: ~/.hermes/"
+    Write-Success "Configuration directory ready: $HermesHome"
     
-    # Seed bundled skills into ~/.hermes/skills/ (manifest-based, one-time per skill)
-    Write-Info "Syncing bundled skills to ~/.hermes/skills/ ..."
+    # Seed bundled skills into $HermesHome\skills (manifest-based, one-time per skill)
+    Write-Info "Syncing bundled skills to $HermesHome\skills ..."
     $pythonExe = "$InstallDir\venv\Scripts\python.exe"
     if (Test-Path $pythonExe) {
         try {
             & $pythonExe "$InstallDir\tools\skills_sync.py" 2>$null
-            Write-Success "Skills synced to ~/.hermes/skills/"
+            Write-Success "Skills synced to $HermesHome\skills"
         } catch {
             # Fallback: simple directory copy
             $bundledSkills = "$InstallDir\skills"
             $userSkills = "$HermesHome\skills"
             if ((Test-Path $bundledSkills) -and -not (Get-ChildItem $userSkills -Exclude '.bundled_manifest' -ErrorAction SilentlyContinue)) {
                 Copy-Item -Path "$bundledSkills\*" -Destination $userSkills -Recurse -Force -ErrorAction SilentlyContinue
-                Write-Success "Skills copied to ~/.hermes/skills/"
+                Write-Success "Skills copied to $HermesHome\skills"
             }
         }
     }
@@ -1873,6 +1963,7 @@ function Install-NodeDeps {
                         Write-Host "    $line" -ForegroundColor DarkGray
                     }
                     Write-Info "  Full log: $logPath"
+                    Show-NpmCertHint $errText | Out-Null
                 }
             }
             Write-Info "Run manually later: cd `"$installDir`"; npm install"
@@ -2127,15 +2218,22 @@ function Install-Desktop {
         # tsc/typescript unresolved so `npm run pack`'s `tsc -b` dies with
         # no obvious cause. Fall back to `npm install` only if `npm ci`
         # fails (lockfile out of sync / very old npm without ci).
-        & $npmExe ci 2>&1 | ForEach-Object { "$_" }
+        #
+        # Tee the merged output into $npmOut while still emitting every line
+        # live. We don't need a side log file (the bootstrap streaming sink
+        # is the artifact), but on failure we scan $npmOut for the TLS-trust
+        # signature so corporate-proxy users get the NODE_EXTRA_CA_CERTS hint
+        # instead of an opaque "exit 1" (issue #38016).
+        & $npmExe ci 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
         $code = $LASTEXITCODE
         if ($code -ne 0) {
             Write-Info "  npm ci failed (exit $code) -- retrying with npm install..."
-            & $npmExe install 2>&1 | ForEach-Object { "$_" }
+            & $npmExe install 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
             $code = $LASTEXITCODE
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {
+            Show-NpmCertHint ($npmOut -join "`n") | Out-Null
             throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
         }
         Write-Success "Desktop workspace dependencies installed"
@@ -2195,6 +2293,24 @@ function Install-Desktop {
                 & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
                 $code = $LASTEXITCODE
             }
+        }
+        # Still failing and the user hasn't pinned their own mirror: GitHub's
+        # Electron release host is likely blocked/throttled (the repeating
+        # "retrying" log). Retry once via npmmirror.com — the de-facto Electron
+        # community mirror (Alibaba). @electron/get SHASUM-checks the download,
+        # but the SHASUMS come from the same mirror, so that guards against a
+        # corrupt/partial download, NOT a compromised mirror: an explicit trust
+        # trade-off we only make AFTER the canonical GitHub download has failed,
+        # and we never override a user-pinned ELECTRON_MIRROR.
+        if ($code -ne 0 -and -not $env:ELECTRON_MIRROR) {
+            $prevMirror = $env:ELECTRON_MIRROR
+            $env:ELECTRON_MIRROR = "https://npmmirror.com/mirrors/electron/"
+            Write-Warn "Desktop build still failing - the Electron download from GitHub looks blocked."
+            Write-Warn "Retrying once via a public Electron mirror ($($env:ELECTRON_MIRROR)):"
+            Write-Info "  (set ELECTRON_MIRROR yourself to use a different/trusted mirror)"
+            & $npmExe run pack 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $buildLog
+            $code = $LASTEXITCODE
+            $env:ELECTRON_MIRROR = $prevMirror
         }
         $ErrorActionPreference = $prevEAP
         if ($code -ne 0) {

@@ -7,10 +7,21 @@ declare global {
       // the window's backend; pass a named profile to lazily spawn/reuse that
       // profile's backend from the pool.
       getConnection: (profile?: string | null) => Promise<HermesConnection>
+      // Reconnect-after-wake recovery: liveness-probe the cached PRIMARY backend
+      // and drop it if a remote one has gone unreachable, so the next
+      // getConnection() rebuilds a reachable descriptor instead of the renderer
+      // re-dialing a dead remote forever. No-op for local backends (they
+      // self-heal via the child 'exit' handler). `rebuilt` is true when a stale
+      // remote cache was dropped.
+      revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       // Keepalive: mark a pool profile backend as recently used so the idle
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
+      // Open (or focus) a standalone OS window for a single chat session so
+      // the user can work with multiple chats side by side. Returns ok:false
+      // with an error code when the sessionId is empty/invalid.
+      openSessionWindow: (sessionId: string) => Promise<{ ok: boolean; error?: string }>
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -44,8 +55,9 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
-        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string }>
+        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
@@ -63,6 +75,10 @@ declare global {
       }
       onClosePreviewRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
+      onDeepLink?: (
+        callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void,
+      ) => () => void
+      signalDeepLinkReady?: () => Promise<{ ok: boolean }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
@@ -81,8 +97,42 @@ declare global {
         setBranch: (name: string) => Promise<{ branch: string }>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
+      uninstall: {
+        summary: () => Promise<DesktopUninstallSummary>
+        run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
+      }
+      themes: {
+        // Download a VS Code Marketplace extension and return the raw color
+        // theme files it contributes. The renderer converts + persists them.
+        fetchMarketplace: (id: string) => Promise<DesktopMarketplaceThemeResult>
+        // Search the Marketplace for color-theme extensions. An empty query
+        // returns the most-installed themes.
+        searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
+      }
     }
   }
+}
+
+export interface DesktopMarketplaceSearchItem {
+  extensionId: string
+  displayName: string
+  publisher: string
+  description: string
+  installs: number
+}
+
+export interface DesktopMarketplaceThemeFile {
+  label: string
+  /** VS Code's `uiTheme` for this entry (vs-dark / vs / hc-black). */
+  uiTheme?: string
+  /** Raw theme JSON (JSONC) text, parsed + converted by the renderer. */
+  contents: string
+}
+
+export interface DesktopMarketplaceThemeResult {
+  extensionId: string
+  displayName: string
+  themes: DesktopMarketplaceThemeFile[]
 }
 
 export interface HermesTerminalSession {
@@ -102,6 +152,30 @@ export interface DesktopVersionInfo {
   nodeVersion: string
   platform: string
   hermesRoot: string
+}
+
+export type DesktopUninstallMode = 'full' | 'gui' | 'lite'
+
+export interface DesktopUninstallSummary {
+  hermes_home: string
+  agent_installed: boolean
+  gui_installed: boolean
+  source_built_artifacts: string[]
+  packaged_app_paths: string[]
+  userdata_dir: string
+  userdata_exists: boolean
+  platform: string
+  running_app_path?: null | string
+  probe?: string
+}
+
+export interface DesktopUninstallResult {
+  ok: boolean
+  mode?: DesktopUninstallMode
+  willRemoveAppBundle?: boolean
+  scriptPath?: string
+  error?: string
+  message?: string
 }
 
 export interface DesktopUpdateCommit {

@@ -13,11 +13,32 @@ export interface ImageAttachResponse {
   path?: string
   text?: string
   message?: string
+  // Returned by the byte-upload variant (image.attach_bytes) used in remote mode.
+  count?: number
+  bytes?: number
+  name?: string
+  width?: number
+  height?: number
+  token_estimate?: number
 }
 
 export interface ImageDetachResponse {
   detached?: boolean
   count?: number
+}
+
+export interface FileAttachResponse {
+  attached?: boolean
+  message?: string
+  // Gateway-side absolute path the file was staged to.
+  path?: string
+  // Workspace-relative path used to build ref_text.
+  ref_path?: string
+  // Rewritten @file: ref that resolves on the gateway (workspace-relative).
+  ref_text?: string
+  // True when bytes/host file were copied into the session workspace.
+  uploaded?: boolean
+  name?: string
 }
 
 export interface SlashExecResponse {
@@ -38,6 +59,26 @@ export interface SessionTitleResponse {
   // to be applied on the first turn (see tui_gateway session.title handler).
   pending?: boolean
   session_key?: string
+}
+
+export interface HandoffRequestResponse {
+  queued?: boolean
+  session_key?: string
+  platform?: string
+  // Human-readable home channel name for the destination platform.
+  home_name?: string
+}
+
+export interface HandoffStateResponse {
+  // '' | 'pending' | 'running' | 'completed' | 'failed'
+  state?: string
+  platform?: string
+  error?: string
+}
+
+export interface HandoffFailResponse {
+  failed?: boolean
+  state?: string
 }
 
 export interface ExecCommandDispatchResponse {
@@ -82,6 +123,13 @@ export interface ClientSessionState {
   messages: ChatMessage[]
   branch: string
   cwd: string
+  model: string
+  provider: string
+  reasoningEffort: string
+  serviceTier: string
+  fast: boolean
+  yolo: boolean
+  personality: string
   busy: boolean
   awaitingResponse: boolean
   streamId: string | null
@@ -91,4 +139,9 @@ export interface ClientSessionState {
   /** A blocking clarify prompt is waiting on the user for this session. Drives
    *  the sidebar "needs input" indicator; cleared when the turn resumes/ends. */
   needsInput: boolean
+  /** Epoch ms the current turn started, or null when idle. Per-session so a
+   *  background turn's elapsed timer keeps counting while another session is
+   *  focused, and switching sessions doesn't zero a still-running turn's clock.
+   *  The global $turnStartedAt mirrors whichever session is currently viewed. */
+  turnStartedAt: number | null
 }

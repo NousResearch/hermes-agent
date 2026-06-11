@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 // Braille spinner frames — reads as a tiny ASCII loader in monospace.
@@ -9,6 +10,7 @@ const FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '
 // backend (lazily spawned). Keeps the last profile name through the fade-out so
 // the label doesn't blank. Purely visual — pointer-events-none.
 export function ChatSwapOverlay({ profile }: { profile: string | null }) {
+  const { t } = useI18n()
   const [frame, setFrame] = useState(0)
   const [label, setLabel] = useState<null | string>(profile)
 
@@ -38,7 +40,7 @@ export function ChatSwapOverlay({ profile }: { profile: string | null }) {
     >
       <div className="flex items-center gap-2 bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] px-4 py-2 font-mono text-[0.8125rem] text-foreground shadow-composer">
         <span className="w-3 text-(--ui-accent)">{FRAMES[frame]}</span>
-        Waking up {label}…
+        {t.composer.wakingProfile(label ?? '')}
       </div>
     </div>
   )

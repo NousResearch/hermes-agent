@@ -85,6 +85,21 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=300`s, native Anthropic 900s). Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+## Update Behavior
+
+`hermes update` settings live under `updates` in `config.yaml`:
+
+```yaml
+updates:
+  pre_update_backup: false       # Create a full HERMES_HOME zip before every update
+  backup_keep: 5                 # Keep this many pre-update backup zips
+  non_interactive_local_changes: stash  # stash | discard
+```
+
+For git installs, Hermes auto-stashes dirty tracked files and untracked files before checking out the update branch or pulling. Interactive terminal updates prompt before restoring that stash. Non-interactive updates (desktop/chat app, gateway, or `--yes`) use `updates.non_interactive_local_changes`: `stash` restores local source edits after a successful pull, while `discard` drops the update-created stash after a successful pull. Use `discard` only on managed installs where local source edits are never meant to persist.
+
+Before that stash step, Hermes also restores tracked `package-lock.json` diffs left by npm install/build churn. Commit or manually stash intentional lockfile edits before updating.
+
 ## Terminal Backend Configuration
 
 Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, or a Singularity/Apptainer container.
@@ -518,6 +533,17 @@ skills:
 
 When on, any flagged `skill_manage` write surfaces as an approval prompt with the scanner's rationale. Accepted writes land; denied writes return an explanatory error to the agent.
 
+### Write approval for skill writes
+
+Independent of the content scanner above, `skills.write_approval` gates **every** agent skill write (create / edit / patch / delete / supporting files) behind your explicit approval — the same approve/deny mechanism as dangerous commands:
+
+```yaml
+skills:
+  write_approval: false   # false = write freely (default) | true = stage every write for review
+```
+
+When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
+
 ## Memory Configuration
 
 ```yaml
@@ -526,7 +552,10 @@ memory:
   user_profile_enabled: true
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
+  write_approval: false     # true = require approval before any memory write
 ```
+
+With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](/user-guide/features/memory#controlling-memory-writes-write_approval).
 
 ## File Read Safety
 
@@ -820,6 +849,7 @@ $ hermes model
 [ ] vision               currently: auto / main model
 [ ] web_extract          currently: auto / main model
 [ ] title_generation     currently: openrouter / google/gemini-3-flash-preview
+[ ] tts_audio_tags       currently: auto / main model
 [ ] compression          currently: auto / main model
 [ ] approval             currently: auto / main model
 [ ] triage_specifier     currently: auto / main model
@@ -895,6 +925,14 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 30                # seconds
+
+  # Gemini 3.1 TTS hidden audio-tag insertion
+  tts_audio_tags:
+    provider: "auto"
+    model: ""                  # empty = main chat model
+    base_url: ""
+    api_key: ""
+    timeout: 30
 
   # Context compression timeout (separate from compression.* config)
   compression:
@@ -1100,6 +1138,17 @@ agent:
 
 When unset (default), reasoning effort defaults to "medium" — a balanced level that works well for most tasks. Setting a value overrides it — higher reasoning effort gives better results on complex tasks at the cost of more tokens and latency.
 
+:::note Adaptive-thinking models (Claude 4.6+, Fable/Mythos-class) over OpenRouter
+These models use *adaptive* thinking and don't accept the usual `reasoning.effort`
+field — OpenRouter ignores it for them. Hermes transparently routes your
+`reasoning_effort` to OpenRouter's `verbosity` parameter instead (which maps to
+Anthropic's `output_config.effort`), so the same `low`/`medium`/`high`/`xhigh`
+knob keeps working — no extra configuration needed. `none` (or unset) leaves the
+model on its own adaptive default. (`max` is accepted on the wire but is not a
+selectable `reasoning_effort` value; `xhigh` is the configurable ceiling.) The
+native Anthropic provider already controls effort directly and is unaffected.
+:::
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```
@@ -1171,8 +1220,10 @@ tts:
     model: "voxtral-mini-tts-2603"
     voice_id: "c69964a6-ab8b-4f8a-9465-ec0925096ec8"  # Paul - Neutral (default)
   gemini:
-    model: "gemini-2.5-flash-preview-tts"   # or gemini-2.5-pro-preview-tts
+    model: "gemini-2.5-flash-preview-tts"   # or gemini-3.1-flash-tts-preview
     voice: "Kore"               # 30 prebuilt voices: Zephyr, Puck, Kore, Enceladus, etc.
+    audio_tags: false           # Hidden Gemini 3.1 TTS audio-tag insertion
+    persona_prompt_file: ""      # Optional Markdown/text file with Gemini voice direction
   xai:
     voice_id: "eve"             # xAI TTS voice
     language: "en"              # ISO 639-1
@@ -1235,7 +1286,7 @@ Set `file_mutation_verifier: false` (or `HERMES_FILE_MUTATION_VERIFIER=0`) to su
 
 The `display.language` setting translates a small set of static user-facing messages — the CLI approval prompt, a handful of gateway slash-command replies (e.g. restart-drain notices, "approval expired", "goal cleared"). It does **not** translate agent responses, log lines, tool output, error tracebacks, or slash-command descriptions — those stay in English. If you want the agent itself to reply in another language, just tell it in your prompt or system message.
 
-Supported values: `en` (default), `zh` (Simplified Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian). Unknown values fall back to English.
+Supported values: `en` (default), `zh` (Simplified Chinese), `zh-hant` (Traditional Chinese), `ja` (Japanese), `de` (German), `es` (Spanish), `fr` (French), `tr` (Turkish), `uk` (Ukrainian), `af` (Afrikaans), `ko` (Korean), `it` (Italian), `ga` (Irish), `pt` (Portuguese), `ru` (Russian), `hu` (Hungarian). Unknown values fall back to English.
 
 You can also set this per-session with the `HERMES_LANGUAGE` env var, which overrides the config value.
 
@@ -1253,15 +1304,17 @@ display:
 
 In the CLI, cycle through these modes with `/verbose`. To use `/verbose` in messaging platforms (Telegram, Discord, Slack, etc.), set `tool_progress_command: true` in the `display` section above. The command will then cycle the mode and save to config.
 
+Tool progress requires a gateway adapter that can display progress updates safely. Platforms without message editing support, including Signal, suppress tool-progress bubbles even if `/verbose` saves a non-`off` mode.
+
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn — same info the CLI shows in its status bar (model, context %, cwd, session duration, tokens, cost). Off by default; opt in per-gateway if your team wants every reply to include the provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # any of: model, context_pct, cwd, duration, tokens, cost
+    fields: ["model", "context_pct", "cwd"]   # supported fields: model, context_pct, cwd
 ```
 
 The `/footer` slash command toggles this at runtime in any session.
@@ -1276,14 +1329,14 @@ Only the **final** message of a turn gets the footer; interim updates stay clean
 
 ### Per-platform progress overrides
 
-Different platforms have different verbosity needs. For example, Signal can't edit messages, so each progress update becomes a separate message — noisy. Use `display.platforms` to set per-platform modes:
+Different platforms have different verbosity needs. Use `display.platforms` to set per-platform modes:
 
 ```yaml
 display:
   tool_progress: all          # global default
   platforms:
     signal:
-      tool_progress: 'off'    # silence progress on Signal
+      tool_progress: 'off'    # Signal cannot currently display tool-progress bubbles
     telegram:
       tool_progress: verbose  # detailed progress on Telegram
     slack:
@@ -1291,6 +1344,8 @@ display:
 ```
 
 Platforms without an override fall back to the global `tool_progress` value. Valid platform keys: `telegram`, `discord`, `slack`, `signal`, `whatsapp`, `matrix`, `mattermost`, `email`, `sms`, `homeassistant`, `dingtalk`, `feishu`, `wecom`, `weixin`, `bluebubbles`, `qqbot`. The legacy `display.tool_progress_overrides` key still loads for backward compatibility but is deprecated and migrated into `display.platforms` on first load.
+
+Signal is listed as a valid platform key because the setting can be saved per platform, but the current Signal adapter cannot edit sent messages and does not render tool-progress bubbles. Keep Signal `tool_progress` set to `off`; use the CLI or an editing-capable messaging platform if you need to watch each tool call live.
 
 `interim_assistant_messages` is gateway-only. When enabled, Hermes sends completed mid-turn assistant updates as separate chat messages. This is independent from `tool_progress` and does not require gateway streaming.
 
@@ -1392,11 +1447,30 @@ For separate natural mid-turn assistant updates without progressive token editin
 
 **Fresh final (Telegram):** Telegram's `editMessageText` preserves the original message timestamp, so a long-running streamed reply would keep the first-token timestamp even after completion. When `fresh_final_after_seconds > 0` (default `60`), the completed reply is delivered as a brand-new message (with the stale preview best-effort deleted) so Telegram's visible timestamp reflects completion time. Short previews still finalize in place. Set to `0` to always edit in place.
 
-:::note
-Streaming is disabled by default. Enable it in `~/.hermes/config.yaml` to try the streaming UX.
+:::note Per-platform streaming defaults
+The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
 :::
 
 ## Group Chat Session Isolation
+
+Limit how many chat sessions can actively be open across CLI, TUI/dashboard,
+and messaging gateway:
+
+```yaml
+max_concurrent_sessions: null  # null/0 = unlimited; positive integer = active session cap
+```
+
+When the cap is reached, Hermes returns a direct limit message for new sessions.
+Existing active sessions keep their normal behavior.
+
+The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
+`gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when
+both are set.
+
+The cap is enforced with a local runtime lease file and is best-effort: Hermes
+fails open if the registry cannot be read or locked so users are not stranded.
+It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
+mounted across multiple machines.
 
 Control whether shared chats keep one conversation per room or one conversation per participant:
 
@@ -1672,7 +1746,7 @@ delegation:
   # api_key: "local-key"                    # API key for base_url (falls back to OPENAI_API_KEY)
   # api_mode: ""                            # Wire protocol for base_url: "chat_completions", "codex_responses", or "anthropic_messages". Empty = auto-detect from URL (e.g. /anthropic suffix → anthropic_messages). Set explicitly for non-standard endpoints the heuristic can't detect.
   max_concurrent_children: 3                # Parallel children per batch (floor 1, no ceiling). Also via DELEGATION_MAX_CONCURRENT_CHILDREN env var.
-  max_spawn_depth: 1                        # Delegation tree depth (floor 1, no ceiling). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3+ = deeper trees.
+  max_spawn_depth: 1                        # Delegation tree depth cap (1-3, clamped). 1 = flat (default): parent spawns leaves that cannot delegate. 2 = orchestrator children can spawn leaf grandchildren. 3 = three levels.
   orchestrator_enabled: true                # Global kill switch. When false, role="orchestrator" is ignored and every child is forced to leaf regardless of max_spawn_depth.
 ```
 
@@ -1686,7 +1760,7 @@ The delegation provider uses the same credential resolution as CLI/gateway start
 
 **Precedence:** `delegation.base_url` in config → `delegation.provider` in config → parent provider (inherited). `delegation.model` in config → parent model (inherited). Setting just `model` without `provider` changes only the model name while keeping the parent's credentials (useful for switching models within the same provider like OpenRouter).
 
-**Width and depth:** `max_concurrent_children` caps how many subagents run in parallel per batch (default `3`, floor of 1, no ceiling). Can also be set via the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var. When the model submits a `tasks` array longer than the cap, `delegate_task` returns a tool error explaining the limit rather than silently truncating. `max_spawn_depth` controls the delegation tree depth (floor of 1, no upper ceiling). At the default `1`, delegation is flat: children cannot spawn grandchildren, and passing `role="orchestrator"` silently degrades to `leaf`. Raise to `2` so orchestrator children can spawn leaf grandchildren; `3` for three-level trees, and higher for deeper ones. The agent opts into orchestration per call via `role="orchestrator"`; `orchestrator_enabled: false` forces every child back to leaf regardless. Cost scales multiplicatively — at `max_spawn_depth: 3` with `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. See [Subagent Delegation → Depth Limit and Nested Orchestration](features/delegation.md#depth-limit-and-nested-orchestration) for usage patterns.
+**Width and depth:** `max_concurrent_children` caps how many subagents run in parallel per batch (default `3`, floor of 1, no ceiling). Can also be set via the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var. When the model submits a `tasks` array longer than the cap, `delegate_task` returns a tool error explaining the limit rather than silently truncating. `max_spawn_depth` controls the delegation tree depth (clamped to 1-3). At the default `1`, delegation is flat: children cannot spawn grandchildren, and passing `role="orchestrator"` silently degrades to `leaf`. Raise to `2` so orchestrator children can spawn leaf grandchildren; `3` for three-level trees. The agent opts into orchestration per call via `role="orchestrator"`; `orchestrator_enabled: false` forces every child back to leaf regardless. Cost scales multiplicatively — at `max_spawn_depth: 3` with `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. See [Subagent Delegation → Depth Limit and Nested Orchestration](features/delegation.md#depth-limit-and-nested-orchestration) for usage patterns.
 
 ## Clarify
 

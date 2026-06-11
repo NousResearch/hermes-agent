@@ -885,6 +885,22 @@ def build_environment_hints() -> str:
                 f"`uname -a && whoami && pwd`."
             )
 
+    # Hermes desktop GUI — any agent running under the desktop app should know
+    # it. HERMES_DESKTOP marks the backend powering the chat; HERMES_DESKTOP_TERMINAL
+    # marks a hermes launched in the embedded terminal pane. Both set by main.cjs.
+    _truthy = ("1", "true", "yes")
+    _in_desktop = (os.getenv("HERMES_DESKTOP") or "").strip().lower() in _truthy
+    _in_desktop_term = (os.getenv("HERMES_DESKTOP_TERMINAL") or "").strip().lower() in _truthy
+    if _in_desktop or _in_desktop_term:
+        _desktop_hint = "Runtime surface: you're running inside the Hermes desktop GUI app."
+        if _in_desktop_term:
+            _desktop_hint += (
+                " You're in its embedded terminal pane, beside the GUI chat — the user can "
+                "select your output (⌥-drag on macOS, Shift-drag elsewhere) and press "
+                "⌘/Ctrl+L to send it to the chat composer."
+            )
+        hints.append(_desktop_hint)
+
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
 
@@ -1085,11 +1101,12 @@ def _skill_should_show(
 def build_skills_system_prompt(
     available_tools: "set[str] | None" = None,
     available_toolsets: "set[str] | None" = None,
+    compact_categories: "frozenset[str] | None" = None,
 ) -> str:
     """Build a compact skill index for the system prompt.
 
     Two-layer cache:
-      1. In-process LRU dict keyed by (skills_dir, tools, toolsets)
+      1. In-process LRU dict keyed by (skills_dir, tools, toolsets, hidden)
       2. Disk snapshot (``.skills_prompt_snapshot.json``) validated by
          mtime/size manifest — survives process restarts
 
@@ -1099,6 +1116,12 @@ def build_skills_system_prompt(
     scanned alongside the local ``~/.hermes/skills/`` directory.  External dirs
     are read-only — they appear in the index but new skills are always created
     in the local dir.  Local skills take precedence when names collide.
+
+    ``compact_categories`` (e.g. from the coding posture — see
+    agent/coding_context.py) demotes whole categories to a names-only line in
+    the rendered index. Nothing is ever hidden: every skill name stays
+    visible and loadable via ``skill_view`` / ``skills_list``; only the
+    descriptions are dropped, and a footer note explains the demotion.
     """
     skills_dir = get_skills_dir()
     external_dirs = get_all_skills_dirs()[1:]  # skip local (index 0)
@@ -1123,6 +1146,7 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        tuple(sorted(compact_categories or ())),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -1256,18 +1280,44 @@ def build_skills_system_prompt(
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
+    # Posture-driven category demotion (e.g. non-coding skills while pairing
+    # on code). Demoted categories stay in the index as a single names-only
+    # line — descriptions are dropped to cut noise, but every skill name
+    # remains visible so memory-anchored recall ("load <name>") keeps working.
+    # NEVER remove entries entirely: agent-created skills are the model's
+    # project memory, and models don't reach for skills_list to rediscover
+    # what the index stops showing them. Match on the top-level category
+    # segment so nested categories ("social-media/twitter") are demoted with
+    # their parent.
+    demoted = frozenset(
+        cat for cat in skills_by_category
+        if cat.split("/", 1)[0] in (compact_categories or frozenset())
+    )
+
+    hidden_note = ""
+    if demoted:
+        hidden_note = (
+            "\n(Categories marked [names only] are outside the current coding "
+            "context, so their descriptions are omitted — the skills work "
+            "normally and load with skill_view(name) as usual.)"
+        )
+
     if not skills_by_category:
         result = ""
     else:
         index_lines = []
         for category in sorted(skills_by_category.keys()):
+            # Deduplicate and sort skills within each category
+            seen = set()
+            if category in demoted:
+                names = sorted({name for name, _ in skills_by_category[category]})
+                index_lines.append(f"  {category} [names only]: {', '.join(names)}")
+                continue
             cat_desc = category_descriptions.get(category, "")
             if cat_desc:
                 index_lines.append(f"  {category}: {cat_desc}")
             else:
                 index_lines.append(f"  {category}:")
-            # Deduplicate and sort skills within each category
-            seen = set()
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
@@ -1304,6 +1354,7 @@ def build_skills_system_prompt(
             "</available_skills>\n"
             "\n"
             "Only proceed without loading a skill if genuinely none are relevant to the task."
+            + hidden_note
         )
 
     # ── Store in LRU cache ────────────────────────────────────────────

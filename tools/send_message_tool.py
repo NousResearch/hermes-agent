@@ -38,7 +38,7 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # below and falls through to channel-name resolution, which has no way to
 # resolve a raw phone number. Keeping the '+' preserves the E.164 form that
 # downstream adapters (signal, etc.) expect.
-_PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
+_PHONE_PLATFORMS = frozenset({"photon", "signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
 # Email addresses — a valid email like "user@domain.com" should be treated as
 # an explicit target for the email platform, not fall through to channel-name
@@ -588,6 +588,16 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     (preserves code-block boundaries, adds part indicators).
     """
     from gateway.config import Platform
+
+    media_files = media_files or []
+
+    # Weixin handles text/media delivery inside its native helper and does not
+    # need the optional platform adapter imports below. Keep this branch early
+    # so a Weixin send is not blocked by unrelated optional dependencies (for
+    # example lark-oapi's heavy Feishu import path).
+    if platform == Platform.WEIXIN:
+        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
+
     from gateway.platforms.base import BasePlatformAdapter, utf16_len
     from gateway.platforms.slack import SlackAdapter
 
@@ -604,8 +614,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         _feishu_available = True
     except ImportError:
         _feishu_available = False
-
-    media_files = media_files or []
 
     if platform == Platform.SLACK and message:
         try:
@@ -662,10 +670,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 return result
             last_result = result
         return last_result
-
-    # --- Weixin: use the native one-shot adapter helper for text + media ---
-    if platform == Platform.WEIXIN:
-        return await _send_weixin(pconfig, chat_id, message, media_files=media_files)
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
     # The plugin's ``_standalone_send`` (registered in
@@ -788,8 +792,6 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
-        elif platform == Platform.HOMEASSISTANT:
-            result = await _send_homeassistant(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
@@ -1484,29 +1486,6 @@ async def _send_matrix_via_adapter(pconfig, chat_id, message, media_files=None, 
             await adapter.disconnect()
         except Exception:
             pass
-
-
-async def _send_homeassistant(token, extra, chat_id, message):
-    """Send via Home Assistant notify service."""
-    try:
-        import aiohttp
-    except ImportError:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
-    try:
-        hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
-        token = token or os.getenv("HASS_TOKEN", "")
-        if not hass_url or not token:
-            return {"error": "Home Assistant not configured (HASS_URL, HASS_TOKEN required)"}
-        url = f"{hass_url}/api/services/notify/notify"
-        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-            async with session.post(url, headers=headers, json={"message": message, "target": chat_id}) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return _error(f"Home Assistant API error ({resp.status}): {body}")
-        return {"success": True, "platform": "homeassistant", "chat_id": chat_id}
-    except Exception as e:
-        return _error(f"Home Assistant send failed: {e}")
 
 
 async def _send_dingtalk(extra, chat_id, message):

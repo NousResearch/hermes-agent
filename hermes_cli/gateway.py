@@ -641,7 +641,10 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     #
     # ``windows_detach_popen_kwargs()`` returns the right kwargs for the
     # host platform and is a no-op on POSIX (just ``start_new_session=True``).
-    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+    from hermes_cli._subprocess_compat import (
+        windows_detach_flags_without_breakaway,
+        windows_detach_popen_kwargs,
+    )
 
     watcher = textwrap.dedent(
         """
@@ -664,6 +667,10 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
         # Platform-appropriate detach for the respawned gateway.  On POSIX
         # start_new_session=True maps to os.setsid; on Windows we need
         # explicit creationflags because start_new_session is a no-op there.
+        # CREATE_BREAKAWAY_FROM_JOB is critical: the watcher itself may have
+        # been spawned inside a job object (Electron/Tauri parent), and
+        # without breakaway the respawned gateway would die when that job
+        # tears down. See _subprocess_compat.windows_detach_flags().
         _popen_kwargs = {
             "stdout": subprocess.DEVNULL,
             "stderr": subprocess.DEVNULL,
@@ -672,32 +679,67 @@ def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
             _CREATE_NEW_PROCESS_GROUP = 0x00000200
             _DETACHED_PROCESS = 0x00000008
             _CREATE_NO_WINDOW = 0x08000000
-            _popen_kwargs["creationflags"] = (
-                _CREATE_NEW_PROCESS_GROUP | _DETACHED_PROCESS | _CREATE_NO_WINDOW
+            _CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+            _flags = (
+                _CREATE_NEW_PROCESS_GROUP
+                | _DETACHED_PROCESS
+                | _CREATE_NO_WINDOW
+                | _CREATE_BREAKAWAY_FROM_JOB
             )
+            try:
+                _popen_kwargs["creationflags"] = _flags
+                subprocess.Popen(cmd, **_popen_kwargs)
+            except OSError:
+                # CREATE_BREAKAWAY_FROM_JOB can be rejected with
+                # ERROR_ACCESS_DENIED when the parent's job object refuses
+                # breakaway. Retry without it — DETACHED_PROCESS et al.
+                # alone are enough in most setups. Mirrors the canonical
+                # fallback in gateway_windows._spawn_detached.
+                _popen_kwargs["creationflags"] = _flags & ~_CREATE_BREAKAWAY_FROM_JOB
+                subprocess.Popen(cmd, **_popen_kwargs)
         else:
             _popen_kwargs["start_new_session"] = True
-        subprocess.Popen(cmd, **_popen_kwargs)
+            subprocess.Popen(cmd, **_popen_kwargs)
         """
     ).strip()
 
+    watcher_argv = [
+        sys.executable,
+        "-c",
+        watcher,
+        str(old_pid),
+        *_gateway_run_args_for_profile(profile),
+    ]
+
+    # Same platform-aware detach for the watcher process itself — so
+    # closing the user's terminal doesn't kill the watcher.
     try:
-        # Same platform-aware detach for the watcher process itself — so
-        # closing the user's terminal doesn't kill the watcher.
         subprocess.Popen(
-            [
-                sys.executable,
-                "-c",
-                watcher,
-                str(old_pid),
-                *_gateway_run_args_for_profile(profile),
-            ],
+            watcher_argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             **windows_detach_popen_kwargs(),
         )
     except OSError:
-        return False
+        # CREATE_BREAKAWAY_FROM_JOB rejected by the parent job object
+        # (Electron, Windows Terminal with restrictive job settings, …).
+        # Retry without it. POSIX never reaches this branch — there
+        # ``start_new_session=True`` cannot raise OSError — so the
+        # fallback is only meaningful on Windows.
+        try:
+            fallback_kwargs: dict = (
+                {"creationflags": windows_detach_flags_without_breakaway()}
+                if sys.platform == "win32"
+                else {"start_new_session": True}
+            )
+            subprocess.Popen(
+                watcher_argv,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                **fallback_kwargs,
+            )
+        except OSError:
+            return False
     return True
 
 
@@ -2367,7 +2409,7 @@ StartLimitIntervalSec=0
 Type=simple
 User={username}
 Group={group_name}
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="HOME={home_dir}"
 Environment="USER={username}"
@@ -2377,8 +2419,6 @@ Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
-RestartMaxDelaySec=300
-RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -2405,15 +2445,13 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
-ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run --replace
+ExecStart={python_path} -m hermes_cli.main{f" {profile_arg}" if profile_arg else ""} gateway run
 WorkingDirectory={working_dir}
 Environment="PATH={sane_path}"
 Environment="VIRTUAL_ENV={venv_dir}"
 Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
-RestartMaxDelaySec=300
-RestartSteps=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
@@ -2429,6 +2467,29 @@ WantedBy=default.target
 
 def _normalize_service_definition(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.strip().splitlines())
+
+
+# Directives that older systemd versions silently ignore/strip.  Normalize
+# them out of stale-check comparisons so a unit that differs only by these
+# directives is not perpetually flagged as outdated.
+_SYSTEMD_OPTIONAL_DIRECTIVES = (
+    "RestartMaxDelaySec",
+    "RestartSteps",
+)
+
+
+def _strip_optional_systemd_directives(text: str) -> str:
+    """Remove systemd directives that older hosts silently drop."""
+    lines = text.splitlines()
+    filtered = []
+    for line in lines:
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#"):
+            key = stripped.split("=", 1)[0].strip()
+            if key in _SYSTEMD_OPTIONAL_DIRECTIVES:
+                continue
+        filtered.append(line)
+    return "\n".join(filtered)
 
 
 def _normalize_launchd_plist_for_comparison(text: str) -> str:
@@ -2458,9 +2519,75 @@ def systemd_unit_is_current(system: bool = False) -> bool:
     installed = unit_path.read_text(encoding="utf-8")
     expected_user = _read_systemd_user_from_unit(unit_path) if system else None
     expected = generate_systemd_unit(system=system, run_as_user=expected_user)
-    return _normalize_service_definition(installed) == _normalize_service_definition(
-        expected
+    # Normalize out directives that older systemd versions silently drop
+    # (RestartMaxDelaySec, RestartSteps) so a unit that differs only by
+    # those directives is not perpetually flagged as outdated.
+    norm_installed = _normalize_service_definition(
+        _strip_optional_systemd_directives(installed)
     )
+    norm_expected = _normalize_service_definition(
+        _strip_optional_systemd_directives(expected)
+    )
+    return norm_installed == norm_expected
+
+
+def _temp_home_in_service_definition(definition: str) -> str | None:
+    """Return the temp-dir HERMES_HOME baked into a service definition, or None.
+
+    A generated systemd unit / launchd plist carries the resolved HERMES_HOME
+    in its environment block. If that path lives under the system temp dir,
+    the definition was almost certainly generated by a test/E2E harness that
+    exported a throwaway ``HERMES_HOME=/tmp/...`` — writing it to the real
+    service file silently breaks the user's gateway on the next (re)start:
+    the gateway comes back "active (running)" but pointed at an empty temp
+    home ("No messaging platforms enabled"), deaf to every platform.
+    Seen live 2026-06-11: an E2E guard probe ran ``hermes gateway restart``
+    with ``HERMES_HOME=/tmp/hermes-e2e-<pr>`` exported; the restart path's
+    unit refresh baked the temp path into the production unit and the
+    post-update restart produced a zombie gateway for 7+ hours.
+
+    Matches both systemd ``Environment="HERMES_HOME=..."`` lines and launchd
+    ``<key>HERMES_HOME</key><string>...</string>`` pairs.
+    """
+    import re
+    import tempfile
+
+    candidates = re.findall(r'HERMES_HOME=([^"\n]+)', definition)
+    candidates += re.findall(
+        r"<key>HERMES_HOME</key>\s*<string>(.*?)</string>", definition, flags=re.S
+    )
+    temp_roots = {
+        Path(tempfile.gettempdir()).resolve(),
+        Path("/tmp"),
+        Path("/var/tmp"),
+        Path("/private/tmp"),
+        Path("/private/var/tmp"),
+    }
+    for raw in candidates:
+        try:
+            resolved = Path(raw.strip().strip('"')).resolve()
+        except (OSError, ValueError):
+            continue
+        for root in temp_roots:
+            if resolved == root or root in resolved.parents:
+                return raw.strip()
+    return None
+
+
+def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
+    """Refuse (with guidance) when a service definition carries a temp HERMES_HOME."""
+    temp_home = _temp_home_in_service_definition(definition)
+    if temp_home is None:
+        return False
+    print(
+        f"✗ Refusing to write the gateway {kind}: HERMES_HOME resolves to a "
+        f"temporary directory ({temp_home})."
+    )
+    print(
+        "  This usually means a test/E2E environment exported HERMES_HOME. "
+        "Unset it (or run from a clean shell) and retry."
+    )
+    return True
 
 
 def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
@@ -2491,6 +2618,12 @@ def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
         or '/hermes_test"' in new_unit
         or "/hermes_test/" in new_unit
     ):
+        return False
+
+    # Structural variant of the same belt: refuse to bake ANY temp-dir
+    # HERMES_HOME into the unit (manual E2E homes like /tmp/hermes-e2e-NNN
+    # don't carry the pytest markers above but poison the unit identically).
+    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
         return False
 
     unit_path.write_text(new_unit, encoding="utf-8")
@@ -2661,10 +2794,11 @@ def systemd_install(
         return
 
     unit_path.parent.mkdir(parents=True, exist_ok=True)
+    new_unit = generate_systemd_unit(system=system, run_as_user=run_as_user)
+    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+        return
     print(f"Installing {_service_scope_label(system)} systemd service to: {unit_path}")
-    unit_path.write_text(
-        generate_systemd_unit(system=system, run_as_user=run_as_user), encoding="utf-8"
-    )
+    unit_path.write_text(new_unit, encoding="utf-8")
 
     _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
     if enable_on_startup:
@@ -2999,8 +3133,178 @@ def get_launchd_label() -> str:
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
+# Cached launchd domain result — probing is cheap but should only run once per
+# process invocation (each ``hermes gateway start/stop/status`` call).
+_resolved_launchd_domain: str | None = None
+
+
 def _launchd_domain() -> str:
-    return f"gui/{os.getuid()}"  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    """Return the launchd domain that actually manages the gateway service.
+
+    Probes ``gui/<uid>`` first (Aqua sessions), then ``user/<uid>``
+    (Background/SSH sessions).  When neither domain contains a loaded
+    service, falls back to ``launchctl managername`` as a heuristic.
+
+    The result is cached for the lifetime of the process so that repeated
+    calls (``start``, ``stop``, ``restart``) use a consistent domain.
+
+    See #40831, #23387.
+    """
+    global _resolved_launchd_domain
+    if _resolved_launchd_domain is not None:
+        return _resolved_launchd_domain
+
+    uid = os.getuid()  # windows-footgun: ok — POSIX launchd (macOS) helper, never invoked on Windows
+    label = get_launchd_label()
+    gui_domain = f"gui/{uid}"
+    user_domain = f"user/{uid}"
+
+    # 1. Probe gui/<uid> first — in Aqua sessions the service is loaded here.
+    try:
+        subprocess.run(
+            ["launchctl", "print", f"{gui_domain}/{label}"],
+            check=True,
+            timeout=5,
+            capture_output=True,
+        )
+        _resolved_launchd_domain = gui_domain
+        return gui_domain
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 2. Probe user/<uid> — in Background/SSH sessions this is the working domain.
+    try:
+        subprocess.run(
+            ["launchctl", "print", f"{user_domain}/{label}"],
+            check=True,
+            timeout=5,
+            capture_output=True,
+        )
+        _resolved_launchd_domain = user_domain
+        return user_domain
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 3. Neither domain has the service loaded — use managername as heuristic.
+    #    Aqua → gui/<uid>, anything else (Background, loginwindow) → user/<uid>.
+    try:
+        result = subprocess.run(
+            ["launchctl", "managername"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if "Aqua" in (result.stdout or ""):
+            _resolved_launchd_domain = gui_domain
+            return gui_domain
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        pass
+
+    # 4. Default to user/<uid> (matches the pre-probing behavior for
+    #    Background/SSH sessions and is the recommended domain on macOS 26+).
+    _resolved_launchd_domain = user_domain
+    return user_domain
+
+
+# On macOS, exit code 125 ("Domain does not support specified action") and
+# 3/113 ("Could not find service") all mean the job isn't currently loaded in
+# the target domain, so start/restart should re-bootstrap the plist and retry.
+_LAUNCHD_JOB_UNLOADED_EXIT_CODES = frozenset({3, 113, 125})
+
+# When even a fresh bootstrap can't manage the domain, launchctl returns 5
+# ("Input/output error") or a persistent 125. On those hosts launchd cannot
+# supervise the gateway at all, so we degrade to a detached background process
+# (the documented `nohup hermes gateway run` workaround). See #23387.
+_LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES = frozenset({5, 125})
+
+
+def _launchd_error_indicates_unloaded(exc: subprocess.CalledProcessError) -> bool:
+    """True when launchctl failed because the job isn't loaded (retry bootstrap)."""
+    return exc.returncode in _LAUNCHD_JOB_UNLOADED_EXIT_CODES
+
+
+def _launchctl_domain_unsupported(returncode: int) -> bool:
+    """True when launchctl can't manage the domain even after a fresh bootstrap.
+
+    Codes 5 and 125 persist on macOS hosts where neither `gui/<uid>` nor
+    `user/<uid>` supports service management; treat these as "launchd
+    unavailable" and degrade gracefully to a detached process.
+    """
+    return returncode in _LAUNCHCTL_DOMAIN_UNSUPPORTED_CODES
+
+
+def _gateway_run_command() -> list[str]:
+    """Build the `python -m hermes_cli.main [--profile X] gateway run --replace` argv.
+
+    Profile-aware: honors the active HERMES_HOME via `_profile_arg()` so the
+    detached fallback launches into the same profile as the CLI invocation.
+    """
+    cmd = [get_python_path(), "-m", "hermes_cli.main"]
+    profile_arg = _profile_arg()
+    if profile_arg:
+        cmd.extend(profile_arg.split())
+    cmd.extend(["gateway", "run", "--replace"])
+    return cmd
+
+
+def _spawn_detached_gateway() -> bool:
+    """Launch the gateway as a detached background process (launchd fallback).
+
+    Used when launchctl can no longer bootstrap/kickstart the gateway on
+    macOS 26+ (issue #23387). Mirrors the `nohup hermes gateway run --replace`
+    workaround but keeps it CLI-managed: stdout/stderr go to the profile's
+    gateway logs and the PID is tracked via the gateway.pid file that
+    `run_gateway` writes, so stop/status/restart keep working.
+    """
+    from hermes_cli._subprocess_compat import windows_detach_popen_kwargs
+
+    log_dir = get_hermes_home() / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    out_path = log_dir / "gateway.log"
+    err_path = log_dir / "gateway.error.log"
+    try:
+        out = open(out_path, "ab")
+        err = open(err_path, "ab")
+    except OSError:
+        return False
+    try:
+        with out, err:
+            subprocess.Popen(
+                _gateway_run_command(),
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=err,
+                **windows_detach_popen_kwargs(),
+            )
+    except OSError:
+        return False
+    return True
+
+
+def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) -> bool:
+    """Start the gateway detached when launchd can't manage it, with guidance.
+
+    Returns True if the detached gateway was launched. When it can't be
+    launched, prints the manual workaround and (by default) exits non-zero so
+    the failure surfaces instead of silently doing nothing.
+    """
+    from hermes_constants import display_hermes_home as _dhh
+
+    print(f"⚠ launchd cannot manage the gateway on this macOS version ({reason}).")
+    if _spawn_detached_gateway():
+        print("✓ Started gateway as a background process instead")
+        print("  It will NOT auto-start at login or auto-restart on crash.")
+        print(f"  Logs: {_dhh()}/logs/gateway.log")
+        print("  Stop it with: hermes gateway stop")
+        return True
+    print_error("Failed to start the gateway as a background process.")
+    print(
+        f"  Try manually: nohup hermes gateway run --replace "
+        f"> {_dhh()}/logs/gateway.log 2>&1 &"
+    )
+    if exit_on_failure:
+        sys.exit(1)
+    return False
 
 
 def generate_launchd_plist() -> str:
@@ -3077,6 +3381,12 @@ def generate_launchd_plist() -> str:
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
     </dict>
+
+    <key>LimitLoadToSessionType</key>
+    <array>
+        <string>Aqua</string>
+        <string>Background</string>
+    </array>
     
     <key>RunAtLoad</key>
     <true/>
@@ -3118,7 +3428,11 @@ def refresh_launchd_plist_if_needed() -> bool:
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
-    plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+    new_plist = generate_launchd_plist()
+    if _refuse_temp_home_service_write(new_plist, "launchd plist"):
+        return False
+
+    plist_path.write_text(new_plist, encoding="utf-8")
     label = get_launchd_label()
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(
@@ -3151,14 +3465,23 @@ def launchd_install(force: bool = False):
         return
 
     plist_path.parent.mkdir(parents=True, exist_ok=True)
+    new_plist = generate_launchd_plist()
+    if _refuse_temp_home_service_write(new_plist, "launchd plist"):
+        return
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(generate_launchd_plist())
+    plist_path.write_text(new_plist)
 
-    subprocess.run(
-        ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-        check=True,
-        timeout=30,
-    )
+    try:
+        subprocess.run(
+            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+            check=True,
+            timeout=30,
+        )
+    except subprocess.CalledProcessError as e:
+        if not _launchctl_domain_unsupported(e.returncode):
+            raise
+        _launchd_fallback_to_detached(f"launchctl bootstrap exit {e.returncode}")
+        return
 
     print()
     print("✓ Service installed and loaded!")
@@ -3192,19 +3515,28 @@ def launchd_start():
 
     # Self-heal if the plist is missing entirely (e.g., manual cleanup, failed upgrade)
     if not plist_path.exists():
+        new_plist = generate_launchd_plist()
+        if _refuse_temp_home_service_write(new_plist, "launchd plist"):
+            sys.exit(1)
         print("↻ launchd plist missing; regenerating service definition")
         plist_path.parent.mkdir(parents=True, exist_ok=True)
-        plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
-            timeout=30,
-        )
-        subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-            check=True,
-            timeout=30,
-        )
+        plist_path.write_text(new_plist, encoding="utf-8")
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(
+                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                check=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError as e:
+            if not _launchctl_domain_unsupported(e.returncode):
+                raise
+            _launchd_fallback_to_detached(f"launchctl exit {e.returncode}")
+            return
         print("✓ Service started")
         return
 
@@ -3216,19 +3548,28 @@ def launchd_start():
             timeout=30,
         )
     except subprocess.CalledProcessError as e:
-        if e.returncode not in {3, 113}:
+        if not _launchd_error_indicates_unloaded(e):
             raise
+        # Job not loaded in this domain — re-bootstrap the plist and retry.
         print("↻ launchd job was unloaded; reloading service definition")
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
-            timeout=30,
-        )
-        subprocess.run(
-            ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
-            check=True,
-            timeout=30,
-        )
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(
+                ["launchctl", "kickstart", f"{_launchd_domain()}/{label}"],
+                check=True,
+                timeout=30,
+            )
+        except subprocess.CalledProcessError as e2:
+            # Even a fresh bootstrap can't manage the domain on this host —
+            # degrade to a detached background process (issue #23387).
+            if not _launchctl_domain_unsupported(e2.returncode):
+                raise
+            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
+            return
     print("✓ Service started")
 
 
@@ -3250,8 +3591,13 @@ def launchd_stop():
     try:
         subprocess.run(["launchctl", "bootout", target], check=True, timeout=90)
     except subprocess.CalledProcessError as e:
-        if e.returncode in {3, 113}:
-            pass  # Already unloaded — nothing to stop.
+        # Job already unloaded (3/113/125), or the domain can't be managed at
+        # all (5/125, macOS 26+ detached-fallback process, issue #23387) — in
+        # both cases just fall through to the PID-based kill below.
+        if _launchd_error_indicates_unloaded(e) or _launchctl_domain_unsupported(
+            e.returncode
+        ):
+            pass
         else:
             raise
     _wait_for_gateway_exit(timeout=10.0, force_after=5.0)
@@ -3335,17 +3681,29 @@ def launchd_restart():
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         print("✓ Service restarted")
     except subprocess.CalledProcessError as e:
-        if e.returncode not in {3, 113}:
+        if not _launchd_error_indicates_unloaded(e):
+            # Not a "job unloaded" code. If the domain is fundamentally
+            # unmanageable (error 5), degrade to detached; the old process was
+            # already drained/terminated above. Otherwise re-raise.
+            if _launchctl_domain_unsupported(e.returncode):
+                _launchd_fallback_to_detached(f"launchctl kickstart exit {e.returncode}")
+                return
             raise
         # Job not loaded — bootstrap and start fresh
         print("↻ launchd job was unloaded; reloading")
         plist_path = get_launchd_plist_path()
-        subprocess.run(
-            ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
-            check=True,
-            timeout=30,
-        )
-        subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        try:
+            subprocess.run(
+                ["launchctl", "bootstrap", _launchd_domain(), str(plist_path)],
+                check=True,
+                timeout=30,
+            )
+            subprocess.run(["launchctl", "kickstart", target], check=True, timeout=30)
+        except subprocess.CalledProcessError as e2:
+            if not _launchctl_domain_unsupported(e2.returncode):
+                raise
+            _launchd_fallback_to_detached(f"launchctl exit {e2.returncode}")
+            return
         print("✓ Service restarted")
 
 

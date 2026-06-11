@@ -2,11 +2,12 @@ import { useRef } from 'react'
 
 import type { DragKind } from '@/app/chat/hooks/use-file-drop-zone'
 import { Codicon } from '@/components/ui/codicon'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-const COPY: Record<'files' | 'session', { icon: string; label: string }> = {
-  files: { icon: 'cloud-upload', label: 'Drop files to attach' },
-  session: { icon: 'comment-discussion', label: 'Drop to link this chat' }
+const ICONS: Record<'files' | 'session', string> = {
+  files: 'cloud-upload',
+  session: 'comment-discussion'
 }
 
 /**
@@ -17,13 +18,16 @@ const COPY: Record<'files' | 'session', { icon: string; label: string }> = {
  * fade-out so the label doesn't blank.
  */
 export function ChatDropOverlay({ kind }: { kind: DragKind }) {
+  const { t } = useI18n()
   const lastKind = useRef<'files' | 'session'>('files')
 
   if (kind) {
     lastKind.current = kind
   }
 
-  const { icon, label } = COPY[kind ?? lastKind.current]
+  const resolvedKind = kind ?? lastKind.current
+  const icon = ICONS[resolvedKind]
+  const label = resolvedKind === 'files' ? t.composer.dropFiles : t.composer.dropSession
 
   return (
     <div

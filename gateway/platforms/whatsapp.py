@@ -191,6 +191,22 @@ from gateway.platforms.base import (
 )
 
 
+def _file_content_hash(path: Path) -> str:
+    """Return the first 16 hex chars of the SHA-256 of *path*'s contents.
+
+    Used for the bridge staleness handshake: bridge.js reports its own
+    source hash in ``/health`` (``scriptHash``), and the adapter compares
+    it against the hash of bridge.js currently on disk.  A mismatch means
+    a long-lived bridge process is serving code from before an update.
+    Returns ``""`` when the file can't be read.
+    """
+    import hashlib
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
+    except OSError:
+        return ""
+
+
 def check_whatsapp_requirements() -> bool:
     """
     Check if WhatsApp dependencies are available.
@@ -242,6 +258,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
+    supports_code_blocks = True  # WhatsApp renders fenced code blocks (monospace)
     DEFAULT_REPLY_PREFIX = "⚕ *Hermes Agent*\n────────────\n"
     
     # Default bridge location relative to the hermes-agent install
@@ -586,9 +603,21 @@ class WhatsAppAdapter(BasePlatformAdapter):
             logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
 
         try:
-            # Auto-install npm dependencies if node_modules doesn't exist
+            # Auto-install npm dependencies when node_modules is missing OR
+            # package.json changed since the last install (e.g. after
+            # `hermes update` bumps the Baileys pin).  The stamp file records
+            # the package.json hash of the last successful install.
             bridge_dir = bridge_path.parent
-            if not (bridge_dir / "node_modules").exists():
+            _pkg_json = bridge_dir / "package.json"
+            _dep_stamp = bridge_dir / "node_modules" / ".hermes-pkg-hash"
+            _pkg_hash = _file_content_hash(_pkg_json)
+            _deps_fresh = False
+            if (bridge_dir / "node_modules").exists():
+                try:
+                    _deps_fresh = (_dep_stamp.read_text().strip() == _pkg_hash) and bool(_pkg_hash)
+                except OSError:
+                    _deps_fresh = False
+            if not _deps_fresh:
                 print(f"[{self.name}] Installing WhatsApp bridge dependencies...")
                 # Resolve npm path so Windows can execute the .cmd shim.
                 # shutil.which honours PATHEXT; on POSIX it returns the
@@ -609,6 +638,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         print(f"[{self.name}] npm install failed: {install_result.stderr}")
                         return False
                     print(f"[{self.name}] Dependencies installed")
+                    if _pkg_hash:
+                        try:
+                            _dep_stamp.write_text(_pkg_hash)
+                        except OSError:
+                            pass  # Stamp is an optimization; install still succeeded
                 except Exception as e:
                     print(f"[{self.name}] Failed to install dependencies: {e}")
                     return False
@@ -628,12 +662,28 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             data = await resp.json()
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
-                                print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
-                                self._mark_connected()
-                                self._bridge_process = None  # Not managed by us
-                                self._http_session = aiohttp.ClientSession()
-                                self._poll_task = asyncio.create_task(self._poll_messages())
-                                return True
+                                # Staleness handshake: only reuse a running
+                                # bridge if it is serving the same bridge.js
+                                # that is on disk right now.  A long-lived
+                                # bridge survives gateway restarts AND
+                                # `hermes update`, so without this check it
+                                # keeps serving pre-update code forever
+                                # (e.g. no inbound media download).  Old
+                                # bridges that don't report scriptHash are
+                                # treated as stale by definition.
+                                running_hash = data.get("scriptHash", "")
+                                disk_hash = _file_content_hash(bridge_path)
+                                if running_hash and disk_hash and running_hash == disk_hash:
+                                    print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
+                                    self._mark_connected()
+                                    self._bridge_process = None  # Not managed by us
+                                    self._http_session = aiohttp.ClientSession()
+                                    self._poll_task = asyncio.create_task(self._poll_messages())
+                                    return True
+                                print(
+                                    f"[{self.name}] Running bridge is stale "
+                                    f"(running={running_hash or 'unversioned'}, disk={disk_hash}), restarting"
+                                )
                             else:
                                 print(f"[{self.name}] Bridge found but not connected (status: {bridge_status}), restarting")
             except Exception:
@@ -658,6 +708,18 @@ class WhatsAppAdapter(BasePlatformAdapter):
             bridge_env = os.environ.copy()
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
+            # Pass the profile-aware cache directories so the bridge writes
+            # media where the Python side reads it.  Without these the bridge
+            # hardcodes ~/.hermes/{image,audio,document}_cache, which diverges
+            # under HERMES_HOME overrides, profiles, and the new cache/ layout.
+            from gateway.platforms.base import (
+                get_audio_cache_dir as _get_audio_dir,
+                get_document_cache_dir as _get_doc_dir,
+                get_image_cache_dir as _get_img_dir,
+            )
+            bridge_env["HERMES_IMAGE_CACHE_DIR"] = str(_get_img_dir())
+            bridge_env["HERMES_AUDIO_CACHE_DIR"] = str(_get_audio_dir())
+            bridge_env["HERMES_DOCUMENT_CACHE_DIR"] = str(_get_doc_dir())
 
             self._bridge_process = subprocess.Popen(
                 [

@@ -75,6 +75,7 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '../store/session'
+import { seedAgentTasks } from '../store/tasks'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
 
@@ -721,6 +722,20 @@ export function DesktopController() {
       void refreshSessions().catch(() => undefined)
     }
   }, [gatewayState, refreshCurrentModel, refreshSessions])
+
+  // Seed the task board from the Action Runtime registry on every (re)connect;
+  // live updates then arrive as task.started / task.completed push events via
+  // handleGatewayEvent. The re-fetch also reconciles rows whose completion
+  // event we missed while the socket was down.
+  useEffect(() => {
+    if (gatewayState !== 'open') {
+      return
+    }
+
+    void requestGateway<{ tasks?: unknown }>('task.list')
+      .then(result => seedAgentTasks(result?.tasks))
+      .catch(() => undefined)
+  }, [gatewayState, requestGateway])
 
   // Keep the cron jobs section live without a user action: the scheduler ticks
   // in the background (advancing next-run/state and creating runs), so poll the

@@ -505,6 +505,7 @@ export interface Translations {
     close: string
     title: string
     subtitle: string
+    tasksTitle: string
     emptyTitle: string
     emptyDesc: string
     running: string

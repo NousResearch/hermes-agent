@@ -219,6 +219,23 @@ def reap_orphan_containers(
                     "Reaped orphan container %s (exited %d seconds ago)",
                     cid[:12], int(age),
                 )
+                # Also remove the bind-mount sandbox dir if one was allocated.
+                task_id = _container_task_id(docker, cid)
+                if task_id:
+                    try:
+                        from tools.environments.base import get_sandbox_dir
+                        sandbox = get_sandbox_dir() / "docker" / task_id
+                        if sandbox.is_dir():
+                            import shutil
+                            shutil.rmtree(sandbox, ignore_errors=True)
+                            logger.info(
+                                "Reaped sandbox dir for task %s", task_id,
+                            )
+                    except Exception as e:
+                        logger.debug(
+                            "sandbox dir cleanup for %s failed: %s",
+                            task_id, e,
+                        )
             else:
                 logger.debug(
                     "docker rm -f %s failed: %s",
@@ -263,6 +280,24 @@ def _container_finished_at(docker_exe: str, container_id: str):
         logger.debug("could not parse FinishedAt %r for %s: %s", raw, container_id[:12], e)
         return None
 
+
+
+def _container_task_id(docker_exe: str, container_id: str) -> str | None:
+    """Return the ``hermes-task-id`` label value for *container_id*, or None."""
+    try:
+        result = subprocess.run(
+            [docker_exe, "inspect", "--format",
+             '{{index .Config.Labels "hermes-task-id"}}', container_id],
+            capture_output=True, text=True, timeout=10, check=False,
+            stdin=subprocess.DEVNULL,
+        )
+    except (subprocess.TimeoutExpired, OSError) as e:
+        logger.debug("orphan reaper inspect task-id %s failed: %s", container_id[:12], e)
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.strip()
+    return raw if raw else None
 
 def find_docker() -> Optional[str]:
     """Locate the docker (or podman) CLI binary.

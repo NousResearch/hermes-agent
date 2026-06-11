@@ -1243,17 +1243,20 @@ def _now_iso(offset_seconds: int = 0) -> str:
 
 
 def _reaper_run_mock(monkeypatch, ps_ids: list[str], inspect_responses: dict[str, str],
-                      rm_succeeds: bool = True):
+                      rm_succeeds: bool = True, task_id_responses: dict[str, str] | None = None):
     """Build a subprocess.run mock for reaper tests.
 
     * ``ps_ids`` — what ``docker ps -a --filter ... --format '{{.ID}}'`` returns
     * ``inspect_responses[cid]`` — what ``docker inspect ... FinishedAt`` returns
       for each cid; ``""`` means "field unset".
     * ``rm_succeeds`` — whether ``docker rm -f`` returns 0.
+    * ``task_id_responses[cid]`` — what ``docker inspect ... hermes-task-id``
+      returns for each cid; missing cids return ``""``.
 
     Captures every call so tests can assert which containers were rm'd.
     """
     calls = []
+    _task_id_responses = task_id_responses or {}
 
     def _run(cmd, **kwargs):
         calls.append((list(cmd) if isinstance(cmd, list) else cmd, kwargs))
@@ -1265,8 +1268,13 @@ def _reaper_run_mock(monkeypatch, ps_ids: list[str], inspect_responses: dict[str
                 cmd, 0, stdout="\n".join(ps_ids) + ("\n" if ps_ids else ""), stderr="",
             )
         if sub == "inspect":
-            # cmd is [docker, inspect, --format, '{{.State.FinishedAt}}', cid]
+            fmt = cmd[3] if len(cmd) > 3 else ""
             cid = cmd[-1]
+            if "hermes-task-id" in fmt:
+                return subprocess.CompletedProcess(
+                    cmd, 0, stdout=_task_id_responses.get(cid, "") + "\n", stderr="",
+                )
+            # Default: FinishedAt
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=inspect_responses.get(cid, "") + "\n", stderr="",
             )
@@ -1399,6 +1407,52 @@ def test_reap_orphan_handles_docker_ps_failure_gracefully(monkeypatch):
         max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
     )
     assert removed == 0
+
+
+
+def test_reap_orphan_cleans_sandbox_dir(monkeypatch, tmp_path):
+    """When the reaper removes a container, it must also delete the
+    bind-mount sandbox dir (issue #44114)."""
+    import shutil
+
+    old = _now_iso(offset_seconds=900)
+    task_dir = tmp_path / "docker" / "test-task-abc"
+    task_dir.mkdir(parents=True)
+    (task_dir / "marker.txt").write_text("hello")
+
+    calls = _reaper_run_mock(
+        monkeypatch, ps_ids=["old-cid"], inspect_responses={"old-cid": old},
+        task_id_responses={"old-cid": "test-task-abc"},
+    )
+    monkeypatch.setattr(docker_env, "get_sandbox_dir", lambda: tmp_path, raising=False)
+
+    # Patch get_sandbox_dir at the import site inside reap_orphan_containers
+    with monkeypatch.context() as m:
+        import tools.environments.base as base_mod
+        m.setattr(base_mod, "get_sandbox_dir", lambda: tmp_path)
+        removed = docker_env.reap_orphan_containers(
+            max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+        )
+
+    assert removed == 1
+    assert not task_dir.exists(), "sandbox dir should be deleted after container reaped"
+
+
+def test_reap_orphan_skips_sandbox_cleanup_on_missing_task_id(monkeypatch, tmp_path):
+    """When the container has no hermes-task-id label, the reaper must not
+    crash — sandbox cleanup is best-effort."""
+    old = _now_iso(offset_seconds=900)
+
+    calls = _reaper_run_mock(
+        monkeypatch, ps_ids=["old-cid"], inspect_responses={"old-cid": old},
+        task_id_responses={},  # no task-id label
+    )
+
+    removed = docker_env.reap_orphan_containers(
+        max_age_seconds=600, profile_filter="default", docker_exe="/usr/bin/docker",
+    )
+
+    assert removed == 1, "container should still be removed even without task-id"
 
 
 def test_reap_orphan_continues_after_individual_rm_failure(monkeypatch):

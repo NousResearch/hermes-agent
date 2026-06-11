@@ -4528,6 +4528,46 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
         return None
 
 
+def _count_local_commits_ahead_of_remote(git_cmd, cwd, branch: str) -> int:
+    """Return count of local-only commits relative to origin/{branch}.
+
+    A diverged ``hermes update`` used to hard-reset to origin/{branch}. That is
+    acceptable for pure upstream rewrites, but destructive when users carry a
+    local patch commit (for example a site-specific hotfix). This helper lets
+    the update path distinguish those cases before choosing reset vs rebase.
+    """
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-list", f"origin/{branch}..HEAD", "--count"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        return int((result.stdout or "0").strip() or "0")
+    except (ValueError, subprocess.CalledProcessError, OSError):
+        return 0
+
+
+def _create_local_update_backup_branch(git_cmd, cwd, branch: str) -> str | None:
+    """Create a best-effort backup branch before rebasing local update commits."""
+    safe_branch = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in branch)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    backup_branch = f"hermes-local-backup/{safe_branch}-{stamp}"
+    try:
+        result = subprocess.run(
+            git_cmd + ["branch", backup_branch, "HEAD"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return backup_branch
+    except OSError:
+        pass
+    return None
+
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -9898,26 +9938,73 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                # ff-only failed.  If the user carries local-only commits, do
+                # NOT discard them with reset --hard; preserve a backup branch
+                # and rebase those local patches onto the fetched upstream.
+                # Only fall back to reset when there are no local commits to
+                # save (e.g. remote history changed but local HEAD has nothing
+                # unique).
+                local_commit_count = _count_local_commits_ahead_of_remote(
+                    git_cmd, PROJECT_ROOT, branch
                 )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                if local_commit_count > 0:
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        "  ⚠ Fast-forward not possible; "
+                        f"preserving {local_commit_count} local commit(s)."
                     )
-                    sys.exit(1)
+                    backup_branch = _create_local_update_backup_branch(
+                        git_cmd, PROJECT_ROOT, branch
+                    )
+                    if backup_branch:
+                        print(f"  ✓ Local commits backed up on {backup_branch}")
+                    else:
+                        print("  ⚠ Could not create a local backup branch; continuing carefully.")
+                    print("  → rebasing local commits onto origin/%s..." % branch)
+                    rebase_result = subprocess.run(
+                        git_cmd + ["rebase", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if rebase_result.returncode != 0:
+                        subprocess.run(
+                            git_cmd + ["rebase", "--abort"],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                        )
+                        print("✗ Could not rebase local commits onto the updated upstream.")
+                        if rebase_result.stderr.strip():
+                            print(f"  {rebase_result.stderr.strip().splitlines()[0]}")
+                        if backup_branch:
+                            print(
+                                f"  Your local commits are preserved on: {backup_branch}"
+                            )
+                        print(
+                            "  Resolve manually, or run from a clean upstream checkout after saving local patches."
+                        )
+                        sys.exit(1)
+                else:
+                    # ff-only failed and no local commits exist — local and
+                    # remote state diverged without local work to preserve, so
+                    # reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit

@@ -151,6 +151,8 @@ language-specific setup where needed.
   missing or the detected Node.js version is too old for the desktop build.
 - Windows `python` now uses a Rust `uv python find 3.11` preflight to skip the PowerShell stage when the required
   runtime is already available, while preserving script fallback so missing Python can still be installed by uv.
+- `venv` now runs native-first through Rust by invoking `uv venv venv --python 3.11` in the checkout, with script
+  fallback preserved if native venv creation fails.
 - `node-deps` now uses a Rust no-op skip when npm is unavailable on every platform, matching the existing script
   behavior without starting PowerShell or bash for a stage that can only skip.
 - Windows `platform-sdks` now skips natively when `.env` has no configured messaging platform tokens, while preserving
@@ -161,8 +163,8 @@ language-specific setup where needed.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
 
 **Still script-backed:**
-- Language/runtime setup: uv, Python, venv, Python dependencies, Node, npm dependencies, desktop build, and platform SDK
-  verification when messaging tokens are configured.
+- Language/runtime setup: uv, Python installation when missing, Python dependencies, Node installation when missing, npm
+  dependencies when npm is available, desktop build, and platform SDK verification when messaging tokens are configured.
 - Repository clone/update stage execution until the Git/ZIP fallback matrix has a parity suite and native stage wiring.
 - Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
 

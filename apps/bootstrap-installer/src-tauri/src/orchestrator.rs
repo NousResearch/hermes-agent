@@ -38,6 +38,14 @@ pub struct PlannedStage {
     pub script_fallback: bool,
 }
 
+/// Native Python virtual environment stage execution plan.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PythonVenvStagePlan {
+    pub uv: PathBuf,
+    pub cwd: PathBuf,
+    pub venv: PathBuf,
+}
+
 /// How a bootstrap stage is currently handled by the Rust orchestrator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StageExecutionMode {
@@ -585,6 +593,76 @@ pub fn write_install_method_stamp(hermes_home: &Path) -> Result<serde_json::Valu
     }))
 }
 
+/// Build the native Python virtual environment stage plan.
+pub fn python_venv_stage_plan<P>(
+    install_root: &Path,
+    hermes_home: &Path,
+    path_env: P,
+    pathext: &str,
+) -> Result<PythonVenvStagePlan>
+where
+    P: AsRef<OsStr>,
+{
+    if !install_root.is_dir() {
+        return Err(anyhow!(
+            "install root does not exist: {}",
+            install_root.display()
+        ));
+    }
+    let managed_uv = managed_tool_path(hermes_home, "uv");
+    let uv = if managed_uv.is_file() {
+        managed_uv
+    } else {
+        find_executable_on_path("uv", path_env, pathext)
+            .ok_or_else(|| anyhow!("uv is not available for venv creation"))?
+    };
+    let venv = install_root.join("venv");
+    Ok(PythonVenvStagePlan {
+        uv,
+        cwd: install_root.to_path_buf(),
+        venv,
+    })
+}
+
+/// Create the Python virtual environment natively through uv.
+pub fn create_python_venv_stage(
+    install_root: &Path,
+    hermes_home: &Path,
+) -> Result<serde_json::Value> {
+    let path_env = std::env::var_os("PATH").unwrap_or_default();
+    let pathext = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_string());
+    let plan = python_venv_stage_plan(install_root, hermes_home, path_env, &pathext)?;
+    if plan.venv.exists() {
+        fs::remove_dir_all(&plan.venv)
+            .with_context(|| format!("removing existing venv {}", plan.venv.display()))?;
+    }
+    let status = Command::new(&plan.uv)
+        .args(["venv", "venv", "--python", "3.11"])
+        .current_dir(&plan.cwd)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .with_context(|| format!("running {}", plan.uv.display()))?;
+    if !status.success() {
+        return Err(anyhow!(
+            "uv venv failed with exit {:?}",
+            status.code()
+        ));
+    }
+    let python = venv_python_path(&plan.venv);
+    if !python.is_file() {
+        return Err(anyhow!(
+            "uv venv completed but Python was not created at {}",
+            python.display()
+        ));
+    }
+    Ok(serde_json::json!({
+        "uv": plan.uv,
+        "venv": plan.venv,
+        "python": python,
+    }))
+}
+
 /// Build a native Windows PATH stage report without mutating user state.
 pub fn windows_path_stage_plan(
     hermes_home: &Path,
@@ -819,6 +897,14 @@ fn skills_sync_env(hermes_home: &Path) -> (&'static str, PathBuf) {
     ("HERMES_HOME", hermes_home.to_path_buf())
 }
 
+fn venv_python_path(venv: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        venv.join("Scripts").join("python.exe")
+    } else {
+        venv.join("bin").join("python")
+    }
+}
+
 fn user_skills_has_non_manifest_entries(path: &Path) -> Result<bool> {
     if !path.exists() {
         return Ok(false);
@@ -973,7 +1059,7 @@ fn node_version_string_satisfies_build(version: &str) -> bool {
 }
 
 fn stage_execution_mode(name: &str) -> StageExecutionMode {
-    if name.eq_ignore_ascii_case("repository") {
+    if name.eq_ignore_ascii_case("repository") || name.eq_ignore_ascii_case("venv") {
         return StageExecutionMode::NativeWithScriptFallback;
     }
     if matches!(
@@ -1084,8 +1170,8 @@ mod tests {
         assert_eq!(plan[4].execution, StageExecutionMode::ProbeThenScript);
         assert_eq!(plan[4].rust_probe, true);
         assert_eq!(plan[5].name, "venv");
-        assert_eq!(plan[5].execution, StageExecutionMode::Script);
-        assert_eq!(plan[5].rust_probe, false);
+        assert_eq!(plan[5].execution, StageExecutionMode::NativeWithScriptFallback);
+        assert_eq!(plan[5].script_fallback, true);
     }
 
     #[test]
@@ -1113,9 +1199,9 @@ mod tests {
 
         let summary = summarize_plan(&report, &plan);
 
-        assert!(summary.contains("native_stages=2"));
+        assert!(summary.contains("native_stages=3"));
         assert!(summary.contains("probe_stages=1"));
-        assert!(summary.contains("script_stages=1"));
+        assert!(summary.contains("script_stages=0"));
         assert!(summary.contains("total_stages=4"));
         assert!(summary.contains("uv=missing"));
     }
@@ -1499,6 +1585,28 @@ mod tests {
         assert_eq!(std::fs::read_to_string(root.join(".install_method")).unwrap(), "git\n");
         assert_eq!(report["installMethod"], "git");
         assert_eq!(report["stampPath"], root.join(".install_method").display().to_string());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_venv_stage_plan_targets_install_root_and_prefers_managed_uv() {
+        let root = std::env::temp_dir().join(format!("hermes-venv-plan-{}", std::process::id()));
+        let hermes_home = root.join("home");
+        let install_root = hermes_home.join("hermes-agent");
+        let path_tools = root.join("tools");
+        std::fs::create_dir_all(hermes_home.join("bin")).unwrap();
+        std::fs::create_dir_all(&install_root).unwrap();
+        std::fs::create_dir_all(&path_tools).unwrap();
+        std::fs::write(hermes_home.join("bin").join("uv.exe"), b"managed uv").unwrap();
+        std::fs::write(path_tools.join("uv.exe"), b"path uv").unwrap();
+
+        let plan = python_venv_stage_plan(&install_root, &hermes_home, &path_tools, ".EXE")
+            .unwrap();
+
+        assert_eq!(plan.uv, hermes_home.join("bin").join("uv.exe"));
+        assert_eq!(plan.venv, install_root.join("venv"));
+        assert_eq!(plan.cwd, install_root);
+
         let _ = std::fs::remove_dir_all(&root);
     }
 

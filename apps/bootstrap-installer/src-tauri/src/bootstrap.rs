@@ -613,6 +613,11 @@ async fn run_bootstrap(
                 Some(crate::orchestrator::configure_unix_path_stage(&install_root))
             } else if stage.name.eq_ignore_ascii_case("complete") {
                 Some(crate::orchestrator::write_install_method_stamp(&hermes_home))
+            } else if stage.name.eq_ignore_ascii_case("venv") {
+                Some(crate::orchestrator::create_python_venv_stage(
+                    &install_root,
+                    &hermes_home,
+                ))
             } else if should_try_native_repository_archive(&stage.name, &install_root) {
                 Some(
                     crate::orchestrator::install_repository_archive_fresh(
@@ -702,6 +707,12 @@ async fn run_bootstrap(
                                 return Err(anyhow!(fallback_err));
                             }
                         }
+                    } else if should_fallback_native_stage(&stage.name, &install_root) {
+                        emit_log(&format!(
+                            "[bootstrap] warning: native {} stage failed; \
+                             falling back to script-backed stage: {err}",
+                            stage.name
+                        ));
                     } else {
                         emit_event(
                             &app,
@@ -940,6 +951,11 @@ fn should_try_native_repository_archive(stage_name: &str, install_root: &std::pa
 
 fn should_fallback_repository_archive(stage_name: &str, install_root: &std::path::Path) -> bool {
     should_try_native_repository_archive(stage_name, install_root)
+}
+
+fn should_fallback_native_stage(stage_name: &str, install_root: &std::path::Path) -> bool {
+    should_fallback_repository_archive(stage_name, install_root)
+        || stage_name.eq_ignore_ascii_case("venv")
 }
 
 fn stage_script_extra_env(
@@ -1300,6 +1316,17 @@ mod tests {
             "repository",
             &install_root
         ));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn venv_native_stage_failure_can_fall_back_to_script() {
+        let root = unique_tmp_dir("venv-fallback");
+        let install_root = root.join("hermes-agent");
+
+        assert!(should_fallback_native_stage("venv", &install_root));
+        assert!(!should_fallback_native_stage("dependencies", &install_root));
 
         let _ = std::fs::remove_dir_all(&root);
     }

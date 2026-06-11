@@ -68,6 +68,14 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+# Pure informational startup notices that are useful in CLI logs but too noisy
+# as standalone gateway chat messages. Real compression warnings still pass
+# through the status rail below.
+_GATEWAY_INFO_ONLY_STATUS_RE = re.compile(
+    r"codex\s+gpt-5\.5\s+caps\s+context\s+at\s+272k,\s+so\s+auto-compaction\s+was\s+raised",
+    re.IGNORECASE,
+)
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not Telegram chat
     r"auxiliary\s+.+\s+failed"
@@ -362,6 +370,8 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     """Filter/sanitize agent status callbacks before platform delivery."""
     text = str(message or "").strip()
     if not text:
+        return None
+    if event_type == "lifecycle" and _GATEWAY_INFO_ONLY_STATUS_RE.search(text):
         return None
     if _gateway_platform_value(platform) != "telegram":
         return text

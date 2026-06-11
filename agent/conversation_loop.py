@@ -1506,6 +1506,43 @@ def run_conversation(
                                 # just re-run the same API call from the current
                                 # message state, giving the model another chance.
                                 continue
+                            if (
+                                not _is_stub_stall
+                                and agent.compression_enabled
+                                and compression_attempts < max_compression_attempts
+                            ):
+                                compression_attempts += 1
+                                agent._buffer_vprint(
+                                    f"⚠️  Truncated tool call response detected again — "
+                                    f"attempting context compression "
+                                    f"({compression_attempts}/{max_compression_attempts}) "
+                                    f"before giving up..."
+                                )
+                                try:
+                                    original_len = len(messages)
+                                    messages, active_system_prompt = agent._compress_context(
+                                        messages, system_message,
+                                        approx_tokens=approx_tokens,
+                                        task_id=effective_task_id,
+                                    )
+                                    # Compression creates a new SQLite session;
+                                    # mirror the other compression call sites so
+                                    # subsequent flushes write to the new session.
+                                    conversation_history = None
+                                except Exception as _compress_err:
+                                    logger.warning(
+                                        "Compression on truncated-tool-call recovery failed: %s",
+                                        _compress_err,
+                                    )
+                                else:
+                                    if len(messages) < original_len:
+                                        agent._buffer_status(
+                                            f"🗜️ Compressed {original_len} → {len(messages)} messages, "
+                                            f"retrying after tool-call truncation..."
+                                        )
+                                        truncated_tool_call_retries = 0
+                                        _retry.restart_with_compressed_messages = True
+                                        break
                             agent._flush_status_buffer()
                             if _is_stub_stall:
                                 agent._vprint(

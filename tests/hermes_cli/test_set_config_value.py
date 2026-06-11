@@ -247,3 +247,146 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# List-shaped string coercion — regression tests for the bug where
+# `hermes config set skills.disabled '["a","b"]'` was written as a
+# quoted YAML scalar instead of a real list. Before the fix at
+# hermes_cli/config.py:set_config_value, downstream _normalize_string_set
+# (in agent/skill_utils.py) would split a comma-shaped string but not a
+# JSON-array-shaped string, so the disabled set silently contained one
+# 28-char literal instead of the two intended names. Worker triage:
+# see /Users/jekabs/.hermes/plans/2026-06-11-specialized-workforce-audit.md
+# ---------------------------------------------------------------------------
+
+class TestListShapedStringCoercion:
+    """hermes config set must coerce JSON-array strings and plain
+    comma-separated strings into real YAML lists.
+    """
+
+    def test_json_array_string_becomes_list(self, _isolated_hermes_home):
+        """`set skills.disabled '["a","b"]'` → real list of 2 strings."""
+        set_config_value(
+            "skills.disabled", '["agency/foo", "agency/bar"]'
+        )
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["skills"]["disabled"] == ["agency/foo", "agency/bar"]
+
+    def test_json_array_on_disk_is_not_a_quoted_scalar(
+        self, _isolated_hermes_home
+    ):
+        """The raw YAML on disk must NOT be a single-quoted string literal.
+        This is the exact symptom of the original bug."""
+        set_config_value(
+            "skills.disabled", '["agency/foo", "agency/bar"]'
+        )
+        raw = _read_config(_isolated_hermes_home)
+
+        # The bug shape: `disabled: '["agency/foo", "agency/bar"]'`
+        # The fix shape: a YAML block list
+        assert "'[" not in raw
+        assert '"[' not in raw
+        # And the list items must appear as list items, not in a string
+        assert "- agency/foo" in raw
+        assert "- agency/bar" in raw
+
+    def test_comma_separated_string_becomes_list(
+        self, _isolated_hermes_home
+    ):
+        """`set skills.disabled 'a,b'` → list of 2 strings."""
+        set_config_value("skills.disabled", "agency/foo,agency/bar")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["skills"]["disabled"] == ["agency/foo", "agency/bar"]
+
+    def test_empty_json_array_becomes_empty_list(
+        self, _isolated_hermes_home
+    ):
+        """`set foo '[]'` → real empty list (not a string '[]')."""
+        set_config_value("skills.disabled", "[]")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["skills"]["disabled"] == []
+
+    def test_malformed_bracket_string_falls_through_safely(
+        self, _isolated_hermes_home
+    ):
+        """A string that starts with [ but isn't valid JSON must
+        stay a string. No crash, no silent split."""
+        set_config_value("weird_key", "[not valid json")
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["weird_key"] == "[not valid json"
+
+    def test_terminal_list_value_round_trips_through_env_bridge(
+        self, _isolated_hermes_home
+    ):
+        """List-typed values for terminal.* keys must still bridge to
+        the matching *_ENV env var as a JSON-encoded string. This
+        pins the env-bridge behavior the sibling call paths
+        (terminal.docker_volumes, terminal.docker_forward_env) rely
+        on.
+        """
+        set_config_value(
+            "terminal.docker_volumes", '["/host:/workspace"]'
+        )
+
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["terminal"]["docker_volumes"] == ["/host:/workspace"]
+
+        env_content = _read_env(_isolated_hermes_home)
+        # The env bridge uses json.dumps for lists, so the env var
+        # is the JSON-encoded form.
+        assert "TERMINAL_DOCKER_VOLUMES=" in env_content
+        env_line = [
+            l for l in env_content.splitlines()
+            if l.startswith("TERMINAL_DOCKER_VOLUMES=")
+        ][0]
+        import json as _json
+        assert _json.loads(env_line.split("=", 1)[1]) == ["/host:/workspace"]
+
+
+# ---------------------------------------------------------------------------
+# Bool / int / float coercion — must survive the list-shaped gate
+# sitting in front of it. Regression pin.
+# ---------------------------------------------------------------------------
+
+class TestScalarCoercionStillWorks:
+    """The new list-shaped gate runs before the bool/int/float
+    heuristics. Make sure scalar coercion is unaffected.
+    """
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("true", True),
+        ("True", True),
+        ("yes", True),
+        ("on", True),
+        ("false", False),
+        ("no", False),
+        ("off", False),
+        ("0", 0),
+        ("42", 42),
+        ("0.85", 0.85),
+        # Note: negative numerics are NOT coerced by the original
+        # code (the .isdigit() heuristic rejects the leading '-'),
+        # so we don't pin that here. The list-shaped gate doesn't
+        # change this behavior — the existing test set
+        # TestFalsyValues already pins that '0' works.
+    ])
+    def test_scalar_coercion_intact(
+        self, _isolated_hermes_home, raw, expected
+    ):
+        set_config_value("test_key", raw)
+        import yaml
+        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert reloaded["test_key"] == expected, (
+            f"input {raw!r} should coerce to {expected!r}, "
+            f"got {reloaded['test_key']!r}"
+        )

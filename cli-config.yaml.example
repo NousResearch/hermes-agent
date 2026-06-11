@@ -203,6 +203,18 @@ terminal:
 #   ssh_key: "~/.ssh/id_rsa"  # Optional - uses ssh-agent if not specified
 
 # -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# OPTION 2b: WSL2 (Windows Subsystem for Linux)
+# Commands run inside your WSL2 distribution.  File tools stay on Windows.
+# Great for: Windows users who want a native Linux environment without Docker
+# -----------------------------------------------------------------------------
+# terminal:
+#   backend: "wsl"
+#   cwd: "~"                         # WSL Linux home; use /home/<user> for explicit
+#   timeout: 180
+#   # Optional: specify a WSL distribution (default: system default)
+#   wsl_distro: "Debian"
+
 # OPTION 3: Docker container
 # Commands run in an isolated Docker container
 # Great for: reproducible environments, testing, isolation

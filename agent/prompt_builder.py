@@ -726,6 +726,19 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 # across Hermes restarts.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
+_WSL_BACKEND_HINT = (
+    "Terminal backend: wsl. Your `terminal` tool executes inside WSL2 "
+    "(a Linux environment running alongside Windows). "
+    "Your `read_file`, `write_file`, `patch`, and `search_files` tools "
+    "operate on the Windows host filesystem.\n"
+    "\n"
+    "Use **Linux paths** for terminal commands (e.g. `/home/agents/...`, "
+    "`/mnt/c/Users/...` to reach Windows files from inside WSL). "
+    "Use **Windows paths** for file tools (e.g. `C:/Users/...`). "
+    "`pwd` inside terminal returns a Linux path; `read_file` and "
+    "`write_file` expect Windows paths."
+)
+
 
 _WINDOWS_BASH_SHELL_HINT = (
     "Shell: on this Windows host your `terminal` tool runs commands through "
@@ -870,6 +883,12 @@ def build_environment_hints() -> str:
                 "hostname."
             )
         hints.append("\n".join(host_lines))
+
+        # WSL backend: terminal runs inside WSL2 (Linux), file tools stay on
+        # Windows. The agent must use Linux paths for terminal commands and
+        # Windows paths for read_file / write_file / patch / search_files.
+        if backend == "wsl":
+            hints.append(_WSL_BACKEND_HINT)
 
         # Windows-local terminal runs bash, not PowerShell — the model must
         # know this or it will issue PowerShell syntax and fail.

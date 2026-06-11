@@ -160,7 +160,7 @@ describe('settings helpers', () => {
 
     it('renders a dropdown for the terminal execution backend', () => {
       const opts = enumOptionsFor('terminal.backend', 'local', config)
-      expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh'])
+      expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'wsl', 'ssh'])
     })
 
     it('appends a hand-typed value not in the known list so it stays selected', () => {

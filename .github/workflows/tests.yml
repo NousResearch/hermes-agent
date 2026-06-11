@@ -90,6 +90,36 @@ jobs:
       - name: Run bootstrap installer Rust tests
         run: cargo test --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml
 
+      - name: Validate Unix bootstrap script manifest
+        run: |
+          bash -n scripts/install.sh
+          python - <<'PY'
+          import json
+          import subprocess
+
+          expected = [
+              "uv",
+              "node",
+              "python",
+              "system-packages",
+              "repository",
+              "venv",
+              "python-deps",
+              "node-deps",
+              "path",
+              "config",
+              "platform-sdks",
+              "setup",
+              "gateway",
+              "bootstrap-marker",
+              "complete",
+          ]
+          raw = subprocess.check_output(["bash", "scripts/install.sh", "--manifest"], text=True)
+          names = [stage["name"] for stage in json.loads(raw)["stages"]]
+          if names != expected:
+              raise SystemExit(f"unexpected Unix bootstrap manifest: {names!r}")
+          PY
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30

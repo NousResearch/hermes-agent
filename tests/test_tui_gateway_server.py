@@ -1382,6 +1382,112 @@ def test_ws_orphan_reap_disabled_when_grace_zero(monkeypatch):
     assert fired["timer"] is False
 
 
+def test_ws_orphan_reap_rearms_after_system_sleep(monkeypatch):
+    """A reap timer the host slept through re-arms instead of reaping.
+
+    Regression for #44183: threading.Timer's wait elapses in wall-clock time
+    on macOS, so closing the lid for longer than the grace made the timer
+    fire at the instant of wake — before the Desktop app could reconnect —
+    and every >20s sleep/wake cycle 404'd the open session. The reap must
+    grant the full grace window in *awake* (monotonic) time.
+    """
+    timers = []
+
+    class _Timer:
+        def __init__(self, interval, function):
+            self.interval = interval
+            self.function = function
+            timers.append(self)
+
+        def start(self):
+            pass
+
+    closed = []
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, *, end_reason: closed.append((sid, end_reason)) or True,
+    )
+
+    server._sessions["slept-sid"] = _session(
+        transport=server._detached_ws_transport, running=False
+    )
+    try:
+        server._schedule_ws_orphan_reap("slept-sid")
+        assert len(timers) == 1
+        assert timers[0].interval == 20.0
+
+        # Host sleeps 2s into the grace: the wall-clock wait expires during
+        # the sleep and the timer fires at wake with only 2s of awake time
+        # elapsed — spared, re-armed for the remaining 18s.
+        clock["now"] += 2.0
+        timers[0].function()
+        assert closed == []
+        assert len(timers) == 2
+        assert abs(timers[1].interval - 18.0) < 1e-9
+
+        # The re-armed timer runs its full remainder awake: reap proceeds.
+        clock["now"] += 18.0
+        timers[1].function()
+        assert closed == [("slept-sid", "ws_orphan_reap")]
+        assert len(timers) == 2
+    finally:
+        server._sessions.pop("slept-sid", None)
+
+
+def test_ws_orphan_reap_rearm_spares_post_wake_reconnect(monkeypatch):
+    """A session that reconnects within the post-wake grace is not reaped."""
+    timers = []
+
+    class _Timer:
+        def __init__(self, interval, function):
+            self.interval = interval
+            self.function = function
+            timers.append(self)
+
+        def start(self):
+            pass
+
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+    closed = []
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(server, "_WS_ORPHAN_REAP_GRACE_S", 20.0)
+    monkeypatch.setattr(server.threading, "Timer", _Timer)
+    monkeypatch.setattr(server.time, "monotonic", lambda: clock["now"])
+    monkeypatch.setattr(
+        server,
+        "_close_session_by_id",
+        lambda sid, *, end_reason: closed.append((sid, end_reason)) or True,
+    )
+
+    server._sessions["woke-sid"] = _session(
+        transport=server._detached_ws_transport, running=False
+    )
+    try:
+        server._schedule_ws_orphan_reap("woke-sid")
+        clock["now"] += 2.0
+        timers[0].function()
+        assert len(timers) == 2  # slept through the wait — re-armed
+
+        # Desktop reconnects (session.resume re-binds a live transport)
+        # before the re-armed remainder elapses: the reap is a no-op and
+        # the chain stops.
+        server._sessions["woke-sid"]["transport"] = _LiveTransport()
+        clock["now"] += 18.0
+        timers[1].function()
+        assert closed == []
+        assert len(timers) == 2
+    finally:
+        server._sessions.pop("woke-sid", None)
+
+
 def test_init_session_fires_reset_hook(monkeypatch):
     hooks = []
 

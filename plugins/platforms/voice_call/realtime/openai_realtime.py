@@ -107,6 +107,10 @@ class OpenAIRealtimeSession(RealtimeVoiceSession):
             "type": "response.create",
             "response": {"instructions": f"Say this to the caller now: {text}"},
         })
+        # Optimistic: the server's response.created event lags our create;
+        # without this, a tool result landing in that window would issue a
+        # colliding response.create ("already has an active response").
+        self.response_active = True
 
     async def cancel_response(self) -> None:
         await self._send({"type": "response.cancel"})
@@ -121,6 +125,7 @@ class OpenAIRealtimeSession(RealtimeVoiceSession):
             },
         })
         await self._send({"type": "response.create"})
+        self.response_active = True  # optimistic — see inject_text
 
     async def close(self) -> None:
         self._closed = True

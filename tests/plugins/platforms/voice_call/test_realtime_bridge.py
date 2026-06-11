@@ -391,6 +391,81 @@ async def test_consult_routes_through_gateway_agent(fake_runtime):
 
 
 @pytest.mark.asyncio
+async def test_interim_sends_do_not_resolve_consults_and_are_not_spoken(
+    fake_runtime,
+):
+    """Tool-progress chrome and other unmarked sends must neither resolve a
+    pending consult (the 0.3s-garbage-answer bug) nor be read aloud."""
+    ws = FakeCarrierWs([])
+    session = FakeSession()
+    bridge = _bridge(fake_runtime, _record(), session)
+
+    run = asyncio.create_task(bridge.run(ws))
+    await asyncio.sleep(0.02)
+    fut = asyncio.get_running_loop().create_future()
+    bridge._consult_future = fut
+
+    assert await bridge.deliver_agent_text("🔍 web_search: weather…", final=False)
+    assert not fut.done()                  # consult still waiting
+    assert session.injected_text == []     # nothing spoken
+
+    assert await bridge.deliver_agent_text("It is sunny, 24 degrees.", final=True)
+    assert fut.result() == "It is sunny, 24 degrees."
+
+    # With no consult pending, final text is spoken; interim still dropped.
+    assert await bridge.deliver_agent_text("Reminder: standup at 10.", final=True)
+    assert session.injected_text == ["Reminder: standup at 10."]
+    assert await bridge.deliver_agent_text("⚙️ exec: ls", final=False)
+    assert session.injected_text == ["Reminder: standup at 10."]
+
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
+
+
+@pytest.mark.asyncio
+async def test_newer_consult_supersedes_pending_one(fake_runtime):
+    """A second question while a consult is in flight resolves the first
+    future benignly instead of leaving its tool result hanging."""
+    ws = FakeCarrierWs([])
+    session = FakeSession()
+    record = _record()
+    bridge = _bridge(fake_runtime, record, session)
+    dispatched = []
+
+    class FakeAdapter:
+        def build_source(self, **kwargs):
+            return kwargs
+
+        async def handle_message(self, event):
+            dispatched.append(event.text)
+            # Only the SECOND turn completes (the first was interrupted).
+            if len(dispatched) == 2:
+                asyncio.get_running_loop().create_task(
+                    bridge.deliver_agent_text("Dublin is 14 and raining.")
+                )
+
+    fake_runtime.adapter = FakeAdapter()
+    run = asyncio.create_task(bridge.run(ws))
+    await asyncio.sleep(0.02)
+    session.push(RealtimeEvent(
+        type="tool_call", tool_call_id="c-oman", tool_name="agent_consult",
+        tool_args={"question": "weather in Oman?"},
+    ))
+    await asyncio.sleep(0.05)
+    session.push(RealtimeEvent(
+        type="tool_call", tool_call_id="c-dublin", tool_name="agent_consult",
+        tool_args={"question": "weather in Dublin?"},
+    ))
+    await asyncio.sleep(0.15)
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
+
+    results = dict(session.tool_results)
+    assert "Superseded" in results["c-oman"]
+    assert results["c-dublin"] == "Dublin is 14 and raining."
+
+
+@pytest.mark.asyncio
 async def test_speak_for_chat_routes_to_bridge_for_realtime_calls(
     tmp_path, make_config
 ):
@@ -405,14 +480,19 @@ async def test_speak_for_chat_routes_to_bridge_for_realtime_calls(
         delivered = []
 
         class FakeBridge:
-            async def deliver_agent_text(self, text):
-                delivered.append(text)
+            async def deliver_agent_text(self, text, final=True):
+                delivered.append((text, final))
                 return True
 
         runtime.bridge_manager.active_bridges[record.call_id] = FakeBridge()
-        ok, call_id = await runtime.speak_for_chat("+15555550001", "agent says hi")
+        # Final responses carry the gateway's notify flag; interim sends don't.
+        ok, call_id = await runtime.speak_for_chat(
+            "+15555550001", "agent says hi", metadata={"notify": True}
+        )
         assert ok and call_id == record.call_id
-        assert delivered == ["agent says hi"]
+        ok, _ = await runtime.speak_for_chat("+15555550001", "🔍 web_search: …")
+        assert ok
+        assert delivered == [("agent says hi", True), ("🔍 web_search: …", False)]
         # Carrier TTS was bypassed entirely.
         assert runtime.provider.spoken == []
     finally:

@@ -403,17 +403,33 @@ class RealtimeCallBridge:
         )
         await self._deliver_tool_result(event.tool_call_id, answer)
 
-    async def deliver_agent_text(self, text: str) -> bool:
+    async def deliver_agent_text(self, text: str, final: bool = True) -> bool:
         """Agent output routed to a realtime call (via adapter.send()).
 
-        A pending consult consumes it as the tool result; otherwise the
-        realtime model is asked to speak it (e.g. cron/agent-initiated
-        messages while a realtime call is live — carrier TTS would talk
-        over the media stream)."""
+        Only the turn's FINAL response counts: a pending consult consumes
+        it as the tool result; otherwise the realtime model is asked to
+        speak it (e.g. cron/agent-initiated messages while a realtime call
+        is live — carrier TTS would talk over the media stream). Interim
+        sends (tool-progress chrome, status notices) are acknowledged but
+        dropped — they must not resolve a consult or be read aloud."""
+        if not final:
+            logger.debug(
+                "voice_call realtime: suppressed interim agent send "
+                "call=%s text=%.120s", self.record.call_id, text,
+            )
+            return True
         fut = self._consult_future
         if fut is not None and not fut.done():
+            logger.info(
+                "voice_call realtime: consult answer received call=%s chars=%d",
+                self.record.call_id, len(text),
+            )
             fut.set_result(text)
             return True
+        logger.info(
+            "voice_call realtime: speaking agent message call=%s chars=%d",
+            self.record.call_id, len(text),
+        )
         try:
             await self.session.inject_text(text)
             return True
@@ -474,6 +490,20 @@ class RealtimeCallBridge:
     async def _consult_via_gateway(self, question: str) -> str:
         from ..responder import dispatch_transcript
 
+        # A newer question supersedes an in-flight consult: resolve the old
+        # future benignly (its tool result completes immediately) — the new
+        # dispatch interrupts the old gateway turn, which is the same
+        # semantics as a user changing their mind mid-message.
+        previous = self._consult_future
+        if previous is not None and not previous.done():
+            logger.info(
+                "voice_call realtime: consult superseded by newer question "
+                "call=%s", self.record.call_id,
+            )
+            previous.set_result(
+                "Superseded by a newer question from the caller; answer that "
+                "instead."
+            )
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._consult_future = fut
         try:

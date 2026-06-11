@@ -241,7 +241,11 @@ class VoiceCallRuntime:
     # -- adapter send() support ----------------------------------------------
 
     async def speak_for_chat(
-        self, chat_id: str, content: str, thread_id: Optional[str] = None
+        self,
+        chat_id: str,
+        content: str,
+        thread_id: Optional[str] = None,
+        metadata: Optional[dict] = None,
     ) -> Tuple[bool, str]:
         """Speak ``content`` on the live call mapped to ``chat_id``.
 
@@ -272,7 +276,12 @@ class VoiceCallRuntime:
             else None
         )
         if bridge is not None:
-            if await bridge.deliver_agent_text(spoken):
+            # The gateway marks only the turn's final response with
+            # metadata["notify"]; everything else (tool-progress chrome,
+            # interim status lines, notices) must not reach the caller's
+            # ear or resolve a pending consult.
+            is_final = bool((metadata or {}).get("notify"))
+            if await bridge.deliver_agent_text(spoken, final=is_final):
                 return True, record.call_id
             return False, "realtime bridge could not deliver the message"
         try:

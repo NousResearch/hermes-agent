@@ -218,7 +218,9 @@ class VoiceCallAdapter(BasePlatformAdapter):
         if runtime is None:
             return SendResult(success=False, error="voice_call runtime not running")
         thread_id = (metadata or {}).get("thread_id")
-        ok, detail = await runtime.speak_for_chat(chat_id, content, thread_id=thread_id)
+        ok, detail = await runtime.speak_for_chat(
+            chat_id, content, thread_id=thread_id, metadata=metadata
+        )
         if ok:
             return SendResult(success=True, message_id=detail)
         return SendResult(success=False, error=detail)

@@ -910,12 +910,50 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
+            self._escalate_permanent_bot_task_error()
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            self._escalate_permanent_bot_task_error()
             self._release_platform_lock()
             return False
+
+    def _escalate_permanent_bot_task_error(self) -> None:
+        """Flag a permanent Discord auth/intent failure as a non-retryable fatal.
+
+        ``self._client.start()`` runs in ``_bot_task``, so a bad/revoked token
+        (``discord.errors.LoginFailure``) or missing portal intents
+        (``discord.errors.PrivilegedIntentsRequired``) surfaces there, not in
+        ``connect()`` — ``on_ready`` never fires and ``connect()`` only sees the
+        READY-wait timeout. Without escalation the gateway reconnect loop keeps
+        the platform in the retry queue forever (it only drops on
+        ``has_fatal_error and not fatal_error_retryable``), pointlessly hammering
+        a bad credential every backoff cycle. Inspect the finished bot task and,
+        for these permanent errors, record a non-retryable fatal so the gateway
+        stops reconnecting. Transient/timeout cases are left untouched so they
+        keep retrying.
+        """
+        task = self._bot_task
+        if task is None or not task.done() or task.cancelled():
+            return
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        if exc is None:
+            return
+        # Match permanent auth/intent errors by class name rather than
+        # isinstance against discord.errors.* — the latter can be patched to a
+        # non-type in test/mocked environments, and the class names are stable
+        # across discord.py versions.
+        permanent_names = {"LoginFailure", "PrivilegedIntentsRequired"}
+        if type(exc).__name__ in permanent_names:
+            self._set_fatal_error(
+                f"discord_{type(exc).__name__}",
+                str(exc) or type(exc).__name__,
+                retryable=False,
+            )
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
@@ -939,10 +977,22 @@ class DiscordAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
+        # Harvest the bot task so a permanent-auth failure (LoginFailure /
+        # PrivilegedIntentsRequired raised inside _client.start()) doesn't leak
+        # an unretrieved "Task exception was never retrieved" warning.
+        if self._bot_task is not None:
+            if not self._bot_task.done():
+                self._bot_task.cancel()
+            try:
+                await self._bot_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
         self._running = False
         self._client = None
         self._ready_event.clear()
         self._post_connect_task = None
+        self._bot_task = None
 
         self._release_platform_lock()
 
@@ -1527,6 +1577,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
+            # A surfaced 429 is transient, not a formatting error. Flag it
+            # retryable so _send_with_retry backs off and replays the real
+            # content instead of corrupting it into a plain-text fallback.
+            if self._is_discord_rate_limit(e):
+                return SendResult(success=False, error=str(e), retryable=True)
             return SendResult(success=False, error=str(e))
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
@@ -1670,12 +1725,36 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def _resolve_send_channel(
+        self,
+        chat_id: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Resolve the target channel for a send, honoring metadata['thread_id'].
+
+        A thread_id in metadata takes precedence over chat_id, matching the
+        routing contract enforced by ``send()``. Without this, media senders
+        post to the parent channel even when chat_id and thread_id diverge
+        (e.g. the session-handoff path), splitting a reply across two
+        locations. Returns ``None`` when the channel cannot be resolved.
+        """
+        if not self._client:
+            return None
+        target_id = chat_id
+        if metadata and metadata.get("thread_id"):
+            target_id = metadata["thread_id"]
+        channel = self._client.get_channel(int(target_id))
+        if not channel:
+            channel = await self._client.fetch_channel(int(target_id))
+        return channel
+
     async def _send_file_attachment(
         self,
         chat_id: str,
         file_path: str,
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment.
 
@@ -1685,9 +1764,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
-        channel = self._client.get_channel(int(chat_id))
-        if not channel:
-            channel = await self._client.fetch_channel(int(chat_id))
+        channel = await self._resolve_send_channel(chat_id, metadata)
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
@@ -1733,9 +1810,7 @@ class DiscordAdapter(BasePlatformAdapter):
             return
 
         try:
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+            channel = await self._resolve_send_channel(chat_id, metadata)
             if not channel:
                 logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
                 return
@@ -1862,9 +1937,7 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             import io
 
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+            channel = await self._resolve_send_channel(chat_id, metadata)
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
 
@@ -2161,7 +2234,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     pass
                 await vc.disconnect()
             task = self._voice_timeout_tasks.pop(guild_id, None)
-            if task:
+            # Don't cancel ourselves: when the inactivity handler calls this it
+            # IS the timeout task, and self-cancellation would raise
+            # CancelledError at its next await (the "left channel" notice),
+            # silently dropping that user-facing message.
+            if task and task is not asyncio.current_task():
                 task.cancel()
             self._voice_text_channels.pop(guild_id, None)
             self._voice_sources.pop(guild_id, None)
@@ -2785,7 +2862,7 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         try:
-            return await self._send_file_attachment(chat_id, image_path, caption)
+            return await self._send_file_attachment(chat_id, image_path, caption, metadata=metadata)
         except FileNotFoundError:
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         except Exception as e:  # pragma: no cover - defensive logging
@@ -2811,9 +2888,7 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+            channel = await self._resolve_send_channel(chat_id, metadata)
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
 
@@ -2890,9 +2965,7 @@ class DiscordAdapter(BasePlatformAdapter):
         try:
             import aiohttp
 
-            channel = self._client.get_channel(int(chat_id))
-            if not channel:
-                channel = await self._client.fetch_channel(int(chat_id))
+            channel = await self._resolve_send_channel(chat_id, metadata)
             if not channel:
                 return SendResult(success=False, error=f"Channel {chat_id} not found")
 
@@ -2950,7 +3023,7 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local video file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, video_path, caption)
+            return await self._send_file_attachment(chat_id, video_path, caption, metadata=metadata)
         except FileNotFoundError:
             return SendResult(success=False, error=f"Video file not found: {video_path}")
         except Exception as e:  # pragma: no cover - defensive logging
@@ -2968,7 +3041,7 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name)
+            return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name, metadata=metadata)
         except FileNotFoundError:
             return SendResult(success=False, error=f"File not found: {file_path}")
         except Exception as e:  # pragma: no cover - defensive logging
@@ -4764,8 +4837,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 if getattr(snap, "content", None):
                     snapshot_text_parts.append(snap.content.strip())
                 snapshot_attachments.extend(getattr(snap, "attachments", []) or [])
-            if snapshot_text_parts and not raw_content:
-                raw_content = "\n".join(snapshot_text_parts)
+            if snapshot_text_parts:
+                forwarded = "\n".join(snapshot_text_parts)
+                # A forward can carry the forwarder's own comment AND the
+                # forwarded body. Combine both so neither is dropped, mirroring
+                # the unconditional handling of snapshot_attachments below.
+                if raw_content:
+                    raw_content = f"{raw_content}\n\n[Forwarded]\n{forwarded}"
+                else:
+                    raw_content = forwarded
                 normalized_content = raw_content
         if self._client.user and self._client.user in message.mentions:
             mention_prefix = True

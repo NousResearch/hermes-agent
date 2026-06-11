@@ -84,6 +84,7 @@ def session_skills_list(task_id: Optional[str] = None) -> str:
 
     Scans the session's message history for skill_view tool calls and
     returns which skills have full content vs pruned placeholders.
+    Also shows the list of all available skills in the system.
 
     Args:
         task_id: Session identifier (required for querying the session DB)
@@ -91,64 +92,72 @@ def session_skills_list(task_id: Optional[str] = None) -> str:
     Returns:
         JSON string with loaded_skills and pruned_skills lists
     """
-    if not task_id:
-        return json.dumps({
-            "success": False,
-            "message": "No session context available. This tool must be called within an active session.",
-            "loaded_skills": [],
-            "pruned_skills": []
-        })
-
     try:
-        from tools.session_search_tool import session_search
-        result = session_search(task_id or "")
-        if isinstance(result, dict) and not result.get("success"):
-            return json.dumps({
-                "success": False,
-                "message": f"Failed to query session: {result.get('error', 'unknown error')}",
-                "loaded_skills": [],
-                "pruned_skills": []
-            })
+        # Get all available skills
+        available_skills = []
+        try:
+            from tools.skills_tool import SKILLS_DIR
+            if SKILLS_DIR.exists():
+                for skill_dir in SKILLS_DIR.iterdir():
+                    if skill_dir.is_dir() and (skill_dir / "SKILL.md").exists():
+                        available_skills.append(skill_dir.name)
+        except Exception:
+            pass
 
-        # Parse the result to find skill_view tool calls
+        # Get skills loaded in session
         loaded_skills: set = set()
         pruned_skills: set = set()
-
-        # The session_search result contains messages
-        messages = result.get("messages", []) if isinstance(result, dict) else []
-        for msg in messages:
-            if isinstance(msg, dict) and msg.get("role") == "tool" and msg.get("tool_name") == "skill_view":
-                content = msg.get("content", "")
-                # Extract skill name from content
-                name_match = re.search(r'"name":\s*"([^"]+)"', content)
-                if name_match:
-                    skill_name = name_match.group(1)
-                    if "[SKILL_PRUNED]" in content:
-                        pruned_skills.add(skill_name)
-                    else:
-                        loaded_skills.add(skill_name)
-            elif isinstance(msg, dict) and msg.get("role") == "assistant":
-                # Check for tool_calls
-                for tc in msg.get("tool_calls") or []:
-                    if isinstance(tc, dict) and tc.get("function", {}).get("name") == "skill_view":
-                        try:
-                            args = json.loads(tc.get("function", {}).get("arguments", "{}"))
-                            skill_name = args.get("name", "")
-                            if skill_name and skill_name not in pruned_skills:
-                                loaded_skills.add(skill_name)
-                        except json.JSONDecodeError:
-                            pass
+        
+        if task_id:
+            try:
+                from tools.session_search_tool import session_search
+                result = session_search(session_id=task_id or "")
+                if isinstance(result, str):
+                    result = json.loads(result)
+                if isinstance(result, dict) and result.get("success"):
+                    messages = result.get("messages", [])
+                    for msg in messages:
+                        if isinstance(msg, dict):
+                            if msg.get("role") == "tool" and msg.get("tool_name") == "skill_view":
+                                content = msg.get("content", "")
+                                name_match = re.search(r'"name":\s*"([^"]+)"', content)
+                                if name_match:
+                                    skill_name = name_match.group(1)
+                                    if "[SKILL_PRUNED]" in content:
+                                        pruned_skills.add(skill_name)
+                                    else:
+                                        loaded_skills.add(skill_name)
+                            elif msg.get("role") == "assistant":
+                                for tc in msg.get("tool_calls") or []:
+                                    if isinstance(tc, dict) and tc.get("function", {}).get("name") == "skill_view":
+                                        try:
+                                            args = json.loads(tc.get("function", {}).get("arguments", "{}"))
+                                            skill_name = args.get("name", "")
+                                            if skill_name and skill_name not in pruned_skills:
+                                                loaded_skills.add(skill_name)
+                                        except json.JSONDecodeError:
+                                            pass
+            except Exception:
+                pass
 
         return json.dumps({
             "success": True,
+            "session_id": task_id,
+            "available_skills": sorted(available_skills),
             "loaded_skills": sorted(loaded_skills),
-            "pruned_skills": sorted(pruned_skills)
+            "pruned_skills": sorted(pruned_skills),
+            "stats": {
+                "total_available": len(available_skills),
+                "loaded_in_session": len(loaded_skills),
+                "pruned_in_session": len(pruned_skills)
+            }
         })
 
     except Exception as e:
         return json.dumps({
             "success": False,
             "message": f"Error querying session: {str(e)}",
+            "available_skills": [],
             "loaded_skills": [],
             "pruned_skills": []
         })

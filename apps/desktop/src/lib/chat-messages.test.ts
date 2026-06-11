@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChatMessage, ChatMessagePart } from './chat-messages'
 import {
   appendAssistantTextPart,
+  appendReasoningPart,
   chatMessageText,
   preserveLocalAssistantErrors,
   renderMediaTags,
@@ -11,6 +12,27 @@ import {
 } from './chat-messages'
 
 describe('toChatMessages', () => {
+  it('keeps adjacent assistant prose contiguous across reasoning-only rows', () => {
+    const messages = toChatMessages([
+      { role: 'assistant', content: 'Got', reasoning: 'Checking the result.', timestamp: 1 },
+      { role: 'assistant', content: ' it. Let me find good poster candidates.', reasoning: 'Next step.', timestamp: 2 }
+    ])
+
+    expect(messages).toHaveLength(1)
+    expect(messages[0].parts.map(p => p.type)).toEqual(['reasoning', 'text', 'reasoning'])
+    expect(chatMessageText(messages[0])).toBe('Got it. Let me find good poster candidates.')
+  })
+
+  it('keeps plain adjacent assistant rows as separate messages', () => {
+    const messages = toChatMessages([
+      { role: 'assistant', content: 'First complete reply.', timestamp: 1 },
+      { role: 'assistant', content: 'Second complete reply.', timestamp: 2 }
+    ])
+
+    expect(messages).toHaveLength(2)
+    expect(messages.map(chatMessageText)).toEqual(['First complete reply.', 'Second complete reply.'])
+  })
+
   it('keeps a turn with interleaved tool-only rows in a single bubble', () => {
     const messages = toChatMessages([
       { role: 'assistant', content: 'Planning.', timestamp: 1 },
@@ -121,6 +143,35 @@ describe('toChatMessages', () => {
     ])
 
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
+  })
+})
+
+describe('appendAssistantTextPart', () => {
+  it('continues assistant text through trailing reasoning without splitting the prose', () => {
+    const parts = appendAssistantTextPart(
+      appendReasoningPart(appendAssistantTextPart([], 'Tar killed, backup state cleared, Plex started. Let me'), 'Checking.'),
+      ' monitor:'
+    )
+
+    const textParts = parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
+
+    expect(parts.map(part => part.type)).toEqual(['text', 'reasoning'])
+    expect(textParts.map(part => part.text)).toEqual([
+      'Tar killed, backup state cleared, Plex started. Let me monitor:'
+    ])
+  })
+
+  it('does not move assistant text backward across tool rows', () => {
+    const withTool = upsertToolPart(appendAssistantTextPart([], 'Plex is up and serving.'), {
+      name: 'terminal',
+      tool_id: 'tool-1'
+    }, 'running')
+
+    const parts = appendAssistantTextPart(appendReasoningPart(withTool, 'Reading poster metadata.'), 'Now applying posters.')
+    const textParts = parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text')
+
+    expect(parts.map(part => part.type)).toEqual(['text', 'tool-call', 'reasoning', 'text'])
+    expect(textParts.map(part => part.text)).toEqual(['Plex is up and serving.', 'Now applying posters.'])
   })
 })
 

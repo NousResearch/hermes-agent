@@ -1428,6 +1428,9 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
+                # "always" to session scope below, so the UI must not offer it.
+                "allow_permanent": not has_tirith,
             }
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"

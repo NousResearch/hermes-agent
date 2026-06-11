@@ -933,6 +933,8 @@ export function useMessageStream({
         // raise it and wait — the sidebar flags "needs input" and the inline bar
         // surfaces once the user focuses that chat.
         setApprovalRequest({
+          // false only when a tirith warning forbids it; backend omits the field otherwise.
+          allowPermanent: payload?.allow_permanent !== false,
           command: typeof payload?.command === 'string' ? payload.command : '',
           description: typeof payload?.description === 'string' ? payload.description : 'dangerous command',
           sessionId: sessionId ?? null

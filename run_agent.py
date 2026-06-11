@@ -3479,6 +3479,56 @@ class AIAgent:
         self._close_openai_client(old_client, reason=f"replace:{reason}", shared=True)
         return True
 
+    def _replace_primary_anthropic_client(self, *, reason: str) -> bool:
+        """Rebuild the shared Anthropic client with the same credentials.
+
+        Anthropic-protocol analog of ``_replace_primary_openai_client``:
+        after a stream drop the dead connection lives in
+        ``_anthropic_client``'s httpx pool, where a retry can pick it up
+        and die again. Rebuilding swaps in a fresh pool.
+        ``_try_refresh_anthropic_client_credentials`` doesn't cover this —
+        it only rebuilds for the native Anthropic provider when the token
+        actually rotated, so third-party anthropic_messages providers
+        (MiniMax, Alibaba, ...) keep the poisoned pool across retries.
+        """
+        if self.api_mode != "anthropic_messages":
+            return False
+        old_client = getattr(self, "_anthropic_client", None)
+        if old_client is None:
+            return False
+        from agent.anthropic_adapter import build_anthropic_client
+
+        try:
+            new_client = build_anthropic_client(
+                self._anthropic_api_key,
+                getattr(self, "_anthropic_base_url", None),
+                timeout=get_provider_request_timeout(self.provider, self.model),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to rebuild shared Anthropic client (%s) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+            return False
+        self._anthropic_client = new_client
+        try:
+            old_client.close()
+            logger.info(
+                "Anthropic client replaced (%s) %s",
+                reason,
+                self._client_log_context(),
+            )
+        except Exception as exc:
+            logger.debug(
+                "Anthropic client close failed (replace:%s) %s error=%s",
+                reason,
+                self._client_log_context(),
+                exc,
+            )
+        return True
+
     def _ensure_primary_openai_client(self, *, reason: str) -> Any:
         with self._openai_client_lock():
             client = getattr(self, "client", None)

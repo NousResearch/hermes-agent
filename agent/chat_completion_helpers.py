@@ -2333,10 +2333,21 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             diag=request_client_holder.get("diag"),
                         )
                         _close_request_client_once("stream_mid_tool_retry_cleanup")
+                        # Rebuild the client that actually carried the
+                        # stream. In anthropic_messages mode that is the
+                        # shared Anthropic client — the OpenAI rebuild
+                        # would fail (``_client_kwargs`` is empty in this
+                        # mode) while leaving the dead connection in the
+                        # Anthropic pool for the retry to hit. (#44006)
                         try:
-                            agent._replace_primary_openai_client(
-                                reason="stream_mid_tool_retry_pool_cleanup"
-                            )
+                            if agent.api_mode == "anthropic_messages":
+                                agent._replace_primary_anthropic_client(
+                                    reason="stream_mid_tool_retry_pool_cleanup"
+                                )
+                            else:
+                                agent._replace_primary_openai_client(
+                                    reason="stream_mid_tool_retry_pool_cleanup"
+                                )
                         except Exception:
                             pass
                         continue
@@ -2385,11 +2396,18 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             # Close the stale request client before retry
                             _close_request_client_once("stream_retry_cleanup")
                             # Also rebuild the primary client to purge
-                            # any dead connections from the pool.
+                            # any dead connections from the pool — the
+                            # Anthropic client in anthropic_messages mode,
+                            # the shared OpenAI client otherwise. (#44006)
                             try:
-                                agent._replace_primary_openai_client(
-                                    reason="stream_retry_pool_cleanup"
-                                )
+                                if agent.api_mode == "anthropic_messages":
+                                    agent._replace_primary_anthropic_client(
+                                        reason="stream_retry_pool_cleanup"
+                                    )
+                                else:
+                                    agent._replace_primary_openai_client(
+                                        reason="stream_retry_pool_cleanup"
+                                    )
                             except Exception:
                                 pass
                             continue

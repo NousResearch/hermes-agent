@@ -986,9 +986,10 @@ class TestAnthropicStreamCallbacks:
 
         assert touch_calls.count("receiving stream response") == len(events)
 
+    @patch("run_agent.AIAgent._replace_primary_anthropic_client")
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_anthropic_stream_parser_valueerror_retries_before_delivery(
-        self, mock_replace, monkeypatch,
+        self, mock_replace_openai, mock_replace_anthropic, monkeypatch,
     ):
         """Malformed Anthropic event-stream frames retry instead of surfacing HTTP None."""
         from run_agent import AIAgent
@@ -1035,7 +1036,11 @@ class TestAnthropicStreamCallbacks:
 
         assert response is final_message
         assert agent._anthropic_client.messages.stream.call_count == 2
-        assert mock_replace.call_count == 1
+        # The retry must purge the Anthropic client's pool — the OpenAI
+        # rebuild is a guaranteed failure in anthropic_messages mode
+        # (``_client_kwargs`` is empty) and must not be attempted. (#44006)
+        assert mock_replace_anthropic.call_count == 1
+        assert mock_replace_openai.call_count == 0
 
     @patch("run_agent.AIAgent._replace_primary_openai_client")
     def test_generic_anthropic_valueerror_still_propagates_without_stream_retry(
@@ -1067,6 +1072,75 @@ class TestAnthropicStreamCallbacks:
 
         assert agent._anthropic_client.messages.stream.call_count == 1
         assert mock_replace.call_count == 0
+
+
+class TestReplacePrimaryAnthropicClient:
+    """``_replace_primary_anthropic_client`` swaps in a fresh client (and
+    httpx pool) with the SAME credentials, so the stream-retry path can
+    purge dead connections for anthropic_messages providers. (#44006)"""
+
+    def _agent(self):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.minimax.io/anthropic",
+            provider="minimax",
+            model="MiniMax-M2.7",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "anthropic_messages"
+        return agent
+
+    @patch("agent.anthropic_adapter.build_anthropic_client")
+    def test_rebuilds_with_same_credentials_and_closes_old_client(
+        self, mock_build,
+    ):
+        agent = self._agent()
+        old_client = MagicMock()
+        agent._anthropic_client = old_client
+        agent._anthropic_api_key = "mm-key"
+        agent._anthropic_base_url = "https://api.minimax.io/anthropic"
+        new_client = MagicMock()
+        mock_build.return_value = new_client
+
+        assert agent._replace_primary_anthropic_client(
+            reason="stream_retry_pool_cleanup"
+        ) is True
+        assert agent._anthropic_client is new_client
+        old_client.close.assert_called_once()
+        args, _kwargs = mock_build.call_args
+        assert args[0] == "mm-key"
+        assert args[1] == "https://api.minimax.io/anthropic"
+
+    @patch("agent.anthropic_adapter.build_anthropic_client")
+    def test_keeps_old_client_when_rebuild_fails(self, mock_build):
+        agent = self._agent()
+        old_client = MagicMock()
+        agent._anthropic_client = old_client
+        agent._anthropic_api_key = "mm-key"
+        mock_build.side_effect = RuntimeError("boom")
+
+        assert agent._replace_primary_anthropic_client(
+            reason="stream_retry_pool_cleanup"
+        ) is False
+        assert agent._anthropic_client is old_client
+        old_client.close.assert_not_called()
+
+    def test_noop_outside_anthropic_mode(self):
+        agent = self._agent()
+        agent.api_mode = "chat_completions"
+        agent._anthropic_client = MagicMock()
+
+        assert agent._replace_primary_anthropic_client(reason="x") is False
+
+    def test_noop_without_anthropic_client(self):
+        agent = self._agent()
+        agent._anthropic_client = None
+
+        assert agent._replace_primary_anthropic_client(reason="x") is False
 
 
 class TestPartialToolCallWarning:

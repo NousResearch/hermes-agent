@@ -2892,3 +2892,129 @@ class TestServiceWorkingDirIsStable:
         # The old conditional dict form must NOT appear
         assert "SuccessfulExit" not in plist
         assert "<key>KeepAlive</key>\n    <dict>" not in plist
+
+
+class TestRefreshLaunchdPlistInsideService:
+    """Tests for the descendant-detection guard in refresh_launchd_plist_if_needed."""
+
+    def test_skips_bootout_when_running_inside_service(self, tmp_path, monkeypatch, capsys):
+        """When the CLI is a descendant of the gateway service, bootout/bootstrap
+        must be skipped to avoid killing the calling process group."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "<plist>new</plist>")
+        monkeypatch.setattr(gateway_cli, "_get_launchd_service_pid", lambda _label: 100)
+        monkeypatch.setattr(gateway_cli, "_is_descendant_of", lambda _pid: True)
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        assert plist_path.read_text(encoding="utf-8") == "<plist>new</plist>"
+        # No launchctl calls at all
+        assert calls == []
+        captured = capsys.readouterr()
+        assert "reload deferred" in captured.out
+
+    def test_performs_bootout_when_not_inside_service(self, tmp_path, monkeypatch):
+        """Normal CLI invocation (not inside the service) must bootout/bootstrap."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "<plist>new</plist>")
+        monkeypatch.setattr(gateway_cli, "_get_launchd_service_pid", lambda _label: 100)
+        monkeypatch.setattr(gateway_cli, "_is_descendant_of", lambda _pid: False)
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        service_calls = [c for c in calls if "bootout" in c or "bootstrap" in c]
+        assert len(service_calls) == 2
+        assert "bootout" in service_calls[0]
+        assert "bootstrap" in service_calls[1]
+
+    def test_performs_bootout_when_service_not_loaded(self, tmp_path, monkeypatch):
+        """When the service PID cannot be resolved (not loaded), proceed normally."""
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("<plist>old</plist>", encoding="utf-8")
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "<plist>new</plist>")
+        monkeypatch.setattr(gateway_cli, "_get_launchd_service_pid", lambda _label: None)
+
+        calls = []
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        result = gateway_cli.refresh_launchd_plist_if_needed()
+
+        assert result is True
+        service_calls = [c for c in calls if "bootout" in c or "bootstrap" in c]
+        assert len(service_calls) == 2
+
+
+class TestGetLaunchdServicePid:
+    """Tests for _get_launchd_service_pid."""
+
+    def test_returns_pid_from_launchctl_output(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(
+                returncode=0,
+                stdout='"PID" = 12345;\n"Label" = "ai.hermes.gateway";\n',
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        assert gateway_cli._get_launchd_service_pid("ai.hermes.gateway") == 12345
+
+    def test_returns_none_when_not_loaded(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            return SimpleNamespace(returncode=1, stdout="", stderr="Could not find job")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        assert gateway_cli._get_launchd_service_pid("ai.hermes.gateway") is None
+
+    def test_returns_none_on_exception(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            raise OSError("launchctl not found")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        assert gateway_cli._get_launchd_service_pid("ai.hermes.gateway") is None
+
+
+class TestIsDescendantOf:
+    """Tests for _is_descendant_of."""
+
+    def test_returns_true_for_own_pid(self):
+        assert gateway_cli._is_descendant_of(os.getpid()) is True
+
+    def test_returns_false_for_pid_one(self):
+        assert gateway_cli._is_descendant_of(1) is False
+
+    def test_returns_false_for_nonexistent_pid(self):
+        assert gateway_cli._is_descendant_of(999999) is False

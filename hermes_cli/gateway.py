@@ -3351,19 +3351,85 @@ def launchd_plist_is_current() -> bool:
     ) == _normalize_launchd_plist_for_comparison(expected)
 
 
+def _get_launchd_service_pid(label: str) -> int | None:
+    """Return the PID of a launchd service, or *None* if not loaded."""
+    try:
+        r = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if r.returncode != 0:
+            return None
+        for line in r.stdout.splitlines():
+            if line.strip().startswith('"PID"'):
+                parts = line.split("=")
+                if len(parts) == 2:
+                    pid_str = parts[1].strip().rstrip(";").strip()
+                    if pid_str.isdigit():
+                        return int(pid_str)
+    except Exception:
+        pass
+    return None
+
+
+def _is_descendant_of(target_pid: int) -> bool:
+    """True when the current process is a descendant of *target_pid*."""
+    import os
+
+    pid = os.getpid()
+    seen: set[int] = set()
+    while pid > 1 and pid not in seen:
+        if pid == target_pid:
+            return True
+        seen.add(pid)
+        try:
+            r = subprocess.run(
+                ["ps", "-o", "ppid=", "-p", str(pid)],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            pid = int(r.stdout.strip())
+        except (ValueError, subprocess.SubprocessError):
+            break
+    return False
+
+
 def refresh_launchd_plist_if_needed() -> bool:
     """Rewrite the installed launchd plist when the generated definition has changed.
 
     Unlike systemd, launchd picks up plist changes on the next ``launchctl kill``/
     ``launchctl kickstart`` cycle — no daemon-reload is needed. We still bootout/
     bootstrap to make launchd re-read the updated plist immediately.
+
+    **When called from inside the gateway service** (e.g. the agent runs
+    ``hermes update`` via its ``terminal`` tool), ``launchctl bootout`` kills the
+    entire process group — including this CLI process.  The follow-up ``bootstrap``
+    never executes and the service is left unloaded.  To avoid this, we detect the
+    descendant relationship and defer the reload to the next explicit
+    ``hermes gateway start``.
     """
     plist_path = get_launchd_plist_path()
     if not plist_path.exists() or launchd_plist_is_current():
         return False
 
     plist_path.write_text(generate_launchd_plist(), encoding="utf-8")
+
     label = get_launchd_label()
+    gw_pid = _get_launchd_service_pid(label)
+    if gw_pid is not None and _is_descendant_of(gw_pid):
+        # We are running inside the gateway service (e.g. agent-initiated
+        # self-update).  bootout would kill us before bootstrap runs.
+        # Write the plist and let the next ``hermes gateway start`` pick it up.
+        print(
+            "↻ Updated gateway launchd service definition "
+            "(reload deferred — running inside the service; "
+            "will apply on next `hermes gateway start`)"
+        )
+        return True
+
     # Bootout/bootstrap so launchd picks up the new definition
     subprocess.run(
         ["launchctl", "bootout", f"{_launchd_domain()}/{label}"],

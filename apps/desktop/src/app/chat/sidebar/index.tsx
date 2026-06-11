@@ -775,18 +775,6 @@ export function ChatSidebar({
 
   const displayAgentSessions = agentSessions
 
-  // Resolve selected ids to loaded rows for the action bar (pin ids need the
-  // lineage root; archive/restore need the owning profile).
-  const selectionSessionsById = useMemo(() => {
-    const map = new Map<string, SessionInfo>()
-
-    for (const session of [...archivedSessions, ...searchResults, ...cronSessions, ...messagingSessions, ...visibleSessions]) {
-      map.set(session.id, session)
-    }
-
-    return map
-  }, [archivedSessions, searchResults, cronSessions, messagingSessions, visibleSessions])
-
   // Drop selected ids whose rows left their section (archived elsewhere,
   // deleted on another device, paged out) so the bar's count stays honest.
   useEffect(() => {
@@ -824,7 +812,9 @@ export function ChatSidebar({
       }
     }
 
-    pruneSidebarSelection(section, new Set(rows.map(row => row.id)))
+    // Rows (not bare ids) so the prune can remap compression-rotated ids and
+    // ignore transient empty lists instead of resetting the selection.
+    pruneSidebarSelection(section, rows)
   }, [selection, agentSessions, archivedSessions, messagingGroups, pinnedSessions, searchResults])
 
   // Pagination is scope-aware. In "All profiles" mode it tracks the global
@@ -1052,7 +1042,10 @@ export function ChatSidebar({
             label={s.results}
             labelMeta={String(searchResults.length)}
             onArchiveSession={onArchiveSession}
+            onArchiveSessions={onArchiveSessions}
             onDeleteSession={onDeleteSession}
+            onDeleteSessions={onDeleteSessions}
+            onRestoreSessions={onRestoreSessions}
             onResumeSession={onResumeSession}
             onToggle={() => undefined}
             onTogglePin={pinSession}
@@ -1075,8 +1068,11 @@ export function ChatSidebar({
             emptyState={<SidebarPinnedEmptyState />}
             label={s.pinned}
             onArchiveSession={onArchiveSession}
+            onArchiveSessions={onArchiveSessions}
             onDeleteSession={onDeleteSession}
+            onDeleteSessions={onDeleteSessions}
             onReorder={handlePinnedDragEnd}
+            onRestoreSessions={onRestoreSessions}
             onResumeSession={onResumeSession}
             onToggle={() => setSidebarPinsOpen(!pinsOpen)}
             onTogglePin={unpinSession}
@@ -1181,9 +1177,12 @@ export function ChatSidebar({
             label={s.sessions}
             labelMeta={recentsMeta}
             onArchiveSession={onArchiveSession}
+            onArchiveSessions={onArchiveSessions}
             onDeleteSession={onDeleteSession}
+            onDeleteSessions={onDeleteSessions}
             onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
             onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
+            onRestoreSessions={onRestoreSessions}
             onResumeSession={onResumeSession}
             onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
             onTogglePin={pinSession}
@@ -1223,7 +1222,10 @@ export function ChatSidebar({
               }
               labelMeta={countLabel(group.loadedCount, group.total)}
               onArchiveSession={onArchiveSession}
+              onArchiveSessions={onArchiveSessions}
               onDeleteSession={onDeleteSession}
+              onDeleteSessions={onDeleteSessions}
+              onRestoreSessions={onRestoreSessions}
               onResumeSession={onResumeSession}
               onToggle={() =>
                 setMessagingOpen(prev => ({ ...prev, [group.sourceId]: prev[group.sourceId] === false }))
@@ -1303,8 +1305,11 @@ export function ChatSidebar({
                 : String(Math.max(archivedTotal, archivedSessions.length))
             }
             onArchiveSession={onArchiveSession}
+            onArchiveSessions={onArchiveSessions}
             onDeleteSession={onDeleteSession}
+            onDeleteSessions={onDeleteSessions}
             onRestoreSession={onRestoreSession}
+            onRestoreSessions={onRestoreSessions}
             onResumeSession={onResumeSession}
             onToggle={() => {
               const next = !archivedOpen
@@ -1325,15 +1330,6 @@ export function ChatSidebar({
         )}
 
         {contentVisible && !showSessionSections && <div className="min-h-0 flex-1" />}
-
-        {contentVisible && selection.ids.length > 0 && (
-          <SelectionActionBar
-            onArchiveSessions={ids => onArchiveSessions?.(ids)}
-            onDeleteSessions={ids => onDeleteSessions?.(ids)}
-            onRestoreSessions={ids => onRestoreSessions?.(ids)}
-            sessionsById={selectionSessionsById}
-          />
-        )}
 
         {contentVisible && (
           <div className="shrink-0 px-0.5 pb-1 pt-0.5">
@@ -1499,6 +1495,10 @@ interface SidebarSessionsSectionProps {
   /** Rows live in the Archived section (restore semantics, no pinning). */
   archivedRows?: boolean
   onRestoreSession?: (sessionId: string) => void
+  /** Bulk verbs for this section's selection-mode header. */
+  onArchiveSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onRestoreSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onDeleteSessions?: (sessionIds: string[]) => Promise<unknown> | void
   rootClassName?: string
   contentClassName?: string
   emptyState: React.ReactNode
@@ -1533,6 +1533,9 @@ function SidebarSessionsSection({
   sectionKey,
   archivedRows = false,
   onRestoreSession,
+  onArchiveSessions,
+  onRestoreSessions,
+  onDeleteSessions,
   rootClassName,
   contentClassName,
   emptyState,
@@ -1575,12 +1578,14 @@ function SidebarSessionsSection({
       }
 
       if (mode === 'range') {
-        rangeSelectSessions(sectionKey, sessionId, orderedIds)
+        // Cold shift-clicks anchor from the OPEN session's row so the range
+        // includes where the user started (Finder semantics).
+        rangeSelectSessions(sectionKey, sessionId, orderedIds, activeSessionId)
       } else {
         toggleSessionSelected(sectionKey, sessionId)
       }
     },
-    [sectionKey, orderedIds]
+    [sectionKey, orderedIds, activeSessionId]
   )
 
   const renderRow = (session: SessionInfo) => {
@@ -1713,14 +1718,26 @@ function SidebarSessionsSection({
       )}
       {...dropHandlers}
     >
-      <SidebarSectionHeader
-        action={headerAction}
-        icon={labelIcon}
-        label={label}
-        meta={labelMeta}
-        onToggle={onToggle}
-        open={open}
-      />
+      {selectionActive ? (
+        // Selection mode: the section header becomes the bulk action bar —
+        // count + verbs sit directly above the checked rows instead of a
+        // detached bar at the bottom of the sidebar nobody finds.
+        <SelectionActionBar
+          onArchiveSessions={onArchiveSessions}
+          onDeleteSessions={onDeleteSessions}
+          onRestoreSessions={onRestoreSessions}
+          sessions={sessions}
+        />
+      ) : (
+        <SidebarSectionHeader
+          action={headerAction}
+          icon={labelIcon}
+          label={label}
+          meta={labelMeta}
+          onToggle={onToggle}
+          open={open}
+        />
+      )}
       {open && (
         <SidebarGroupContent className={resolvedContentClassName}>
           {body}

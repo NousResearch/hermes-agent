@@ -72,25 +72,84 @@ describe('rangeSelectSessions', () => {
 
     expect($sidebarSelection.get().ids).toEqual(['a', 'b', 'c', 'd', 'e'])
   })
+
+  it('seeds a cold range from the active row so the starting point stays selected', () => {
+    // No selection yet; the open session ("b") is the implicit anchor.
+    rangeSelectSessions('sessions', 'd', ORDER, 'b')
+
+    expect($sidebarSelection.get().ids).toEqual(['b', 'c', 'd'])
+  })
+
+  it('ignores the seed when it equals the target or is not in the list', () => {
+    rangeSelectSessions('sessions', 'c', ORDER, 'c')
+    expect($sidebarSelection.get()).toEqual({ ids: ['c'], section: 'sessions' })
+
+    clearSidebarSelection()
+    rangeSelectSessions('sessions', 'c', ORDER, 'not-in-list')
+    expect($sidebarSelection.get()).toEqual({ ids: ['c'], section: 'sessions' })
+  })
+
+  it('prefers the in-section anchor over the seed once a selection exists', () => {
+    toggleSessionSelected('sessions', 'd')
+    rangeSelectSessions('sessions', 'e', ORDER, 'a')
+
+    expect($sidebarSelection.get().ids).toEqual(['d', 'e'])
+  })
 })
 
 describe('pruneSidebarSelection', () => {
+  const rows = (...ids: string[]) => ids.map(id => ({ id }))
+
   it('drops ids that left the section and clears when none remain', () => {
     toggleSessionSelected('sessions', 'a')
     toggleSessionSelected('sessions', 'b')
 
-    pruneSidebarSelection('sessions', new Set(['b', 'c']))
+    pruneSidebarSelection('sessions', rows('b', 'c'))
     expect($sidebarSelection.get()).toEqual({ ids: ['b'], section: 'sessions' })
 
-    pruneSidebarSelection('sessions', new Set(['c']))
+    pruneSidebarSelection('sessions', rows('c'))
     expect($sidebarSelection.get()).toEqual({ ids: [], section: null })
   })
 
   it('ignores prunes aimed at a different section', () => {
     toggleSessionSelected('archived', 'x')
-    pruneSidebarSelection('sessions', new Set())
+    pruneSidebarSelection('sessions', rows('y'))
 
     expect($sidebarSelection.get()).toEqual({ ids: ['x'], section: 'archived' })
+  })
+
+  it('keeps the selection intact across a transient EMPTY row list', () => {
+    // A background refresh can hand the section zero rows for a beat; nuking
+    // the selection then is the deselects-everything-but-the-last bug.
+    toggleSessionSelected('sessions', 'a')
+    toggleSessionSelected('sessions', 'b')
+
+    pruneSidebarSelection('sessions', [])
+
+    expect($sidebarSelection.get().ids).toEqual(['a', 'b'])
+  })
+
+  it('remaps a compression-rotated id to the new live tip instead of dropping it', () => {
+    toggleSessionSelected('sessions', 'a')
+    toggleSessionSelected('sessions', 'b')
+
+    // Auto-compression rotated b → b-tip (lineage root b) mid-selection.
+    pruneSidebarSelection('sessions', [{ id: 'a' }, { id: 'b-tip', _lineage_root_id: 'b' }, { id: 'c' }])
+
+    expect($sidebarSelection.get().ids).toEqual(['a', 'b-tip'])
+
+    // The remapped id stays a usable range anchor.
+    rangeSelectSessions('sessions', 'c', ['a', 'b-tip', 'c'])
+    expect($sidebarSelection.get().ids).toEqual(['a', 'b-tip', 'c'])
+  })
+
+  it('collapses duplicates when a rotation lands on an already-selected tip', () => {
+    toggleSessionSelected('sessions', 'b')
+    toggleSessionSelected('sessions', 'b-tip')
+
+    pruneSidebarSelection('sessions', [{ id: 'b-tip', _lineage_root_id: 'b' }])
+
+    expect($sidebarSelection.get().ids).toEqual(['b-tip'])
   })
 })
 

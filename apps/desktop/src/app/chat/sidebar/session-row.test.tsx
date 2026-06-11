@@ -70,13 +70,35 @@ describe('SidebarSessionRow gestures', () => {
     expect(handlers.onToggleSelect).not.toHaveBeenCalled()
   })
 
-  it('shift-click on a selectable row STARTS a selection — it must not pin', () => {
+  it('shift-click on a selectable row requests a RANGE — it must not pin', () => {
     const { handlers, rowButton } = renderRow()
 
     fireEvent.click(rowButton, { shiftKey: true })
 
-    expect(handlers.onToggleSelect).toHaveBeenCalledWith('single')
+    // A cold shift-click is still a range request: the section seeds the
+    // anchor from the open session so the starting row stays selected.
+    expect(handlers.onToggleSelect).toHaveBeenCalledWith('range')
     expect(handlers.onPin).not.toHaveBeenCalled()
+    expect(handlers.onResume).not.toHaveBeenCalled()
+  })
+
+  it('⌘-click toggles a row in and out — non-contiguous selection, never a new window', () => {
+    const { handlers, rowButton } = renderRow()
+
+    fireEvent.click(rowButton, { metaKey: true })
+    expect(handlers.onToggleSelect).toHaveBeenLastCalledWith('single')
+
+    fireEvent.click(rowButton, { metaKey: true })
+    expect(handlers.onToggleSelect).toHaveBeenCalledTimes(2)
+    expect(handlers.onResume).not.toHaveBeenCalled()
+  })
+
+  it('ctrl-click behaves like ⌘-click', () => {
+    const { handlers, rowButton } = renderRow()
+
+    fireEvent.click(rowButton, { ctrlKey: true })
+
+    expect(handlers.onToggleSelect).toHaveBeenCalledWith('single')
     expect(handlers.onResume).not.toHaveBeenCalled()
   })
 
@@ -89,7 +111,7 @@ describe('SidebarSessionRow gestures', () => {
     expect(handlers.onResume).not.toHaveBeenCalled()
   })
 
-  it('with a selection active, plain click toggles and shift-click range-extends', () => {
+  it('with a selection active, plain click toggles, shift extends, ⌘ toggles', () => {
     const { handlers, rowButton } = renderRow({ selectionActive: true })
 
     fireEvent.click(rowButton)
@@ -97,6 +119,9 @@ describe('SidebarSessionRow gestures', () => {
 
     fireEvent.click(rowButton, { shiftKey: true })
     expect(handlers.onToggleSelect).toHaveBeenLastCalledWith('range')
+
+    fireEvent.click(rowButton, { metaKey: true })
+    expect(handlers.onToggleSelect).toHaveBeenLastCalledWith('single')
 
     expect(handlers.onResume).not.toHaveBeenCalled()
     expect(handlers.onPin).not.toHaveBeenCalled()

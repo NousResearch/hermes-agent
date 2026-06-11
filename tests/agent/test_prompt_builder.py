@@ -276,8 +276,14 @@ class TestBuildSkillsSystemPrompt:
         # "search" should appear only once per category
         assert result.count("- search") == 1
 
-    def test_hidden_categories_pruned_with_note(self, monkeypatch, tmp_path):
-        """Posture-driven pruning drops whole categories and discloses it."""
+    def test_compact_categories_demoted_to_names_only(self, monkeypatch, tmp_path):
+        """Posture-driven demotion keeps every skill NAME visible.
+
+        Demoted categories lose their descriptions, never their entries —
+        full pruning caused silent capability loss in a real workflow
+        (agent-created skills are the model's project memory, and models
+        don't rediscover them via skills_list once the index goes quiet).
+        """
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         for cat, name in (("social-media", "tweet-stuff"), ("github", "pr-review")):
             d = tmp_path / "skills" / cat / name
@@ -287,14 +293,18 @@ class TestBuildSkillsSystemPrompt:
             )
 
         result = build_skills_system_prompt(
-            hidden_categories=frozenset({"social-media"})
+            compact_categories=frozenset({"social-media"})
         )
-        assert "pr-review" in result
-        assert "tweet-stuff" not in result
-        # Disclosure note so the model knows the full catalog exists.
-        assert "skills_list" in result
+        # Coding-adjacent category keeps its full entry.
+        assert "pr-review" in result and "Does pr-review things" in result
+        # Demoted category: name stays visible, description is dropped.
+        assert "tweet-stuff" in result
+        assert "Does tweet-stuff things" not in result
+        assert "social-media [names only]" in result
+        # Disclosure note explains the demotion and how to load.
+        assert "skill_view" in result
 
-    def test_hidden_categories_prune_nested_and_miss_cache_separately(
+    def test_compact_categories_demote_nested_and_miss_cache_separately(
         self, monkeypatch, tmp_path
     ):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -303,14 +313,16 @@ class TestBuildSkillsSystemPrompt:
         (d / "SKILL.md").write_text(
             "---\nname: thread-writer\ndescription: Write threads\n---\n"
         )
-        # Nested category ("social-media/twitter") pruned via its parent.
-        pruned = build_skills_system_prompt(
-            hidden_categories=frozenset({"social-media"})
+        # Nested category ("social-media/twitter") demoted via its parent:
+        # name visible, description gone.
+        compact = build_skills_system_prompt(
+            compact_categories=frozenset({"social-media"})
         )
-        assert "thread-writer" not in pruned
-        # Unfiltered call must not be served from the filtered cache entry.
+        assert "thread-writer" in compact
+        assert "Write threads" not in compact
+        # Unfiltered call must not be served from the compacted cache entry.
         full = build_skills_system_prompt()
-        assert "thread-writer" in full
+        assert "Write threads" in full
 
     def test_excludes_incompatible_platform_skills(self, monkeypatch, tmp_path):
         """Skills with platforms: [macos] should not appear on Linux."""

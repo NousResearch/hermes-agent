@@ -685,14 +685,29 @@ class DiscordAdapter(BasePlatformAdapter):
                 }
 
             # Set up intents.
-            # Message Content is required for normal text replies.
+            # Message Content is required for normal text replies, but it is a
+            # privileged intent in Discord's Developer Portal. Requesting it when
+            # it has not been enabled prevents the bot from coming online at all.
+            # Allow a local fallback so slash-command-only operation can still
+            # connect while the portal setting is fixed.
+            message_content_env = os.getenv("DISCORD_MESSAGE_CONTENT_INTENT", "true").strip().lower()
+            request_message_content = message_content_env not in {"0", "false", "no", "off"}
             # Server Members is only needed when the allowlist contains usernames
             # that must be resolved to numeric IDs. Requesting privileged intents
             # that aren't enabled in the Discord Developer Portal can prevent the
             # bot from coming online at all, so avoid requesting members intent
             # unless it is actually necessary.
             intents = Intents.default()
-            intents.message_content = True
+            intents.message_content = request_message_content
+            if not request_message_content:
+                logger.warning(
+                    "[%s] DISCORD_MESSAGE_CONTENT_INTENT=false: Discord will connect "
+                    "without Message Content intent; normal text-message replies may "
+                    "not work, but slash commands such as /ask can still be used. "
+                    "Enable Message Content Intent in the Discord Developer Portal "
+                    "and remove this env override for full functionality.",
+                    self.name,
+                )
             intents.dm_messages = True
             intents.guild_messages = True
             intents.members = (
@@ -782,14 +797,31 @@ class DiscordAdapter(BasePlatformAdapter):
                 # permitted by DISCORD_ALLOW_BOTS are not rejected for
                 # not being in DISCORD_ALLOWED_USERS (fixes #4466).
                 if getattr(message.author, "bot", False):
-                    allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
-                    if allow_bots == "none":
-                        return
-                    elif allow_bots == "mentions":
-                        if not self._client.user or self._client.user not in message.mentions:
+                    # Bot authors are allowed if explicitly listed in
+                    # DISCORD_ALLOWED_USERS. This matters for multi-agent
+                    # Discord workflows where another Hermes bot (e.g. a
+                    # handoff/intake agent) @mentions this bot.  The older
+                    # logic checked DISCORD_ALLOW_BOTS before the allowlist,
+                    # so an explicitly trusted bot was silently dropped when
+                    # DISCORD_ALLOW_BOTS kept its safe default of "none".
+                    author_id = str(getattr(message.author, "id", ""))
+                    explicitly_allowed_bot = bool(author_id and author_id in self._allowed_user_ids)
+                    if not explicitly_allowed_bot:
+                        allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+                        if allow_bots == "none":
+                            logger.debug(
+                                "[%s] Ignoring bot message from non-allowlisted bot %s",
+                                self.name,
+                                author_id or getattr(message.author, "name", "unknown"),
+                            )
                             return
-                    # "all" falls through; bot is permitted — skip the
-                    # human-user allowlist below (bots aren't in it).
+                        elif allow_bots == "mentions":
+                            client_user = self._client.user if self._client else None
+                            if not client_user or client_user not in message.mentions:
+                                return
+                    # "all" falls through; explicitly allowlisted bots also
+                    # fall through. Skip the human-user role gate below because
+                    # bots do not have the same member/role shape everywhere.
                 else:
                     # Non-bot: enforce the configured user/role allowlists.
                     # Pass guild + is_dm so role checks are scoped to the

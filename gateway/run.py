@@ -27,6 +27,7 @@ except ModuleNotFoundError:
 import asyncio
 import concurrent.futures
 import dataclasses
+import hashlib
 import inspect
 import json
 import logging
@@ -12417,6 +12418,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 workspace = ""
         if workspace:
             lines.append(f"**Workspace:** `{workspace}`")
+        matrix_source = getattr(session_entry, "origin", None) or source
+        if getattr(matrix_source, "platform", None) == Platform.MATRIX:
+            adapter = self.adapters.get(Platform.MATRIX)
+            matrix_scope = getattr(adapter, "_matrix_session_scope", "room") or "room"
+            room_label = getattr(matrix_source, "chat_name", None) or getattr(matrix_source, "chat_id", "")
+            room_id = getattr(matrix_source, "chat_id", "")
+            key_hash = hashlib.sha256(session_key.encode("utf-8")).hexdigest()[:16]
+            lines.append(f"**Matrix scope:** {room_label} (`{room_id}`)")
+            lines.append(f"`session_scope: {matrix_scope}` · `session_key: sha256:{key_hash}`")
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
         lines.extend([

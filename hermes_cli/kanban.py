@@ -440,6 +440,41 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="With --state-type: keep runs whose column equals this value",
     )
 
+    # --- board (visual table view) ---
+    p_board = sub.add_parser(
+        "board",
+        help="Render the kanban board as a visual table",
+        description="Show all tasks grouped by status as columns in a Rich table.",
+    )
+    p_board.add_argument(
+        "--limit", type=int, default=5,
+        help="Max tasks per column (default 5; 0 = unlimited)",
+    )
+    p_board.add_argument(
+        "--show-all", "--all", action="store_true", dest="show_all",
+        help="Include the done and archived columns",
+    )
+    p_board.add_argument(
+        "--mine", action="store_true",
+        help="Only tasks assigned to $HERMES_PROFILE",
+    )
+    p_board.add_argument(
+        "--assignee", default=None,
+        help="Filter by assignee profile name",
+    )
+    p_board.add_argument(
+        "--json", action="store_true",
+        help="Output a flat JSON task list instead of the table",
+    )
+    p_board.add_argument(
+        "--tail", action="store_true",
+        help="Continuously refresh the board view (Ctrl+C to stop)",
+    )
+    p_board.add_argument(
+        "--refresh", type=int, default=5,
+        help="Seconds between refreshes in --tail mode (default 5)",
+    )
+
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
@@ -963,6 +998,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "list":     _cmd_list,
             "ls":       _cmd_list,
             "show":     _cmd_show,
+            "board":    _cmd_board,
             "assign":   _cmd_assign,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
@@ -1420,6 +1456,84 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
         print("Workers: " + ", ".join(created.worker_ids))
         print(f"Verifier: {created.verifier_id}")
         print(f"Synthesizer: {created.synthesizer_id}")
+    return 0
+
+
+def _cmd_board(args: argparse.Namespace) -> int:
+    """Handle ``hermes kanban board`` — render the board as a Rich table.
+
+    Board scope is already applied by ``kanban_command`` (the global
+    ``--board`` flag), so connections here open against the ambient board.
+    """
+    import time
+
+    from rich.console import Console
+
+    from hermes_cli.kanban_board_render import render_board
+
+    board_slug = kb.get_current_board()
+
+    assignee = args.assignee
+    if args.mine and not assignee:
+        assignee = _profile_author()
+
+    try:
+        other_count = max(0, len(kb.list_boards(include_archived=False)) - 1)
+    except Exception:
+        other_count = 0
+
+    limit = args.limit if (args.limit and args.limit > 0) else None
+
+    def _fetch_tasks() -> "list[kb.Task]":
+        with kb.connect_closing() as conn:
+            kb.recompute_ready(conn)
+            return kb.list_tasks(
+                conn, assignee=assignee, include_archived=args.show_all
+            )
+
+    if args.json:
+        tasks = _fetch_tasks()
+        print(json.dumps(
+            [
+                {
+                    "id": t.id,
+                    "title": t.title,
+                    "status": t.status,
+                    "assignee": t.assignee,
+                    "priority": t.priority,
+                }
+                for t in tasks
+            ],
+            indent=2,
+            ensure_ascii=False,
+        ))
+        return 0
+
+    console = Console()
+
+    def _render_once() -> None:
+        tasks = _fetch_tasks()
+        table = render_board(
+            tasks,
+            board_slug=board_slug,
+            other_board_count=other_count,
+            show_all=args.show_all,
+            limit=limit,
+        )
+        if args.tail:
+            console.clear()
+        console.print(table)
+
+    if args.tail:
+        try:
+            while True:
+                _render_once()
+                time.sleep(args.refresh)
+        except KeyboardInterrupt:
+            print()  # tidy newline after ^C
+        return 0
+
+    _render_once()
     return 0
 
 

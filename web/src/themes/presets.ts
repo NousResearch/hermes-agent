@@ -185,6 +185,100 @@ export const roseTheme: DashboardTheme = {
 };
 
 /**
+ * Nous Blue — the inverted "light mode" Hermes look, ported from the
+ * LENS_5I overlay preset in `@nous-research/ui`.
+ *
+ * Unlike the other built-ins (which paint dark color directly on the
+ * canvas), this theme relies on `<Backdrop />`'s foreground inversion
+ * layer: an opaque white sheet at z-200 with `mix-blend-mode: difference`
+ * that flips the entire stack below it. Authoring colors stay dark
+ * (`#170d02` brown background, `#FFAC02` orange midground), and the
+ * inversion converts them to their visual complements at paint time —
+ * the orange midground reads as #0053FD Nous-blue on screen, against a
+ * cream `#E8F2FD` canvas.
+ *
+ * Note on bg blend mode: the DS Lens uses `multiply` for LENS_5I because
+ * nousnet-web's <body> is white; hermes-agent's App root is `bg-black`,
+ * so we leave the bg layer's blend mode at the `difference` default —
+ * `difference(#170d02, #000)` passes the bg through unchanged, and the
+ * subsequent FG-difference layer then inverts it to cream. Using
+ * `multiply` here would collapse the bg to pure black against the
+ * `bg-black` root and produce a plain-white canvas instead of the
+ * intended cream-blue.
+ *
+ * Source of truth for the palette: `design-language/src/ui/components/
+ * overlays/lens.ts` (LENS_5I export).
+ */
+export const nousBlueTheme: DashboardTheme = {
+  name: "nous-blue",
+  label: "Nous Blue",
+  description: "Light mode — vivid Nous-blue accents on cream canvas",
+  palette: {
+    background: { hex: "#170d02", alpha: 1 },
+    midground: { hex: "#FFAC02", alpha: 1 },
+    foreground: { hex: "#FFFFFF", alpha: 1 },
+    // Same warm-amber as nousnet-web's overlay glow; after the FG
+    // inversion it reads as a cool ultraviolet vignette in the top-left.
+    warmGlow: "rgba(255, 172, 2, 0.18)",
+    // Noise sits above the FG inversion and is NOT flipped, so a softer
+    // multiplier keeps it from speckling over the bright post-inversion
+    // canvas.
+    noiseOpacity: 0.4,
+  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
+  // Inverted page: the embedded terminal is below the FG layer too, so
+  // a `#000000` source paints as visual white — i.e. a proper light-mode
+  // terminal pane. xterm picks lighter palette colors against the "black"
+  // canvas, which then read as dark text on screen post-inversion.
+  terminalBackground: "#000000",
+  componentStyles: {
+    backdrop: {
+      // Lower than LENS_5I.Lens.fillerOpacity (0.06). The filler texture
+      // gets amplified post-inversion: small variations against the deep
+      // `#170d02` source bg are barely visible, but those same variations
+      // against the bright `#E8F2FD` post-inversion canvas read as a
+      // heavy cloud/marble pattern — especially on near-empty pages
+      // (loading spinners, blank states). 0.02 keeps subtle grain
+      // without overwhelming the canvas.
+      fillerOpacity: "0.02",
+    },
+  },
+  // Pre-invert absolute-hex tokens so they read as their familiar colors
+  // through the FG difference layer. e.g. source #04D3C9 (cyan) is what
+  // gets painted, and `255 - channel` flips it to #FB2C36 (red) on screen.
+  // Without these, the default destructive/success/warning tokens would
+  // appear as their unintuitive complements.
+  colorOverrides: {
+    destructive: "#04d3c9",
+    destructiveForeground: "#000000",
+    success: "#b5217f",
+    warning: "#0042c7",
+  },
+  // Pre-inverted data-series accents for the Analytics/Models token
+  // charts. The defaults (#ffe6cb cream + #34d399 emerald) would render
+  // through the FG difference layer as dark navy + hot-coral on the
+  // bright Nous-blue canvas — the coral is the "red" users see for
+  // Output values without these overrides. Source → on-screen:
+  //   Input:  #ffe6cb → #001934 (dark navy)        ← unchanged
+  //   Output: #ffac02 → #0053fd (vivid Nous-blue)  ← brand accent
+  // Input keeps the cream source so it stays a neutral, low-contrast
+  // dark-blue against the cream canvas; output paints as the brand
+  // Nous-blue so the "primary" series in token-flow charts reads as
+  // the highlight color, matching the rest of the inverted UI chrome.
+  seriesColors: {
+    inputTokenAccent: "#ffe6cb",
+    outputTokenAccent: "#ffac02",
+  },
+  // Explicit picker swatch — the raw palette hex (`#170d02`, `#FFAC02`,
+  // amber rgba) doesn't reflect what users see after the FG inversion,
+  // so we paint the post-inversion visual triplet directly:
+  //   white → vivid Nous-blue → cream/light-blue
+  // matching the actual on-screen rendering of the theme.
+  swatchColors: ["#FFFFFF", "#0053FD", "#E8F2FD"],
+};
+
+/**
  * Same look as ``defaultTheme`` but with a larger root font size, looser
  * line-height, and ``spacious`` density so every rem-based size in the
  * dashboard scales up. For users who find the default 15px UI too dense.
@@ -208,6 +302,7 @@ export const defaultLargeTheme: DashboardTheme = {
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   "default-large": defaultLargeTheme,
+  "nous-blue": nousBlueTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

@@ -44,6 +44,7 @@ export type GatewayEventPayload = {
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
+  yolo?: boolean
   running?: boolean
   cwd?: string
   branch?: string
@@ -54,6 +55,15 @@ export type GatewayEventPayload = {
   request_id?: string
   question?: string
   choices?: string[] | null
+  // approval.request (dangerous command / execute_code) — session-keyed
+  command?: string
+  description?: string
+  // secret.request (skill credential capture)
+  env_var?: string
+  prompt?: string
+  // terminal.read.request (GUI agent reading the in-app terminal pane)
+  start?: number
+  count?: number
 }
 
 export function textPart(text: string): ChatMessagePart {

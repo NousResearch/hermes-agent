@@ -181,6 +181,8 @@ def _strip_mdv2(text: str) -> str:
     """
     # Remove escape backslashes before special characters
     cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
+    # Remove standard markdown bold (**text** → text) BEFORE MarkdownV2 bold
+    cleaned = re.sub(r'\*\*([^*]+)\*\*', r'\1', cleaned)
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
     # Remove MarkdownV2 italic markers that format_message converted from *italic*
@@ -344,6 +346,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
     # Threshold for detecting Telegram client-side message splits.
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
@@ -1142,7 +1145,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # gateway process is alive and reports "connected" but
                 # no messages are received or sent.
                 if self._polling_conflict_count < MAX_CONFLICT_RETRIES:
-                    loop = asyncio.get_event_loop()
+                    # We are inside a running coroutine, so the running loop is
+                    # guaranteed to exist. asyncio.get_event_loop() is deprecated
+                    # and raises "RuntimeError: There is no current event loop in
+                    # thread 'MainThread'" on Python 3.10+ when invoked from a
+                    # context without an attached loop (which can happen when PTB
+                    # dispatches this error callback). Use get_running_loop().
+                    loop = asyncio.get_running_loop()
                     self._polling_error_task = loop.create_task(
                         self._handle_polling_conflict(retry_err)
                     )
@@ -2201,11 +2210,17 @@ class TelegramAdapter(BasePlatformAdapter):
                 # "Message is not modified" is a no-op, not an error
                 if "not modified" in str(fmt_err).lower():
                     return SendResult(success=True, message_id=message_id)
-                # Fallback: retry without markdown formatting
+                # Fallback: strip MarkdownV2 escapes and retry as clean plain text
+                logger.warning(
+                    "[%s] MarkdownV2 edit failed, falling back to plain text: %s",
+                    self.name,
+                    fmt_err,
+                )
+                _plain = _strip_mdv2(content) if content else content
                 await self._bot.edit_message_text(
                     chat_id=int(chat_id),
                     message_id=int(message_id),
-                    text=content,
+                    text=_plain,
                 )
             return SendResult(success=True, message_id=message_id)
         except Exception as e:
@@ -2333,10 +2348,15 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception as fmt_err:
                     if "not modified" not in str(fmt_err).lower():
+                        logger.warning(
+                            "[%s] Overflow split: MarkdownV2 first-chunk edit "
+                            "failed, falling back to plain text: %s",
+                            self.name, fmt_err,
+                        )
                         await self._bot.edit_message_text(
                             chat_id=int(chat_id),
                             message_id=int(message_id),
-                            text=first_chunk,
+                            text=_strip_mdv2(first_chunk),
                         )
             else:
                 await self._bot.edit_message_text(
@@ -2364,6 +2384,7 @@ class TelegramAdapter(BasePlatformAdapter):
         # are already correctly sized).  Best-effort MarkdownV2 with plain
         # fallback, mirroring send().
         continuation_ids: list[str] = []
+        delivered_chunks = [first_chunk]
         prev_id = message_id
         thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
@@ -2377,7 +2398,14 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             for use_markdown in (True, False) if finalize else (False,):
                 try:
-                    text = self.format_message(chunk) if use_markdown else chunk
+                    if use_markdown:
+                        text = self.format_message(chunk)
+                    else:
+                        # Plain attempt: on finalize the MarkdownV2 attempt
+                        # failed, so degrade to clean stripped text, never
+                        # the raw chunk (raw ** / ``` markers would render
+                        # literally); streaming previews stay raw.
+                        text = _strip_mdv2(chunk) if finalize else chunk
                     sent_msg = await self._bot.send_message(
                         chat_id=int(chat_id),
                         text=text,
@@ -2403,7 +2431,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         try:
                             sent_msg = await self._bot.send_message(
                                 chat_id=int(chat_id),
-                                text=chunk,
+                                text=_strip_mdv2(chunk) if finalize else chunk,
                                 **retry_thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
@@ -2427,17 +2455,37 @@ class TelegramAdapter(BasePlatformAdapter):
                     break
             if sent_msg is None:
                 # Continuation failed — the user has chunk 1 + however many
-                # continuations succeeded.  Report success with what we got
-                # so the stream consumer knows the edit landed; the
-                # remaining tail is lost on this attempt and the next
-                # streaming tick may retry.
+                # continuations succeeded, but NOT the full response.  Do not
+                # report success: the stream consumer treats a successful edit
+                # as final delivery on got_done, which would suppress fallback
+                # delivery and leave the Telegram topic clipped after the last
+                # delivered chunk.
                 logger.warning(
                     "[%s] Overflow split: stopped at %d/%d chunks delivered",
                     self.name, 1 + len(continuation_ids), len(chunks),
                 )
-                break
+                delivered_prefix = "".join(
+                    re.sub(r" \(\d+/\d+\)$", "", delivered)
+                    for delivered in delivered_chunks
+                )
+                return SendResult(
+                    success=False,
+                    message_id=prev_id,
+                    error="overflow_continuation_failed",
+                    retryable=True,
+                    raw_response={
+                        "partial_overflow": True,
+                        "delivered_chunks": 1 + len(continuation_ids),
+                        "total_chunks": len(chunks),
+                        "last_message_id": prev_id,
+                        "delivered_prefix": delivered_prefix,
+                        "continuation_message_ids": tuple(continuation_ids),
+                    },
+                    continuation_message_ids=tuple(continuation_ids),
+                )
             new_id = str(getattr(sent_msg, "message_id", "")) or prev_id
             continuation_ids.append(new_id)
+            delivered_chunks.append(chunk)
             prev_id = new_id
 
         last_id = continuation_ids[-1] if continuation_ids else message_id
@@ -2521,31 +2569,55 @@ class TelegramAdapter(BasePlatformAdapter):
         text = content if len(content) <= self.MAX_MESSAGE_LENGTH else \
             self.truncate_message(content, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len)[0]
 
-        kwargs: Dict[str, Any] = {
-            "chat_id": int(chat_id),
-            "draft_id": int(draft_id),
-            "text": text,
-        }
         thread_id = self._metadata_thread_id(metadata)
-        if thread_id is not None:
-            kwargs["message_thread_id"] = thread_id
 
-        try:
-            ok = await self._bot.send_message_draft(**kwargs)
-            if ok:
-                # Drafts have no message_id; we report success without one
-                # so the caller knows the animation frame landed.
-                return SendResult(success=True, message_id=None)
-            return SendResult(success=False, error="draft_rejected")
-        except Exception as e:
-            # Most likely: BadRequest because this bot/chat doesn't allow
-            # drafts, or a transient server hiccup.  The caller treats any
-            # failure as "fall back to edit-based for this response".
-            logger.debug(
-                "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
-                self.name, chat_id, draft_id, e,
-            )
-            return SendResult(success=False, error=str(e))
+        # Apply the same MarkdownV2 conversion the regular ``send`` path uses
+        # so the animated draft preview renders with identical formatting to
+        # the final message.  Without this, the draft streams as raw text and
+        # the final ``sendMessage`` (which DOES use MarkdownV2) snaps into
+        # formatted output, producing a jarring visual shift at the end of the
+        # response.  We try MarkdownV2 first and fall back to plain text if a
+        # malformed escape would be rejected — mirroring the (True, False)
+        # retry the streaming send loop uses — so a single bad token never
+        # kills draft streaming for the whole response.
+        for use_markdown in (True, False):
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "draft_id": int(draft_id),
+                "text": self.format_message(text) if use_markdown else text,
+            }
+            if use_markdown:
+                kwargs["parse_mode"] = ParseMode.MARKDOWN_V2
+            if thread_id is not None:
+                kwargs["message_thread_id"] = thread_id
+
+            try:
+                ok = await self._bot.send_message_draft(**kwargs)
+                if ok:
+                    # Drafts have no message_id; we report success without one
+                    # so the caller knows the animation frame landed.
+                    return SendResult(success=True, message_id=None)
+                return SendResult(success=False, error="draft_rejected")
+            except Exception as e:
+                # A MarkdownV2 parse failure (BadRequest "can't parse entities")
+                # is recoverable: retry once as plain text.  Any other failure
+                # (chat doesn't allow drafts, transient hiccup) — or a failure
+                # on the plain-text attempt — propagates to the caller, which
+                # treats it as "fall back to edit-based for this response".
+                if use_markdown and self._is_bad_request_error(e):
+                    logger.debug(
+                        "[%s] sendMessageDraft MarkdownV2 rejected, retrying "
+                        "as plain text (chat=%s draft_id=%s): %s",
+                        self.name, chat_id, draft_id, e,
+                    )
+                    continue
+                logger.debug(
+                    "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
+                    self.name, chat_id, draft_id, e,
+                )
+                return SendResult(success=False, error=str(e))
+
+        return SendResult(success=False, error="draft_rejected")
 
     async def _send_message_with_thread_fallback(self, **kwargs):
         """Send a Telegram message, retrying once without message_thread_id
@@ -2991,7 +3063,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_model_picker_callback(
         self, query, data: str, chat_id: str
     ) -> None:
-        """Handle model picker inline keyboard callbacks (mp:/mm:/mb:/mx:/mg:)."""
+        """Handle model picker inline keyboard callbacks (mp:/mm:/mc:/mb:/mx:/mg:)."""
         state = self._model_picker_state.get(chat_id)
         if not state:
             await query.answer(text="Picker expired — use /model again.")
@@ -3076,6 +3148,55 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             await query.answer()
 
+        elif data.startswith("mc:"):
+            # --- Expensive model confirmed: perform the switch ---
+            try:
+                idx = int(data[3:])
+            except ValueError:
+                await query.answer(text="Invalid selection.")
+                return
+
+            model_list = state.get("model_list", [])
+            if idx < 0 or idx >= len(model_list):
+                await query.answer(text="Invalid model index.")
+                return
+
+            model_id = model_list[idx]
+            provider_slug = state.get("selected_provider", "")
+            callback = state.get("on_model_selected")
+
+            if not callback:
+                await query.answer(text="Picker expired.")
+                return
+
+            switch_failed = False
+            try:
+                result_text = await callback(chat_id, model_id, provider_slug)
+            except Exception as exc:
+                logger.error("Model picker switch failed: %s", exc)
+                result_text = f"Error switching model: {exc}"
+                switch_failed = True
+
+            try:
+                await query.edit_message_text(
+                    text=self.format_message(result_text),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=None,
+                )
+            except Exception:
+                try:
+                    await query.edit_message_text(
+                        text=result_text,
+                        parse_mode=None,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            await query.answer(
+                text="Switch failed." if switch_failed else "Model switched!"
+            )
+            self._model_picker_state.pop(chat_id, None)
+
         elif data.startswith("mm:"):
             # --- Model selected: perform the switch ---
             try:
@@ -3098,10 +3219,42 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             try:
+                from hermes_cli.model_cost_guard import expensive_model_warning
+
+                # Pricing lookup can hit models.dev / a /models endpoint on a
+                # cache miss — keep it off the event loop.
+                warning = await asyncio.to_thread(
+                    expensive_model_warning,
+                    model_id,
+                    provider=provider_slug,
+                )
+            except Exception:
+                warning = None
+            if warning is not None:
+                keyboard = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Switch anyway", callback_data=f"mc:{idx}")],
+                    [
+                        InlineKeyboardButton("◀ Back", callback_data="mb"),
+                        InlineKeyboardButton("✗ Cancel", callback_data="mx"),
+                    ],
+                ])
+                await query.edit_message_text(
+                    text=self.format_message(
+                        f"⚠ *Expensive Model Warning*\n\n{warning.message}"
+                    ),
+                    parse_mode=ParseMode.MARKDOWN_V2,
+                    reply_markup=keyboard,
+                )
+                await query.answer(text="Confirm expensive model")
+                return
+
+            switch_failed = False
+            try:
                 result_text = await callback(chat_id, model_id, provider_slug)
             except Exception as exc:
                 logger.error("Model picker switch failed: %s", exc)
                 result_text = f"Error switching model: {exc}"
+                switch_failed = True
 
             # Edit message to show confirmation, remove buttons
             try:
@@ -3120,7 +3273,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     )
                 except Exception:
                     pass
-            await query.answer(text="Model switched!")
+            await query.answer(
+                text="Switch failed." if switch_failed else "Model switched!"
+            )
 
             # Clean up state
             self._model_picker_state.pop(chat_id, None)
@@ -3221,7 +3376,7 @@ class TelegramAdapter(BasePlatformAdapter):
         query_user_name = getattr(query.from_user, "first_name", None)
 
         # --- Model picker callbacks ---
-        if data.startswith(("mp:", "mpg:", "mm:", "mb", "mx", "mg:")):
+        if data.startswith(("mp:", "mpg:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
@@ -4049,7 +4204,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            print(f"[{self.name}] Failed to send document: {e}")
+            logger.warning("[%s] Failed to send document: %s", self.name, e, exc_info=True)
             return await super().send_document(chat_id, file_path, caption, file_name, reply_to, metadata=metadata)
 
     async def send_video(
@@ -4096,7 +4251,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            print(f"[{self.name}] Failed to send video: {e}")
+            logger.warning("[%s] Failed to send video: %s", self.name, e, exc_info=True)
             return await super().send_video(chat_id, video_path, caption, reply_to, metadata=metadata)
 
     async def send_image(

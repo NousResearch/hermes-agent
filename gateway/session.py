@@ -91,6 +91,7 @@ class SessionSource:
     guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    role_authorized: bool = False  # True when adapter granted access via role (not user ID)
     
     @property
     def description(self) -> str:
@@ -635,6 +636,22 @@ def build_session_key(
             if source.thread_id:
                 return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
             return f"agent:main:{platform}:dm:{dm_chat_id}"
+        # No chat_id — fall back to the sender's own identifier before the
+        # bare per-platform sink.  Without this, every DM from every user that
+        # arrives without a chat_id (non-standard adapters / synthetic sources)
+        # collapses into one shared "agent:main:<platform>:dm" session, and a
+        # single cached agent ends up serving multiple people's conversations —
+        # cross-user history bleed.  participant_id keeps DMs isolated per user.
+        dm_participant_id = source.user_id_alt or source.user_id
+        if dm_participant_id and source.platform == Platform.WHATSAPP:
+            dm_participant_id = (
+                canonical_whatsapp_identifier(str(dm_participant_id))
+                or dm_participant_id
+            )
+        if dm_participant_id:
+            if source.thread_id:
+                return f"agent:main:{platform}:dm:{dm_participant_id}:{source.thread_id}"
+            return f"agent:main:{platform}:dm:{dm_participant_id}"
         if source.thread_id:
             return f"agent:main:{platform}:dm:{source.thread_id}"
         return f"agent:main:{platform}:dm"

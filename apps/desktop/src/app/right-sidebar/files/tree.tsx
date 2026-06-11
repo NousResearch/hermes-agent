@@ -1,8 +1,10 @@
 import { useCallback, useRef, useState } from 'react'
 import { type NodeApi, type NodeRendererProps, Tree, type TreeApi } from 'react-arborist'
 
+import { PageLoader } from '@/components/page-loader'
 import { Codicon } from '@/components/ui/codicon'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
 import type { TreeNode } from './use-project-tree'
@@ -11,6 +13,8 @@ const ROW_HEIGHT = 22
 const INDENT = 10
 
 interface ProjectTreeProps {
+  collapseNonce: number
+  cwd: string
   data: TreeNode[]
   onActivateFile: (path: string) => void
   onActivateFolder: (path: string) => void
@@ -21,6 +25,8 @@ interface ProjectTreeProps {
 }
 
 export function ProjectTree({
+  collapseNonce,
+  cwd,
   data,
   onActivateFile,
   onActivateFolder,
@@ -63,7 +69,7 @@ export function ProjectTree({
 
       onNodeOpenChange(id, node.isOpen)
 
-      if (node.isOpen && node.data.children === undefined) {
+      if (node.isOpen && node.data?.isDirectory && node.data.children === undefined) {
         void onLoadChildren(id)
       }
     },
@@ -72,7 +78,7 @@ export function ProjectTree({
 
   const handleActivate = useCallback(
     (node: NodeApi<TreeNode>) => {
-      if (!node.data.isDirectory) {
+      if (node.data && !node.data.isDirectory) {
         onPreviewFile?.(node.data.id)
       }
     },
@@ -83,7 +89,7 @@ export function ProjectTree({
     <div className="min-h-0 flex-1 overflow-hidden" ref={containerRef}>
       {size.height > 0 && size.width > 0 ? (
         <Tree<TreeNode>
-          childrenAccessor={node => (node.isDirectory ? (node.children ?? []) : null)}
+          childrenAccessor={node => (node?.isDirectory ? (node.children ?? []) : null)}
           data={data}
           disableDrag
           disableDrop
@@ -91,6 +97,7 @@ export function ProjectTree({
           height={size.height}
           indent={INDENT}
           initialOpenState={openState}
+          key={`${cwd}:${collapseNonce}`}
           onActivate={handleActivate}
           onToggle={handleToggle}
           openByDefault={false}
@@ -116,11 +123,9 @@ export function ProjectTree({
 }
 
 function TreeSizingState() {
-  return (
-    <div className="flex h-full min-h-24 items-center justify-center px-3 text-[0.68rem] text-(--ui-text-tertiary)">
-      Loading files...
-    </div>
-  )
+  const { t } = useI18n()
+
+  return <PageLoader aria-label={t.rightSidebar.loadingFiles} className="min-h-24 px-3" />
 }
 
 function ProjectTreeRow({
@@ -135,6 +140,10 @@ function ProjectTreeRow({
   onAttachFolder: (path: string) => void
   onPreviewFile?: (path: string) => void
 }) {
+  if (!node.data) {
+    return <div style={style} />
+  }
+
   const isFolder = node.data.isDirectory
   const isPlaceholder = node.data.id.endsWith('::__loading__')
 

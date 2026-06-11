@@ -8,37 +8,20 @@
 # No reimplementation of the agent resolution in this wrapper.
 { pkgs, lib, stdenv, makeWrapper, hermesNpmLib, electron, hermesAgent, ... }:
 let
-  src = ../apps;
-  npmDeps = pkgs.fetchNpmDeps {
-    src = ../apps/desktop;
-    # buildNpmPackage uses `npm ci` which is strict — peer deps not in the
-    # lockfile cause network fetch attempts.  Fetcher v2 stages the full
-    # cache (including peer-only deps) so `npm ci` can resolve them offline.
-    fetcherVersion = 2;
-    hash = "sha256-7W9ObYz08yDMtybY8+RkUXkKVsJXINLl0qBUB91hpao=";
-  };
-
   npm = hermesNpmLib.mkNpmPassthru { folder = "apps/desktop"; attr = "desktop"; pname = "hermes-desktop"; };
 
-  packageJson = builtins.fromJSON (builtins.readFile (src + "/desktop/package.json"));
+  packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/apps/desktop/package.json"));
   version = packageJson.version;
 
   # Build the renderer (dist/ + electron/ + package.json).
   renderer = pkgs.buildNpmPackage (npm // {
     pname = "hermes-desktop-renderer";
-    inherit src npmDeps version;
-    sourceRoot = "apps/desktop";
+    inherit version;
 
     doCheck = false;
-    # buildNpmPackage uses `npm ci` which fails on peer deps not in the
-    # lockfile.  npmDepsFetcherVersion=2 stages the full cache (peer deps
-    # included) so the offline `npm ci` resolves them.
-    npmDepsFetcherVersion = 2;
-    # `--ignore-scripts` skips the electron prebuild download (we use nixpkgs
-    # electron instead).  `--legacy-peer-deps` matches the dev workflow —
-    # apps/desktop has conflicting peer deps (zod, @testing-library) that
-    # the package.json relies on npm 7+ to relax.
-    npmFlags = [ "--ignore-scripts" "--legacy-peer-deps" ];
+    # The workspace lockfile resolves all peer deps
+    # correctly so --legacy-peer-deps is not needed.
+    # --ignore-scripts comes from mkNpmPassthru (shared).
     makeCacheWritable = true;
 
     buildPhase = ''
@@ -47,21 +30,23 @@ let
       # write-build-stamp.cjs replacement.  Packaged Electron reads this
       # at first-launch to pin the install.ps1 git ref; informational in
       # nix builds (the backend comes from the derivation directly).
-      mkdir -p build
-      echo '{"schemaVersion":1,"commit":"nix","branch":"nix","dirty":false,"source":"nix"}' > build/install-stamp.json
+      mkdir -p apps/desktop/build
+      echo '{"schemaVersion":1,"commit":"nix","branch":"nix","dirty":false,"source":"nix"}' > apps/desktop/build/install-stamp.json
 
-      # The vite config aliases react/react-dom to ../../node_modules/react
-      # (workspace root, where npm dedups them in dev).  In the standalone
-      # nix build there is no workspace root, so the deps are installed
-      # locally — rewrite the aliases to point at the local copy.
-      substituteInPlace vite.config.ts \
-        --replace-quiet '../../node_modules/' './node_modules/'
+      # Build from apps/desktop/ so vite.config.ts resolves correctly.
+      # The workspace root's node_modules/ is accessible as ../../node_modules/.
+      cd apps/desktop
 
       # vite handles TS transpilation via esbuild — no type-checking.
       # We skip `tsc -b` to avoid type errors in test files that don't
       # ship in the bundle (real upstream peer-dep version mismatches
       # in @testing-library/react v16 — not blocking the build).
-      npx vite build --outDir dist
+      # Call vite directly from root node_modules to avoid npx resolving
+      # through unpatched workspace symlinks.
+      node ../../node_modules/vite/bin/vite.js build --outDir dist
+
+      # Return to source root so installPhase paths are correct.
+      cd ../..
 
       runHook postBuild
     '';
@@ -69,8 +54,12 @@ let
     installPhase = ''
       runHook preInstall
       mkdir -p $out
-      cp -r dist electron build $out/
-      cp package.json $out/
+      # vite writes to apps/desktop/dist/ (we cd'd there in buildPhase).
+      # apps/desktop/build was created before the cd.  electron/ is source.
+      cp -r apps/desktop/dist $out/
+      cp -r apps/desktop/electron $out/
+      cp -r apps/desktop/build $out/
+      cp apps/desktop/package.json $out/
       runHook postInstall
     '';
   });
@@ -105,6 +94,10 @@ stdenv.mkDerivation {
 
     runHook postInstall
   '';
+
+  passthru = {
+    inherit (renderer.passthru) packageJsonPath;
+  };
 
   meta = with lib; {
     description = "Native Electron desktop shell for Hermes Agent";

@@ -33,6 +33,7 @@ _AUDIO_EXTS = frozenset({'.ogg', '.opus', '.mp3', '.wav', '.m4a', '.flac'})
 # delivered as a regular document.
 _TELEGRAM_AUDIO_ATTACHMENT_EXTS = frozenset({'.mp3', '.m4a'})
 _TELEGRAM_VOICE_EXTS = frozenset({'.ogg', '.opus'})
+_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS = 30.0
 
 
 def _platform_name(platform) -> str:
@@ -967,14 +968,35 @@ def _media_delivery_denied_paths() -> List[Path]:
 
 
 def _path_under_denied_prefix(resolved: Path) -> bool:
-    """Return True if ``resolved`` lives under a deny-listed system path."""
+    """Return True if ``resolved`` lives under a deny-listed system path.
+
+    One narrow exception: when a denied prefix IS the running user's own home,
+    the home itself is not treated as denied. ``/root`` is on the system-path
+    denylist so that a non-root gateway can't deliver another user's home, but
+    on a root-run gateway ``$HOME=/root`` and the operator's own deliverables
+    (``/root/work/proposal.docx``) live directly under it. The credential
+    sub-directories inside home (``~/.ssh``, ``~/.aws``, ...) and Hermes
+    secrets (``~/.hermes/.env``, ``auth.json``) are *separate, more-specific*
+    denied paths, so they stay blocked regardless of this exception — it can
+    only un-block a plain file sitting in the running user's home tree, never a
+    credential location or another user's home.
+    """
+    try:
+        home = Path(os.path.expanduser("~")).resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        home = None
     for denied in _media_delivery_denied_paths():
         try:
             resolved_denied = denied.expanduser().resolve(strict=False)
         except (OSError, RuntimeError, ValueError):
             continue
-        if _path_is_within(resolved, resolved_denied) or resolved == resolved_denied:
-            return True
+        if not (_path_is_within(resolved, resolved_denied) or resolved == resolved_denied):
+            continue
+        # Allow the running user's own home tree; its credential sub-dirs are
+        # caught by their own (more-specific) denylist entries above.
+        if home is not None and resolved_denied == home:
+            continue
+        return True
     return False
 
 
@@ -1523,6 +1545,13 @@ class SendResult:
     message_id: Optional[str] = None
     error: Optional[str] = None
     raw_response: Any = None
+    # Adapter-specific metadata.  Cross-layer contracts that affect delivery
+    # semantics must be documented at the producer and consumer sites.  Current
+    # known contract: Telegram edit overflow partials set
+    # raw_response["partial_overflow"] with delivered_chunks, total_chunks,
+    # last_message_id, delivered_prefix, and continuation_message_ids so the
+    # stream consumer can send the missing tail instead of marking a clipped
+    # response complete.
     retryable: bool = False  # True for transient connection errors — base will retry automatically
     # When the adapter had to split an oversized payload across multiple
     # platform messages (e.g. Telegram edit_message overflow split-and-deliver),
@@ -1771,7 +1800,29 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
-    
+
+    # Whether this platform renders triple-backtick fenced code blocks (i.e.
+    # ``format_message`` translates/preserves markdown fences into a real code
+    # block).  Capability flag for markdown-aware presentation choices.
+    # Default False (plain-text platforms); markdown-rendering adapters set True.
+    # Tool-progress uses this to render a terminal command as a bare fenced code
+    # block (no language tag — Slack mrkdwn would print the tag as a literal
+    # first code line).  Plain-text platforms fall back to the short truncated
+    # preview (see gateway/run.py progress_callback).
+    supports_code_blocks: bool = False
+
+    # The command prefix users can always TYPE on this platform to reach
+    # Hermes commands.  Default "/" (most platforms deliver "/approve" etc.
+    # as plain message text).  Platforms where typing a leading "/" is
+    # intercepted or restricted by the client (Slack blocks native slash
+    # commands inside threads; Matrix clients reserve "/" for client-local
+    # commands) ship a "!" alias rewrite in their adapter and set this to
+    # "!" so user-facing instruction text ("Reply `!approve` ...") tells
+    # users the form that actually works everywhere.  Capability flag —
+    # shared prompt builders read it via getattr(adapter,
+    # "typed_command_prefix", "/"); no per-platform branching at call sites.
+    typed_command_prefix: str = "/"
+
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
@@ -1796,9 +1847,14 @@ class BasePlatformAdapter(ABC):
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
         self._session_tasks: Dict[str, asyncio.Task] = {}
+        # Legacy busy_text_mode env var; when unset the runner syncs the
+        # resolved value (driven by busy_input_mode) onto the adapter after
+        # construction (gateway/run.py). Default to "interrupt" so a stray
+        # pre-sync read matches the single-knob default rather than silently
+        # queueing.
         self._busy_text_mode: str = (
-            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "queue").strip().lower()
-            or "queue"
+            os.environ.get("HERMES_GATEWAY_BUSY_TEXT_MODE", "interrupt").strip().lower()
+            or "interrupt"
         )
         self._busy_text_debounce_seconds: float = _float_env(
             "HERMES_GATEWAY_BUSY_TEXT_DEBOUNCE_SECONDS", 0.35
@@ -1915,6 +1971,84 @@ class BasePlatformAdapter(ABC):
         raise NotImplementedError(
             f"{type(self).__name__} does not implement send_draft"
         )
+
+    # ── Structured stream-event rendering ────────────────────────────────
+    #
+    # These methods let an adapter decide *how* to present each structured
+    # streaming event (see gateway/stream_events.py).  The default
+    # implementations reproduce the historical behavior exactly: assistant
+    # text/commentary/segment events delegate to the stream consumer, and
+    # tool events render the same "emoji tool_name: preview" chrome the
+    # gateway has always produced.  Adapters override these to be more native
+    # to their platform (e.g. Telegram streaming a MarkdownV2 ```bash``` block
+    # as a draft; iMessage eating tool chrome it cannot format).
+    #
+    # The contract is presentation-only: nothing rendered here is persisted to
+    # conversation history.  History is owned by the agent; what an adapter
+    # chooses to "eat" must never change the bytes the agent stored.
+
+    def render_message_event(self, event: Any, sink: Any) -> None:
+        """Render a MessageChunk / MessageStop / Commentary onto the sink.
+
+        Default: map onto the stream consumer's existing primitives, preserving
+        today's behavior 1:1.  ``sink`` is a GatewayStreamConsumer.
+        """
+        from gateway.stream_events import MessageChunk, MessageStop, Commentary
+
+        if isinstance(event, MessageChunk):
+            if event.text:
+                sink.on_delta(event.text)
+        elif isinstance(event, MessageStop):
+            # An intermediate stop (text → tool → text) is a segment break;
+            # the terminal stop is signalled by the gateway via finish(),
+            # not here, so we only break segments on non-final stops.
+            if not event.final:
+                sink.on_segment_break()
+        elif isinstance(event, Commentary):
+            if event.text:
+                sink.on_commentary(event.text)
+
+    def format_tool_event(self, event: Any, *, mode: str = "all",
+                          preview_max_len: int = 40) -> Optional[str]:
+        """Return the rendered chrome for a ToolCallChunk, or None to eat it.
+
+        Reproduces the gateway's historical tool-progress formatting: an emoji
+        for the tool, the tool name, and a short argument preview (or the full
+        args dict in ``verbose`` mode).  Adapters that cannot render tool chrome
+        (no message editing, plain-text only) should override to return None so
+        the event is dropped rather than spamming separate bubbles.
+
+        ``mode`` is the resolved tool-progress mode ("all" / "new" / "verbose");
+        ``preview_max_len`` mirrors the ``tool_preview_length`` config (0 means
+        "no cap" in verbose mode).
+        """
+        from gateway.stream_events import ToolCallChunk
+        if not isinstance(event, ToolCallChunk):
+            return None
+
+        from agent.display import get_tool_emoji
+        emoji = get_tool_emoji(event.tool_name, default="⚙️")
+
+        if mode == "verbose":
+            if event.args:
+                import json
+                args_str = json.dumps(event.args, ensure_ascii=False, default=str)
+                if preview_max_len > 0 and len(args_str) > preview_max_len:
+                    args_str = args_str[:preview_max_len - 3] + "..."
+                return f"{emoji} {event.tool_name}({list(event.args.keys())})\n{args_str}"
+            if event.preview:
+                return f"{emoji} {event.tool_name}: \"{event.preview}\""
+            return f"{emoji} {event.tool_name}..."
+
+        # "all" / "new": short preview, capped (default 40 to keep gateway
+        # progress bubbles compact — they persist as permanent messages).
+        preview = event.preview
+        if preview:
+            cap = preview_max_len if preview_max_len > 0 else 40
+            if len(preview) > cap:
+                preview = preview[:cap - 3] + "..."
+            return f"{emoji} {event.tool_name}: \"{preview}\""
+        return f"{emoji} {event.tool_name}..."
 
     @property
     def has_fatal_error(self) -> bool:
@@ -2917,6 +3051,17 @@ class BasePlatformAdapter(ABC):
             expanded = os.path.expanduser(raw)
             if os.path.isfile(expanded):
                 found.append((raw, expanded))
+            else:
+                # The reply mentions a deliverable-looking path that does not
+                # exist on disk, so it is silently dropped from native delivery.
+                # This is the most common reason a promised file never arrives
+                # (the model said "here's your file" but never wrote it, or
+                # referenced the wrong path). Log it so the gap is visible in
+                # gateway.log rather than vanishing without a trace.
+                logger.info(
+                    "Skipping bare file path in reply (no file on disk): %s",
+                    _log_safe_path(raw),
+                )
 
         # Deduplicate by expanded path, preserving discovery order
         seen: set = set()
@@ -3296,7 +3441,7 @@ class BasePlatformAdapter(ABC):
     def _is_queue_text_debounce_candidate(self, event: MessageEvent) -> bool:
         """Return True for normal text eligible for queue-mode debounce."""
         result = (
-            getattr(self, "_busy_text_mode", "queue") == "queue"
+            getattr(self, "_busy_text_mode", "interrupt") == "queue"
             and event.message_type == MessageType.TEXT
             and not getattr(event, "internal", False)
             and not event.is_command()
@@ -4337,6 +4482,15 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Stop typing before any deferred callback work.  Post-delivery
+            # callbacks may perform platform I/O; a stuck callback must not
+            # leave the typing refresh task running indefinitely.
+            await _stop_typing_task()
+            try:
+                if hasattr(self, "stop_typing"):
+                    await self.stop_typing(event.source.chat_id)
+            except Exception:
+                pass
             # Fire any one-shot post-delivery callback registered for this
             # session (e.g. deferred background-review notifications).
             #
@@ -4364,11 +4518,12 @@ class BasePlatformAdapter(ABC):
                 try:
                     _post_result = _post_cb()
                     if inspect.isawaitable(_post_result):
-                        await _post_result
-                except Exception:
+                        await asyncio.wait_for(
+                            _post_result,
+                            timeout=_POST_DELIVERY_CALLBACK_TIMEOUT_SECONDS,
+                        )
+                except (asyncio.TimeoutError, Exception):
                     pass
-            # Stop typing indicator
-            await _stop_typing_task()
             # Also cancel any platform-level persistent typing tasks (e.g. Discord)
             # that may have been recreated by _keep_typing after the last stop_typing()
             try:
@@ -4526,6 +4681,7 @@ class BasePlatformAdapter(ABC):
         guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        role_authorized: bool = False,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -4546,6 +4702,7 @@ class BasePlatformAdapter(ABC):
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
+            role_authorized=role_authorized,
         )
     
     @abstractmethod

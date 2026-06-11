@@ -46,7 +46,7 @@ class TestMinimaxM3StaleCacheGuard:
         assert not _model_name_suggests_minimax_m3("MiniMax-M2.7")
         assert not _model_name_suggests_minimax_m3("MiniMax-M2.5")
 
-    def test_stale_m3_cache_dropped_and_reresolves_to_1m(self, tmp_path, monkeypatch):
+    def test_stale_m3_cache_dropped_and_reresolves(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         import importlib
         import agent.model_metadata as mm
@@ -56,7 +56,13 @@ class TestMinimaxM3StaleCacheGuard:
         ctx = mm.get_model_context_length(
             "MiniMax-M3", base_url=base, api_key="", provider="minimax-cn"
         )
-        assert ctx == 1_000_000
+        # Invariant: the stale 204,800 catch-all value must be DROPPED and
+        # re-resolved to M3's real, larger context. The exact value depends on
+        # the resolution source (hardcoded catalog = 1,000,000; the models.dev
+        # registry currently reports 512,000) — both are large-context values
+        # well above the generic "minimax" catch-all. Assert the contract
+        # ("> 204,800, stale value gone"), not a brittle literal.
+        assert ctx > 204_800, f"stale M3 cache not dropped/re-resolved, got {ctx}"
 
     def test_correct_m3_cache_preserved(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -135,14 +141,37 @@ class TestMinimaxThinkingSupport:
 
 
 class TestMinimaxAuxModel:
-    """Verify auxiliary model is standard (not highspeed) — now reads from profiles."""
+    """Verify auxiliary model is the current frontier standard (not highspeed).
+
+    As of M3's release (2026-06-01) the minimax / minimax-cn provider
+    profiles advertise ``MiniMax-M3`` as their ``default_aux_model`` (the
+    same model users see in ``_PROVIDER_MODELS["minimax"]`` and in the
+    user-facing ``model.default`` for a Token-Plan install).  The OAuth
+    / Coding Plan path sticks with M2.7 because M3 is not on that
+    tier — see ``test_minimax_profile.py`` for the per-provider split.
+
+    The historical concern this class guards is the #4082 / #6082
+    regression: the highspeed variant costs 2x with no model-quality
+    benefit, so we still assert that no aux choice contains the substring
+    ``"highspeed"``.
+    """
 
     def test_minimax_aux_is_standard(self):
+        # Import model_tools to trigger plugin discovery so the
+        # ProviderProfile objects are registered in the providers
+        # registry before _get_aux_model_for_provider() is called.
+        # Without this, profile-based resolution can be order-dependent
+        # or fail outright in isolation (the minimax-* entries are
+        # no longer in _API_KEY_PROVIDER_AUX_MODELS_FALLBACK after the
+        # minimax-M3 default-aux-model cleanup, so the profile is
+        # the only path to a non-empty aux value).
+        import model_tools  # noqa: F401
         from agent.auxiliary_client import _get_aux_model_for_provider
-        assert _get_aux_model_for_provider("minimax") == "MiniMax-M2.7"
-        assert _get_aux_model_for_provider("minimax-cn") == "MiniMax-M2.7"
+        assert _get_aux_model_for_provider("minimax") == "MiniMax-M3"
+        assert _get_aux_model_for_provider("minimax-cn") == "MiniMax-M3"
 
     def test_minimax_aux_not_highspeed(self):
+        import model_tools  # noqa: F401
         from agent.auxiliary_client import _get_aux_model_for_provider
         assert "highspeed" not in _get_aux_model_for_provider("minimax")
         assert "highspeed" not in _get_aux_model_for_provider("minimax-cn")

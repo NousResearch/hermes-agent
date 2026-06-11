@@ -498,6 +498,77 @@ class TestSecurity:
 
 
 # ===========================================================================
+# Nested directories whose names match USER_OWNED_EXCLUDE must survive install
+# ===========================================================================
+
+
+class TestNestedUserOwnedExcludeNotFiltered:
+
+    def test_nested_bin_dir_is_preserved(self, profile_env):
+        """"A distribution shipping tools/bin/ must not have tools/bin/ dropped
+        during install even though 'bin' is in USER_OWNED_EXCLUDE."""
+        staged = _make_staging_dir(profile_env, "src")
+        (staged / "tools" / "bin").mkdir(parents=True)
+        (staged / "tools" / "bin" / "tool.py").write_text("# tool\n")
+
+        plan = install_distribution(str(staged), name="nested_bin")
+        assert (plan.target_dir / "tools" / "bin").is_dir(), "nested bin/ was dropped"
+        assert (plan.target_dir / "tools" / "bin" / "tool.py").exists()
+
+    def test_nested_logs_dir_is_preserved(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        (staged / "scripts" / "logs").mkdir(parents=True)
+        (staged / "scripts" / "logs" / "run.log").write_text("ok\n")
+
+        plan = install_distribution(str(staged), name="nested_logs")
+        assert (plan.target_dir / "scripts" / "logs").is_dir()
+        assert (plan.target_dir / "scripts" / "logs" / "run.log").read_text() == "ok\n"
+
+    def test_nested_cache_dir_is_preserved(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        (staged / "control-plane" / "cache").mkdir(parents=True)
+        (staged / "control-plane" / "cache" / "data.json").write_text("{}\n")
+
+        plan = install_distribution(str(staged), name="nested_cache")
+        assert (plan.target_dir / "control-plane" / "cache").is_dir()
+        assert (plan.target_dir / "control-plane" / "cache" / "data.json").exists()
+
+    def test_top_level_user_owned_still_skipped(self, profile_env):
+        """Top-level entries in USER_OWNED_EXCLUDE must still be skipped —
+        only nested (deeper) directories should be preserved.
+
+        Note: _bootstrap_user_dirs creates some of these (logs/, sessions/,
+        memories/) in every fresh profile, so we check that the *staged content*
+        did not leak through rather than asserting the directory doesn't exist."""
+        staged = _make_staging_dir(profile_env, "src")
+        # Add top-level excluded entries alongside the legit ones
+        (staged / "bin").mkdir(exist_ok=True)
+        (staged / "bin" / "shipped_binary").write_text("x")
+        (staged / "logs").mkdir(exist_ok=True)
+        (staged / "logs" / "shipped.log").write_text("y\n")
+
+        plan = install_distribution(str(staged), name="top_filter")
+        # bin/ is not created by _bootstrap_user_dirs so absence means filtered
+        assert not (plan.target_dir / "bin").exists(), "top-level bin/ should be filtered"
+        # logs/ is created by _bootstrap_user_dirs even on a clean profile,
+        # so check that the staged file did NOT land there.
+        assert not (plan.target_dir / "logs" / "shipped.log").exists(), \
+            "staged logs/ content should not leak into target"
+
+    def test_both_nested_and_top_level_coexist(self, profile_env):
+        """Top-level bin/ filtered, but tools/bin/ kept."""
+        staged = _make_staging_dir(profile_env, "src")
+        (staged / "bin").mkdir(exist_ok=True)
+        (staged / "bin" / "top.sh").write_text("# top\n")
+        (staged / "tools" / "bin").mkdir(parents=True)
+        (staged / "tools" / "bin" / "helper.py").write_text("# helper\n")
+
+        plan = install_distribution(str(staged), name="coexist")
+        assert not (plan.target_dir / "bin").exists()
+        assert (plan.target_dir / "tools" / "bin" / "helper.py").exists()
+
+
+# ===========================================================================
 # Install-time metadata (installed_at stamp)
 # ===========================================================================
 

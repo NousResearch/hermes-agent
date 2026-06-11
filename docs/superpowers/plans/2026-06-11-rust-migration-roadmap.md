@@ -135,6 +135,8 @@ language-specific setup where needed.
 - For Windows archive-created checkouts, the Tauri updater now skips Git checkout preparation, refreshes the repository
   from a GitHub ZIP archive natively in Rust, and then calls `hermes update --finalize-only` so Python only refreshes
   dependencies, caches, and generated assets.
+- Archive-created checkout updates now use the same native ZIP refresh path on Windows, Linux, and macOS, so those
+  installs do not require Git just to refresh source files before dependency finalization.
 - Fresh bootstrap repository stages now try the native Rust GitHub archive path before falling back to script-backed
   clone behavior on every platform. On Unix bootstrap runs, `install.sh` receives an internal archive signal so the
   prerequisites stage does not install or require Git when Rust will fetch the source archive.

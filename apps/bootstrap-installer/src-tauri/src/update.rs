@@ -646,11 +646,23 @@ fn archive_checkout_without_git(install_root: &Path) -> bool {
         )
 }
 
-fn needs_archive_git_checkout_prepare(install_root: &Path, _update_branch: &str) -> bool {
+fn needs_archive_git_checkout_prepare(install_root: &Path, update_branch: &str) -> bool {
+    needs_archive_git_checkout_prepare_for_target(
+        install_root,
+        update_branch,
+        std::env::consts::OS,
+    )
+}
+
+fn needs_archive_git_checkout_prepare_for_target(
+    install_root: &Path,
+    _update_branch: &str,
+    target_os: &str,
+) -> bool {
     if !archive_checkout_without_git(install_root) {
         return false;
     }
-    !cfg!(target_os = "windows")
+    !matches!(target_os, "windows" | "linux" | "macos")
 }
 
 fn update_command_args(update_branch: &str, finalize_only: bool) -> Vec<String> {
@@ -1275,10 +1287,20 @@ mod tests {
             r#"{"schemaVersion":1,"method":"github_archive","ref":"main"}"#,
         )
         .unwrap();
-        assert_eq!(
-            needs_archive_git_checkout_prepare(&install_root, "feature/rust-release"),
-            !cfg!(target_os = "windows")
-        );
+        assert!(!needs_archive_git_checkout_prepare(
+            &install_root,
+            "feature/rust-release"
+        ));
+        for target_os in ["windows", "linux", "macos"] {
+            assert!(
+                !needs_archive_git_checkout_prepare_for_target(
+                    &install_root,
+                    "feature/rust-release",
+                    target_os,
+                ),
+                "{target_os} should use ZIP refresh for archive-created checkouts"
+            );
+        }
 
         std::fs::create_dir_all(install_root.join(".git")).unwrap();
         assert!(!needs_archive_git_checkout_prepare(
@@ -1302,11 +1324,11 @@ mod tests {
 
         assert_eq!(
             needs_archive_git_checkout_prepare(&install_root, "main"),
-            !cfg!(target_os = "windows")
+            false
         );
         assert_eq!(
             needs_archive_git_checkout_prepare(&install_root, "feature/rust-release"),
-            !cfg!(target_os = "windows")
+            false
         );
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -3123,6 +3123,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = f"{hint}\n\n{text}" if text else hint
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        if getattr(message, "chat_type", None) == "p2p":
+            thread_id = None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)

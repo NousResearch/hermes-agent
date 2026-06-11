@@ -543,7 +543,11 @@ def active_features() -> list[str]:
     """Return the list of features the user has ever lazy-installed.
 
     A feature counts as "active" if at least one of its declared packages
-    is currently installed in the venv (presence check, ignoring version).
+    is currently installed in the venv *at the pinned version* (see
+    :func:`_is_satisfied`). A presence-only check would false-positive on
+    transitive installs — e.g. aiohttp 3.14.1 dragged in by another
+    backend would mark ``platform.slack`` (pinned to aiohttp==3.13.4) as
+    "active" and trigger an unnecessary downgrade on ``hermes update``.
     Features the user has never enabled stay quiet.
 
     Used by ``hermes update`` to figure out which lazy backends need a
@@ -551,7 +555,7 @@ def active_features() -> list[str]:
     """
     active = []
     for feature, specs in LAZY_DEPS.items():
-        if any(_is_present(s) for s in specs):
+        if any(_is_satisfied(s) for s in specs):
             active.append(feature)
     return active
 

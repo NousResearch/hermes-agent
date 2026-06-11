@@ -301,13 +301,14 @@ class TestIsSatisfiedVersionAware:
 
 class TestActiveFeatures:
     def test_no_packages_installed_returns_empty(self, monkeypatch):
-        monkeypatch.setattr(ld, "_is_present", lambda spec: False)
+        monkeypatch.setattr(ld, "_is_satisfied", lambda spec: False)
         assert ld.active_features() == []
 
     def test_finds_features_with_at_least_one_package_installed(self, monkeypatch):
-        # Pretend only honcho-ai is installed; nothing else.
+        # Pretend only honcho-ai is installed at the pinned version;
+        # nothing else.
         monkeypatch.setattr(
-            ld, "_is_present",
+            ld, "_is_satisfied",
             lambda spec: ld._pkg_name_from_spec(spec) == "honcho-ai",
         )
         active = ld.active_features()
@@ -321,7 +322,7 @@ class TestActiveFeatures:
         # for the feature to count as active (user activated it before,
         # one transitive may have been uninstalled separately).
         monkeypatch.setattr(
-            ld, "_is_present",
+            ld, "_is_satisfied",
             lambda spec: ld._pkg_name_from_spec(spec) == "slack-bolt",
         )
         assert "platform.slack" in ld.active_features()
@@ -404,3 +405,66 @@ class TestRefreshActiveFeatures:
         result = ld.refresh_active_features()
         assert result["a.ok"] == "current"
         assert result["b.fail"].startswith("failed:")
+
+
+# ---------------------------------------------------------------------------
+# active_features() must not false-positive on transitive installs at the
+# wrong version. Regression test for #44404.
+#
+# The reported bug: platform.slack pins aiohttp==3.13.4. If some other
+# backend drags aiohttp 3.14.1 in transitively, _is_present("aiohttp==3.13.4")
+# returns True (matches on package name), so active_features() reports
+# platform.slack as "active" even though the user never installed it.
+# refresh_active_features() then triggers `pip install aiohttp==3.13.4` —
+# a downgrade — and on Windows the .pyd file can be locked by the gateway,
+# failing the refresh outright.
+#
+# Behavior contract being asserted:
+#   A feature is "active" only if at least one of its declared packages
+#   is installed at the pinned version. A transitive install at a
+#   different version must not activate the feature.
+#
+# This test deliberately does NOT mock _is_present / _is_satisfied — it
+# exercises the real importlib.metadata path so a regression on either
+# helper would also be caught. `packaging` is a transitive of pip and is
+# always present in any pip-based venv, which makes the impossible
+# version pin a deterministic stand-in for the aiohttp 3.14.1 case in
+# the issue.
+# ---------------------------------------------------------------------------
+
+
+class TestActiveFeaturesVersionAware:
+    def test_present_at_wrong_version_is_not_active(self, monkeypatch):
+        # Inject a feature pinned to a real-but-mismatched version of
+        # `packaging`. `packaging` is always present in any pip-based
+        # venv (transitive of pip itself) at version 24.x today; pinning
+        # the test feature to an older but-parsable version makes:
+        #   _is_present("packaging==20.0")  -> True
+        #   _is_satisfied("packaging==20.0") -> False
+        # (the version parses cleanly but does not match the installed
+        # version). Note: an impossible version like
+        # ``packaging==0.0.0-impossible`` would NOT work here, because
+        # :func:`_is_satisfied` has an ``InvalidVersion`` fallback that
+        # returns True ("don't churn"). The bug in #44404 is specifically
+        # about a real-but-different version, not malformed strings.
+        monkeypatch.setitem(
+            ld.LAZY_DEPS,
+            "test.buggy-feature",
+            ("packaging==20.0",),
+        )
+        try:
+            active = ld.active_features()
+        finally:
+            # Clean up even if the assertion fails — the buggy feature
+            # must not bleed into other tests in the same session.
+            monkeypatch.delitem(ld.LAZY_DEPS, "test.buggy-feature")
+        # The user never activated test.buggy-feature. A transitive
+        # install of `packaging` at a non-pinned version must NOT mark
+        # the feature as active. The pre-fix code (which used
+        # _is_present, presence-only) failed this assertion; the fix
+        # switches active_features() to _is_satisfied.
+        assert "test.buggy-feature" not in active, (
+            f"active_features() false-positive: {active!r} includes a "
+            f"feature pinned to a real-but-mismatched version, "
+            f"indicating presence-only detection (regression of #44404)"
+        )

@@ -10431,6 +10431,26 @@ def cmd_dashboard(args):
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
+    # Desktop chat uses the dashboard's in-process /api/ws gateway, which builds
+    # agents via tui_gateway.server._make_agent.  That path only snapshots the
+    # tool registry — it never starts MCP discovery (the stdio TUI does that in
+    # tui_gateway/entry.py, which the dashboard process doesn't run).  Without
+    # this, a profile's configured MCP servers never connect, so desktop
+    # sessions show no MCP tools.  Spawn discovery in the background here so a
+    # slow/dead server can't block dashboard startup.
+    try:
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
+
+        start_background_mcp_discovery(
+            logger=logger,
+            thread_name="dashboard-mcp-discovery",
+        )
+    except Exception:
+        logger.debug(
+            "Background MCP tool discovery failed at dashboard startup",
+            exc_info=True,
+        )
+
     from hermes_cli.web_server import start_server
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always

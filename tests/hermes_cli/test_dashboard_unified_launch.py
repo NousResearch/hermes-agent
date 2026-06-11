@@ -128,3 +128,45 @@ class TestUnifiedDashboardRouting:
         with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
             main_mod.cmd_dashboard(_args(open_profile="worker_x"))
         assert execs == []
+
+    def test_dashboard_starts_mcp_discovery_for_ws_backend(self, main_mod, monkeypatch):
+        """The dashboard process serves the /api/ws gateway but never runs
+        tui_gateway/entry.py, so it must kick off MCP discovery itself or
+        desktop sessions never see a profile's MCP tools."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+        monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
+        monkeypatch.setattr(main_mod, "_build_web_ui", lambda *_a, **_k: True)
+        monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
+        monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_logging",
+            types.SimpleNamespace(setup_logging=lambda **_k: None),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.plugins",
+            types.SimpleNamespace(discover_plugins=lambda: None),
+        )
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.start_background_mcp_discovery",
+            lambda **kwargs: calls.append(kwargs),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.web_server",
+            types.SimpleNamespace(start_server=lambda **_kwargs: None),
+        )
+
+        main_mod.cmd_dashboard(_args())
+
+        assert calls == [
+            {
+                "logger": main_mod.logger,
+                "thread_name": "dashboard-mcp-discovery",
+            }
+        ]

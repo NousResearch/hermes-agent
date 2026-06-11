@@ -62,7 +62,17 @@ def generate_title(
             timeout=timeout,
             main_runtime=main_runtime,
         )
-        title = (response.choices[0].message.content or "").strip()
+        content = response.choices[0].message.content or ""
+        # Strip thinking/reasoning blocks that some think-enabled models
+        # (MiniMax M2.7, DeepSeek) emit even for simple prompts like title
+        # generation.  Without this the raw <think>...</think> XML leaks
+        # into session titles — see session 20260611_105050_b44345.
+        try:
+            from agent.agent_runtime_helpers import strip_think_blocks
+            content = strip_think_blocks(None, content)
+        except ImportError:
+            pass
+        title = content.strip()
         # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
         title = title.strip('"\'')
         if title.lower().startswith("title:"):

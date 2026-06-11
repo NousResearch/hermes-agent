@@ -34,6 +34,20 @@ interface SelectionActionBarProps {
 
 type PendingAction = 'archive' | 'delete' | 'halt' | 'pin' | 'prompt' | 'restore' | 'steer' | null
 
+function splitSelectedCountLabel(label: string, count: number): null | { count: string; text: string } {
+  const countText = String(count)
+  const parts = label.trim().split(/\s+/)
+  const countIndex = parts.findIndex(part => part === countText)
+
+  if (countIndex < 0 || parts.length < 2) {
+    return null
+  }
+
+  const text = [...parts.slice(0, countIndex), ...parts.slice(countIndex + 1)].join(' ')
+
+  return text ? { count: countText, text } : null
+}
+
 /** Selection-mode header for a sidebar section: while rows in the section are
  * selected, this REPLACES the section's own header row — the live count and
  * the bulk verbs sit directly above the checked rows, where the user is
@@ -91,6 +105,8 @@ export function SelectionActionBar({
 
   const isArchivedSection = selection.section === 'archived'
   const isPinnedSection = selection.section === 'pinned'
+  const selectedCountLabel = s.selectedCount(count)
+  const selectedCountParts = splitSelectedCountLabel(selectedCountLabel, count)
 
   const runBulk = async (action: Exclude<PendingAction, null>, run: () => Promise<unknown> | void) => {
     if (pending) {
@@ -186,24 +202,31 @@ export function SelectionActionBar({
     // for this bar moves nothing: the count sits on the section-label edge and
     // the verbs land where the header actions were.
     <div
-      className="flex min-h-[1.875rem] shrink-0 items-center gap-0.5 overflow-hidden pb-1 pr-0.5 pt-1.5"
+      className="grid min-h-[1.875rem] shrink-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-0.5 pb-1 pr-0.5 pt-1.5"
       data-selection-bar
     >
-      <span className="flex shrink-0 items-center gap-1.5 pl-2" data-selection-count>
+      <span className="flex min-w-0 items-center gap-1.5 pl-2" data-selection-count>
         <span aria-hidden="true" className="grid w-3.5 shrink-0 place-items-center text-(--ui-text-secondary)">
           <Codicon name="check" size="0.75rem" />
         </span>
-        <span
-          className="whitespace-nowrap text-[0.6875rem] font-semibold uppercase tracking-wide text-(--ui-text-secondary)"
-          data-selection-count-label
-        >
-          {s.selectedCount(count)}
-        </span>
+        <Tip label={selectedCountLabel}>
+          <span
+            aria-label={selectedCountLabel}
+            className="flex min-w-0 max-w-full flex-wrap items-center gap-x-1 overflow-hidden text-[0.6875rem] font-semibold uppercase leading-[0.6875rem] tracking-wide text-(--ui-text-secondary)"
+            data-selection-count-label
+          >
+            {selectedCountParts ? (
+              <>
+                <span className="shrink-0">{selectedCountParts.count}</span>
+                <span className="min-w-0 break-words">{selectedCountParts.text}</span>
+              </>
+            ) : (
+              <span className="min-w-0 break-words">{selectedCountLabel}</span>
+            )}
+          </span>
+        </Tip>
       </span>
-      <div
-        className="ml-auto flex min-w-0 flex-1 items-center justify-end gap-0.5 overflow-x-auto overflow-y-hidden overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
-        data-selection-actions
-      >
+      <div className="ml-auto flex shrink-0 items-center justify-end gap-0.5" data-selection-actions>
         {!isArchivedSection &&
           actionButton(
             s.promptCount(count),

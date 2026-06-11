@@ -12,7 +12,7 @@ afterEach(() => {
 })
 
 describe('SelectionActionBar', () => {
-  it('keeps the selected count readable while actions take the remaining width', () => {
+  it('keeps the selected count readable without clipping the action buttons', () => {
     $sidebarSelection.set({ ids: ['s1', 's2'], section: 'sessions' })
 
     const { container } = render(
@@ -21,18 +21,24 @@ describe('SelectionActionBar', () => {
       </I18nProvider>
     )
 
-    const label = screen.getByText('2 selected')
+    const label = screen.getByLabelText('2 selected')
     expect(label.hasAttribute('data-selection-count-label')).toBe(true)
-    expect(label.className).toContain('whitespace-nowrap')
+    expect(Array.from(label.children).map(child => child.textContent)).toEqual(['2', 'selected'])
+    expect(label.className).toContain('flex-wrap')
+    expect(label.className).not.toContain('whitespace-nowrap')
     expect(label.className).not.toContain('truncate')
 
     const count = container.querySelector('[data-selection-count]') as HTMLElement
-    expect(count.className).toContain('shrink-0')
-    expect(count.className).not.toContain('min-w-0')
+    expect(count.className).toContain('min-w-0')
 
     const actions = container.querySelector('[data-selection-actions]') as HTMLElement
-    expect(actions.className).toContain('min-w-0')
-    expect(actions.className).toContain('flex-1')
-    expect(actions.className).toContain('overflow-x-auto')
+    expect(actions.className).toContain('shrink-0')
+    expect(actions.className).not.toContain('min-w-0')
+    expect(actions.className).not.toContain('flex-1')
+    expect(actions.className).not.toContain('overflow-x-auto')
+
+    expect(screen.getByLabelText('Prompt 2')).toBeTruthy()
+    expect(screen.getByLabelText('Steer 2')).toBeTruthy()
+    expect(screen.getByLabelText('Stop 2')).toBeTruthy()
   })
 })

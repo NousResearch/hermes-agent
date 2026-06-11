@@ -272,6 +272,17 @@ Create and manage scheduled cron jobs that run agent prompts on a recurring sche
 - **Trigger now** — immediately execute a job outside its normal schedule
 - **Delete** — permanently remove a cron job
 
+### Profiles
+
+Create and manage [profiles](../profiles.md) — isolated Hermes instances with their own config, skills, and sessions.
+
+- **Profile cards** — each shows its model/provider, skill count, gateway state, description, and badges (active, default, alias)
+- **Create** — name + optional clone-from-default / clone-everything / no-bundled-skills, description, and model; the dedicated Profile Builder page (`/profiles/new`) offers the full flow (model, MCPs, skills)
+- **Manage skills & tools** — jumps to the Skills page scoped to that profile (sets the sidebar profile switcher)
+- **Set as active** — flips the sticky default that **future CLI/gateway runs** pick up (same as `hermes profile use`). This does *not* change what the dashboard manages — that's the profile switcher's job
+- **Edit model / description / SOUL** — inline editors writing into that profile
+- **Rename / Delete** — named profiles only
+
 ### Skills
 
 Browse, search, and toggle installed skills and toolsets, and install new ones from the hub. Skills are loaded from `~/.hermes/skills/` and grouped by category.
@@ -386,6 +397,16 @@ This re-reads `~/.hermes/.env` into the running process's environment. Useful wh
 ## REST API
 
 The web dashboard exposes a REST API that the frontend consumes. You can also call these endpoints directly for automation:
+
+:::tip Profile-scoped endpoints
+The management endpoint families — `/api/config`, `/api/env`, `/api/skills`,
+`/api/tools/toolsets`, `/api/mcp`, and `/api/model/{info,options,auxiliary,set}` —
+accept an optional `?profile=<name>` query parameter (or `"profile"` in the
+JSON body for writes) that scopes the read/write to that profile's
+`HERMES_HOME`. Omitted = the dashboard's own profile. Unknown profile names
+return `404`. The `/api/pty` WebSocket accepts the same parameter to spawn
+a chat under the selected profile.
+:::
 
 ### GET /api/status
 

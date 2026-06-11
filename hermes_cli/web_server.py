@@ -2843,7 +2843,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
                 }
 
         def _apply_assignment():
-            with _profile_scope(profile or body.profile):
+            with _profile_scope(body.profile or profile):
                 return _apply_model_assignment_sync(
                     scope, provider, model, task, base_url
                 )
@@ -3045,7 +3045,7 @@ def _denormalize_config_from_web(config: Dict[str, Any]) -> Dict[str, Any]:
 @app.put("/api/config")
 async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
     try:
-        with _profile_scope(profile or body.profile):
+        with _profile_scope(body.profile or profile):
             save_config(_denormalize_config_from_web(body.config))
         return {"ok": True}
     except HTTPException:
@@ -3083,7 +3083,7 @@ async def get_env_vars(profile: Optional[str] = None):
 @app.put("/api/env")
 async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     try:
-        with _profile_scope(profile or body.profile):
+        with _profile_scope(body.profile or profile):
             save_env_value(body.key, body.value)
         return {"ok": True, "key": body.key}
     except ValueError as exc:
@@ -3197,7 +3197,7 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
 @app.delete("/api/env")
 async def remove_env_var(body: EnvVarDelete, profile: Optional[str] = None):
     try:
-        with _profile_scope(profile or body.profile):
+        with _profile_scope(body.profile or profile):
             removed = remove_env_value(body.key)
         if not removed:
             raise HTTPException(status_code=404, detail=f"{body.key} not found in .env")
@@ -3237,7 +3237,7 @@ async def reveal_env_var(
     _reveal_timestamps.append(now)
 
     # --- Reveal ---
-    with _profile_scope(profile or body.profile):
+    with _profile_scope(body.profile or profile):
         env_on_disk = load_env()
     value = env_on_disk.get(body.key)
     if value is None:
@@ -6493,7 +6493,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Server name is required")
-    with _profile_scope(profile or body.profile):
+    with _profile_scope(body.profile or profile):
         existing = _get_mcp_servers()
     if name in existing:
         raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
@@ -6516,7 +6516,7 @@ async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
         server_config["auth"] = body.auth
 
     try:
-        with _profile_scope(profile or body.profile):
+        with _profile_scope(body.profile or profile):
             _save_mcp_server(name, server_config)
     except HTTPException:
         raise
@@ -6592,7 +6592,7 @@ async def set_mcp_server_enabled(
     flag the agent reads at startup.  Disabled servers stay in config so they
     can be re-enabled without re-entering their settings.
     """
-    with _profile_scope(profile or body.profile):
+    with _profile_scope(body.profile or profile):
         cfg = load_config()
         servers = cfg.get("mcp_servers")
         if not isinstance(servers, dict) or name not in servers:
@@ -6689,7 +6689,7 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
 
     # Persist any supplied env vars first (catalog entries declare which names
     # they need; we only write the ones the user provided).
-    effective_profile = profile or body.profile
+    effective_profile = body.profile or profile
     if body.env:
         with _profile_scope(effective_profile):
             for k, v in body.env.items():
@@ -7514,7 +7514,7 @@ async def install_skill_hub(body: SkillInstallRequest, profile: Optional[str] = 
         raise HTTPException(status_code=400, detail="identifier is required")
     try:
         proc = _spawn_hermes_action(
-            _profile_cli_args(profile or body.profile) + ["skills", "install", identifier],
+            _profile_cli_args(body.profile or profile) + ["skills", "install", identifier],
             "skills-install",
         )
     except HTTPException:
@@ -7537,7 +7537,7 @@ async def uninstall_skill_hub(body: SkillUninstallRequest, profile: Optional[str
         raise HTTPException(status_code=400, detail="name is required")
     try:
         proc = _spawn_hermes_action(
-            _profile_cli_args(profile or body.profile) + ["skills", "uninstall", name, "--yes"],
+            _profile_cli_args(body.profile or profile) + ["skills", "uninstall", name, "--yes"],
             "skills-uninstall",
         )
     except HTTPException:
@@ -7557,7 +7557,7 @@ async def update_skills_hub(
     body: Optional[SkillsUpdateRequest] = None, profile: Optional[str] = None
 ):
     try:
-        effective = profile or (body.profile if body else None)
+        effective = (body.profile if body else None) or profile
         proc = _spawn_hermes_action(
             _profile_cli_args(effective) + ["skills", "update"], "skills-update"
         )
@@ -8579,7 +8579,7 @@ async def get_skills(profile: Optional[str] = None):
 @app.put("/api/skills/toggle")
 async def toggle_skill(body: SkillToggle, profile: Optional[str] = None):
     from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
-    with _profile_scope(profile or body.profile):
+    with _profile_scope(body.profile or profile):
         config = load_config()
         disabled = get_disabled_skills(config)
         if body.enabled:
@@ -8650,7 +8650,7 @@ async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] 
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    with _profile_scope(profile or body.profile):
+    with _profile_scope(body.profile or profile):
         config = load_config()
         enabled = set(
             _get_platform_tools(config, "cli", include_default_mcp_servers=False)
@@ -8752,7 +8752,7 @@ async def select_toolset_provider(
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    with _profile_scope(profile or body.profile):
+    with _profile_scope(body.profile or profile):
         config = load_config()
         try:
             apply_provider_selection(name, body.provider, config)
@@ -8790,7 +8790,7 @@ async def save_toolset_env(name: str, body: ToolsetEnvUpdate, profile: Optional[
     if name not in valid_ts:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
-    with _profile_scope(profile or body.profile):
+    with _profile_scope(body.profile or profile):
         config = load_config()
         cat = TOOL_CATEGORIES.get(name)
         allowed: set[str] = set()
@@ -8863,7 +8863,7 @@ async def run_toolset_post_setup(
 
     try:
         proc = _spawn_hermes_action(
-            _profile_cli_args(profile or body.profile)
+            _profile_cli_args(body.profile or profile)
             + ["tools", "post-setup", body.key],
             "tools-post-setup",
         )
@@ -8902,7 +8902,7 @@ async def update_config_raw(body: RawConfigUpdate, profile: Optional[str] = None
         parsed = yaml.safe_load(body.yaml_text)
         if not isinstance(parsed, dict):
             raise HTTPException(status_code=400, detail="YAML must be a mapping")
-        with _profile_scope(profile or body.profile):
+        with _profile_scope(body.profile or profile):
             save_config(parsed)
         return {"ok": True}
     except yaml.YAMLError as e:

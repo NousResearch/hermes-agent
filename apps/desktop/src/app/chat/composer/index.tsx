@@ -137,8 +137,8 @@ interface QueueEditState {
 
 const cloneAttachments = (attachments: ComposerAttachment[]) => attachments.map(a => ({ ...a }))
 
-// How long the composer waits after the last keystroke before persisting the
-// draft to localStorage. Scope-change/unmount flushes bypass the delay.
+// Quiet period after the last keystroke before persisting the draft;
+// unmount/pagehide flushes bypass it.
 const DRAFT_PERSIST_DEBOUNCE_MS = 400
 
 export function ChatBar({
@@ -1109,9 +1109,9 @@ export function ChatBar({
     }
   }
 
-  // The composer deliberately does NOT react to session switches: it sits
-  // above the thread and its contents follow the user. The only restore is a
-  // one-shot on mount so an unsent draft survives an app reload.
+  // The composer sits above the thread and does NOT react to session
+  // switches; the only restore is a one-shot on mount so drafts survive
+  // app reloads.
   useEffect(() => {
     const persisted = readPersistedComposerDraft()
 
@@ -1120,18 +1120,14 @@ export function ChatBar({
     }
   }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Debounced draft persistence. Skipped for programmatically-loaded text
+  // (history browsing, queued-prompt edits) so recalled text never clobbers
+  // the genuine in-progress draft.
   useEffect(() => {
-    // Don't persist programmatically-loaded text: browsing sent-message
-    // history or editing a queued prompt swaps the composer to recalled text,
-    // and persisting that would clobber the genuine in-progress draft (which
-    // history keeps in its own snapshot and restores on the way back).
     if (isBrowsingHistory(sessionId) || queueEdit) {
       return
     }
 
-    // Debounce the localStorage write: the composer's per-keystroke path was
-    // deliberately slimmed down (see the draftRef sync comment above), so we
-    // don't touch storage on every keypress.
     pendingDraftPersistRef.current = draft
 
     const handle = window.setTimeout(() => {
@@ -1142,10 +1138,10 @@ export function ChatBar({
     return () => window.clearTimeout(handle)
   }, [draft, queueEdit, sessionId])
 
-  // Flush any pending debounced write on unmount or window unload. The
-  // pagehide listener is load-bearing: React does NOT run effect cleanups on
-  // a page reload, so without it a Cmd+R inside the debounce window would
-  // silently drop everything typed in the last 400ms.
+  // Flush any pending debounced write on unmount or unload. The pagehide
+  // listener is load-bearing: React does NOT run effect cleanups on a page
+  // reload, so without it a Cmd+R inside the debounce window drops the
+  // trailing keystrokes.
   useEffect(() => {
     const flushPendingDraftPersist = () => {
       const pending = pendingDraftPersistRef.current
@@ -1380,6 +1376,19 @@ export function ChatBar({
     setQueueEdit(null)
   }, [activeQueueSessionKey, editingQueuedPrompt, queueEdit]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Submit, restoring the composer (and its persisted draft) if the gateway
+  // rejects or the submit throws — typed text is never lost to a failed send.
+  const dispatchSubmit = (text: string, attachments?: ComposerAttachment[]) => {
+    const restore = () => {
+      loadIntoComposer(text, attachments ?? [])
+      writePersistedComposerDraft(text)
+    }
+
+    void Promise.resolve(attachments ? onSubmit(text, { attachments }) : onSubmit(text))
+      .then(accepted => void (accepted === false ? restore() : clearPersistedComposerDraft()))
+      .catch(restore)
+  }
+
   const submitDraft = () => {
     // Source the text from the DOM editor, not React state. The AUI composer
     // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
@@ -1414,20 +1423,9 @@ export function ChatBar({
       // /send directives).  Queuing them would make every slash command wait
       // for the current turn to finish, which is how the TUI never behaves.
       if (!attachments.length && SLASH_COMMAND_RE.test(text.trim())) {
-        const submitted = text
         triggerHaptic('submit')
         clearDraft()
-        void Promise.resolve(onSubmit(submitted)).then(accepted => {
-          if (accepted === false) {
-            loadIntoComposer(submitted, [])
-            writePersistedComposerDraft(submitted)
-          } else {
-            clearPersistedComposerDraft()
-          }
-        }).catch(() => {
-          loadIntoComposer(submitted, [])
-          writePersistedComposerDraft(submitted)
-        })
+        dispatchSubmit(text)
       } else if (payloadPresent) {
         queueCurrentDraft()
       } else {
@@ -1439,23 +1437,12 @@ export function ChatBar({
     } else if (!payloadPresent && queuedPrompts.length > 0) {
       void drainNextQueued()
     } else if (payloadPresent) {
-      const submitted = text
       const submittedAttachments = cloneAttachments(attachments)
       triggerHaptic('submit')
       resetBrowseState(sessionId)
       clearDraft()
       clearComposerAttachments()
-      void Promise.resolve(onSubmit(submitted, { attachments: submittedAttachments })).then(accepted => {
-        if (accepted === false) {
-          loadIntoComposer(submitted, submittedAttachments)
-          writePersistedComposerDraft(submitted)
-        } else {
-          clearPersistedComposerDraft()
-        }
-      }).catch(() => {
-        loadIntoComposer(submitted, submittedAttachments)
-        writePersistedComposerDraft(submitted)
-      })
+      dispatchSubmit(text, submittedAttachments)
     }
 
     focusInput()

@@ -26,52 +26,29 @@ export const $composerTerminalSelections = atom<Record<string, string>>({})
 // session lifecycle. One storage key makes the draft survive app reloads.
 export const COMPOSER_DRAFT_STORAGE_KEY = 'hermes:composer-draft:v2'
 
-function browserStorage(): Storage | null {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  try {
-    return window.localStorage
-  } catch {
-    return null
-  }
-}
-
 export function readPersistedComposerDraft(): string {
   try {
-    return browserStorage()?.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? ''
+    return window.localStorage.getItem(COMPOSER_DRAFT_STORAGE_KEY) ?? ''
   } catch {
     return ''
   }
 }
 
+// Empty drafts remove the key. Persistence is a safety net only — storage
+// errors (quota, private mode) must never break typing or submission.
 export function writePersistedComposerDraft(value: string) {
   try {
-    const storage = browserStorage()
-
-    if (!storage) {
-      return
-    }
-
-    if (value.length === 0) {
-      storage.removeItem(COMPOSER_DRAFT_STORAGE_KEY)
+    if (value) {
+      window.localStorage.setItem(COMPOSER_DRAFT_STORAGE_KEY, value)
     } else {
-      storage.setItem(COMPOSER_DRAFT_STORAGE_KEY, value)
+      window.localStorage.removeItem(COMPOSER_DRAFT_STORAGE_KEY)
     }
-  } catch {
-    // Draft persistence is a safety net only; storage quota/private-mode errors
-    // must never break typing or submission.
-  }
-}
-
-export function clearPersistedComposerDraft() {
-  try {
-    browserStorage()?.removeItem(COMPOSER_DRAFT_STORAGE_KEY)
   } catch {
     // Best-effort only.
   }
 }
+
+export const clearPersistedComposerDraft = () => writePersistedComposerDraft('')
 
 export function setComposerDraft(value: string) {
   $composerDraft.set(value)

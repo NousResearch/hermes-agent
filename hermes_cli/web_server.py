@@ -9374,11 +9374,18 @@ class RawConfigUpdate(BaseModel):
 
 @app.get("/api/config/raw")
 async def get_config_raw(profile: Optional[str] = None):
+    """Raw config.yaml text plus its resolved path.
+
+    ``path`` is resolved inside ``_profile_scope`` so the Config page header
+    shows the file the switched profile actually reads/writes — /api/status's
+    ``config_path`` is machine-global and always reports the dashboard
+    process's own profile, which is wrong under the global profile switcher.
+    """
     with _profile_scope(profile):
         path = get_config_path()
     if not path.exists():
-        return {"yaml": ""}
-    return {"yaml": path.read_text(encoding="utf-8")}
+        return {"yaml": "", "path": str(path)}
+    return {"yaml": path.read_text(encoding="utf-8"), "path": str(path)}
 
 
 @app.put("/api/config/raw")

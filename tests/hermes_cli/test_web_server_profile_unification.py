@@ -92,6 +92,16 @@ class TestProfileScopedConfig:
         resp = client.get("/api/config/raw")
         assert "Io/Volcano" not in resp.json()["yaml"]
 
+    def test_config_raw_path_reflects_requested_profile(self, client, isolated_profiles):
+        """The Config page header shows /api/config/raw's ``path`` — it must
+        point at the SWITCHED profile's config.yaml, not the dashboard's own
+        (the stale-path bug reported after the profile unification launch)."""
+        resp = client.get("/api/config/raw", params={"profile": "worker_beta"})
+        assert resp.status_code == 200
+        assert resp.json()["path"] == str(isolated_profiles["worker_beta"] / "config.yaml")
+        resp = client.get("/api/config/raw")
+        assert resp.json()["path"] == str(isolated_profiles["default"] / "config.yaml")
+
     def test_unknown_profile_404(self, client, isolated_profiles):
         resp = client.get("/api/config", params={"profile": "ghost"})
         assert resp.status_code == 404

@@ -761,13 +761,12 @@ export function ChatBar({
     finish()
   }
 
-  const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // IME composition: Enter confirms composed text, not a message submission.
     // We check both composingRef (set by compositionstart/compositionend, robust
-    // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
-    // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
-    // preedit fires submitDraft() and splits the message mid-word.
-    if (composingRef.current || event.nativeEvent.isComposing) {
+    // across browsers) and nativeEvent.isComposing (Chromium fallback). We also
+    // include event.keyCode === 229 for Korean IME on Windows where Enter fires mid-composition.
+    if (composingRef.current || event.nativeEvent.isComposing || event.keyCode === 229) {
       return
     }
 
@@ -1410,26 +1409,19 @@ export function ChatBar({
       .catch(restore)
   }
 
-  const submitDraft = () => {
-    // Source the text from the DOM editor, not React state. The AUI composer
-    // state (`draft`) and the derived `hasComposerPayload` lag the DOM by a
-    // render, so on fast typing or IME composition the final keystroke(s) may
-    // not have synced yet — reading state here drops the message (Enter looks
-    // like it does nothing; typing a trailing space only "fixes" it because the
-    // extra input event forces a state sync). draftRef is updated on every
-    // input event; refresh it from the editor once more to also cover an
-    // in-flight keystroke that hasn't fired its input event yet.
-    const editor = editorRef.current
+const editorNode = editorRef.current
+  // Source the text from the DOM editor directly to handle cases where 
+  // React state lags behind during rapid typing or IME composition.
+  const submitted = editorNode ? composerPlainText(editorNode).trim() || draft : draft
 
-    if (editor) {
-      const domText = composerPlainText(editor)
-
-      if (domText !== draftRef.current) {
-        draftRef.current = domText
-        aui.composer().setText(domText)
-      }
+  if (editorNode) {
+    const domText = composerPlainText(editorNode)
+    if (domText !== draftRef.current) {
+      draftRef.current = domText
+      setDraft(domText)
     }
-
+    aui.composer().setText(domText)
+  }
     const text = draftRef.current
     const payloadPresent = text.trim().length > 0 || attachments.length > 0
 

@@ -176,8 +176,10 @@ language-specific setup where needed.
   shell profile file, with dry-run and JSON output support.
 - `hermes-manager write-user-path` can dry-run or write the current user's Windows `Path` registry value, using the
   registry as the default source of truth and broadcasting an environment-change notification after apply.
-- Bootstrap installer now runs the Windows `path` stage natively, preserving user `Path` and `HERMES_HOME` setup while
-  leaving Unix symlink/profile behavior script-backed until full parity exists.
+- Bootstrap installer now runs the Windows `path` stage natively, preserving user `Path` and `HERMES_HOME` setup.
+- Bootstrap installer now runs the Unix `path` stage natively for shell profile PATH setup, writing an idempotent
+  Hermes-managed profile block through the Rust manager and refreshing the bootstrap process PATH. System-level
+  symlink behavior remains script-backed until full parity exists.
 - `hermes-manager plan-shortcuts` reports Start Menu and Desktop `.lnk` targets for the packaged Windows desktop app,
   including working directory and icon location, without mutating user state.
 - `hermes-manager write-shortcuts` can dry-run or create those `.lnk` files through the built-in Windows shortcut COM

@@ -581,6 +581,8 @@ async fn run_bootstrap(
                     &hermes_home,
                     &install_root,
                 ))
+            } else if !cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("path") {
+                Some(crate::orchestrator::configure_unix_path_stage(&install_root))
             } else if should_try_native_repository_archive(&stage.name, &install_root) {
                 Some(
                     crate::orchestrator::install_repository_archive_fresh(

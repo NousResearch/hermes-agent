@@ -230,6 +230,40 @@ pub fn configure_windows_path_stage(_hermes_home: &Path, _install_root: &Path) -
     Err(anyhow!("native PATH stage is only available on Windows"))
 }
 
+/// Apply the native Unix shell-profile PATH stage.
+pub fn configure_unix_path_stage(install_root: &Path) -> Result<serde_json::Value> {
+    let profile_path = default_unix_profile_path()
+        .ok_or_else(|| anyhow!("could not resolve a writable Unix shell profile path"))?;
+    configure_unix_path_stage_with_profile(install_root, &profile_path, std::env::var("PATH").ok())
+}
+
+fn configure_unix_path_stage_with_profile(
+    install_root: &Path,
+    profile_path: &Path,
+    current_path: Option<String>,
+) -> Result<serde_json::Value> {
+    let plan = hermes_manager::platform::plan_path_update(install_root, current_path, false);
+    let before = std::fs::read_to_string(profile_path).ok();
+    hermes_manager::platform::write_shell_profile_update(profile_path, &plan)
+        .map_err(|err| anyhow!("writing Unix shell profile update: {err}"))?;
+    let after = std::fs::read_to_string(profile_path).ok();
+    std::env::set_var("PATH", &plan.next_path);
+    Ok(serde_json::json!({
+        "profilePath": profile_path.display().to_string(),
+        "hermesBin": plan.hermes_bin,
+        "pathChanged": plan.changed,
+        "profileChanged": before != after,
+        "applied": plan.changed || before != after,
+    }))
+}
+
+fn default_unix_profile_path() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let shell = std::env::var("SHELL").unwrap_or_default();
+    let name = if shell.ends_with("zsh") { ".zshrc" } else { ".profile" };
+    Some(home.join(name))
+}
+
 #[cfg(target_os = "windows")]
 fn refresh_process_path(install_root: &Path) {
     let current = std::env::var("PATH").ok();
@@ -641,6 +675,33 @@ mod tests {
         assert_eq!(report["pathChanged"], true);
         assert_eq!(report["hermesHomeChanged"], true);
         assert_eq!(report["applied"], false);
+    }
+
+    #[test]
+    fn unix_path_stage_writes_managed_profile_block() {
+        let root = std::env::temp_dir().join(format!("hermes-unix-path-{}", std::process::id()));
+        let home = root.join("home");
+        let install_root = root.join("hermes-agent");
+        let profile = home.join(".profile");
+        std::fs::create_dir_all(&install_root).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(&profile, "alias ll='ls -la'\n").unwrap();
+
+        let report = configure_unix_path_stage_with_profile(&install_root, &profile, None).unwrap();
+
+        let text = std::fs::read_to_string(&profile).unwrap();
+        assert!(text.contains("alias ll='ls -la'"));
+        assert!(text.contains("Hermes Agent PATH"));
+        assert!(text.contains(&install_root.join("venv").join("bin").display().to_string()));
+        assert_eq!(report["profilePath"], profile.display().to_string());
+        assert_eq!(report["profileChanged"], true);
+        assert_eq!(report["pathChanged"], true);
+        assert_eq!(
+            report["hermesBin"],
+            install_root.join("venv").join("bin").display().to_string()
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

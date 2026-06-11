@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from agent.skill_utils import (
+    extract_skill_config_vars,
     extract_skill_conditions,
     get_disabled_skill_names,
     get_external_skills_dirs,
@@ -10,6 +11,7 @@ from agent.skill_utils import (
     is_external_skill_path,
     is_skill_support_path,
     iter_skill_index_files,
+    parse_frontmatter,
     resolve_skill_config_values,
     skill_matches_platform,
     skill_matches_platform_list,
@@ -386,3 +388,89 @@ class TestNormalizeSkillLookupName:
         monkeypatch.setattr("agent.skill_utils.get_skills_dir", lambda: tmp_path / "skills")
         outside = str(tmp_path / "outside" / "skill")
         assert normalize_skill_lookup_name(outside) == outside
+
+
+# ── parse_frontmatter: UTF-8 BOM tolerance ─────────────────────────────────
+
+
+class TestParseFrontmatterBOM:
+    """A UTF-8 BOM (U+FEFF) on a Windows-saved SKILL.md must not defeat
+    frontmatter parsing.
+
+    Notepad and PowerShell ``>`` prepend a BOM when saving UTF-8;
+    ``read_text(encoding="utf-8")`` (what ``_parse_skill_file`` uses) keeps
+    it, so the bytes handed to ``parse_frontmatter`` start with a BOM ahead of
+    the ``---`` fence. Before the fix the ``startswith("---")`` check returned
+    False and the whole frontmatter was silently dropped — the skill loaded
+    nameless, platform gating fell open, and env-var/config setup never fired.
+    """
+
+    SKILL = (
+        "---\n"
+        "name: my-skill\n"
+        "description: Does a thing.\n"
+        "platforms: [macos]\n"
+        "metadata:\n"
+        "  hermes:\n"
+        "    config:\n"
+        "      - key: my.key\n"
+        "        description: A configured value\n"
+        "---\n\n"
+        "# My Skill\n\nBody text.\n"
+    )
+
+    def test_bom_frontmatter_matches_plain(self):
+        plain_fm, plain_body = parse_frontmatter(self.SKILL)
+        bom_fm, bom_body = parse_frontmatter("\ufeff" + self.SKILL)
+        assert bom_fm == plain_fm
+        assert bom_body == plain_body
+        assert bom_fm["name"] == "my-skill"
+        assert bom_fm["description"] == "Does a thing."
+
+    def test_bom_body_has_no_leading_marker(self):
+        _, body = parse_frontmatter("\ufeff" + self.SKILL)
+        assert not body.startswith("\ufeff")
+        assert body.lstrip().startswith("# My Skill")
+
+    def test_bom_without_frontmatter_strips_marker(self):
+        # A BOM'd file with no frontmatter still gets the invisible marker
+        # removed from the body so it never reaches the system prompt.
+        fm, body = parse_frontmatter("\ufeff# Heading\nText.\n")
+        assert fm == {}
+        assert body == "# Heading\nText.\n"
+
+    def test_interior_bom_is_preserved(self):
+        # Only the leading marker is stripped; a U+FEFF in the body is data.
+        fm, body = parse_frontmatter("\ufeff---\nname: x\n---\nbo\ufeffdy\n")
+        assert fm["name"] == "x"
+        assert "\ufeff" in body
+
+    def test_bom_platform_gating_regression(self):
+        # The concrete harm: a macOS-only skill must stay hidden on non-macOS
+        # whether or not the file carries a BOM. Empty frontmatter (the bug)
+        # reads as "no platform restriction" and leaks the skill everywhere.
+        with patch("agent.skill_utils.sys.platform", "win32"), patch(
+            "agent.skill_utils.is_termux", return_value=False
+        ):
+            plain_fm, _ = parse_frontmatter(self.SKILL)
+            bom_fm, _ = parse_frontmatter("\ufeff" + self.SKILL)
+            assert skill_matches_platform(plain_fm) is False
+            assert skill_matches_platform(bom_fm) is False
+
+    def test_bom_config_vars_preserved(self):
+        # metadata.hermes.config drives secure setup-on-load; it must survive
+        # a BOM so Windows users still get prompted for the value.
+        bom_fm, _ = parse_frontmatter("\ufeff" + self.SKILL)
+        assert [v["key"] for v in extract_skill_config_vars(bom_fm)] == ["my.key"]
+
+    def test_real_file_read_path(self, tmp_path):
+        # End-to-end: write the file the way a Windows editor does (utf-8-sig
+        # emits a BOM), read it the way _parse_skill_file does (plain utf-8),
+        # and confirm the frontmatter survives the round trip.
+        f = tmp_path / "SKILL.md"
+        f.write_text(self.SKILL, encoding="utf-8-sig")
+        raw = f.read_text(encoding="utf-8")
+        assert raw.startswith("\ufeff")  # BOM really is present on disk
+        fm, _ = parse_frontmatter(raw)
+        assert fm["name"] == "my-skill"
+        assert fm["platforms"] == ["macos"]

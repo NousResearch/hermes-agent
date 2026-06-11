@@ -101,3 +101,82 @@ def test_render_shows_multi_board_hint():
 def test_render_no_hint_for_single_board():
     out = r._render_to_string(r.render_board([], board_slug="default", other_board_count=0))
     assert "other board" not in out.lower()
+
+
+# ── Stacked (narrow-terminal) layout ──────────────────────────────────
+
+
+def test_should_stack_narrow_is_true():
+    assert r.should_stack(50, show_all=False) is True
+
+
+def test_should_stack_wide_is_false():
+    assert r.should_stack(200, show_all=False) is False
+
+
+def test_should_stack_show_all_needs_more_width():
+    # 9 columns need more room than 7; a width that fits 7 may not fit 9.
+    assert r.should_stack(120, show_all=True) is True
+    assert r.should_stack(120, show_all=False) is False
+
+
+def test_stacked_returns_group():
+    result = r.render_board_stacked([_make_task("t_001", "x", "todo")], board_slug="default")
+    assert "Group" in type(result).__name__
+
+
+def test_stacked_lists_tasks_under_status_headers():
+    tasks = [
+        _make_task("t_001", "first todo", "todo"),
+        _make_task("t_002", "the runner", "running"),
+    ]
+    out = r._render_to_string(r.render_board_stacked(tasks, board_slug="default"))
+    assert "todo" in out.lower()
+    assert "running" in out.lower()
+    assert "first todo" in out.lower()
+    assert "the runner" in out.lower()
+
+
+def test_stacked_omits_empty_sections():
+    out = r._render_to_string(
+        r.render_board_stacked([_make_task("t_001", "only todo", "todo")], board_slug="default")
+    )
+    assert "todo" in out.lower()
+    # ready/running/blocked sections have no tasks → not printed
+    assert "ready" not in out.lower()
+    assert "blocked" not in out.lower()
+
+
+def test_stacked_collapses_excess():
+    tasks = [_make_task(f"t_{i:03d}", f"task {i}", "todo") for i in range(10)]
+    out = r._render_to_string(r.render_board_stacked(tasks, board_slug="default", limit=5))
+    assert "(+5 hidden)" in out.lower()
+
+
+def test_stacked_show_all_includes_done():
+    tasks = [_make_task("t_001", "finished", "done")]
+    out = r._render_to_string(
+        r.render_board_stacked(tasks, board_slug="default", show_all=True)
+    )
+    assert "done" in out.lower()
+    assert "finished" in out.lower()
+
+
+def test_stacked_done_hidden_by_default():
+    tasks = [_make_task("t_001", "finished", "done")]
+    out = r._render_to_string(r.render_board_stacked(tasks, board_slug="default"))
+    # done is collapsed; with no other tasks the board reads as empty
+    assert "finished" not in out.lower()
+    assert "(no tasks)" in out.lower()
+
+
+def test_stacked_empty_board():
+    out = r._render_to_string(r.render_board_stacked([], board_slug="default"))
+    assert "(no tasks)" in out.lower()
+
+
+def test_stacked_multi_board_hint():
+    out = r._render_to_string(
+        r.render_board_stacked([], board_slug="default", other_board_count=2)
+    )
+    assert "other board" in out.lower()

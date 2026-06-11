@@ -8,8 +8,9 @@ from __future__ import annotations
 
 from typing import Optional
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.table import Table
+from rich.text import Text
 
 from hermes_cli import kanban_db as kb
 
@@ -118,13 +119,93 @@ def render_board(
     return table
 
 
-def _render_to_string(table: Table) -> str:
-    """Render a Table to a plain (uncolored) string for tests.
+# Rough min characters a single status column needs to stay readable.
+_MIN_COL_WIDTH = 16
 
-    Width 200 keeps the nine-column show_all layout from truncating
-    headers, so substring assertions on labels stay reliable.
+
+def _needed_width(show_all: bool) -> int:
+    """Approximate terminal width the columnar board needs to fit."""
+    n = len([c for c in COLUMNS if show_all or c[0] not in _COLLAPSED])
+    return n * _MIN_COL_WIDTH
+
+
+def should_stack(width: int, *, show_all: bool = False) -> bool:
+    """True when the columnar board won't fit ``width`` and the caller
+    should fall back to the vertical stacked layout."""
+    return width < _needed_width(show_all)
+
+
+def render_board_stacked(
+    tasks: list[kb.Task],
+    *,
+    board_slug: str = "default",
+    other_board_count: int = 0,
+    show_all: bool = False,
+    limit: Optional[int] = 5,
+) -> Group:
+    """Vertical board layout for narrow terminals.
+
+    Each non-empty status becomes a section header followed by its task
+    lines, one per line. Fits any width (titles wrap instead of truncating),
+    which makes it the readable choice over SSH from a phone. Same grouping
+    and collapse rules as ``render_board``.
     """
+    visible_statuses = [
+        (status, label, style)
+        for status, label, style in COLUMNS
+        if show_all or status not in _COLLAPSED
+    ]
+
+    title = f"Board: {board_slug}"
+    if other_board_count:
+        plural = "s" if other_board_count != 1 else ""
+        title += f"  (+{other_board_count} other board{plural}; 'hermes kanban boards list')"
+
+    blocks: list = [Text(title, style="bold")]
+
+    if not tasks:
+        blocks.append(Text("(no tasks)", style="dim"))
+        return Group(*blocks)
+
+    grouped: dict[str, list[kb.Task]] = {status: [] for status, _, _ in visible_statuses}
+    for t in tasks:
+        if t.status in grouped:
+            grouped[t.status].append(t)
+        elif t.status in _COLLAPSED:
+            continue  # hidden unless show_all
+        else:
+            grouped.setdefault("todo", []).append(t)
+
+    any_section = False
+    for status, label, style in visible_statuses:
+        col_tasks = grouped[status]
+        if not col_tasks:
+            continue  # skip empty sections — vertical noise
+        any_section = True
+        icon = _STATUS_ICON.get(status, "?")
+        section = Text()
+        section.append(f"\n{icon} {label} ({len(col_tasks)})", style=f"bold {style}")
+        shown = col_tasks if limit is None else col_tasks[:limit]
+        hidden = len(col_tasks) - len(shown)
+        for t in shown:
+            line = f"\n  {t.id} {t.title}" + (f" [{t.assignee}]" if t.assignee else "")
+            section.append(line)
+        if hidden > 0:
+            section.append(f"\n  … (+{hidden} hidden)", style="dim")
+        blocks.append(section)
+
+    if not any_section:
+        # Everything was collapsed (e.g. only done/archived without show_all).
+        blocks.append(Text("(no tasks)", style="dim"))
+
+    return Group(*blocks)
+
+
+def _render_to_string(renderable) -> str:
+    """Render any Rich renderable (Table or Group) to a plain, uncolored
+    string for tests. Width 200 keeps the wide table from truncating its
+    headers, so substring assertions stay reliable."""
     console = Console(width=200, force_terminal=False, color_system=None)
     with console.capture() as capture:
-        console.print(table)
+        console.print(renderable)
     return capture.get()

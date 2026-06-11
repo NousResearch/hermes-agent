@@ -32,6 +32,11 @@ class _FakeAS(BaseHTTPRequestHandler):
             return
         q = parse_qs(parsed.query)
         redirect = q["redirect_uri"][0]
+        # The redirect must be the IP literal matching the bound host — a
+        # `localhost` redirect can resolve to ::1 and miss the IPv4 listener.
+        assert redirect.startswith("http://127.0.0.1:8765"), redirect
+        # The consent screen shows the actual file the grant lands in.
+        assert q["config_path"][0].endswith("honcho.json"), q.get("config_path")
         state = q["state"][0]
         location = f"{redirect}?code=test-auth-code&state={state}"
         self.send_response(302)
@@ -151,6 +156,17 @@ def test_source_tags_the_authorize_link(fake_as):
     assert "source=hermes-cli" in url
     untagged, _ = oauth_flow.begin_authorization(endpoints)
     assert "source=" not in untagged
+
+
+def test_config_path_rides_the_authorize_link(fake_as):
+    endpoints = oauth_flow.resolve_endpoints()
+    url, _ = oauth_flow.begin_authorization(
+        endpoints, config_path="/Users/x/.hermes/profiles/work/honcho.json"
+    )
+    q = parse_qs(urlparse(url).query)
+    assert q["config_path"][0] == "/Users/x/.hermes/profiles/work/honcho.json"
+    bare, _ = oauth_flow.begin_authorization(endpoints)
+    assert "config_path=" not in bare
 
 
 def test_cli_flow_stores_tokens_without_applying_config(tmp_path, fake_as):

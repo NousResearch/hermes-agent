@@ -32,10 +32,11 @@ from plugins.memory.honcho.client import resolve_active_host, resolve_config_pat
 
 logger = logging.getLogger(__name__)
 
-# The loopback redirect registered for the Hermes OAuth client.
+# The loopback redirect registered for the Hermes OAuth client. IP-literal so
+# the browser can't resolve the advertised host to ::1 and miss the IPv4 bind.
 LOOPBACK_HOST = "127.0.0.1"
 LOOPBACK_PORT = 8765
-LOOPBACK_REDIRECT_URI = "http://localhost:8765/callback"
+LOOPBACK_REDIRECT_URI = f"http://{LOOPBACK_HOST}:{LOOPBACK_PORT}/callback"
 
 # Pending authorizations live only until their callback returns; keyed by the
 # CSRF ``state`` so a stray/forged callback can't complete a grant.
@@ -131,13 +132,16 @@ def begin_authorization(
     redirect_uri: str = LOOPBACK_REDIRECT_URI,
     *,
     source: str | None = None,
+    config_path: str | None = None,
     now: float | None = None,
 ) -> tuple[str, str]:
     """Start an authorization: return ``(authorize_url, state)`` and stash PKCE.
 
     ``source`` tags the authorize link with the initiating surface
     (``hermes-desktop`` / ``hermes-cli``) so the consent side can attribute
-    connects and vary behavior per surface.
+    connects and vary behavior per surface. ``config_path`` is the actual file
+    the grant will be written to, shown on the consent screen in place of the
+    manifest's default path (profile-scoped configs differ from it).
     """
     now = time.time() if now is None else now
     verifier, challenge = _pkce()
@@ -156,6 +160,8 @@ def begin_authorization(
     }
     if source:
         params["source"] = source
+    if config_path:
+        params["config_path"] = config_path
     return f"{endpoints.authorize_url}?{urlencode(params)}", state
 
 
@@ -281,7 +287,10 @@ def authorize_via_loopback(
     browserless environments.
     """
     endpoints = resolve_endpoints()
-    authorize_url, state = begin_authorization(endpoints, LOOPBACK_REDIRECT_URI, source=source)
+    path = config_path or resolve_config_path()
+    authorize_url, state = begin_authorization(
+        endpoints, LOOPBACK_REDIRECT_URI, source=source, config_path=str(path)
+    )
 
     if open_url is None:
         import webbrowser
@@ -301,7 +310,7 @@ def authorize_via_loopback(
         endpoints,
         code,
         returned_state,
-        config_path=config_path,
+        config_path=path,
         host=host,
         apply_config=apply_config,
     )
@@ -364,6 +373,10 @@ def start_loopback_flow_background(
     double-clicked button can't open two browser tabs / bind :8765 twice.
     """
     global _flow_thread
+    # Resolve under the caller's profile scope NOW — the worker thread outlives
+    # the request, where a context-local HERMES_HOME override can't reach.
+    config_path = config_path or resolve_config_path()
+    host = host or resolve_active_host()
     with _status_lock:
         if _status.state == "pending" and _flow_thread and _flow_thread.is_alive():
             return {"state": _status.state, "detail": _status.detail}

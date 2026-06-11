@@ -21,6 +21,7 @@
   --ifm-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   --ifm-font-family-monospace: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
 
+  --ifm-background-color: #ffffff;
   --ifm-code-font-size: 90%;
   --ifm-heading-font-weight: 600;
 

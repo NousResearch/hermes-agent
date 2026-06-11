@@ -474,6 +474,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--refresh", type=int, default=5,
         help="Seconds between refreshes in --tail mode (default 5)",
     )
+    p_board.add_argument(
+        "--layout", choices=("auto", "columns", "stack"), default="auto",
+        help="auto (default: stack on narrow terminals), columns (force the "
+             "wide table), or stack (force the vertical list)",
+    )
 
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
@@ -1469,7 +1474,11 @@ def _cmd_board(args: argparse.Namespace) -> int:
 
     from rich.console import Console
 
-    from hermes_cli.kanban_board_render import render_board
+    from hermes_cli.kanban_board_render import (
+        render_board,
+        render_board_stacked,
+        should_stack,
+    )
 
     board_slug = kb.get_current_board()
 
@@ -1513,7 +1522,12 @@ def _cmd_board(args: argparse.Namespace) -> int:
 
     def _render_once() -> None:
         tasks = _fetch_tasks()
-        table = render_board(
+        use_stack = args.layout == "stack" or (
+            args.layout == "auto"
+            and should_stack(console.size.width, show_all=args.show_all)
+        )
+        renderer = render_board_stacked if use_stack else render_board
+        view = renderer(
             tasks,
             board_slug=board_slug,
             other_board_count=other_count,
@@ -1522,7 +1536,7 @@ def _cmd_board(args: argparse.Namespace) -> int:
         )
         if args.tail:
             console.clear()
-        console.print(table)
+        console.print(view)
 
     if args.tail:
         try:

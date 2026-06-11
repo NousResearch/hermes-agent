@@ -28,6 +28,7 @@ const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = requ
 const { runBootstrap } = require('./bootstrap-runner.cjs')
 const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
+const { hasUsableActiveInstall } = require('./active-install.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
@@ -1891,23 +1892,20 @@ function readJson(filePath) {
 //     completedAt:  "<ISO 8601>",
 //     desktopVersion: "<app.getVersion()>"  // for forensics
 //   }
-function readBootstrapMarker() {
-  return readJson(BOOTSTRAP_COMPLETE_MARKER)
-}
-
 function isBootstrapComplete() {
-  const marker = readBootstrapMarker()
-  if (!marker || typeof marker !== 'object') return false
-  if (marker.schemaVersion !== BOOTSTRAP_MARKER_SCHEMA_VERSION) return false
-  if (typeof marker.pinnedCommit !== 'string' || marker.pinnedCommit.length < 7) return false
   // We DELIBERATELY do NOT verify that the checkout is currently at the
   // pinned commit -- users update via the in-app update path or `hermes
   // update`, which moves HEAD legitimately. The marker just attests "we
-  // ran the bootstrap successfully at least once." We DO additionally require
-  // a runnable venv: an interrupted or split-home install can leave the marker
-  // + checkout without a venv, and trusting that spawns a dead backend
-  // ("gateway offline") instead of re-running bootstrap to repair it.
-  return isHermesSourceRoot(ACTIVE_HERMES_ROOT) && fileExists(getVenvPython(VENV_ROOT))
+  // ran the bootstrap successfully at least once."
+  //
+  // Also treat a canonical source root + bundled venv as ready even when the
+  // marker is missing or stale. The bootstrap stages are idempotent, but on
+  // macOS a missing marker can make the launcher fall past the valid venv and
+  // probe /usr/bin/python3 instead; that Python is 3.9 on stock macOS and
+  // cannot import Hermes' PEP-604 syntax, causing an endless reinstall loop.
+  // We still require both source files and the venv python so broken or
+  // half-installed checkouts continue through bootstrap repair.
+  return hasUsableActiveInstall(ACTIVE_HERMES_ROOT, VENV_ROOT)
 }
 
 function writeBootstrapMarker(payload) {

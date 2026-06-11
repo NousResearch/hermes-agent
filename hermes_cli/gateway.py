@@ -3356,6 +3356,19 @@ def generate_launchd_plist() -> str:
         ]
     )
     prog_args_xml = "\n        ".join(prog_args)
+    # LaunchAgents bootstrapped into user/<uid> from SSH/background sessions need
+    # a Background-only session type.  A multi-session Aqua+Background array can
+    # still fail there with `Bootstrap failed: 5: Input/output error`.
+    session_type_xml = (
+        "    <key>LimitLoadToSessionType</key>\n"
+        "    <string>Background</string>\n\n"
+        if _launchd_domain().startswith("user/")
+        else "    <key>LimitLoadToSessionType</key>\n"
+        "    <array>\n"
+        "        <string>Aqua</string>\n"
+        "        <string>Background</string>\n"
+        "    </array>\n\n"
+    )
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -3364,6 +3377,7 @@ def generate_launchd_plist() -> str:
     <key>Label</key>
     <string>{label}</string>
 
+{session_type_xml}
     <key>ProgramArguments</key>
     <array>
         {prog_args_xml}
@@ -3382,12 +3396,6 @@ def generate_launchd_plist() -> str:
         <string>{hermes_home}</string>
     </dict>
 
-    <key>LimitLoadToSessionType</key>
-    <array>
-        <string>Aqua</string>
-        <string>Background</string>
-    </array>
-    
     <key>RunAtLoad</key>
     <true/>
     

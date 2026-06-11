@@ -1061,6 +1061,33 @@ class TestLaunchdDomainDetection:
         domain = gateway_cli._launchd_domain()
         assert domain == f"user/501"
 
+    def test_launchd_plist_uses_background_string_for_user_domain(self, monkeypatch):
+        """user/<uid> LaunchAgents need Background-only session type.
+
+        On SSH/background sessions, launchctl can reject a multi-session
+        Aqua+Background array with `Bootstrap failed: 5: Input/output error`.
+        """
+        self._reset_domain_cache()
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "user/501")
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>LimitLoadToSessionType</key>" in plist
+        assert "<string>Background</string>" in plist
+        assert "<string>Aqua</string>" not in plist
+
+    def test_launchd_plist_allows_aqua_and_background_for_gui_domain(self, monkeypatch):
+        """Desktop gui/<uid> LaunchAgents should retain Aqua compatibility."""
+        self._reset_domain_cache()
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>LimitLoadToSessionType</key>" in plist
+        assert "<array>" in plist
+        assert "<string>Aqua</string>" in plist
+        assert "<string>Background</string>" in plist
+
     def test_caches_result_across_calls(self, monkeypatch):
         """Domain detection should run once and cache the result."""
         self._reset_domain_cache()

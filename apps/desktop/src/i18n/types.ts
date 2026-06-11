@@ -569,6 +569,13 @@ export interface Translations {
     done: string
     streaming: string
     files: string
+    tabs: Record<'overview' | 'timeline' | 'files', string>
+    liveHint: string
+    taskIndex: (index: number, count: number) => string
+    noEvents: string
+    noFiles: string
+    reads: string
+    writes: string
     moreFiles: (count: number) => string
     delegation: (index: number) => string
     workers: (count: number) => string

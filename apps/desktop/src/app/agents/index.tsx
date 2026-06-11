@@ -5,6 +5,7 @@ import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
 import { FadeText } from '@/components/ui/fade-text'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertCircle, CheckCircle2, Sparkles } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
@@ -90,11 +91,11 @@ export function AgentsView({ onClose }: AgentsViewProps) {
   return (
     <OverlayView
       closeLabel={t.agents.close}
-      contentClassName="px-5 pt-5 pb-4 sm:px-6"
+      contentClassName="px-3 pt-4 pb-3 sm:px-5 lg:px-6"
       onClose={onClose}
-      rootClassName="mx-auto max-w-3xl"
+      rootClassName="mx-auto w-full max-w-6xl"
     >
-      <header className="mb-3 shrink-0">
+      <header className="mb-3 flex shrink-0 flex-col gap-1 sm:flex-row sm:items-end sm:justify-between">
         <h2 className="text-sm font-semibold text-foreground">{t.agents.title}</h2>
         <p className="text-xs text-muted-foreground/80">{t.agents.subtitle}</p>
       </header>
@@ -190,6 +191,7 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
   const { t } = useI18n()
   const flat = useMemo(() => flatten(tree), [tree])
   const groups = useMemo(() => groupDelegations(tree), [tree])
+  const [tab, setTab] = useState<'files' | 'overview' | 'timeline'>('overview')
   const [nowMs, setNowMs] = useState(() => Date.now())
 
   const active = flat.filter(n => n.status === 'running' || n.status === 'queued').length
@@ -231,13 +233,131 @@ function SubagentTree({ tree }: { tree: SubagentNode[] }) {
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-4 overflow-hidden">
-      <p className="shrink-0 text-[0.7rem] text-muted-foreground/70">{summary.join(' · ')}</p>
-      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1">
-        <div className="flex min-w-0 flex-col gap-6">
-          {groups.map(group => (
-            <DelegationGroup group={group} key={group.id} nowMs={nowMs} />
-          ))}
+      <div className="flex shrink-0 flex-col gap-3 border-b border-border/70 pb-3 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <p className="text-[0.7rem] text-muted-foreground/70">{summary.join(' · ')}</p>
+          <p className="mt-1 text-[0.66rem] text-muted-foreground/55">{t.agents.liveHint}</p>
         </div>
+        <Tabs className="shrink-0" onValueChange={value => setTab(value as typeof tab)} value={tab}>
+          <TabsList className="h-8 justify-start">
+            <TabsTrigger className="h-6 px-2.5 text-xs" value="overview">
+              {t.agents.tabs.overview}
+            </TabsTrigger>
+            <TabsTrigger className="h-6 px-2.5 text-xs" value="timeline">
+              {t.agents.tabs.timeline}
+            </TabsTrigger>
+            <TabsTrigger className="h-6 px-2.5 text-xs" value="files">
+              {t.agents.tabs.files}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      </div>
+
+      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain pr-1">
+        {tab === 'overview' ? (
+          <div className="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-2">
+            {groups.map(group => (
+              <DelegationGroup group={group} key={group.id} nowMs={nowMs} />
+            ))}
+          </div>
+        ) : tab === 'timeline' ? (
+          <TimelineView nodes={flat} nowMs={nowMs} />
+        ) : (
+          <FilesView nodes={flat} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+function TimelineView({ nodes, nowMs }: { nodes: SubagentNode[]; nowMs: number }) {
+  const { t } = useI18n()
+  const rows = useMemo(
+    () =>
+      nodes
+        .flatMap(node =>
+          node.stream.map((entry, index) => ({
+            entry,
+            id: `${node.id}:${entry.kind}:${entry.at}:${index}`,
+            node
+          }))
+        )
+        .sort((a, b) => b.entry.at - a.entry.at),
+    [nodes]
+  )
+
+  if (rows.length === 0) {
+    return <div className="grid place-items-center py-12 text-sm text-muted-foreground/70">{t.agents.noEvents}</div>
+  }
+
+  return (
+    <div className="grid min-w-0 grid-cols-1 gap-2 xl:grid-cols-2">
+      {rows.map(({ entry, id, node }) => (
+        <div className="min-w-0 rounded-lg border border-border/75 bg-background/40 p-3" key={id}>
+          <div className="mb-2 flex min-w-0 items-center gap-2">
+            {statusGlyph(node.status, t.agents)}
+            <p className="min-w-0 flex-1 truncate text-[0.75rem] font-medium text-foreground/90">{node.goal}</p>
+            <span className="shrink-0 text-[0.62rem] text-muted-foreground/55">
+              {fmtAge(entry.at, nowMs, t.agents)}
+            </span>
+          </div>
+          <StreamLine active={false} entry={entry} parentRunning={false} rowKey={id} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function FilesView({ nodes }: { nodes: SubagentNode[] }) {
+  const { t } = useI18n()
+  const rows = nodes.filter(node => node.filesRead.length > 0 || node.filesWritten.length > 0)
+
+  if (rows.length === 0) {
+    return <div className="grid place-items-center py-12 text-sm text-muted-foreground/70">{t.agents.noFiles}</div>
+  }
+
+  return (
+    <div className="grid min-w-0 grid-cols-1 gap-3 xl:grid-cols-2">
+      {rows.map(node => (
+        <section className="min-w-0 rounded-lg border border-border/75 bg-background/40 p-3" key={node.id}>
+          <div className="mb-3 flex min-w-0 items-start gap-2">
+            {statusGlyph(node.status, t.agents)}
+            <div className="min-w-0 flex-1">
+              <p className="wrap-anywhere text-[0.78rem] font-medium leading-snug text-foreground/90">{node.goal}</p>
+              {node.taskCount > 1 ? (
+                <p className="mt-0.5 text-[0.62rem] text-muted-foreground/55">
+                  {t.agents.taskIndex(node.taskIndex + 1, node.taskCount)}
+                </p>
+              ) : null}
+            </div>
+          </div>
+
+          <FileBucket
+            label={t.agents.writes}
+            paths={node.filesWritten}
+            tone="text-emerald-600/90 dark:text-emerald-400/90"
+          />
+          <FileBucket label={t.agents.reads} paths={node.filesRead} tone="text-muted-foreground/85" />
+        </section>
+      ))}
+    </div>
+  )
+}
+
+function FileBucket({ label, paths, tone }: { label: string; paths: string[]; tone: string }) {
+  if (paths.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="mb-3 last:mb-0">
+      <p className="mb-1 text-[0.58rem] font-medium tracking-wider text-muted-foreground/60 uppercase">{label}</p>
+      <div className="grid min-w-0 gap-1">
+        {paths.map(path => (
+          <p className={cn('break-words font-mono text-[0.68rem] leading-relaxed', tone)} key={path}>
+            {path}
+          </p>
+        ))}
       </div>
     </div>
   )
@@ -253,7 +373,7 @@ function DelegationGroup({ group, nowMs }: { group: RootGroup; nowMs: number }) 
   const activeWorkers = group.nodes.filter(n => n.status === 'running' || n.status === 'queued').length
 
   return (
-    <section className="grid min-w-0 gap-3">
+    <section className="grid min-w-0 gap-3 rounded-lg border border-border/70 bg-background/30 p-3">
       <p className="text-[0.66rem] font-medium uppercase tracking-wider text-muted-foreground/70">
         {group.delegationIndex > 0 ? t.agents.delegation(group.delegationIndex) : ''}{' '}
         <span className="text-muted-foreground/50">·</span> {t.agents.workers(group.nodes.length)}
@@ -330,7 +450,14 @@ function SubagentRow({ node, depth = 0, nowMs }: { node: SubagentNode; depth?: n
   ].filter(Boolean)
 
   return (
-    <div className={cn('grid min-w-0 max-w-full gap-2', depth > 0 && 'pl-4')} data-slot="tool-block" ref={enterRef}>
+    <div
+      className={cn(
+        'grid min-w-0 max-w-full gap-2 rounded-lg border border-border/70 bg-background/35 p-3',
+        depth > 0 && 'pl-4'
+      )}
+      data-slot="tool-block"
+      ref={enterRef}
+    >
       <button
         aria-expanded={open}
         className="group flex w-full min-w-0 items-start gap-2.5 text-left"

@@ -128,6 +128,14 @@ def _chrome_debug_args(port: int) -> list[str]:
     return [
         f"--remote-debugging-port={port}",
         f"--user-data-dir={chrome_debug_data_dir()}",
+        # Chrome/Chromium 111+ rejects CDP WebSocket handshakes with HTTP 403
+        # unless the connecting origin is explicitly allowed. Playwright's
+        # ``connect_over_cdp`` (used by ``/browser connect``) sends an ``Origin``
+        # header, so without this flag the attach fails on modern Chrome. The
+        # debug endpoint binds to loopback on a dedicated profile, so allowing
+        # all origins is scoped to localhost. See:
+        # https://chromium-review.googlesource.com/c/chromium/src/+/4106462
+        "--remote-allow-origins=*",
         "--no-first-run",
         "--no-default-browser-check",
     ]
@@ -181,7 +189,8 @@ def manual_chrome_debug_command(port: int = DEFAULT_BROWSER_CDP_PORT, system: st
         data_dir = chrome_debug_data_dir()
         return (
             f'open -a "Google Chrome" --args --remote-debugging-port={port} '
-            f'--user-data-dir="{data_dir}" --no-first-run --no-default-browser-check'
+            f'--user-data-dir="{data_dir}" --remote-allow-origins=* '
+            f'--no-first-run --no-default-browser-check'
         )
 
     return None

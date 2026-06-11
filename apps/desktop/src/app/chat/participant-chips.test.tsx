@@ -1,20 +1,32 @@
 import { cleanup, render } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { loadCloudChannelParticipants, loadSessionCloudStatus } from '@/lib/cloud-share'
 import { $localDeviceName, $sessionParticipants, setSessionParticipants } from '@/store/session'
 
 import { ParticipantChips } from './participant-chips'
+
+vi.mock('@/lib/cloud-share', () => ({
+  loadCloudChannelParticipants: vi.fn(),
+  loadSessionCloudStatus: vi.fn()
+}))
+
+const mockLoadSessionCloudStatus = vi.mocked(loadSessionCloudStatus)
+const mockLoadCloudChannelParticipants = vi.mocked(loadCloudChannelParticipants)
 
 describe('ParticipantChips', () => {
   beforeEach(() => {
     $sessionParticipants.set({})
     $localDeviceName.set('')
+    mockLoadSessionCloudStatus.mockResolvedValue({ configured: false, shared: false })
+    mockLoadCloudChannelParticipants.mockResolvedValue({ participants: [] })
   })
 
   afterEach(() => {
     cleanup()
     $sessionParticipants.set({})
     $localDeviceName.set('')
+    vi.clearAllMocks()
   })
 
   it('renders nothing when only this device is viewing', () => {
@@ -50,6 +62,18 @@ describe('ParticipantChips', () => {
 
     expect(getByText('omar-iphone')).toBeTruthy()
     expect(getByText('×2')).toBeTruthy()
+  })
+
+  it('renders cloud roster viewers for a shared session', async () => {
+    mockLoadSessionCloudStatus.mockResolvedValue({ channel_id: 'ch_cloud', configured: true, shared: true })
+    mockLoadCloudChannelParticipants.mockResolvedValue({
+      participants: [{ count: 1, device: 'remote-browser' }]
+    })
+
+    const { findByText } = render(<ParticipantChips sessionId="s1" />)
+
+    expect(await findByText('remote-browser')).toBeTruthy()
+    expect(mockLoadCloudChannelParticipants).toHaveBeenCalledWith('ch_cloud', { quiet: true })
   })
 
   it('renders nothing for a session with no roster', () => {

@@ -8,7 +8,7 @@ interface CloudShareResult {
   pushed_seq: number
 }
 
-interface CloudStatusResult {
+export interface CloudStatusResult {
   channel_id?: string
   configured: boolean
   shared: boolean
@@ -200,6 +200,36 @@ export async function copyCloudChannelId(sessionId: string): Promise<void> {
     notify({ kind: 'success', title: 'Copied cloud ID', message: result.channel_id })
   } catch (err) {
     notifyError(err, 'Could not copy the cloud channel ID')
+  }
+}
+
+export async function loadSessionCloudStatus(
+  sessionId: string,
+  options: { quiet?: boolean } = {}
+): Promise<CloudStatusResult | null> {
+  const gateway = activeGateway()
+  const trimmed = sessionId.trim()
+
+  if (!gateway) {
+    if (!options.quiet) {
+      notify({ kind: 'error', title: 'Cloud channel', message: 'Not connected yet — try again in a moment.' })
+    }
+
+    return null
+  }
+
+  if (!trimmed) {
+    return null
+  }
+
+  try {
+    return await gateway.request<CloudStatusResult>('session.cloud_status', { session_id: trimmed })
+  } catch (err) {
+    if (!options.quiet) {
+      notifyError(err, 'Could not load cloud channel status')
+    }
+
+    return null
   }
 }
 

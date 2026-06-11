@@ -10304,6 +10304,10 @@ def cmd_dashboard(args):
                 f"Running a dedicated dashboard for profile '{_launch_profile}' "
                 "(machine-dashboard re-exec is not supported on Windows)."
             )
+            # Mark the launch isolated so any downstream profile-routing checks
+            # treat this exactly like an explicit --isolated invocation rather
+            # than relying on incidental fall-through.
+            args.isolated = True
         else:
             print(
                 f"Routing to the machine dashboard (profile '{_launch_profile}' "

@@ -94,11 +94,15 @@ class TestUnifiedDashboardRouting:
         monkeypatch.setattr(main_mod.sys, "platform", "win32")
         execs = []
         monkeypatch.setattr(main_mod.os, "execvpe", lambda *a, **k: execs.append(a))
-        # Stop before actually starting a server: make the first post-routing
-        # dependency check bail.
+        # Stop before actually starting a server: force the post-routing web-UI
+        # dependency check to bail. Setting the sys.modules entry to None makes
+        # `import fastapi` raise ImportError, which cmd_dashboard converts to a
+        # clean SystemExit(1). Asserting on SystemExit specifically (not a broad
+        # tuple) keeps an unrelated AttributeError/TypeError regression failing
+        # loudly instead of being silently swallowed.
         monkeypatch.setitem(sys.modules, "fastapi", None)
 
-        with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
+        with pytest.raises(SystemExit):
             main_mod.cmd_dashboard(_args())
 
         assert execs == []  # Windows must NOT re-exec (would segfault)

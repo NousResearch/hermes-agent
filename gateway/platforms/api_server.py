@@ -1144,8 +1144,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         Returns gateway state, connected platforms, PID, and uptime so the
         dashboard can display full status without needing a shared PID file or
-        /proc access.  No authentication required.
+        /proc access.  Requires the same Bearer auth as other API routes.
         """
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
         from gateway.status import (
             derive_gateway_busy,
             derive_gateway_drainable,
@@ -4449,22 +4453,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 )
                 return False
 
-            # Refuse to start network-accessible with a placeholder or weak key.
+            # Refuse to start with a placeholder or weak key on any bind address.
             # Ported from openclaw/openclaw#64586; entropy floor raised to 16 in
             # the June 2026 hermes-0day hardening (an 8-char key dispatching
-            # terminal-capable agent work on a public bind is brute-forceable).
-            if is_network_accessible(self._host) and self._api_key:
+            # terminal-capable agent work is brute-forceable).
+            if self._api_key:
                 try:
                     from hermes_cli.auth import has_usable_secret
                     if not has_usable_secret(self._api_key, min_length=16):
                         logger.error(
                             "[%s] Refusing to start: API_SERVER_KEY is a "
-                            "placeholder or too short (<16 chars) for a "
-                            "network-accessible bind. This endpoint dispatches "
-                            "terminal-capable agent work — a guessable key is "
-                            "remote code execution. Generate a strong secret "
-                            "(e.g. `openssl rand -hex 32`) and set "
-                            "API_SERVER_KEY before exposing it on %s.",
+                            "placeholder or too short (<16 chars). This endpoint "
+                            "dispatches terminal-capable agent work — a guessable "
+                            "key is remote code execution. Generate a strong secret "
+                            "(e.g. `openssl rand -hex 32`) and set API_SERVER_KEY "
+                            "before starting the API server on %s.",
                             self.name, self._host,
                         )
                         return False

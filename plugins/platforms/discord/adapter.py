@@ -2765,7 +2765,17 @@ class DiscordAdapter(BasePlatformAdapter):
         has_users = bool(allowed_users)
         has_roles = bool(allowed_roles)
         if not has_users and not has_roles:
-            return True
+            if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+                return True
+            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+                return True
+            # Channel-scoped guild access: when DISCORD_ALLOWED_CHANNELS is
+            # configured, upstream channel gates already verified the message
+            # originated from an allowed channel — authorize guild traffic
+            # without a separate per-user allowlist.
+            if not is_dm and os.getenv("DISCORD_ALLOWED_CHANNELS", "").strip():
+                return True
+            return False
         # Check user ID allowlist (works for both DMs and guild messages)
         if has_users and user_id in allowed_users:
             return True
@@ -2903,11 +2913,14 @@ class DiscordAdapter(BasePlatformAdapter):
         if user is None or getattr(user, "id", None) is None:
             # No identifiable user. With any user/role allowlist
             # configured, fail closed rather than raise AttributeError
-            # on ``interaction.user.id`` below. With no allowlist this
-            # is the existing "no allowlist = everyone" backwards-compat.
+            # on ``interaction.user.id`` below.
             if allowed_users or allowed_roles:
                 return (False, "missing interaction.user with allowlist configured")
-            return (True, None)
+            if os.getenv("DISCORD_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+                return (True, None)
+            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+                return (True, None)
+            return (False, "missing interaction.user without allow-all opt-in")
 
         user_id = str(user.id)
         # Pass guild + is_dm so role check is scoped to the originating

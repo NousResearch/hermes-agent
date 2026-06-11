@@ -776,7 +776,17 @@ class EmailAdapter(BasePlatformAdapter):
         # a race between dispatch and authorization can result in the adapter
         # sending a reply even though the handler returned None.
         allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
-        if allowed_raw:
+        if not allowed_raw:
+            if os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
+                os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"}
+            ):
+                logger.debug(
+                    "[Email] Dropping sender at dispatch — EMAIL_ALLOWED_USERS is unset "
+                    "and open access is not opted in: %s",
+                    sender_addr,
+                )
+                return
+        else:
             allowed = {addr.strip().lower() for addr in allowed_raw.split(",") if addr.strip()}
             if sender_addr.lower() not in allowed:
                 logger.debug("[Email] Dropping non-allowlisted sender at dispatch: %s", sender_addr)

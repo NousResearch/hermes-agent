@@ -176,21 +176,28 @@ def _make_interaction(
 
 
 @pytest.mark.asyncio
-async def test_no_allowlist_allows_everyone(adapter):
-    """SECURITY-CRITICAL backwards-compat: deployments without any allowlist
-    env vars set must see ZERO behavior change. on_message lets everyone
-    through in this case (returns True at line 1890); slash must do the same.
-    """
+async def test_no_allowlist_denies_without_opt_in(adapter):
+    """Without allowlists or allow-all flags, Discord traffic is denied."""
     interaction = _make_interaction("999999999")
-    assert await adapter._check_slash_authorization(interaction, "/help") is True
-    interaction.response.send_message.assert_not_awaited()
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_awaited()
 
 
 @pytest.mark.asyncio
-async def test_no_allowlist_dm_also_allowed(adapter):
-    """Same for DMs — no allowlist means no restriction, matching on_message."""
+async def test_no_allowlist_dm_denied_without_opt_in(adapter):
+    """DM slash commands follow the same fail-closed default."""
     interaction = _make_interaction("999999999", in_dm=True)
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_no_allowlist_allows_with_gateway_allow_all(adapter, monkeypatch):
+    """Explicit ``GATEWAY_ALLOW_ALL_USERS`` restores open Discord access."""
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    interaction = _make_interaction("999999999")
     assert await adapter._check_slash_authorization(interaction, "/help") is True
+    interaction.response.send_message.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -277,10 +284,10 @@ async def test_channel_allowlist_wildcard_passes(adapter, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_channel_allowlist_does_not_apply_to_dms(adapter, monkeypatch):
-    """DMs aren't channel-gated — they go through on_message's DM lockdown."""
+    """DMs ignore channel allowlists and still require user allowlist or opt-in."""
     monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "1111")
     interaction = _make_interaction("100200300", in_dm=True)
-    assert await adapter._check_slash_authorization(interaction, "/help") is True
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
 
 
 # ---------------------------------------------------------------------------
@@ -432,11 +439,10 @@ async def test_missing_channel_id_rejected_when_channel_policy_configured(
 
 
 @pytest.mark.asyncio
-async def test_missing_channel_id_allowed_when_no_channel_policy(adapter):
-    """No DISCORD_ALLOWED_CHANNELS configured + missing channel id: still
-    pass through the channel block (matches no-allowlist default)."""
+async def test_missing_channel_id_denied_without_allowlists(adapter):
+    """No channel or user policy configured: fail closed by default."""
     interaction = _make_interaction("100200300", channel_id=None)
-    assert await adapter._check_slash_authorization(interaction, "/help") is True
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
 
 
 @pytest.mark.asyncio
@@ -451,12 +457,10 @@ async def test_missing_user_rejected_when_allowlist_configured(adapter):
 
 
 @pytest.mark.asyncio
-async def test_missing_user_allowed_when_no_allowlist_configured(adapter):
-    """interaction.user is None but no allowlist configured: allow
-    (preserves no-allowlist back-compat -- anyone is allowed when no
-    policy is in effect)."""
+async def test_missing_user_denied_when_no_allowlist_configured(adapter):
+    """interaction.user is None without allow-all opt-in: fail closed."""
     interaction = _make_interaction("100200300", user=None)
-    assert await adapter._check_slash_authorization(interaction, "/help") is True
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
 
 
 # ---------------------------------------------------------------------------

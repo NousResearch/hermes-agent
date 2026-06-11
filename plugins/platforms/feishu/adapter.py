@@ -4118,6 +4118,14 @@ class FeishuAdapter(BasePlatformAdapter):
                 return "bot_not_mentioned"
 
         if not is_group:
+            if os.getenv("FEISHU_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+                return None
+            if os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in {"true", "1", "yes"}:
+                return None
+            if not self._allowed_group_users:
+                return "dm_policy_rejected"
+            if not (sender_ids and (sender_ids & self._allowed_group_users)):
+                return "dm_policy_rejected"
             return None
 
         if not self._allow_group_message(

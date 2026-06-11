@@ -256,11 +256,11 @@ def test_user_id_allowlist_works_in_guild():
     )
 
 
-def test_empty_allowlists_allow_everyone():
+def test_empty_allowlists_deny_without_opt_in():
     adapter = _make_adapter()
     assert (
         adapter._is_allowed_user("42", author=None, guild=None, is_dm=True)
-        is True
+        is False
     )
 
 

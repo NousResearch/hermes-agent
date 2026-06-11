@@ -5869,10 +5869,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if not _any_allowlist and not _allow_all:
             logger.warning(
-                "No user allowlists configured. All unauthorized users will be denied. "
-                "Set GATEWAY_ALLOW_ALL_USERS=true in ~/.hermes/.env to allow open access, "
-                "or configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id)."
+                "No env user allowlists configured. Messaging platforms default to "
+                "pairing/allowlist policies and will deny unknown senders unless you "
+                "configure platform allowlists (e.g., TELEGRAM_ALLOWED_USERS=your_id) "
+                "or explicitly opt in with GATEWAY_ALLOW_ALL_USERS=true plus "
+                "dm_policy/group_policy: open on the platform."
             )
+
+        _own_policy_open_env = {
+            Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
+            Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
+            Platform.YUANBAO: ("YUANBAO_DM_POLICY", "YUANBAO_GROUP_POLICY", "YUANBAO_ALLOW_ALL_USERS"),
+            Platform.QQBOT: (None, None, "QQ_ALLOW_ALL_USERS"),
+            Platform.WHATSAPP: ("WHATSAPP_DM_POLICY", "WHATSAPP_GROUP_POLICY", "WHATSAPP_ALLOW_ALL_USERS"),
+        }
+        for platform, platform_config in getattr(self.config, "platforms", {}).items():
+            if not getattr(platform_config, "enabled", False):
+                continue
+            open_env = _own_policy_open_env.get(platform)
+            if not open_env:
+                continue
+            dm_env, group_env, allow_all_env = open_env
+            extra = getattr(platform_config, "extra", None) or {}
+            dm_policy = str(
+                extra.get("dm_policy")
+                or (os.getenv(dm_env, "pairing") if dm_env else "pairing")
+            ).strip().lower()
+            group_policy = str(
+                extra.get("group_policy")
+                or (os.getenv(group_env, "pairing") if group_env else "pairing")
+            ).strip().lower()
+            if dm_policy != "open" and group_policy != "open":
+                continue
+            platform_opted_in = _allow_all or (
+                allow_all_env
+                and os.getenv(allow_all_env, "").lower() in {"true", "1", "yes"}
+            )
+            if platform_opted_in:
+                continue
+            reason = f"{platform.value}: open policy without allow-all opt-in"
+            logger.error(
+                "Refusing to start: %s has dm_policy/group_policy set to 'open' "
+                "but neither GATEWAY_ALLOW_ALL_USERS nor %s is enabled.",
+                platform.value,
+                allow_all_env or "a platform allow-all flag",
+            )
+            try:
+                from gateway.status import write_runtime_status
+                write_runtime_status(gateway_state="startup_failed", exit_reason=reason)
+            except Exception:
+                pass
+            self._request_clean_exit(reason)
+            return True
         
         # Discover Python plugins before shell hooks so plugin block
         # decisions take precedence in tie cases.  The CLI startup path

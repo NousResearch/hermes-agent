@@ -28,9 +28,9 @@ def _make_adapter(require_mention=None, mention_patterns=None, free_response_cha
     adapter.platform = Platform.WHATSAPP
     adapter.config = PlatformConfig(enabled=True, extra=extra)
     adapter._message_handler = AsyncMock()
-    adapter._dm_policy = str(extra.get("dm_policy", "open")).strip().lower()
+    adapter._dm_policy = str(extra.get("dm_policy", "pairing")).strip().lower()
     adapter._allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("allow_from"))
-    adapter._group_policy = str(extra.get("group_policy", "open")).strip().lower()
+    adapter._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
     adapter._group_allow_from = WhatsAppAdapter._coerce_allow_list(extra.get("group_allow_from"))
     adapter._mention_patterns = adapter._compile_mention_patterns()
     adapter._free_response_chats = adapter._whatsapp_free_response_chats()

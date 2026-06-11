@@ -150,6 +150,19 @@ def test_own_policy_allowlist_authorized_without_env_allowlist(monkeypatch, plat
 
 
 @pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
+def test_own_policy_open_dm_authorized_with_gateway_allow_all(monkeypatch, platform):
+    """Explicit ``GATEWAY_ALLOW_ALL_USERS`` unlocks ``dm_policy: open``."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    config = GatewayConfig(
+        platforms={platform: PlatformConfig(enabled=True, extra={"dm_policy": "open"})}
+    )
+    runner, _adapter = _make_runner(platform, config, enforces=True)
+
+    assert runner._is_user_authorized(_source(platform)) is True
+
+
+@pytest.mark.parametrize("platform", _OWN_POLICY_PLATFORMS)
 def test_own_policy_open_dm_not_authorized_without_allowlist(monkeypatch, platform):
     """``dm_policy: open`` forwards everyone → NOT authorization (SECURITY.md §2.6).
 

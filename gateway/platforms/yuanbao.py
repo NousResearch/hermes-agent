@@ -5050,7 +5050,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         # ------------------------------------------------------------------
         dm_policy: str = (
             _extra.get("dm_policy")
-            or os.getenv("YUANBAO_DM_POLICY", "open")
+            or os.getenv("YUANBAO_DM_POLICY", "pairing")
         ).strip().lower()
 
         _dm_allow_from_raw: str = (
@@ -5061,7 +5061,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
 
         group_policy: str = (
             _extra.get("group_policy")
-            or os.getenv("YUANBAO_GROUP_POLICY", "open")
+            or os.getenv("YUANBAO_GROUP_POLICY", "pairing")
         ).strip().lower()
 
         _group_allow_from_raw: str = (

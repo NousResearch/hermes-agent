@@ -57,7 +57,7 @@ class TestQQAdapterInit:
 
     def test_dm_policy_default(self):
         adapter = self._make(app_id="a", client_secret="b")
-        assert adapter._dm_policy == "open"
+        assert adapter._dm_policy == "pairing"
 
     def test_dm_policy_explicit(self):
         adapter = self._make(app_id="a", client_secret="b", dm_policy="allowlist")
@@ -65,7 +65,7 @@ class TestQQAdapterInit:
 
     def test_group_policy_default(self):
         adapter = self._make(app_id="a", client_secret="b")
-        assert adapter._group_policy == "open"
+        assert adapter._group_policy == "pairing"
 
     def test_allow_from_parsing_string(self):
         adapter = self._make(app_id="a", client_secret="b", allow_from="x, y , z")

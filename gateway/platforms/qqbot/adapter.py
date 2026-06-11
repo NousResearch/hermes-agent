@@ -12,9 +12,9 @@ Configuration in config.yaml:
           app_id: "your-app-id"            # or QQ_APP_ID env var
           client_secret: "your-secret"     # or QQ_CLIENT_SECRET env var
           markdown_support: true           # enable QQ markdown (msg_type 2)
-          dm_policy: "open"                # open | allowlist | disabled
+          dm_policy: "pairing"             # open | allowlist | disabled | pairing
           allow_from: ["openid_1"]
-          group_policy: "open"             # open | allowlist | disabled
+          group_policy: "pairing"          # open | allowlist | disabled | pairing
           group_allow_from: ["group_openid_1"]
           stt:                             # Voice-to-text config (optional)
             provider: "zai"                # zai (GLM-ASR), openai (Whisper), etc.
@@ -208,11 +208,11 @@ class QQAdapter(BasePlatformAdapter):
         self._markdown_support = bool(extra.get("markdown_support", True))
 
         # Auth/ACL policies
-        self._dm_policy = str(extra.get("dm_policy", "open")).strip().lower()
+        self._dm_policy = str(extra.get("dm_policy", "pairing")).strip().lower()
         self._allow_from = _coerce_list(
             extra.get("allow_from") or extra.get("allowFrom")
         )
-        self._group_policy = str(extra.get("group_policy", "open")).strip().lower()
+        self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(
             extra.get("group_allow_from") or extra.get("groupAllowFrom")
         )

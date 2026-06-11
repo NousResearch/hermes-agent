@@ -1193,7 +1193,7 @@ class WeixinAdapter(BasePlatformAdapter):
         )
         self._rate_limit_circuit_until = 0.0
         self._rate_limit_events: List[float] = []
-        self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "open")).strip().lower()
+        self._dm_policy = str(extra.get("dm_policy") or os.getenv("WEIXIN_DM_POLICY", "pairing")).strip().lower()
         self._group_policy = str(extra.get("group_policy") or os.getenv("WEIXIN_GROUP_POLICY", "disabled")).strip().lower()
         allow_from = extra.get("allow_from")
         if allow_from is None:

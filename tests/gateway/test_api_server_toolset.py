@@ -1,9 +1,6 @@
 """Tests for hermes-api-server toolset and API server tool availability."""
-import os
-import json
 from unittest.mock import patch, MagicMock
 
-import pytest
 
 from toolsets import resolve_toolset, get_toolset, validate_toolset
 

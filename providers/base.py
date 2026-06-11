@@ -21,6 +21,20 @@ logger = logging.getLogger(__name__)
 OMIT_TEMPERATURE = object()
 
 
+def _profile_user_agent() -> str:
+    """Return a ``hermes-cli/<version>`` UA string, with a stable fallback.
+
+    Used by ``ProviderProfile.fetch_models`` so the catalog probe is not
+    served the default ``Python-urllib/<ver>`` UA — some providers
+    (OpenCode Zen, etc.) sit behind a WAF that returns 403 for that.
+    """
+    try:
+        from hermes_cli import __version__ as _ver  # lazy: avoid layer cycle at import time
+        return f"hermes-cli/{_ver}"
+    except Exception:
+        return "hermes-cli"
+
+
 @dataclass
 class ProviderProfile:
     """Base provider profile — subclass or instantiate with overrides."""
@@ -40,6 +54,23 @@ class ProviderProfile:
     base_url: str = ""
     models_url: str = ""  # explicit models endpoint; falls back to {base_url}/models
     auth_type: str = "api_key"   # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    supports_health_check: bool = True  # False → doctor skips /models probe for this provider
+
+    # ── Vision support ────────────────────────────────────────
+    # True when the provider's API accepts image content inside
+    # tool-result messages natively.  Set on providers that expose
+    # multimodal models via tool results (Anthropic Messages API,
+    # OpenAI Chat Completions, Gemini, MiniMax, etc.).
+    # Falls back to model-catalog lookup when False and the provider
+    # has no registered profile.
+    supports_vision: bool = False
+
+    # True when the provider's API accepts list-type tool message
+    # content (multipart with image_url parts).  Defaults to True for
+    # backward compatibility.  Set to False for providers that accept
+    # multimodal user messages but reject list-type tool content
+    # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
+    supports_vision_tool_messages: bool = True
 
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
@@ -114,6 +145,20 @@ class ProviderProfile:
         """
         return {}, {}
 
+    def get_max_tokens(self, model: str | None) -> int | None:
+        """Return the default max_tokens cap for *model*.
+
+        Overrideable hook for providers that need per-model output caps —
+        e.g. a relay that fronts several upstream backends, each with a
+        different completion-token limit. The transport calls this when
+        the user hasn't set an explicit max_tokens.
+
+        Default: return self.default_max_tokens (the static profile field),
+        ignoring the model name. Override in a subclass to vary the cap
+        per-model.
+        """
+        return self.default_max_tokens
+
     def fetch_models(
         self,
         *,
@@ -152,6 +197,10 @@ class ProviderProfile:
         if api_key:
             req.add_header("Authorization", f"Bearer {api_key}")
         req.add_header("Accept", "application/json")
+        # Some providers (e.g. OpenCode Zen) sit behind a WAF that blocks
+        # the default ``Python-urllib/<ver>`` User-Agent.  Set a generic
+        # hermes-cli UA so the catalog endpoint is reachable.
+        req.add_header("User-Agent", _profile_user_agent())
         for k, v in self.default_headers.items():
             req.add_header(k, v)
 

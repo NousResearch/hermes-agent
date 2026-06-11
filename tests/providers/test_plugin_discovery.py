@@ -8,11 +8,9 @@ Verifies that:
 
 from __future__ import annotations
 
-import importlib
 import sys
 from pathlib import Path
 
-import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -46,14 +44,26 @@ def test_bundled_plugins_discovered():
         assert (child / "plugin.yaml").exists(), f"{child.name} missing plugin.yaml"
 
 
-def test_all_33_profiles_register():
-    """After discovery, the registry must contain exactly 33 distinct profiles."""
+def test_all_profiles_register():
+    """After discovery, the registry must contain every bundled provider directory.
+
+    This is an invariant — the number of profiles matches the number of plugin
+    directories, not a hardcoded count. Counts shift when providers are
+    added/removed; that's expected and shouldn't break CI.
+    """
     _clear_provider_caches()
     from providers import list_providers
 
+    plugins_dir = REPO_ROOT / "plugins" / "model-providers"
+    plugin_dir_count = sum(1 for c in plugins_dir.iterdir() if c.is_dir())
+
     profiles = list_providers()
     names = sorted(p.name for p in profiles)
-    assert len(names) == 33, f"Expected 33 profiles, got {len(names)}: {names}"
+    # Some plugin __init__.py files register multiple profiles, so the registry
+    # count is >= the directory count (never less).
+    assert len(names) >= plugin_dir_count, (
+        f"Expected at least {plugin_dir_count} profiles (one per plugin dir), got {len(names)}: {names}"
+    )
 
     # Spot-check representative providers from different categories
     for required in (

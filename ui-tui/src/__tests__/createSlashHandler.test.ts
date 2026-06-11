@@ -11,11 +11,45 @@ describe('createSlashHandler', () => {
     resetUiState()
   })
 
-  it('opens the resume picker locally', () => {
+  it('opens the unified sessions overlay for /resume', () => {
     const ctx = buildCtx()
 
     expect(createSlashHandler(ctx)('/resume')).toBe(true)
-    expect(getOverlayState().picker).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
+  })
+
+  it('resumes a prior session by id when /resume has an argument', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
+    expect(ctx.session.resumeById).toHaveBeenCalledWith('sid-old')
+    expect(getOverlayState().sessions).toBe(false)
+  })
+
+  it('opens the unified sessions overlay locally even when the current session is busy', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/sessions')).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
+    expect(ctx.session.guardBusySessionSwitch).not.toHaveBeenCalled()
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('blocks immediate resume-by-id while a turn is busy', () => {
+    patchUiState({ busy: true, sid: 'sid-abc' })
+    const ctx = buildCtx({ session: { ...buildSession(), guardBusySessionSwitch: vi.fn(() => true) } })
+
+    expect(createSlashHandler(ctx)('/resume sid-old')).toBe(true)
+    expect(ctx.session.guardBusySessionSwitch).toHaveBeenCalled()
+    expect(ctx.session.resumeById).not.toHaveBeenCalled()
+  })
+
+  it('treats /session (singular) as an alias of the sessions overlay', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/session')).toBe(true)
+    expect(getOverlayState().sessions).toBe(true)
   })
 
   it('handles /redraw locally without slash worker fallback', () => {
@@ -32,6 +66,21 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/quit')).toBe(true)
     expect(ctx.session.die).toHaveBeenCalledTimes(1)
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('handles /update locally and exits with code 42 via dieWithCode', () => {
+    vi.useFakeTimers()
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/update')).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('exiting TUI to run update...')
+
+    // Advance past the 100ms setTimeout
+    vi.advanceTimersByTime(150)
+    expect(ctx.session.dieWithCode).toHaveBeenCalledWith(42)
+
+    vi.useRealTimers()
   })
 
   it('routes /status to live session.status instead of slash worker', async () => {
@@ -59,6 +108,7 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/model x-model')).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model'
@@ -79,6 +129,7 @@ describe('createSlashHandler', () => {
       createSlashHandler(ctx)(`/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`)
     ).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
@@ -91,6 +142,7 @@ describe('createSlashHandler', () => {
 
     createSlashHandler(ctx)('/model x-model --global')
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      confirm_expensive_model: false,
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model --global'
@@ -205,6 +257,21 @@ describe('createSlashHandler', () => {
 
     expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', 'sprint planning')
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it('keeps visible scrollback when branching a TUI session', async () => {
+    patchUiState({ sid: 'sid-parent' })
+    const rpc = vi.fn(() => Promise.resolve({ session_id: 'sid-branch', title: 'branch title' }))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/branch branch title')).toBe(true)
+
+    expect(rpc).toHaveBeenCalledWith('session.branch', { name: 'branch title', session_id: 'sid-parent' })
+    await vi.waitFor(() => {
+      expect(getUiState().sid).toBe('sid-branch')
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('branched → branch title')
+    })
+    expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
   })
 
   it('reloads skills in the live gateway and refreshes the catalog', async () => {
@@ -372,8 +439,8 @@ describe('createSlashHandler', () => {
       Promise.resolve({
         connected: false,
         messages: [
-          "Chrome isn't running with remote debugging — attempting to launch...",
-          'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+          "Chromium-family browser isn't running with remote debugging — attempting to launch...",
+          'Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect'
         ],
         url: 'http://127.0.0.1:9222'
       })
@@ -382,14 +449,14 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
 
     expect(createSlashHandler(ctx)('/browser connect')).toBe(true)
-    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chrome remote debugging at http://127.0.0.1:9222...')
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('checking Chromium-family browser remote debugging at http://127.0.0.1:9222...')
 
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        "Chrome isn't running with remote debugging — attempting to launch..."
+        "Chromium-family browser isn't running with remote debugging — attempting to launch..."
       )
       expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        'Browser not connected — start Chrome with remote debugging and retry /browser connect'
+        'Browser not connected — start a Chromium-family browser with remote debugging and retry /browser connect'
       )
       expect(ctx.transcript.sys).not.toHaveBeenCalledWith('browser connect failed')
     })
@@ -730,6 +797,7 @@ const buildComposer = () => ({
 const buildGateway = () => ({
   gw: {
     getLogTail: vi.fn(() => ''),
+    kill: vi.fn(),
     request: vi.fn(() => Promise.resolve({}))
   },
   rpc: vi.fn(() => Promise.resolve({}))
@@ -746,7 +814,9 @@ const buildLocal = () => ({
 const buildSession = () => ({
   closeSession: vi.fn(() => Promise.resolve(null)),
   die: vi.fn(),
+  dieWithCode: vi.fn(),
   guardBusySessionSwitch: vi.fn(() => false),
+  newLiveSession: vi.fn(),
   newSession: vi.fn(),
   resetVisibleHistory: vi.fn(),
   resumeById: vi.fn(),
@@ -764,7 +834,8 @@ const buildTranscript = () => ({
 
 const buildVoice = () => ({
   setVoiceEnabled: vi.fn(),
-  setVoiceRecordKey: vi.fn()
+  setVoiceRecordKey: vi.fn(),
+  setVoiceTts: vi.fn()
 })
 
 interface Ctx {

@@ -48,8 +48,14 @@ def _process_group_snapshot(pgid: int) -> str:
     ).stdout.strip()
 
 
-def _wait_for_pgid_exit(pgid: int, timeout: float = 10.0) -> bool:
-    """Wait for a process group to disappear under loaded xdist hosts."""
+def _wait_for_pgid_exit(pgid: int, timeout: float = 30.0) -> bool:
+    """Wait for a process group to disappear under loaded xdist hosts.
+
+    The cleanup chain is: SIGTERM → 3s TimeoutStopSec → SIGKILL → reap.
+    Under heavy xdist load (40 parallel workers, 6-shard CI), the full
+    sequence can exceed 10s. Default timeout is generous to avoid CI
+    flakes; in practice the wait returns in <1s on quiet hosts.
+    """
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if not _pgid_still_alive(pgid):
@@ -155,7 +161,6 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         # way CPython's signal machinery would.  We use ctypes.PyThreadState_SetAsyncExc
         # which is how signal delivery to non-main threads is simulated.
         import ctypes
-        import sys as _sys
         # py-thread-state exception targets need the ident, not the Thread
         tid = t.ident
         assert tid is not None
@@ -166,9 +171,11 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         assert ret == 1, f"SetAsyncExc returned {ret}, expected 1"
 
         # Give the worker a moment to: hit the exception at the next poll,
-        # run the except-block cleanup (_kill_process), and exit.
-        t.join(timeout=5.0)
-        assert not t.is_alive(), "worker didn't exit within 5 s of the interrupt"
+        # run the except-block cleanup (_kill_process), and exit.  Under
+        # xdist load the SIGTERM → 3s wait → SIGKILL chain can take longer
+        # than 5s before the worker's join() returns; bumped to 15s.
+        t.join(timeout=15.0)
+        assert not t.is_alive(), "worker didn't exit within 15 s of the interrupt"
 
         # The critical assertion: the subprocess GROUP must be dead.  Not
         # just the bash wrapper — the 'sleep 30' child too. Under xdist load,

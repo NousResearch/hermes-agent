@@ -99,6 +99,7 @@ from agent.process_bootstrap import (
     OpenAI,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.OpenAI")
     _SafeWriter,  # noqa: F401  # re-exported for tests that `from run_agent import _SafeWriter`
     _get_proxy_for_base_url,
+    _get_tls_ssl_context,
 )
 from agent.iteration_budget import IterationBudget
 
@@ -3433,9 +3434,21 @@ class AIAgent:
             # Explicitly read proxy settings while still honoring NO_PROXY for
             # loopback / local endpoints such as a locally hosted sub2api.
             _proxy = _get_proxy_for_base_url(base_url)
+            # HERMES_TLS_MAX_VERSION caps the TLS handshake (#44365: some CDN
+            # edges kill TLS 1.3 ClientHellos mid-handshake).  httpx ignores
+            # client-level ``verify`` when an explicit ``transport`` is
+            # passed, so the context must go on the transport itself; it is
+            # also passed to the Client so the proxy mount built internally
+            # from ``proxy=`` inherits the same cap.
+            _ssl_ctx = _get_tls_ssl_context()
+            _transport_kwargs: dict = {"socket_options": _sock_opts}
+            _client_kwargs: dict = {"proxy": _proxy}
+            if _ssl_ctx is not None:
+                _transport_kwargs["verify"] = _ssl_ctx
+                _client_kwargs["verify"] = _ssl_ctx
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts),
-                proxy=_proxy,
+                transport=_httpx.HTTPTransport(**_transport_kwargs),
+                **_client_kwargs,
             )
         except Exception:
             return None

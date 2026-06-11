@@ -76,6 +76,7 @@ AUTHOR_MAP = {
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "dirtyren@users.noreply.github.com": "dirtyren",
     "mharris@parallel.ai": "NormallyGaussian",
+    "roger@roger.local": "mollusk",
     "ted.malone@outlook.com": "temalo",
     "adityamalik2833@gmail.com": "alarcritty",
     "islam666@users.noreply.github.com": "islam666",

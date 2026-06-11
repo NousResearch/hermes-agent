@@ -25,6 +25,14 @@ from tools import approval as A
 from tools.thread_context import propagate_context_to_thread
 
 
+@pytest.fixture(autouse=True)
+def _reset_session_contextvars():
+    yield
+    from gateway.session_context import _UNSET, _VAR_MAP
+    for var in _VAR_MAP.values():
+        var.set(_UNSET)
+
+
 # ---------------------------------------------------------------------------
 # 1. Context + callback propagation helper
 # ---------------------------------------------------------------------------
@@ -165,6 +173,26 @@ def test_guard_cron_deny_blocks(monkeypatch):
     res = A.check_execute_code_guard("import os", "local")
     assert res["approved"] is False
     assert res["outcome"] == "blocked"
+
+
+def test_guard_live_gateway_ignores_stale_cron_env(monkeypatch, gw_session):
+    """Stale process cron env must not block live gateway execute_code approval."""
+    from gateway.session_context import clear_session_vars, set_session_vars
+
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+    monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+    monkeypatch.setattr(A, "_get_approval_mode", lambda: "manual")
+    monkeypatch.setattr(A, "_get_cron_approval_mode", lambda: "deny")
+
+    tokens = set_session_vars(platform="discord", chat_id="live-chat", session_key=gw_session)
+    try:
+        _register_resolver(gw_session, "once")
+        res = A.check_execute_code_guard("import os; print(1)", "local")
+        assert res["approved"] is True
+        assert res.get("user_approved") is True
+        assert res.get("outcome") != "blocked"
+    finally:
+        clear_session_vars(tokens)
 
 
 def test_guard_gateway_user_approves_is_one_shot(gw_session):

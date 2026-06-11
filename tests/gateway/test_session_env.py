@@ -139,6 +139,30 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
 
 
+def test_live_session_masks_stale_cron_env(monkeypatch):
+    """Gateway session context should hide stale process-level cron markers."""
+    monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
+
+    tokens = set_session_vars(platform="discord", session_key="live-session")
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+    clear_session_vars(tokens)
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+
+def test_cron_session_contextvar_overrides_absent_env(monkeypatch):
+    """Cron identity can be scoped to the current context without os.environ."""
+    monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
+
+    tokens = set_session_vars(cron_session="1")
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
+
+    clear_session_vars(tokens)
+    assert get_session_env("HERMES_CRON_SESSION") == ""
+
+
 def test_get_session_env_default_when_nothing_set(monkeypatch):
     """get_session_env returns default when neither contextvar nor env is set."""
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)

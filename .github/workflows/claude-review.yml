@@ -9,7 +9,7 @@ on:
     types: [created]
 
 permissions:
-  contents: read
+  contents: write
   pull-requests: write
   issues: write
   id-token: write
@@ -18,7 +18,8 @@ jobs:
   claude-review:
     if: |
       github.actor != 'dependabot[bot]' &&
-      github.actor != 'github-actions[bot]'
+      github.actor != 'github-actions[bot]' &&
+      github.actor != 'claude[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,8 +31,9 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           prompt: |
             Review this PR for correctness bugs, security issues, type safety,
-            and test coverage gaps on changed behaviour. Post inline comments on
-            specific lines where actionable. Skip style nits caught by the
-            project linter.
-          claude_args: "--model claude-sonnet-4-6 --max-turns 5"
+            and test coverage gaps on changed behaviour. For each issue found:
+            fix it directly in the code and commit the fix to this branch. After
+            fixing, leave a brief PR comment summarising what was changed and
+            why. Skip style nits caught by the project linter.
+          claude_args: "--model claude-sonnet-4-6 --max-turns 10"
 

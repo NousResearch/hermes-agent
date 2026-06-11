@@ -26,6 +26,7 @@ except ModuleNotFoundError:
 import logging
 import os
 import shutil
+import shlex
 import sys
 import json
 import re
@@ -3003,6 +3004,65 @@ def _looks_like_slash_command(text: str) -> bool:
     # After stripping the leading /, a command name has no slashes.
     # A path like /Users/foo/bar.md always does.
     return "/" not in first_word[1:]
+
+
+_LOCAL_HERMES_COMMANDS: dict[str, set[str] | None] = {
+    "config": None,
+    "debug": None,
+    "model": None,
+    "gateway": {"stop", "status", "list"},
+}
+
+
+def _split_local_hermes_command(text: str) -> list[str] | None:
+    """Return argv for local Hermes control commands typed in chat.
+
+    A user with an exhausted model account can still need local commands like
+    ``hermes gateway stop`` or ``hermes config set ...``.  Without this guard,
+    the classic REPL sends those shell-looking strings to the LLM first, which
+    deadlocks on provider 402s before the terminal tool can run anything.
+    """
+    try:
+        parts = shlex.split(text)
+    except ValueError:
+        return None
+    if len(parts) < 2 or parts[0] != "hermes":
+        return None
+
+    command = parts[1]
+    allowed_subcommands = _LOCAL_HERMES_COMMANDS.get(command)
+    if command not in _LOCAL_HERMES_COMMANDS:
+        return None
+    if allowed_subcommands is not None:
+        subcommand = parts[2] if len(parts) > 2 else "run"
+        if subcommand not in allowed_subcommands:
+            return None
+    return parts[1:]
+
+
+def _run_local_hermes_command_from_prompt(text: str) -> bool:
+    argv = _split_local_hermes_command(text)
+    if argv is None:
+        return False
+
+    import subprocess
+
+    _cprint(f"\n⚙️  hermes {' '.join(shlex.quote(part) for part in argv)}")
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", "hermes_cli.main", *argv],
+            check=False,
+        )
+    except KeyboardInterrupt:
+        _cprint("\n[dim]Command interrupted.[/dim]")
+        return True
+    except OSError as exc:
+        _cprint(f"  {_DIM}✗ Could not run local hermes command: {_escape(str(exc))}{_RST}")
+        return True
+
+    if completed.returncode:
+        _cprint(f"  {_DIM}local hermes command exited with {completed.returncode}{_RST}")
+    return True
 
 
 # ============================================================================
@@ -12846,6 +12906,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             user_input = _seed
                         else:
                             continue
+
+                    if (
+                        not _file_drop
+                        and isinstance(user_input, str)
+                        and _run_local_hermes_command_from_prompt(user_input)
+                    ):
+                        continue
                     
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')

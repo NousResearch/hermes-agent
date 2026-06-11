@@ -415,9 +415,12 @@ DANGEROUS_PATTERNS = [
     (r'\bfind\b.*-exec(?:dir)?\s+(/\S*/)?rm\b', "find -exec/-execdir rm"),
     (r'\bfind\b.*-delete\b', "find -delete"),
     # Gateway lifecycle protection: prevent the agent from killing its own
-    # gateway process.  These commands trigger a gateway restart/stop that
-    # terminates all running agents mid-work.
-    (r'\bhermes\s+gateway\s+(stop|restart)\b', "stop/restart hermes gateway (kills running agents)"),
+    # gateway process.  These commands trigger a gateway start/restart/stop that
+    # terminates all running agents mid-work.  Cover both the Hermes CLI path
+    # and direct service-manager bypasses such as launchctl/systemctl.
+    (r'\bhermes\s+gateway\s+(start|stop|restart)\b', "manage hermes gateway via cli (kills running agents)"),
+    (r'\blaunchctl\s+[^\n;&|]*\b(?:kickstart|bootout|bootstrap|stop|kill)\b[^\n;&|]*\bai\.hermes\.gateway\b', "manage hermes gateway launchd service (kills running agents)"),
+    (r'\bsystemctl\s+[^\n;&|]*\b(?:start|stop|restart|disable|mask)\b[^\n;&|]*\bhermes-gateway\b', "manage hermes gateway systemd service (kills running agents)"),
     (r'\bhermes\s+update\b', "hermes update (restarts gateway, kills running agents)"),
     # Docker container lifecycle — any user with docker.sock mounted (a common
     # Docker Compose pattern) gives the agent the ability to restart/stop/kill

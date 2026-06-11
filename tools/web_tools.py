@@ -41,6 +41,8 @@ import logging
 import os
 import re
 import asyncio
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import List, Dict, Any, Optional, TYPE_CHECKING
 import httpx  # noqa: F401 — kept at module top so tests can patch tools.web_tools.httpx
 # After the web-provider plugin migration (PR #25182), the Firecrawl SDK
@@ -132,6 +134,135 @@ def _env_value(name: str) -> str:
 
 def _has_env(name: str) -> bool:
     return bool(_env_value(name))
+
+
+_FREE_TIER_DEFAULT_LIMITS = {
+    "exa": 1000,
+    "tavily": 1000,
+    "firecrawl": 1000,
+    "brave-free": 1000,
+}
+
+
+def _free_tier_guard_config() -> dict:
+    cfg = _load_web_config().get("free_tier_guard", {})
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _free_tier_guard_enabled() -> bool:
+    return bool(_free_tier_guard_config().get("enabled", False))
+
+
+def _free_tier_month() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _free_tier_usage_path() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+        home = Path(get_hermes_home())
+    except Exception:
+        home = Path.home() / ".hermes"
+    return home / "usage" / "web_free_tier_usage.json"
+
+
+def _free_tier_limits() -> dict:
+    cfg = _free_tier_guard_config()
+    limits = dict(_FREE_TIER_DEFAULT_LIMITS)
+    configured = cfg.get("limits", {})
+    if isinstance(configured, dict):
+        for provider, value in configured.items():
+            try:
+                limits[str(provider).lower().strip()] = int(value)
+            except (TypeError, ValueError):
+                continue
+    return limits
+
+
+def _load_free_tier_usage() -> dict:
+    path = _free_tier_usage_path()
+    try:
+        if path.exists():
+            data = json.loads(path.read_text())
+            return data if isinstance(data, dict) else {}
+    except Exception:
+        logger.warning("Could not read web free-tier usage file", exc_info=True)
+    return {}
+
+
+def _save_free_tier_usage(data: dict) -> None:
+    path = _free_tier_usage_path()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, sort_keys=True))
+        tmp.replace(path)
+    except Exception:
+        logger.warning("Could not write web free-tier usage file", exc_info=True)
+
+
+def _free_tier_status(provider_name: str, units: int) -> dict:
+    provider = (provider_name or "").lower().strip()
+    limit = _free_tier_limits().get(provider)
+    if not _free_tier_guard_enabled() or not limit:
+        return {"enabled": False, "provider": provider}
+    cfg = _free_tier_guard_config()
+    warn_fraction = float(cfg.get("warn_fraction", 0.70))
+    stop_fraction = float(cfg.get("stop_fraction", 0.95))
+    units = max(1, int(units or 1))
+    month = _free_tier_month()
+    usage = _load_free_tier_usage()
+    current = int(((usage.get(month) or {}).get(provider) or 0))
+    projected = current + units
+    return {
+        "enabled": True,
+        "provider": provider,
+        "month": month,
+        "used": current,
+        "limit": limit,
+        "remaining": max(limit - current, 0),
+        "units": units,
+        "projected": projected,
+        "warn": projected >= (limit * warn_fraction),
+        "block": projected >= (limit * stop_fraction),
+        "message": f"Free-tier guard: {provider} has used {current}/{limit} units this month; this call needs {units}.",
+    }
+
+
+def _free_tier_block_message(status: dict) -> str:
+    stop_pct = int(float(_free_tier_guard_config().get("stop_fraction", 0.95)) * 100)
+    return (
+        f"{status.get('message')} Stopping before the configured {stop_pct}% "
+        "free-tier ceiling so provider calls do not fail silently or spill into paid usage. "
+        "Use a fallback provider or explicitly raise the free-tier guard limit after checking the provider dashboard."
+    )
+
+
+def _record_free_tier_usage(provider_name: str, units: int) -> dict:
+    status = _free_tier_status(provider_name, units)
+    if not status.get("enabled"):
+        return status
+    usage = _load_free_tier_usage()
+    month = status["month"]
+    provider = status["provider"]
+    usage.setdefault(month, {})
+    usage[month][provider] = int(usage[month].get(provider, 0)) + int(status["units"])
+    _save_free_tier_usage(usage)
+    return _free_tier_status(provider, 0)
+
+
+def _attach_free_tier_warning(response_data: dict, status: dict) -> dict:
+    if not status.get("enabled") or not status.get("warn"):
+        return response_data
+    warning = (
+        f"Free-tier warning: {status['provider']} projected usage is "
+        f"{status['projected']}/{status['limit']} units for {status['month']}. "
+        "Hermes will stop before the configured free-tier ceiling instead of failing silently."
+    )
+    if isinstance(response_data, dict):
+        response_data.setdefault("warnings", []).append(warning)
+    return response_data
+
 
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
@@ -906,11 +1037,22 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 ),
             }
         else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
-            response_data = provider.search(query, limit)
+            provider_name = getattr(provider, "name", backend)
+            quota_status = _free_tier_status(provider_name, 1)
+            if quota_status.get("block"):
+                response_data = {
+                    "success": False,
+                    "error": _free_tier_block_message(quota_status),
+                    "quota_guard": quota_status,
+                }
+            else:
+                logger.info(
+                    "Web search via %s: '%s' (limit: %d)",
+                    provider.name, query, limit,
+                )
+                response_data = provider.search(query, limit)
+                post_quota_status = _record_free_tier_usage(provider_name, 1)
+                response_data = _attach_free_tier_warning(response_data, post_quota_status)
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
@@ -1015,6 +1157,7 @@ async def web_extract_tool(
         # hosted Search MCP) so we can credit Parallel in the output/UI. Bound
         # here so empty/all-blocked inputs (which skip dispatch) stay defined.
         _free_parallel_extract = False
+        post_quota_status = None
 
         # Dispatch only safe URLs to the configured backend
         if not safe_urls:
@@ -1073,6 +1216,18 @@ async def web_extract_tool(
                         ensure_ascii=False,
                     )
 
+            provider_name = getattr(provider, "name", backend)
+            quota_status = _free_tier_status(provider_name, len(safe_urls))
+            if quota_status.get("block"):
+                return json.dumps(
+                    {
+                        "success": False,
+                        "error": _free_tier_block_message(quota_status),
+                        "quota_guard": quota_status,
+                    },
+                    ensure_ascii=False,
+                )
+
             logger.info(
                 "Web extract via %s: %d URL(s)", provider.name, len(safe_urls)
             )
@@ -1088,6 +1243,7 @@ async def web_extract_tool(
                 results = await asyncio.to_thread(
                     provider.extract, safe_urls, format=format
                 )
+            post_quota_status = _record_free_tier_usage(provider_name, len(safe_urls))
 
         # Merge any SSRF-blocked results back in
         if ssrf_blocked:
@@ -1205,6 +1361,8 @@ async def web_extract_tool(
                 "Extraction powered by the free Parallel Web Search MCP "
                 "(https://parallel.ai)."
             )
+        if post_quota_status:
+            trimmed_response = _attach_free_tier_warning(trimmed_response, post_quota_status)
 
         if trimmed_response.get("results") == []:
             result_json = tool_error("Content was inaccessible or not found")

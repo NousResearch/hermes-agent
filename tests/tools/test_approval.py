@@ -778,7 +778,28 @@ class TestGatewayProtection:
         cmd = "systemctl --user restart hermes-gateway"
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is True
-        assert "stop/restart" in desc
+        assert "service" in desc or "hermes gateway" in desc
+
+    def test_hermes_gateway_start_flagged(self):
+        """hermes gateway start can reload/kick the service and should require approval."""
+        cmd = "hermes gateway start"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "hermes gateway" in desc
+
+    def test_launchctl_kickstart_gateway_flagged(self):
+        """Direct launchd kickstart bypass should require approval too."""
+        cmd = "launchctl kickstart -k gui/501/ai.hermes.gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "launchd" in desc
+
+    def test_launchctl_bootout_gateway_flagged(self):
+        """Direct launchd unload bypass should require approval too."""
+        cmd = "launchctl bootout gui/501/ai.hermes.gateway"
+        dangerous, key, desc = detect_dangerous_command(cmd)
+        assert dangerous is True
+        assert "launchd" in desc
 
     def test_pkill_hermes_detected(self):
         """pkill targeting hermes/gateway processes must be caught."""

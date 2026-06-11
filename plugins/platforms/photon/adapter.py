@@ -966,15 +966,28 @@ class PhotonAdapter(BasePlatformAdapter):
             for old in list(sent.keys())[: len(sent) - self._SENT_IDS_MAX]:
                 del sent[old]
 
+    # A DM space is addressable two ways — the chat GUID (`any;-;+1555...`)
+    # that inbound events carry, and the bare E.164 phone that home-channel
+    # config typically uses. The sidecar's resolveSpace treats them as the
+    # same space; normalize to the bare phone so the last-inbound tracker
+    # does too (mirrors phoneTargetFromSpaceId in sidecar/index.mjs).
+    _DM_CHAT_GUID_RE = re.compile(r"^any;-;(\+\d{6,})$")
+
+    @classmethod
+    def _normalize_chat_key(cls, chat_id: str) -> str:
+        match = cls._DM_CHAT_GUID_RE.match(chat_id)
+        return match.group(1) if match else chat_id
+
     def _record_last_inbound(
         self, chat_id: Optional[str], message_id: Optional[str]
     ) -> None:
         if not chat_id or not message_id:
             return
+        key = self._normalize_chat_key(chat_id)
         last = self._last_inbound_by_chat
-        if chat_id in last:
-            del last[chat_id]  # refresh insertion order
-        last[chat_id] = message_id
+        if key in last:
+            del last[key]  # refresh insertion order
+        last[key] = message_id
         if len(last) > self._LAST_INBOUND_CHATS_MAX:
             for old in list(last.keys())[
                 : len(last) - self._LAST_INBOUND_CHATS_MAX
@@ -1035,7 +1048,9 @@ class PhotonAdapter(BasePlatformAdapter):
         maps ❤️👍👎😂‼️❓ to native tapbacks; anything else uses Apple's
         custom-emoji reaction.
         """
-        target = message_id or self._last_inbound_by_chat.get(chat_id)
+        target = message_id or self._last_inbound_by_chat.get(
+            self._normalize_chat_key(chat_id)
+        )
         if not target:
             return {
                 "success": False,
@@ -1054,7 +1069,9 @@ class PhotonAdapter(BasePlatformAdapter):
         self, chat_id: str, message_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Retract our tapback from a message (best-effort)."""
-        target = message_id or self._last_inbound_by_chat.get(chat_id)
+        target = message_id or self._last_inbound_by_chat.get(
+            self._normalize_chat_key(chat_id)
+        )
         if not target:
             return {
                 "success": False,

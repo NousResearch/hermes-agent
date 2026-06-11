@@ -85,6 +85,48 @@ def test_oauth_token_paths_follow_override(tmp_path, monkeypatch, mcp_loop):
     assert os.path.join("mcp-tokens", "probe-srv.json") in path
 
 
+def test_concurrent_scopes_do_not_interfere(tmp_path, monkeypatch, mcp_loop):
+    """Two threads carrying DIFFERENT overrides scheduling onto the same
+    loop must each see their own home — the wrapper is task-local."""
+    import threading
+
+    from hermes_constants import (
+        get_hermes_home,
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    process_home = tmp_path / "proc-home"
+    home_a = tmp_path / "profile-a"
+    home_b = tmp_path / "profile-b"
+    for h in (process_home, home_a, home_b):
+        h.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(process_home))
+
+    async def read_home():
+        return str(get_hermes_home())
+
+    results: dict = {}
+
+    def scoped_call(key, home):
+        token = set_hermes_home_override(str(home))
+        try:
+            results[key] = mcp_loop._run_on_mcp_loop(read_home(), timeout=10)
+        finally:
+            reset_hermes_home_override(token)
+
+    threads = [
+        threading.Thread(target=scoped_call, args=("a", home_a)),
+        threading.Thread(target=scoped_call, args=("b", home_b)),
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=15)
+
+    assert results == {"a": str(home_a), "b": str(home_b)}
+
+
 def test_wrap_is_noop_without_override(mcp_loop):
     """No active override → the coroutine passes through unwrapped."""
 

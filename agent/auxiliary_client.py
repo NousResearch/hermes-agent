@@ -4940,6 +4940,9 @@ def _build_call_kwargs(
         "model": model,
         "messages": messages,
         "timeout": timeout,
+        "stream": False,  # Explicitly request non-streaming; some endpoints
+                          # (e.g. custom OpenAI-compatible proxies) default to
+                          # SSE responses even when stream is omitted.
     }
 
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
@@ -5019,12 +5022,32 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
     propagate to downstream consumers where they crash with misleading
     AttributeError (e.g. "'str' object has no attribute 'choices'").
 
+    When a custom endpoint returns an SSE (Server-Sent Events) string despite
+    stream=False being requested, this method parses the SSE payload and
+    reconstructs a valid ChatCompletion-like object so downstream consumers
+    can access .choices[0].message.content as usual.
+
     See #7264.
     """
     if response is None:
         raise RuntimeError(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
+
+    # Handle SSE string responses from endpoints that ignore stream=False.
+    # These arrive as raw strings starting with "data: {...}" lines.
+    if isinstance(response, str) and response.lstrip().startswith("data:"):
+        logger.info(
+            "Auxiliary %s: endpoint returned SSE despite stream=False; "
+            "parsing inline",
+            task or "call",
+        )
+        parsed = _parse_sse_string_response(response)
+        if parsed is not None:
+            response = parsed
+        # If parsing failed, fall through to the normal validation which
+        # will produce a clear error message.
+
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.
     try:
@@ -5041,6 +5064,84 @@ def _validate_llm_response(response: Any, task: str = None) -> Any:
             f"adapter or custom endpoint compatibility."
         ) from exc
     return response
+
+
+def _parse_sse_string_response(raw: str) -> Optional[Any]:
+    """Parse an SSE-format string response into a SimpleNamespace that mimics
+    ChatCompletion with .choices[0].message.content.
+
+    Handles multi-line SSE payloads like:
+        data: {"id":"...", "choices":[{"delta":{"content":"Hello"},...}], ...}
+        data: {"id":"...", "choices":[{"delta":{"content":" world"},...}], ...}
+        data: [DONE]
+
+    Returns None if parsing fails so _validate_llm_response can raise a
+    clear error.
+    """
+    import re
+    from types import SimpleNamespace
+
+    # Extract all data lines (skip comments, empty lines, [DONE])
+    data_lines = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line or line.startswith(":"):
+            continue
+        if line == "data: [DONE]":
+            break
+        if line.startswith("data:"):
+            json_str = line[len("data:"):].strip()
+            if json_str:
+                data_lines.append(json_str)
+
+    if not data_lines:
+        return None
+
+    # Strategy 1: If there's a single data line, try to parse it as a
+    # complete ChatCompletion response (some endpoints send the full
+    # response as one SSE chunk).
+    if len(data_lines) == 1:
+        try:
+            obj = json.loads(data_lines[0])
+            # If it already has choices with message (not delta), return it
+            if isinstance(obj, dict) and "choices" in obj:
+                choices = obj["choices"]
+                if choices and "message" in choices[0]:
+                    return SimpleNamespace(
+                        choices=[SimpleNamespace(
+                            message=SimpleNamespace(
+                                content=choices[0]["message"].get("content", "")
+                            )
+                        )]
+                    )
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+
+    # Strategy 2: Multiple SSE chunks with delta content — concatenate.
+    # This is the standard SSE streaming format where each chunk has
+    # choices[0].delta.content.
+    collected_content = []
+    for json_str in data_lines:
+        try:
+            obj = json.loads(json_str)
+            if isinstance(obj, dict) and "choices" in obj:
+                for choice in obj["choices"]:
+                    delta = choice.get("delta", {})
+                    content = delta.get("content")
+                    if content is not None:
+                        collected_content.append(str(content))
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
+
+    if collected_content:
+        full_content = "".join(collected_content)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(content=full_content)
+            )]
+        )
+
+    return None
 
 
 def call_llm(

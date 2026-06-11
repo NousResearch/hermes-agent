@@ -1284,12 +1284,14 @@ def build_skills_system_prompt(
                 index_lines.append(f"  {category}:")
             # Deduplicate and sort skills within each category
             seen = set()
+            _MAX_DESC_LEN = 40
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
                 if name in seen:
                     continue
                 seen.add(name)
                 if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+                    _trunc = desc if len(desc) <= _MAX_DESC_LEN else desc[:_MAX_DESC_LEN] + "..."
+                    index_lines.append(f"    - {name}: {_trunc}")
                 else:
                     index_lines.append(f"    - {name}")
 

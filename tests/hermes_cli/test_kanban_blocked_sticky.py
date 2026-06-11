@@ -170,6 +170,38 @@ def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> No
         assert kb.get_task(conn, child).status == "ready"
 
 
+def test_standalone_circuit_breaker_block_does_not_auto_promote(kanban_home: Path) -> None:
+    """A no-parent task parked by the circuit breaker has no dependency
+    transition to wait for, so ``recompute_ready`` must leave it blocked.
+
+    Without this guard, the empty parent list made ``all(parents_done)``
+    true and a protocol-violation ``gave_up`` block was promoted back to
+    ready in the same dispatcher tick, causing an endless respawn loop.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="standalone gave up")
+
+        conn.execute(
+            "UPDATE tasks SET status='blocked', consecutive_failures=1, "
+            "last_failure_error='worker exited cleanly' WHERE id=?",
+            (tid,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'gave_up', NULL, ?)",
+            (tid, int(time.time())),
+        )
+        conn.commit()
+
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "blocked"
+        assert task.consecutive_failures == 1
+        assert task.last_failure_error == "worker exited cleanly"
+
+
 # ---------------------------------------------------------------------------
 # unblock_task clears the sticky state
 # ---------------------------------------------------------------------------
@@ -178,10 +210,13 @@ def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> No
 def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -> None:
     """``hermes kanban unblock`` (or the ``kanban_unblock`` tool) is
     the only legitimate way out of a worker-initiated block.  After
-    unblock, a *subsequent* circuit-breaker block on the same task
-    must again be eligible for auto-recovery."""
+    unblock, a *subsequent* dependency-backed circuit-breaker block on
+    the same task must again be eligible for auto-recovery."""
     with kb.connect() as conn:
-        tid = kb.create_task(conn, title="t")
+        parent = kb.create_task(conn, title="parent")
+        tid = kb.create_task(conn, title="t", parents=[parent])
+        kb.complete_task(conn, parent, result="ok")
+        kb.recompute_ready(conn)
         kb.claim_task(conn, tid)
         kb.block_task(
             conn, tid,
@@ -192,10 +227,11 @@ def test_unblock_clears_sticky_state_and_lets_block_recover(kanban_home: Path) -
         # After unblock the task is no longer blocked at all.
         assert kb.get_task(conn, tid).status == "ready"
 
-        # Now simulate a *later* circuit-breaker block (no new
-        # ``blocked`` event, just status flip).  The most recent
-        # block/unblock event is ``unblocked`` → guard does not fire
-        # → recompute can recover.
+        # Now simulate a *later* dependency-backed circuit-breaker block
+        # (no new ``blocked`` event, just status flip).  The most recent
+        # block/unblock event is ``unblocked`` → guard does not fire,
+        # and the completed parent gives recompute_ready a real
+        # dependency transition to recover from.
         conn.execute(
             "UPDATE tasks SET status='blocked' WHERE id=?", (tid,),
         )

@@ -2875,6 +2875,12 @@ def recompute_ready(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
+            if cur_status == "blocked" and not parents:
+                # A standalone circuit-breaker block has no dependency
+                # transition that can make it newly ready. Keep it parked
+                # until an explicit unblock instead of treating all([])
+                # as "parents finished" and respawning immediately.
+                continue
             if all(p["status"] in ("done", "archived") for p in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the

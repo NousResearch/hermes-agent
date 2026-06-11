@@ -1639,9 +1639,16 @@ def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+                        model = _model_cfg.get("default") or _model_cfg.get("model") or model
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+        if not model:
+            raise RuntimeError(
+                f"Job '{job_id}': no model configured. "
+                f"Set model.default in config.yaml, pass --model when creating the job, "
+                f"or set the HERMES_MODEL environment variable."
+            )
 
         # Apply IPv4 preference if configured.
         try:

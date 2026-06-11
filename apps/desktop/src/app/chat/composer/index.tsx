@@ -200,6 +200,7 @@ export function ChatBar({
   queueEditRef.current = queueEdit
   const dragDepthRef = useRef(0)
   const composingRef = useRef(false) // true during IME composition (CJK input)
+  const imeEnterRef = useRef(false) // Enter pressed during IME composition — submit on compositionend
   const lastSpokenIdRef = useRef<string | null>(null)
 
   const narrow = useMediaQuery('(max-width: 30rem)')
@@ -617,12 +618,14 @@ export function ChatBar({
   }
 
   const handleEditorInput = (event: FormEvent<HTMLDivElement>) => {
-    // During IME composition the DOM contains uncommitted preedit text
-    // mixed with real content.  Skip state writes — compositionend flushes
-    // the finalized text (see onCompositionEnd).
-    if (composingRef.current) {
-      return
-    }
+    // During IME composition the DOM contains uncommitted preedit text.
+    // We used to skip state writes here, relying on compositionend to deliver
+    // the finalized text via a clean input event. But that breaks CJK IME on
+    // macOS: compositionend fires BEFORE the input event, and the auto-submit
+    // path runs between them — draftRef is synced but the React state isn't,
+    // so hasComposerPayload stays false and the Send button never appears.
+    // Let the draft update on every input (including composition intermediates).
+    // The Enter guard in handleEditorKeyDown still blocks premature submission.
 
     flushEditorToDraft(event.currentTarget)
   }
@@ -762,12 +765,27 @@ export function ChatBar({
   }
 
   const handleEditorKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Self-heal a stale composition flag before the guard below reads it.
+    // compositionend can be missed (focus jumps, input-source switches, or a
+    // programmatic DOM swap mid-preedit abort the composition without the
+    // event reaching us), and a wedged composingRef silently swallows every
+    // Enter — and, via the form onSubmit guard, the Send button — until the
+    // component remounts. Chromium stamps isComposing on every keydown of a
+    // genuine composition, so when the native flag says we're not composing,
+    // trust it and recover.
+    if (composingRef.current && !event.nativeEvent.isComposing) {
+      composingRef.current = false
+    }
+
     // IME composition: Enter confirms composed text, not a message submission.
     // We check both composingRef (set by compositionstart/compositionend, robust
     // across browsers) and nativeEvent.isComposing (Chromium fallback).  Without
     // this guard, pressing Enter to finalise a Korean/Japanese/Chinese IME
     // preedit fires submitDraft() and splits the message mid-word.
     if (composingRef.current || event.nativeEvent.isComposing) {
+      if (event.key === 'Enter') {
+        imeEnterRef.current = true
+      }
       return
     }
 
@@ -1604,7 +1622,15 @@ export function ChatBar({
         contentEditable={!disabled}
         data-placeholder={placeholder}
         data-slot={RICH_INPUT_SLOT}
-        onBlur={() => window.setTimeout(closeTrigger, 80)}
+        onBlur={() => {
+          // A composition never survives focus loss (Chromium commits the
+          // preedit and fires compositionend on blur) — but if that event is
+          // missed, the wedged flag would block the Send button's form-submit
+          // guard forever. Clear unconditionally: by the time blur runs there
+          // is nothing left composing in this editor.
+          composingRef.current = false
+          window.setTimeout(closeTrigger, 80)
+        }}
         onCompositionEnd={event => {
           composingRef.current = false
 
@@ -1615,7 +1641,18 @@ export function ChatBar({
           // Chinese "你好", Japanese, Korean) never reaches composer state, so
           // `hasComposerPayload` stays false and the send button stays hidden
           // until an unrelated edit forces a sync (#39614).
-          flushEditorToDraft(event.currentTarget)
+          if (imeEnterRef.current) {
+            imeEnterRef.current = false
+            // IME consumed Enter to commit text — sync the draft from DOM and submit.
+            // handleEditorInput used to skip during composition, so draft/DOM were out
+            // of sync until the next input event fired. Read the editor synchronously
+            // here so the Send button appears immediately and submitDraft() sees the
+            // right text.
+            flushEditorToDraft(event.currentTarget)
+            window.setTimeout(() => submitDraft(), 0)
+          } else {
+            flushEditorToDraft(event.currentTarget)
+          }
         }}
         onCompositionStart={() => {
           composingRef.current = true

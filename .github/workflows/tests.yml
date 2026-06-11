@@ -120,6 +120,13 @@ jobs:
               raise SystemExit(f"unexpected Unix bootstrap manifest: {names!r}")
           PY
 
+      - name: Validate bootstrap tool archive manifests
+        run: |
+          python -m unittest tests.scripts.test_prepare_bootstrap_tools -v
+          python scripts/prepare_bootstrap_tools.py --platform windows --arch x64 --dry-run
+          python scripts/prepare_bootstrap_tools.py --platform linux --arch x64 --dry-run
+          python scripts/prepare_bootstrap_tools.py --platform macos --arch arm64 --dry-run
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30

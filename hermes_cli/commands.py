@@ -99,6 +99,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
                gateway_only=True, args_hint="[session|always]"),
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
                gateway_only=True, args_hint="[all] [reason]"),
+    CommandDef("intervention", "Deny/extend/status a remote CLI prompt by code", "Session",
+               gateway_only=True, aliases=("iv",),
+               args_hint="<deny|extend|status> <code> [minutes]",
+               subcommands=("deny", "extend", "status"))
     CommandDef("background", "Run a prompt in the background", "Session",
                aliases=("bg", "btw"), args_hint="<prompt>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",

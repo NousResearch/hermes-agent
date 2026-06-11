@@ -11620,6 +11620,63 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             outcome = outcome[:119] + "…"
         _cprint(f"\n{_DIM}{icon} {label}: {detail} → {outcome}{_RST}")
 
+    def _setup_remote_intervention(self, *, kind, preview, timeout, command="", description="", risk_level=""):
+        """Create a pending record (when remote control enabled) and return
+        (remote_code, remote_actions, risk_explanation). Never raises.
+
+        Shared by the sudo + clarify callbacks so the deny/extend wiring stays
+        in one place. Mirrors the inline logic in _approval_callback (Task 4),
+        which is intentionally left untouched.
+        """
+        rc = self._remote_intervention_settings()
+        risk_expl = self._explain_command_risk_for_notify(command, description, risk_level, rc)
+        remote_code, remote_actions = "", None
+        if bool(rc.get("enabled")):
+            allowed = []
+            if rc.get("allow_deny", True):
+                allowed.append("deny")
+            if rc.get("allow_extend", True):
+                allowed.append("extend")
+            try:
+                rec = self._rc_create_pending(
+                    kind=kind, title=kind, preview=preview,
+                    session_key=getattr(self, "session_id", ""), timeout_seconds=timeout,
+                    max_total_wait_minutes=int(rc.get("max_total_wait_minutes", 15)),
+                    allowed_actions=allowed or None)
+                remote_code = rec.code
+                remote_actions = (allowed + ["status"]) if allowed else ["status"]
+            except Exception:
+                remote_code, remote_actions = "", None
+        return remote_code, remote_actions, risk_expl
+
+    def _poll_remote_intervention(self, remote_code, current_deadline):
+        """Consume one remote decision. Returns (signal, source, deadline) where
+        signal is 'deny' | 'extend' | None and deadline is the (possibly bumped,
+        monotonic) deadline. Never raises.
+
+        The store only ever yields deny/extend (it has no password/answer
+        field), so this can never inject a sudo password or pick a clarify
+        option — it can only cancel (deny) or push the deadline out (extend).
+        """
+        import time as _t
+        if not remote_code:
+            return (None, "", current_deadline)
+        try:
+            snap = self._rc_consume(remote_code)
+        except Exception:
+            return (None, "", current_deadline)
+        if snap is None:
+            return (None, "", current_deadline)
+        if getattr(snap, "decision", None) == "deny":
+            return ("deny", getattr(snap, "decision_source", "") or "mobile", current_deadline)
+        if getattr(snap, "decision", None) == "extend":
+            delta = max(0.0, getattr(snap, "deadline_ts", 0.0) - _t.time())
+            new_deadline = _t.monotonic() + delta
+            if new_deadline > current_deadline:
+                current_deadline = new_deadline
+            return ("extend", getattr(snap, "decision_source", "") or "mobile", current_deadline)
+        return (None, "", current_deadline)
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -11649,37 +11706,89 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # thread. Modal prompts must paint at once and must not be gated by the
         # _invalidate throttle / resize guard — see _paint_now / _invalidate (#41098).
         self._paint_now()
-
-        # Poll for the user's response. The countdown in the hint line updates
-        # on each repaint; refresh it once a second so the timer stays visible
-        # while we wait. Selection changes (↑/↓) trigger instant repaints via
-        # the key bindings.
-        _last_countdown_refresh = _time.monotonic()
-        while True:
-            try:
-                result = response_queue.get(timeout=1)
-                self._clarify_deadline = 0
-                self._persist_prompt_summary("?", "Clarify", question, str(result))
-                return result
-            except queue.Empty:
-                remaining = self._clarify_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
-                now = _time.monotonic()
-                if now - _last_countdown_refresh >= 1.0:
-                    _last_countdown_refresh = now
-                    self._paint_now()
-
-        # Timed out — tear down the UI and let the agent decide
-        self._clarify_state = None
-        self._clarify_freetext = False
-        self._clarify_deadline = 0
-        self._paint_now()
-        _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
-        return (
-            "The user did not provide a response within the time limit. "
-            "Use your best judgement to make the choice and proceed."
+        # --- remote control wiring (mobile deny/extend; answering is local) ---
+        # Remote deny == cancel (timeout-equivalent: the agent decides); there
+        # is NO remote path that selects an option. risk_level/explanation are
+        # N/A for clarify, so _risk comes back "".
+        remote_code, remote_actions, _risk = self._setup_remote_intervention(
+            kind="clarify", preview=str(question)[:200], timeout=timeout,
         )
+
+        try:
+            from hermes_cli.human_intervention_notifications import notify_human_intervention
+            notify_human_intervention(
+                "clarify",
+                "Hermes needs your input",
+                f"Question: {question}",
+                session_key=getattr(self, "session_id", ""),
+                dedupe_key=f"clarify:{question}",
+                timeout_seconds=timeout,
+                remote_code=remote_code,
+                remote_actions=remote_actions,
+            )
+        except Exception:
+            pass
+
+        try:
+            # Poll for the user's response. The countdown in the hint line updates
+            # on each repaint; refresh it once a second so the timer stays visible
+            # while we wait. Selection changes (↑/↓) trigger instant repaints via
+            # the key bindings. Local answers are checked FIRST every iteration,
+            # so a local choice always wins over a remote decision.
+            _last_countdown_refresh = _time.monotonic()
+            while True:
+                try:
+                    result = response_queue.get(timeout=1)
+                    self._clarify_deadline = 0
+                    self._persist_prompt_summary("?", "Clarify", question, str(result))
+                    return result
+                except queue.Empty:
+                    remaining = self._clarify_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
+                    if remote_code:
+                        signal, source, self._clarify_deadline =                             self._poll_remote_intervention(remote_code, self._clarify_deadline)
+                        if signal == "deny":
+                            # Remote deny == cancel/timeout-equivalent: tear the
+                            # UI down and let the agent decide. It must NOT pick
+                            # an option for the user.
+                            self._clarify_state = None
+                            self._clarify_freetext = False
+                            self._clarify_deadline = 0
+                            self._paint_now()
+                            _cprint(f"\n{_DIM}(clarify denied remotely ({source}) — agent will decide){_RST}")
+                            self._persist_prompt_summary("?", "Clarify", question, "denied remotely")
+                            return (
+                                "The user did not provide a response within the time limit. "
+                                "Use your best judgement to make the choice and proceed."
+                            )
+                        # extend just bumped the deadline above; keep waiting.
+                    now = _time.monotonic()
+                    if now - _last_countdown_refresh >= 1.0:
+                        _last_countdown_refresh = now
+                        self._paint_now()
+
+            # Timed out — tear down the UI and let the agent decide
+            self._clarify_state = None
+            self._clarify_freetext = False
+            self._clarify_deadline = 0
+            self._paint_now()
+            _cprint(f"\n{_DIM}(clarify timed out after {timeout}s — agent will decide){_RST}")
+            self._persist_prompt_summary("?", "Clarify", question, "timed out")
+            return (
+                "The user did not provide a response within the time limit. "
+                "Use your best judgement to make the choice and proceed."
+            )
+        finally:
+            # Clear any pending record on every exit path. Consuming an
+            # already-resolved decision returns None, which is harmless.
+            # NOTE: never `return` inside this finally.
+            if remote_code:
+                try:
+                    self._rc_consume(remote_code)
+                    self._rc_cleanup()
+                except Exception:
+                    pass
 
     def _sudo_password_callback(self) -> str:
         """
@@ -11703,35 +11812,215 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Modal prompt — paint immediately, bypassing the throttle/resize guard
         # so the prompt can't be dropped and time out unseen (#41098).
         self._paint_now()
+        # --- remote control wiring (mobile cancel/extend; NEVER a password) ---
+        # Remote deny == cancel: it returns "" (continue without sudo), exactly
+        # like the timeout path. A password can ONLY be supplied locally; the
+        # store has no password field, so remote password injection is
+        # structurally impossible.
+        remote_code, remote_actions, _risk = self._setup_remote_intervention(
+            kind="sudo", preview="sudo password request", timeout=timeout,
+        )
 
-        while True:
-            try:
-                result = response_queue.get(timeout=1)
-                self._sudo_state = None
-                self._sudo_deadline = 0
-                self._restore_modal_input_snapshot()
-                self._paint_now()
-                if result:
-                    _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
+        try:
+            from hermes_cli.human_intervention_notifications import notify_human_intervention
+            notify_human_intervention(
+                "sudo",
+                "Hermes needs your sudo password",
+                "A command is waiting for sudo password input in the CLI.",
+                session_key=getattr(self, "session_id", ""),
+                dedupe_key="sudo-password",
+                timeout_seconds=timeout,
+                remote_code=remote_code,
+                remote_actions=remote_actions,
+            )
+        except Exception:
+            pass
+
+        try:
+            while True:
+                try:
+                    # Local answer is checked FIRST every iteration, so a local
+                    # password always wins over a remote decision.
+                    result = response_queue.get(timeout=1)
+                    self._sudo_state = None
+                    self._sudo_deadline = 0
+                    self._restore_modal_input_snapshot()
+                    self._paint_now()
+                    if result:
+                        _cprint(f"\n{_DIM}  ✓ Password received (cached for session){_RST}")
+                    else:
+                        _cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
+                    return result
+                except queue.Empty:
+                    remaining = self._sudo_deadline - _time.monotonic()
+                    if remaining <= 0:
+                        break
+                    if remote_code:
+                        signal, source, self._sudo_deadline = \
+                            self._poll_remote_intervention(remote_code, self._sudo_deadline)
+                        if signal == "deny":
+                            # Remote cancel == continue without sudo. NEVER a
+                            # password. Tear down exactly like the timeout path.
+                            self._sudo_state = None
+                            self._sudo_deadline = 0
+                            self._restore_modal_input_snapshot()
+                            self._paint_now()
+                            _cprint(f"\n{_DIM}  (sudo cancelled remotely ({source}) — continuing without sudo){_RST}")
+                            return ""
+                        # extend just bumped the deadline above; keep waiting.
+                    self._paint_now()
+
+            self._sudo_state = None
+            self._sudo_deadline = 0
+            self._restore_modal_input_snapshot()
+            self._paint_now()
+            _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
+            return ""
+        finally:
+            # Clear any pending record on every exit path. Consuming an
+            # already-resolved decision returns None, which is harmless.
+            # NOTE: never `return` inside this finally.
+            if remote_code:
+                try:
+                    self._rc_consume(remote_code)
+                    self._rc_cleanup()
+                except Exception:
+                    pass
+
+    def _remote_intervention_settings(self) -> dict:
+        """Return the notifications.human_intervention.remote_control config.
+
+        Reads ``notifications.human_intervention.remote_control`` from the live
+        config and merges it over safe defaults so callers can rely on every
+        key being present and well-typed. Any missing/oddly-typed key falls
+        back to its default; any error returns the all-default dict.
+
+        Keeping this a real method (not a closure) makes it trivially patchable
+        from tests and keeps Task 7 (config defaults) a one-line change.
+        """
+        defaults = {
+            "enabled": False,
+            "allow_deny": True,
+            "allow_extend": True,
+            "allow_approve": False,
+            "approve_medium": True,
+            "approve_high_typed_confirm": True,
+            "approve_token_len": 4,
+            "never_approve_levels": ["critical"],
+            "code_ttl_seconds": 90,
+            "max_extend_minutes": 15,
+            "max_total_wait_minutes": 15,
+            "allowed_targets": [],
+            "risk_explanation": {
+                "enabled": True,
+                "only_for_risk_levels": ["high", "critical"],
+                "max_chars": 280,
+                "timeout_seconds": 3,
+                "fallback_to_static": True,
+                "use_llm": False,
+            },
+        }
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            notifications = cfg.get("notifications") if isinstance(cfg, dict) else None
+            human = notifications.get("human_intervention") if isinstance(notifications, dict) else None
+            rc = human.get("remote_control") if isinstance(human, dict) else None
+            if not isinstance(rc, dict):
+                return defaults
+            merged = dict(defaults)
+            for key, value in rc.items():
+                if key == "risk_explanation":
+                    if isinstance(value, dict):
+                        re_merged = dict(defaults["risk_explanation"])
+                        re_merged.update(value)
+                        merged["risk_explanation"] = re_merged
                 else:
-                    _cprint(f"\n{_DIM}  ⏭ Skipped{_RST}")
-                return result
-            except queue.Empty:
-                remaining = self._sudo_deadline - _time.monotonic()
-                if remaining <= 0:
-                    break
-                self._paint_now()
+                    merged[key] = value
+            return merged
+        except Exception:
+            return defaults
 
-        self._sudo_state = None
-        self._sudo_deadline = 0
-        self._restore_modal_input_snapshot()
-        self._paint_now()
-        _cprint(f"\n{_DIM}  ⏱ Timeout — continuing without sudo{_RST}")
-        return ""
+    def _explain_command_risk_for_notify(self, command, description, risk_level, rc_settings) -> str:
+        """Return an advisory risk explanation for the notification body.
+
+        Gated to the configured risk levels (high/critical by default) and only
+        when explanation is enabled. Advisory only: it must never block or break
+        approval, so it is wrapped in try/except and returns "" on any issue.
+        """
+        try:
+            re_cfg = rc_settings.get("risk_explanation", {}) if isinstance(rc_settings, dict) else {}
+            if not isinstance(re_cfg, dict):
+                return ""
+            if not re_cfg.get("enabled", False):
+                return ""
+            only_for = re_cfg.get("only_for_risk_levels", ["high", "critical"])
+            if not isinstance(only_for, (list, tuple, set)):
+                only_for = ["high", "critical"]
+            normalized = str(risk_level or "").strip().lower()
+            if normalized not in {str(x).strip().lower() for x in only_for}:
+                return ""
+            # Lazy import keeps this cheap and lets tests patch the explainer.
+            # When use_llm is configured, pass the bounded auxiliary-model
+            # explainer; otherwise llm_fn=None yields an instant static
+            # explanation that never blocks the prompt.
+            from hermes_cli import human_intervention_risk_explainer as _expl
+            max_chars = int(re_cfg.get("max_chars", 280) or 280)
+            timeout_seconds = int(re_cfg.get("timeout_seconds", 3) or 3)
+            use_llm = bool(re_cfg.get("use_llm", False))
+            llm_fn = _expl.default_llm_fn if use_llm else None
+            return _expl.explain_command_risk(
+                command=command,
+                description=description,
+                risk_level=risk_level,
+                llm_fn=llm_fn,
+                max_chars=max_chars,
+                timeout_seconds=timeout_seconds,
+            )
+        except Exception:
+            return ""
+
+    def _rc_create_pending(self, **kw):
+        """Thin patchable wrapper around the pending-intervention store."""
+        from hermes_cli.human_intervention_remote_control import create_pending_intervention
+        return create_pending_intervention(**kw)
+
+    def _rc_consume(self, code):
+        """Thin patchable wrapper to consume a remote deny/extend decision."""
+        from hermes_cli.human_intervention_remote_control import consume_remote_decision
+        return consume_remote_decision(code)
+
+    def _rc_cleanup(self):
+        """Thin patchable wrapper to reap expired pending interventions."""
+        from hermes_cli.human_intervention_remote_control import cleanup_expired
+        return cleanup_expired()
+
+    def _compute_approve_tier(self, risk_level, rc):
+        """Return (approve_tier, never_levels). tier in 'none'|'one_tap'|'typed_confirm'.
+
+        Decides whether (and how) a dangerous-command prompt may be approved
+        remotely. critical/hardline levels — and any level in
+        ``never_approve_levels`` — are NEVER remotely approvable, and approval
+        is disabled entirely unless ``allow_approve`` is set. medium maps to a
+        one-tap approve, high to a typed-confirm approve (token required).
+        """
+        never = rc.get("never_approve_levels") or ["critical"]
+        never = [str(x).strip().lower() for x in never]
+        lvl = str(risk_level or "").strip().lower()
+        if not bool(rc.get("allow_approve")):
+            return ("none", never)
+        if lvl in never:
+            return ("none", never)
+        if lvl == "medium" and bool(rc.get("approve_medium", True)):
+            return ("one_tap", never)
+        if lvl == "high" and bool(rc.get("approve_high_typed_confirm", True)):
+            return ("typed_confirm", never)
+        return ("none", never)
 
     def _approval_callback(self, command: str, description: str,
                            *, allow_permanent: bool = True,
-                           smart_denied: bool = False) -> str:
+                           smart_denied: bool = False,
+                           risk_level: str = "") -> str:
         """
         Prompt for dangerous command approval through the prompt_toolkit UI.
 
@@ -11745,6 +12034,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         Uses _approval_lock to serialize concurrent requests (e.g. from
         parallel delegation subtasks) so each prompt gets its own turn
         and the shared _approval_state / _approval_deadline aren't clobbered.
+
+        Remote control: when enabled, a pending-intervention record is created
+        so a mobile gateway command can DENY or EXTEND this prompt. Approval
+        itself stays local-only — there is no remote approve path. A local
+        answer always wins because response_queue.get() is checked first each
+        poll iteration, before any remote decision is consulted.
         """
         import time as _time
 
@@ -11771,39 +12066,157 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # the command is denied on timeout without the user ever seeing it
             # (#41098). The countdown refreshes below paint the same way.
             self._paint_now()
-
-            _last_countdown_refresh = _time.monotonic()
-            while True:
+            # --- remote control wiring (mobile deny/extend/approve) ---
+            rc = self._remote_intervention_settings()
+            remote_enabled = bool(rc.get("enabled"))
+            # Decide whether this prompt may be remotely approved and how.
+            # critical/never levels (and allow_approve=False) yield "none" so
+            # no approve line/token is ever advertised or accepted.
+            approve_tier, _never = self._compute_approve_tier(risk_level, rc)
+            approve_token = ""
+            remote_code = ""
+            remote_actions = None
+            if remote_enabled:
+                allowed = []
+                if rc.get("allow_deny", True):
+                    allowed.append("deny")
+                if rc.get("allow_extend", True):
+                    allowed.append("extend")
                 try:
-                    result = response_queue.get(timeout=1)
-                    self._approval_state = None
-                    self._approval_deadline = 0
-                    self._paint_now()
-                    _outcome_labels = {
-                        "once": "allowed once",
-                        "session": "allowed for session",
-                        "always": "added to allowlist",
-                        "deny": "denied",
-                    }
-                    self._persist_prompt_summary(
-                        "⚠", "Approval", command,
-                        _outcome_labels.get(result, str(result)),
+                    # Always create the pending record when remote control is
+                    # enabled: even with no deny/extend actions, the approve
+                    # tier (handled separately) may still allow a remote approve.
+                    rec = self._rc_create_pending(
+                        kind=intervention_kind,
+                        title="approval",
+                        preview=command,
+                        session_key=getattr(self, "session_id", ""),
+                        timeout_seconds=timeout,
+                        max_total_wait_minutes=int(rc.get("max_total_wait_minutes", 15)),
+                        allowed_actions=allowed or None,
+                        risk_level=risk_level,
+                        approve_tier=approve_tier,
                     )
-                    return result
-                except queue.Empty:
-                    remaining = self._approval_deadline - _time.monotonic()
-                    if remaining <= 0:
-                        break
-                    now = _time.monotonic()
-                    if now - _last_countdown_refresh >= 1.0:
-                        _last_countdown_refresh = now
-                        self._paint_now()
+                    remote_code = rec.code
+                    # The store generates the typed-confirm token (if any).
+                    approve_token = getattr(rec, "approve_token", "") or ""
+                    remote_actions = (allowed + ["status"]) if allowed else ["status"]
+                    # Expose for tests + UI.
+                    self._approval_state["remote_code"] = remote_code
+                except Exception:
+                    remote_code = ""
+                    remote_actions = None
+                    approve_token = ""
 
-            self._approval_state = None
-            self._approval_deadline = 0
-            self._paint_now()
-            _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
-            return "deny"
+            # Compute the (possibly LLM-backed, ~seconds) danger explanation
+            # AFTER the local panel has been painted, so a slow auxiliary call
+            # never delays the local approval prompt. The explanation only
+            # enriches the mobile notification below.
+            risk_expl = self._explain_command_risk_for_notify(command, description, risk_level, rc)
+            try:
+                from hermes_cli.human_intervention_notifications import notify_human_intervention
+                notify_human_intervention(
+                    intervention_kind,
+                    "Hermes needs command approval" if intervention_kind == "approval" else "Hermes needs computer-use approval",
+                    f"{description}\nCommand: {command}",
+                    session_key=getattr(self, "session_id", ""),
+                    dedupe_key=f"{intervention_kind}:{command}",
+                    timeout_seconds=timeout,
+                    remote_code=remote_code,
+                    remote_actions=remote_actions,
+                    risk_level=risk_level,
+                    risk_explanation=risk_expl,
+                    approve_tier=approve_tier,
+                    approve_token=approve_token,
+                )
+            except Exception:
+                pass
+
+            try:
+                _last_countdown_refresh = _time.monotonic()
+                _outcome_labels = {
+                    "once": "allowed once",
+                    "session": "allowed for session",
+                    "always": "added to allowlist",
+                    "deny": "denied",
+                }
+                while True:
+                    try:
+                        # Local answer is checked FIRST every iteration, so a
+                        # local choice always wins over a remote decision.
+                        result = response_queue.get(timeout=1)
+                        self._approval_state = None
+                        self._approval_deadline = 0
+                        self._paint_now()
+                        self._persist_prompt_summary(
+                            "⚠", "Approval", command,
+                            _outcome_labels.get(result, str(result)),
+                        )
+                        return result
+                    except queue.Empty:
+                        remaining = self._approval_deadline - _time.monotonic()
+                        if remaining <= 0:
+                            break
+                        if remote_code:
+                            snap = self._rc_consume(remote_code)
+                            if snap is not None and snap.decision == "deny":
+                                # Remote deny → behave like a local deny.
+                                self._approval_state = None
+                                self._approval_deadline = 0
+                                self._paint_now()
+                                _cprint(
+                                    f"\n{_DIM}  ⏹ Denied remotely "
+                                    f"({snap.decision_source or 'mobile'}){_RST}"
+                                )
+                                self._persist_prompt_summary(
+                                    "⚠", "Approval", command, "denied remotely"
+                                )
+                                return "deny"
+                            if snap is not None and getattr(snap, "decision", None) == "approve":
+                                # Remote approve → behave like a local "once".
+                                # Only reachable when the store accepted an
+                                # approve (tier != none); critical/never levels
+                                # never produce an approve snapshot.
+                                self._approval_state = None
+                                self._approval_deadline = 0
+                                self._invalidate()
+                                _cprint(
+                                    f"\n{_DIM}  ✅ Approved remotely "
+                                    f"({snap.decision_source or 'mobile'}){_RST}"
+                                )
+                                return "once"
+                            if snap is not None and snap.decision == "extend":
+                                # Translate the store's wall-clock deadline into
+                                # the CLI's monotonic clock; only ever increase.
+                                import time as _t
+                                delta = max(0.0, snap.deadline_ts - _t.time())
+                                new_deadline = _time.monotonic() + delta
+                                if new_deadline > self._approval_deadline:
+                                    self._approval_deadline = new_deadline
+                                self._paint_now()
+                                # keep waiting
+                        now = _time.monotonic()
+                        if now - _last_countdown_refresh >= 1.0:
+                            _last_countdown_refresh = now
+                            self._paint_now()
+
+                self._approval_state = None
+                self._approval_deadline = 0
+                self._paint_now()
+                _cprint(f"\n{_DIM}  ⏱ Timeout — denying command{_RST}")
+                self._persist_prompt_summary("⚠", "Approval", command, "timed out / denied")
+                return "deny"
+            finally:
+                # Clear any pending record on every exit path. Consuming an
+                # already-resolved deny returns None, which is harmless.
+                # NOTE: never `return` inside this finally (avoids the
+                # SyntaxWarning that would otherwise swallow the verdict).
+                if remote_code:
+                    try:
+                        self._rc_consume(remote_code)
+                        self._rc_cleanup()
+                    except Exception:
+                        pass
 
     def _approval_choices(self, command: str, *, allow_permanent: bool = True,
                           smart_denied: bool = False) -> list[str]:
@@ -11829,6 +12242,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         verdict = self._approval_callback(
             command=f"computer_use: {summary}",
             description=f"Allow computer_use to perform `{action}`?",
+            intervention_kind="computer_use",
         )
         return {
             "once": "approve_once",

@@ -111,6 +111,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
         "faster-whisper==1.2.1",
         "sounddevice==0.5.5",
         "numpy==2.4.3",
+        "av>=11,<18",  # faster-whisper transitive dep; explicit for corrupted-venv resilience
     ),
 
     # ─── Image generation backends ─────────────────────────────────────────

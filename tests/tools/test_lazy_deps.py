@@ -94,6 +94,15 @@ class TestAllowlist:
                 assert ld._spec_is_safe(spec), \
                     f"{feature}: spec {spec!r} fails safety check"
 
+    def test_stt_faster_whisper_includes_av(self):
+        """Regression: faster-whisper requires av>=11 transitively —
+        listing it explicitly handles corrupted-venv / interrupted-install
+        scenarios where transitive resolution fails."""
+        specs = ld.LAZY_DEPS["stt.faster_whisper"]
+        av_specs = [s for s in specs if s.startswith("av")]
+        assert len(av_specs) == 1, f"expected exactly one av spec, got {av_specs}"
+        assert av_specs[0].startswith("av>="), f"expected av>=floor pin, got {av_specs[0]}"
+
     def test_feature_install_command_returns_pip_invocation(self):
         cmd = ld.feature_install_command("memory.honcho")
         assert cmd is not None

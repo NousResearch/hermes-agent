@@ -910,6 +910,17 @@ class DiscordAdapter(BasePlatformAdapter):
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
+            # Cancel the background bot task so it cannot fire on_message after
+            # this adapter is discarded.  Without this, the task keeps running and
+            # a later successful reconnect leaves two active Discord clients that
+            # each process every message, producing duplicate threads/responses.
+            if self._bot_task and not self._bot_task.done():
+                self._bot_task.cancel()
+                try:
+                    await self._bot_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                self._bot_task = None
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
@@ -919,6 +930,20 @@ class DiscordAdapter(BasePlatformAdapter):
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        # Cancel the bot task before closing the client.  If connect() timed out
+        # and returned False, the background client.start() task may still be
+        # running; calling client.close() alone is not enough to stop it because
+        # discord.py's reconnect loop can ignore the closed flag while a
+        # WebSocket handshake is in flight.  Explicitly cancelling the task here
+        # ensures the zombie client cannot receive or dispatch any further events.
+        if self._bot_task and not self._bot_task.done():
+            self._bot_task.cancel()
+            try:
+                await self._bot_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._bot_task = None
+
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:

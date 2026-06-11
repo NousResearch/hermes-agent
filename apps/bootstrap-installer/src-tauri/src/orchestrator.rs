@@ -1981,6 +1981,13 @@ fn configure_unix_path_stage_with_profile(
 fn default_unix_profile_path() -> Option<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
     let shell = std::env::var("SHELL").unwrap_or_default();
+    default_unix_profile_path_for(&home, &shell)
+}
+
+fn default_unix_profile_path_for(home: &Path, shell: &str) -> Option<PathBuf> {
+    if shell.ends_with("fish") {
+        return Some(home.join(".config").join("fish").join("config.fish"));
+    }
     let name = if shell.ends_with("zsh") { ".zshrc" } else { ".profile" };
     Some(home.join(name))
 }
@@ -4417,6 +4424,24 @@ mod tests {
         assert_eq!(report["pathChanged"], true);
         assert_eq!(report["hermesHomeChanged"], true);
         assert_eq!(report["applied"], false);
+    }
+
+    #[test]
+    fn unix_profile_path_uses_fish_config_for_fish_shell() {
+        let home = PathBuf::from("/home/user");
+
+        assert_eq!(
+            default_unix_profile_path_for(&home, "/usr/bin/fish").unwrap(),
+            home.join(".config").join("fish").join("config.fish")
+        );
+        assert_eq!(
+            default_unix_profile_path_for(&home, "/bin/zsh").unwrap(),
+            home.join(".zshrc")
+        );
+        assert_eq!(
+            default_unix_profile_path_for(&home, "/bin/bash").unwrap(),
+            home.join(".profile")
+        );
     }
 
     #[test]

@@ -91,6 +91,10 @@ pub fn plan_path_update_with_extra_entries(
 
 /// Return a shell profile line users can apply on Unix-like platforms.
 pub fn shell_profile_hint(plan: &PathUpdatePlan) -> String {
+    posix_shell_profile_hint(plan)
+}
+
+fn posix_shell_profile_hint(plan: &PathUpdatePlan) -> String {
     let entries = if plan.path_entries.is_empty() {
         plan.hermes_bin.display().to_string()
     } else {
@@ -103,6 +107,26 @@ pub fn shell_profile_hint(plan: &PathUpdatePlan) -> String {
     format!("export PATH=\"{entries}:$PATH\"")
 }
 
+fn fish_shell_profile_hint(plan: &PathUpdatePlan) -> String {
+    let entries = if plan.path_entries.is_empty() {
+        vec![plan.hermes_bin.clone()]
+    } else {
+        plan.path_entries.clone()
+    };
+    entries
+        .iter()
+        .map(|entry| format!("fish_add_path \"{}\"", entry.display()))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn shell_profile_hint_for_profile(profile_path: &Path, plan: &PathUpdatePlan) -> String {
+    if profile_path.file_name().and_then(|value| value.to_str()) == Some("config.fish") {
+        return fish_shell_profile_hint(plan);
+    }
+    posix_shell_profile_hint(plan)
+}
+
 /// Write or replace the Hermes-managed PATH block in a shell profile file.
 pub fn write_shell_profile_update(profile_path: &Path, plan: &PathUpdatePlan) -> Result<()> {
     let existing = match fs::read_to_string(profile_path) {
@@ -112,7 +136,7 @@ pub fn write_shell_profile_update(profile_path: &Path, plan: &PathUpdatePlan) ->
     };
     let block = format!(
         "{HERMES_PROFILE_BEGIN}\n{}\n{HERMES_PROFILE_END}\n",
-        shell_profile_hint(plan)
+        shell_profile_hint_for_profile(profile_path, plan)
     );
     let next = replace_managed_block(&existing, &block);
     if let Some(parent) = profile_path.parent() {
@@ -537,6 +561,34 @@ mod tests {
         assert_eq!(text.matches(HERMES_PROFILE_BEGIN).count(), 1);
         assert!(text.contains("alias ll='ls -la'"));
         assert!(text.contains("export PATH=\"/home/user/.hermes/hermes-agent/venv/bin:$PATH\""));
+    }
+
+    #[test]
+    fn write_shell_profile_update_uses_fish_add_path_for_fish_config() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let config_dir = dir.path().join(".config").join("fish");
+        let profile = config_dir.join("config.fish");
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(&profile, "set -gx EDITOR vim\n").unwrap();
+        let plan = PathUpdatePlan {
+            hermes_bin: PathBuf::from("/home/user/.hermes/hermes-agent/venv/bin"),
+            path_entries: vec![
+                PathBuf::from("/home/user/.hermes/hermes-agent/venv/bin"),
+                PathBuf::from("/home/user/.hermes/bin"),
+            ],
+            changed: true,
+            next_path: String::new(),
+        };
+
+        write_shell_profile_update(&profile, &plan).unwrap();
+        write_shell_profile_update(&profile, &plan).unwrap();
+
+        let text = std::fs::read_to_string(&profile).unwrap();
+        assert_eq!(text.matches(HERMES_PROFILE_BEGIN).count(), 1);
+        assert!(text.contains("set -gx EDITOR vim"));
+        assert!(text.contains("fish_add_path \"/home/user/.hermes/hermes-agent/venv/bin\""));
+        assert!(text.contains("fish_add_path \"/home/user/.hermes/bin\""));
+        assert!(!text.contains("export PATH="));
     }
 
     #[test]

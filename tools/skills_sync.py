@@ -29,7 +29,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import iter_skill_index_files
 from typing import Dict, List, Optional, Set, Tuple
 from utils import atomic_replace
 
@@ -81,9 +81,7 @@ def _build_external_skill_index() -> Set[str]:
 
     external_names: Set[str] = set()
     for ext_dir in get_external_skills_dirs():
-        for skill_md in ext_dir.rglob("SKILL.md"):
-            if is_excluded_skill_path(skill_md):
-                continue
+        for skill_md in iter_skill_index_files(ext_dir, "SKILL.md"):
             skill_dir = skill_md.parent
             # Index by directory name (how _find_skill resolves skills)
             external_names.add(skill_dir.name)
@@ -210,9 +208,7 @@ def _discover_bundled_skills(bundled_dir: Path) -> List[Tuple[str, Path]]:
     if not bundled_dir.exists():
         return skills
 
-    for skill_md in bundled_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(skill_md):
-            continue
+    for skill_md in iter_skill_index_files(bundled_dir, "SKILL.md"):
         skill_dir = skill_md.parent
         skill_name = _read_skill_name(skill_md, skill_dir.name)
         skills.append((skill_name, skill_dir))
@@ -286,9 +282,7 @@ def _optional_skill_index() -> Dict[str, Tuple[str, str, Path]]:
     index: Dict[str, Tuple[str, str, Path]] = {}
     if not optional_dir.exists():
         return index
-    for skill_md in sorted(optional_dir.rglob("SKILL.md")):
-        if is_excluded_skill_path(skill_md):
-            continue
+    for skill_md in iter_skill_index_files(optional_dir, "SKILL.md"):
         src = skill_md.parent
         try:
             install_path = _safe_rel_install_path(src, optional_dir)
@@ -349,9 +343,7 @@ def restore_official_optional_skill(name: str, *, restore: bool = False) -> dict
         src_frontmatter = _read_skill_name(src / "SKILL.md", folder_name)
         matches: List[Path] = []
         if SKILLS_DIR.exists():
-            for skill_md in sorted(SKILLS_DIR.rglob("SKILL.md")):
-                if is_excluded_skill_path(skill_md):
-                    continue
+            for skill_md in iter_skill_index_files(SKILLS_DIR, "SKILL.md"):
                 candidate = skill_md.parent
                 try:
                     candidate.relative_to(SKILLS_DIR)
@@ -414,9 +406,7 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
 
     backfilled: List[str] = []
     changed = False
-    for skill_md in sorted(optional_dir.rglob("SKILL.md")):
-        if is_excluded_skill_path(skill_md):
-            continue
+    for skill_md in iter_skill_index_files(optional_dir, "SKILL.md"):
         src = skill_md.parent
         try:
             install_path = _safe_rel_install_path(src, optional_dir)

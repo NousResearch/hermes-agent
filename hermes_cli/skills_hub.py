@@ -23,7 +23,7 @@ from rich.table import Table
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import iter_skill_index_files
 
 _console = Console()
 
@@ -197,10 +197,7 @@ def _existing_categories() -> List[str]:
                 continue
             # Has at least one nested SKILL.md (excluding dependency/cache dirs)?
             try:
-                if any(
-                    not is_excluded_skill_path(p)
-                    for p in entry.rglob("SKILL.md")
-                ):
+                if next(iter_skill_index_files(entry, "SKILL.md"), None):
                     out.append(entry.name)
             except OSError:
                 continue

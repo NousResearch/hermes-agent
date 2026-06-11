@@ -75,9 +75,11 @@ def _category(fm: dict[str, Any], skill_md: Path) -> str:
 
 
 def _iter_skill_files(roots: list[tuple[str, Path]]):
+    from agent.skill_utils import iter_skill_index_files
+
     for source, root in roots:
         if root.exists():
-            for path in root.rglob("SKILL.md"):
+            for path in iter_skill_index_files(root, "SKILL.md"):
                 yield source, path
 
 

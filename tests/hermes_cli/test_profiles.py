@@ -1896,3 +1896,37 @@ class TestProfilesToServe:
     def test_on_no_named_profiles_returns_just_default(self, profile_env):
         serve = profiles_to_serve(multiplex=True)
         assert [n for n, _ in serve] == ["default"]
+class TestCountSkills:
+    """_count_skills must see symlinked skill dirs (external skill managers)."""
+
+    def test_counts_real_and_symlinked_skills(self, tmp_path):
+        from hermes_cli.profiles import _count_skills
+
+        profile_dir = tmp_path / "profile"
+        skills_dir = profile_dir / "skills"
+        skills_dir.mkdir(parents=True)
+
+        real = skills_dir / "real-skill"
+        real.mkdir()
+        (real / "SKILL.md").write_text("---\nname: real-skill\n---\n", encoding="utf-8")
+
+        vault = tmp_path / "vault" / "linked-skill"
+        vault.mkdir(parents=True)
+        (vault / "SKILL.md").write_text("---\nname: linked-skill\n---\n", encoding="utf-8")
+        (skills_dir / "linked-skill").symlink_to(vault)
+
+        assert _count_skills(profile_dir) == 2
+
+    def test_excluded_dirs_not_counted(self, tmp_path):
+        from hermes_cli.profiles import _count_skills
+
+        profile_dir = tmp_path / "profile"
+        skills_dir = profile_dir / "skills"
+        dep = skills_dir / "some-skill" / "node_modules" / "dep"
+        dep.mkdir(parents=True)
+        (dep / "SKILL.md").write_text("---\nname: dep\n---\n", encoding="utf-8")
+        (skills_dir / "some-skill" / "SKILL.md").write_text(
+            "---\nname: some-skill\n---\n", encoding="utf-8"
+        )
+
+        assert _count_skills(profile_dir) == 1

@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import List, Optional, Tuple
 
-from agent.skill_utils import is_excluded_skill_path
+from agent.skill_utils import iter_skill_index_files
 
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
@@ -729,7 +729,7 @@ def _check_gateway_running(profile_dir: Path) -> bool:
         return False
 
 
-# In-process cache for skill counts. Walking ``skills_dir.rglob("SKILL.md")``
+# In-process cache for skill counts. Walking ``iter_skill_index_files``
 # recurses the entire skill tree (each skill carries references/scripts/assets
 # sub-trees); the default profile alone has ~270 skills, and ``list_profiles``
 # calls this for EVERY profile (16+), so an uncached scan costs ~6s — long
@@ -785,11 +785,7 @@ def _count_skills(profile_dir: Path) -> int:
     ):
         return cached[2]
 
-    count = 0
-    for md in skills_dir.rglob("SKILL.md"):
-        if is_excluded_skill_path(md):
-            continue
-        count += 1
+    count = sum(1 for _ in iter_skill_index_files(skills_dir, "SKILL.md"))
     _SKILL_COUNT_CACHE[key] = (signature, now, count)
     return count
 

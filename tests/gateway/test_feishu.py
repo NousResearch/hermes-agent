@@ -1952,6 +1952,50 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.reply_to_message_id, "om_parent")
         self.assertEqual(event.reply_to_text, "父消息内容")
 
+    def test_dm_quoted_reply_ignores_thread_id(self):
+        """Feishu DMs (p2p) do not support real threads; quoted replies
+        populate thread_id/root_id but should not create isolated sessions (#44028)."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter.get_chat_info = AsyncMock(
+            return_value={"chat_id": "oc_chat", "name": "Feishu DM", "type": "dm"}
+        )
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "ou_user", "user_name": "张三", "user_id_alt": None}
+        )
+        # Simulate a quoted reply in a DM: thread_id/root_id are populated
+        # by the Lark SDK but should NOT create an isolated session.
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            thread_id="om_thread_parent",
+            root_id="om_thread_parent",
+            parent_id="om_parent",
+            upper_message_id=None,
+            message_type="text",
+            content='{"text":"reply"}',
+            message_id="om_reply",
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=SimpleNamespace(event=SimpleNamespace(message=message)),
+                message=message,
+                sender_id=SimpleNamespace(open_id="ou_user", user_id=None, union_id=None),
+                is_bot=False,
+                chat_type="p2p",
+                message_id="om_reply",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        # thread_id must be None in DMs despite the message having one
+        self.assertIsNone(event.source.thread_id)
+        # reply_to_message_id is still preserved for context
+        self.assertEqual(event.reply_to_message_id, "om_parent")
+
     @patch.dict(os.environ, {}, clear=True)
     def test_send_replies_in_thread_when_thread_metadata_present(self):
         from gateway.config import PlatformConfig

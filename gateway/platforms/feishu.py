@@ -3123,6 +3123,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 text = f"{hint}\n\n{text}" if text else hint
 
         thread_id = getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None
+        # Feishu DMs (p2p) do not support real threads; quoted replies populate
+        # thread_id/root_id but should not create isolated sessions (#44028).
+        if chat_type == "p2p":
+            thread_id = None
         reply_to_message_id = (
             getattr(message, "parent_id", None)
             or getattr(message, "upper_message_id", None)

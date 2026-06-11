@@ -33,8 +33,11 @@ function renderRow(over: Partial<SidebarSessionRowProps> = {}) {
   const handlers = {
     onArchive: vi.fn(),
     onDelete: vi.fn(),
+    onHaltSelectedSessions: vi.fn(),
     onPin: vi.fn(),
+    onPromptSelectedSessions: vi.fn(),
     onResume: vi.fn(),
+    onSteerSelectedSessions: vi.fn(),
     onToggleSelect: vi.fn()
   }
 
@@ -45,8 +48,11 @@ function renderRow(over: Partial<SidebarSessionRowProps> = {}) {
       isWorking={false}
       onArchive={handlers.onArchive}
       onDelete={handlers.onDelete}
+      onHaltSelectedSessions={handlers.onHaltSelectedSessions}
       onPin={handlers.onPin}
+      onPromptSelectedSessions={handlers.onPromptSelectedSessions}
       onResume={handlers.onResume}
+      onSteerSelectedSessions={handlers.onSteerSelectedSessions}
       onToggleSelect={handlers.onToggleSelect}
       selectable
       session={session()}
@@ -173,6 +179,33 @@ describe('SidebarSessionRow gestures', () => {
 
   it('right-clicking a checked multi-selected row opens bulk actions for the selected set', async () => {
     const onArchiveSelectedSessions = vi.fn()
+    const onHaltSelectedSessions = vi.fn()
+
+    const { handlers, rowButton } = renderRow({
+      bulkSelectedSessionIds: ['s1', 's2', 's3'],
+      checked: true,
+      onArchiveSelectedSessions,
+      onHaltSelectedSessions,
+      selectionActive: true
+    })
+
+    fireEvent.contextMenu(rowButton)
+
+    expect(await screen.findByText('Prompt 3')).toBeTruthy()
+    expect(screen.getByText('Steer 3')).toBeTruthy()
+    expect(screen.getByText('Stop 3')).toBeTruthy()
+    expect(screen.getByText('Archive 3')).toBeTruthy()
+    expect(screen.getByText('Delete 3')).toBeTruthy()
+    expect(screen.queryByText('Rename')).toBeNull()
+
+    fireEvent.click(screen.getByText('Stop 3'))
+
+    await waitFor(() => expect(onHaltSelectedSessions).toHaveBeenCalledWith(['s1', 's2', 's3']))
+    expect(handlers.onDelete).not.toHaveBeenCalled()
+  })
+
+  it('right-clicking a checked multi-selected row archives the selected set', async () => {
+    const onArchiveSelectedSessions = vi.fn()
 
     const { handlers, rowButton } = renderRow({
       bulkSelectedSessionIds: ['s1', 's2', 's3'],
@@ -229,7 +262,14 @@ describe('SidebarSessionRow gestures', () => {
   it('starts a session drag from the row body without rendering a separate reorder handle', () => {
     const onSessionDragEnd = vi.fn()
     const onSessionDragStart = vi.fn()
-    const { container, rowButton } = renderRow({ isPinned: true, onSessionDragEnd, onSessionDragStart, reorderable: true })
+
+    const { container, rowButton } = renderRow({
+      isPinned: true,
+      onSessionDragEnd,
+      onSessionDragStart,
+      reorderable: true
+    })
+
     const transfer = fakeTransfer()
 
     expect(container.querySelector('[data-reorder-handle]')).toBeNull()

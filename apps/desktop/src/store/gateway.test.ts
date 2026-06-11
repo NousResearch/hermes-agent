@@ -1,6 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-
 import type { ConnectionState, GatewayEvent } from '@hermes/shared'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // The registry calls `new HermesGateway()` internally, so mock the class with
 // a controllable fake that records connect URLs and fires its state listener.
@@ -13,6 +12,7 @@ const { FakeGateway } = vi.hoisted(() => {
     connectUrls: string[] = []
     closed = false
     eventCbs: Array<(e: GatewayEvent) => void> = []
+    requests: Array<{ method: string; params?: Record<string, unknown> }> = []
     stateCbs: Array<(s: ConnectionState) => void> = []
 
     constructor() {
@@ -21,6 +21,7 @@ const { FakeGateway } = vi.hoisted(() => {
 
     onEvent(cb: (e: GatewayEvent) => void) {
       this.eventCbs.push(cb)
+
       return () => {
         this.eventCbs = this.eventCbs.filter(c => c !== cb)
       }
@@ -28,6 +29,7 @@ const { FakeGateway } = vi.hoisted(() => {
 
     onState(cb: (s: ConnectionState) => void) {
       this.stateCbs.push(cb)
+
       return () => {
         this.stateCbs = this.stateCbs.filter(c => c !== cb)
       }
@@ -38,18 +40,25 @@ const { FakeGateway } = vi.hoisted(() => {
       this.setState('open')
     }
 
+    async request<T>(method: string, params?: Record<string, unknown>): Promise<T> {
+      this.requests.push({ method, params })
+
+      return { method, ok: true, params } as T
+    }
+
     close() {
       this.closed = true
       this.setState('closed')
     }
 
     emitEvent(event: GatewayEvent) {
-      for (const cb of this.eventCbs) cb(event)
+      for (const cb of this.eventCbs) {cb(event)}
     }
 
     setState(state: ConnectionState) {
       this.connectionState = state
-      for (const cb of this.stateCbs) cb(state)
+
+      for (const cb of this.stateCbs) {cb(state)}
     }
   }
 
@@ -59,12 +68,15 @@ const { FakeGateway } = vi.hoisted(() => {
 vi.mock('@/hermes', () => ({ HermesGateway: FakeGateway }))
 
 import {
+  activeBackendIsRemote,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForEndpoint,
+  ensureGatewayForProfile,
   isRemoteBackendKey,
   pruneSecondaryGateways,
   remoteGatewayWsUrl,
+  requestGatewayForEndpoint,
   setPrimaryGateway
 } from './gateway'
 
@@ -125,10 +137,7 @@ describe('ensureGatewayForEndpoint', () => {
     await ensureGatewayForEndpoint(ENDPOINT, 'tok2')
 
     expect(FakeGateway.instances.length).toBe(countAfterFirst) // no new socket
-    expect(FakeGateway.instances.at(-1)!.connectUrls).toEqual([
-      `${ENDPOINT}?token=tok1`,
-      `${ENDPOINT}?token=tok2`
-    ])
+    expect(FakeGateway.instances.at(-1)!.connectUrls).toEqual([`${ENDPOINT}?token=tok1`, `${ENDPOINT}?token=tok2`])
   })
 
   it('feeds remote gateway events into the shared event handler', async () => {
@@ -139,6 +148,22 @@ describe('ensureGatewayForEndpoint', () => {
 
     expect(events).toHaveLength(1)
     expect(events[0]).toMatchObject({ type: 'message.delta', session_id: 's1' })
+  })
+
+  it('can request a remote gateway in the background without making it active', async () => {
+    await ensureGatewayForProfile('default')
+    expect(activeBackendIsRemote()).toBe(false)
+
+    await expect(requestGatewayForEndpoint(ENDPOINT, 'cloud.ping', { session_id: 's1' }, 'tok1')).resolves.toEqual({
+      method: 'cloud.ping',
+      ok: true,
+      params: { session_id: 's1' }
+    })
+
+    const remote = FakeGateway.instances.at(-1)!
+    expect(remote.connectUrls).toEqual([`${ENDPOINT}?token=tok1`])
+    expect(remote.requests).toEqual([{ method: 'cloud.ping', params: { session_id: 's1' } }])
+    expect(activeBackendIsRemote()).toBe(false)
   })
 
   it('is pruned and closed when neither active nor kept', async () => {

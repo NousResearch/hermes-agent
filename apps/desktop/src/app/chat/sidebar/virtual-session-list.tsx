@@ -29,7 +29,10 @@ interface SessionRowCommonProps {
   bulkSelectedSessionIds?: readonly string[]
   onArchiveSelectedSessions?: (sessionIds: string[]) => Promise<unknown> | void
   onDeleteSelectedSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onHaltSelectedSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onPromptSelectedSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
   onRestoreSelectedSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onSteerSelectedSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
 }
 
 interface VirtualSessionListProps {
@@ -59,7 +62,10 @@ interface VirtualSessionListProps {
   onToggleSelect?: (sessionId: string, mode: 'range' | 'single') => void
   onArchiveSessions?: (sessionIds: string[]) => Promise<unknown> | void
   onDeleteSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onHaltSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onPromptSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
   onRestoreSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onSteerSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
 }
 
 const ROW_ESTIMATE_PX = 28
@@ -89,7 +95,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onToggleSelect,
   onArchiveSessions,
   onDeleteSessions,
-  onRestoreSessions
+  onHaltSessions,
+  onPromptSessions,
+  onRestoreSessions,
+  onSteerSessions
 }) => {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
 
@@ -119,7 +128,8 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
     const commonProps: SessionRowCommonProps = {
       archived,
-      bulkSelectedSessionIds: rowIsChecked && selectedSessionIds && selectedSessionIds.length > 1 ? selectedSessionIds : undefined,
+      bulkSelectedSessionIds:
+        rowIsChecked && selectedSessionIds && selectedSessionIds.length > 1 ? selectedSessionIds : undefined,
       checked: rowIsChecked,
       dragging: draggingSessionId === session.id,
       isPinned: pinned,
@@ -129,10 +139,13 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       onArchiveSelectedSessions: onArchiveSessions,
       onDelete: () => onDeleteSession(session.id),
       onDeleteSelectedSessions: onDeleteSessions,
+      onHaltSelectedSessions: archived ? undefined : onHaltSessions,
       onPin: () => onTogglePin(sessionPinId(session)),
+      onPromptSelectedSessions: archived ? undefined : onPromptSessions,
       onRestore: onRestoreSession ? () => onRestoreSession(session.id) : undefined,
       onRestoreSelectedSessions: onRestoreSessions,
       onResume: () => onResumeSession(session.id),
+      onSteerSelectedSessions: archived ? undefined : onSteerSessions,
       onSessionDragEnd,
       onSessionDragStart,
       onToggleSelect: onToggleSelect ? mode => onToggleSelect(session.id, mode) : undefined,

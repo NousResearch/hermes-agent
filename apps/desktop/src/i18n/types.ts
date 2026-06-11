@@ -896,19 +896,39 @@ export interface Translations {
       selectedCount: (count: number) => string
       pin: string
       unpin: string
+      prompt: string
+      steer: string
+      halt: string
       archive: string
       restore: string
       delete: string
+      promptCount: (count: number) => string
+      steerCount: (count: number) => string
+      haltCount: (count: number) => string
       archiveCount: (count: number) => string
       restoreCount: (count: number) => string
       deleteCount: (count: number) => string
+      promptDialogTitle: (count: number) => string
+      promptDialogDesc: string
+      promptPlaceholder: string
+      promptSubmit: string
+      steerDialogTitle: (count: number) => string
+      steerDialogDesc: string
+      steerPlaceholder: string
+      steerSubmit: string
       clearSelection: string
       deleteDialogTitle: (count: number) => string
       deleteDialogDesc: string
       deleteConfirm: string
+      promptedToast: (count: number) => string
+      steeredToast: (count: number) => string
+      haltedToast: (count: number) => string
       archivedToast: (count: number) => string
       restoredToast: (count: number) => string
       deletedToast: (count: number) => string
+      promptFailed: (count: number) => string
+      steerFailed: (count: number) => string
+      haltFailed: (count: number) => string
       archiveFailed: (count: number) => string
       restoreFailed: (count: number) => string
       deleteFailed: (count: number) => string

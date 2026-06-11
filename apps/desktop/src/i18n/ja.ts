@@ -217,9 +217,11 @@ export const ja = defineLocale({
       technicalDesc: '生のツール引数、結果、低レベルの詳細を含めます。',
       themeTitle: 'テーマ',
       themeDesc: 'デスクトップ専用のパレットです。選択したモードの上に適用されます。',
-      themeProfileNote: profile => `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
+      themeProfileNote: profile =>
+        `「${profile}」プロファイルに保存されます。プロファイルごとに個別のテーマを保持します。`,
       installTitle: 'VS Code から導入',
-      installDesc: 'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',
+      installDesc:
+        'Marketplace の拡張機能 ID（例: dracula-theme.theme-dracula）を貼り付けると、その配色テーマをデスクトップ用パレットに変換します。',
       installPlaceholder: 'publisher.extension',
       installButton: 'インストール',
       installing: 'インストール中…',
@@ -348,7 +350,8 @@ export const ja = defineLocale({
         personality: '新しいセッションのデフォルトのアシスタントスタイルです。',
         showReasoning: 'バックエンドが推論内容を提供したときに表示します。'
       },
-      timezone: 'Hermes がローカル時刻のコンテキストを必要とするときに使用します。空欄ならシステムのタイムゾーンを使います。',
+      timezone:
+        'Hermes がローカル時刻のコンテキストを必要とするときに使用します。空欄ならシステムのタイムゾーンを使います。',
       agent: {
         imageInputMode: '画像添付をモデルへ送る方法を制御します。',
         maxTurns: 'Hermes が 1 回の実行を停止するまでのツール呼び出しターン上限です。'
@@ -474,15 +477,16 @@ export const ja = defineLocale({
       envOverrideDesc:
         '保存された設定を使用するには HERMES_DESKTOP_REMOTE_URL と HERMES_DESKTOP_REMOTE_TOKEN の設定を解除してください。',
       localTitle: 'ローカルゲートウェイ',
-      localDesc: 'ローカルホストでプライベートな Hermes バックエンドを起動します。これがデフォルトで、オフラインでも動作します。',
+      localDesc:
+        'ローカルホストでプライベートな Hermes バックエンドを起動します。これがデフォルトで、オフラインでも動作します。',
       remoteTitle: 'リモートゲートウェイ',
       remoteDesc:
         'このデスクトップシェルをリモートの Hermes バックエンドに接続します。ホスト型ゲートウェイは OAuth またはユーザー名とパスワードを使用します。自己ホスト型はセッショントークンを使用する場合があります。',
       remoteUrlTitle: 'リモート URL',
-      remoteUrlDesc: 'リモートダッシュボードバックエンドのベース URL。/hermes などのパスプレフィックスもサポートしています。',
+      remoteUrlDesc:
+        'リモートダッシュボードバックエンドのベース URL。/hermes などのパスプレフィックスもサポートしています。',
       probing: 'このゲートウェイの認証方法を確認中…',
-      probeError:
-        'このゲートウェイにまだ到達できません。URL を確認してください。応答後に認証方法が表示されます。',
+      probeError: 'このゲートウェイにまだ到達できません。URL を確認してください。応答後に認証方法が表示されます。',
       signedIn: 'サインイン済み',
       signIn: 'サインイン',
       signOut: 'サインアウト',
@@ -490,7 +494,8 @@ export const ja = defineLocale({
       authTitle: '認証',
       authSignedInPassword:
         'このゲートウェイはユーザー名とパスワードを使用します。サインイン済みです。セッションは自動的に更新されます。',
-      authSignedInOauth: 'このゲートウェイは OAuth を使用します。サインイン済みです。セッションは自動的に更新されます。',
+      authSignedInOauth:
+        'このゲートウェイは OAuth を使用します。サインイン済みです。セッションは自動的に更新されます。',
       authNeedsPassword:
         'このゲートウェイはユーザー名とパスワードを使用します。このデスクトップアプリを承認するにはサインインしてください。',
       authNeedsOauth: provider =>
@@ -505,8 +510,7 @@ export const ja = defineLocale({
       saveForRestart: '次回起動時のために保存',
       saveAndReconnect: '保存して再接続',
       diagnostics: '診断',
-      diagnosticsDesc:
-        'ファイルマネージャーで desktop.log を表示します。ゲートウェイの起動に失敗した際に役立ちます。',
+      diagnosticsDesc: 'ファイルマネージャーで desktop.log を表示します。ゲートウェイの起動に失敗した際に役立ちます。',
       openLogs: 'ログを開く',
       incompleteTitle: 'リモートゲートウェイの設定が不完全です',
       incompleteSignIn: 'リモートに切り替える前にリモート URL を入力してサインインしてください。',
@@ -564,7 +568,8 @@ export const ja = defineLocale({
     },
     model: {
       loading: 'モデル設定を読み込み中...',
-      appliesDesc: '新しいセッションに適用されます。コンポーザーのモデルピッカーを使ってアクティブなチャットをホットスワップできます。',
+      appliesDesc:
+        '新しいセッションに適用されます。コンポーザーのモデルピッカーを使ってアクティブなチャットをホットスワップできます。',
       provider: 'プロバイダー',
       model: 'モデル',
       applying: '適用中...',
@@ -650,7 +655,7 @@ export const ja = defineLocale({
       noApiKeyRequired: 'API キーは不要です。',
       postSetupHint: step =>
         `このプロバイダーは追加のセットアップ手順 (${step}) が必要です。今は CLI で hermes tools を実行してください。`,
-      postSetupRun: 'セットアップを実行',
+      postSetupRun: 'セットアップを実行'
     }
   },
 
@@ -971,7 +976,8 @@ export const ja = defineLocale({
     notSet: '未設定',
     soulDesc: 'このプロファイルに組み込まれたシステムプロンプトとペルソナの指示。',
     soulOptional: '省略可能',
-    soulPlaceholder: mode => `このプロファイルのシステムプロンプト / ペルソナ。\n空欄のままにすると ${mode} のデフォルトを使用します。`,
+    soulPlaceholder: mode =>
+      `このプロファイルのシステムプロンプト / ペルソナ。\n空欄のままにすると ${mode} のデフォルトを使用します。`,
     soulPlaceholderCloned: 'クローン済み',
     soulPlaceholderEmpty: '空',
     unsavedChanges: '未保存の変更',
@@ -1180,7 +1186,8 @@ export const ja = defineLocale({
     archiveAllTitle: 'すべてのセッションをアーカイブ',
     archiveAllAria: '固定されていないすべてのセッションをアーカイブ',
     archiveAllDialogTitle: 'すべてのセッションをアーカイブ',
-    archiveAllDialogDesc: 'サイドバーから固定されていないセッションをアーカイブします。固定中のチャット、現在のチャット、実行中のセッションは表示されたままです。',
+    archiveAllDialogDesc:
+      'サイドバーから固定されていないセッションをアーカイブします。固定中のチャット、現在のチャット、実行中のセッションは表示されたままです。',
     archiveAllConfirm: 'すべてアーカイブ',
     archiveAllCancel: 'キャンセル',
     archiveAllSubmitting: 'アーカイブ中…',
@@ -1229,19 +1236,39 @@ export const ja = defineLocale({
       selectedCount: count => `${count} 件を選択中`,
       pin: 'ピン留め',
       unpin: 'ピン留めを解除',
+      prompt: '送信',
+      steer: '誘導',
+      halt: '停止',
       archive: 'アーカイブ',
       restore: '復元',
       delete: '削除',
+      promptCount: count => `${count} 件に送信`,
+      steerCount: count => `${count} 件を誘導`,
+      haltCount: count => `${count} 件を停止`,
       archiveCount: count => `${count} 件をアーカイブ`,
       restoreCount: count => `${count} 件を復元`,
       deleteCount: count => `${count} 件を削除`,
+      promptDialogTitle: count => `${count} 件のセッションに送信`,
+      promptDialogDesc: '選択したすべてのセッションに同じメッセージを送信します。',
+      promptPlaceholder: '送信するメッセージ…',
+      promptSubmit: 'プロンプトを送信',
+      steerDialogTitle: count => `${count} 件のセッションを誘導`,
+      steerDialogDesc: '選択したすべての実行中セッションに補足指示を送ります。',
+      steerPlaceholder: '誘導メモ…',
+      steerSubmit: '誘導',
       clearSelection: '選択を解除',
       deleteDialogTitle: count => `${count} 件のセッションを削除しますか？`,
       deleteDialogDesc: '削除したセッションは完全に削除され、元に戻せません。',
       deleteConfirm: '削除',
+      promptedToast: count => `${count} 件のセッションに送信しました`,
+      steeredToast: count => `${count} 件のセッションを誘導しました`,
+      haltedToast: count => `${count} 件のセッションを停止しました`,
       archivedToast: count => `${count} 件のセッションをアーカイブしました`,
       restoredToast: count => `${count} 件のセッションを復元しました`,
       deletedToast: count => `${count} 件のセッションを削除しました`,
+      promptFailed: count => `${count} 件のセッションに送信できませんでした`,
+      steerFailed: count => `${count} 件のセッションを誘導できませんでした`,
+      haltFailed: count => `${count} 件のセッションを停止できませんでした`,
       archiveFailed: count => `${count} 件のセッションをアーカイブできませんでした`,
       restoreFailed: count => `${count} 件のセッションを復元できませんでした`,
       deleteFailed: count => `${count} 件のセッションを削除できませんでした`
@@ -1281,7 +1308,8 @@ export const ja = defineLocale({
       cloudMembersEmpty: '招待済みメンバーはまだいません。',
       cloudMembersRefresh: '更新',
       cloudMembersPermissionLabel: 'クラウドメンバー権限',
-      cloudMembersPermission: permission => ({ admin: '管理者', post: '投稿可', read: '読み取り' })[permission] || permission,
+      cloudMembersPermission: permission =>
+        ({ admin: '管理者', post: '投稿可', read: '読み取り' })[permission] || permission,
       cloudMembersRevoke: '取り消し',
       cloudMembersRevokeConfirm: member => `${member} のクラウドアクセスを取り消しますか？`,
       cloudMembersSaving: '保存中...',
@@ -1447,7 +1475,8 @@ export const ja = defineLocale({
     availableBody: '新しいバージョンの Hermes をインストールする準備ができています。',
     availableTitleBackend: 'バックエンドの更新があります',
     availableBodyBackend: '接続中の Hermes バックエンドの新しいバージョンをインストールできます。',
-    availableBodyNoChangelog: '新しいバージョンを利用できます。このインストール形式ではリリースノートは表示できません。',
+    availableBodyNoChangelog:
+      '新しいバージョンを利用できます。このインストール形式ではリリースノートは表示できません。',
     updateNow: '今すぐ更新',
     maybeLater: '後で',
     moreChanges: count => `さらに ${count} 件の変更が含まれています。`,
@@ -1470,7 +1499,8 @@ export const ja = defineLocale({
       restarting: 'バックエンドが更新を読み込むため再起動しています…',
       notAvailable: 'このバックエンドでは更新を利用できません。',
       failed: 'バックエンドの更新に失敗しました。',
-      noReturn: 'バックエンドがオンラインに戻りませんでした。更新が完了していない可能性があります。バックエンドホストを確認してください。'
+      noReturn:
+        'バックエンドがオンラインに戻りませんでした。更新が完了していない可能性があります。バックエンドホストを確認してください。'
     }
   },
 

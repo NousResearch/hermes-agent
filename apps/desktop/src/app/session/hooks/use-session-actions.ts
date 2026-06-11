@@ -55,8 +55,8 @@ import type {
   SessionCreateResponse,
   SessionInfo,
   SessionPresenceRecord,
-  SessionRuntimeInfo,
   SessionResumeResponse,
+  SessionRuntimeInfo,
   UsageStats
 } from '@/types/hermes'
 
@@ -71,6 +71,7 @@ import {
   recordSessionArchived,
   restoreArchivedSessions
 } from '../session-bulk-actions'
+import { haltStoredSessions, promptStoredSessions, steerStoredSessions } from '../session-bulk-runtime-actions'
 
 export { isSessionGoneError } from '../session-bulk-actions'
 
@@ -624,6 +625,7 @@ export function useSessionActions({
 
       if (cachedRuntimeId && cachedState) {
         const stored = $sessions.get().find(session => session.id === storedSessionId)
+
         const cachedViewState =
           !cachedState.model && stored?.model != null
             ? {
@@ -1214,6 +1216,24 @@ export function useSessionActions({
     [activeSessionId, requestGateway, selectedStoredSessionId, startFreshSessionDraft]
   )
 
+  const promptSessionsBulk = useCallback((sessionIds: string[], text: string) => {
+    clearNotifications()
+
+    return promptStoredSessions(sessionIds, text)
+  }, [])
+
+  const steerSessionsBulk = useCallback((sessionIds: string[], text: string) => {
+    clearNotifications()
+
+    return steerStoredSessions(sessionIds, text)
+  }, [])
+
+  const haltSessionsBulk = useCallback((sessionIds: string[]) => {
+    clearNotifications()
+
+    return haltStoredSessions(sessionIds)
+  }, [])
+
   const archiveAllSessions = useCallback(async () => {
     clearNotifications()
 
@@ -1260,12 +1280,15 @@ export function useSessionActions({
     createBackendSessionForSend,
     createSessionOnDevice,
     deleteSessionsBulk,
+    haltSessionsBulk,
     openSettings,
     openPresenceSession,
+    promptSessionsBulk,
     removeSession,
     restoreSessionsBulk,
     resumeSession,
     selectSidebarItem,
+    steerSessionsBulk,
     startFreshSessionDraft
   }
 }

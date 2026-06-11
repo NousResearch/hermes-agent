@@ -38,6 +38,8 @@ import { setSessions } from '@/store/session'
 import { clearSidebarSelection } from '@/store/sidebar-selection'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
+import { BulkRuntimeTextDialog, type BulkRuntimeTextMode } from './bulk-runtime-text-dialog'
+
 interface SessionActions {
   sessionId: string
   title: string
@@ -60,12 +62,15 @@ export interface SessionBulkContextActions {
   archived?: boolean
   onArchiveSessions?: BulkSessionHandler
   onDeleteSessions?: BulkSessionHandler
+  onHaltSessions?: BulkSessionHandler
+  onPromptSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
   onRestoreSessions?: BulkSessionHandler
+  onSteerSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
   sessionIds: readonly string[]
 }
 
 type MenuItem = typeof DropdownMenuItem | typeof ContextMenuItem
-type PendingBulkAction = 'archive' | 'delete' | 'restore' | null
+type PendingBulkAction = 'archive' | 'delete' | 'halt' | 'prompt' | 'restore' | 'steer' | null
 
 interface ItemSpec {
   className?: string
@@ -280,13 +285,9 @@ function useSessionActions({
     />
   )
 
-  const inviteDialog = (
-    <InviteCloudDialog onOpenChange={setInviteOpen} open={inviteOpen} sessionId={sessionId} />
-  )
+  const inviteDialog = <InviteCloudDialog onOpenChange={setInviteOpen} open={inviteOpen} sessionId={sessionId} />
 
-  const membersDialog = (
-    <CloudMembersDialog onOpenChange={setMembersOpen} open={membersOpen} sessionId={sessionId} />
-  )
+  const membersDialog = <CloudMembersDialog onOpenChange={setMembersOpen} open={membersOpen} sessionId={sessionId} />
 
   const deleteCloudDialog = (
     <DeleteCloudChannelDialog onOpenChange={setDeleteCloudOpen} open={deleteCloudOpen} sessionId={sessionId} />
@@ -299,13 +300,17 @@ function useBulkSessionActions({
   archived = false,
   onArchiveSessions,
   onDeleteSessions,
+  onHaltSessions,
+  onPromptSessions,
   onRestoreSessions,
+  onSteerSessions,
   sessionIds
 }: SessionBulkContextActions) {
   const { t } = useI18n()
   const s = t.sidebar.bulk
   const [pending, setPending] = useState<PendingBulkAction>(null)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [runtimeTextMode, setRuntimeTextMode] = useState<BulkRuntimeTextMode | null>(null)
 
   const count = sessionIds.length
 
@@ -328,6 +333,18 @@ function useBulkSessionActions({
     triggerHaptic('warning')
     setConfirmDeleteOpen(false)
     void runBulk('delete', onDeleteSessions)
+  }
+
+  const haltSelected = () => {
+    triggerHaptic('warning')
+    void runBulk('halt', onHaltSessions)
+  }
+
+  const submitRuntimeText = (mode: BulkRuntimeTextMode, text: string) => {
+    setRuntimeTextMode(null)
+    triggerHaptic('submit')
+
+    void runBulk(mode, ids => (mode === 'prompt' ? onPromptSessions?.(ids, text) : onSteerSessions?.(ids, text)))
   }
 
   const items: ItemSpec[] = archived
@@ -354,6 +371,32 @@ function useBulkSessionActions({
         }
       ]
     : [
+        {
+          disabled: pending !== null || !onPromptSessions,
+          icon: 'arrow-up',
+          label: s.promptCount(count),
+          onSelect: () => {
+            triggerHaptic('selection')
+            setRuntimeTextMode('prompt')
+          }
+        },
+        {
+          disabled: pending !== null || !onSteerSessions,
+          icon: 'comment-discussion',
+          label: s.steerCount(count),
+          onSelect: () => {
+            triggerHaptic('selection')
+            setRuntimeTextMode('steer')
+          }
+        },
+        {
+          className: 'text-destructive focus:text-destructive',
+          disabled: pending !== null || !onHaltSessions,
+          icon: 'debug-stop',
+          label: s.haltCount(count),
+          onSelect: haltSelected,
+          variant: 'destructive'
+        },
         {
           disabled: pending !== null || !onArchiveSessions,
           icon: 'archive',
@@ -395,6 +438,16 @@ function useBulkSessionActions({
     </Dialog>
   )
 
+  const runtimeTextDialog = (
+    <BulkRuntimeTextDialog
+      count={count}
+      mode={runtimeTextMode}
+      onOpenChange={open => setRuntimeTextMode(open ? runtimeTextMode : null)}
+      onSubmit={submitRuntimeText}
+      pending={pending !== null}
+    />
+  )
+
   const renderItems = (Item: MenuItem) =>
     items.map(({ className, disabled, icon, label, onSelect, variant }) => (
       <Item className={className} disabled={disabled} key={label} onSelect={onSelect} variant={variant}>
@@ -403,7 +456,7 @@ function useBulkSessionActions({
       </Item>
     ))
 
-  return { count, deleteDialog, renderItems }
+  return { count, deleteDialog, renderItems, runtimeTextDialog }
 }
 
 interface SessionActionsMenuProps
@@ -472,7 +525,10 @@ export function SessionContextMenu({ bulkActions, children, ...actions }: Sessio
         </ContextMenuContent>
       </ContextMenu>
       {showBulkMenu ? (
-        bulk.deleteDialog
+        <>
+          {bulk.deleteDialog}
+          {bulk.runtimeTextDialog}
+        </>
       ) : (
         <>
           {deleteCloudDialog}
@@ -644,11 +700,7 @@ function CloudMembersDialog({ open, onOpenChange, sessionId }: CloudMembersDialo
                       onValueChange={value => void updatePermission(member, value as CloudChannelPermission)}
                       value={permission}
                     >
-                      <SelectTrigger
-                        aria-label={r.cloudMembersPermissionLabel}
-                        className="h-7 w-28"
-                        size="sm"
-                      >
+                      <SelectTrigger aria-label={r.cloudMembersPermissionLabel} className="h-7 w-28" size="sm">
                         <SelectValue />
                       </SelectTrigger>
                       <SelectContent>

@@ -19,15 +19,20 @@ import { sessionPinId } from '@/store/session'
 import { $sidebarSelection, clearSidebarSelection } from '@/store/sidebar-selection'
 import type { SessionInfo } from '@/types/hermes'
 
+import { BulkRuntimeTextDialog, type BulkRuntimeTextMode } from './bulk-runtime-text-dialog'
+
 interface SelectionActionBarProps {
   /** The owning section's rows — resolves selected ids to pin ids/profiles. */
   sessions: SessionInfo[]
   onArchiveSessions?: (sessionIds: string[]) => Promise<unknown> | void
   onRestoreSessions?: (sessionIds: string[]) => Promise<unknown> | void
   onDeleteSessions?: (sessionIds: string[]) => Promise<unknown> | void
+  onPromptSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
+  onSteerSessions?: (sessionIds: string[], text: string) => Promise<unknown> | void
+  onHaltSessions?: (sessionIds: string[]) => Promise<unknown> | void
 }
 
-type PendingAction = 'archive' | 'delete' | 'pin' | 'restore' | null
+type PendingAction = 'archive' | 'delete' | 'halt' | 'pin' | 'prompt' | 'restore' | 'steer' | null
 
 /** Selection-mode header for a sidebar section: while rows in the section are
  * selected, this REPLACES the section's own header row — the live count and
@@ -39,13 +44,17 @@ export function SelectionActionBar({
   sessions,
   onArchiveSessions,
   onRestoreSessions,
-  onDeleteSessions
+  onDeleteSessions,
+  onPromptSessions,
+  onSteerSessions,
+  onHaltSessions
 }: SelectionActionBarProps) {
   const { t } = useI18n()
   const s = t.sidebar.bulk
   const selection = useStore($sidebarSelection)
   const [pending, setPending] = useState<PendingAction>(null)
   const [confirmDeleteOpen, setConfirmDeleteOpen] = useState(false)
+  const [runtimeTextMode, setRuntimeTextMode] = useState<BulkRuntimeTextMode | null>(null)
 
   const count = selection.ids.length
   const active = selection.section !== null && count > 0
@@ -72,6 +81,7 @@ export function SelectionActionBar({
   useEffect(() => {
     if (!active) {
       setConfirmDeleteOpen(false)
+      setRuntimeTextMode(null)
     }
   }, [active])
 
@@ -130,12 +140,27 @@ export function SelectionActionBar({
     void runBulk('delete', () => onDeleteSessions?.([...selection.ids]))
   }
 
+  const haltSelected = () => {
+    triggerHaptic('warning')
+    void runBulk('halt', () => onHaltSessions?.([...selection.ids]))
+  }
+
+  const submitRuntimeText = (mode: BulkRuntimeTextMode, text: string) => {
+    setRuntimeTextMode(null)
+    triggerHaptic('submit')
+
+    void runBulk(mode, () =>
+      mode === 'prompt' ? onPromptSessions?.([...selection.ids], text) : onSteerSessions?.([...selection.ids], text)
+    )
+  }
+
   const actionButton = (
     label: string,
     icon: string,
     onClick: () => void,
     action: Exclude<PendingAction, null>,
-    destructive = false
+    destructive = false,
+    disabled = false
   ) => (
     <Tip key={label} label={label}>
       <Button
@@ -145,7 +170,7 @@ export function SelectionActionBar({
             ? 'size-5 text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-destructive'
             : 'size-5 text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground'
         }
-        disabled={pending !== null}
+        disabled={pending !== null || disabled}
         onClick={onClick}
         size="icon-xs"
         variant="ghost"
@@ -169,6 +194,26 @@ export function SelectionActionBar({
           {s.selectedCount(count)}
         </span>
       </span>
+      {!isArchivedSection &&
+        actionButton(
+          s.promptCount(count),
+          'arrow-up',
+          () => setRuntimeTextMode('prompt'),
+          'prompt',
+          false,
+          !onPromptSessions
+        )}
+      {!isArchivedSection &&
+        actionButton(
+          s.steerCount(count),
+          'comment-discussion',
+          () => setRuntimeTextMode('steer'),
+          'steer',
+          false,
+          !onSteerSessions
+        )}
+      {!isArchivedSection &&
+        actionButton(s.haltCount(count), 'debug-stop', haltSelected, 'halt', true, !onHaltSessions)}
       {!isArchivedSection &&
         actionButton(isPinnedSection ? s.unpin : s.pin, isPinnedSection ? 'pinned' : 'pin', togglePins, 'pin')}
       {!isArchivedSection && actionButton(s.archive, 'archive', archiveSelected, 'archive')}
@@ -202,6 +247,13 @@ export function SelectionActionBar({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <BulkRuntimeTextDialog
+        count={count}
+        mode={runtimeTextMode}
+        onOpenChange={open => setRuntimeTextMode(open ? runtimeTextMode : null)}
+        onSubmit={submitRuntimeText}
+        pending={pending !== null}
+      />
     </div>
   )
 }

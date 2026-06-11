@@ -49,7 +49,10 @@ export interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   bulkSelectedSessionIds?: readonly string[]
   onArchiveSelectedSessions?: SessionBulkContextActions['onArchiveSessions']
   onDeleteSelectedSessions?: SessionBulkContextActions['onDeleteSessions']
+  onHaltSelectedSessions?: SessionBulkContextActions['onHaltSessions']
+  onPromptSelectedSessions?: SessionBulkContextActions['onPromptSessions']
   onRestoreSelectedSessions?: SessionBulkContextActions['onRestoreSessions']
+  onSteerSelectedSessions?: SessionBulkContextActions['onSteerSessions']
 }
 
 const AGE_TICKS: ReadonlyArray<[number, 'ageDay' | 'ageHour' | 'ageMin']> = [
@@ -93,7 +96,10 @@ export function SidebarSessionRow({
   bulkSelectedSessionIds,
   onArchiveSelectedSessions,
   onDeleteSelectedSessions,
+  onHaltSelectedSessions,
+  onPromptSelectedSessions,
   onRestoreSelectedSessions,
+  onSteerSelectedSessions,
   className,
   style,
   ref,
@@ -113,7 +119,10 @@ export function SidebarSessionRow({
           archived,
           onArchiveSessions: onArchiveSelectedSessions,
           onDeleteSessions: onDeleteSelectedSessions,
+          onHaltSessions: onHaltSelectedSessions,
+          onPromptSessions: onPromptSelectedSessions,
           onRestoreSessions: onRestoreSelectedSessions,
+          onSteerSessions: onSteerSelectedSessions,
           sessionIds: bulkSelectedSessionIds
         }
       : undefined
@@ -180,112 +189,112 @@ export function SidebarSessionRow({
           onDoubleClick={selectionActive ? () => onResume() : undefined}
           transition={{ layout: { duration: 0.16, ease: [0.2, 0, 0, 1] } }}
         >
-        {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
-        <button
-          className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-2 text-left"
-          onClick={event => {
-            const canSelect = Boolean(selectable && onToggleSelect)
+          {isWorking && !needsInput && <span aria-hidden="true" className="arc-border" />}
+          <button
+            className="z-0 flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-2 text-left"
+            onClick={event => {
+              const canSelect = Boolean(selectable && onToggleSelect)
 
-            // Desktop-convention selection on every selectable row:
-            //   ⌘/⌃-click  — toggle THIS row in or out (non-contiguous sets,
-            //                gaps welcome; also how a selection starts).
-            //                Takes the binding over from open-in-new-window,
-            //                which stays in the row's ⋯ / right-click menus.
-            //   ⌥-click    — same toggle (legacy alias from the first cut).
-            //   shift-click — contiguous range from the anchor; a cold
-            //                shift-click seeds the anchor from the OPEN row
-            //                so the run includes where the user started.
-            //   plain click — resume normally; while a selection is active it
-            //                toggles instead, and double-click still resumes.
-            // Every gesture toggles, so re-clicking a selected row deselects
-            // it regardless of modifier.
-            if (canSelect && (event.metaKey || event.ctrlKey || event.altKey)) {
-              event.preventDefault()
-              event.stopPropagation()
-              toggleSelect('single')
+              // Desktop-convention selection on every selectable row:
+              //   ⌘/⌃-click  — toggle THIS row in or out (non-contiguous sets,
+              //                gaps welcome; also how a selection starts).
+              //                Takes the binding over from open-in-new-window,
+              //                which stays in the row's ⋯ / right-click menus.
+              //   ⌥-click    — same toggle (legacy alias from the first cut).
+              //   shift-click — contiguous range from the anchor; a cold
+              //                shift-click seeds the anchor from the OPEN row
+              //                so the run includes where the user started.
+              //   plain click — resume normally; while a selection is active it
+              //                toggles instead, and double-click still resumes.
+              // Every gesture toggles, so re-clicking a selected row deselects
+              // it regardless of modifier.
+              if (canSelect && (event.metaKey || event.ctrlKey || event.altKey)) {
+                event.preventDefault()
+                event.stopPropagation()
+                toggleSelect('single')
 
-              return
-            }
-
-            if (canSelect && event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-              toggleSelect('range')
-
-              return
-            }
-
-            if (canSelect && selectionActive) {
-              event.preventDefault()
-              event.stopPropagation()
-              toggleSelect('single')
-
-              return
-            }
-
-            // Rows outside any selectable section keep the legacy bindings.
-            if (event.shiftKey) {
-              event.preventDefault()
-              event.stopPropagation()
-
-              if (!archived) {
-                triggerHaptic('selection')
-                onPin()
+                return
               }
 
-              return
-            }
+              if (canSelect && event.shiftKey) {
+                event.preventDefault()
+                event.stopPropagation()
+                toggleSelect('range')
 
-            // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
-            // window on non-selectable rows. Falls through to a normal resume
-            // when standalone windows aren't available (web embed).
-            if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
-              event.preventDefault()
-              event.stopPropagation()
-              triggerHaptic('selection')
-              void openSessionInNewWindow(session.id)
+                return
+              }
 
-              return
-            }
+              if (canSelect && selectionActive) {
+                event.preventDefault()
+                event.stopPropagation()
+                toggleSelect('single')
 
-            onResume()
-          }}
-          type="button"
-        >
-          {selectionActive ? (
-            // Selection mode: the leading dot column becomes the checkbox, so
-            // rows don't shift horizontally when a selection starts (same
-            // w-3.5 slot the other leading affordances use).
-            <span aria-checked={checked} className="grid w-3.5 shrink-0 place-items-center" role="checkbox">
+                return
+              }
+
+              // Rows outside any selectable section keep the legacy bindings.
+              if (event.shiftKey) {
+                event.preventDefault()
+                event.stopPropagation()
+
+                if (!archived) {
+                  triggerHaptic('selection')
+                  onPin()
+                }
+
+                return
+              }
+
+              // ⌘-click (mac) / ⌃-click (win/linux) pops the chat into its own
+              // window on non-selectable rows. Falls through to a normal resume
+              // when standalone windows aren't available (web embed).
+              if ((event.metaKey || event.ctrlKey) && canOpenSessionWindow()) {
+                event.preventDefault()
+                event.stopPropagation()
+                triggerHaptic('selection')
+                void openSessionInNewWindow(session.id)
+
+                return
+              }
+
+              onResume()
+            }}
+            type="button"
+          >
+            {selectionActive ? (
+              // Selection mode: the leading dot column becomes the checkbox, so
+              // rows don't shift horizontally when a selection starts (same
+              // w-3.5 slot the other leading affordances use).
+              <span aria-checked={checked} className="grid w-3.5 shrink-0 place-items-center" role="checkbox">
+                <span
+                  className={cn(
+                    'grid size-3 place-items-center rounded-[3px] border transition-colors',
+                    checked
+                      ? 'border-foreground/80 bg-foreground/90 text-(--ui-sidebar-surface-background,var(--background))'
+                      : 'border-(--ui-stroke-secondary) bg-transparent'
+                  )}
+                >
+                  {checked && <Codicon name="check" size="0.5rem" />}
+                </span>
+              </span>
+            ) : (
               <span
                 className={cn(
-                  'grid size-3 place-items-center rounded-[3px] border transition-colors',
-                  checked
-                    ? 'border-foreground/80 bg-foreground/90 text-(--ui-sidebar-surface-background,var(--background))'
-                    : 'border-(--ui-stroke-secondary) bg-transparent'
+                  'grid w-3.5 shrink-0 place-items-center',
+                  needsInput ? 'overflow-visible' : 'overflow-hidden',
+                  'self-center'
                 )}
               >
-                {checked && <Codicon name="check" size="0.5rem" />}
+                <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
               </span>
-            </span>
-          ) : (
-            <span
-              className={cn(
-                'grid w-3.5 shrink-0 place-items-center',
-                needsInput ? 'overflow-visible' : 'overflow-hidden',
-                'self-center'
-              )}
-            >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
-            </span>
-          )}
-          <div className="min-w-0 flex-1">
-            <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-              {title}
-            </span>
-          </div>
-        </button>
-        {/* Trailing slot: on an IDLE row the timestamp is visible and slides
+            )}
+            <div className="min-w-0 flex-1">
+              <span className="block truncate text-[0.8125rem] font-normal text-(--ui-text-secondary) group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+                {title}
+              </span>
+            </div>
+          </button>
+          {/* Trailing slot: on an IDLE row the timestamp is visible and slides
             left only while the row is hovered or the menu/keyboard action is
             actually visible. Plain pointer focus must not keep it displaced
             after the menu closes. On an ACTIVE row the pulsing orange dot on
@@ -293,50 +302,50 @@ export function SidebarSessionRow({
             but its width is still reserved (opacity-0, not unmounted) so the
             menu lands in the same spot and the row height never shifts.
             Transform/opacity only — no layout reflow. */}
-        <div className="relative flex h-full items-center justify-end self-stretch pl-1 pr-1.5">
-          <span
-            className={cn(
-              'pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-[transform,opacity] duration-150 ease-out',
-              // Slide left past the menu's footprint so the age stays fully
-              // legible beside the revealed 3-dot button.
-              'group-hover:-translate-x-6 group-data-[actions-visible=true]:-translate-x-6',
-              // Active sessions: the orange dot is the status cue; hide the
-              // timestamp (keep its reserved width) for the whole active run.
-              isWorking && 'opacity-0'
-            )}
-            data-session-row-age
-          >
-            {age}
-          </span>
-          <div className="absolute inset-y-0 right-1 grid place-items-center">
-            <SessionActionsMenu
-              archived={archived}
-              onArchive={onArchive}
-              onDelete={onDelete}
-              onOpenChange={setActionsMenuOpen}
-              onPin={onPin}
-              onRestore={onRestore}
-              onSelect={selectable && onToggleSelect ? () => toggleSelect('single') : undefined}
-              pinned={isPinned}
-              profile={session.profile}
-              sessionId={session.id}
-              title={title}
+          <div className="relative flex h-full items-center justify-end self-stretch pl-1 pr-1.5">
+            <span
+              className={cn(
+                'pointer-events-none min-w-6 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-[transform,opacity] duration-150 ease-out',
+                // Slide left past the menu's footprint so the age stays fully
+                // legible beside the revealed 3-dot button.
+                'group-hover:-translate-x-6 group-data-[actions-visible=true]:-translate-x-6',
+                // Active sessions: the orange dot is the status cue; hide the
+                // timestamp (keep its reserved width) for the whole active run.
+                isWorking && 'opacity-0'
+              )}
+              data-session-row-age
             >
-              <Button
-                aria-label={r.actionsFor(title)}
-                className="size-5 translate-x-1 scale-90 rounded-[4px] bg-transparent text-transparent opacity-0 transition-all duration-150 ease-out group-hover:translate-x-0 group-hover:scale-100 group-hover:text-(--ui-text-tertiary) group-hover:opacity-100 group-data-[actions-visible=true]:translate-x-0 group-data-[actions-visible=true]:scale-100 group-data-[actions-visible=true]:text-(--ui-text-tertiary) group-data-[actions-visible=true]:opacity-100 hover:bg-(--ui-control-active-background)! hover:text-foreground! focus-visible:translate-x-0 focus-visible:scale-100 focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:opacity-100 focus-visible:ring-0 data-[state=open]:translate-x-0 data-[state=open]:scale-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
-                data-session-row-actions
-                onBlur={() => setActionsKeyboardFocus(false)}
-                onFocus={event => setActionsKeyboardFocus(event.currentTarget.matches(':focus-visible'))}
-                size="icon"
-                title={r.sessionActions}
-                variant="ghost"
+              {age}
+            </span>
+            <div className="absolute inset-y-0 right-1 grid place-items-center">
+              <SessionActionsMenu
+                archived={archived}
+                onArchive={onArchive}
+                onDelete={onDelete}
+                onOpenChange={setActionsMenuOpen}
+                onPin={onPin}
+                onRestore={onRestore}
+                onSelect={selectable && onToggleSelect ? () => toggleSelect('single') : undefined}
+                pinned={isPinned}
+                profile={session.profile}
+                sessionId={session.id}
+                title={title}
               >
-                <Codicon name="ellipsis" size="0.875rem" />
-              </Button>
-            </SessionActionsMenu>
+                <Button
+                  aria-label={r.actionsFor(title)}
+                  className="size-5 translate-x-1 scale-90 rounded-[4px] bg-transparent text-transparent opacity-0 transition-all duration-150 ease-out group-hover:translate-x-0 group-hover:scale-100 group-hover:text-(--ui-text-tertiary) group-hover:opacity-100 group-data-[actions-visible=true]:translate-x-0 group-data-[actions-visible=true]:scale-100 group-data-[actions-visible=true]:text-(--ui-text-tertiary) group-data-[actions-visible=true]:opacity-100 hover:bg-(--ui-control-active-background)! hover:text-foreground! focus-visible:translate-x-0 focus-visible:scale-100 focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:opacity-100 focus-visible:ring-0 data-[state=open]:translate-x-0 data-[state=open]:scale-100 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground data-[state=open]:opacity-100 [&_svg]:size-3.5!"
+                  data-session-row-actions
+                  onBlur={() => setActionsKeyboardFocus(false)}
+                  onFocus={event => setActionsKeyboardFocus(event.currentTarget.matches(':focus-visible'))}
+                  size="icon"
+                  title={r.sessionActions}
+                  variant="ghost"
+                >
+                  <Codicon name="ellipsis" size="0.875rem" />
+                </Button>
+              </SessionActionsMenu>
+            </div>
           </div>
-        </div>
         </motion.div>
       </div>
     </SessionContextMenu>

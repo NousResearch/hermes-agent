@@ -11,7 +11,13 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { formatRefValue } from '../components/assistant-ui/directive-text'
-import { autoArchiveOldSessions, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
+import {
+  autoArchiveOldSessions,
+  getSessionMessages,
+  listAllProfileSessions,
+  type SessionInfo,
+  triggerCronJob
+} from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
   isMessagingSource,
@@ -391,10 +397,7 @@ export function DesktopController() {
     try {
       const limit = $sessionsLimit.get()
 
-      const preserveIds = new Set<string>([
-        ...$workingSessionIds.get(),
-        ...$pinnedSessionIds.get()
-      ])
+      const preserveIds = new Set<string>([...$workingSessionIds.get(), ...$pinnedSessionIds.get()])
 
       const selectedSessionId = $selectedStoredSessionId.get()
       const activeSessionId = $activeSessionId.get()
@@ -482,7 +485,10 @@ export function DesktopController() {
 
     const keep = sessionsToKeep(key)
 
-    setSessions(prev => [...prev.filter(s => !inKey(s)), ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)])
+    setSessions(prev => [
+      ...prev.filter(s => !inKey(s)),
+      ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
+    ])
 
     const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
     setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
@@ -633,15 +639,17 @@ export function DesktopController() {
     createBackendSessionForSend,
     createSessionOnDevice,
     deleteSessionsBulk,
+    haltSessionsBulk,
     openSettings,
     openPresenceSession,
+    promptSessionsBulk,
     removeSession,
     restoreSessionsBulk,
     resumeSession,
     selectSidebarItem,
+    steerSessionsBulk,
     startFreshSessionDraft
   } = useSessionActions({
-
     activeSessionId,
     activeSessionIdRef,
     busyRef,
@@ -752,19 +760,19 @@ export function DesktopController() {
     submitText,
     transcribeVoiceAudio
   } = usePromptActions({
-      activeSessionId,
-      activeSessionIdRef,
-      branchCurrentSession: branchInNewChat,
-      busyRef,
-      createBackendSessionForSend,
-      handleSkinCommand,
-      refreshSessions,
-      requestGateway,
-      selectedStoredSessionIdRef,
-      startFreshSessionDraft,
-      sttEnabled,
-      updateSessionState
-    })
+    activeSessionId,
+    activeSessionIdRef,
+    branchCurrentSession: branchInNewChat,
+    busyRef,
+    createBackendSessionForSend,
+    handleSkinCommand,
+    refreshSessions,
+    requestGateway,
+    selectedStoredSessionIdRef,
+    startFreshSessionDraft,
+    sttEnabled,
+    updateSessionState
+  })
 
   useGatewayBoot({
     handleGatewayEvent: handleDesktopGatewayEvent,
@@ -830,6 +838,7 @@ export function DesktopController() {
       onDeleteSession={sessionId => void removeSession(sessionId)}
       onDeleteSessions={sessionIds => deleteSessionsBulk(sessionIds)}
       onEnsureArchivedLoaded={ensureArchivedLoaded}
+      onHaltSessions={sessionIds => haltSessionsBulk(sessionIds)}
       onLoadMoreArchived={loadMoreArchivedSessions}
       onLoadMoreMessaging={loadMoreMessagingForPlatform}
       onLoadMoreProfileSessions={loadMoreSessionsForProfile}
@@ -837,9 +846,11 @@ export function DesktopController() {
       onManageCronJob={() => navigate(CRON_ROUTE)}
       onNavigate={selectSidebarItem}
       onNewSessionInWorkspace={startSessionInWorkspace}
+      onPromptSessions={(sessionIds, text) => promptSessionsBulk(sessionIds, text)}
       onRestoreSession={sessionId => void restoreSessionsBulk([sessionId])}
       onRestoreSessions={sessionIds => restoreSessionsBulk(sessionIds)}
       onResumeSession={sessionId => navigate(sessionRoute(sessionId))}
+      onSteerSessions={(sessionIds, text) => steerSessionsBulk(sessionIds, text)}
       onTriggerCronJob={jobId => void triggerCronJob(jobId).then(() => refreshCronJobs())}
     />
   )

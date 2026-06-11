@@ -80,10 +80,13 @@ export function isRemoteBackendKey(key: string): boolean {
 // WebSocket headers); append it without clobbering an existing query string.
 export function remoteGatewayWsUrl(endpoint: string, token?: string): string {
   const base = endpoint.trim()
+
   if (!token) {
     return base
   }
+
   const sep = base.includes('?') ? '&' : '?'
+
   return `${base}${sep}token=${encodeURIComponent(token)}`
 }
 
@@ -142,6 +145,7 @@ async function openSecondary(entry: Secondary): Promise<void> {
   // backend process, so we skip getConnection / touchBackend entirely.
   if (entry.endpoint) {
     await entry.gateway.connect(remoteGatewayWsUrl(entry.endpoint, entry.token))
+
     return
   }
 
@@ -256,6 +260,94 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
   }
 
   setActive(key)
+}
+
+async function openSecondaryIfNeeded(entry: Secondary): Promise<void> {
+  entry.wantOpen = true
+
+  if (isOpen(entry.gateway)) {
+    return
+  }
+
+  clearTimer(entry)
+  entry.reconnectAttempt = 0
+
+  try {
+    await openSecondary(entry)
+  } catch {
+    scheduleReconnect(entry)
+  }
+}
+
+// Resolve a profile backend without making it the active/focused gateway.
+// Bulk fan-out uses this so prompts/stops sent to other sessions do not flicker
+// the foreground chat through each selected profile.
+export async function gatewayForProfile(profile: string): Promise<HermesGateway | null> {
+  const key = normKey(profile)
+
+  if (key === primaryProfile) {
+    return primaryGateway
+  }
+
+  let entry = secondaries.get(key)
+
+  if (!entry) {
+    entry = createSecondary(key)
+  }
+
+  await openSecondaryIfNeeded(entry)
+
+  return isOpen(entry.gateway) ? entry.gateway : null
+}
+
+// Resolve a remote endpoint backend without making it active.
+export async function gatewayForEndpoint(endpoint: string, token?: string): Promise<HermesGateway | null> {
+  const key = endpoint.trim()
+
+  if (!key) {
+    return null
+  }
+
+  let entry = secondaries.get(key)
+
+  if (!entry) {
+    entry = createSecondary(key, { endpoint: key, token })
+  } else {
+    entry.token = token
+  }
+
+  await openSecondaryIfNeeded(entry)
+
+  return isOpen(entry.gateway) ? entry.gateway : null
+}
+
+export async function requestGatewayForProfile<T>(
+  profile: string,
+  method: string,
+  params: Record<string, unknown> = {}
+): Promise<T> {
+  const gateway = await gatewayForProfile(profile)
+
+  if (!gateway) {
+    throw new Error(`Hermes gateway unavailable for profile ${normKey(profile)}`)
+  }
+
+  return gateway.request<T>(method, params)
+}
+
+export async function requestGatewayForEndpoint<T>(
+  endpoint: string,
+  method: string,
+  params: Record<string, unknown> = {},
+  token?: string
+): Promise<T> {
+  const gateway = await gatewayForEndpoint(endpoint, token)
+
+  if (!gateway) {
+    throw new Error('Hermes gateway unavailable for remote session')
+  }
+
+  return gateway.request<T>(method, params)
 }
 
 // Make a REMOTE gateway (another device's dashboard, discovered via session

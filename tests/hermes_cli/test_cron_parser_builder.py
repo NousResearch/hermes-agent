@@ -47,20 +47,19 @@ def test_cron_aliases():
 def test_cron_create_options():
     parser = _build()
     ns = parser.parse_args([
-        "cron", "create", "0 9 * * *", "do the thing",
+        "cron", "create", "0 9 * * *", "daily task prompt",
         "--name", "daily", "--deliver", "origin", "--repeat", "3",
         "--skill", "a", "--skill", "b", "--no-agent",
-        "--workdir", "/tmp/x", "--profile", "work",
+        "--workdir", "/tmp/x",
     ])
     assert ns.schedule == "0 9 * * *"
-    assert ns.prompt == "do the thing"
+    assert ns.prompt == "daily task prompt"
     assert ns.name == "daily"
     assert ns.deliver == "origin"
     assert ns.repeat == 3
     assert ns.skills == ["a", "b"]
     assert ns.no_agent is True
     assert ns.workdir == "/tmp/x"
-    assert ns.profile == "work"
 
 
 def test_cron_edit_no_agent_tristate():

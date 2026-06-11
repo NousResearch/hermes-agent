@@ -3862,6 +3862,17 @@ def run_conversation(
                         )
                         final_response = _recovered
                         agent._response_was_previewed = True
+                        # Append the recovered text as a real assistant turn
+                        # before breaking. Without this the transcript tail
+                        # ends at the user message: _persist_session writes no
+                        # assistant row for this turn, so the next message
+                        # makes the model re-answer every "unanswered" user
+                        # message in the session (#44100).
+                        _recovered_msg = agent._build_assistant_message(
+                            assistant_message, finish_reason
+                        )
+                        _recovered_msg["content"] = _recovered
+                        messages.append(_recovered_msg)
                         break
 
                     # If the previous turn already delivered real content alongside

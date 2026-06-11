@@ -8793,11 +8793,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _user_entry,
                         skip_db=agent_persisted,
                     )
+                    # The assistant write must NOT be skipped: with an empty
+                    # new-message slice the agent's own DB flush wrote nothing
+                    # this turn, and a response generated this turn cannot
+                    # already be in the loaded history — so there is no
+                    # duplicate risk (#860 / #42039 concern only the user
+                    # entry). With skip_db=agent_persisted this write was a
+                    # no-op (state.db is the canonical transcript store) and
+                    # the delivered response was silently dropped. (#44100)
                     if response:
                         self.session_store.append_to_transcript(
                             session_entry.session_id,
                             {"role": "assistant", "content": response, "timestamp": ts},
-                            skip_db=agent_persisted,
+                            skip_db=False,
                         )
                 else:
                     # Attach the inbound platform message_id to the first user
@@ -8823,7 +8831,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             session_entry.session_id, entry,
                             skip_db=agent_persisted,
                         )
-            
+
+                    # Safety net: recovery paths (e.g. partial-stream
+                    # recovery) can deliver a final response without ever
+                    # appending an assistant message to the agent's message
+                    # list. The agent's DB flush then persists only the user
+                    # turn, and because state.db is the canonical transcript
+                    # store, the skip_db writes above cannot backfill it —
+                    # the delivered response is lost and the model re-answers
+                    # every "unanswered" user message next turn (#44100).
+                    # The response provably isn't among the agent-persisted
+                    # messages here, so skip_db=False cannot double-write.
+                    _turn_has_assistant_text = any(
+                        isinstance(m, dict)
+                        and m.get("role") == "assistant"
+                        and not m.get("tool_calls")
+                        and str(m.get("content") or "").strip()
+                        for m in new_messages
+                    )
+                    if response and not _turn_has_assistant_text:
+                        logger.info(
+                            "Delivered response missing from agent transcript "
+                            "— backfilling assistant row for session %s",
+                            session_entry.session_id,
+                        )
+                        self.session_store.append_to_transcript(
+                            session_entry.session_id,
+                            {"role": "assistant", "content": response, "timestamp": ts},
+                            skip_db=False,
+                        )
+
             # Token counts and model are now persisted by the agent directly.
             # Keep only last_prompt_tokens here for context-window tracking and
             # compression decisions.

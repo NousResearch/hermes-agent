@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, Mutex};
 
 use crate::events::{BootstrapEvent, LogStream, StageState};
@@ -433,6 +433,10 @@ async fn run_bootstrap(
         .unwrap_or_else(crate::paths::hermes_home);
     let install_state = crate::orchestrator::probe_install_state(&hermes_home_for_report);
     let rust_plan = crate::orchestrator::build_stage_plan(&manifest.stages, args.include_desktop);
+    let bundled_tools_dir = bootstrap_tools_resource_dir(&app);
+    if let Some(path) = &bundled_tools_dir {
+        emit_log(&format!("[bootstrap] bundled tool archives at {}", path.display()));
+    }
     emit_log(&crate::orchestrator::summarize_plan(
         &install_state,
         &rust_plan,
@@ -631,20 +635,29 @@ async fn run_bootstrap(
                 Some(crate::orchestrator::write_install_method_stamp(&hermes_home))
             } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("uv") {
                 Some(
-                    crate::orchestrator::install_windows_uv_runtime_stage(&hermes_home)
-                        .await,
+                    crate::orchestrator::install_windows_uv_runtime_stage(
+                        &hermes_home,
+                        bundled_tools_dir.as_deref(),
+                    )
+                    .await,
                 )
             } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("git") {
                 Some(
-                    crate::orchestrator::install_windows_git_runtime_stage(&hermes_home)
-                        .await,
+                    crate::orchestrator::install_windows_git_runtime_stage(
+                        &hermes_home,
+                        bundled_tools_dir.as_deref(),
+                    )
+                    .await,
                 )
             } else if stage.name.eq_ignore_ascii_case("python") {
                 Some(crate::orchestrator::install_python_runtime_stage(&hermes_home))
             } else if cfg!(target_os = "windows") && stage.name.eq_ignore_ascii_case("node") {
                 Some(
-                    crate::orchestrator::install_windows_node_runtime_stage(&hermes_home)
-                        .await,
+                    crate::orchestrator::install_windows_node_runtime_stage(
+                        &hermes_home,
+                        bundled_tools_dir.as_deref(),
+                    )
+                    .await,
                 )
             } else if stage.name.eq_ignore_ascii_case("venv") {
                 Some(crate::orchestrator::create_python_venv_stage(
@@ -1111,6 +1124,13 @@ async fn cancellation_signalled(holder: &Arc<Mutex<Option<mpsc::Receiver<()>>>>)
     } else {
         false
     }
+}
+
+fn bootstrap_tools_resource_dir(app: &AppHandle) -> Option<PathBuf> {
+    app.path()
+        .resolve("bootstrap-tools", BaseDirectory::Resource)
+        .ok()
+        .filter(|path| path.is_dir())
 }
 
 async fn run_install_script(

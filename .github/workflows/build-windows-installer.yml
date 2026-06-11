@@ -62,6 +62,9 @@ jobs:
         with:
           workspaces: apps/bootstrap-installer/src-tauri
 
+      - name: Bundle bootstrap tool archives
+        run: python scripts/prepare_bootstrap_tools.py --arch x64
+
       - name: Build installer
         run: npm run tauri:build
         working-directory: apps/bootstrap-installer

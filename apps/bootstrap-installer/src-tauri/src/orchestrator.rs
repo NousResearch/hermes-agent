@@ -139,6 +139,28 @@ pub enum StageExecutionMode {
     Script,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BootstrapArchiveSourceKind {
+    Bundled,
+    Cache,
+}
+
+impl BootstrapArchiveSourceKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Bundled => "bundled",
+            Self::Cache => "cache",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedBootstrapArchive {
+    path: PathBuf,
+    cache_path: PathBuf,
+    kind: BootstrapArchiveSourceKind,
+}
+
 /// Build the bootstrap stage manifest without invoking the platform script.
 pub fn native_bootstrap_manifest(kind: ScriptKind, include_desktop: bool) -> Manifest {
     let stages = match kind {
@@ -894,11 +916,20 @@ pub fn windows_node_runtime_stage_plan_from_index(
     let version_major = 22;
     let archive_name = latest_windows_node_archive_name(index_html, version_major, arch)
         .ok_or_else(|| anyhow!("Node.js v{version_major} Windows {arch} archive not found"))?;
+    windows_node_runtime_stage_plan_from_archive_name(hermes_home, archive_name)
+}
+
+fn windows_node_runtime_stage_plan_from_archive_name(
+    hermes_home: &Path,
+    archive_name: String,
+) -> Result<WindowsNodeRuntimeStagePlan> {
+    let version_major = node_archive_version_tuple(&archive_name).0;
+    if version_major == 0 {
+        return Err(anyhow!("invalid Node.js archive name: {archive_name}"));
+    }
     let download_url =
         format!("https://nodejs.org/dist/latest-v{version_major}.x/{archive_name}");
-    let archive_path = hermes_home
-        .join("bootstrap-cache")
-        .join(&archive_name);
+    let archive_path = bootstrap_archive_cache_path(hermes_home, &archive_name);
     let install_dir = hermes_home.join("node");
     let node_exe = install_dir.join("node.exe");
     Ok(WindowsNodeRuntimeStagePlan {
@@ -914,6 +945,7 @@ pub fn windows_node_runtime_stage_plan_from_index(
 /// Install the Windows Node.js runtime from the official portable ZIP archive.
 pub async fn install_windows_node_runtime_stage(
     hermes_home: &Path,
+    bundled_tools_dir: Option<&Path>,
 ) -> Result<serde_json::Value> {
     if !cfg!(target_os = "windows") {
         return Err(anyhow!("native Node runtime stage is only available on Windows"));
@@ -923,28 +955,38 @@ pub async fn install_windows_node_runtime_stage(
         return Err(anyhow!("unsupported Windows architecture for Node.js: {arch}"));
     }
     let version_major = 22;
-    let index_url = format!("https://nodejs.org/dist/latest-v{version_major}.x/");
-    let index_html = reqwest::Client::new()
-        .get(&index_url)
-        .header("User-Agent", "Hermes-Setup")
-        .send()
+    let plan = if let Some(archive_name) =
+        latest_bundled_windows_node_archive_name(bundled_tools_dir, version_major, &arch)
+    {
+        windows_node_runtime_stage_plan_from_archive_name(hermes_home, archive_name)?
+    } else {
+        let index_url = format!("https://nodejs.org/dist/latest-v{version_major}.x/");
+        let index_html = reqwest::Client::new()
+            .get(&index_url)
+            .header("User-Agent", "Hermes-Setup")
+            .send()
+            .await
+            .with_context(|| format!("GET {index_url}"))?
+            .text()
+            .await
+            .with_context(|| format!("reading body of {index_url}"))?;
+        windows_node_runtime_stage_plan_from_index(hermes_home, &arch, &index_html)?
+    };
+    let archive_source =
+        resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
+    if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        crate::artifact::download_to_cache(
+            crate::artifact::DownloadSpec {
+                url: plan.download_url.clone(),
+                user_agent: "Hermes-Setup",
+                expected_sha256: None,
+            },
+            &archive_source.path,
+        )
         .await
-        .with_context(|| format!("GET {index_url}"))?
-        .text()
-        .await
-        .with_context(|| format!("reading body of {index_url}"))?;
-    let plan = windows_node_runtime_stage_plan_from_index(hermes_home, &arch, &index_html)?;
-    crate::artifact::download_to_cache(
-        crate::artifact::DownloadSpec {
-            url: plan.download_url.clone(),
-            user_agent: "Hermes-Setup",
-            expected_sha256: None,
-        },
-        &plan.archive_path,
-    )
-    .await
-    .with_context(|| format!("downloading {}", plan.archive_name))?;
-    install_windows_node_archive(&plan.archive_path, &plan.install_dir)?;
+        .with_context(|| format!("downloading {}", plan.archive_name))?;
+    }
+    install_windows_node_archive(&archive_source.path, &plan.install_dir)?;
     if !node_version_satisfies_build(&plan.node_exe) {
         return Err(anyhow!(
             "installed Node.js does not satisfy desktop build requirements"
@@ -955,6 +997,7 @@ pub async fn install_windows_node_runtime_stage(
     Ok(serde_json::json!({
         "node": plan.node_exe,
         "archive": plan.archive_name,
+        "archiveSource": archive_source.kind.as_str(),
         "installDir": plan.install_dir,
     }))
 }
@@ -983,24 +1026,31 @@ pub fn windows_uv_runtime_stage_plan(
     })
 }
 
-/// Install uv natively on Windows from the official GitHub release ZIP.
-pub async fn install_windows_uv_runtime_stage(hermes_home: &Path) -> Result<serde_json::Value> {
+/// Install uv natively on Windows from a bundled or official GitHub release ZIP.
+pub async fn install_windows_uv_runtime_stage(
+    hermes_home: &Path,
+    bundled_tools_dir: Option<&Path>,
+) -> Result<serde_json::Value> {
     if !cfg!(target_os = "windows") {
         return Err(anyhow!("native uv stage is only available on Windows"));
     }
     let arch = windows_node_arch_slug();
     let plan = windows_uv_runtime_stage_plan(hermes_home, &arch)?;
-    crate::artifact::download_to_cache(
-        crate::artifact::DownloadSpec {
-            url: plan.download_url.clone(),
-            user_agent: "Hermes-Setup",
-            expected_sha256: None,
-        },
-        &plan.archive_path,
-    )
-    .await
-    .with_context(|| format!("downloading {}", plan.archive_name))?;
-    install_windows_uv_archive(&plan.archive_path, &plan.install_dir)?;
+    let archive_source =
+        resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
+    if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        crate::artifact::download_to_cache(
+            crate::artifact::DownloadSpec {
+                url: plan.download_url.clone(),
+                user_agent: "Hermes-Setup",
+                expected_sha256: None,
+            },
+            &archive_source.path,
+        )
+        .await
+        .with_context(|| format!("downloading {}", plan.archive_name))?;
+    }
+    install_windows_uv_archive(&archive_source.path, &plan.install_dir)?;
     let status = Command::new(&plan.uv_exe)
         .arg("--version")
         .stdout(Stdio::null())
@@ -1013,6 +1063,7 @@ pub async fn install_windows_uv_runtime_stage(hermes_home: &Path) -> Result<serd
     Ok(serde_json::json!({
         "uv": plan.uv_exe,
         "archive": plan.archive_name,
+        "archiveSource": archive_source.kind.as_str(),
     }))
 }
 
@@ -1063,42 +1114,57 @@ pub fn windows_git_runtime_stage_plan(
 }
 
 /// Install Git for Windows natively before falling back to PowerShell.
-pub async fn install_windows_git_runtime_stage(hermes_home: &Path) -> Result<serde_json::Value> {
+pub async fn install_windows_git_runtime_stage(
+    hermes_home: &Path,
+    bundled_tools_dir: Option<&Path>,
+) -> Result<serde_json::Value> {
     if !cfg!(target_os = "windows") {
         return Err(anyhow!("native Git stage is only available on Windows"));
     }
     let arch = windows_node_arch_slug();
     let plan = windows_git_runtime_stage_plan(hermes_home, &arch)?;
-    crate::artifact::download_to_cache(
-        crate::artifact::DownloadSpec {
-            url: plan.download_url.clone(),
-            user_agent: "Hermes-Setup",
-            expected_sha256: None,
-        },
-        &plan.archive_path,
-    )
-    .await
-    .with_context(|| format!("downloading {}", plan.archive_name))?;
-    install_windows_git_archive(&plan)?;
-    if !plan.git_exe.is_file() {
-        return Err(anyhow!("Git extraction did not produce {}", plan.git_exe.display()));
+    let archive_source =
+        resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
+    if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        crate::artifact::download_to_cache(
+            crate::artifact::DownloadSpec {
+                url: plan.download_url.clone(),
+                user_agent: "Hermes-Setup",
+                expected_sha256: None,
+            },
+            &archive_source.path,
+        )
+        .await
+        .with_context(|| format!("downloading {}", plan.archive_name))?;
+    }
+    let install_plan = WindowsGitRuntimeStagePlan {
+        archive_path: archive_source.path.clone(),
+        ..plan
+    };
+    install_windows_git_archive(&install_plan)?;
+    if !install_plan.git_exe.is_file() {
+        return Err(anyhow!(
+            "Git extraction did not produce {}",
+            install_plan.git_exe.display()
+        ));
     }
     let path_entries = [
-        plan.install_dir.join("cmd"),
-        plan.install_dir.join("bin"),
-        plan.install_dir.join("usr").join("bin"),
+        install_plan.install_dir.join("cmd"),
+        install_plan.install_dir.join("bin"),
+        install_plan.install_dir.join("usr").join("bin"),
     ];
     prepend_process_paths(&path_entries);
     persist_windows_path_entries(&path_entries)?;
-    let bash = find_windows_git_bash(&plan.install_dir);
+    let bash = find_windows_git_bash(&install_plan.install_dir);
     if let Some(bash) = &bash {
         persist_windows_env_var("HERMES_GIT_BASH_PATH", &bash.display().to_string())?;
         std::env::set_var("HERMES_GIT_BASH_PATH", bash);
     }
     Ok(serde_json::json!({
-        "git": plan.git_exe,
+        "git": install_plan.git_exe,
         "bash": bash,
-        "archive": plan.archive_name,
+        "archive": install_plan.archive_name,
+        "archiveSource": archive_source.kind.as_str(),
     }))
 }
 
@@ -1717,6 +1783,54 @@ fn latest_windows_node_archive_name(
             }
         })
         .max_by(|left, right| compare_node_archive_versions(left, right))
+}
+
+fn latest_bundled_windows_node_archive_name(
+    bundled_tools_dir: Option<&Path>,
+    version_major: u32,
+    arch: &str,
+) -> Option<String> {
+    let bundled_tools_dir = bundled_tools_dir?;
+    let entries = fs::read_dir(bundled_tools_dir).ok()?;
+    entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| windows_node_archive_matches(name, version_major, arch))
+        .max_by(|left, right| compare_node_archive_versions(left, right))
+}
+
+fn windows_node_archive_matches(name: &str, version_major: u32, arch: &str) -> bool {
+    let expected_suffix = format!("-win-{arch}.zip");
+    name.starts_with("node-v")
+        && name.ends_with(&expected_suffix)
+        && node_archive_version_tuple(name).0 == version_major
+}
+
+fn bootstrap_archive_cache_path(hermes_home: &Path, archive_name: &str) -> PathBuf {
+    hermes_home.join("bootstrap-cache").join(archive_name)
+}
+
+fn resolve_bootstrap_archive_source(
+    hermes_home: &Path,
+    bundled_tools_dir: Option<&Path>,
+    archive_name: &str,
+) -> ResolvedBootstrapArchive {
+    let cache_path = bootstrap_archive_cache_path(hermes_home, archive_name);
+    let bundled_path = bundled_tools_dir
+        .map(|dir| dir.join(archive_name))
+        .filter(|path| path.is_file());
+    if let Some(path) = bundled_path {
+        return ResolvedBootstrapArchive {
+            path,
+            cache_path,
+            kind: BootstrapArchiveSourceKind::Bundled,
+        };
+    }
+    ResolvedBootstrapArchive {
+        path: cache_path.clone(),
+        cache_path,
+        kind: BootstrapArchiveSourceKind::Cache,
+    }
 }
 
 fn windows_uv_archive_name(arch: &str) -> Option<&'static str> {
@@ -2542,6 +2656,90 @@ mod tests {
         );
         assert_eq!(plan.install_dir, hermes_home.join("node"));
         assert_eq!(plan.node_exe, hermes_home.join("node").join("node.exe"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_archive_source_prefers_bundled_resource_over_cache() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bootstrap-archive-source-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let bundled = root.join("resources").join("bootstrap-tools");
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(bundled.join("uv-x86_64-pc-windows-msvc.zip"), b"uv").unwrap();
+
+        let source = resolve_bootstrap_archive_source(
+            &hermes_home,
+            Some(&bundled),
+            "uv-x86_64-pc-windows-msvc.zip",
+        );
+
+        assert_eq!(source.kind, BootstrapArchiveSourceKind::Bundled);
+        assert_eq!(
+            source.path,
+            bundled.join("uv-x86_64-pc-windows-msvc.zip")
+        );
+        assert_eq!(
+            source.cache_path,
+            hermes_home
+                .join("bootstrap-cache")
+                .join("uv-x86_64-pc-windows-msvc.zip")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_archive_source_falls_back_to_cache_when_resource_is_absent() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bootstrap-archive-cache-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let bundled = root.join("resources").join("bootstrap-tools");
+        std::fs::create_dir_all(&bundled).unwrap();
+
+        let source = resolve_bootstrap_archive_source(
+            &hermes_home,
+            Some(&bundled),
+            "uv-x86_64-pc-windows-msvc.zip",
+        );
+
+        assert_eq!(source.kind, BootstrapArchiveSourceKind::Cache);
+        assert_eq!(
+            source.path,
+            hermes_home
+                .join("bootstrap-cache")
+                .join("uv-x86_64-pc-windows-msvc.zip")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundled_node_archive_picker_uses_latest_matching_v22_arch() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bundled-node-archive-test-{}",
+            std::process::id()
+        ));
+        let bundled = root.join("resources").join("bootstrap-tools");
+        std::fs::create_dir_all(&bundled).unwrap();
+        for name in [
+            "node-v22.18.0-win-x64.zip",
+            "node-v22.20.1-win-arm64.zip",
+            "node-v22.19.1-win-x64.zip",
+            "node-v21.7.3-win-x64.zip",
+            "node-v22.19.2-win-x86.zip",
+        ] {
+            std::fs::write(bundled.join(name), b"node").unwrap();
+        }
+
+        let picked = latest_bundled_windows_node_archive_name(Some(&bundled), 22, "x64");
+
+        assert_eq!(picked.as_deref(), Some("node-v22.19.1-win-x64.zip"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

@@ -279,6 +279,10 @@ language-specific setup where needed.
   and future release manifest integration.
 - Desktop release staging writes install-script metadata into `embedded_resources`, so release manifests document
   embedded script names, sizes, and SHA-256 values without treating them as standalone files.
+- Tauri bootstrap installer bundles a `bootstrap-tools/` resource directory and the Windows native Node, uv, and Git
+  runtime stages prefer matching bundled archives before falling back to the download cache.
+- Windows installer release workflow prepares x64 Node v22, uv, and pinned Git for Windows archives before Tauri
+  packaging, then writes `bootstrap-tools-manifest.json` with archive URL, size, and SHA-256 metadata for review.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

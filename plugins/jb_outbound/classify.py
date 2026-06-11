@@ -1,13 +1,15 @@
 """Classification d'un appel d'outil : exécuter / proposer / bloquer.
 
-« Rien ne part sans accord » couvre TOUS les canaux. Deux familles d'outils émettent vers
-l'extérieur et passent toutes deux par le `tool_execution` middleware :
-  - `send_message` : envoi gateway (Telegram, etc.).
-  - `mcp_composio_*` : email / réseaux sociaux via Composio (appels d'outils MCP).
-
-Décision (confirmée) : tout outil d'envoi non répertorié est **BLOQUÉ** (fail-closed) — jamais
-auto-envoyé. Un outil composio clairement en lecture passe ; clairement en écriture devient une
-proposition ; ambigu → bloqué (on élargit les listes au besoin).
+« Rien ne part sans accord » couvre TOUS les canaux. Trois familles d'outils passent par le
+`tool_execution` middleware :
+  - `send_message` : envoi gateway (Telegram, etc.) → proposition.
+  - `mcp_composio_*` : email / réseaux sociaux via Composio. Lecture → passe ; écriture → proposition ;
+    action composio AMBIGUË → bloquée (fail-closed, on élargit les listes au besoin).
+  - MCP ADDITIONNELS (hors Composio) : déclarés par l'opérateur via la table managée
+    (`managed.json`, cf. `managed.py`). Une fonction listée comme ACTION (write/egress) devient une
+    proposition (dashboard) ; toute autre fonction d'un MCP additionnel est une lecture → passe.
+    **Pas de blocage** pour ces serveurs : c'est l'allowlist `tools.include` + la table managée qui
+    bornent ce qui est exposé et ce qui requiert validation.
 """
 
 from __future__ import annotations
@@ -27,8 +29,14 @@ _READ_MARKERS = ("GET", "LIST", "FETCH", "SEARCH", "READ", "FIND", "RETRIEVE", "
 
 
 def classify(tool_name: str) -> str:
+    from . import managed
+
     name = tool_name or ""
     if name in SEND_TOOLS:
+        return PROPOSE
+    # Action d'un MCP additionnel managé (hors Composio) → proposition (dashboard). Les lectures de
+    # ces serveurs ne sont PAS dans la table → elles tombent en PASS plus bas (aucun blocage).
+    if managed.action_for(name) is not None:
         return PROPOSE
     if name.startswith(_COMPOSIO_PREFIX):
         upper = name.upper()

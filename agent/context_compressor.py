@@ -1041,8 +1041,19 @@ class ContextCompressor(ContextEngine):
         # Count skill_view calls across entire history + identify recent
         skill_call_count: Dict[str, int] = {}
         skill_recent_calls: set = set()
+        skill_mentioned_in_user_messages: set = set()
         total = len(messages)
         tail_start = max(0, total - prepass_tail)
+        # Gather user message texts from recent context for mention checking
+        recent_user_texts: list[str] = []
+        for i, msg in enumerate(messages):
+            if msg.get("role") != "user":
+                continue
+            if i < tail_start:
+                continue
+            cont = msg.get("content", "")
+            if isinstance(cont, str):
+                recent_user_texts.append(cont.lower())
 
         for i, msg in enumerate(messages):
             if msg.get("role") != "assistant":
@@ -1062,6 +1073,11 @@ class ContextCompressor(ContextEngine):
                             skill_call_count[name.lower()] = skill_call_count.get(name.lower(), 0) + 1
                             if i >= tail_start:
                                 skill_recent_calls.add(name.lower())
+                            # Check if skill name is mentioned in recent user messages
+                            for user_text in recent_user_texts:
+                                if name.lower() in user_text:
+                                    skill_mentioned_in_user_messages.add(name.lower())
+                                    break
 
         # Collect skill_view results >10000 chars (not already pruned)
         skill_results: Dict[str, list] = {}
@@ -1098,6 +1114,8 @@ class ContextCompressor(ContextEngine):
                 continue  # Actively used in recent context
             if skill_call_count.get(name_lower, 0) >= 2:
                 continue  # Reused skill, likely still relevant
+            if name_lower in skill_mentioned_in_user_messages:
+                continue  # Skill name mentioned in recent user messages
             stale_skills.append((skill_name, results))
 
         if not stale_skills:

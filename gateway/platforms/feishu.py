@@ -1649,6 +1649,10 @@ class FeishuAdapter(BasePlatformAdapter):
         self._require_mention = settings.require_mention
         self._streaming_card_enabled = settings.streaming_card_enabled
         self.REQUIRES_EDIT_FINALIZE = self._streaming_card_enabled
+        logger.info(
+            "[Feishu] Streaming card config: enabled=%s HAS_CARDKIT=%s REQUIRES_EDIT_FINALIZE=%s bot_name=%r",
+            self._streaming_card_enabled, HAS_CARDKIT, self.REQUIRES_EDIT_FINALIZE, getattr(self, '_bot_name', '?'),
+        )
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -2038,6 +2042,10 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client or not HAS_CARDKIT:
             return None
         try:
+            # Best-effort hydrate bot name on first streaming card use.
+            if not getattr(self, "_bot_name", ""):
+                await self._hydrate_bot_identity()
+
             # --- Card reuse: if this chat already has an active streaming
             # card, update it in-place instead of closing + recreating.
             # This handles the tool-boundary case where stream_consumer
@@ -4671,6 +4679,7 @@ class FeishuAdapter(BasePlatformAdapter):
                             "[Feishu] FEISHU_BOT_NAME differs from /bot/v3/info; using hydrated bot name for group @mention gating."
                         )
                     self._bot_name = bot_name
+                    logger.info("[Feishu] Bot identity hydrated: bot_name=%r open_id=%r", bot_name, open_id[:8] if open_id else "")
         except Exception:
             logger.debug(
                 "[Feishu] /bot/v3/info probe failed during hydration",

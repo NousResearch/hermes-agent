@@ -93,6 +93,7 @@ try {
       nodePty = require(nodePtyDir)
     }
   } catch {
+    console.log(`[terminal] failed to load node-pty from path ${nodePtyDir}`)
     nodePty = null
     nodePtyDir = null
   }

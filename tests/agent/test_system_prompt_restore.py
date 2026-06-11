@@ -219,5 +219,80 @@ class TestPromptStabilityInvariant:
         assert agent._cached_system_prompt.encode("utf-8") == stored.encode("utf-8")
 
 
+# ---------------------------------------------------------------------------
+# _resolve_skills_prompt_text — the telemetry skill-split source
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSkillsPromptText:
+    """The skills-prompt resolver used by request-composition telemetry.
+
+    On the gateway path a fresh AIAgent is built per turn and the system
+    prompt is restored from the DB (build_system_prompt_parts never runs),
+    so agent._skills_prompt_text is "".  The resolver must recompute it via
+    the cached build_skills_system_prompt so comp_skills_tokens isn't 0.
+    """
+
+    def _agent(self, *, stash="", valid=("skill_view",)):
+        agent = MagicMock()
+        agent._skills_prompt_text = stash
+        agent.valid_tool_names = set(valid)
+        return agent
+
+    def test_prefers_stash_when_present(self, monkeypatch):
+        import agent.conversation_loop as cl
+
+        called = {"n": 0}
+
+        def _boom():
+            called["n"] += 1
+            raise AssertionError("should not recompute when stash is set")
+
+        monkeypatch.setattr(cl, "_ra", _boom)
+        agent = self._agent(stash="STASHED_SKILLS")
+        assert cl._resolve_skills_prompt_text(agent) == "STASHED_SKILLS"
+        assert called["n"] == 0
+
+    def test_recomputes_when_stash_empty_gateway_path(self, monkeypatch):
+        """Empty stash + skills tools present → recompute via run_agent."""
+        import agent.conversation_loop as cl
+
+        fake_ra = MagicMock()
+        fake_ra.get_toolset_for_tool.return_value = "skill-creator"
+        fake_ra.build_skills_system_prompt.return_value = "RECOMPUTED_INDEX"
+        monkeypatch.setattr(cl, "_ra", lambda: fake_ra)
+
+        agent = self._agent(stash="", valid=("skill_view", "skill_manage"))
+        out = cl._resolve_skills_prompt_text(agent)
+
+        assert out == "RECOMPUTED_INDEX"
+        fake_ra.build_skills_system_prompt.assert_called_once()
+        # Result is memoized back onto the agent for the rest of the turn.
+        assert agent._skills_prompt_text == "RECOMPUTED_INDEX"
+
+    def test_returns_empty_when_no_skills_tools(self, monkeypatch):
+        """No skills tools → mirror build_system_prompt_parts and return ''."""
+        import agent.conversation_loop as cl
+
+        fake_ra = MagicMock()
+        monkeypatch.setattr(cl, "_ra", lambda: fake_ra)
+        agent = self._agent(stash="", valid=("memory", "session_search"))
+
+        assert cl._resolve_skills_prompt_text(agent) == ""
+        fake_ra.build_skills_system_prompt.assert_not_called()
+
+    def test_recompute_failure_returns_empty_stash(self, monkeypatch):
+        """Any recompute error → fall back to the (empty) stash, never raise."""
+        import agent.conversation_loop as cl
+
+        def _boom():
+            raise RuntimeError("registry exploded")
+
+        monkeypatch.setattr(cl, "_ra", _boom)
+        agent = self._agent(stash="", valid=("skill_view",))
+        # Must not raise; telemetry never breaks the loop.
+        assert cl._resolve_skills_prompt_text(agent) == ""
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -216,6 +216,48 @@ def _try_refresh_nous_paid_entitlement_credentials(agent) -> bool:
         return False
 
 
+def _resolve_skills_prompt_text(agent) -> str:
+    """Return the skill-index substring embedded in the system prompt.
+
+    Used only by the request-composition telemetry (compose_request_breakdown)
+    to split the System-prompt bucket into identity/rules vs skill catalog.
+    Display-only — never affects the bytes actually sent.
+
+    Prefers the stash set during a from-scratch prompt build
+    (``agent._skills_prompt_text``).  On the gateway path a fresh AIAgent is
+    constructed per turn and the system prompt is usually RESTORED verbatim
+    from the session DB (see _restore_or_build_system_prompt), so the stash is
+    never set and stays "".  In that case recompute it here via the cached
+    ``build_skills_system_prompt`` (in-process LRU + disk snapshot, so this is
+    cheap), mirroring the exact gating used in build_system_prompt_parts:
+    only when the skills tools are present.  Best-effort: any failure returns
+    the (possibly empty) stash so telemetry never breaks the loop.
+    """
+    stashed = getattr(agent, "_skills_prompt_text", "") or ""
+    if stashed:
+        return stashed
+    try:
+        valid = getattr(agent, "valid_tool_names", None) or set()
+        if not any(n in valid for n in ("skills_list", "skill_view", "skill_manage")):
+            return ""
+        _r = _ra()
+        avail_toolsets = {
+            ts for ts in (_r.get_toolset_for_tool(t) for t in valid) if ts
+        }
+        text = _r.build_skills_system_prompt(
+            available_tools=valid,
+            available_toolsets=avail_toolsets,
+        ) or ""
+        # Memoize so subsequent calls this turn skip the recompute.
+        try:
+            agent._skills_prompt_text = text
+        except Exception:
+            pass
+        return text
+    except Exception:
+        return stashed
+
+
 def _restore_or_build_system_prompt(agent, system_message, conversation_history):
     """Restore the cached system prompt from the session DB or build it fresh.
 
@@ -1101,10 +1143,11 @@ def run_conversation(
         # _turn_calls entry below; the FINAL call's composition becomes the
         # turn's recorded breakdown. Telemetry must never break the loop.
         try:
+            _skills_text = _resolve_skills_prompt_text(agent)
             _call_composition = compose_request_breakdown(
                 api_messages,
                 system_prompt=effective_system or "",
-                skills_prompt=getattr(agent, "_skills_prompt_text", "") or "",
+                skills_prompt=_skills_text,
                 tools=agent.tools or None,
             )
         except Exception:

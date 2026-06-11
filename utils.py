@@ -1,17 +1,40 @@
 """Shared utility functions for hermes-agent."""
 
+import contextlib
 import json
 import logging
 import os
 import stat
 import tempfile
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, Iterator, Union
 from urllib.parse import urlparse
 
 import yaml
 
+try:
+    import fcntl as _fcntl  # type: ignore
+except ImportError:  # pragma: no cover - non-POSIX
+    _fcntl = None  # type: ignore
+
 logger = logging.getLogger(__name__)
+
+
+# Per-thread reentrance set so atomic_yaml_write/atomic_roundtrip_yaml_update
+# can safely call each other (or run inside an outer config_file_lock) without
+# deadlocking on the advisory flock.
+import threading as _threading
+_LOCK_REENTRY = _threading.local()
+
+
+def _in_config_lock(path) -> bool:
+    held = getattr(_LOCK_REENTRY, "held", None)
+    if not held:
+        return False
+    try:
+        return str(Path(path).expanduser().resolve()) in held
+    except (OSError, ValueError):
+        return False
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
@@ -151,7 +174,78 @@ def atomic_json_write(
         raise
 
 
+def _is_hermes_config_path(path: Union[str, Path]) -> bool:
+    """Return True when ``path`` resolves to a Hermes profile's ``config.yaml``.
+
+    Hermes config lives at one of:
+      * ``$HERMES_HOME/config.yaml`` (env override)
+      * ``~/.hermes/config.yaml`` (default profile)
+      * ``~/.hermes/profiles/<name>/config.yaml`` (named profile)
+
+    The atomic-write helpers use this to auto-acquire ``config_file_lock``
+    so that call-sites can't forget the cross-process lock and produce a
+    torn write (which corrupts line 1 and silently drops the gateway onto
+    the default config, e.g. provider: openrouter, breaking auth).
+    """
+    try:
+        resolved = Path(path).expanduser().resolve()
+    except (OSError, ValueError):
+        return False
+    if resolved.name != "config.yaml":
+        return False
+
+    candidate_homes: set[Path] = set()
+    hermes_home_env = os.environ.get("HERMES_HOME")
+    if hermes_home_env:
+        try:
+            candidate_homes.add(Path(hermes_home_env).expanduser().resolve())
+        except (OSError, ValueError):
+            pass
+    try:
+        candidate_homes.add((Path.home() / ".hermes").resolve())
+    except (OSError, ValueError):
+        pass
+
+    parent = resolved.parent
+    for home in candidate_homes:
+        try:
+            if parent == home:
+                return True
+            if parent.parent == home / "profiles":
+                return True
+        except (OSError, ValueError):
+            continue
+    return False
+
+
 def atomic_yaml_write(
+    path: Union[str, Path],
+    data: Any,
+    *,
+    default_flow_style: bool = False,
+    sort_keys: bool = False,
+    extra_content: str | None = None,
+) -> None:
+    # Auto-acquire cross-process lock for Hermes config.yaml so concurrent
+    # writers (gateway, TUI, CLI, agent) can't produce torn writes that
+    # corrupt line 1 and drop the gateway onto the default config.
+    if _is_hermes_config_path(path) and not _in_config_lock(path):
+        with config_file_lock(path):
+            return _atomic_yaml_write_impl(
+                path, data,
+                default_flow_style=default_flow_style,
+                sort_keys=sort_keys,
+                extra_content=extra_content,
+            )
+    return _atomic_yaml_write_impl(
+        path, data,
+        default_flow_style=default_flow_style,
+        sort_keys=sort_keys,
+        extra_content=extra_content,
+    )
+
+
+def _atomic_yaml_write_impl(
     path: Union[str, Path],
     data: Any,
     *,
@@ -204,6 +298,18 @@ def atomic_yaml_write(
 
 
 def atomic_roundtrip_yaml_update(
+    path: Union[str, Path],
+    key_path: str,
+    value: Any,
+) -> None:
+    # Auto-acquire cross-process lock for Hermes config.yaml.
+    if _is_hermes_config_path(path) and not _in_config_lock(path):
+        with config_file_lock(path):
+            return _atomic_roundtrip_yaml_update_impl(path, key_path, value)
+    return _atomic_roundtrip_yaml_update_impl(path, key_path, value)
+
+
+def _atomic_roundtrip_yaml_update_impl(
     path: Union[str, Path],
     key_path: str,
     value: Any,
@@ -265,6 +371,83 @@ def atomic_roundtrip_yaml_update(
         except OSError:
             pass
         raise
+
+
+@contextlib.contextmanager
+def config_file_lock(
+    config_path: Union[str, Path],
+    *,
+    timeout: float = 10.0,
+) -> Iterator[None]:
+    """Serialize cross-process writes to a shared YAML config file.
+
+    Multiple Hermes components (TUI gateway, telegram adapter, CLI ``hermes
+    config set``, agent runtime) all mutate ``~/.hermes/config.yaml``.  When
+    two writers interleave, the file can be left half-written — a YAML
+    parse error on line 1 that drops the gateway back onto the default
+    config (e.g. provider: openrouter instead of the user's choice).
+
+    This advisory ``fcntl.flock`` on a sibling ``.lock`` file makes every
+    cooperating writer wait its turn.  On non-POSIX platforms the lock is
+    a no-op — atomic_yaml_write still prevents torn writes within a single
+    process; only cross-process races require the lock.
+
+    Use as::
+
+        with config_file_lock(cfg_path):
+            data = yaml.safe_load(cfg_path.read_text()) or {}
+            data["foo"] = "bar"
+            atomic_yaml_write(cfg_path, data)
+    """
+    config_path = Path(config_path)
+    lock_path = config_path.with_suffix(config_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if _fcntl is None:
+        yield
+        return
+
+    import time
+
+    fd = os.open(str(lock_path), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            try:
+                _fcntl.flock(fd, _fcntl.LOCK_EX | _fcntl.LOCK_NB)
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    logger.warning(
+                        "config_file_lock: timeout after %.1fs waiting for %s; "
+                        "proceeding without lock (writes may race).",
+                        timeout, lock_path,
+                    )
+                    break
+                time.sleep(0.05)
+
+        held = getattr(_LOCK_REENTRY, "held", None)
+        if held is None:
+            held = set()
+            _LOCK_REENTRY.held = held
+        try:
+            _resolved = str(config_path.expanduser().resolve())
+        except (OSError, ValueError):
+            _resolved = str(config_path)
+        held.add(_resolved)
+        try:
+            yield
+        finally:
+            held.discard(_resolved)
+    finally:
+        try:
+            _fcntl.flock(fd, _fcntl.LOCK_UN)
+        except OSError:
+            pass
+        try:
+            os.close(fd)
+        except OSError:
+            pass
 
 
 # ─── JSON Helpers ─────────────────────────────────────────────────────────────

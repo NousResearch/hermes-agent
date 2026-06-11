@@ -376,6 +376,88 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
     return None
 
 
+def _check_hermes_config_path(filepath: str, task_id: str = "default") -> str | None:
+    """Refuse direct writes/patches to any Hermes profile's ``config.yaml``.
+
+    ``config.yaml`` is mutated concurrently by the gateway, TUI, telegram
+    adapter, onboarding flow, and CLI ``hermes config set``. A torn write
+    from this tool produces a corrupt file on line 1, after which the
+    gateway falls back to the default config (provider: openrouter), the
+    user's keys stop working, and authentication starts failing silently.
+
+    Route through ``utils.atomic_roundtrip_yaml_update`` (single key) or
+    ``utils.atomic_yaml_write`` inside ``utils.config_file_lock`` (full
+    rewrite) — both serialize cross-process writers via ``fcntl.flock``
+    and preserve comments/quoting.
+    """
+    try:
+        resolved = Path(_resolve_path_for_task(filepath, task_id)).resolve()
+    except (OSError, ValueError):
+        try:
+            resolved = Path(os.path.expanduser(filepath)).resolve()
+        except (OSError, ValueError):
+            return None
+
+    if resolved.name != "config.yaml":
+        return None
+
+    # Hermes config lives at one of:
+    #   ~/.hermes/config.yaml                       (default profile)
+    #   ~/.hermes/profiles/<name>/config.yaml       (named profile)
+    #   $HERMES_HOME/config.yaml                    (env override)
+    candidate_homes: set[Path] = set()
+    try:
+        from hermes_constants import get_hermes_home
+        candidate_homes.add(Path(get_hermes_home()).resolve())
+    except Exception:
+        pass
+    hermes_home_env = os.environ.get("HERMES_HOME")
+    if hermes_home_env:
+        try:
+            candidate_homes.add(Path(hermes_home_env).expanduser().resolve())
+        except (OSError, ValueError):
+            pass
+    try:
+        candidate_homes.add((Path.home() / ".hermes").resolve())
+    except (OSError, ValueError):
+        pass
+
+    parent = resolved.parent
+    is_hermes_config = False
+    # Direct child of any candidate home, or under <home>/profiles/<name>/.
+    for home in candidate_homes:
+        try:
+            if parent == home:
+                is_hermes_config = True
+                break
+            if parent.parent == home / "profiles":
+                is_hermes_config = True
+                break
+        except (OSError, ValueError):
+            continue
+
+    if not is_hermes_config:
+        return None
+
+    return (
+        f"Refusing to write to Hermes config: {resolved}\n"
+        "This file is mutated concurrently by the gateway, TUI, telegram "
+        "adapter, onboarding, and `hermes config set`. A torn write from "
+        "this tool corrupts line 1 and silently drops the gateway onto "
+        "the default config (provider: openrouter), breaking auth.\n\n"
+        "Use one of these instead (both serialize writers and preserve "
+        "comments/quoting):\n"
+        "  • Single key:\n"
+        "      from utils import atomic_roundtrip_yaml_update\n"
+        "      atomic_roundtrip_yaml_update(path, 'model.provider', 'copilot')\n"
+        "  • Full rewrite:\n"
+        "      from utils import atomic_yaml_write, config_file_lock\n"
+        "      with config_file_lock(path):\n"
+        "          atomic_yaml_write(path, new_config)\n"
+        "Run them via the `execute_code` tool."
+    )
+
+
 def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | None:
     """Return a soft-guard warning when ``filepath`` lands in another Hermes
     profile's scoped area, a host-side sandbox-mirror of authoritative profile
@@ -1106,6 +1188,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    hermes_config_err = _check_hermes_config_path(path, task_id)
+    if hermes_config_err:
+        return tool_error(hermes_config_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
@@ -1208,6 +1293,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        hermes_config_err = _check_hermes_config_path(_p, task_id)
+        if hermes_config_err:
+            return tool_error(hermes_config_err)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:

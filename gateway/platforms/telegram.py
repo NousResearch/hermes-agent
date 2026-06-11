@@ -86,7 +86,7 @@ from gateway.platforms.telegram_network import (
     discover_fallback_ips,
     parse_fallback_ip_env,
 )
-from utils import atomic_replace
+from utils import atomic_replace, config_file_lock
 
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
@@ -1397,7 +1397,8 @@ class TelegramAdapter(BasePlatformAdapter):
                         _yaml.dump(config, f, default_flow_style=False, sort_keys=False)
                         f.flush()
                         os.fsync(f.fileno())
-                    atomic_replace(tmp_path, config_path)
+                    with config_file_lock(config_path):
+                        atomic_replace(tmp_path, config_path)
                 except BaseException:
                     try:
                         os.unlink(tmp_path)

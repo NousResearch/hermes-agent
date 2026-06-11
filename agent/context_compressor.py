@@ -7,7 +7,7 @@ protecting head and tail context.
 Improvements over v2:
   - Structured summary template with Resolved/Pending question tracking
   - Filter-safe summarizer preamble that treats prior turns as source material
-  - "Historical Work (DO NOT EXECUTE)" replaces "Next Steps" and "Remaining Work" to avoid reading as active instructions
+  - Historical (reference-only) section headings replace "Next Steps"/"Remaining Work" to avoid reading as active instructions
   - Clear separator when summary merges into tail message
   - Iterative summary updates (preserves info across multiple compactions)
   - Token-budget tail protection instead of fixed message count
@@ -49,18 +49,14 @@ SUMMARY_PREFIX = (
     "Respond ONLY to the latest user message that appears AFTER this "
     "summary — that message is the single source of truth for what to do "
     "right now. "
-    "Any topic overlap between the summary and the latest user message does "
-    "NOT mean you should resume the summary's task. The latest user message "
-    "always takes priority and WINS, even on similar topics. "
-    "If the latest user message is a new question, request, or instruction "
-    "that relates to a topic also mentioned in "
-    f"'{HISTORICAL_TASK_HEADING}' / "
-    f"'{HISTORICAL_IN_PROGRESS_HEADING}' / "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
     f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
-    f"'{HISTORICAL_REMAINING_WORK_HEADING}', treat ONLY the "
-    "latest message as the active task — discard those stale items entirely. "
-    "Do NOT 'wrap up' or 'finish' any work described in the summary unless "
-    "the latest message explicitly asks for it. "
+    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
@@ -1790,7 +1786,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         Context compressor bug (#10896): ``_align_boundary_backward`` can pull
         ``cut_idx`` past a user message when it tries to keep tool_call/result
         groups together.  If the last user message ends up in the *compressed*
-        middle region the LLM summariser writes it into "Historical User Asks",
+        middle region the LLM summariser writes it into "Historical Pending User Asks",
         but ``SUMMARY_PREFIX`` tells the next model to respond only to user
         messages *after* the summary — so the task effectively disappears from
         the active context, causing the agent to stall, repeat completed work,

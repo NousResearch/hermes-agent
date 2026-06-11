@@ -229,6 +229,52 @@ async def test_realtime_tool_bridge_executes_ask_agent_and_returns_provider_resu
 
 
 @pytest.mark.asyncio
+async def test_realtime_tool_bridge_splits_spoken_result_from_display_artifacts():
+    """Provider audio gets speak-safe text while Discord text can receive artifacts.
+
+    Real failure caught: Hazel reads raw URLs aloud instead of saying a clean spoken
+    sentence while the text channel gets the link/artifact payload.
+    """
+    from gateway.realtime_voice.tool_bridge import RealtimeToolBridge
+
+    display_updates = []
+
+    async def ask_agent(_prompt: str):
+        return {
+            "speak": "I found the reference and posted it in chat.",
+            "display": "Reference: https://example.com/reference",
+            "artifacts": [{"type": "url", "url": "https://example.com/reference"}],
+        }
+
+    async def on_tool_display(update):
+        display_updates.append(update)
+
+    provider_session = _ToolResultSession()
+    bridge = RealtimeToolBridge(
+        RealtimeVoiceConfig(),
+        ask_agent=ask_agent,
+        on_tool_display=on_tool_display,
+    )
+
+    await bridge.handle_tool_call(
+        provider_session,
+        RealtimeToolCall("ask_agent", {"prompt": "find the ref"}, "call_display"),
+    )
+
+    assert provider_session.results == [
+        ("call_display", "I found the reference and posted it in chat.")
+    ]
+    assert "https://" not in provider_session.results[0][1]
+    assert display_updates == [
+        {
+            "tool": "ask_agent",
+            "display": "Reference: https://example.com/reference",
+            "artifacts": [{"type": "url", "url": "https://example.com/reference"}],
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_realtime_tool_bridge_denies_disallowed_tool_without_crashing_session():
     """Promise: disallowed tools are denied safely and visibly.
 

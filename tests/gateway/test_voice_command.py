@@ -1204,6 +1204,28 @@ class TestVoiceChannelCommands:
         )
         assert "rt_123" not in mock_channel.send.call_args.args[0]
 
+    @pytest.mark.asyncio
+    async def test_realtime_tool_display_posts_artifacts_to_text_channel(self, runner):
+        """Realtime display payloads should go to text chat, not spoken audio."""
+        mock_channel = AsyncMock()
+        mock_adapter = SimpleNamespace(
+            _client=SimpleNamespace(get_channel=MagicMock(return_value=mock_channel))
+        )
+
+        await runner._send_realtime_voice_tool_display(
+            mock_adapter,
+            "123",
+            {
+                "tool": "ask_agent",
+                "display": "Reference: https://example.com/reference",
+                "artifacts": [{"type": "url", "url": "https://example.com/reference"}],
+            },
+        )
+
+        message = mock_channel.send.await_args.args[0]
+        assert message.startswith("**[Realtime display]**")
+        assert "https://example.com/reference" in message
+
     # -- _handle_voice_channel_input --
 
     @pytest.mark.asyncio

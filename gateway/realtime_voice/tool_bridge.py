@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 AskAgentCallable = Callable[[str], Awaitable[str] | str]
 TaskUpdateCallable = Callable[[dict[str, str]], Awaitable[None] | None]
+ToolDisplayCallable = Callable[[dict[str, Any]], Awaitable[None] | None]
 
 _HERMES_TOOL_NAMES = {
     "ask_agent",
@@ -140,10 +141,12 @@ class RealtimeToolBridge:
         *,
         ask_agent: AskAgentCallable,
         on_task_update: TaskUpdateCallable | None = None,
+        on_tool_display: ToolDisplayCallable | None = None,
     ) -> None:
         self.config = config
         self.ask_agent = ask_agent
         self.on_task_update = on_task_update
+        self.on_tool_display = on_tool_display
         self.allowed_tools = {
             _normalize_tool_name(name)
             for name in (getattr(config, "allow_tools", ()) or ())
@@ -197,14 +200,17 @@ class RealtimeToolBridge:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _ask_agent(self, prompt: str) -> str:
+    async def _ask_agent(self, prompt: str, *, tool_name: str = "ask_agent") -> str:
         clean = prompt.strip()
         if not clean:
             return "No prompt was provided for ask_agent."
         result = self.ask_agent(clean)
         if inspect.isawaitable(result):
             result = await result
-        return _safe_text(result)
+        speak, display, artifacts = _split_tool_result(result)
+        if display or artifacts:
+            await self._notify_tool_display(tool_name, display=display, artifacts=artifacts)
+        return _safe_text(speak)
 
     async def _start_agent_task(self, prompt: str, *, title: str = "") -> str:
         clean = prompt.strip()
@@ -223,7 +229,7 @@ class RealtimeToolBridge:
     async def _run_background_task(self, task_id: str, prompt: str) -> None:
         entry = self._tasks[task_id]
         try:
-            entry.result = await self._ask_agent(prompt)
+            entry.result = await self._ask_agent(prompt, tool_name="start_agent_task")
             entry.status = "completed"
         except asyncio.CancelledError:
             entry.status = "cancelled"
@@ -252,6 +258,22 @@ class RealtimeToolBridge:
                 await result
         except Exception:
             logger.debug("Realtime voice task update callback failed", exc_info=True)
+
+    async def _notify_tool_display(self, tool_name: str, *, display: str, artifacts: list[Any]) -> None:
+        callback = self.on_tool_display
+        if callback is None:
+            return
+        payload = {
+            "tool": tool_name,
+            "display": _safe_text(display),
+            "artifacts": artifacts,
+        }
+        try:
+            result = callback(payload)
+            if inspect.isawaitable(result):
+                await result
+        except Exception:
+            logger.debug("Realtime voice tool display callback failed", exc_info=True)
 
     def _task_status(self, task_id: str, *, title: str = "") -> str:
         entry, error = self._resolve_task(task_id, title)
@@ -331,6 +353,28 @@ def _task_title(title: Any, prompt: str) -> str:
     if len(clean) > 80:
         clean = clean[:77].rstrip() + "..."
     return clean or "Realtime task"
+
+
+def _split_tool_result(value: Any) -> tuple[str, str, list[Any]]:
+    """Split a tool result envelope into speak/display/artifacts channels."""
+
+    data = value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                parsed = None
+            if isinstance(parsed, Mapping):
+                data = parsed
+    if isinstance(data, Mapping):
+        speak = _safe_text(data.get("speak") or data.get("spoken") or data.get("text") or "I posted the details in chat.")
+        display = _safe_text(data.get("display") or data.get("markdown") or "")
+        raw_artifacts = data.get("artifacts") or []
+        artifacts = raw_artifacts if isinstance(raw_artifacts, list) else []
+        return speak, display, artifacts[:20]
+    return _safe_text(value), "", []
 
 
 def _safe_text(value: Any) -> str:

@@ -11364,10 +11364,14 @@ class GatewayRunner:
         async def _on_task_update(update: dict[str, str]) -> None:
             await self._send_realtime_voice_task_update(adapter, text_channel_id, update)
 
+        async def _on_tool_display(update: dict[str, Any]) -> None:
+            await self._send_realtime_voice_tool_display(adapter, text_channel_id, update)
+
         bridge = RealtimeToolBridge(
             self._get_realtime_voice_config(),
             ask_agent=_ask_agent,
             on_task_update=_on_task_update,
+            on_tool_display=_on_tool_display,
         )
         bridges[guild_id] = bridge
         return bridge
@@ -11459,6 +11463,36 @@ class GatewayRunner:
                 await channel.send(message)
         except Exception:
             logger.debug("Failed to post realtime voice task update", exc_info=True)
+
+    async def _send_realtime_voice_tool_display(self, adapter: Any, text_channel_id: str, update: dict[str, Any]) -> None:
+        """Post non-spoken realtime tool display/artifact payloads to text chat."""
+        display = str(update.get("display") or "").strip()
+        artifacts = update.get("artifacts") or []
+        if not display and not artifacts:
+            return
+        safe_display = display.replace("@everyone", "@\u200beveryone").replace("@here", "@\u200bhere")
+        safe_display = safe_display[:1800]
+        artifact_lines: list[str] = []
+        if isinstance(artifacts, list):
+            for artifact in artifacts[:5]:
+                if isinstance(artifact, dict):
+                    label = str(artifact.get("title") or artifact.get("type") or "artifact").strip()
+                    url = str(artifact.get("url") or artifact.get("path") or "").strip()
+                    if url and url not in safe_display:
+                        artifact_lines.append(f"- {label}: {url}")
+                elif isinstance(artifact, str) and artifact not in safe_display:
+                    artifact_lines.append(f"- {artifact}")
+        body = safe_display
+        if artifact_lines:
+            body = f"{body}\n" if body else ""
+            body += "\n".join(artifact_lines)
+        message = f"**[Realtime display]**\n{body[:1900]}"
+        try:
+            channel = adapter._client.get_channel(int(text_channel_id))
+            if channel:
+                await channel.send(message)
+        except Exception:
+            logger.debug("Failed to post realtime voice tool display", exc_info=True)
 
     async def _stop_realtime_voice_session(
         self,

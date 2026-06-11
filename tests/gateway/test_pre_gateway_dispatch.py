@@ -61,6 +61,35 @@ def _make_runner(platform: Platform):
 
 
 @pytest.mark.asyncio
+async def test_pending_secret_preempts_pre_gateway_dispatch(monkeypatch):
+    """Sensitive replies are captured before plugin hooks can see raw text."""
+    from tools import secret_capture_gateway
+
+    event = _make_event("super-secret-value")
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    session_key = runner._session_key_for_source(event.source)  # noqa: SLF001
+    entry = secret_capture_gateway.register("sid-prehook", session_key, "MY_SECRET", "Send it")
+    entry.bind_source(event.source)
+
+    called = {"value": False}
+
+    def _fake_hook(name, **kwargs):
+        called["value"] = True
+        raise AssertionError("pre_gateway_dispatch saw a secret payload")
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
+    try:
+        result = await runner._handle_message(event)
+    finally:
+        secret_capture_gateway.clear_session(session_key)
+
+    assert result == ""
+    assert called["value"] is False
+    assert entry.value == "super-secret-value"
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_hook_skip_short_circuits_dispatch(monkeypatch):
     """A plugin returning {'action': 'skip'} drops the message before auth."""
     _clear_auth_env(monkeypatch)

@@ -481,6 +481,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # Clarify button state: clarify_id → session_key (for the clarify tool's
         # multiple-choice prompts; see GatewayRunner clarify_callback wiring).
         self._clarify_state: Dict[str, str] = {}
+        self._secret_capture_state: Dict[str, Dict[str, Any]] = {}
+        self._secret_capture_prompt_messages: Dict[str, int] = {}
         # Notification mode for message sends.
         # "important" — only final responses, approvals, and slash confirmations
         #               trigger notifications; tool progress, streaming, status
@@ -2896,6 +2898,90 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def send_secret_capture(
+        self,
+        chat_id: str,
+        prompt: str,
+        env_var: str,
+        secret_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout_seconds: Optional[int] = None,
+    ) -> SendResult:
+        """Send protected sensitive-input prompt with an inline cancel button."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            thread_id = self._metadata_thread_id(metadata)
+            timeout_line = f"\n\n<i>Expires in {int(timeout_seconds)} seconds.</i>" if timeout_seconds else ""
+            text = (
+                f"🔐 <b>Protected sensitive input</b> for <code>{_html.escape(env_var)}</code>\n\n"
+                f"{_html.escape(prompt)}\n\n"
+                "Send the value in your next message. While this request is pending, "
+                "anything you type — including slash commands — is treated as the secret value. "
+                "Use the Cancel button to cancel. The agent model will not receive that message "
+                "as chat text; Hermes stores it locally."
+                f"{timeout_line}"
+            )
+            keyboard = InlineKeyboardMarkup([[
+                InlineKeyboardButton("❌ Cancel", callback_data=f"sgc:cancel:{secret_id}"),
+            ]])
+            reply_to_id = self._reply_to_message_id_for_send(None, metadata, reply_to_mode=self._reply_to_mode)
+            kwargs: Dict[str, Any] = {
+                "chat_id": int(chat_id),
+                "text": text,
+                "parse_mode": ParseMode.HTML,
+                "reply_markup": keyboard,
+                "reply_to_message_id": reply_to_id,
+                **self._link_preview_kwargs(),
+            }
+            kwargs.update(self._thread_kwargs_for_send(chat_id, thread_id, metadata, reply_to_message_id=reply_to_id))
+            msg = await self._send_message_with_thread_fallback(**kwargs)
+            self._secret_capture_state[secret_id] = {
+                "session_key": session_key,
+                "env_var": env_var,
+                "chat_id": str(chat_id),
+            }
+            self._secret_capture_prompt_messages[secret_id] = int(msg.message_id)
+            return SendResult(success=True, message_id=str(msg.message_id))
+        except Exception as e:
+            logger.warning("[%s] send_secret_capture failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
+    async def finalize_secret_capture(
+        self,
+        chat_id: str,
+        secret_id: str,
+        status: str,
+        env_var: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Edit the original secret prompt to a terminal state and clear buttons."""
+        message_id = self._secret_capture_prompt_messages.pop(secret_id, None)
+        self._secret_capture_state.pop(secret_id, None)
+        if not self._bot or not message_id:
+            return SendResult(success=True)
+        labels = {
+            "received": "✅ Sensitive input received. Continuing…",
+            "stored": "✅ Sensitive input stored.",
+            "timeout": "⌛ Sensitive input request expired. Start a new request before sending the value.",
+            "button_cancelled": "❌ Sensitive input request cancelled.",
+            "session_cleared": "❌ Sensitive input request cancelled.",
+        }
+        text = labels.get(status, "Sensitive input request resolved.")
+        try:
+            await self._bot.edit_message_text(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                text=f"{text}\n\n<code>{_html.escape(env_var)}</code>",
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+            return SendResult(success=True, message_id=str(message_id))
+        except Exception as e:
+            logger.debug("[%s] finalize_secret_capture failed: %s", self.name, e)
+            return SendResult(success=False, error=str(e))
+
     async def send_model_picker(
         self,
         chat_id: str,
@@ -3563,6 +3649,59 @@ class TelegramAdapter(BasePlatformAdapter):
                         await self._send_message_with_thread_fallback(**send_kwargs)
                 except Exception as exc:
                     logger.error("[%s] slash-confirm callback failed: %s", self.name, exc, exc_info=True)
+            return
+
+        # --- Sensitive-input callbacks (sgc:cancel:secret_id) ---
+        if data.startswith("sgc:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3 and parts[1] == "cancel":
+                secret_id = parts[2]
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ You are not authorized to cancel this prompt.")
+                    return
+                state = self._secret_capture_state.get(secret_id)
+                if not state:
+                    await query.answer(text="This sensitive-input request has already been resolved.")
+                    return
+                try:
+                    from gateway.session import SessionSource
+                    from tools.secret_capture_gateway import cancel_gateway_secret
+                    _callback_source = SessionSource(
+                        platform=Platform.TELEGRAM,
+                        chat_id=str(query_chat_id) if query_chat_id is not None else "",
+                        chat_type="dm" if str(query_chat_type) == "private" else str(query_chat_type or "group"),
+                        user_id=caller_id,
+                        user_name=query_user_name,
+                        thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    )
+                    resolved = cancel_gateway_secret(secret_id, reason="button_cancelled", source=_callback_source)
+                except Exception as exc:
+                    logger.error("[%s] cancel_gateway_secret failed: %s", self.name, exc)
+                    resolved = False
+                if state.get("user_id") and str(state.get("user_id")) != caller_id:
+                    await query.answer(text="⛔ This prompt belongs to another user.")
+                    return
+                if resolved:
+                    await query.answer(text="Cancelled.")
+                    try:
+                        await query.edit_message_text(
+                            text=f"❌ Sensitive input request cancelled.\n\n<code>{_html.escape(str(state.get('env_var') or ''))}</code>",
+                            parse_mode=ParseMode.HTML,
+                            reply_markup=None,
+                        )
+                    except Exception:
+                        pass
+                    self._secret_capture_state.pop(secret_id, None)
+                    self._secret_capture_prompt_messages.pop(secret_id, None)
+                else:
+                    await query.answer(text="This sensitive-input request has already been resolved.")
             return
 
         # --- Clarify callbacks (cl:clarify_id:idx | cl:clarify_id:other) ---
@@ -5338,6 +5477,21 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return getattr(update, "effective_message", None) or getattr(update, "message", None)
 
+    def _message_has_pending_secret_capture(self, event: MessageEvent) -> bool:
+        """Return True when this Telegram event should bypass pre-filters for secret capture."""
+        try:
+            from gateway.session import build_session_key
+            from tools import secret_capture_gateway as scg
+            self._apply_topic_recovery(event)
+            key = build_session_key(
+                event.source,
+                group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            )
+            return scg.get_pending_for_session(key, source=event.source) is not None
+        except Exception:
+            return False
+
     async def _handle_text_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming text messages.
 
@@ -5348,13 +5502,21 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        if self._message_has_pending_secret_capture(event):
+            # Secret replies must bypass mention filters, trigger-text cleaning,
+            # observed-message attribution/logging, and text batching. The
+            # gateway runner captures this raw text before plugin hooks or
+            # normal dispatch.
+            await self.handle_message(event)
+            return
+
         if not self._should_process_message(msg):
             if self._should_observe_unmentioned_group_message(msg):
                 self._observe_unmentioned_group_message(msg, MessageType.TEXT, update_id=update.update_id)
             return
         await self._ensure_forum_commands(update.message)
-
-        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
@@ -5364,11 +5526,14 @@ class TelegramAdapter(BasePlatformAdapter):
         msg = self._effective_update_message(update)
         if not msg or not msg.text:
             return
+        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
+        if self._message_has_pending_secret_capture(event):
+            await self.handle_message(event)
+            return
         if not self._should_process_message(msg, is_command=True):
             return
         await self._ensure_forum_commands(msg)
 
-        event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         event = self._apply_telegram_group_observe_attribution(event)
         await self.handle_message(event)

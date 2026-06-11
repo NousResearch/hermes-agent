@@ -191,6 +191,44 @@ def test_unmentioned_group_messages_can_be_observed_without_dispatching():
     asyncio.run(_run())
 
 
+def test_pending_secret_bypasses_group_mention_filter_and_observe():
+    async def _run():
+        from gateway.session import build_session_key
+        from tools import secret_capture_gateway
+
+        adapter = _make_adapter(
+            require_mention=True,
+            allowed_chats=["-100"],
+            group_allowed_chats=["-100"],
+            observe_unmentioned_group_messages=True,
+        )
+        store = _FakeSessionStore()
+        adapter._session_store = store
+        adapter.handle_message = AsyncMock()
+        msg = _group_message("super-secret-value")
+        event = adapter._build_message_event(msg, MessageType.TEXT, update_id=1002)
+        session_key = build_session_key(
+            event.source,
+            group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+        )
+        entry = secret_capture_gateway.register("sid-group", session_key, "MY_SECRET", "Send it")
+        entry.bind_source(event.source)
+        try:
+            update = SimpleNamespace(update_id=1002, message=msg, effective_message=None)
+            await adapter._handle_text_message(update, SimpleNamespace())
+        finally:
+            secret_capture_gateway.clear_session(session_key)
+
+        adapter.handle_message.assert_awaited_once()
+        dispatched = adapter.handle_message.await_args.args[0]
+        assert dispatched.text == "super-secret-value"
+        assert dispatched.source.user_id == "111"
+        assert store.messages == []
+
+    asyncio.run(_run())
+
+
 def test_observed_group_context_uses_shared_source_and_prompt_for_later_mentions():
     async def _run():
         adapter = _make_adapter(

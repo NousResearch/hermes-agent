@@ -2511,6 +2511,49 @@ class BasePlatformAdapter(ABC):
             metadata=metadata,
         )
 
+    async def send_secret_capture(
+        self,
+        chat_id: str,
+        prompt: str,
+        env_var: str,
+        secret_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+        timeout_seconds: Optional[int] = None,
+    ) -> SendResult:
+        """Send a protected sensitive-input prompt.
+
+        Rich adapters may override this with inline cancel buttons.  The
+        default text fallback is intentionally explicit that anything typed
+        next is treated as the sensitive payload and that cancellation is only
+        available where the platform provides a dedicated control.
+        """
+        timeout_note = f" This request expires in {timeout_seconds} seconds." if timeout_seconds else ""
+        text = (
+            f"🔐 Protected sensitive input requested for `{env_var}`.\n\n"
+            f"{prompt}\n\n"
+            "Send the value in your next message. While this request is pending, "
+            "anything you type — including slash commands — is treated as the secret value. "
+            "The agent model will not receive that message as chat text; Hermes stores it locally."
+            f"{timeout_note}"
+        )
+        return await self.send(chat_id=chat_id, content=text, metadata=metadata)
+
+    async def finalize_secret_capture(
+        self,
+        chat_id: str,
+        secret_id: str,
+        status: str,
+        env_var: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Update/acknowledge a sensitive-input prompt after resolve/cancel/timeout.
+
+        Default adapters do nothing to avoid extra messages on platforms where
+        editing the original prompt is unavailable or noisy.
+        """
+        return SendResult(success=True)
+
     async def send_private_notice(
         self,
         chat_id: str,
@@ -3870,6 +3913,49 @@ class BasePlatformAdapter(ABC):
 
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
+            # Protected sensitive-input replies must reach the gateway runner
+            # even while the original agent turn is active and blocked inside
+            # request_sensitive_input().  Otherwise the reply is queued as a
+            # follow-up turn and the tool times out while the raw secret sits
+            # in pending-message state.  This applies to slash-prefixed values
+            # too: while a secret prompt is pending, typed text is payload, not
+            # a command.
+            try:
+                from tools import secret_capture_gateway as _secret_mod
+                _pending_secret = _secret_mod.get_pending_for_session(session_key, source=event.source)
+            except Exception:
+                _pending_secret = None
+            if _pending_secret is not None:
+                logger.debug(
+                    "[%s] Routing message to sensitive-input intercept for %s",
+                    self.name, session_key,
+                )
+                try:
+                    _thread_meta = _thread_metadata_for_source(
+                        event.source, _reply_anchor_for_event(event)
+                    )
+                    response = await self._message_handler(event)
+                    _text, _eph_ttl = self._unwrap_ephemeral(response)
+                    if _text:
+                        _r = await self._send_with_retry(
+                            chat_id=event.source.chat_id,
+                            content=_text,
+                            reply_to=_reply_anchor_for_event(event),
+                            metadata=_thread_meta,
+                        )
+                        if _eph_ttl > 0 and _r.success and _r.message_id:
+                            self._schedule_ephemeral_delete(
+                                chat_id=event.source.chat_id,
+                                message_id=_r.message_id,
+                                ttl_seconds=_eph_ttl,
+                            )
+                except Exception as e:
+                    logger.error(
+                        "[%s] Sensitive-input intercept dispatch failed: %s",
+                        self.name, e, exc_info=True,
+                    )
+                return
+
             # Certain commands must bypass the active-session guard and be
             # dispatched directly to the gateway runner.  Without this, they
             # are queued as pending messages and either:

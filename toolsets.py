@@ -53,8 +53,8 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
-    # Clarifying questions
-    "clarify",
+    # Clarifying questions and protected secret input
+    "clarify", "request_sensitive_input",
     # Code execution + delegation
     "execute_code", "delegate_task",
     # Cronjob management
@@ -334,6 +334,13 @@ TOOLSETS = {
         "includes": ["web", "file"]  # For searching error messages and solutions, and file operations
     },
     
+
+    "sensitive_input": {
+        "description": "Protected password/API-key/OTP capture without exposing the raw value to the model",
+        "tools": ["request_sensitive_input"],
+        "includes": []
+    },
+
     "safe": {
         "description": "Safe toolkit without terminal access",
         "tools": [],

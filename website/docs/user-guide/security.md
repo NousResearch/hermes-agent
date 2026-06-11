@@ -20,6 +20,26 @@ The security model has seven layers:
 6. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
 7. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
+## Protected sensitive input
+
+When Hermes needs a password, OTP, API key, token, or similar secret during an agent task, it should use the `request_sensitive_input` tool instead of asking the user to paste the value into normal chat.
+
+What happens:
+
+1. The agent calls `request_sensitive_input(env_var, prompt)`.
+2. Hermes sends a platform-native protected prompt. On Telegram this includes a **Cancel** button.
+3. The next typed message from the same user/session is intercepted before plugin hooks, update prompts, slash commands, clarify prompts, and normal agent dispatch.
+4. That message is stored locally under the requested env var and is not appended to chat history or returned in the tool result.
+5. The prompt is finalized as received, cancelled, or expired so stale prompts do not keep inviting users to send secrets.
+
+Important limitations:
+
+- The value is still delivered to the local Hermes process and stored locally (normally in `.env`); it is not a remote vault.
+- Platform providers may retain the original user message in their own chat history.
+- If a prompt expires or the gateway restarts, start a new protected request before sending the value.
+- While a protected prompt is pending, anything typed — including slash commands — is treated as the secret payload. Use the platform cancel control to cancel.
+
+
 ## Dangerous Command Approval
 
 Before executing any command, Hermes checks it against a curated list of dangerous patterns. If a match is found, the user must explicitly approve it.

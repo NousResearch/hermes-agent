@@ -6364,6 +6364,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # are system-generated and must skip user authorization.
         is_internal = bool(getattr(event, "internal", False))
 
+        _quick_key = self._session_key_for_source(source)
+
+        # Protected sensitive-input replies must preempt plugin hooks and every
+        # other text consumer so raw secrets cannot be logged, rewritten, or
+        # routed as ordinary chat.  Entries are bound to the original
+        # platform/chat/thread/user before the prompt is sent, so this early
+        # check still fails closed for unrelated users/sessions.
+        if not is_internal:
+            _secret_mod = None
+            try:
+                from tools import secret_capture_gateway as _secret_mod
+                _pending_secret = _secret_mod.get_pending_for_session(_quick_key, source=source)
+            except Exception:
+                _pending_secret = None
+            if _pending_secret is not None and _secret_mod is not None:
+                _raw_secret_reply = event.text or ""
+                if _raw_secret_reply != "":
+                    _resolved = _secret_mod.resolve_gateway_secret(
+                        _pending_secret.secret_id, _raw_secret_reply, source=source,
+                    )
+                    if _resolved:
+                        logger.info(
+                            "Gateway intercepted protected secret payload for env=%s",
+                            _pending_secret.env_var,
+                        )
+                        return ""
+
         # Fire pre_gateway_dispatch plugin hook for user-originated messages.
         # Plugins receive the MessageEvent and may return a dict influencing flow:
         #   {"action": "skip",    "reason": ...}    -> drop (no reply, plugin handled)
@@ -6460,7 +6487,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # IMPORTANT: recognized slash commands must bypass this interception.
         # Otherwise control/session commands like /new or /help get silently
         # consumed as update answers instead of being dispatched normally.
-        _quick_key = self._session_key_for_source(source)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
             raw = (event.text or "").strip()
@@ -14270,6 +14296,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 set_current_session_key,
                 unregister_gateway_notify,
             )
+            from tools import secret_capture_gateway as _secret_capture_mod
 
             def _approval_notify_sync(approval_data: dict) -> None:
                 """Send the approval request to the user from the agent thread.
@@ -14350,6 +14377,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _approval_send_fut.result(timeout=15)
                 except Exception as _e:
                     logger.error("Failed to send approval request: %s", _e)
+
+            def _secret_capture_notify_sync(entry) -> None:
+                """Send protected sensitive-input prompt from the agent thread."""
+                entry.bind_source(source)
+                timeout_seconds = _secret_capture_mod.get_secret_capture_timeout()
+                if getattr(type(_status_adapter), "send_secret_capture", None) is not None:
+                    _secret_fut = safe_schedule_threadsafe(
+                        _status_adapter.send_secret_capture(
+                            chat_id=_status_chat_id,
+                            prompt=entry.prompt,
+                            env_var=entry.env_var,
+                            secret_id=entry.secret_id,
+                            session_key=entry.session_key,
+                            metadata=_status_thread_metadata,
+                            timeout_seconds=timeout_seconds,
+                        ),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="send_secret_capture scheduling error",
+                    )
+                    if _secret_fut is None:
+                        raise RuntimeError("send_secret_capture: loop unavailable")
+                    _secret_result = _secret_fut.result()
+                    if not getattr(_secret_result, "success", False):
+                        raise RuntimeError(getattr(_secret_result, "error", "send_secret_capture failed"))
+
+            def _secret_capture_finalize_sync(entry, status: str) -> None:
+                if getattr(type(_status_adapter), "finalize_secret_capture", None) is None:
+                    return
+                _secret_final_fut = safe_schedule_threadsafe(
+                    _status_adapter.finalize_secret_capture(
+                        chat_id=_status_chat_id,
+                        secret_id=entry.secret_id,
+                        status=status,
+                        env_var=entry.env_var,
+                        metadata=_status_thread_metadata,
+                    ),
+                    _loop_for_step,
+                    logger=logger,
+                    log_message="finalize_secret_capture scheduling error",
+                )
+                # Do not block here. Finalization may be triggered from the
+                # gateway event loop while resolving a user message/callback;
+                # waiting on a coroutine scheduled to the same loop would stall
+                # the gateway until timeout.  The prompt update is best-effort.
 
             # Prepend pending model switch note so the model knows about the switch
             _pending_notes = getattr(self, '_pending_model_notes', {})
@@ -14443,6 +14515,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _approval_session_key = session_key or ""
             _approval_session_token = set_current_session_key(_approval_session_key)
             register_gateway_notify(_approval_session_key, _approval_notify_sync)
+            _secret_capture_mod.register_notify(_approval_session_key, _secret_capture_notify_sync)
+            _secret_capture_mod.register_finalize(_approval_session_key, _secret_capture_finalize_sync)
             try:
                 # If _prepare_inbound_message_text buffered image paths for native
                 # attachment, wrap the user turn as an OpenAI-style multimodal
@@ -14488,6 +14562,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 result = agent.run_conversation(_api_run_message, **_conversation_kwargs)
             finally:
                 unregister_gateway_notify(_approval_session_key)
+                _secret_capture_mod.unregister_notify(_approval_session_key)
                 # Cancel any pending clarify entries so blocked agent
                 # threads don't hang past the end of the run (interrupt,
                 # completion, gateway shutdown).  Idempotent.

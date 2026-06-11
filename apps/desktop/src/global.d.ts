@@ -55,8 +55,9 @@ declare global {
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
-        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string }>
+        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
@@ -96,8 +97,38 @@ declare global {
         summary: () => Promise<DesktopUninstallSummary>
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
       }
+      themes: {
+        // Download a VS Code Marketplace extension and return the raw color
+        // theme files it contributes. The renderer converts + persists them.
+        fetchMarketplace: (id: string) => Promise<DesktopMarketplaceThemeResult>
+        // Search the Marketplace for color-theme extensions. An empty query
+        // returns the most-installed themes.
+        searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
+      }
     }
   }
+}
+
+export interface DesktopMarketplaceSearchItem {
+  extensionId: string
+  displayName: string
+  publisher: string
+  description: string
+  installs: number
+}
+
+export interface DesktopMarketplaceThemeFile {
+  label: string
+  /** VS Code's `uiTheme` for this entry (vs-dark / vs / hc-black). */
+  uiTheme?: string
+  /** Raw theme JSON (JSONC) text, parsed + converted by the renderer. */
+  contents: string
+}
+
+export interface DesktopMarketplaceThemeResult {
+  extensionId: string
+  displayName: string
+  themes: DesktopMarketplaceThemeFile[]
 }
 
 export interface HermesTerminalSession {

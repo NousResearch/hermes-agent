@@ -1,6 +1,7 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import {
   appendAssistantTextPart,
   appendReasoningPart,
@@ -18,6 +19,7 @@ import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setClarifyRequest } from '@/store/clarify'
+import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
@@ -631,14 +633,21 @@ export function useMessageStream({
         const runningChanged = typeof payload?.running === 'boolean'
 
         if (apply) {
-          const runtimeInfo: { branch?: string; cwd?: string } = {}
+          const runtimeInfo: Partial<
+            Pick<
+              ClientSessionState,
+              'branch' | 'cwd' | 'fast' | 'model' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+            >
+          > = {}
 
           if (modelChanged) {
             setCurrentModel(payload!.model || '')
+            runtimeInfo.model = payload!.model || ''
           }
 
           if (providerChanged) {
             setCurrentProvider(payload!.provider || '')
+            runtimeInfo.provider = payload!.provider || ''
           }
 
           if (typeof payload?.cwd === 'string') {
@@ -651,32 +660,32 @@ export function useMessageStream({
             runtimeInfo.branch = payload.branch
           }
 
-          if (sessionId && (runtimeInfo.cwd !== undefined || runtimeInfo.branch !== undefined)) {
-            updateSessionState(sessionId, state => ({
-              ...state,
-              branch: runtimeInfo.branch ?? state.branch,
-              cwd: runtimeInfo.cwd ?? state.cwd
-            }))
-          }
-
           if (typeof payload?.personality === 'string') {
             setCurrentPersonality(normalizePersonalityValue(payload.personality))
           }
 
           if (typeof payload?.reasoning_effort === 'string') {
             setCurrentReasoningEffort(payload.reasoning_effort)
+            runtimeInfo.reasoningEffort = payload.reasoning_effort
           }
 
           if (typeof payload?.service_tier === 'string') {
             setCurrentServiceTier(payload.service_tier)
+            runtimeInfo.serviceTier = payload.service_tier
           }
 
           if (typeof payload?.fast === 'boolean') {
             setCurrentFastMode(payload.fast)
+            runtimeInfo.fast = payload.fast
           }
 
           if (typeof payload?.yolo === 'boolean') {
             setYoloActive(payload.yolo)
+            runtimeInfo.yolo = payload.yolo
+          }
+
+          if (sessionId && Object.keys(runtimeInfo).length > 0) {
+            updateSessionState(sessionId, state => ({ ...state, ...runtimeInfo }))
           }
 
           if (runningChanged && sessionId) {
@@ -905,6 +914,21 @@ export function useMessageStream({
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
+        }
+      } else if (event.type === 'terminal.read.request') {
+        // read_terminal tool: serialize the renderer's xterm buffer and answer
+        // immediately (Python blocks on the respond). Empty text = no live pane.
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+
+        if (requestId) {
+          const start = typeof payload?.start === 'number' ? payload.start : undefined
+          const count = typeof payload?.count === 'number' ? payload.count : undefined
+          const result = readActiveTerminal({ start, count })
+
+          void $gateway.get()?.request('terminal.read.respond', {
+            request_id: requestId,
+            text: result ? JSON.stringify(result) : ''
+          })
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'

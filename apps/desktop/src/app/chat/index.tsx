@@ -126,7 +126,10 @@ function ChatHeader({
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
       <div
         className="min-w-0 flex-1"
-        style={{ maxWidth: 'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)' }}
+        style={{
+          maxWidth:
+            'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)'
+        }}
       >
         <SessionActionsMenu
           align="start"

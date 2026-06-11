@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   AlignLeft,
   Check,
@@ -246,6 +247,7 @@ export default function ProfilesPage() {
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setEnd } = usePageHeader();
+  const navigate = useNavigate();
 
   // Locale strings with English fallbacks. The enriched keys are optional in
   // the i18n type so untranslated locales don't break the build — they render
@@ -722,21 +724,31 @@ export default function ProfilesPage() {
       : base;
   })();
 
-  // Put "Create" button in page header
+  // Put "Build" (full builder) + "Create" (quick modal) buttons in header
   useLayoutEffect(() => {
     setEnd(
-      <Button
-        className="uppercase"
-        size="sm"
-        onClick={() => setCreateModalOpen(true)}
-      >
-        {t.common.create}
-      </Button>,
+      <div className="flex items-center gap-2">
+        <Button
+          className="uppercase"
+          size="sm"
+          outlined
+          onClick={() => navigate("/profiles/new")}
+        >
+          Build
+        </Button>
+        <Button
+          className="uppercase"
+          size="sm"
+          onClick={() => setCreateModalOpen(true)}
+        >
+          {t.common.create}
+        </Button>
+      </div>,
     );
     return () => {
       setEnd(null);
     };
-  }, [setEnd, t.common.create, loading]);
+  }, [setEnd, t.common.create, loading, navigate]);
 
   const cloning = cloneAll || cloneFromDefault;
 
@@ -782,7 +794,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto",
+              "relative w-full max-w-md border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -804,7 +816,7 @@ export default function ProfilesPage() {
               </h2>
             </header>
 
-            <div className="p-5 grid gap-4">
+            <div className="min-h-0 overflow-y-auto p-5 grid gap-4">
               <div className="grid gap-2">
                 <Label htmlFor="profile-name">{t.profiles.name}</Label>
 
@@ -1195,7 +1207,7 @@ export default function ProfilesPage() {
           <div
             className={cn(
               themedBody,
-              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh] overflow-y-auto",
+              "relative w-full max-w-lg border border-border bg-card shadow-2xl flex flex-col max-h-[90vh]",
             )}
           >
             <Button
@@ -1222,7 +1234,12 @@ export default function ProfilesPage() {
               </h2>
             </header>
 
-            <div className="p-5 grid gap-4">
+            <div
+              className={cn(
+                "p-5 grid gap-4",
+                editorKind === "soul" && "min-h-0 overflow-y-auto",
+              )}
+            >
               {editorKind === "model" &&
                 (modelChoices !== null && modelChoices.length === 0 ? (
                   <p className="text-xs text-muted-foreground">{L.modelNone}</p>

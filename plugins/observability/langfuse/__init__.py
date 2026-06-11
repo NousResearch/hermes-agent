@@ -227,7 +227,30 @@ def _trace_key(task_id: str, session_id: str) -> str:
     return f"thread:{threading.get_ident()}"
 
 
-def _truncate_text(value: str, max_chars: int) -> str:
+def _is_base64_data_uri(value: str) -> bool:
+    prefix = value[:200].lower()
+    return prefix.startswith("data:") and ";base64," in prefix
+
+
+def _redact_data_uri(value: str) -> dict[str, Any]:
+    header = value.split(",", 1)[0] if "," in value else "data:"
+    media_type = header[5:].split(";", 1)[0] if header.startswith("data:") else ""
+    return {
+        "type": "data_uri",
+        "media_type": media_type or None,
+        "omitted": True,
+        "length": len(value),
+    }
+
+
+def _truncate_text(value: str, max_chars: int) -> Any:
+    # Langfuse SDK treats data:*;base64 strings as media and attempts to
+    # decode them. Truncating those strings produces invalid base64 and noisy
+    # "Error parsing base64 data URI" logs. Observability only needs metadata,
+    # not raw image/audio payloads, so redact the whole data URI before it
+    # reaches the SDK.
+    if _is_base64_data_uri(value):
+        return _redact_data_uri(value)
     if len(value) <= max_chars:
         return value
     return value[:max_chars] + f"... [truncated {len(value) - max_chars} chars]"

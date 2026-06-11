@@ -124,11 +124,20 @@ export function mergeSessionPage(
     return incoming
   }
 
-  const incomingIds = new Set(incoming.map(session => session.id))
+  const incomingConversationIds = new Set<string>()
+
+  for (const session of incoming) {
+    incomingConversationIds.add(session.id)
+
+    if (session._lineage_root_id != null) {
+      incomingConversationIds.add(session._lineage_root_id)
+    }
+  }
 
   const survivors = previous.filter(
     session =>
-      !incomingIds.has(session.id) &&
+      !incomingConversationIds.has(session.id) &&
+      (session._lineage_root_id == null || !incomingConversationIds.has(session._lineage_root_id)) &&
       (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
   )
 

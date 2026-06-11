@@ -140,6 +140,20 @@ describe('mergeSessionPage', () => {
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
   })
+
+  it('drops a kept compression root when the server returns its projected tip', () => {
+    // A refresh can arrive after auto-compression rotates root -> tip while the
+    // old root is still in keepIds (working, recently-settled, or pinned). The
+    // incoming tip is the fresh server row for that same conversation, so the
+    // stale root must not survive beside it as a duplicate sidebar entry.
+    const previous = [session({ id: 'root', title: 'Old root copy' })]
+    const incoming = [session({ id: 'tip', _lineage_root_id: 'root', title: 'Fresh tip row' })]
+
+    const merged = mergeSessionPage(previous, incoming, ['root'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip'])
+    expect(merged[0]?.title).toBe('Fresh tip row')
+  })
 })
 
 describe('workspaceCwdForNewSession', () => {

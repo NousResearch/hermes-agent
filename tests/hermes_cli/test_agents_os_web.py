@@ -11,6 +11,8 @@ from hermes_cli.agents_os_web import (
     artifacts_payload,
     create_idea_action,
     jarvis_briefing_payload,
+    jarvis_preview_payload,
+    jarvis_transcribe_payload,
     knowledge_index_payload,
     media_assets_payload,
     mission_control_html,
@@ -147,10 +149,55 @@ def test_artifacts_media_operator_manage_voice_payloads_are_redacted_and_read_on
     assert operator["judge_status"] in {"pending", "ready"}
 
 
+def test_jarvis_transcribe_writes_local_artifacts_without_execution(agents_home):
+    paths = resolve_paths(None)
+
+    payload = jarvis_transcribe_payload(
+        paths,
+        {
+            "audio_base64": "UklGRg==",
+            "audio_mime": "audio/webm",
+            "transcript_text": "Prikaži zadnje BP24 stanje",
+        },
+    )
+
+    assert payload["local_only"] is True
+    assert payload["execution_created"] is False
+    assert payload["status"] == "transcribed"
+    assert payload["transcript"]["text"] == "Prikaži zadnje BP24 stanje"
+    assert payload["intent_preview"]["risk_class"] == "safe_local"
+    assert payload["intent_preview"]["approval_required"] is False
+    assert Path(payload["audio_artifact_path"]).exists()
+    assert Path(payload["transcript_artifact_path"]).exists()
+    assert "Prikaži zadnje BP24 stanje" in Path(payload["transcript_artifact_path"]).read_text(encoding="utf-8")
+
+
+def test_jarvis_preview_gates_risky_commands_without_execution(agents_home):
+    paths = resolve_paths(None)
+
+    safe = jarvis_preview_payload(paths, {"transcript_text": "Prikaži zadnje BP24 stanje"})
+    public = jarvis_preview_payload(paths, {"transcript_text": "Pošalji klijentu email"})
+    deploy = jarvis_preview_payload(paths, {"transcript_text": "Deployaj BP24"})
+
+    assert safe["command_card"]["risk_class"] == "safe_local"
+    assert safe["command_card"]["approval_required"] is False
+    assert safe["command_card"]["execution_created"] is False
+    assert public["command_card"]["risk_class"] == "public_gated"
+    assert public["command_card"]["approval_required"] is True
+    assert public["command_card"]["execution_created"] is False
+    assert deploy["command_card"]["risk_class"] == "public_gated"
+    assert deploy["command_card"]["approval_required"] is True
+    assert deploy["command_card"]["execution_created"] is False
+
+
 def test_root_html_contains_jarvis_oracle_briefing_panel(agents_home):
     service = AgentsOSService(resolve_paths(None))
     html = mission_control_html(service)
 
     assert "Jarvis / Oracle Briefing" in html
+    assert "Record command" in html
+    assert "Command Preview" in html
     assert "/api/jarvis/briefing" in html
+    assert "/api/jarvis/transcribe" in html
+    assert "/api/jarvis/preview" in html
     assert "wake/show/build/act" in html

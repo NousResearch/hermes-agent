@@ -7467,6 +7467,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             self._show_usage()
         elif canonical == "credits":
             self._show_credits()
+        elif canonical == "tps":
+            self._show_tps()
         elif canonical == "insights":
             self._show_insights(cmd_original)
         elif canonical == "copy":
@@ -8447,6 +8449,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 print(f"  Top-up URL: {view.topup_url}")
         else:
             print("  🟡 Cancelled. No credits added.")
+
+    def _show_tps(self):
+        """`/tps` — show tokens-per-second of the last API response."""
+        agent = getattr(self, "agent", None)
+        last_dur = getattr(agent, "last_api_duration", 0.0) or 0.0
+        last_out = getattr(agent, "last_output_tokens", 0) or 0
+        print()
+        print("  ⚡ Tokens per second")
+        print(f"  {'─' * 41}")
+        if last_dur > 0 and last_out > 0:
+            tps = last_out / last_dur
+            print(f"  Last response:      {last_out:,} tokens in {last_dur:.1f}s")
+            print(f"  Output speed:       {tps:,.0f} tok/s")
+        else:
+            print(f"  No API response recorded yet in this session.")
+            print(f"  Send a message first, then run /tps.")
 
     def _show_insights(self, command: str = "/insights"):
         """Show usage insights and analytics from session history."""

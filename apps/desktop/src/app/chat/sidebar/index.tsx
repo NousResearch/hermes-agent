@@ -71,6 +71,7 @@ import {
 } from '@/store/layout'
 import {
   $newChatProfile,
+  $activeGatewayProfile,
   $profiles,
   $profileScope,
   ALL_PROFILES,
@@ -816,7 +817,7 @@ export function ChatSidebar({
                         // no swap. The switcher header is the single place to
                         // change which profile that is.
                         if (isNewSession) {
-                          $newChatProfile.set(null)
+                          $newChatProfile.set($activeGatewayProfile.get())
                         }
 
                         onNavigate(item)

@@ -19,6 +19,7 @@ import {
 } from '@/store/layout'
 import {
   $newChatProfile,
+  $activeGatewayProfile,
   cycleProfile,
   requestProfileCreate,
   switchProfileToSlot,
@@ -128,7 +129,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       // Match the sidebar New Session button. A plain keyboard new chat should
       // target the current live profile, not a stale per-profile quick-create
       // selection from a prior action.
-      $newChatProfile.set(null)
+      $newChatProfile.set($activeGatewayProfile.get())
       deps.startFreshSession()
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },

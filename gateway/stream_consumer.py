@@ -289,6 +289,7 @@ class GatewayStreamConsumer:
                 await result
         except Exception:
             pass
+
     def delivery_summary(self) -> dict[str, Any]:
         """Read-only delivery facts for diagnostic logging.
 

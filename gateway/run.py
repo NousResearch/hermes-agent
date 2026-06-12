@@ -105,8 +105,15 @@ _GATEWAY_RAW_TEXT_PLATFORMS = frozenset(
 def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     """True only for programmatic/local surfaces that must keep raw text."""
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
+
+
 _NO_CONSUMER_DELIVERY_FACTS = (
     "acc_len=? acc_digest=? last_sent_len=? sc_msg_id=? last_edit_overflowed=?"
+)
+
+_SUPPRESS_FINAL_SEND_LOG_FMT = (
+    "Suppressing normal final send for session %s: final delivery already "
+    "confirmed (streamed=%s previewed=%s content_delivered=%s). %s"
 )
 
 
@@ -118,10 +125,13 @@ def _delivery_log_facts(final_text: Any, stream_consumer: Any) -> str:
     raises: a missing consumer or a failing summary degrades to ``?``
     fields so log composition cannot affect the suppression decision.
     """
-    from gateway.stream_consumer import _short_digest
+    try:
+        from gateway.stream_consumer import _short_digest
 
-    final = final_text if isinstance(final_text, str) else ""
-    parts = [f"final_len={len(final)}", f"final_digest={_short_digest(final)}"]
+        final = final_text if isinstance(final_text, str) else ""
+        parts = [f"final_len={len(final)}", f"final_digest={_short_digest(final)}"]
+    except Exception:
+        parts = ["final_len=? final_digest=?"]
     try:
         summary = (
             stream_consumer.delivery_summary()
@@ -20299,7 +20309,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
                 logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s). %s",
+                    _SUPPRESS_FINAL_SEND_LOG_FMT,
                     session_key or "?",
                     _streamed,
                     _previewed,

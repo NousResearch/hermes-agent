@@ -1,6 +1,7 @@
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
+import { getRememberedSelectedStoredSessionId } from '@/store/session'
 
 interface RouteResumeOptions {
   activeSessionId: string | null
@@ -10,7 +11,7 @@ interface RouteResumeOptions {
   freshDraftReady: boolean
   gatewayState: string | undefined
   locationPathname: string
-  resumeSession: (sessionId: string, focus: boolean) => Promise<unknown>
+  resumeSession: (sessionId: string, replaceRoute: boolean) => Promise<unknown>
   routedSessionId: string | null
   runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>>
   selectedStoredSessionId: string | null
@@ -122,6 +123,17 @@ export function useRouteResume({
       (selectedStoredSessionId || activeSessionId || !freshDraftReady) &&
       !rawHashLooksLikeSession()
     ) {
+      const rememberedSessionId =
+        !selectedStoredSessionId && !activeSessionId && !freshDraftReady
+          ? getRememberedSelectedStoredSessionId()
+          : null
+
+      if (rememberedSessionId) {
+        void resumeSession(rememberedSessionId, true)
+
+        return
+      }
+
       startFreshSessionDraft(true)
     }
   }, [

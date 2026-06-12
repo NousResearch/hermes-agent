@@ -2,6 +2,9 @@ import { cleanup, render } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { HermesConnection } from '@/global'
+import { setConnection, setSelectedStoredSessionId } from '@/store/session'
+
 import { useRouteResume } from './use-route-resume'
 
 interface HarnessProps {
@@ -29,7 +32,119 @@ function RouteResumeHarness(props: HarnessProps) {
 describe('useRouteResume', () => {
   afterEach(() => {
     cleanup()
+    setConnection(null)
+    setSelectedStoredSessionId(null)
+    window.localStorage.clear()
     vi.restoreAllMocks()
+  })
+
+  it('resumes the remembered session on root startup', () => {
+    const remoteConnection = {
+      baseUrl: 'https://gateway.example',
+      isFullscreen: false,
+      logs: [],
+      mode: 'remote',
+      nativeOverlayWidth: 0,
+      profile: 'default',
+      token: '',
+      windowButtonPosition: null,
+      wsUrl: 'wss://gateway.example/ws'
+    } satisfies HermesConnection
+
+    setConnection(remoteConnection)
+    setSelectedStoredSessionId('session-persisted')
+
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/"
+        resumeSession={resumeSession}
+        routedSessionId={null}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).toHaveBeenCalledTimes(1)
+    expect(resumeSession).toHaveBeenCalledWith('session-persisted', true)
+    expect(startFreshSessionDraft).not.toHaveBeenCalled()
+  })
+
+  it('starts a fresh draft on root startup when no session is remembered', () => {
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady={false}
+        gatewayState="open"
+        locationPathname="/"
+        resumeSession={resumeSession}
+        routedSessionId={null}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+    expect(startFreshSessionDraft).toHaveBeenCalledTimes(1)
+    expect(startFreshSessionDraft).toHaveBeenCalledWith(true)
+  })
+
+  it('does not restore a remembered session while an explicit fresh draft is ready', () => {
+    setSelectedStoredSessionId('session-persisted')
+
+    const resumeSession = vi.fn(async () => undefined)
+    const startFreshSessionDraft = vi.fn()
+    const activeSessionIdRef: MutableRefObject<null | string> = { current: null }
+    const creatingSessionRef = { current: false }
+    const runtimeIdByStoredSessionIdRef = { current: new Map() }
+    const selectedStoredSessionIdRef: MutableRefObject<null | string> = { current: null }
+
+    render(
+      <RouteResumeHarness
+        activeSessionId={null}
+        activeSessionIdRef={activeSessionIdRef}
+        creatingSessionRef={creatingSessionRef}
+        currentView="chat"
+        freshDraftReady
+        gatewayState="open"
+        locationPathname="/"
+        resumeSession={resumeSession}
+        routedSessionId={null}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        selectedStoredSessionId={null}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        startFreshSessionDraft={startFreshSessionDraft}
+      />
+    )
+
+    expect(resumeSession).not.toHaveBeenCalled()
+    expect(startFreshSessionDraft).not.toHaveBeenCalled()
   })
 
   it('does not re-resume the old session during a /:sid -> /new transition', () => {

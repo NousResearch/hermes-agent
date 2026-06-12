@@ -534,6 +534,10 @@ export function useSessionActions({
 
       await ensureGatewayProfile(sessionProfile)
 
+      if (replaceRoute) {
+        navigate(sessionRoute(storedSessionId), { replace: true })
+      }
+
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
@@ -652,6 +656,7 @@ export function useSessionActions({
           reconcileResumeMessages(toChatMessages(resumed.messages), currentMessages),
           currentMessages
         )
+
         // Keep the local snapshot when resume would only reshuffle runtime projection.
         const preferredMessages =
           localSnapshot.length > 0
@@ -706,6 +711,7 @@ export function useSessionActions({
       activeSessionIdRef,
       busyRef,
       copy,
+      navigate,
       requestGateway,
       runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef,

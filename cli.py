@@ -24,6 +24,7 @@ except ModuleNotFoundError:
     pass
 
 import logging
+import math
 import os
 import shutil
 import sys
@@ -11670,7 +11671,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if getattr(snap, "decision", None) == "deny":
             return ("deny", getattr(snap, "decision_source", "") or "mobile", current_deadline)
         if getattr(snap, "decision", None) == "extend":
-            delta = max(0.0, getattr(snap, "deadline_ts", 0.0) - _t.time())
+            try:
+                deadline_ts = float(getattr(snap, "deadline_ts", 0.0))
+                if not math.isfinite(deadline_ts):
+                    return (None, "", current_deadline)
+                delta = max(0.0, deadline_ts - _t.time())
+            except (TypeError, ValueError):
+                return (None, "", current_deadline)
             new_deadline = _t.monotonic() + delta
             if new_deadline > current_deadline:
                 current_deadline = new_deadline
@@ -12158,7 +12165,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         if remaining <= 0:
                             break
                         if remote_code:
-                            snap = self._rc_consume(remote_code)
+                            try:
+                                snap = self._rc_consume(remote_code)
+                            except Exception:
+                                snap = None
                             if snap is not None and snap.decision == "deny":
                                 # Remote deny → behave like a local deny.
                                 self._approval_state = None

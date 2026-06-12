@@ -28,6 +28,7 @@ can monkeypatch it for deterministic expiry / cleanup behaviour.
 from __future__ import annotations
 
 import json
+import math
 import os
 import random
 import threading
@@ -165,6 +166,93 @@ def _generate_token(n: int = DEFAULT_APPROVE_TOKEN_LEN, *, avoid: str = "") -> s
     return f"{random.randint(0, high):0{n}d}"
 
 
+def _finite_number(value) -> float | None:
+    """Return ``value`` as a finite float, rejecting bools/strings/NaN/inf."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    value = float(value)
+    if not math.isfinite(value):
+        return None
+    return value
+
+
+def _record_from_raw(raw: dict) -> PendingIntervention | None:
+    """Deserialize and validate one record defensively.
+
+    Gateway commands and CLI poll loops must never crash just because the JSON
+    store was truncated, hand-edited, or written by an older schema. Treat a
+    malformed per-code record as absent; cleanup will later reap it if it is
+    still present.
+    """
+    try:
+        if not isinstance(raw, dict):
+            return None
+
+        required = {
+            "code", "kind", "title", "preview", "session_key", "state",
+            "created_ts", "deadline_ts", "max_deadline_ts",
+        }
+        if not required.issubset(raw):
+            return None
+
+        normalized = dict(raw)
+        for key in ("created_ts", "deadline_ts", "max_deadline_ts"):
+            value = _finite_number(normalized.get(key))
+            if value is None:
+                return None
+            normalized[key] = value
+
+        if normalized.get("decision_ts") is not None:
+            decision_ts = _finite_number(normalized.get("decision_ts"))
+            if decision_ts is None:
+                return None
+            normalized["decision_ts"] = decision_ts
+
+        for key in ("code", "kind", "title", "preview", "session_key", "state"):
+            if not isinstance(normalized.get(key), str):
+                return None
+
+        if normalized["state"] not in {
+            "pending", "denied", "extended", "approved", "expired", "resolved",
+        }:
+            return None
+
+        decision = normalized.get("decision")
+        if decision is not None and decision not in {"deny", "extend", "approve"}:
+            return None
+
+        allowed_actions = normalized.get("allowed_actions")
+        if allowed_actions is not None:
+            if not isinstance(allowed_actions, list) or not all(
+                isinstance(item, str) for item in allowed_actions
+            ):
+                return None
+
+        for key in ("decision_source", "risk_level", "approve_tier", "approve_token"):
+            if key in normalized and not isinstance(normalized.get(key), str):
+                return None
+        if normalized.get("approve_tier", "none") not in {"", "none", "one_tap", "typed_confirm"}:
+            return None
+
+        return PendingIntervention.from_dict(normalized)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _is_past_action_deadline(rec: PendingIntervention, now: float) -> bool:
+    """Return True when no remote action may be applied anymore.
+
+    Both deadlines are enforced at the store boundary: the current prompt
+    deadline and the absolute max-total-wait guard. This keeps the cap
+    server-side even if a stale/tampered record carries an overlong
+    ``deadline_ts``.
+    """
+    return (
+        now > rec.deadline_ts + GRACE_SECONDS
+        or now > rec.max_deadline_ts + GRACE_SECONDS
+    )
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -212,6 +300,10 @@ def create_pending_intervention(
             token = ""
 
         now = _now()
+        timeout_seconds = max(0, int(timeout_seconds))
+        max_wait_seconds = max(0, int(max_total_wait_minutes) * 60)
+        max_deadline_ts = now + max_wait_seconds
+        deadline_ts = now + min(timeout_seconds, max_wait_seconds)
         rec = PendingIntervention(
             code=code,
             kind=kind,
@@ -220,8 +312,8 @@ def create_pending_intervention(
             session_key=session_key,
             state="pending",
             created_ts=now,
-            deadline_ts=now + timeout_seconds,
-            max_deadline_ts=now + max_total_wait_minutes * 60,
+            deadline_ts=deadline_ts,
+            max_deadline_ts=max_deadline_ts,
             decision=None,
             decision_ts=None,
             decision_source="",
@@ -242,7 +334,7 @@ def get_pending_intervention(code: str) -> PendingIntervention | None:
         raw = records.get(code)
         if raw is None:
             return None
-        return PendingIntervention.from_dict(raw)
+        return _record_from_raw(raw)
 
 
 def _action_allowed(rec: PendingIntervention, action: str) -> bool:
@@ -267,7 +359,7 @@ def set_remote_decision(
 
     Returns ``(ok, reason, record_or_None)``. On failure ``reason`` is one of
     ``not_found`` / ``expired`` / ``action_not_allowed`` / ``already_resolved``
-    / ``approve_not_allowed`` / ``bad_token``.
+    / ``approve_not_allowed`` / ``bad_token`` / ``invalid_minutes``.
 
     ``deny`` and ``extend`` keep the phase-1 ``_action_allowed`` gate.
     ``approve`` is gated separately on the record's ``approve_tier`` (it is
@@ -281,7 +373,11 @@ def set_remote_decision(
         if raw is None:
             return (False, "not_found", None)
 
-        rec = PendingIntervention.from_dict(raw)
+        rec = _record_from_raw(raw)
+        if rec is None:
+            records.pop(code, None)
+            _save_records(records)
+            return (False, "not_found", None)
 
         if action == "approve":
             # Tier gate — approve is opt-in per record, not via _action_allowed.
@@ -293,7 +389,7 @@ def set_remote_decision(
                 return (False, "already_resolved", rec)
 
             now = _now()
-            if now > rec.deadline_ts + GRACE_SECONDS:
+            if _is_past_action_deadline(rec, now):
                 return (False, "expired", rec)
 
             if tier == "typed_confirm":
@@ -316,7 +412,7 @@ def set_remote_decision(
             return (False, "already_resolved", rec)
 
         now = _now()
-        if now > rec.deadline_ts + GRACE_SECONDS:
+        if _is_past_action_deadline(rec, now):
             return (False, "expired", rec)
 
         reason = "ok"
@@ -327,6 +423,12 @@ def set_remote_decision(
             rec.decision_source = source
         elif action == "extend":
             mins = DEFAULT_EXTEND_MINUTES if minutes is None else minutes
+            try:
+                mins = int(mins)
+            except (TypeError, ValueError):
+                return (False, "invalid_minutes", rec)
+            if mins <= 0:
+                return (False, "invalid_minutes", rec)
             new_deadline = rec.deadline_ts + mins * 60
             if new_deadline >= rec.max_deadline_ts:
                 new_deadline = rec.max_deadline_ts
@@ -368,7 +470,17 @@ def consume_remote_decision(code: str) -> PendingIntervention | None:
         if raw is None:
             return None
 
-        rec = PendingIntervention.from_dict(raw)
+        rec = _record_from_raw(raw)
+        if rec is None:
+            records.pop(code, None)
+            _save_records(records)
+            return None
+
+        if _is_past_action_deadline(rec, _now()):
+            rec.state = "expired"
+            records[code] = rec.to_dict()
+            _save_records(records)
+            return None
 
         if rec.state in ("denied", "approved"):
             snapshot = PendingIntervention.from_dict(rec.to_dict())
@@ -378,6 +490,11 @@ def consume_remote_decision(code: str) -> PendingIntervention | None:
             return snapshot
 
         if rec.state == "extended":
+            # Treat the absolute max deadline as a store-side invariant even
+            # for stale/tampered records. The CLI consumes this wall-clock
+            # value directly, so never hand back an overlong deadline.
+            if rec.deadline_ts > rec.max_deadline_ts:
+                rec.deadline_ts = rec.max_deadline_ts
             snapshot = PendingIntervention.from_dict(rec.to_dict())
             rec.state = "pending"
             rec.decision = None
@@ -401,9 +518,8 @@ def cleanup_expired() -> int:
         now = _now()
         to_remove = []
         for code, raw in records.items():
-            try:
-                rec = PendingIntervention.from_dict(raw)
-            except (TypeError, ValueError):
+            rec = _record_from_raw(raw)
+            if rec is None:
                 to_remove.append(code)
                 continue
             if now > rec.max_deadline_ts + GRACE_SECONDS:

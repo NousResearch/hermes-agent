@@ -1050,6 +1050,109 @@ class TestApprovalRemoteControl:
         assert result["value"] == "once"
         cli._rc_create_pending.assert_not_called()
 
+    def test_approval_poll_errors_do_not_abort_local_prompt(self):
+        cli = _make_cli_stub()
+        cli._remote_intervention_settings = lambda: {
+            "enabled": True,
+            "allow_deny": True,
+            "allow_extend": True,
+            "max_total_wait_minutes": 15,
+            "risk_explanation": {
+                "enabled": False,
+                "only_for_risk_levels": ["high", "critical"],
+            },
+        }
+        cli._rc_create_pending = MagicMock(
+            return_value=SimpleNamespace(code="3131")
+        )
+        cli._rc_cleanup = MagicMock(return_value=0)
+        calls = {"n": 0}
+
+        def _flaky_consume(_code):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("store temporarily unavailable")
+            return None
+
+        cli._rc_consume = MagicMock(side_effect=_flaky_consume)
+
+        result = {}
+
+        def _run_callback():
+            result["value"] = cli._approval_callback("rm -rf /tmp/x", "wipe")
+
+        with patch.object(cli_module, "_cprint"), \
+             patch.object(cli_module, "notify_human_intervention", create=True):
+            thread = threading.Thread(target=_run_callback, daemon=True)
+            thread.start()
+            self._wait_for_state(cli)
+            deadline = time.time() + 4
+            while calls["n"] < 1 and time.time() < deadline:
+                time.sleep(0.02)
+            cli._approval_state["response_queue"].put("once")
+            thread.join(timeout=3)
+
+        assert calls["n"] >= 1
+        assert not thread.is_alive()
+        assert result["value"] == "once"
+
+    def test_poll_remote_intervention_handles_store_errors(self):
+        cli = _make_cli_stub()
+        cli._rc_consume = MagicMock(side_effect=OSError("store unavailable"))
+        current_deadline = time.monotonic() + 30
+
+        signal, source, deadline = cli._poll_remote_intervention("3131", current_deadline)
+
+        assert signal is None
+        assert source == ""
+        assert deadline == current_deadline
+
+    def test_poll_remote_intervention_denies_and_extends_safely(self):
+        cli = _make_cli_stub()
+        current_deadline = time.monotonic() + 30
+        later_wall_deadline = time.time() + 120
+        cli._rc_consume = MagicMock(return_value=SimpleNamespace(
+            decision="extend",
+            decision_source="telegram",
+            deadline_ts=later_wall_deadline,
+        ))
+
+        signal, source, deadline = cli._poll_remote_intervention("3131", current_deadline)
+
+        assert signal == "extend"
+        assert source == "telegram"
+        assert deadline > current_deadline
+
+        cli._rc_consume = MagicMock(return_value=SimpleNamespace(
+            decision="deny",
+            decision_source="telegram",
+        ))
+        signal, source, deadline2 = cli._poll_remote_intervention("3131", deadline)
+        assert signal == "deny"
+        assert source == "telegram"
+        assert deadline2 == deadline
+
+    def test_poll_remote_intervention_rejects_bad_or_non_extend_decisions(self):
+        cli = _make_cli_stub()
+        current_deadline = time.monotonic() + 30
+
+        cli._rc_consume = MagicMock(return_value=SimpleNamespace(
+            decision="extend",
+            deadline_ts="not-a-number",
+        ))
+        assert cli._poll_remote_intervention("3131", current_deadline) == (
+            None, "", current_deadline
+        )
+
+        cli._rc_consume = MagicMock(return_value=SimpleNamespace(
+            decision="approve",
+            deadline_ts=time.time() + 120,
+        ))
+        assert cli._poll_remote_intervention("3131", current_deadline) == (
+            None, "", current_deadline
+        )
+
+
 
 def _make_sudo_clarify_stub():
     """CLI stub wired for sudo + clarify remote-control tests.

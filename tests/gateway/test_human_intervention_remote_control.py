@@ -108,6 +108,63 @@ async def test_iv_extend_defaults_to_15():
 
 
 @pytest.mark.asyncio
+async def test_iv_extend_rejects_non_positive_minutes_before_store():
+    runner = _make_runner()
+    with patch("hermes_cli.config.load_config", return_value=_enabled_config()), \
+         patch(
+             "hermes_cli.human_intervention_remote_control.set_remote_decision",
+         ) as mock_set:
+        result = await runner._handle_intervention_command(_make_event("extend 7392 -5"))
+
+    assert mock_set.call_count == 0
+    assert "分钟" in result
+    assert "正整数" in result
+
+
+@pytest.mark.asyncio
+async def test_iv_extend_reports_max_wait_clamp():
+    runner = _make_runner()
+    with patch("hermes_cli.config.load_config", return_value=_enabled_config()), \
+         patch(
+             "hermes_cli.human_intervention_remote_control.set_remote_decision",
+             return_value=(True, "clamped", None),
+         ):
+        result = await runner._handle_intervention_command(_make_event("extend 7392 120"))
+
+    assert "已延长" in result
+    assert "最大等待上限" in result
+
+
+@pytest.mark.asyncio
+async def test_iv_extend_real_store_clamps_to_max_wait(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    import importlib
+    import hermes_cli.human_intervention_remote_control as hic
+
+    hic = importlib.reload(hic)
+    runner = _make_runner()
+    rec = hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=60,
+        max_total_wait_minutes=2,
+        code="7392",
+    )
+
+    with patch("hermes_cli.config.load_config", return_value=_enabled_config()):
+        result = await runner._handle_intervention_command(_make_event("extend 7392 120"))
+
+    stored = hic.get_pending_intervention("7392")
+    assert "已延长" in result
+    assert "最大等待上限" in result
+    assert stored is not None
+    assert stored.deadline_ts == pytest.approx(rec.max_deadline_ts)
+    assert stored.deadline_ts <= rec.created_ts + 2 * 60
+
+
+@pytest.mark.asyncio
 async def test_iv_status_reports_state():
     runner = _make_runner()
     rec = SimpleNamespace(

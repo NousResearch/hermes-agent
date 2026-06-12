@@ -14615,6 +14615,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "expired": "该等待项已超时。",
                 "already_resolved": "该等待项已处理。",
                 "action_not_allowed": "该操作不被允许。",
+                "invalid_minutes": "延长分钟必须是正整数。",
             }.get(reason, f"操作失败：{reason}。")
 
         try:
@@ -14657,7 +14658,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 try:
                     minutes = int(tokens[2])
                 except (TypeError, ValueError):
-                    minutes = 15
+                    return "延长分钟必须是正整数。"
+                if minutes <= 0:
+                    return "延长分钟必须是正整数。"
             ok, reason, _rec = set_remote_decision(
                 code, "extend", minutes=minutes, source=platform_name or "mobile"
             )

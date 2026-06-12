@@ -135,6 +135,181 @@ def test_set_remote_decision_extend_bounded(hic):
     assert max_deadline == pytest.approx(created + 15 * 60)
 
 
+def test_create_clamps_initial_deadline_to_max_total_wait(hic, monkeypatch):
+    base = 1_000_000.0
+    monkeypatch.setattr(hic, "_now", lambda: base)
+
+    rec = hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=10 * 60,
+        max_total_wait_minutes=2,
+        code="3334",
+    )
+
+    assert rec.max_deadline_ts == pytest.approx(base + 2 * 60)
+    assert rec.deadline_ts == pytest.approx(rec.max_deadline_ts)
+
+
+def test_extend_rejects_non_positive_minutes(hic):
+    rec = hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=60,
+        max_total_wait_minutes=15,
+        code="3335",
+    )
+
+    for minutes in (0, -5):
+        ok, reason, updated = hic.set_remote_decision(
+            "3335", "extend", minutes=minutes
+        )
+        assert ok is False
+        assert reason == "invalid_minutes"
+        assert updated is not None
+        assert updated.deadline_ts == pytest.approx(rec.deadline_ts)
+
+
+def test_remote_actions_rejected_after_max_total_wait_even_if_deadline_tampered(hic, monkeypatch):
+    rec = hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=60,
+        max_total_wait_minutes=1,
+        code="3336",
+        approve_tier="one_tap",
+    )
+    records = hic._load_records()
+    records["3336"]["deadline_ts"] = rec.max_deadline_ts + 24 * 60 * 60
+    hic._save_records(records)
+
+    monkeypatch.setattr(
+        hic, "_now", lambda: rec.max_deadline_ts + hic.GRACE_SECONDS + 1
+    )
+
+    ok, reason, _ = hic.set_remote_decision("3336", "deny")
+    assert ok is False
+    assert reason == "expired"
+
+    ok, reason, _ = hic.set_remote_decision("3336", "approve")
+    assert ok is False
+    assert reason == "expired"
+
+
+def test_malformed_record_does_not_crash_decision_or_consume(hic):
+    hic._save_records({"3337": {"code": "3337", "state": "pending"}})
+
+    ok, reason, rec = hic.set_remote_decision("3337", "deny")
+
+    assert ok is False
+    assert reason == "not_found"
+    assert rec is None
+    assert hic.consume_remote_decision("3337") is None
+
+
+def test_bad_typed_record_does_not_crash_decision_consume_or_cleanup(hic):
+    hic._save_records({
+        "3338": {
+            "code": "3338",
+            "kind": "approval",
+            "title": "t",
+            "preview": "p",
+            "session_key": "s",
+            "state": "extended",
+            "created_ts": 1_000_000.0,
+            "deadline_ts": "not-a-number",
+            "max_deadline_ts": 1_000_120.0,
+            "decision": "extend",
+        }
+    })
+
+    ok, reason, rec = hic.set_remote_decision("3338", "deny")
+
+    assert ok is False
+    assert reason == "not_found"
+    assert rec is None
+    assert hic.consume_remote_decision("3338") is None
+
+    hic._save_records({
+        "3338b": {
+            "code": "3338b",
+            "kind": "approval",
+            "title": "t",
+            "preview": "p",
+            "session_key": "s",
+            "state": "extended",
+            "created_ts": 1_000_000.0,
+            "deadline_ts": "not-a-number",
+            "max_deadline_ts": 1_000_120.0,
+            "decision": "extend",
+        }
+    })
+    assert hic.cleanup_expired() == 1
+
+
+def test_consume_clamps_tampered_extended_deadline_to_max(hic, monkeypatch):
+    rec = hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=60,
+        max_total_wait_minutes=2,
+        code="3339",
+    )
+    records = hic._load_records()
+    records["3339"].update({
+        "state": "extended",
+        "decision": "extend",
+        "deadline_ts": rec.max_deadline_ts + 24 * 60 * 60,
+    })
+    hic._save_records(records)
+    monkeypatch.setattr(hic, "_now", lambda: rec.created_ts + 30)
+
+    consumed = hic.consume_remote_decision("3339")
+
+    assert consumed is not None
+    assert consumed.decision == "extend"
+    assert consumed.deadline_ts == pytest.approx(rec.max_deadline_ts)
+    stored = hic.get_pending_intervention("3339")
+    assert stored is not None
+    assert stored.state == "pending"
+    assert stored.deadline_ts == pytest.approx(rec.max_deadline_ts)
+
+
+def test_consume_rejects_decision_after_max_total_wait(hic, monkeypatch):
+    rec = hic.create_pending_intervention(
+        kind="approval",
+        title="t",
+        preview="p",
+        session_key="s",
+        timeout_seconds=60,
+        max_total_wait_minutes=1,
+        code="3340",
+    )
+    records = hic._load_records()
+    records["3340"].update({
+        "state": "extended",
+        "decision": "extend",
+        "deadline_ts": rec.max_deadline_ts + 24 * 60 * 60,
+    })
+    hic._save_records(records)
+    monkeypatch.setattr(
+        hic, "_now", lambda: rec.max_deadline_ts + hic.GRACE_SECONDS + 1
+    )
+
+    assert hic.consume_remote_decision("3340") is None
+    stored = hic.get_pending_intervention("3340")
+    assert stored is not None
+    assert stored.state == "expired"
+
+
 def test_expired_token_cannot_be_denied(hic, monkeypatch):
     hic.create_pending_intervention(
         kind="approval",

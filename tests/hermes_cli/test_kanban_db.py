@@ -1711,15 +1711,71 @@ def test_respawn_guard_stale_success_not_guarded(kanban_home):
 
 
 def test_respawn_guard_active_pr_in_comment(kanban_home):
-    """A GitHub PR URL in a recent comment triggers active_pr."""
+    """A GitHub PR URL posted AFTER the card's own worker spawned triggers
+    active_pr (real anti-duplicate-PR case: impl worker ran, opened a PR,
+    and a respawn would open a second one)."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
+        # This card's own worker actually spawned (prior run) ...
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'spawned', ?)",
+            (t, int(time.time()) - 120),
+        )
+        # ... and then opened a PR.
         kb.add_comment(
             conn, t, "worker",
             "PR created: https://github.com/totemx-AI/subsidysmart/pull/42",
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "active_pr"
+
+
+def test_respawn_guard_active_pr_handoff_before_first_spawn_not_guarded(
+    kanban_home,
+):
+    """Deadlock regression (2026-06-12, ТЗ-2 reviewer t_350540c9): a card with
+    a PR URL in a comment but NO prior `spawned` event of its own must NOT be
+    guarded. The impl worker posts a handoff comment ("PR: …/pull/N") onto the
+    reviewer/merge-gate CHILD card before that child ever runs; guarding on it
+    permanently deadlocked the child (stuck `ready`, repeating respawn_guarded
+    {active_pr}, never claimed)."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reviewer-child", assignee="reviewer")
+        # Handoff comment from the parent impl worker — references the PR the
+        # reviewer must look at. The child itself has NEVER spawned.
+        kb.add_comment(
+            conn, t, "ultracode",
+            "implementation handoff for review\n\n"
+            "PR: https://github.com/totemx-AI/subsidysmart/pull/457",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_respawn_guard_active_pr_comment_predating_spawn_not_guarded(
+    kanban_home,
+):
+    """A PR-URL comment posted BEFORE the card's first spawn is a handoff, not
+    the card's own PR, so it must not guard even when a later spawn exists."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="late-spawn", assignee="reviewer")
+        now = int(time.time())
+        # Handoff PR comment arrives first ...
+        conn.execute(
+            "INSERT INTO task_comments (task_id, author, body, created_at) "
+            "VALUES (?, 'ultracode', "
+            "'PR: https://github.com/totemx-AI/subsidysmart/pull/457', ?)",
+            (t, now - 300),
+        )
+        # ... then the card's own worker spawns later, opening no new PR.
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'spawned', ?)",
+            (t, now - 60),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
 
 
 def test_respawn_guard_old_pr_comment_not_guarded(kanban_home):
@@ -1811,7 +1867,8 @@ def test_dispatch_respawn_guard_skips_recent_success(
 def test_dispatch_respawn_guard_skips_active_pr(
     kanban_home, all_assignees_spawnable
 ):
-    """dispatch_once skips (but does not block) a task with an active PR comment."""
+    """dispatch_once skips (but does not block) a task whose OWN worker spawned
+    and then opened a PR (real anti-duplicate-PR case)."""
     spawned_ids = []
 
     def fake_spawn(task, workspace):
@@ -1819,6 +1876,11 @@ def test_dispatch_respawn_guard_skips_active_pr(
 
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, created_at) "
+            "VALUES (?, 'spawned', ?)",
+            (t, int(time.time()) - 120),
+        )
         kb.add_comment(
             conn, t, "worker",
             "Opened https://github.com/totemx-AI/subsidysmart/pull/99",
@@ -1830,6 +1892,31 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_active_pr_handoff_spawns_child(
+    kanban_home, all_assignees_spawnable
+):
+    """Deadlock regression: a fresh child card carrying only a handoff PR
+    comment (no prior spawn of its own) MUST be spawned by dispatch_once,
+    not guarded as active_pr."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="reviewer-child", assignee="alice")
+        kb.add_comment(
+            conn, t, "ultracode",
+            "implementation handoff for review\n\n"
+            "PR: https://github.com/totemx-AI/subsidysmart/pull/457",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert (t, "active_pr") not in res.respawn_guarded
+    assert t in spawned_ids
+    assert t not in res.auto_blocked
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

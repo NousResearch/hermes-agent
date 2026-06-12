@@ -1344,7 +1344,7 @@ class TestAdjustSplitForMarkdownTable:
         split_at = text.index("\n  |---|")
         result = BasePlatformAdapter._adjust_split_for_markdown_table(text, split_at)
         # Walks back to the newline before the indented header row
-        assert result == text.index("\n  | Header |") + 1  # +1 = | position
+        assert result == text.index("\n  | Header |") + 1  # +1 = first char after newline
 
     def test_indented_table_data_row(self):
         text = "before\n  | Hdr |\n  |---|\n  | data |\nmore"
@@ -1352,7 +1352,7 @@ class TestAdjustSplitForMarkdownTable:
         split_at = text.index("| data |") + 3
         result = BasePlatformAdapter._adjust_split_for_markdown_table(text, split_at)
         # Walks back to the newline before the data row
-        assert result == text.index("\n  | data |") + 1  # +1 = | position
+        assert result == text.index("\n  | data |") + 1  # +1 = first char after newline
 
     # ── Table at position 0 ─────────────────────────────────────
 

@@ -4735,7 +4735,9 @@ class BasePlatformAdapter(ABC):
         between pipes is a dash, colon, or whitespace."""
         if not (line.startswith("|") and line.count("|") >= 2):
             return False
-        _inner = line.strip("|").replace(" ", "")
+        _inner = line.strip("|")
+        # Strip all whitespace (spaces, tabs, non-breaking spaces, etc.)
+        _inner = re.sub(r"\s", "", _inner)
         return all(c in "-:|" for c in _inner) and "-" in _inner
 
     @staticmethod
@@ -4747,7 +4749,7 @@ class BasePlatformAdapter(ABC):
         and ``\\n  |…``).  Returns the *newline* index (not the ``|``
         position), so callers add ``+ 1`` to skip the newline (producing
         a chunk that ends at the newline and a subsequent chunk that
-        starts with the ``|``, preserving any indentation)."""
+        starts with the table row, preserving any leading indentation)."""
         # Try flush-left first (common case).
         _pos = text.rfind("\n|", 0, end)
         if _pos >= 0:

@@ -2093,6 +2093,7 @@ def delegate_task(
     background: Optional[bool] = None,
     parent_agent=None,
     background: bool = False,
+    timeout_seconds: Optional[float] = None,
 ) -> str:
     """
     Spawn one or more child agents to handle delegated tasks.
@@ -3205,6 +3206,16 @@ DELEGATE_TASK_SCHEMA = {
                     "Capacity is limited by delegation.max_async_children (default 3)."
                 ),
             },
+            "timeout_seconds": {
+                "type": "number",
+                "description": (
+                    "Optional wall-clock deadline for background delegations. "
+                    "If the subagent has not finished within this many seconds after dispatch, "
+                    "it is marked status='timed_out' and evicted. "
+                    "Only honoured when background=True. "
+                    "Omit to disable (default: no timeout)."
+                ),
+            },
         },
         "required": [],
     },
@@ -3247,6 +3258,7 @@ registry.register(
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
         background=args.get("background", False),
+        timeout_seconds=args.get("timeout_seconds"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",

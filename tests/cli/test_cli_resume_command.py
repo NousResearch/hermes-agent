@@ -222,6 +222,22 @@ class TestPendingResumeNumberedSelection:
         # A non-resume command disarms the one-shot prompt (#34584).
         assert cli_obj._pending_resume_sessions is None
 
+    def test_list_recent_sessions_does_not_filter_by_cli_source(self):
+        cli_obj = _make_cli()
+        cli_obj._session_db = MagicMock()
+        cli_obj._session_db.list_sessions_rich.return_value = []
+        cli_obj.session_id = "current_session"
+
+        cli_obj._list_recent_sessions(limit=5)
+
+        # Assert list_sessions_rich was called, and source was NOT passed (or was not "cli")
+        cli_obj._session_db.list_sessions_rich.assert_called_once()
+        kwargs = cli_obj._session_db.list_sessions_rich.call_args[1]
+        assert "source" not in kwargs
+        assert kwargs.get("exclude_sources") == ["tool"]
+        assert kwargs.get("limit") == 5
+
+
 
 class TestRestoreSessionCwdMarkup:
     """Regression: _restore_session_cwd must not crash with Rich MarkupError.

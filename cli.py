@@ -5736,12 +5736,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         print()
     
     def _list_recent_sessions(self, limit: int = 10) -> list[dict[str, Any]]:
-        """Return recent CLI sessions for in-chat browsing/resume affordances."""
+        """Return recent sessions for in-chat browsing/resume affordances."""
         if not self._session_db:
             return []
         try:
             sessions = self._session_db.list_sessions_rich(
-                source="cli",
                 exclude_sources=["tool"],
                 limit=limit,
             )

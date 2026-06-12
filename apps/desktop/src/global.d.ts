@@ -69,6 +69,10 @@ declare global {
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
+      // Resolve git-worktree identity for a batch of session cwds, reading git's
+      // on-disk metadata locally. Returns null per cwd that isn't inside a
+      // checkout (or can't be read — e.g. a remote backend's path).
+      worktrees?: (cwds: string[]) => Promise<Record<string, HermesWorktreeInfo | null>>
       terminal: {
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
@@ -439,6 +443,18 @@ export interface HermesReadFileTextResult {
 export interface HermesPreviewWatch {
   id: string
   path: string
+}
+
+export interface HermesWorktreeInfo {
+  // Main repo root — the shared grouping key for a checkout and all its linked
+  // worktrees.
+  repoRoot: string
+  // This cwd's own worktree root.
+  worktreeRoot: string
+  // True when this is the repo's primary checkout (.git is a directory).
+  isMainWorktree: boolean
+  // Current branch (or short detached-HEAD sha), null when unreadable.
+  branch: null | string
 }
 
 export interface HermesReadDirEntry {

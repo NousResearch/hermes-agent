@@ -29,6 +29,13 @@
 @font-face {
   font-family: 'JetBrains Mono';
   font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Medium.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
   font-weight: 700;
   font-display: swap;
   src: url('./fonts/JetBrainsMono-Bold.woff2') format('woff2');
@@ -419,6 +426,10 @@
   body,
   #root {
     height: 100%;
+    /* App shell, not a document: the window itself never scrolls on either axis
+       (panes own their own scroll). Belt to the auto-scroll axis-lock in the
+       sidebar reorder DnD — nothing can drag the whole shell sideways. */
+    overflow: hidden;
   }
 
   html {
@@ -433,7 +444,6 @@
     font-size: 0.8125rem;
     line-height: var(--dt-line-height, 1.55);
     letter-spacing: var(--dt-letter-spacing, 0);
-    overflow: hidden;
     -webkit-user-select: none;
     user-select: none;
     -webkit-font-smoothing: antialiased;
@@ -913,6 +923,17 @@ canvas {
   overflow-y: auto;
   -webkit-mask-image: none;
   mask-image: none;
+}
+
+/* Attachment chips sit above the clamped text. They render normally in flow,
+   but collapse to nothing while the bubble is stuck to the top of the viewport
+   (data-stuck, set by an IntersectionObserver sentinel) so a prompt with
+   attachments can't eat the screen as you scroll past it during a stream. */
+[data-stuck='true'] .sticky-human-attachments {
+  max-height: 0;
+  overflow: hidden;
+  border-bottom-width: 0;
+  padding-bottom: 0;
 }
 
 /* The thread renders items in natural document flow (padding spacers, not

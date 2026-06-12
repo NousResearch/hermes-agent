@@ -81,6 +81,7 @@ import {
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useStuckToTop } from '@/hooks/use-stuck-to-top'
 import { useI18n } from '@/i18n'
 import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
@@ -708,11 +709,18 @@ function messageAttachmentRefs(value: unknown): string[] {
 }
 
 function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null)
+  // --sticky-human-top is 0.23rem (~4px); the sentinel trips when the bubble
+  // parks there. Collapses sticky attachments via [data-stuck] (see styles.css).
+  const stuck = useStuckToTop(ref, 4)
+
   return (
     <div
       className="group/user-message sticky z-40 -mx-4 flex w-[calc(100%+2rem)] min-w-0 max-w-none flex-col items-stretch gap-0 self-end overflow-visible bg-(--ui-chat-surface-background) px-4 pb-(--conversation-turn-gap) pt-2"
       data-role="user"
       data-slot="aui_user-message-root"
+      data-stuck={stuck ? 'true' : undefined}
+      ref={ref}
     >
       {children}
     </div>
@@ -857,8 +865,12 @@ const UserMessage: FC<{
 
   const bubbleContent = (
     <>
+      {/* Attachments collapse to nothing while the bubble rests (incl. stuck at
+          the top of the viewport) so a message with attachments doesn't eat the
+          screen; they expand with the body when the bubble is focused / the edit
+          composer opens (see styles.css .sticky-human-attachments). */}
       {attachmentRefs.length > 0 && (
-        <span className="-mx-1 flex flex-wrap gap-1 border-b border-border/45 pb-1.5">
+        <span className="sticky-human-attachments -mx-1 flex flex-wrap gap-1 border-b border-border/45 pb-1.5">
           <DirectiveContent text={attachmentRefs.join(' ')} />
         </span>
       )}

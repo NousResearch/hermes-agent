@@ -129,8 +129,15 @@ DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
 
 # Minimum context length required to run Hermes Agent.  Models with fewer
 # tokens cannot maintain enough working memory for tool-calling workflows.
-# Sessions, model switches, and cron jobs should reject models below this.
-MINIMUM_CONTEXT_LENGTH = 64_000
+# Configurable via HERMES_MIN_CONTEXT_LENGTH so operators on small local GPU
+# slots (where effective ctx = -c / --parallel can fall below 64k) can lower
+# the floor instead of being hard-rejected at init.  Default unchanged.
+MINIMUM_CONTEXT_LENGTH = int(os.environ.get("HERMES_MIN_CONTEXT_LENGTH", "64000"))
+if MINIMUM_CONTEXT_LENGTH <= 0:
+    raise ValueError(
+        "HERMES_MIN_CONTEXT_LENGTH must be a positive integer, got "
+        f"{MINIMUM_CONTEXT_LENGTH!r}"
+    )
 
 # Thin fallback defaults — only broad model family patterns.
 # These fire only when provider is unknown AND models.dev/OpenRouter/Anthropic

@@ -152,7 +152,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
   }, [])
 
-  const refreshSessions = useCallback(async () => {
+  const refreshSessions = useCallback(async (profileOverride?: string) => {
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
     setSessionsLoading(true)
@@ -171,16 +171,35 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // Scope the fetch to the active profile (not always 'all') so a profile
       // with few recent sessions isn't windowed out of the cross-profile
       // recency page — the empty-history-on-profile-switch bug.
-      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+      // A profile override lets callers (e.g. delete/archive) refresh the
+      // exact profile that just mutated instead of the currently visible one.
+      const sessionProfile = profileOverride ?? (profileScope === ALL_PROFILES ? 'all' : profileScope)
 
       const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: SIDEBAR_EXCLUDED_SOURCES
       })
 
       if (refreshSessionsRequestRef.current === requestId) {
-        setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
-        setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
-        setSessionProfileTotals(result.profile_totals ?? {})
+        if (profileOverride && profileScope === ALL_PROFILES) {
+          // In ALL_PROFILES view, a profile-scoped refresh (e.g. after a
+          // cross-profile delete/archive) must merge only the target profile
+          // in place and preserve every other profile's rows. The fetch only
+          // returned that profile's sessions, so global totals are untouched.
+          const key = normalizeProfileKey(profileOverride)
+          const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
+
+          setSessions(prev => [
+            ...prev.filter(s => !inKey(s)),
+            ...mergeSessionPage(prev.filter(inKey), result.sessions, sessionsToKeep(key))
+          ])
+
+          const total = result.profile_totals?.[key] ?? result.total ?? result.sessions.length
+          setSessionProfileTotals(prev => ({ ...prev, [key]: Math.max(total, result.sessions.length) }))
+        } else {
+          setSessions(prev => mergeSessionPage(prev, result.sessions, sessionsToKeep()))
+          setSessionsTotal(typeof result.total === 'number' ? result.total : result.sessions.length)
+          setSessionProfileTotals(result.profile_totals ?? {})
+        }
       }
     } finally {
       if (refreshSessionsRequestRef.current === requestId) {

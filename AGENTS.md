@@ -286,6 +286,24 @@ Applies to TypeScript across Hermes: desktop, TUI, website, and future TS packag
 - `src/store` owns shared atoms.
 - `src/lib` owns shared pure helpers.
 
+## Maintainer Sweep Safety Pattern
+
+When doing GitHub maintenance, backlog cleanup, PR sweeps, guarded merge trains,
+or other agentic development operations in this repo, use the bundled
+`maintainer-sweep` skill and the ClawSweeper/Clownfish-style boundary:
+
+- LLM/Hermes/Codex workers produce proposals, reports, plans, and patches; they
+  do not directly comment, close, push, or merge from model judgment.
+- Start with a read-only durable sweep when operating on a backlog:
+  `python scripts/maintainer_sweep.py --repo OWNER/REPO --state-dir .hermes/maintainer --limit 50`.
+- Treat `.hermes/maintainer/repos/<repo>/items/*.md`, `dashboard.md`, and
+  `ledger.jsonl` as audit evidence, not permission to mutate GitHub.
+- A deterministic applicator or human must re-fetch live GitHub state and verify
+  authorization, branch/head/base, CI, mergeability, labels, and explicit allow
+  gates immediately before every public write.
+- Keep security, secrets, privacy, destructive infrastructure, and financial or
+  broker/live-execution changes human-gated.
+
 ## File Dependency Chain
 
 ```

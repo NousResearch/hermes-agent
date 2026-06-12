@@ -5,7 +5,14 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import (
+    do_check,
+    do_install,
+    do_list,
+    do_update,
+    do_well_known,
+    handle_skills_slash,
+)
 
 
 class _DummyLockFile:
@@ -65,7 +72,7 @@ def three_source_env(monkeypatch, hub_env):
 def _capture(source_filter: str = "all") -> str:
     """Run do_list into a string buffer and return the output."""
     sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
     do_list(source_filter=source_filter, console=console)
     return sink.getvalue()
 
@@ -74,7 +81,7 @@ def _capture_check(monkeypatch, results, name=None) -> str:
     import tools.skills_hub as hub
 
     sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
     monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: results)
     do_check(name=name, console=console)
     return sink.getvalue()
@@ -85,7 +92,7 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
     import hermes_cli.skills_hub as cli_hub
 
     sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
     installs = []
 
     monkeypatch.setattr(hub, "check_for_skill_updates", lambda **_kwargs: results)
@@ -192,7 +199,7 @@ def test_do_list_enabled_only_hides_disabled(three_source_env, monkeypatch):
         lambda platform=None: {"hub-skill"},
     )
     sink = StringIO()
-    console = Console(file=sink, force_terminal=False, color_system=None)
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
     do_list(enabled_only=True, console=console)
     output = sink.getvalue()
 
@@ -247,6 +254,99 @@ def test_do_update_reinstalls_outdated_skills(monkeypatch):
 
     assert installs == [("skills-sh/example/repo/hub-skill", "category", True)]
     assert "Updated 1 skill" in output
+
+
+def test_do_well_known_list_renders_configured_sources(monkeypatch, tmp_path):
+    import tools.skills_hub as hub
+
+    class _Manager:
+        def list_sources(self, include_disabled=True):
+            return [{
+                "name": "Internal Skill Hub",
+                "base_url": "https://hub.example.com",
+                "description": "Private skills",
+                "enabled": True,
+                "trust_level": "community",
+            }]
+
+    monkeypatch.setattr(hub, "WellKnownSourcesManager", lambda: _Manager())
+    monkeypatch.setattr(hub, "WELL_KNOWN_SOURCES_FILE", tmp_path / "well-known-sources.json")
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+
+    do_well_known("list", console=console)
+
+    output = sink.getvalue()
+    assert "Internal Skill Hub" in output
+    assert "https://hub.example.com" in output
+    assert "enabled" in output
+
+
+def test_do_well_known_add_persists_source(monkeypatch):
+    import tools.skills_hub as hub
+
+    calls = []
+
+    class _Manager:
+        def add(self, base_url, *, name="", description="", trust_level="community", enabled=True):
+            calls.append({
+                "base_url": base_url,
+                "name": name,
+                "description": description,
+                "trust_level": trust_level,
+                "enabled": enabled,
+            })
+            return True
+
+    monkeypatch.setattr(hub, "WellKnownSourcesManager", lambda: _Manager())
+
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None, width=200)
+
+    do_well_known(
+        "add",
+        base_url="https://hub.example.com",
+        name="Internal Skill Hub",
+        description="Private skills",
+        trust_level="trusted",
+        enabled=False,
+        console=console,
+    )
+
+    assert calls == [{
+        "base_url": "https://hub.example.com",
+        "name": "Internal Skill Hub",
+        "description": "Private skills",
+        "trust_level": "trusted",
+        "enabled": False,
+    }]
+    assert "Added well-known skill hub" in sink.getvalue()
+
+
+def test_handle_skills_slash_routes_well_known_add(monkeypatch):
+    calls = []
+
+    def _fake_do_well_known(action, **kwargs):
+        calls.append((action, kwargs))
+
+    monkeypatch.setattr("hermes_cli.skills_hub.do_well_known", _fake_do_well_known)
+
+    handle_skills_slash(
+        "/skills well-known add https://hub.example.com --name internal --trust-level trusted --disabled"
+    )
+
+    assert len(calls) == 1
+    action, kwargs = calls[0]
+    assert action == "add"
+    assert kwargs.pop("console") is not None
+    assert kwargs == {
+        "base_url": "https://hub.example.com",
+        "name": "internal",
+        "description": "",
+        "trust_level": "trusted",
+        "enabled": False,
+    }
 
 
 def test_handle_skills_slash_search_accepts_chatconsole_without_status_errors():
@@ -780,4 +880,3 @@ def test_do_search_json_flag_emits_full_identifiers(capsys):
     assert payload[0]["source"] == "browse-sh"
     # Table render must be suppressed — sink should be empty (no "Searching for:" header).
     assert "Searching for:" not in sink.getvalue()
-

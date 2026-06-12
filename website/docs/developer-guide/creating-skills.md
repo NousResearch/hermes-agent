@@ -436,3 +436,12 @@ Hermes can now consume third-party skills from multiple external discovery model
 - well-known endpoints served from `/.well-known/skills/index.json`
 
 If you want your skills to be discoverable without a GitHub-specific installer, consider serving them from a well-known endpoint in addition to publishing them in a repo or marketplace.
+
+For private or self-hosted well-known hubs, users can persist the source once:
+
+```bash
+hermes skills well-known add https://skills.example.com --name internal
+hermes skills search deploy --source well-known
+```
+
+The same configuration can be managed directly at `~/.hermes/skills/.hub/well-known-sources.json` under a top-level `sources` array with `name`, `base_url`, `description`, `enabled`, and `trust_level` fields.

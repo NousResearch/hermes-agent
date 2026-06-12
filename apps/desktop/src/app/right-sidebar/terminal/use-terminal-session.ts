@@ -333,7 +333,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       cursorBlink: true,
       fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
-      fontWeight: '400',
+      fontWeight: '500',
       fontWeightBold: '700',
       letterSpacing: 0,
       lineHeight: 1.12,
@@ -617,10 +617,12 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       startSession()
     }
 
-    // fonts.ready settles only already-requested faces; bold/italic aren't asked
-    // for until styled output paints (past atlas init), so warm them up front.
+    // fonts.ready settles only already-requested faces; the regular (500),
+    // bold (700) and italic aren't asked for until styled output paints (past
+    // atlas init), so warm them up front — otherwise the WebGL atlas bakes a
+    // fallback face and the terminal renders thin until a repaint.
     const warm = document.fonts?.load
-      ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
+      ? Promise.allSettled(['500', '700', 'italic 500'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
       : Promise.resolve()
 
     void warm.then(mount, mount)

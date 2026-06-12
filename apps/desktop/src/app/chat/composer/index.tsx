@@ -1741,7 +1741,6 @@ export function ChatBar({
                 'group/composer-surface relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out focus-within:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
                 COMPOSER_DROP_FADE_CLASS,
                 'group-has-data-[state=open]/composer:border-t-transparent',
-                'group-data-[status-stack]/composer:border-t-transparent',
                 dragActive && COMPOSER_DROP_ACTIVE_CLASS
               )}
               data-slot="composer-surface"

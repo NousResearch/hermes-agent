@@ -533,7 +533,7 @@ def compress_context(
             agent._session_db_created = False
             agent._session_db.create_session(
                 session_id=agent.session_id,
-                source=agent.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+                source=os.environ.get("HERMES_SESSION_SOURCE") or agent.platform or "cli",
                 model=agent.model,
                 model_config=agent._session_init_model_config,
                 parent_session_id=old_session_id,

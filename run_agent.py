@@ -510,7 +510,7 @@ class AIAgent:
         """Create session DB row on first use. Disables _session_db on failure."""
         if self._session_db_created or not self._session_db:
             return
-        source = self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli")
+        source = os.environ.get("HERMES_SESSION_SOURCE") or self.platform or "cli"
         try:
             self._session_db.create_session(
                 session_id=self.session_id,

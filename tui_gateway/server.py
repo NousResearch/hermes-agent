@@ -5328,35 +5328,37 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             prompt = text
 
             if isinstance(prompt, str) and "@" in prompt:
-                from agent.context_references import preprocess_context_references
-                from agent.model_metadata import get_model_context_length
+                from agent.context_references import preprocess_context_references, REFERENCE_PATTERN
 
-                ctx_len = get_model_context_length(
-                    getattr(agent, "model", "") or _resolve_model(),
-                    base_url=getattr(agent, "base_url", "") or "",
-                    api_key=getattr(agent, "api_key", "") or "",
-                    provider=getattr(agent, "provider", "") or "",
-                    config_context_length=getattr(
-                        agent, "_config_context_length", None
-                    ),
-                )
-                ctx = preprocess_context_references(
-                    prompt,
-                    cwd=cwd,
-                    allowed_root=cwd,
-                    context_length=ctx_len,
-                )
-                if ctx.blocked:
-                    _emit(
-                        "error",
-                        sid,
-                        {
-                            "message": "\n".join(ctx.warnings)
-                            or "Context injection refused."
-                        },
+                if REFERENCE_PATTERN.search(prompt):
+                    from agent.model_metadata import get_model_context_length
+
+                    ctx_len = get_model_context_length(
+                        getattr(agent, "model", "") or _resolve_model(),
+                        base_url=getattr(agent, "base_url", "") or "",
+                        api_key=getattr(agent, "api_key", "") or "",
+                        provider=getattr(agent, "provider", "") or "",
+                        config_context_length=getattr(
+                            agent, "_config_context_length", None
+                        ),
                     )
-                    return
-                prompt = ctx.message
+                    ctx = preprocess_context_references(
+                        prompt,
+                        cwd=cwd,
+                        allowed_root=cwd,
+                        context_length=ctx_len,
+                    )
+                    if ctx.blocked:
+                        _emit(
+                            "error",
+                            sid,
+                            {
+                                "message": "\n".join(ctx.warnings)
+                                or "Context injection refused."
+                            },
+                        )
+                        return
+                    prompt = ctx.message
 
             # Decide image routing per-turn based on active provider/model.
             # "native" → pass pixels to the main model as OpenAI-style content

@@ -150,6 +150,11 @@ _AUTO_FOCUS_MAX_CHARS = 700
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
 
+# MEDIA delivery directives must not reach the summarizer — if one leaks into
+# the summary, the downstream model may re-emit it as an active directive on
+# the next turn, triggering bogus attachment sends (#14665).
+_MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
+
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
     value = value.strip()
@@ -1006,16 +1011,11 @@ class ContextCompressor(ContextEngine):
         (API keys, tokens, passwords) from leaking into the summary that
         gets sent to the auxiliary model and persisted across compactions.
         """
-        # Strip MEDIA directives before sending to the summarizer — if they
-        # leak into the summary, the downstream model may re-emit them as
-        # active directives on the next turn (#14665).
-        _MEDIA_RE = re.compile(r'MEDIA:\S+')
-
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
             content = redact_sensitive_text(msg.get("content") or "")
-            content = _MEDIA_RE.sub("[media attachment]", content)
+            content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":

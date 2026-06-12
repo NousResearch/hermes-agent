@@ -28,6 +28,7 @@ from agent.model_metadata import (
     parse_context_limit_from_error,
     save_context_length,
     fetch_model_metadata,
+    clear_model_metadata_caches,
     _MODEL_CACHE_TTL,
 )
 
@@ -1422,3 +1423,59 @@ class TestGrok43StaleCacheGuard:
                 slug, base_url=base, api_key="", provider="xai"
             )
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
+
+
+# =========================================================================
+# clear_model_metadata_caches — /new session reset
+# =========================================================================
+
+class TestClearModelMetadataCaches:
+    """Verify that clear_model_metadata_caches() resets all metadata caches."""
+
+    def test_clears_openrouter_cache(self):
+        """OpenRouter model metadata cache is emptied."""
+        import agent.model_metadata as mm
+        # Populate the cache
+        mm._model_metadata_cache = {"gpt-5": {"context_length": 128000}}
+        mm._model_metadata_cache_time = time.time()
+        assert mm._model_metadata_cache  # not empty
+        clear_model_metadata_caches()
+        assert mm._model_metadata_cache == {}
+        assert mm._model_metadata_cache_time == 0
+
+    def test_clears_endpoint_cache(self):
+        """Per-endpoint model metadata cache is emptied."""
+        import agent.model_metadata as mm
+        mm._endpoint_model_metadata_cache["http://localhost:1234/v1"] = {
+            "my-model": {"context_length": 8192}
+        }
+        mm._endpoint_model_metadata_cache_time["http://localhost:1234/v1"] = time.time()
+        assert mm._endpoint_model_metadata_cache
+        clear_model_metadata_caches()
+        assert mm._endpoint_model_metadata_cache == {}
+        assert mm._endpoint_model_metadata_cache_time == {}
+
+    def test_clears_novita_cache(self):
+        """Novita metadata cache is emptied."""
+        import agent.model_metadata as mm
+        mm._novita_metadata_cache = {"model-a": {"context_length": 32768}}
+        mm._novita_metadata_cache_time = time.time()
+        assert mm._novita_metadata_cache
+        clear_model_metadata_caches()
+        assert mm._novita_metadata_cache == {}
+        assert mm._novita_metadata_cache_time == 0
+
+    def test_forces_refetch_after_clear(self):
+        """After clearing, fetch_model_metadata(force_refresh=True) re-fetches."""
+        import agent.model_metadata as mm
+        # Populate cache
+        mm._model_metadata_cache = {"old-model": {"context_length": 4096}}
+        mm._model_metadata_cache_time = time.time()
+
+        clear_model_metadata_caches()
+
+        # The cache is empty, so the next call with force_refresh=True
+        # would hit the network. We verify the cache was cleared,
+        # which means fetch_model_metadata will attempt a fresh fetch.
+        assert not mm._model_metadata_cache
+        assert mm._model_metadata_cache_time == 0

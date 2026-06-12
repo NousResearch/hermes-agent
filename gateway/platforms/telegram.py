@@ -664,7 +664,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
                 if direct_topic_id is not None:
                     return {
-                        "message_thread_id": None,
                         "direct_messages_topic_id": int(direct_topic_id),
                     }
                 return {}
@@ -672,7 +671,6 @@ class TelegramAdapter(BasePlatformAdapter):
         direct_topic_id = cls._metadata_direct_messages_topic_id(metadata)
         if direct_topic_id is not None:
             return {
-                "message_thread_id": None,
                 "direct_messages_topic_id": int(direct_topic_id),
             }
         return {"message_thread_id": cls._message_thread_id_for_send(thread_id)}

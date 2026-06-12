@@ -33,6 +33,7 @@ class FakeClient:
         self.notifications_responses: list[dict] = []
         self.responses: list[tuple[Any, dict]] = []
         self.error_responses: list[tuple[Any, int, str]] = []
+        self.request_timeouts: list[tuple[str, float]] = []
         self._initialized = False
         self._closed = False
         self._notifications: list[dict] = []
@@ -47,6 +48,7 @@ class FakeClient:
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = 30.0):
         self.requests.append((method, params or {}))
+        self.request_timeouts.append((method, timeout))
         if self._request_handler is not None:
             return self._request_handler(method, params or {})
         # Sensible defaults for protocol methods used by the session
@@ -160,6 +162,17 @@ class TestLifecycle:
         method, params = next(r for r in client.requests if r[0] == "thread/start")
         assert params["cwd"] == "/tmp"
         assert "permissions" not in params  # see session.ensure_started() comment
+
+    def test_thread_start_uses_slower_startup_timeout(self):
+        client = FakeClient()
+        s = make_session(client)
+        s.ensure_started()
+        timeouts = [
+            timeout
+            for method, timeout in client.request_timeouts
+            if method == "thread/start"
+        ]
+        assert timeouts == [session_mod._THREAD_START_TIMEOUT_SECONDS]
 
     def test_close_idempotent(self):
         client = FakeClient()
@@ -383,6 +396,29 @@ class TestRunTurn:
         assert "model_provider 'azure_foundry' not configured" in r.error
         assert r.should_retire is True
         assert r.final_text == ""
+
+    def test_startup_failure_filters_noisy_stderr_tail(self):
+        client = FakeClient()
+        client.set_stderr_tail([
+            "\x1b[33mWARN\x1b[0m codex_core_plugins::manifest: ignoring interface.defaultPrompt[0]: prompt must be at most 128 characters",
+            "WARN sqlx::query: slow statement: execution time exceeded alert threshold db.statement=\"INSERT INTO logs VALUES (?, ?)\"",
+            "rows_affected=0 rows_returned=0 elapsed_secs=6.7",
+        ])
+
+        def boom(method, params):
+            if method == "thread/start":
+                raise TimeoutError("codex method 'thread/start' timed out after 15s")
+            return {}
+
+        client._request_handler = boom
+        s = make_session(client)
+        r = s.run_turn("hi", turn_timeout=2.0)
+        assert r.error is not None
+        assert "prompt must be at most 128 characters" in r.error
+        assert "sqlx::query" not in r.error
+        assert "db.statement" not in r.error
+        assert "rows_affected" not in r.error
+        assert "noisy Codex stderr line(s) omitted" in r.error
 
     def test_interrupt_during_turn_issues_turn_interrupt(self):
         client = FakeClient()

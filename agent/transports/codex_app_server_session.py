@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass, field
@@ -47,6 +48,19 @@ logger = logging.getLogger(__name__)
 # wedge watchdog, etc.). Small enough to keep error messages legible, large
 # enough to surface a config/provider/auth diagnostic.
 _STDERR_TAIL_LINES = 12
+_STDERR_USER_MAX_LINES = 4
+_STDERR_USER_MAX_LINE_CHARS = 280
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+_NOISY_STDERR_SUBSTRINGS = (
+    "sqlx::query",
+    "db.statement",
+    "rows_affected",
+    "rows_returned",
+    "VALUES (?,",
+)
+
+
+_THREAD_START_TIMEOUT_SECONDS = 45.0
 
 
 # Permission profile mapping mirrors the docstring in PR proposal:
@@ -178,6 +192,31 @@ def _classify_oauth_failure(*parts: str) -> Optional[str]:
     return None
 
 
+def _format_stderr_tail_for_user(lines: list[str]) -> str:
+    """Return a compact, chat-safe diagnostic from Codex stderr lines."""
+    cleaned: list[str] = []
+    omitted = 0
+    for raw_line in lines:
+        line = _ANSI_ESCAPE_RE.sub("", str(raw_line)).replace("\x00", "").strip()
+        if not line:
+            continue
+        if any(marker in line for marker in _NOISY_STDERR_SUBSTRINGS):
+            omitted += 1
+            continue
+        if len(line) > _STDERR_USER_MAX_LINE_CHARS:
+            line = line[: _STDERR_USER_MAX_LINE_CHARS - 15].rstrip() + " [truncated]"
+        if len(cleaned) < _STDERR_USER_MAX_LINES:
+            cleaned.append(line)
+        else:
+            omitted += 1
+
+    if omitted:
+        cleaned.append(
+            f"[{omitted} noisy Codex stderr line(s) omitted; see agent.log]"
+        )
+    return "\n".join(cleaned)
+
+
 @dataclass
 class _ServerRequestRouting:
     """Default policies for codex-side approval requests when no interactive
@@ -268,7 +307,11 @@ class CodexAppServerSession:
         # Users who want a write-capable profile configure it in their
         # ~/.codex/config.toml the same way they would for any codex usage.
         params: dict[str, Any] = {"cwd": self._cwd}
-        result = self._client.request("thread/start", params, timeout=15)
+        result = self._client.request(
+            "thread/start",
+            params,
+            timeout=_THREAD_START_TIMEOUT_SECONDS,
+        )
         # Cross-fill thread.id/sessionId — different codex versions have
         # serialized this under either key. Mirrors openclaw beta.8's
         # tolerance fix so future codex drops/renames don't KeyError us
@@ -359,6 +402,9 @@ class CodexAppServerSession:
         if not joined.strip():
             return base
         redacted = redact_sensitive_text(joined, force=True)
+        redacted = _format_stderr_tail_for_user(redacted.splitlines())
+        if not redacted.strip():
+            return base
         return f"{base}\ncodex stderr (last {len(tail)} lines):\n{redacted}"
 
     # ---------- per-turn ----------

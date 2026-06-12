@@ -1,0 +1,8 @@
+name: completion-auditor
+version: "0.1.0"
+description: "Audit-only completion-claim observer. Records local JSONL evidence-alignment metadata from post_tool_call and post_llm_call without mutating user-visible responses. Disabled by default; enable with `hermes plugins enable completion-auditor`."
+author: NousResearch
+kind: standalone
+hooks:
+  - post_tool_call
+  - post_llm_call

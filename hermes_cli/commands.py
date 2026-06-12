@@ -428,6 +428,20 @@ def _requires_argument(args_hint: str) -> bool:
     return args_hint.strip().startswith("<")
 
 
+def apply_brand(text: str) -> str:
+    """AVOCADO FORK: white-label user-facing command text per profile.
+
+    When HERMES_BRAND_NAME is set in the profile environment (e.g.
+    "Super Agent" for Avocado tenant bots), substitute it for the product
+    name in user-visible strings. No-op when unset, so the default/pilot
+    profiles and upstream behavior are untouched.
+    """
+    brand = os.getenv("HERMES_BRAND_NAME", "").strip()
+    if not brand:
+        return text
+    return text.replace("Hermes Agent", brand).replace("Hermes", brand)
+
+
 def gateway_help_lines() -> list[str]:
     """Generate gateway help text lines from the registry."""
     overrides = _resolve_config_gates()
@@ -443,7 +457,8 @@ def gateway_help_lines() -> list[str]:
                 continue
             alias_parts.append(f"`/{a}`")
         alias_note = f" (alias: {', '.join(alias_parts)})" if alias_parts else ""
-        lines.append(f"`/{cmd.name}{args}` -- {cmd.description}{alias_note}")
+        # AVOCADO FORK: white-label the description for branded profiles.
+        lines.append(f"`/{cmd.name}{args}` -- {apply_brand(cmd.description)}{alias_note}")
     return lines
 
 
@@ -805,7 +820,9 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
     )
     # Drop the cmd_key — Telegram only needs (name, desc) pairs.
     all_commands.extend((n, d) for n, d, _k in entries)
-    return all_commands[:max_commands], hidden_count + hidden_core_count
+    # AVOCADO FORK: white-label menu descriptions for branded profiles.
+    branded = [(n, apply_brand(d)) for n, d in all_commands[:max_commands]]
+    return branded, hidden_count + hidden_core_count
 
 
 def discord_skill_commands(

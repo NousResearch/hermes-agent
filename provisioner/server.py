@@ -177,16 +177,65 @@ def _profile_dir(slug: str) -> Path:
     return HERMES_HOME / "profiles" / slug
 
 
+SOUL_TEMPLATE = """\
+# Super Agent
+
+You are **Super Agent** — the creative AI agent for this user's Avocado AI
+account, made by Avocado AI (avocadoai.co).
+
+## Identity rules
+- Your name is Super Agent. You are a product of Avocado AI.
+- Never mention Hermes, Nous Research, or any underlying framework, model
+  vendor, or infrastructure. If asked what you are or who made you:
+  "I'm Super Agent, your creative AI agent from Avocado AI."
+
+## Personality & style
+- Helpful creative partner: warm, direct, encouraging.
+- Concise and mobile-chat friendly: short messages. No markdown walls,
+  no giant bullet lists unless the user asks for detail.
+
+## How you create
+- Create directly in this conversation: generate images, video, music,
+  and speech with your avocado tools and send the finished asset back
+  here in the chat.
+- Do NOT use storyboard or flow tools unless the user explicitly asks
+  for a storyboard or flow.
+
+{user_section}
+"""
+
+SOUL_KNOWN_USER = """\
+## What you know about this user
+{soul}
+"""
+
+SOUL_FIRST_MEETING = """\
+## First meeting
+You haven't met this user yet. Over the first few messages, naturally
+learn about their business or project, their audience, and the tone and
+style they like — one question at a time, woven into the conversation,
+never as a form or checklist. Remember what you learn.
+"""
+
+
 def _write_profile_files(
     slug: str, *, bot_token: str, telegram_user_id: str,
-    avocado_mcp_key: str,
+    avocado_mcp_key: str, soul: Optional[str] = None,
 ) -> None:
-    """Write config.yaml + .env for a paired tenant profile.
+    """Write config.yaml + .env + SOUL.md for a paired tenant profile.
 
     Mirrors provision-in-container.sh: Avocado MCP scoped to the tenant's
     key, creative-safe toolset only (no terminal/file/code), manual
     approvals, cron denied. No OPENROUTER_API_KEY line — the profile
     inherits the shared fleet key from the Railway service variable.
+
+    Branding: SOUL.md (identity slot #1 of the system prompt) presents the
+    agent as "Super Agent" by Avocado AI — never Hermes/Nous. ``soul`` is
+    the user's saved business/personal profile from the app; when absent,
+    the agent is instructed to interview the user over the first messages.
+    HERMES_BRAND_NAME white-labels /help + the Telegram command menu, and
+    TELEGRAM_HOME_CHANNEL (the paired private chat) suppresses the
+    "set a home channel" onboarding nudge.
     """
     pdir = _profile_dir(slug)
     pdir.mkdir(parents=True, exist_ok=True)
@@ -230,8 +279,18 @@ cron:
     env = (
         f"TELEGRAM_BOT_TOKEN={bot_token}\n"
         f"TELEGRAM_ALLOWED_USERS={telegram_user_id}\n"
+        f"TELEGRAM_HOME_CHANNEL={telegram_user_id}\n"
+        "HERMES_BRAND_NAME=Super Agent\n"
         f"HERMES_MAX_ITERATIONS={MAX_ITER}\n"
         "AUTO_UPDATE=false\n"
+    )
+    soul_clean = (soul or "").strip()[:8000]
+    user_section = (
+        SOUL_KNOWN_USER.format(soul=soul_clean)
+        if soul_clean else SOUL_FIRST_MEETING
+    )
+    (pdir / "SOUL.md").write_text(
+        SOUL_TEMPLATE.format(user_section=user_section), encoding="utf-8",
     )
     (pdir / "config.yaml").write_text(config, encoding="utf-8")
     env_path = pdir / ".env"
@@ -472,12 +531,13 @@ class FleetController:
                       slug, rc, out[-300:])
             return False
 
-        log.info("finalize[%s] 4/6: writing config + env (allowlist locked)", slug)
+        log.info("finalize[%s] 4/6: writing config + env + soul (allowlist locked)", slug)
         _write_profile_files(
             slug,
             bot_token=rec["botToken"],
             telegram_user_id=telegram_user_id,
             avocado_mcp_key=rec["avocadoMcpKey"],
+            soul=rec.get("soul"),
         )
 
         log.info("finalize[%s] 5/6: starting gateway", slug)
@@ -512,11 +572,15 @@ class FleetController:
         except Exception:
             return web.json_response({"ok": False, "error": "invalid json"},
                                      status=400)
+        # Known fields only — anything else in the payload is ignored for
+        # forward-compat (the app may add fields before the fleet does).
         tenant_id = str(body.get("tenantId") or "").strip()
         bot_token = str(body.get("botToken") or "").strip()
         avk = str(body.get("avocadoMcpKey") or "").strip()
         code = str(body.get("pairingCode") or "").strip()
         bot_username = (body.get("botUsername") or None)
+        soul_raw = body.get("soul")
+        soul = str(soul_raw).strip() if isinstance(soul_raw, str) else None
         if not tenant_id or not bot_token or not avk or not code:
             return web.json_response(
                 {"ok": False,
@@ -539,6 +603,7 @@ class FleetController:
                 "botUsername": bot_username,
                 "avocadoMcpKey": avk,
                 "pairingCode": code,
+                "soul": soul,
             })
             self._start_poller(tenant_id)
         log.info("tenant provisioned (unpaired): %s", slug)

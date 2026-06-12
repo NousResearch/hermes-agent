@@ -793,9 +793,11 @@ class GatewaySlashCommandsMixin:
     async def _handle_help_command(self, event: MessageEvent) -> str:
         """Handle /help command - list available commands."""
         from gateway.run import _telegramize_command_mentions
-        from hermes_cli.commands import gateway_help_lines
+        from hermes_cli.commands import apply_brand, gateway_help_lines
         lines = [
-            t("gateway.help.header"),
+            # AVOCADO FORK: apply_brand white-labels the header ("Hermes
+            # Commands") for branded tenant profiles; no-op otherwise.
+            apply_brand(t("gateway.help.header")),
             *gateway_help_lines(),
         ]
         try:

@@ -3357,6 +3357,20 @@ def generate_launchd_plist() -> str:
     )
     prog_args_xml = "\n        ".join(prog_args)
 
+    # Extra environment variables from config: gateway.extra_env (dict)
+    import html as _html
+    raw_config = read_raw_config() or {}
+    extra_env: dict = raw_config.get("gateway", {}).get("extra_env", {}) or {}
+    extra_env_xml = ""
+    for k, v in extra_env.items():
+        k_str = str(k).strip()
+        if not k_str:
+            continue  # skip empty/blank keys — launchd silently ignores them
+        extra_env_xml += (
+            f"        <key>{_html.escape(k_str, quote=True)}</key>\n"
+            f"        <string>{_html.escape(str(v), quote=True)}</string>\n"
+        )
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -3380,7 +3394,7 @@ def generate_launchd_plist() -> str:
         <string>{venv_dir}</string>
         <key>HERMES_HOME</key>
         <string>{hermes_home}</string>
-    </dict>
+{extra_env_xml}    </dict>
 
     <key>LimitLoadToSessionType</key>
     <array>

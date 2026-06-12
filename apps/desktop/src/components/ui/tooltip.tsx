@@ -28,7 +28,7 @@ function TooltipContent({
         // classes). bg-foreground/text-background auto-inverts per theme: white
         // on near-black in light mode, black on white in dark.
         className={cn(
-          'z-[200] w-fit bg-foreground px-1.5 py-1 text-[11px] font-bold leading-none text-background select-none [font-family:Arial,sans-serif]',
+          'z-[200] w-fit bg-foreground px-1.5 py-1 text-[11px] font-bold leading-none text-background select-none font-sans',
           className
         )}
         data-slot="tooltip-content"

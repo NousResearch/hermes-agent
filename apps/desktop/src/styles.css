@@ -1,3 +1,7 @@
+@import '@fontsource/cairo/400.css';
+@import '@fontsource/cairo/500.css';
+@import '@fontsource/cairo/600.css';
+@import '@fontsource/cairo/700.css';
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
 @import 'tw-shimmer';
@@ -8,14 +12,6 @@
 /* Sidebar sections: tall viewports give each its own scroller; compact ones
    (this variant) flatten everything into one shared scroll. See ChatSidebar. */
 @custom-variant compact (@media (max-height: 768px));
-
-@font-face {
-  font-family: 'Collapse';
-  font-style: normal;
-  font-weight: 700;
-  font-display: swap;
-  src: url('../../../node_modules/@nous-research/ui/dist/fonts/Collapse-Bold.woff2') format('woff2');
-}
 
 @theme inline {
   --color-background: var(--dt-background);
@@ -271,7 +267,7 @@
     --dt-user-bubble-border: var(--ui-stroke-tertiary);
 
     --dt-font-sans:
-      'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
+      'Cairo', 'Segoe WPC', 'Segoe UI', -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif,
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     --dt-font-mono:
       'Cascadia Code', 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
@@ -436,7 +432,7 @@
 }
 
 html[dir='rtl'] {
-  font-family: Tahoma, 'Geeza Pro', 'Noto Sans Arabic', Arial, sans-serif;
+  font-family: 'Cairo', sans-serif;
   letter-spacing: 0;
 }
 

@@ -222,7 +222,7 @@ export function ChatBar({
 
   const showHelpHint = draft === '?'
 
-  const { t } = useI18n()
+  const { locale, t } = useI18n()
   const gatewayState = useStore($gatewayState)
   const newSessionPlaceholders = t.composer.newSessionPlaceholders
   const followUpPlaceholders = t.composer.followUpPlaceholders
@@ -237,24 +237,27 @@ export function ChatBar({
   )
 
   const prevSessionIdRef = useRef(sessionId)
+  const prevLocaleRef = useRef(locale)
 
   useEffect(() => {
     const prev = prevSessionIdRef.current
+    const localeChanged = prevLocaleRef.current !== locale
     prevSessionIdRef.current = sessionId
+    prevLocaleRef.current = locale
 
-    if (prev === sessionId) {
+    if (prev === sessionId && !localeChanged) {
       return
     }
 
     // null → id: the new session we're already in just got persisted. Keep the
     // starter we showed instead of swapping to a follow-up under the user.
-    if (prev == null && sessionId) {
+    if (prev == null && sessionId && !localeChanged) {
       return
     }
 
     resetBrowseState(prev)
     setRestingPlaceholder(pickPlaceholder(sessionId ? followUpPlaceholders : newSessionPlaceholders))
-  }, [followUpPlaceholders, newSessionPlaceholders, sessionId])
+  }, [followUpPlaceholders, locale, newSessionPlaceholders, sessionId])
 
   // When the bar is disabled it's because the gateway isn't open. Distinguish a
   // cold start ("Starting Hermes...") from a dropped connection we're trying to
@@ -688,8 +691,7 @@ export function ChatBar({
     // already an arg pick (`/personality alice`), so it commits normally.
     const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
 
-    const expandsToArgs =
-      trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+    const expandsToArgs = trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
 
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
@@ -1113,11 +1115,8 @@ export function ChatBar({
     }
   }
 
-  const stashAt = (
-    scope: string | null,
-    text = draftRef.current,
-    attachments = $composerAttachments.get()
-  ) => stashSessionDraft(scope, text, attachments)
+  const stashAt = (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
+    stashSessionDraft(scope, text, attachments)
 
   // Per-thread draft swap — the composer's only session coupling. Lifecycle
   // never clears composer state; this effect alone stashes on leave, restores

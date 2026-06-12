@@ -52,6 +52,7 @@
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
+    "@fontsource/cairo": "^5.2.7",
     "@hermes/shared": "file:../shared",
     "@icons-pack/react-simple-icons": "^13.13.0",
     "@nanostores/react": "^1.1.0",

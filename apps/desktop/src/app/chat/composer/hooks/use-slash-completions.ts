@@ -5,6 +5,7 @@ import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
+  desktopSkillCommandPairs,
   desktopSkinSlashCompletions,
   desktopSlashDescription,
   type DesktopThemeCommandOption,
@@ -246,36 +247,14 @@ export function useSlashCompletions(options: {
       }
 
       try {
-        if (!query) {
-          const catalog = filterDesktopCommandsCatalog(await gateway.request<CommandsCatalogLike>('commands.catalog'))
-          const sections = catalog.categories?.length
-            ? catalog.categories
-            : [{ name: '', pairs: catalog.pairs ?? [] }]
+        const catalog = await gateway.request<CommandsCatalogLike>('commands.catalog')
 
-          const items = sections.flatMap(section =>
-            section.pairs
-              .filter(([command]) => isDesktopSlashExtensionCommand(command))
-              .map(([command, meta]) => ({
-                text: command,
-                display: skillMarkerText(command),
-                group: section.name || 'Skills',
-                meta
-              }))
-          )
-
-          return { items, query }
-        }
-
-        const result = await gateway.request<{ items?: CompletionEntry[] }>('complete.slash', { text: `/${query}` })
-        const items = (result.items ?? [])
-          .filter(item => isDesktopSlashExtensionCommand(item.text))
-          .map(item => ({
-            ...item,
-            text: commandText(item.text),
-            display: skillMarkerText(item.text),
-            group: 'Skills',
-            meta: desktopSlashDescription(item.text, textValue(item.meta))
-          }))
+        const items = desktopSkillCommandPairs(catalog, query).map(([command, meta]) => ({
+          text: command,
+          display: skillMarkerText(command),
+          group: 'Skills',
+          meta
+        }))
 
         return { items, query }
       } catch {

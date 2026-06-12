@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import agent.skill_commands as skill_commands_module
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from hermes_cli.active_sessions import active_session_registry_snapshot
 from tui_gateway import server
@@ -3480,14 +3481,10 @@ def test_prompt_submit_expands_inline_multi_skill_markers(monkeypatch):
         def start(self):
             self._target()
 
-    fake_skill_commands = types.ModuleType("agent.skill_commands")
-
     def _fake_expand_multi_skill_invocation(text, *, task_id=None, skill_commands=None):
         captured["skill_text"] = text
         captured["skill_task_id"] = task_id
         return "expanded skill prompt", ["first-skill", "second-skill"], []
-
-    fake_skill_commands.expand_multi_skill_invocation = _fake_expand_multi_skill_invocation
 
     fake_ctx = types.ModuleType("agent.context_references")
     fake_ctx.preprocess_context_references = (
@@ -3507,7 +3504,11 @@ def test_prompt_submit_expands_inline_multi_skill_markers(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
     monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
     monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
-    monkeypatch.setitem(sys.modules, "agent.skill_commands", fake_skill_commands)
+    monkeypatch.setattr(
+        skill_commands_module,
+        "expand_multi_skill_invocation",
+        _fake_expand_multi_skill_invocation,
+    )
     monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
     monkeypatch.setitem(sys.modules, "agent.model_metadata", fake_meta)
 
@@ -3522,6 +3523,68 @@ def test_prompt_submit_expands_inline_multi_skill_markers(monkeypatch):
     assert captured["skill_text"] == "$first-skill $second-skill do X"
     assert captured["skill_task_id"] == "session-key"
     assert captured["prompt"] == "expanded skill prompt"
+
+
+def test_run_prompt_submit_does_not_expand_synthetic_prompt(monkeypatch):
+    captured = {}
+
+    class _Agent:
+        model = "test/model"
+        base_url = ""
+        api_key = ""
+
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            captured["prompt"] = prompt
+            return {
+                "final_response": "ok",
+                "messages": [{"role": "assistant", "content": "ok"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    fake_ctx = types.ModuleType("agent.context_references")
+    fake_ctx.preprocess_context_references = (
+        lambda message, **kwargs: types.SimpleNamespace(
+            blocked=False,
+            message=message,
+            warnings=[],
+            references=[],
+            injected_tokens=0,
+        )
+    )
+    fake_meta = types.ModuleType("agent.model_metadata")
+    fake_meta.get_model_context_length = lambda *args, **kwargs: 100000
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(
+        server,
+        "_expand_multi_skill_prompt",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("synthetic prompts must not expand skills")
+        ),
+    )
+    monkeypatch.setitem(sys.modules, "agent.context_references", fake_ctx)
+    monkeypatch.setitem(sys.modules, "agent.model_metadata", fake_meta)
+
+    server._run_prompt_submit(
+        "1",
+        "sid",
+        server._sessions["sid"],
+        "Background result contains $first-skill",
+    )
+
+    assert captured["prompt"] == "Background result contains $first-skill"
 
 
 def test_image_attach_appends_local_image(monkeypatch):
@@ -6913,7 +6976,7 @@ def test_notification_poller_emits_distinct_watch_matches_once(monkeypatch):
     turns = []
     emitted = []
 
-    def _fake_run_prompt_submit(rid, sid, session, text):
+    def _fake_run_prompt_submit(rid, sid, session, text, **_kwargs):
         turns.append(text)
         with session["history_lock"]:
             session["running"] = False

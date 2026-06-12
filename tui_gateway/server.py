@@ -5523,7 +5523,7 @@ def _(rid, params: dict) -> dict:
                 session["running"] = False
                 _clear_inflight_turn(session)
             return
-        _run_prompt_submit(rid, sid, session, text)
+        _run_prompt_submit(rid, sid, session, text, expand_skills=True)
 
     threading.Thread(target=run_after_agent_ready, daemon=True).start()
     return _ok(rid, {"status": "streaming"})
@@ -5743,11 +5743,21 @@ def _expand_multi_skill_prompt(
     return expanded
 
 
-def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
-    text, _loaded_skill_names, _missing_skill_names = _expand_multi_skill_prompt(
-        text,
-        session,
-    )
+def _run_prompt_submit(
+    rid,
+    sid: str,
+    session: dict,
+    text: Any,
+    *,
+    expand_skills: bool = False,
+) -> None:
+    if expand_skills:
+        text, _loaded_skill_names, _missing_skill_names = (
+            _expand_multi_skill_prompt(
+                text,
+                session,
+            )
+        )
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))

@@ -15,6 +15,70 @@ def _make_cli():
 
 
 class TestSlashCommandPrefixMatching:
+    def test_skill_bundle_takes_precedence_over_multi_skill_prefix(self):
+        cli_obj = _make_cli()
+        fake_skills = {
+            "/shared": {"name": "Shared Skill", "description": "test"},
+            "/other": {"name": "Other Skill", "description": "test"},
+        }
+        fake_bundles = {
+            "/shared": {"name": "Shared Bundle", "description": "test"},
+        }
+
+        import cli as cli_mod
+
+        with (
+            patch.object(cli_mod, "_skill_commands", fake_skills),
+            patch.object(cli_mod, "_skill_bundles", fake_bundles),
+            patch.object(
+                cli_mod,
+                "build_bundle_invocation_message",
+                return_value=("bundle prompt", ["Shared Skill"], []),
+            ) as build_bundle,
+            patch.object(
+                cli_mod,
+                "build_multi_skill_invocation_message",
+            ) as build_multi,
+        ):
+            cli_obj.process_command("/shared /other do X")
+
+        build_bundle.assert_called_once_with(
+            "/shared",
+            "/other do X",
+            task_id=None,
+        )
+        build_multi.assert_not_called()
+        cli_obj._pending_input.put.assert_called_once_with("bundle prompt")
+
+    def test_multi_skill_failure_lists_all_requested_skills(self):
+        cli_obj = _make_cli()
+        fake_skills = {
+            "/first-skill": {"name": "First Skill", "description": "test"},
+            "/second-skill": {"name": "Second Skill", "description": "test"},
+        }
+        fake_console = MagicMock()
+
+        import cli as cli_mod
+
+        with (
+            patch.object(cli_mod, "_skill_commands", fake_skills),
+            patch.object(cli_mod, "_skill_bundles", {}),
+            patch.object(
+                cli_mod,
+                "build_multi_skill_invocation_message",
+                return_value=None,
+            ),
+            patch.object(cli_mod, "ChatConsole", return_value=fake_console),
+        ):
+            cli_obj.process_command("/first-skill /second-skill do X")
+
+        rendered = " ".join(
+            str(call.args[0]) for call in fake_console.print.call_args_list
+        )
+        assert "first-skill" in rendered
+        assert "second-skill" in rendered
+        cli_obj._pending_input.put.assert_not_called()
+
     def test_unique_prefix_dispatches_command(self):
         """/con should dispatch to /config when it uniquely matches."""
         cli_obj = _make_cli()

@@ -7725,28 +7725,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             _cprint(str(result))
                     except Exception as e:
                         _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")
-            elif multi_skill := parse_multi_skill_invocation(
-                cmd_original,
-                skill_commands=skill_commands,
-            ):
-                multi_result = build_multi_skill_invocation_message(
-                    multi_skill.skill_keys,
-                    multi_skill.user_instruction,
-                    task_id=self.session_id,
-                )
-                if multi_result:
-                    msg, loaded_names, missing = multi_result
-                    print(f"\n⚡ Loading skills: {', '.join(loaded_names)}")
-                    if missing:
-                        ChatConsole().print(
-                            f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
-                        )
-                    if hasattr(self, '_pending_input'):
-                        self._pending_input.put(msg)
-                else:
-                    ChatConsole().print(
-                        f"[bold red]Failed to load skills for {base_cmd}[/]"
-                    )
             # Skill bundles take precedence over individual skills — /<bundle>
             # loads multiple skills at once. Rescans cheaply when files change.
             elif base_cmd in skill_bundles:
@@ -7770,6 +7748,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 else:
                     ChatConsole().print(
                         f"[bold red]Failed to load bundle for {base_cmd}[/]"
+                    )
+            elif multi_skill := parse_multi_skill_invocation(
+                cmd_original,
+                skill_commands=skill_commands,
+            ):
+                multi_result = build_multi_skill_invocation_message(
+                    multi_skill.skill_keys,
+                    multi_skill.user_instruction,
+                    task_id=self.session_id,
+                )
+                if multi_result:
+                    msg, loaded_names, missing = multi_result
+                    print(f"\n⚡ Loading skills: {', '.join(loaded_names)}")
+                    if missing:
+                        ChatConsole().print(
+                            f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
+                        )
+                    if hasattr(self, '_pending_input'):
+                        self._pending_input.put(msg)
+                else:
+                    requested = ", ".join(
+                        key.lstrip("/") for key in multi_skill.skill_keys
+                    )
+                    ChatConsole().print(
+                        f"[bold red]Failed to load requested skills: {requested}[/]"
                     )
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in skill_commands:

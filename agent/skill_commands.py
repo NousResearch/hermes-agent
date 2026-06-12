@@ -9,7 +9,7 @@ import logging
 import os
 import re
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
@@ -237,16 +237,42 @@ def _build_skill_message(
     for entries in linked_files.values():
         if isinstance(entries, list):
             for entry in entries:
-                _append_unique_supporting_file(supporting, supporting_seen, entry)
+                _append_unique_supporting_file(
+                    supporting,
+                    supporting_seen,
+                    entry,
+                    skill_dir,
+                )
 
-    if skill_dir:
+    if skill_dir and not linked_files:
+        try:
+            resolved_skill_dir = skill_dir.resolve()
+        except (OSError, RuntimeError):
+            resolved_skill_dir = None
         for subdir in ("references", "templates", "scripts", "assets"):
             subdir_path = skill_dir / subdir
-            if subdir_path.exists():
-                for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file() and not f.is_symlink():
+            try:
+                resolved_subdir = subdir_path.resolve()
+            except (OSError, RuntimeError):
+                continue
+            if (
+                resolved_skill_dir is None
+                or not subdir_path.is_dir()
+                or not _path_is_within(resolved_subdir, resolved_skill_dir)
+            ):
+                continue
+            for f in sorted(subdir_path.rglob("*")):
+                if f.is_file() and not f.is_symlink():
+                    try:
                         rel = f.relative_to(skill_dir).as_posix()
-                        _append_unique_supporting_file(supporting, supporting_seen, rel)
+                    except ValueError:
+                        continue
+                    _append_unique_supporting_file(
+                        supporting,
+                        supporting_seen,
+                        rel,
+                        skill_dir,
+                    )
 
     if supporting and skill_dir:
         try:
@@ -464,17 +490,68 @@ def _append_unique_skill_key(keys: list[str], seen: set[str], key: str | None) -
         seen.add(key)
 
 
-def _append_unique_supporting_file(files: list[str], seen: set[str], value: Any) -> None:
-    rel = str(value or "").strip().replace("\\", "/").strip("/")
+def _path_is_within(candidate: Path, directory: Path) -> bool:
+    try:
+        candidate.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
+def _normalize_supporting_file(value: Any, skill_dir: Path | None) -> str | None:
+    if skill_dir is None:
+        return None
+
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    try:
+        posix_path = PurePosixPath(raw)
+        windows_path = PureWindowsPath(raw)
+    except (TypeError, ValueError):
+        return None
+
+    pure_paths = (posix_path, windows_path)
+    if any(
+        path.is_absolute()
+        or bool(path.root)
+        or bool(path.drive)
+        or ".." in path.parts
+        for path in pure_paths
+    ):
+        return None
+
+    normalized = PurePosixPath(raw.replace("\\", "/"))
+    if not normalized.parts:
+        return None
+
+    try:
+        resolved_skill_dir = skill_dir.resolve()
+        candidate = (resolved_skill_dir / Path(*normalized.parts)).resolve()
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if not _path_is_within(candidate, resolved_skill_dir):
+        return None
+
+    return normalized.as_posix()
+
+
+def _append_unique_supporting_file(
+    files: list[str],
+    seen: set[str],
+    value: Any,
+    skill_dir: Path | None,
+) -> None:
+    rel = _normalize_supporting_file(value, skill_dir)
     if rel and rel not in seen:
         files.append(rel)
         seen.add(rel)
 
 
 def _compact_skill_instruction(text: str) -> str:
-    """Trim marker gaps without flattening user-authored newlines."""
-    lines = [re.sub(r"[ \t]{2,}", " ", line).strip() for line in text.splitlines()]
-    return "\n".join(line for line in lines if line).strip()
+    """Trim outer marker gaps without rewriting user-authored formatting."""
+    return text.strip()
 
 
 def parse_multi_skill_invocation(
@@ -585,6 +662,25 @@ def build_skill_invocation_message(
     except Exception:
         pass  # Non-critical — skill invocation proceeds regardless
 
+    return _build_loaded_single_skill_invocation(
+        loaded_skill,
+        skill_dir,
+        skill_name,
+        user_instruction=user_instruction,
+        runtime_note=runtime_note,
+        task_id=task_id,
+    )
+
+
+def _build_loaded_single_skill_invocation(
+    loaded_skill: dict[str, Any],
+    skill_dir: Path | None,
+    skill_name: str,
+    *,
+    user_instruction: str = "",
+    runtime_note: str = "",
+    task_id: str | None = None,
+) -> str:
     activation_note = (
         f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
@@ -611,7 +707,7 @@ def build_multi_skill_invocation_message(
     when no requested skill could be loaded.
     """
     commands = get_skill_commands()
-    prompt_parts: list[str] = []
+    loaded_skills: list[tuple[dict[str, Any], Path | None, str]] = []
     loaded_names: list[str] = []
     missing: list[str] = []
     deduped_keys: list[str] = []
@@ -624,7 +720,6 @@ def build_multi_skill_invocation_message(
             continue
         _append_unique_skill_key(deduped_keys, seen, key)
 
-    display_keys = ", ".join(key.lstrip("/") for key in deduped_keys)
     for key in deduped_keys:
         skill_info = commands.get(key)
         if not skill_info:
@@ -645,9 +740,29 @@ def build_multi_skill_invocation_message(
             pass
 
         loaded_names.append(skill_name)
+        loaded_skills.append((loaded_skill, skill_dir, skill_name))
+
+    if not loaded_skills:
+        return None
+
+    if len(loaded_skills) == 1:
+        loaded_skill, skill_dir, skill_name = loaded_skills[0]
+        message = _build_loaded_single_skill_invocation(
+            loaded_skill,
+            skill_dir,
+            skill_name,
+            user_instruction=user_instruction,
+            runtime_note=runtime_note,
+            task_id=task_id,
+        )
+        return message, loaded_names, missing
+
+    prompt_parts: list[str] = []
+    display_names = ", ".join(loaded_names)
+    for loaded_skill, skill_dir, skill_name in loaded_skills:
         activation_note = (
             "[IMPORTANT: The user has invoked multiple skills for this turn: "
-            f"{display_keys}. This block loads the \"{skill_name}\" skill. "
+            f"{display_names}. This block loads the \"{skill_name}\" skill. "
             "Follow all loaded skill instructions together for the same user request.]"
         )
         prompt_parts.append(
@@ -658,9 +773,6 @@ def build_multi_skill_invocation_message(
                 session_id=task_id,
             )
         )
-
-    if not prompt_parts:
-        return None
 
     if user_instruction:
         prompt_parts.append(

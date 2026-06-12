@@ -216,14 +216,17 @@ def _validate_config(cfg) -> bool:
     return bool(os.getenv("TIME_BOT_TOKEN")) and bool(os.getenv("TIME_API_BASE_URL"))
 
 
+# NOTE: env_enablement_fn must return a FLAT dict. The caller pops
+# "home_channel" and merges every other key into PlatformConfig.extra.
+# Returning {"extra": {...}} would wrongly nest under extra["extra"].
 def _env_enablement():
     if not os.getenv("TIME_BOT_TOKEN"):
         return None
-    extra = {"api_base_url": os.getenv("TIME_API_BASE_URL", "")}
+    seed = {"api_base_url": os.getenv("TIME_API_BASE_URL", "")}
     home = os.getenv("TIME_HOME_CHANNEL")
     if home:
-        return {"extra": extra, "home_channel": {"chat_id": home}}
-    return {"extra": extra}
+        seed["home_channel"] = {"chat_id": home}
+    return seed
 
 
 def register(ctx):

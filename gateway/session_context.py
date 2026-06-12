@@ -88,6 +88,8 @@ _SESSION_ASYNC_DELIVERY: ContextVar = ContextVar("HERMES_SESSION_ASYNC_DELIVERY"
 _CRON_AUTO_DELIVER_PLATFORM: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
 _CRON_AUTO_DELIVER_CHAT_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_CHAT_ID", default=_UNSET)
 _CRON_AUTO_DELIVER_THREAD_ID: ContextVar = ContextVar("HERMES_CRON_AUTO_DELIVER_THREAD_ID", default=_UNSET)
+_CRON_JOB_ID: ContextVar = ContextVar("HERMES_CRON_JOB_ID", default=_UNSET)
+_CRON_JOB_NAME: ContextVar = ContextVar("HERMES_CRON_JOB_NAME", default=_UNSET)
 
 _VAR_MAP = {
     "HERMES_SESSION_PLATFORM": _SESSION_PLATFORM,
@@ -103,6 +105,8 @@ _VAR_MAP = {
     "HERMES_CRON_AUTO_DELIVER_PLATFORM": _CRON_AUTO_DELIVER_PLATFORM,
     "HERMES_CRON_AUTO_DELIVER_CHAT_ID": _CRON_AUTO_DELIVER_CHAT_ID,
     "HERMES_CRON_AUTO_DELIVER_THREAD_ID": _CRON_AUTO_DELIVER_THREAD_ID,
+    "HERMES_CRON_JOB_ID": _CRON_JOB_ID,
+    "HERMES_CRON_JOB_NAME": _CRON_JOB_NAME,
 }
 
 
@@ -207,6 +211,16 @@ def clear_session_vars(tokens: list) -> None:
         clear_session_cwd()
     except Exception:
         pass
+
+
+def get_context_env(name: str, default: str = "") -> str:
+    """Read only the task-local context variable without os.environ fallback."""
+    var = _VAR_MAP.get(name)
+    if var is not None:
+        value = var.get()
+        if value is not _UNSET:
+            return value
+    return default
 
 
 def get_session_env(name: str, default: str = "") -> str:

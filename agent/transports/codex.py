@@ -247,9 +247,27 @@ class ResponsesApiTransport(ProviderTransport):
         elif not is_github_responses and not is_xai_responses:
             kwargs["include"] = []
 
+        request_metadata = params.get("request_metadata")
+        if request_metadata:
+            existing_metadata = kwargs.get("metadata")
+            merged_metadata: Dict[str, Any] = {}
+            if isinstance(existing_metadata, dict):
+                merged_metadata.update(existing_metadata)
+            merged_metadata.update(request_metadata)
+            kwargs["metadata"] = merged_metadata
+
         request_overrides = params.get("request_overrides")
         if request_overrides:
-            kwargs.update(request_overrides)
+            for key, value in request_overrides.items():
+                if key == "metadata" and isinstance(value, dict):
+                    existing_metadata = kwargs.get("metadata")
+                    merged_metadata = {}
+                    if isinstance(existing_metadata, dict):
+                        merged_metadata.update(existing_metadata)
+                    merged_metadata.update(value)
+                    kwargs["metadata"] = merged_metadata
+                else:
+                    kwargs[key] = value
 
         # xAI Responses API rejects ``service_tier`` (HTTP 400 "Argument not
         # supported: service_tier") — hit when ``/fast`` priority-processing

@@ -669,6 +669,14 @@ class TestCodexTransportTimeout:
         )
         assert kw.get("timeout") == 450.0
 
+    def test_request_metadata_is_forwarded(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "hello"}],
+            request_metadata={"hermes_source_tag": "interactive:slack"},
+        )
+        assert kw["metadata"]["hermes_source_tag"] == "interactive:slack"
+
 
 class TestCodexTransportXaiServiceTierStrip:
     """xAI Responses API rejects ``service_tier`` (#28490).

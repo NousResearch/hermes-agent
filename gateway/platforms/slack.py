@@ -376,6 +376,30 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
 
+    # ── Overridable seams for Slack-API-compatible platforms (e.g. Time) ──
+    def _app_token_env(self) -> str:
+        """Env var holding the Socket Mode app token."""
+        return "SLACK_APP_TOKEN"
+
+    def _api_base_url(self):
+        """Web API base URL. None = slack_bolt default (https://slack.com/api/)."""
+        return None
+
+    def _make_async_app(self, token: str):
+        """Build the AsyncApp, honoring a custom base_url when set."""
+        base = self._api_base_url()
+        if base:
+            client = AsyncWebClient(token=token, base_url=base)
+            return AsyncApp(token=token, client=client)
+        return AsyncApp(token=token)
+
+    def _make_web_client(self, token: str):
+        """Build an AsyncWebClient, honoring a custom base_url when set."""
+        base = self._api_base_url()
+        if base:
+            return AsyncWebClient(token=token, base_url=base)
+        return AsyncWebClient(token=token)
+
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
         if not self._app or not self._app_token:
@@ -740,7 +764,7 @@ class SlackAdapter(BasePlatformAdapter):
             return False
 
         raw_token = self.config.token
-        app_token = os.getenv("SLACK_APP_TOKEN")
+        app_token = os.getenv(self._app_token_env())
 
         if not raw_token:
             logger.error("[Slack] SLACK_BOT_TOKEN not set")
@@ -830,12 +854,12 @@ class SlackAdapter(BasePlatformAdapter):
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
-            self._app = AsyncApp(token=primary_token)
+            self._app = self._make_async_app(primary_token)
             _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client
             for token in bot_tokens:
-                client = AsyncWebClient(token=token)
+                client = self._make_web_client(token)
                 _apply_slack_proxy(client, proxy_url)
                 auth_response = await client.auth_test()
                 team_id = auth_response.get("team_id", "")

@@ -1341,11 +1341,51 @@ def _scan_assembled_cron_prompt(assembled: str, job: dict, *, has_skills: bool =
     return assembled
 
 
+def _jb_job_hooks():
+    """Pont OPTIONNEL vers le plugin jb_outbound (greffe Jean-Billie).
+
+    Expose au scheduler le contexte d'attribution (casquette/skill/job, lu ensuite par le
+    middleware du plugin) et les signaux début/fin de job. On résout le module DÉJÀ chargé —
+    le PluginManager importe les plugins sous ``hermes_plugins.<slug>`` ; jamais d'import à
+    froid : sans plugin chargé, renvoie ``None`` et le scheduler garde son comportement
+    d'origine (stock Hermes inchangé).
+    """
+    import importlib
+    for pkg in ("hermes_plugins.jb_outbound", "jb_outbound", "plugins.jb_outbound"):
+        if pkg in sys.modules:
+            try:
+                return importlib.import_module(pkg + ".job_context")
+            except Exception:
+                logger.debug("jb_outbound job_context unavailable", exc_info=True)
+                return None
+    return None
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """Execute a single cron job, applying any per-job profile override."""
     job_id = job["id"]
     with _job_profile_context(job_id, job.get("profile")):
-        return _run_job_impl(job)
+        jb_hooks = _jb_job_hooks()
+        if jb_hooks is None:
+            return _run_job_impl(job)
+        # Greffe Jean-Billie : attribution + signaux d'activité. Les deux hooks n'échouent
+        # jamais côté plugin (best-effort) ; double garde ici — un hook ne doit en AUCUN cas
+        # bloquer ni faire échouer le job.
+        jb_token = None
+        try:
+            jb_token = jb_hooks.job_started(job)
+        except Exception:
+            logger.debug("jb_outbound job_started hook failed", exc_info=True)
+        success = False
+        try:
+            result = _run_job_impl(job)
+            success = bool(result and result[0])
+            return result
+        finally:
+            try:
+                jb_hooks.job_finished(job, success=success, token=jb_token)
+            except Exception:
+                logger.debug("jb_outbound job_finished hook failed", exc_info=True)
 
 
 def _run_job_impl(job: dict) -> tuple[bool, str, str, Optional[str]]:

@@ -111,8 +111,8 @@ async def test_feishu_final_response_long_card_sends_multiple_interactive_cards(
 
     monkeypatch.setattr(adapter, "_feishu_send_with_retry", fake_send)
     long_text = "\n\n".join(
-        f"第 {i:02d} 段：" + ("长内容不会被塞进单张卡片导致截断。" * 80)
-        for i in range(1, 8)
+        f"第 {i:03d} 段：" + ("长内容不会被塞进单张卡片导致截断。" * 20)
+        for i in range(1, 101)
     )
 
     result = await adapter.send(

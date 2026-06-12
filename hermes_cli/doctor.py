@@ -101,8 +101,10 @@ def _termux_install_all_fallback_notes() -> list[str]:
 
 
 def _has_provider_env_config(content: str) -> bool:
-    """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
-    return any(key in content for key in _PROVIDER_ENV_HINTS)
+    """Return True when ~/.hermes/.env or os.environ contains provider auth/base URL settings."""
+    return any(key in content for key in _PROVIDER_ENV_HINTS) or any(
+        str(os.environ.get(key) or "").strip() for key in _PROVIDER_ENV_HINTS
+    )
 
 
 def _honcho_is_configured_for_doctor() -> bool:
@@ -694,7 +696,9 @@ def run_doctor(args):
     managed_scope_check()
     # Check ~/.hermes/.env (primary location for user config)
     env_path = HERMES_HOME / '.env'
-    if env_path.exists():
+    env_file_exists = env_path.exists()
+    content = ""
+    if env_file_exists:
         check_ok(f"{_DHH}/.env file exists")
         
         # Check for common issues. Pin encoding to UTF-8 because .env files are
@@ -702,17 +706,14 @@ def run_doctor(args):
         # defaults to the system locale — which crashes on non-UTF-8 Windows
         # locales (e.g. GBK) as soon as the file contains any non-ASCII byte.
         content = env_path.read_text(encoding="utf-8")
-        if _has_provider_env_config(content):
-            check_ok("API key or custom endpoint configured")
-        else:
-            check_warn(f"No API key found in {_DHH}/.env")
-            issues.append("Run 'hermes setup' to configure API keys")
-    else:
+
+    has_provider_env_config = _has_provider_env_config(content)
+    if not env_file_exists:
         # Also check project root as fallback
         fallback_env = PROJECT_ROOT / '.env'
         if fallback_env.exists():
             check_ok(".env file exists (in project directory)")
-        else:
+        elif not has_provider_env_config:
             check_fail(f"{_DHH}/.env file missing")
             if should_fix:
                 env_path.parent.mkdir(parents=True, exist_ok=True)
@@ -730,6 +731,12 @@ def run_doctor(args):
             else:
                 check_info("Run 'hermes setup' to create one")
                 issues.append("Run 'hermes setup' to create .env")
+
+    if has_provider_env_config:
+        check_ok("API key or custom endpoint configured")
+    elif env_file_exists:
+        check_warn(f"No API key found in {_DHH}/.env")
+        issues.append("Run 'hermes setup' to configure API keys")
     
     # Check ~/.hermes/config.yaml (primary) or project cli-config.yaml (fallback)
     config_path = HERMES_HOME / 'config.yaml'
@@ -1831,7 +1838,12 @@ def run_doctor(args):
         from hermes_cli.auth import get_anthropic_key
         key = get_anthropic_key()
         if not key:
-            return _ConnectivityResult("Anthropic API", [], [])
+            return _ConnectivityResult(
+                "Anthropic API",
+                [(color("⚠", Colors.YELLOW), "Anthropic API",
+                  color("(not configured)", Colors.DIM))],
+                [],
+            )
         try:
             import httpx
             from agent.anthropic_adapter import (
@@ -1989,9 +2001,19 @@ def run_doctor(args):
                 resolve_bedrock_region,
             )
         except ImportError:
-            return _ConnectivityResult("AWS Bedrock", [], [])
+            return _ConnectivityResult(
+                "AWS Bedrock",
+                [(color("⚠", Colors.YELLOW), "AWS Bedrock",
+                  color("(boto3 not installed)", Colors.DIM))],
+                [],
+            )
         if not has_aws_credentials():
-            return _ConnectivityResult("AWS Bedrock", [], [])
+            return _ConnectivityResult(
+                "AWS Bedrock",
+                [(color("⚠", Colors.YELLOW), "AWS Bedrock",
+                  color("(not configured)", Colors.DIM))],
+                [],
+            )
         auth_var = resolve_aws_auth_env_var()
         region = resolve_bedrock_region()
         label = "AWS Bedrock".ljust(20)
@@ -2049,13 +2071,28 @@ def run_doctor(args):
             cfg = load_config()
             model_cfg = cfg.get("model") if isinstance(cfg, dict) else {}
             if not isinstance(model_cfg, dict):
-                return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
+                return _ConnectivityResult(
+                    "Azure Foundry (Entra ID)",
+                    [(color("⚠", Colors.YELLOW), "Azure Foundry (Entra ID)",
+                      color("(not configured)", Colors.DIM))],
+                    [],
+                )
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
             auth_mode = str(model_cfg.get("auth_mode") or "").strip().lower()
             if cfg_provider != "azure-foundry" or auth_mode != "entra_id":
-                return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
+                return _ConnectivityResult(
+                    "Azure Foundry (Entra ID)",
+                    [(color("⚠", Colors.YELLOW), "Azure Foundry (Entra ID)",
+                      color("(not configured)", Colors.DIM))],
+                    [],
+                )
         except Exception:
-            return _ConnectivityResult("Azure Foundry (Entra ID)", [], [])
+            return _ConnectivityResult(
+                "Azure Foundry (Entra ID)",
+                [(color("⚠", Colors.YELLOW), "Azure Foundry (Entra ID)",
+                      color("(not configured)", Colors.DIM))],
+                [],
+            )
 
         try:
             from agent.azure_identity_adapter import (

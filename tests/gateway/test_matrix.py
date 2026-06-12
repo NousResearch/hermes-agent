@@ -1090,6 +1090,39 @@ class TestMatrixMarkdownToHtml:
         assert "<code" in result
         assert "print" in result
 
+    def test_matrix_sanitizer_preserves_tables(self):
+        from gateway.platforms.matrix import _sanitize_matrix_html
+
+        result = _sanitize_matrix_html(
+            '<table onclick="alert(1)"><thead><tr><th>Name</th><th>Value</th></tr>'
+            '</thead><tbody><tr><td style="color:red">Alpha</td><td>1</td></tr>'
+            "</tbody></table>"
+        )
+        assert "<table>" in result
+        assert "<thead>" in result
+        assert "<tbody>" in result
+        assert "<tr>" in result
+        assert "<th>" in result
+        assert "<td>" in result
+        assert "onclick" not in result
+        assert "style=" not in result
+        assert "Alpha" in result
+
+    def test_matrix_markdown_preserves_tables_when_markdown_library_available(self):
+        pytest.importorskip("markdown")
+        result = self.adapter._markdown_to_html(
+            "| Name | Value |\n"
+            "| --- | --- |\n"
+            "| Alpha | 1 |\n"
+        )
+        assert "<table>" in result
+        assert "<thead>" in result
+        assert "<tbody>" in result
+        assert "<tr>" in result
+        assert "<th>" in result
+        assert "<td>" in result
+        assert "Alpha" in result
+
 
 # ---------------------------------------------------------------------------
 # Helper: display name extraction

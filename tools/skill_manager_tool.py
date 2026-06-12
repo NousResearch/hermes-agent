@@ -44,6 +44,7 @@ from typing import Dict, Any, List, Optional, Tuple
 
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
+from tools.skill_versioning import save_version
 
 logger = logging.getLogger(__name__)
 
@@ -518,6 +519,9 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
 
+    # Save initial version in history
+    save_version(name, skill_dir=skill_dir)
+
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)
     if scan_error:
@@ -556,6 +560,9 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     skill_md = existing["path"] / "SKILL.md"
     # Back up original content for rollback
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
+    # Save current state as a new version before overwriting
+    save_version(name, skill_dir=existing["path"])
+
     _atomic_write_text(skill_md, content)
 
     # Security scan — roll back on block
@@ -653,6 +660,9 @@ def _patch_skill(
 
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)
+    # Save old state as a new version before applying patch
+    if not file_path:
+        save_version(name, skill_dir=skill_dir)
 
     # Security scan — roll back on block
     scan_error = _security_scan_skill(skill_dir)

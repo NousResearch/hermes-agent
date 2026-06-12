@@ -154,6 +154,9 @@ _DEFAULT_PAYLOADS = {
         "api_call_count": 1,
         "message_count": 4,
         "tool_count": 12,
+        # Full-fidelity per-call tools array (raw passthrough, like
+        # request_messages). Empty here; populated at runtime from api_kwargs.
+        "request_tools": [],
         "approx_input_tokens": 2048,
         "request_char_count": 8192,
         "max_tokens": 4096,

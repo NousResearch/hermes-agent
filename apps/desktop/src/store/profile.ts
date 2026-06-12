@@ -144,6 +144,14 @@ export const $activeGatewayProfile = atom<string>('default')
 // / default, so single-profile users are unaffected.
 export const $newChatProfile = atom<string | null>(null)
 
+// Profile whose history the sidebar is browsing right now. This intentionally
+// differs from $activeGatewayProfile: the rail should show a profile's existing
+// chats immediately even while that profile's backend/socket is still waking up
+// (or has crashed and will show a connection error). Tying the sidebar scope to
+// successful gateway connection made profile switches look active while still
+// filtering the sidebar to the old/default profile.
+export const $selectedProfileScope = atom<string>('default')
+
 // Bumped whenever the profile context actually changes (switch or create). The
 // chat controller subscribes and drops to a fresh new-session draft, so the
 // session you were in doesn't stay sticky across a profile switch.
@@ -274,13 +282,24 @@ export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_ST
 
 $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
 
+$activeGatewayProfile.subscribe(value => {
+  const key = normalizeProfileKey(value)
+
+  // Keep the browsed profile in sync for profile changes that originate outside
+  // the rail (for example opening a session from All Profiles). Rail clicks set
+  // $selectedProfileScope immediately before the backend finishes waking up.
+  if (!$showAllProfiles.get()) {
+    $selectedProfileScope.set(key)
+  }
+})
+
 // The profile context the sidebar is currently showing: a concrete profile key,
 // or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
 // gateway so opening/selecting a profile (which swaps the gateway) moves the
 // whole sidebar with it — a real context switch, not a separate filter to keep
 // in sync.
-export const $profileScope = computed([$showAllProfiles, $activeGatewayProfile], (showAll, gateway) =>
-  showAll ? ALL_PROFILES : normalizeProfileKey(gateway)
+export const $profileScope = computed([$showAllProfiles, $selectedProfileScope], (showAll, selected) =>
+  showAll ? ALL_PROFILES : normalizeProfileKey(selected)
 )
 
 // Switch the active context to `name`: leave "All profiles" mode, point new
@@ -292,6 +311,7 @@ export function selectProfile(name: string): void {
   // fresh; re-tapping the profile you're already in leaves your session be.
   const switching = $showAllProfiles.get() || target !== normalizeProfileKey($activeGatewayProfile.get())
   $showAllProfiles.set(false)
+  $selectedProfileScope.set(target)
   $newChatProfile.set(target)
 
   if (switching) {

@@ -3,8 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
 
-// Keep profile.ts's side-effecting imports inert: the gateway socket layer and
-// the REST query client must not run for real in a unit test.
+// Keep profile.ts's side-effecting imports inert: the gateway socket layer,
+// storage persistence and REST query client must not run for real in unit tests.
 const ensureGatewayForProfile = vi.fn(async () => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 
@@ -14,8 +14,25 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
+vi.mock('@/lib/storage', () => ({
+  arraysEqual: (a: unknown[], b: unknown[]) => a.length === b.length && a.every((value, index) => value === b[index]),
+  persistBoolean: vi.fn(),
+  persistStringArray: vi.fn(),
+  persistStringRecord: vi.fn(),
+  storedBoolean: vi.fn(() => false),
+  storedStringArray: vi.fn(() => []),
+  storedStringRecord: vi.fn(() => ({}))
+}))
 
-const { $activeGatewayProfile, ensureGatewayProfile } = await import('./profile')
+const {
+  $activeGatewayProfile,
+  $newChatProfile,
+  $profileScope,
+  $selectedProfileScope,
+  $showAllProfiles,
+  ensureGatewayProfile,
+  selectProfile
+} = await import('./profile')
 const { $connection } = await import('./session')
 
 const remoteConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
@@ -31,6 +48,9 @@ beforeEach(() => {
   ensureGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
+  $selectedProfileScope.set('default')
+  $showAllProfiles.set(false)
+  $newChatProfile.set(null)
   $connection.set(localConn())
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
 })
@@ -85,5 +105,19 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('profile sidebar scope', () => {
+  it('shows the selected profile history immediately without waiting for gateway connection', () => {
+    $activeGatewayProfile.set('default')
+    $selectedProfileScope.set('default')
+    $showAllProfiles.set(false)
+
+    selectProfile('google_search_agent')
+
+    expect($profileScope.get()).toBe('google_search_agent')
+    expect($newChatProfile.get()).toBe('google_search_agent')
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('google_search_agent')
   })
 })

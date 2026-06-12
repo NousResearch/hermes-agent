@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from tools.environments import docker as docker_env
 
 
@@ -110,6 +111,7 @@ def test_ensure_docker_available_uses_resolved_executable(monkeypatch):
             "text": True,
             "timeout": 5,
             "stdin": subprocess.DEVNULL,
+            "creationflags": windows_hide_flags(),
         })
     ]
 

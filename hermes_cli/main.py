@@ -10368,7 +10368,16 @@ def cmd_dashboard(args):
         env = os.environ.copy()
         # Drop the profile HERMES_HOME so the child binds the machine root.
         env.pop("HERMES_HOME", None)
-        os.execvpe(sys.executable, reexec_argv, env)
+        # On Windows, os.execvpe() does not truly replace the process — it
+        # spawns via CreateProcess then the parent exits.  Under Python 3.14+
+        # this can crash with STATUS_ACCESS_VIOLATION (0xC0000005) when
+        # re-executing the dashboard for a non-default profile.  Use
+        # subprocess.Popen + sys.exit() on Windows to avoid the crash.
+        if sys.platform == "win32":
+            proc = subprocess.Popen(reexec_argv, env=env)
+            sys.exit(proc.wait())
+        else:
+            os.execvpe(sys.executable, reexec_argv, env)
 
     # Attach gui.log early so dashboard startup/build failures are captured in
     # the same logs directory as every other Hermes surface.

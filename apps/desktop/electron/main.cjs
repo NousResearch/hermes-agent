@@ -33,6 +33,7 @@ const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
 const { PortPool } = require('./port-pool.cjs')
 const { serializeJsonBody, setJsonRequestHeaders } = require('./oauth-net-request.cjs')
 const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-marketplace.cjs')
+const { buildDesktopBackendEnv } = require('./backend-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
 const {
@@ -2134,9 +2135,11 @@ function createPythonBackend(root, label, dashboardArgs, options = {}) {
     label,
     command: python,
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
-    env: {
-      PYTHONPATH: [root, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-    },
+    env: buildDesktopBackendEnv({
+      hermesHome: HERMES_HOME,
+      pythonPathEntries: [root],
+      venvRoot: path.join(root, 'venv')
+    }),
     root,
     bootstrap: Boolean(options.bootstrap),
     shell: false
@@ -2155,9 +2158,11 @@ function createActiveBackend(dashboardArgs) {
     label: `Hermes at ${ACTIVE_HERMES_ROOT}`,
     command: fileExists(venvPython) ? venvPython : findSystemPython(),
     args: ['-m', 'hermes_cli.main', ...dashboardArgs],
-    env: {
-      PYTHONPATH: [ACTIVE_HERMES_ROOT, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter)
-    },
+    env: buildDesktopBackendEnv({
+      hermesHome: HERMES_HOME,
+      pythonPathEntries: [ACTIVE_HERMES_ROOT],
+      venvRoot: VENV_ROOT
+    }),
     root: ACTIVE_HERMES_ROOT,
     bootstrap: true,
     shell: false

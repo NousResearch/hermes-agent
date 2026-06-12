@@ -602,6 +602,14 @@ def run_conversation(
                 repaired_seq,
                 agent.session_id or "-",
             )
+            # Clamp the SessionDB flush cursor after compaction.  If repair
+            # merged or dropped messages, _last_flushed_db_idx may now point
+            # past the new end of `messages`, causing turn-end flush to skip
+            # the assistant/tool chain entirely (#44837).
+            if hasattr(agent, "_last_flushed_db_idx"):
+                agent._last_flushed_db_idx = min(
+                    agent._last_flushed_db_idx, len(messages)
+                )
 
         api_messages = []
         for idx, msg in enumerate(messages):

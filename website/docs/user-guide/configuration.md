@@ -1264,6 +1264,7 @@ display:
     enabled: false
     fields: ["model", "context_pct", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
+  credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
 

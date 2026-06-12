@@ -440,12 +440,31 @@ class GatewaySlashCommandsMixin:
         ]
         if title:
             lines.append(t("gateway.status.title", title=title))
+        # Read current model from config
+        model_label = ""
+        try:
+            from gateway.run import _load_gateway_config
+            cfg = _load_gateway_config()
+            if cfg:
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    model_name = model_cfg.get("default", "")
+                    provider_name = model_cfg.get("provider", "")
+                    if model_name:
+                        model_label = f"{model_name}"
+                        if provider_name:
+                            model_label += f" ({provider_name})"
+        except Exception:
+            pass
+
         lines.extend([
             t("gateway.status.created", timestamp=session_entry.created_at.strftime('%Y-%m-%d %H:%M')),
             t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime('%Y-%m-%d %H:%M')),
             t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
             t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
+        if model_label:
+            lines.append(f"Model: {model_label}")
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
         if source.platform == Platform.MATRIX:

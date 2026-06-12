@@ -138,8 +138,8 @@ SEND_MESSAGE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["send", "list", "react"],
-                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks)."
+                "enum": ["send", "list", "react", "unreact"],
+                "description": "Action to perform. 'send' (default) sends a message. 'list' returns all available channels/contacts across connected platforms. 'react' attaches an emoji reaction to a message (platforms that support it, e.g. photon/iMessage tapbacks). 'unreact' retracts a previously-added reaction."
             },
             "target": {
                 "type": "string",
@@ -155,7 +155,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "message_id": {
                 "type": "string",
-                "description": "For action='react': id of the message to react to. Omit to react to the most recent message received in that chat (usually the one being replied to)."
+                "description": "For action='react'/'unreact': id of the message to react to. Omit to target the most recent message received in that chat (usually the one being replied to)."
             }
         },
         "required": []
@@ -173,6 +173,9 @@ def send_message_tool(args, **kw):
     if action == "react":
         return _handle_react(args)
 
+    if action == "unreact":
+        return _handle_react(args, remove=True)
+
     return _handle_send(args)
 
 
@@ -185,20 +188,24 @@ def _handle_list():
         return json.dumps(_error(f"Failed to load channel directory: {e}"))
 
 
-def _handle_react(args):
-    """Attach an emoji reaction to a message via a live gateway adapter.
+def _handle_react(args, remove=False):
+    """Attach (or with ``remove=True`` retract) an emoji reaction on a message
+    via a live gateway adapter.
 
-    Only adapters that expose an ``add_reaction(chat_id, emoji, message_id)``
-    coroutine support this (e.g. photon/iMessage tapbacks). Requires the
-    gateway to be running in this process — there is no standalone fallback,
-    since reacting needs the adapter's live message-id state.
+    Only adapters that expose ``add_reaction(chat_id, emoji, message_id)`` /
+    ``remove_reaction(chat_id, message_id)`` coroutines support this (e.g.
+    photon/iMessage tapbacks). Requires the gateway to be running in this
+    process — there is no standalone fallback, since reacting needs the
+    adapter's live message-id state.
     """
     target = args.get("target", "")
     emoji = (args.get("emoji") or "").strip()
     message_id = (args.get("message_id") or "").strip() or None
-    if not target or not emoji:
+    if not target or (not remove and not emoji):
         return tool_error(
             "Both 'target' and 'emoji' are required when action='react'"
+            if not remove
+            else "'target' is required when action='unreact'"
         )
 
     parts = target.split(":", 1)
@@ -249,7 +256,8 @@ def _handle_react(args):
             f"Reactions require a live {platform_name} adapter in the running "
             "gateway (not available from cron/standalone contexts)."
         )
-    react_fn = getattr(adapter, "add_reaction", None)
+    fn_name = "remove_reaction" if remove else "add_reaction"
+    react_fn = getattr(adapter, fn_name, None)
     if not callable(react_fn):
         return tool_error(
             f"Platform '{platform_name}' does not support message reactions."
@@ -257,9 +265,14 @@ def _handle_react(args):
 
     try:
         from model_tools import _run_async
-        result = _run_async(
-            react_fn(chat_id=chat_id, emoji=emoji, message_id=message_id)
-        )
+        if remove:
+            result = _run_async(
+                react_fn(chat_id=chat_id, message_id=message_id)
+            )
+        else:
+            result = _run_async(
+                react_fn(chat_id=chat_id, emoji=emoji, message_id=message_id)
+            )
     except Exception as e:
         return json.dumps(_error(f"Reaction failed: {e}"))
     if isinstance(result, dict):

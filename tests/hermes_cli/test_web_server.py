@@ -7124,6 +7124,44 @@ class TestPtyWebSocket:
         assert env["HERMES_PYTHON"] == sys.executable
         assert env["HERMES_CWD"] == os.getcwd()
 
+    def test_resolve_chat_argv_replaces_invalid_tui_python_environment(self, monkeypatch):
+        """Dashboard chat does not preserve unusable inherited TUI Python env."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.setenv("HERMES_PYTHON_SRC_ROOT", "/definitely/missing/hermes-src")
+        monkeypatch.setenv("HERMES_PYTHON", "/definitely/missing/python")
+        monkeypatch.setenv("HERMES_CWD", "/definitely/missing/cwd")
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_PYTHON_SRC_ROOT"] == str(main_mod.PROJECT_ROOT)
+        assert env["HERMES_PYTHON"] == sys.executable
+        assert env["HERMES_CWD"] == os.getcwd()
+
+    def test_resolve_chat_argv_falls_back_when_getcwd_is_missing(self, monkeypatch, tmp_path):
+        """Dashboard chat still starts if the service cwd was deleted."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.delenv("HERMES_CWD", raising=False)
+        monkeypatch.setenv("PWD", str(tmp_path))
+        monkeypatch.setattr(main_mod.os, "getcwd", lambda: (_ for _ in ()).throw(FileNotFoundError()))
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_CWD"] == str(tmp_path)
+
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
     ):

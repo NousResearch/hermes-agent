@@ -1,5 +1,5 @@
 import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
@@ -104,6 +104,84 @@ function groupedPendingMessage(): ThreadMessage {
   } as ThreadMessage
 }
 
+function pendingOnlyMessage(): ThreadMessage {
+  return {
+    id: 'assistant-pending-only',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'term-only',
+        toolName: 'terminal',
+        args: { command: 'sleep 10' },
+        argsText: JSON.stringify({ command: 'sleep 10' })
+      }
+    ],
+    status: { type: 'running' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
+function completedOnlyMessage(): ThreadMessage {
+  return {
+    id: 'assistant-completed-only',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'read-only',
+        toolName: 'read_file',
+        args: { path: '/etc/hosts' },
+        argsText: JSON.stringify({ path: '/etc/hosts' }),
+        result: { content: '127.0.0.1 localhost' }
+      }
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
+function failedOnlyMessage(): ThreadMessage {
+  return {
+    id: 'assistant-failed-only',
+    role: 'assistant',
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: 'term-failed',
+        toolName: 'terminal',
+        args: { command: 'exit 1' },
+        argsText: JSON.stringify({ command: 'exit 1' }),
+        isError: true,
+        result: { stderr: 'boom' }
+      }
+    ],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function GroupHarness({ message }: { message: ThreadMessage }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [message],
@@ -154,5 +232,41 @@ describe('flat tool list approval surfacing', () => {
       // in a `hidden` subtree.
       expect(bar?.closest('[hidden]')).toBeNull()
     })
+  })
+
+  it('lets completed tool rows be dismissed', async () => {
+    const { container } = render(<GroupHarness message={completedOnlyMessage()} />)
+
+    const dismiss = await screen.findByLabelText('Dismiss')
+
+    expect(container.querySelectorAll('[data-slot="tool-block"]').length).toBeGreaterThan(1)
+
+    fireEvent.click(dismiss)
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Dismiss')).toBeNull()
+    })
+  })
+
+  it('lets failed tool rows be dismissed', async () => {
+    render(<GroupHarness message={failedOnlyMessage()} />)
+
+    const dismiss = await screen.findByLabelText('Dismiss')
+
+    fireEvent.click(dismiss)
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Dismiss')).toBeNull()
+    })
+  })
+
+  it('does not show dismiss for pending tool rows', async () => {
+    const { container } = render(<GroupHarness message={pendingOnlyMessage()} />)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-slot="tool-block"]').length).toBeGreaterThan(0)
+    })
+
+    expect(screen.queryByLabelText('Dismiss')).toBeNull()
   })
 })

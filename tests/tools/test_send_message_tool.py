@@ -1414,6 +1414,116 @@ class TestSendDiscordThreadId:
         assert "403" in result["error"]
 
 
+class TestStandaloneParseRetryAfter:
+    """_standalone_parse_retry_after extracts retry_after from 429 bodies."""
+
+    def test_parses_retry_after_float(self):
+        from plugins.platforms.discord.adapter import _standalone_parse_retry_after
+        body = '{"message": "You are being rate limited.", "retry_after": 0.3}'
+        assert _standalone_parse_retry_after(body) == 0.5  # floored at 0.5
+
+    def test_parses_retry_after_large_value(self):
+        from plugins.platforms.discord.adapter import _standalone_parse_retry_after
+        body = '{"retry_after": 15.0}'
+        assert _standalone_parse_retry_after(body) == 10.0  # capped at 10
+
+    def test_returns_none_on_missing_field(self):
+        from plugins.platforms.discord.adapter import _standalone_parse_retry_after
+        body = '{"message": "You are being rate limited."}'
+        assert _standalone_parse_retry_after(body) is None
+
+    def test_returns_none_on_invalid_json(self):
+        from plugins.platforms.discord.adapter import _standalone_parse_retry_after
+        assert _standalone_parse_retry_after("not json") is None
+
+    def test_returns_none_on_non_numeric(self):
+        from plugins.platforms.discord.adapter import _standalone_parse_retry_after
+        body = '{"retry_after": "abc"}'
+        assert _standalone_parse_retry_after(body) is None
+
+
+class TestSendDiscord429Retry:
+    """_standalone_send retries on 429 rate-limit responses."""
+
+    @staticmethod
+    def _build_mock_sequence(responses):
+        """Build a mock aiohttp session that returns different responses per call.
+
+        ``responses`` is a list of (status, json_data, text_body) tuples.
+        """
+        mock_session = MagicMock()
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        call_count = 0
+
+        def _make_resp(status, data, text_body):
+            resp = MagicMock()
+            resp.status = status
+            resp.json = AsyncMock(return_value=data)
+            resp.text = AsyncMock(return_value=text_body)
+            resp.__aenter__ = AsyncMock(return_value=resp)
+            resp.__aexit__ = AsyncMock(return_value=None)
+            return resp
+
+        def _post(*args, **kwargs):
+            nonlocal call_count
+            idx = min(call_count, len(responses) - 1)
+            call_count += 1
+            s, d, t = responses[idx]
+            return _make_resp(s, d, t)
+
+        mock_session.post = MagicMock(side_effect=_post)
+        return mock_session
+
+    def test_429_then_success_retries_and_succeeds(self):
+        """A 429 with retry_after followed by 200 should succeed."""
+        mock_session = self._build_mock_sequence([
+            (429, {"retry_after": 0.5}, '{"retry_after": 0.5}'),
+            (200, {"id": "msg123"}, '{}'),
+        ])
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_discord("tok", "111", "hello"))
+        assert result["success"] is True
+        assert result["message_id"] == "msg123"
+        assert mock_session.post.call_count == 2
+
+    def test_429_exhausted_retries_returns_error(self):
+        """Three consecutive 429s should return an error."""
+        mock_session = self._build_mock_sequence([
+            (429, {"retry_after": 0.5}, '{"retry_after": 0.5}'),
+            (429, {"retry_after": 0.5}, '{"retry_after": 0.5}'),
+            (429, {"retry_after": 0.5}, '{"retry_after": 0.5}'),
+        ])
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_discord("tok", "111", "hello"))
+        assert "error" in result
+        assert "429" in result["error"]
+        assert mock_session.post.call_count == 3
+
+    def test_429_no_retry_after_returns_error_immediately(self):
+        """429 without parseable retry_after should return error on first attempt."""
+        mock_session = self._build_mock_sequence([
+            (429, {"message": "rate limited"}, '{"message": "rate limited"}'),
+        ])
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_discord("tok", "111", "hello"))
+        assert "error" in result
+        assert "429" in result["error"]
+        assert mock_session.post.call_count == 1
+
+    def test_non_429_error_returns_immediately(self):
+        """Non-429 errors (e.g. 403) should not retry."""
+        mock_session = self._build_mock_sequence([
+            (403, {"message": "Forbidden"}, '{"message": "Forbidden"}'),
+        ])
+        with patch("aiohttp.ClientSession", return_value=mock_session):
+            result = asyncio.run(_send_discord("tok", "111", "hello"))
+        assert "error" in result
+        assert "403" in result["error"]
+        assert mock_session.post.call_count == 1
+
+
 class TestSendToPlatformDiscordThread:
     """_send_to_platform passes thread_id through to _send_discord."""
 

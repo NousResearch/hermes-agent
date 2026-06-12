@@ -6310,6 +6310,27 @@ def _standalone_sanitize_error(text) -> str:
     )
 
 
+# Maximum number of attempts for 429 retries in the standalone send path.
+_STANDALONE_MAX_RETRIES = 3
+
+
+def _standalone_parse_retry_after(body_text: str) -> Optional[float]:
+    """Extract ``retry_after`` from a Discord 429 JSON response body.
+
+    Returns the delay in seconds (floored at 0.5, capped at 10), or ``None``
+    if the body doesn't contain a parseable ``retry_after`` field.
+    """
+    try:
+        import json as _json
+        data = _json.loads(body_text)
+        raw = data.get("retry_after")
+        if raw is not None:
+            return max(0.5, min(10.0, float(raw)))
+    except Exception:
+        pass
+    return None
+
+
 async def _standalone_send(
     pconfig,
     chat_id: str,
@@ -6470,12 +6491,26 @@ async def _standalone_send(
 
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             # Send text message (skip if empty and media is present)
+            # Retries on 429 rate-limit using Discord's retry_after field.
             if message.strip() or not media_files:
-                async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
-                    if resp.status not in {200, 201}:
-                        body = await resp.text()
-                        return {"error": f"Discord API error ({resp.status}): {body}"}
-                    last_data = await resp.json()
+                for _attempt in range(_STANDALONE_MAX_RETRIES):
+                    async with session.post(url, headers=json_headers, json={"content": message}, **_req_kw) as resp:
+                        if resp.status == 429:
+                            body = await resp.text()
+                            delay = _standalone_parse_retry_after(body)
+                            if delay is not None and _attempt < _STANDALONE_MAX_RETRIES - 1:
+                                logger.warning(
+                                    "Discord standalone send rate-limited (attempt %d/%d), retrying in %.1fs",
+                                    _attempt + 1, _STANDALONE_MAX_RETRIES, delay,
+                                )
+                                await asyncio.sleep(delay)
+                                continue
+                            return {"error": f"Discord API error (429): {body}"}
+                        if resp.status not in {200, 201}:
+                            body = await resp.text()
+                            return {"error": f"Discord API error ({resp.status}): {body}"}
+                        last_data = await resp.json()
+                        break
 
             # Send each media file as a separate multipart upload
             for media_path, _is_voice in media_files:
@@ -6485,18 +6520,34 @@ async def _standalone_send(
                     warnings.append(warning)
                     continue
                 try:
-                    form = aiohttp.FormData()
                     filename = os.path.basename(media_path)
-                    with open(media_path, "rb") as f:
-                        form.add_field("files[0]", f, filename=filename)
-                        async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
-                            if resp.status not in {200, 201}:
-                                body = await resp.text()
-                                warning = _standalone_sanitize_error(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
-                                logger.error(warning)
-                                warnings.append(warning)
-                                continue
-                            last_data = await resp.json()
+                    for _m_attempt in range(_STANDALONE_MAX_RETRIES):
+                        form = aiohttp.FormData()
+                        with open(media_path, "rb") as f:
+                            form.add_field("files[0]", f, filename=filename)
+                            async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:
+                                if resp.status == 429:
+                                    body = await resp.text()
+                                    delay = _standalone_parse_retry_after(body)
+                                    if delay is not None and _m_attempt < _STANDALONE_MAX_RETRIES - 1:
+                                        logger.warning(
+                                            "Discord media upload rate-limited (attempt %d/%d), retrying in %.1fs",
+                                            _m_attempt + 1, _STANDALONE_MAX_RETRIES, delay,
+                                        )
+                                        await asyncio.sleep(delay)
+                                        continue
+                                    warning = _standalone_sanitize_error(f"Failed to send media {media_path}: Discord API error (429): {body}")
+                                    logger.error(warning)
+                                    warnings.append(warning)
+                                    break
+                                if resp.status not in {200, 201}:
+                                    body = await resp.text()
+                                    warning = _standalone_sanitize_error(f"Failed to send media {media_path}: Discord API error ({resp.status}): {body}")
+                                    logger.error(warning)
+                                    warnings.append(warning)
+                                    break
+                                last_data = await resp.json()
+                                break
                 except Exception as e:
                     warning = _standalone_sanitize_error(f"Failed to send media {media_path}: {e}")
                     logger.error(warning)

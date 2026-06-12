@@ -404,7 +404,7 @@ def test_simulator_proof_android_captures_while_long_lived_run_is_foreground(mon
                 "-a",
                 "android.intent.action.VIEW",
                 "-d",
-                "elixir-card://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081&disableOnboarding=1",
+                "'elixir-card://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081&disableOnboarding=1'",
                 "-p",
                 "com.elixir.card.staging",
             ),
@@ -432,6 +432,45 @@ def test_simulator_proof_android_captures_while_long_lived_run_is_foreground(mon
     ]
     assert bytes_calls == [
         (("adb", "-s", "emulator-5554", "exec-out", "screencap", "-p"), worktree, 120)
+    ]
+
+
+def test_open_android_url_shell_quotes_dev_client_url_with_query_separator(tmp_path):
+    calls = []
+
+    def run_text(args, cwd, timeout):
+        calls.append((args, cwd, timeout))
+
+    url = "elixir-card://expo-development-client/?url=http%3A%2F%2F127.0.0.1%3A8081&disableOnboarding=1"
+
+    simulator_proof._open_android_url(
+        run_text,
+        ("adb", "-s", "emulator-5554"),
+        tmp_path,
+        30,
+        url,
+        "com.joinelixir.elixirclub",
+    )
+
+    assert calls == [
+        (
+            (
+                "adb",
+                "-s",
+                "emulator-5554",
+                "shell",
+                "am",
+                "start",
+                "-a",
+                "android.intent.action.VIEW",
+                "-d",
+                f"'{url}'",
+                "-p",
+                "com.joinelixir.elixirclub",
+            ),
+            tmp_path,
+            30,
+        )
     ]
 
 

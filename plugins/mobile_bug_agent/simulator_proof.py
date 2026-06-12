@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shlex
 import subprocess
 import tempfile
 import time
@@ -861,10 +862,10 @@ def _open_android_url(
         "-a",
         "android.intent.action.VIEW",
         "-d",
-        url,
+        shlex.quote(url),
     ]
     if package.strip():
-        args.extend(("-p", package.strip()))
+        args.extend(("-p", shlex.quote(package.strip())))
     run_text(tuple(args), cwd, timeout)
 
 

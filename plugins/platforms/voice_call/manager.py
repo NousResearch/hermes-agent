@@ -630,6 +630,12 @@ class CallManager:
                 "voice_call: realtime delivery failed for %s; falling back "
                 "to carrier TTS", call_id,
             )
+        # Speaking again on a notify call: hold the auto-hangup while the
+        # new message plays, then re-arm it (notify semantics: hang up a
+        # few seconds after the LAST message).
+        is_notify = record.mode == "notify"
+        if is_notify:
+            self._cancel_timer(call_id, "notify")
         was_listening = record.state == CallState.LISTENING
         self._transition(record, CallState.SPEAKING)
         await self.provider.speak(record, text)
@@ -640,13 +646,40 @@ class CallManager:
         if was_listening or record.mode == "conversation":
             self._transition(record, CallState.LISTENING)
             self._arm_silence_timer(record)
+        elif is_notify and record.answered_at:
+            self._arm_timer(
+                call_id, "notify",
+                max(0, self.config.outbound.notify_hangup_delay_s),
+                self._on_notify_hangup,
+            )
 
     async def continue_call(self, call_id: str, text: str) -> str:
-        """Speak ``text`` and wait for the caller's next final utterance."""
-        self._require_call(call_id)
+        """Speak ``text`` and wait for the caller's next final utterance.
+
+        On a notify call this upgrades the call to a conversation: the
+        auto-hangup is cancelled and carrier transcription starts, so the
+        caller's reply can come back.
+        """
+        record = self._require_call(call_id)
         existing = self._waiters.get(call_id)
         if existing is not None and not existing.done():
             raise RuntimeError(f"already waiting for a reply on {call_id}")
+        if record.mode == "notify":
+            logger.info(
+                "voice_call: continue_call upgrades notify call %s to "
+                "conversation", call_id,
+            )
+            self._cancel_timer(call_id, "notify")
+            record.mode = "conversation"
+            self._persist(record)
+            if not self._realtime_owns_audio(record):
+                try:
+                    await self.provider.start_listening(record)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "voice_call: start_listening failed during notify "
+                        "upgrade of %s: %s", call_id, e,
+                    )
         await self.speak(call_id, text)
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._waiters[call_id] = fut

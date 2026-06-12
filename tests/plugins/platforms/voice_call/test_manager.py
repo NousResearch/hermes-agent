@@ -57,6 +57,64 @@ async def test_outbound_notify_speaks_and_hangs_up(vc_config, provider, store):
 
 
 @pytest.mark.asyncio
+async def test_continue_call_upgrades_notify_to_conversation(
+    vc_config, provider, store
+):
+    """continue_call on a notify call cancels the auto-hangup, starts
+    carrier transcription, and waits for the caller's reply."""
+    vc_config.outbound.default_mode = "notify"
+    vc_config.outbound.notify_hangup_delay_s = 0.3
+    manager = CallManager(vc_config, provider, store)
+    provider.event_sink = manager.process_event
+    record = await manager.initiate_call("+15555550001", message="deploy is ready")
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while not record.answered_at and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+
+    async def caller_replies():
+        await asyncio.sleep(0.1)
+        await manager.process_event(NormalizedEvent(
+            type=EventType.CALL_SPEECH, provider="mock",
+            provider_call_id=record.provider_call_id, text="yes ship it",
+        ))
+
+    asyncio.get_running_loop().create_task(caller_replies())
+    reply = await manager.continue_call(record.call_id, "shall I proceed?")
+    assert reply == "yes ship it"
+    assert record.mode == "conversation"          # upgraded
+    assert provider.listening == [record.provider_call_id]  # transcription on
+    await asyncio.sleep(0.5)
+    assert manager.get_call(record.call_id) is not None  # no auto-hangup
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_speak_on_notify_call_rearms_hangup(vc_config, provider, store):
+    """speak_to_user on a notify call holds the auto-hangup while the new
+    message plays, then re-arms it — hang up after the LAST message."""
+    vc_config.outbound.default_mode = "notify"
+    vc_config.outbound.notify_hangup_delay_s = 0.25
+    manager = CallManager(vc_config, provider, store)
+    provider.event_sink = manager.process_event
+    record = await manager.initiate_call("+15555550001", message="first part")
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while not record.answered_at and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+
+    await asyncio.sleep(0.1)
+    await manager.speak(record.call_id, "and one more thing")
+    await asyncio.sleep(0.15)
+    # Original timer (would have fired at 0.25 after answer) was re-armed.
+    assert manager.get_call(record.call_id) is not None
+    await asyncio.sleep(0.25)
+    assert manager.get_call(record.call_id) is None  # then it hung up
+    assert record.end_reason == "notify-complete"
+    assert [t.text for t in record.transcript if t.speaker == "bot"] == [
+        "first part", "and one more thing",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_ring_timeout_marks_no_answer(store, make_config):
     cfg = make_config(timeouts=TimeoutsConfig(max_call_s=5, ring_s=0.05, silence_s=0,
                                               transcript_wait_s=0.5))

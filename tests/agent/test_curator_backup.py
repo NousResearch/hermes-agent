@@ -191,6 +191,41 @@ def test_rollback_restores_deleted_skill(backup_env):
     assert "important content" in (user_skill / "SKILL.md").read_text()
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="creates a symlink; symlink creation is restricted on Windows",
+)
+def test_rollback_skips_external_skill_symlink(backup_env):
+    """A snapshot can contain a skill entry that is a symlink to a package
+    OUTSIDE the skills tree (a legitimate layout, e.g.
+    ``skills/<name> -> ../../.agents/skills/<name>``). Rollback must restore the
+    real skills rather than aborting on that link (#44658); the external link is
+    skipped (never recreated from the archive) but everything else is restored.
+    """
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+
+    _write_skill(skills, "local-skill", body="keep me")
+    external_root = backup_env["home"].parent / ".agents" / "skills"
+    _write_skill(external_root, "ext-skill")
+    (skills / "ext-skill").symlink_to(
+        os.path.relpath(external_root / "ext-skill", skills)
+    )
+
+    cb.snapshot_skills(reason="with-external-link")
+
+    # Simulate a bad curator run that deletes the real skill.
+    import shutil as _sh
+    _sh.rmtree(skills / "local-skill")
+    assert not (skills / "local-skill").exists()
+
+    ok, msg, _ = cb.rollback()
+    assert ok, f"rollback must not abort on an external skill symlink: {msg}"
+    assert "keep me" in (skills / "local-skill" / "SKILL.md").read_text()
+    # The external link is intentionally skipped, not recreated from the archive.
+    assert not (skills / "ext-skill").is_symlink()
+
+
 def test_rollback_is_itself_undoable(backup_env):
     """A rollback creates its own safety snapshot before replacing the
     tree, so the user can undo a mistaken rollback. The safety snapshot

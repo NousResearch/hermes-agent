@@ -12,7 +12,6 @@ Subcommands:
   login    Explicit alias for the default one-shot onboarding.
   info     Show Portal auth state + which Tool Gateway tools are routed.
   open     Open the Portal subscription page in the user's default browser.
-  topup    Open the Portal billing page with the top-up modal open.
   tools    List Tool Gateway tools and which are active in the current config.
 
 This command is intentionally minimal — it does not duplicate functionality
@@ -119,59 +118,6 @@ def _cmd_open(args) -> int:
     return 0
 
 
-def _cmd_topup(args) -> int:
-    """Start a top-up by opening the portal billing page with the modal open.
-
-    The terminal does NOT confirm, poll, or track the payment — checkout,
-    payment, and confirmation all happen in the browser. The next `/usage`
-    fetch simply shows the new balance. (Roadmap phase 2a: terminal → portal
-    top-up handoff. Terminal-native charging is deferred to 2b.)
-    """
-    from hermes_cli.nous_account import (
-        get_nous_portal_account_info,
-        nous_portal_topup_url,
-    )
-
-    # force_fresh: the org slug + name + email come from /api/oauth/account,
-    # not the JWT — a fresh fetch is what gives us the org-pinned URL and the
-    # identity line.
-    try:
-        account = get_nous_portal_account_info(force_fresh=True)
-    except Exception:
-        account = None
-
-    if account is None or not getattr(account, "logged_in", False):
-        print(color("  Not logged into Nous Portal.", Colors.YELLOW))
-        print("  Run `hermes portal` to log in, then `hermes portal topup`.")
-        return 1
-
-    # Identity line — always shown before opening a money surface so the user
-    # knows which account/org they're topping up (roadmap §4.4).
-    email = getattr(account, "email", None)
-    org_name = getattr(account, "org_name", None)
-    who_parts = []
-    if email:
-        who_parts.append(color(email, Colors.CYAN))
-    if org_name:
-        who_parts.append(f"org {color(org_name, Colors.CYAN)}")
-    if who_parts:
-        print(f"  Topping up as {' / '.join(who_parts)}")
-
-    target = nous_portal_topup_url(account)
-    print(f"  Opening {target}")
-    try:
-        opened = webbrowser.open(target)
-    except Exception:
-        opened = False
-    if not opened:
-        print()
-        print("  Could not launch a browser. Open the URL above to top up.")
-        # Not a hard failure: the user still has the URL to complete the top-up.
-    print()
-    print("  Complete your top-up in the browser — credits will appear in /usage shortly.")
-    return 0
-
-
 def _cmd_tools(args) -> int:
     """List the Tool Gateway catalog + current routing."""
     from hermes_cli.nous_subscription import get_nous_subscription_features
@@ -255,8 +201,6 @@ def portal_command(args) -> int:
         return _cmd_status(args)
     if sub == "open":
         return _cmd_open(args)
-    if sub == "topup":
-        return _cmd_topup(args)
     if sub == "tools":
         return _cmd_tools(args)
     print(f"Unknown portal subcommand: {sub}", file=sys.stderr)
@@ -274,7 +218,7 @@ def add_parser(subparsers) -> None:
             "and set it up — pick a model, set Nous as your provider, and offer "
             "the Tool Gateway (the human-readable alias for `hermes auth add "
             "nous --type oauth`, identical to `hermes setup --portal`). "
-            "Subcommands: login (default), info, open, topup, tools."
+            "Subcommands: login (default), info, open, tools."
         ),
     )
     portal_sub = portal_parser.add_subparsers(dest="portal_command")
@@ -292,10 +236,6 @@ def add_parser(subparsers) -> None:
     portal_sub.add_parser(
         "open",
         help="Open the Portal subscription page in your default browser",
-    )
-    portal_sub.add_parser(
-        "topup",
-        help="Open the Portal billing page with the top-up modal open",
     )
     portal_sub.add_parser(
         "tools",

@@ -1458,6 +1458,20 @@ function SidebarWorkspaceGroup({
   const hiddenCount = Math.max(0, totalCount - visibleSessions.length)
   const nextCount = Math.min(pageStep, hiddenCount)
 
+  // Leading glyph: profile color dot, platform avatar, or a branch mark for a
+  // worktree. When reorderable it doubles as the drag handle (icon ↔ grabber).
+  const leadingIcon = group.color ? (
+    <span aria-hidden="true" className="size-2 shrink-0 rounded-full" style={{ backgroundColor: group.color }} />
+  ) : isSourceGroup && group.sourceId ? (
+    <PlatformAvatar
+      className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
+      platformId={group.sourceId}
+      platformName={group.label}
+    />
+  ) : (
+    <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="git-branch" size="0.75rem" />
+  )
+
   // Reveal already-loaded rows first; only hit the backend when the next page
   // crosses what's been fetched for this profile.
   const handleProfileLoadMore = () => {
@@ -1494,20 +1508,16 @@ function SidebarWorkspaceGroup({
           onClick={() => setOpen(value => !value)}
           type="button"
         >
-          {group.color ? (
-            <span
-              aria-hidden="true"
-              className="size-2 shrink-0 rounded-full"
-              style={{ backgroundColor: group.color }}
+          {reorderable ? (
+            <WorkspaceReorderHandle
+              dragging={dragging}
+              dragHandleProps={dragHandleProps}
+              icon={leadingIcon}
+              label={s.reorderWorkspace(group.label)}
             />
-          ) : null}
-          {isSourceGroup && group.sourceId ? (
-            <PlatformAvatar
-              className="size-4 rounded-[4px] text-[0.5625rem] [&_svg]:size-3"
-              platformId={group.sourceId}
-              platformName={group.label}
-            />
-          ) : null}
+          ) : (
+            leadingIcon
+          )}
           <span className="min-w-0 truncate">{group.label}</span>
           <span className="shrink-0">
             <SidebarCount>
@@ -1533,23 +1543,6 @@ function SidebarWorkspaceGroup({
               <Codicon name="add" size="0.75rem" />
             </button>
           </Tip>
-        )}
-        {reorderable && (
-          <span
-            {...dragHandleProps}
-            aria-label={s.reorderWorkspace(group.label)}
-            className="ml-auto -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing"
-            onClick={event => event.stopPropagation()}
-          >
-            <Codicon
-              className={cn(
-                'text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/workspace:opacity-80 hover:text-(--ui-text-secondary)',
-                dragging && 'text-(--ui-text-secondary) opacity-100'
-              )}
-              name="grabber"
-              size="0.75rem"
-            />
-          </span>
         )}
       </div>
       {open && (
@@ -1650,7 +1643,16 @@ function SidebarWorkspaceParent({
           onClick={() => setOpen(value => !value)}
           type="button"
         >
-          <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.75rem" />
+          {reorderable ? (
+            <WorkspaceReorderHandle
+              dragging={dragging}
+              dragHandleProps={dragHandleProps}
+              icon={<Codicon className="text-(--ui-text-tertiary)" name="repo" size="0.75rem" />}
+              label={s.reorderWorkspace(parent.label)}
+            />
+          ) : (
+            <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.75rem" />
+          )}
           <span className="min-w-0 truncate">{parent.label}</span>
           <span className="shrink-0">
             <SidebarCount>{parent.sessionCount}</SidebarCount>
@@ -1671,23 +1673,6 @@ function SidebarWorkspaceParent({
               <Codicon name="add" size="0.75rem" />
             </button>
           </Tip>
-        )}
-        {reorderable && (
-          <span
-            {...dragHandleProps}
-            aria-label={s.reorderWorkspace(parent.label)}
-            className="ml-auto -my-0.5 grid w-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing"
-            onClick={event => event.stopPropagation()}
-          >
-            <Codicon
-              className={cn(
-                'text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/workspace:opacity-80 hover:text-(--ui-text-secondary)',
-                dragging && 'text-(--ui-text-secondary) opacity-100'
-              )}
-              name="grabber"
-              size="0.75rem"
-            />
-          </span>
         )}
       </div>
       {open &&
@@ -1754,6 +1739,48 @@ function WorkspaceShowMoreButton({ count, label, onClick }: { count: number; lab
         <Codicon name="ellipsis" size="0.75rem" />
       </button>
     </Tip>
+  )
+}
+
+// Reorder handle that lives in the header's leading-icon slot: the resting icon
+// fades out and a grabber fades in on hover/drag (same swap as the session row),
+// so the drag affordance never eats header width on the right.
+function WorkspaceReorderHandle({
+  dragHandleProps,
+  dragging,
+  icon,
+  label
+}: {
+  dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  dragging: boolean
+  icon: React.ReactNode
+  label: string
+}) {
+  return (
+    <span
+      {...dragHandleProps}
+      aria-label={label}
+      className="group/handle relative -my-0.5 grid size-4 shrink-0 cursor-grab touch-none place-items-center self-stretch overflow-hidden active:cursor-grabbing"
+      data-reorder-handle
+      onClick={event => event.stopPropagation()}
+    >
+      <span
+        className={cn(
+          'grid place-items-center transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0',
+          dragging && 'opacity-0'
+        )}
+      >
+        {icon}
+      </span>
+      <Codicon
+        className={cn(
+          'absolute text-(--ui-text-quaternary) opacity-0 transition-opacity group-hover/handle:opacity-80 group-focus-within/handle:opacity-80 hover:text-(--ui-text-secondary)',
+          dragging && 'text-(--ui-text-secondary) opacity-100'
+        )}
+        name="grabber"
+        size="0.75rem"
+      />
+    </span>
   )
 }
 

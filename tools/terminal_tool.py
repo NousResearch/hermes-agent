@@ -2049,6 +2049,7 @@ def terminal_tool(
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None
+        approval_record_id = None
         if not force:
             approval = _check_all_guards(command, env_type)
             if not approval["approved"]:
@@ -2080,6 +2081,7 @@ def terminal_tool(
             if approval.get("user_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command required approval ({desc}) and was approved by the user."
+                approval_record_id = approval.get("approval_record_id")
             elif approval.get("smart_approved"):
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
@@ -2113,7 +2115,11 @@ def terminal_tool(
             # Spawn a tracked background process via the process registry.
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
-            from tools.approval import get_current_session_key
+            from tools.approval import (
+                get_current_session_key,
+                mark_gateway_approval_completed,
+                mark_gateway_approval_executing,
+            )
             from tools.process_registry import process_registry
 
             session_key = get_current_session_key(default="")
@@ -2123,6 +2129,7 @@ def terminal_tool(
                 default_cwd=cwd,
             )
             try:
+                mark_gateway_approval_executing(approval_record_id)
                 if env_type == "local":
                     proc_session = process_registry.spawn_local(
                         command=command,
@@ -2150,6 +2157,8 @@ def terminal_tool(
                 }
                 if approval_note:
                     result_data["approval"] = approval_note
+                if approval_record_id:
+                    result_data["approval_record_id"] = approval_record_id
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
 
@@ -2321,8 +2330,10 @@ def terminal_tool(
                     proc_session.watch_patterns = list(watch_patterns)
                     result_data["watch_patterns"] = proc_session.watch_patterns
 
+                mark_gateway_approval_completed(approval_record_id, exit_code=0)
                 return json.dumps(result_data, ensure_ascii=False)
             except Exception as e:
+                mark_gateway_approval_completed(approval_record_id, exit_code=-1)
                 return json.dumps({
                     "output": "",
                     "exit_code": -1,
@@ -2330,9 +2341,14 @@ def terminal_tool(
                 }, ensure_ascii=False)
         else:
             # Run foreground command with retry logic
+            from tools.approval import (
+                mark_gateway_approval_completed,
+                mark_gateway_approval_executing,
+            )
             max_retries = 3
             retry_count = 0
             result = None
+            mark_gateway_approval_executing(approval_record_id)
             
             while retry_count <= max_retries:
                 try:
@@ -2348,6 +2364,7 @@ def terminal_tool(
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:
+                        mark_gateway_approval_completed(approval_record_id, exit_code=124)
                         return json.dumps({
                             "output": "",
                             "exit_code": 124,
@@ -2365,6 +2382,7 @@ def terminal_tool(
                     
                     logger.error("Execution failed after %d retries - Command: %s - Error: %s: %s - Task: %s, Backend: %s",
                                  max_retries, _safe_command_preview(command), type(e).__name__, e, effective_task_id, env_type)
+                    mark_gateway_approval_completed(approval_record_id, exit_code=-1)
                     return json.dumps({
                         "output": "",
                         "exit_code": -1,
@@ -2435,9 +2453,12 @@ def terminal_tool(
             }
             if approval_note:
                 result_dict["approval"] = approval_note
+            if approval_record_id:
+                result_dict["approval_record_id"] = approval_record_id
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
 
+            mark_gateway_approval_completed(approval_record_id, exit_code=returncode)
             return json.dumps(result_dict, ensure_ascii=False)
 
     except Exception as e:

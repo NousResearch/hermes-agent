@@ -9,6 +9,8 @@ This module is the single source of truth for the dangerous command system:
 """
 
 import contextvars
+import hashlib
+import json
 import logging
 import os
 import re
@@ -16,6 +18,7 @@ import sys
 import threading
 import time
 import unicodedata
+from pathlib import Path
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -615,6 +618,215 @@ _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
 
+_LEDGER_STATUSES = {
+    "pending",
+    "approved_once",
+    "executing",
+    "completed",
+    "denied",
+    "expired",
+    "stale",
+}
+
+
+def _approval_ledger_path() -> Path:
+    """Return the non-secret durable gateway approval ledger path."""
+    from hermes_constants import get_hermes_home
+
+    return get_hermes_home() / "approval-ledger.json"
+
+
+def _approval_now() -> float:
+    return time.time()
+
+
+def _approval_command_fingerprint(
+    session_key: str,
+    command: str,
+    tool_type: str,
+    pattern_keys: list[str] | tuple[str, ...] | None,
+) -> str:
+    """Hash the exact approval identity without storing the raw command."""
+    payload = {
+        "session_key": session_key or "",
+        "tool_type": tool_type or "gateway",
+        "pattern_keys": list(pattern_keys or []),
+        "command": command or "",
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _read_approval_ledger() -> dict:
+    path = _approval_ledger_path()
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.debug("Failed to read approval ledger %s: %s", path, exc)
+        return {}
+
+
+def _write_approval_ledger(data: dict) -> None:
+    path = _approval_ledger_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        json.dump(data, fh, sort_keys=True, separators=(",", ":"))
+    tmp.replace(path)
+
+
+def _approval_expiry_seconds() -> int:
+    cfg = _get_approval_config()
+    try:
+        timeout = int(cfg.get("gateway_timeout", 300))
+    except (ValueError, TypeError):
+        timeout = 300
+    return max(timeout, 60)
+
+
+def _get_approval_ledger_record(
+    session_key: str,
+    command: str,
+    tool_type: str,
+    pattern_keys: list[str] | tuple[str, ...] | None,
+) -> dict | None:
+    """Return the durable record for an exact command fingerprint, if present."""
+    record_id = _approval_command_fingerprint(session_key, command, tool_type, pattern_keys)
+    record = _read_approval_ledger().get(record_id)
+    return dict(record) if isinstance(record, dict) else None
+
+
+def _save_approval_record(record: dict) -> dict:
+    status = record.get("status")
+    if status not in _LEDGER_STATUSES:
+        raise ValueError(f"invalid approval ledger status: {status!r}")
+    data = _read_approval_ledger()
+    data[record["id"]] = record
+    _write_approval_ledger(data)
+    return record
+
+
+def _prepare_gateway_approval_record(
+    *,
+    session_key: str,
+    command: str,
+    tool_type: str,
+    pattern_keys: list[str] | tuple[str, ...] | None,
+    description: str = "",
+) -> dict:
+    """Create or reuse a non-secret durable approval record before prompting."""
+    now = _approval_now()
+    keys = list(pattern_keys or [])
+    record_id = _approval_command_fingerprint(session_key, command, tool_type, keys)
+    data = _read_approval_ledger()
+    record = data.get(record_id)
+    if isinstance(record, dict):
+        expires_at = float(record.get("expires_at", 0) or 0)
+        if expires_at and expires_at < now and record.get("status") in {"pending", "approved_once"}:
+            record["status"] = "expired"
+            record["updated_at"] = now
+        record["prompt_count"] = int(record.get("prompt_count", 0) or 0) + 1
+        record["updated_at"] = now
+        record["description_hash"] = hashlib.sha256((description or "").encode("utf-8")).hexdigest()
+        data[record_id] = record
+        _write_approval_ledger(data)
+        return dict(record)
+
+    record = {
+        "id": record_id,
+        "session_key_hash": hashlib.sha256((session_key or "").encode("utf-8")).hexdigest(),
+        "command_hash": hashlib.sha256((command or "").encode("utf-8")).hexdigest(),
+        "fingerprint": record_id,
+        "tool_type": tool_type or "gateway",
+        "pattern_keys": keys,
+        "description_hash": hashlib.sha256((description or "").encode("utf-8")).hexdigest(),
+        "status": "pending",
+        "created_at": now,
+        "updated_at": now,
+        "expires_at": now + _approval_expiry_seconds(),
+        "prompt_count": 1,
+    }
+    data[record_id] = record
+    _write_approval_ledger(data)
+    return dict(record)
+
+
+def _update_gateway_approval_record(record_id: str, status: str, **fields) -> bool:
+    if status not in _LEDGER_STATUSES:
+        raise ValueError(f"invalid approval ledger status: {status!r}")
+    data = _read_approval_ledger()
+    record = data.get(record_id)
+    if not isinstance(record, dict):
+        return False
+    record.update(fields)
+    record["status"] = status
+    record["updated_at"] = _approval_now()
+    data[record_id] = record
+    _write_approval_ledger(data)
+    return True
+
+
+def mark_gateway_approval_executing(record_id: str | None) -> bool:
+    """Mark a one-shot approval as executing immediately before tool spawn."""
+    if not record_id:
+        return False
+    return _update_gateway_approval_record(record_id, "executing")
+
+
+def mark_gateway_approval_completed(record_id: str | None, *, exit_code=None) -> bool:
+    """Mark an approval as completed after tool execution returns."""
+    if not record_id:
+        return False
+    fields = {}
+    if exit_code is not None:
+        fields["exit_code"] = exit_code
+    return _update_gateway_approval_record(record_id, "completed", **fields)
+
+
+def _handle_duplicate_gateway_approval(
+    *,
+    session_key: str,
+    command: str,
+    tool_type: str,
+    pattern_keys: list[str] | tuple[str, ...] | None,
+) -> dict | None:
+    """Return a non-approval result when a resumed turn repeats a prompt."""
+    record = _get_approval_ledger_record(session_key, command, tool_type, pattern_keys)
+    if not record:
+        return None
+    status = record.get("status")
+    if status not in {"pending", "approved_once", "executing", "stale"}:
+        return None
+
+    prompt_count = int(record.get("prompt_count", 0) or 0)
+    outcome = "stale"
+    message = (
+        "BLOCKED: A prior command approval was interrupted before Hermes could "
+        "complete the approved action. The command was not re-run automatically. "
+        "Please review and approve the exact action again if it is still needed."
+    )
+    if prompt_count > 1 or status == "stale":
+        outcome = "approval_loop_detected"
+        message = (
+            "APPROVAL LOOP DETECTED\n\n"
+            "The same command approval fingerprint was encountered again after "
+            "a gateway interruption/resume. Hermes will not keep re-prompting "
+            "or auto-run this action. Manually run the command if safe, then "
+            "provide the output for the next step."
+        )
+    _update_gateway_approval_record(record["id"], "stale")
+    return {
+        "approved": False,
+        "message": message,
+        "outcome": outcome,
+        "user_consent": False,
+        "approval_record_id": record["id"],
+    }
+
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
 # =========================================================================
@@ -688,6 +900,12 @@ def resolve_gateway_approval(session_key: str, choice: str,
 
     for entry in targets:
         entry.result = choice
+        record_id = entry.data.get("approval_record_id") if isinstance(entry.data, dict) else None
+        if record_id:
+            if choice == "once":
+                _update_gateway_approval_record(record_id, "approved_once")
+            elif choice == "deny":
+                _update_gateway_approval_record(record_id, "denied")
         entry.event.set()
     return len(targets)
 
@@ -1188,6 +1406,26 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     description = approval_data.get("description", "")
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
+    tool_type = approval_data.get("tool_type", surface)
+
+    duplicate = _handle_duplicate_gateway_approval(
+        session_key=session_key,
+        command=command,
+        tool_type=tool_type,
+        pattern_keys=list(all_keys),
+    )
+    if duplicate is not None:
+        return {"resolved": False, "choice": None, "duplicate": duplicate}
+
+    approval_record = _prepare_gateway_approval_record(
+        session_key=session_key,
+        command=command,
+        tool_type=tool_type,
+        pattern_keys=list(all_keys),
+        description=description,
+    )
+    approval_data = dict(approval_data)
+    approval_data["approval_record_id"] = approval_record["id"]
 
     entry = _ApprovalEntry(approval_data)
     with _lock:
@@ -1253,6 +1491,15 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     _drop_entry()
 
     choice = entry.result
+    record_id = approval_data.get("approval_record_id")
+    if record_id:
+        if not resolved or choice is None:
+            _update_gateway_approval_record(record_id, "expired")
+        elif choice == "deny":
+            _update_gateway_approval_record(record_id, "denied")
+        elif choice == "once":
+            _update_gateway_approval_record(record_id, "approved_once")
+
     # Normalize outcome for the post hook. Unresolved (timeout) and None both
     # mean the user never responded; report that explicitly so plugins can
     # distinguish timeout from explicit deny.
@@ -1267,7 +1514,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
         surface=surface,
         choice=_outcome,
     )
-    return {"resolved": resolved, "choice": choice}
+    return {"resolved": resolved, "choice": choice, "approval_record_id": record_id}
 
 
 def check_all_command_guards(command: str, env_type: str,
@@ -1428,6 +1675,7 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": combined_desc,
+                "tool_type": "terminal",
                 # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
                 # "always" to session scope below, so the UI must not offer it.
                 "allow_permanent": not has_tirith,
@@ -1435,6 +1683,11 @@ def check_all_command_guards(command: str, env_type: str,
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
+            if decision.get("duplicate"):
+                duplicate = dict(decision["duplicate"])
+                duplicate.setdefault("pattern_key", primary_key)
+                duplicate.setdefault("description", combined_desc)
+                return duplicate
             if decision.get("notify_failed"):
                 return {
                     "approved": False,
@@ -1488,7 +1741,8 @@ def check_all_command_guards(command: str, env_type: str,
                 # single time only, matching the CLI's behavior.
 
             return {"approved": True, "message": None,
-                    "user_approved": True, "description": combined_desc}
+                    "user_approved": True, "description": combined_desc,
+                    "approval_record_id": decision.get("approval_record_id")}
 
         # Fallback: no gateway callback registered (e.g. cron, batch).
         # Return approval_required for backward compat.
@@ -1699,10 +1953,16 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
         "pattern_key": pattern_key,
         "pattern_keys": [pattern_key],
         "description": description,
+        "tool_type": "execute_code",
     }
     decision = _await_gateway_decision(
         session_key, notify_cb, approval_data, surface="gateway"
     )
+    if decision.get("duplicate"):
+        duplicate = dict(decision["duplicate"])
+        duplicate.setdefault("pattern_key", pattern_key)
+        duplicate.setdefault("description", description)
+        return duplicate
     if decision.get("notify_failed"):
         return {
             "approved": False,
@@ -1744,7 +2004,8 @@ def check_execute_code_guard(code: str, env_type: str) -> dict:
     # choice == "once": no persistence — approval lasts this single call only.
 
     return {"approved": True, "message": None,
-            "user_approved": True, "description": description}
+            "user_approved": True, "description": description,
+            "approval_record_id": decision.get("approval_record_id")}
 
 
 # Load permanent allowlist from config on module import

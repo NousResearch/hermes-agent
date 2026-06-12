@@ -856,10 +856,13 @@ class GatewayStreamConsumer:
                 if result.success:
                     break
                 if attempt == 0 and self._is_flood_error(result):
+                    retry_after = getattr(result, "retry_after", None)
+                    wait = max(float(retry_after), 3.0) if retry_after else 3.0
                     logger.debug(
-                        "Flood control on fallback send, retrying in 3s"
+                        "Flood control on fallback send, retrying in %.1fs",
+                        wait,
                     )
-                    await asyncio.sleep(3.0)
+                    await asyncio.sleep(wait)
                 else:
                     break  # non-flood error or second attempt failed
 

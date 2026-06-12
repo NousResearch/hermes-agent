@@ -612,18 +612,6 @@ def _make_redirect_handler(port: int):
 
     return _redirect_handler
 
-    if _can_open_browser():
-        try:
-            opened = webbrowser.open(authorization_url)
-            if opened:
-                print("  (Browser opened automatically.)\n", file=sys.stderr)
-            else:
-                print("  (Could not open browser — please open the URL manually.)\n", file=sys.stderr)
-        except Exception:
-            print("  (Could not open browser — please open the URL manually.)\n", file=sys.stderr)
-    else:
-        print("  (Headless environment detected — open the URL manually.)\n", file=sys.stderr)
-
 
 async def _wait_for_callback() -> tuple[str, str | None]:
     """Wait for the OAuth callback to arrive on the local callback server.

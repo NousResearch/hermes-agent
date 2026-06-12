@@ -24,7 +24,7 @@ def _make_popen_mock(monkeypatch):
     return mock
 
 
-def _make_env():
+def _make_wsl_env_without_init():
     """Create WslEnvironment with _find_wsl + init_session bypassed."""
     import os
 
@@ -100,14 +100,14 @@ def test_probe_wsl_home_rejects_non_absolute_path(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_run_bash_non_login(monkeypatch):
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     mock = _make_popen_mock(monkeypatch)
     env._run_bash("echo hello", login=False)
     assert mock.call_args[0][0][1:] == ["-e", "bash", "-c", "echo hello"]
 
 
 def test_run_bash_login_uses_bash_dash_l(monkeypatch):
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     mock = _make_popen_mock(monkeypatch)
     env._run_bash("bootstrap", login=True)
     assert mock.call_args[0][0][1:] == ["-e", "bash", "-l", "-c", "bootstrap"]
@@ -115,7 +115,7 @@ def test_run_bash_login_uses_bash_dash_l(monkeypatch):
 
 def test_run_bash_with_distro(monkeypatch):
     monkeypatch.setenv("TERMINAL_WSL_DISTRO", "Debian")
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     env._distro = "Debian"
     mock = _make_popen_mock(monkeypatch)
     env._run_bash("ls")
@@ -123,7 +123,7 @@ def test_run_bash_with_distro(monkeypatch):
 
 
 def test_stdin_data_piped(monkeypatch):
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     popen_mock = _make_popen_mock(monkeypatch)
     pipe_mock = MagicMock()
     monkeypatch.setattr(wsl_env, "_pipe_stdin", pipe_mock)
@@ -132,7 +132,7 @@ def test_stdin_data_piped(monkeypatch):
 
 
 def test_creationflags_windows_hide(monkeypatch):
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     mock = _make_popen_mock(monkeypatch)
     env._run_bash("echo")
     assert "creationflags" in mock.call_args[1]
@@ -143,7 +143,7 @@ def test_creationflags_windows_hide(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def test_update_cwd_from_marker():
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     env._cwd_marker = "MARK"
     result = {"output": "some output\nMARK/home/agentsMARK\nmore"}
     env._update_cwd(result)
@@ -151,7 +151,7 @@ def test_update_cwd_from_marker():
 
 
 def test_cleanup_best_effort(monkeypatch):
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     env._snapshot_path = "/nonexistent/snap.sh"
     env._cwd_file = "/nonexistent/cwd.txt"
     mock_run = MagicMock()
@@ -160,7 +160,7 @@ def test_cleanup_best_effort(monkeypatch):
 
 
 def test_kill_process_terminate_then_kill():
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     proc = MagicMock()
     proc.terminate.side_effect = OSError
     env._kill_process(proc)
@@ -177,7 +177,7 @@ def test_kill_process_terminate_then_kill():
 def test_distro_priority_param_over_env(monkeypatch):
     """Explicit distro param wins over env dict and os.getenv."""
     monkeypatch.setenv("TERMINAL_WSL_DISTRO", "Ubuntu")
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     env._distro = "Debian"  # simulate distro param
     assert env._distro == "Debian"
 
@@ -185,7 +185,7 @@ def test_distro_priority_param_over_env(monkeypatch):
 def test_distro_priority_env_over_os_getenv(monkeypatch):
     """Env dict wins over os.getenv."""
     monkeypatch.setenv("TERMINAL_WSL_DISTRO", "Ubuntu")
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     # _make_env uses os.getenv, so clear _distro to simulate env dict overriding
     env._distro = os.environ.get("TERMINAL_WSL_DISTRO", "")
     assert env._distro == "Ubuntu"
@@ -194,5 +194,5 @@ def test_distro_priority_env_over_os_getenv(monkeypatch):
 def test_distro_priority_os_getenv_fallback():
     """os.getenv is the last resort."""
     import os
-    env = _make_env()
+    env = _make_wsl_env_without_init()
     assert env._distro == ""  # no env var set

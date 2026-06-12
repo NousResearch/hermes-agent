@@ -1068,6 +1068,48 @@ def _safe_getcwd() -> str:
 
 _AUTO_SAVED_CWDS: set = set()
 
+def _maybe_convert_and_persist_cwd(
+    env_type: str, cwd: str, default_cwd: str, _backend_cwd: str | None
+) -> str:
+    """Discard stale CWDs from other backends and auto-save for persistence.
+
+    Returns the cleaned CWD (possibly empty for WSL to trigger $HOME probe).
+    """
+    # Stale path detection — container paths like /workspace don't belong in
+    # WSL or local backends.
+    if not _backend_cwd and cwd:
+        if env_type == "wsl" and not any(
+            cwd.startswith(p) for p in ("/home/", "/mnt/", "/root/", "/tmp", "/opt")
+        ):
+            logger.info(
+                "Discarding stale TERMINAL_CWD=%r for wsl backend "
+                "(leftover from another backend). Falling back to $HOME probe.",
+                cwd,
+            )
+            cwd = ""
+        elif env_type in ("local", "ssh") and cwd in ("/workspace", "/root", "/home"):
+            logger.info(
+                "Discarding stale TERMINAL_CWD=%r for %s backend "
+                "(leftover from container backend).",
+                cwd, env_type,
+            )
+            cwd = default_cwd
+
+    # Auto-save per-backend CWD on first use (once per process lifetime).
+    if not _backend_cwd and cwd and cwd != default_cwd and env_type not in _AUTO_SAVED_CWDS:
+        try:
+            from hermes_cli.config import set_config_value
+            _backend_key = f"terminal.{env_type}_cwd"
+            set_config_value(_backend_key, cwd, source="auto:per-backend-cwd")
+            _AUTO_SAVED_CWDS.add(env_type)
+            logger.info("Auto-saved %s=%r for %s backend", _backend_key, cwd, env_type)
+        except Exception:
+            logger.debug(
+                "Auto-save of %s skipped (config write failed)", _backend_key, exc_info=True
+            )
+
+    return cwd
+
 
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
@@ -1143,36 +1185,9 @@ def _get_env_config() -> Dict[str, Any]:
         # normal sandbox behavior and discard host paths.
         cwd = os.getenv("TERMINAL_CWD", default_cwd)
 
-    # If TERMINAL_CWD is a stale path from a different backend (e.g. /workspace
-    # left over from Docker when switching to WSL/local), discard it and use the
-    # current backend's default instead.
-    if not _backend_cwd and cwd:
-        # WSL: docker leftovers like /workspace don't exist; fall back to probe
-        if env_type == "wsl" and not any(cwd.startswith(p) for p in ("/home/", "/mnt/", "/root/", "/tmp", "/opt")):
-            logger.info("Discarding stale TERMINAL_CWD=%r for wsl backend "
-                        "(leftover from another backend). Falling back to $HOME probe.", cwd)
-            cwd = ""
-        # Local/SSH on Windows: /workspace or /root are container paths
-        elif env_type in ("local", "ssh") and cwd in ("/workspace", "/root", "/home"):
-            logger.info("Discarding stale TERMINAL_CWD=%r for %s backend "
-                        "(leftover from container backend).", cwd, env_type)
-            cwd = default_cwd
-
-    # Auto-populate per-backend CWD on first use so the user's choice persists.
-    # Guarded by a module-level cache so config.yaml is written at most once per
-    # backend per Hermes process lifetime — avoids violating the AGENTS.md rule
-    # against mid-conversation config mutation on repeated terminal_tool calls.
-    global _AUTO_SAVED_CWDS
-    if not _backend_cwd and cwd and cwd != default_cwd and env_type not in _AUTO_SAVED_CWDS:
-        try:
-            # Don't block on config write failures — best effort only.
-            from hermes_cli.config import set_config_value
-            _backend_key = f"terminal.{env_type}_cwd"
-            set_config_value(_backend_key, cwd, source="auto:per-backend-cwd")
-            _AUTO_SAVED_CWDS.add(env_type)
-            logger.info("Auto-saved %s=%r for %s backend", _backend_key, cwd, env_type)
-        except Exception:
-            pass
+    # Discard stale paths left over from a different backend, then
+    # auto-save the resolved CWD for future sessions (once per lifetime).
+    cwd = _maybe_convert_and_persist_cwd(env_type, cwd, default_cwd, _backend_cwd)
     if cwd:
         cwd = os.path.expanduser(cwd)
     host_cwd = None

@@ -36,6 +36,7 @@ import logging
 import re
 import subprocess
 import time
+from email.utils import parseaddr
 from typing import Any, Dict, List, Optional
 
 try:
@@ -351,8 +352,94 @@ class WebhookAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
+    def _extract_sender_emails(self, payload: Any) -> List[str]:
+        """Return normalized sender email addresses from common webhook shapes."""
+        candidates: List[Any] = []
+        if isinstance(payload, dict):
+            message = payload.get("message")
+            if isinstance(message, dict):
+                candidates.extend(
+                    [
+                        message.get("from"),
+                        message.get("from_"),
+                        message.get("sender"),
+                        message.get("sender_email"),
+                    ]
+                )
+            candidates.extend(
+                [
+                    payload.get("from"),
+                    payload.get("from_"),
+                    payload.get("sender"),
+                    payload.get("sender_email"),
+                ]
+            )
+
+        emails: List[str] = []
+
+        def _visit(value: Any) -> None:
+            if not value:
+                return
+            if isinstance(value, list):
+                for item in value:
+                    _visit(item)
+                return
+            if isinstance(value, dict):
+                for key in ("email", "address", "value"):
+                    if key in value:
+                        _visit(value.get(key))
+                return
+            if not isinstance(value, str):
+                return
+            parsed = parseaddr(value)[1] or value
+            match = re.search(
+                r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}",
+                parsed,
+                re.IGNORECASE,
+            )
+            if match:
+                email = match.group(0).lower()
+                if email not in emails:
+                    emails.append(email)
+
+        for candidate in candidates:
+            _visit(candidate)
+        return emails
+
+    def _sender_allowed(self, route_config: dict, payload: Any) -> tuple[bool, List[str], List[str]]:
+        """Apply an optional route-level sender allowlist.
+
+        ``allowed_senders`` is intentionally simple: entries may be exact
+        email addresses (``you@example.com``), bare domains (``example.com``),
+        or at-prefixed domains (``@example.com``).  Unknown/missing senders
+        fail closed when the allowlist is present.
+        """
+        configured = (
+            route_config.get("allowed_senders")
+            or route_config.get("sender_allowlist")
+            or route_config.get("from_allowlist")
+            or []
+        )
+        if not configured:
+            return True, [], []
+        if isinstance(configured, str):
+            configured = [configured]
+        allowed = [str(entry).strip().lower() for entry in configured if str(entry).strip()]
+        sender_emails = self._extract_sender_emails(payload)
+        for email in sender_emails:
+            _, _, domain = email.partition("@")
+            for entry in allowed:
+                if email == entry:
+                    return True, sender_emails, allowed
+                if entry.startswith("@") and domain == entry[1:]:
+                    return True, sender_emails, allowed
+                if "@" not in entry and domain == entry:
+                    return True, sender_emails, allowed
+        return False, sender_emails, allowed
+
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
+        assert web is not None
         # Hot-reload dynamic subscriptions on each request (mtime-gated, cheap)
         self._reload_dynamic_routes()
 
@@ -455,6 +542,28 @@ class WebhookAdapter(BasePlatformAdapter):
             )
             return web.json_response(
                 {"status": "ignored", "event": event_type}
+            )
+
+        # Optional sender allowlist (used by AgentMail-style inbound routes).
+        # Return 200 so webhook providers do not retry an intentionally ignored
+        # message, but do not render a prompt or start an agent run.
+        sender_ok, sender_emails, allowed_senders = self._sender_allowed(
+            route_config, payload
+        )
+        if not sender_ok:
+            logger.info(
+                "[webhook] Ignoring sender for route %s: sender=%s allowed=%s",
+                route_name,
+                sender_emails or "(none)",
+                allowed_senders,
+            )
+            return web.json_response(
+                {
+                    "status": "ignored",
+                    "reason": "sender_not_allowed",
+                    "event": event_type,
+                    "sender": sender_emails,
+                }
             )
 
         # Format prompt from template

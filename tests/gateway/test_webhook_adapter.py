@@ -467,6 +467,74 @@ class TestEventFilter:
             assert resp.status == 202
 
 
+class TestSenderAllowlist:
+    """Tests for optional route-level sender filtering."""
+
+    def test_sender_allowlist_accepts_display_name_email(self):
+        adapter = _make_adapter()
+        route = {"allowed_senders": ["caleb.royer@techtreepartners.com"]}
+        payload = {
+            "event_type": "message.received",
+            "message": {"from": "Caleb Royer <caleb.royer@techtreepartners.com>"},
+        }
+
+        allowed, senders, configured = adapter._sender_allowed(route, payload)
+
+        assert allowed is True
+        assert senders == ["caleb.royer@techtreepartners.com"]
+        assert configured == ["caleb.royer@techtreepartners.com"]
+
+    def test_sender_allowlist_rejects_unknown_or_missing_sender(self):
+        adapter = _make_adapter()
+        route = {"allowed_senders": ["caleb.royer@techtreepartners.com"]}
+
+        assert adapter._sender_allowed(
+            route,
+            {"message": {"from": "Mallory <mallory@example.com>"}},
+        ) == (
+            False,
+            ["mallory@example.com"],
+            ["caleb.royer@techtreepartners.com"],
+        )
+        assert adapter._sender_allowed(route, {"message": {"subject": "missing"}}) == (
+            False,
+            [],
+            ["caleb.royer@techtreepartners.com"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_sender_allowlist_ignores_before_agent_run(self):
+        routes = {
+            "agentmail": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["message.received"],
+                "allowed_senders": ["caleb.royer@techtreepartners.com"],
+                "prompt": "should not render",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/agentmail",
+                json={
+                    "event_type": "message.received",
+                    "message": {"from": "Mallory <mallory@example.com>"},
+                },
+            )
+            assert resp.status == 200
+            data = await resp.json()
+            assert data == {
+                "status": "ignored",
+                "reason": "sender_not_allowed",
+                "event": "message.received",
+                "sender": ["mallory@example.com"],
+            }
+        adapter.handle_message.assert_not_called()
+
+
 # ===================================================================
 # HTTP handling
 # ===================================================================

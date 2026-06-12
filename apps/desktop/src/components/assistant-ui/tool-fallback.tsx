@@ -279,11 +279,14 @@ function ToolEntry({ part }: ToolEntryProps) {
 
   const copyAction = useMemo(() => toolCopyPayload(part, view), [part, view])
 
+  // The header trailing slot only carries the live duration timer while the
+  // tool is running. The copy control used to live here too, but an
+  // `opacity-0` (yet still clickable) button straddling the caret/duration made
+  // the disclosure caret hard to hit. Copy now lives in the expanded body's
+  // top-right, where it can't fight the caret for the right edge.
   const trailing =
     isPending && !embedded ? (
       <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} />
-    ) : !isPending && copyAction.text ? (
-      <CopyButton appearance="tool-row" label={copyAction.label} stopPropagation text={copyAction.text} />
     ) : undefined
 
   return (
@@ -322,7 +325,18 @@ function ToolEntry({ part }: ToolEntryProps) {
       </div>
       {isPending && <PendingToolApproval part={part} />}
       {open && (
-        <div className="grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
+        <div className="relative grid w-full min-w-0 max-w-full gap-1.5 overflow-hidden p-1.5">
+          {copyAction.text && (
+            <CopyButton
+              appearance="inline"
+              className="absolute right-1.5 top-1.5 z-10 h-5 gap-0 rounded-md border border-(--ui-stroke-tertiary) bg-background/80 px-1 opacity-60 backdrop-blur-sm transition-opacity hover:opacity-100 focus-visible:opacity-100"
+              iconClassName="size-3"
+              label={copyAction.label}
+              showLabel={false}
+              stopPropagation
+              text={copyAction.text}
+            />
+          )}
           {!embedded && view.previewTarget && isPreviewableTarget(view.previewTarget) && (
             <PreviewAttachment source="tool-result" target={view.previewTarget} />
           )}

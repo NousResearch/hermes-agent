@@ -11,6 +11,7 @@ import pytest
 from hermes_cli.auth import (
     AuthError,
     DEFAULT_CODEX_BASE_URL,
+    CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
     PROVIDER_REGISTRY,
     _read_codex_tokens,
     _save_codex_tokens,
@@ -48,6 +49,13 @@ def _jwt_with_exp(exp_epoch: int) -> str:
     payload = {"exp": exp_epoch}
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).rstrip(b"=").decode("utf-8")
     return f"h.{encoded}.s"
+
+
+def test_codex_oauth_refresh_skew_is_large_enough_for_long_gateway_turns():
+    # Codex/ChatGPT tokens are long-lived, while gateway turns can stream and
+    # tool-call for many minutes.  Keep a generous skew so a request does not
+    # begin near expiry and cross the boundary mid-turn.
+    assert CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS == 36 * 60 * 60
 
 
 def test_read_codex_tokens_success(tmp_path, monkeypatch):

@@ -95,7 +95,12 @@ STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
-CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+# Refresh Codex OAuth access tokens well before expiry.  Two minutes is too
+# close for long gateway/agent turns: a request can begin with a token that is
+# technically valid and then cross expiry while streaming/tool-calling. Refresh
+# about a day and a half early so long-lived setups do not wait until the last
+# few minutes before rotating a 10-day ChatGPT token.
+CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 36 * 60 * 60
 XAI_OAUTH_ISSUER = "https://auth.x.ai"
 XAI_OAUTH_DISCOVERY_URL = f"{XAI_OAUTH_ISSUER}/.well-known/openid-configuration"
 XAI_OAUTH_CLIENT_ID = "b1a00492-073a-47ea-816f-4c329264a828"

@@ -85,7 +85,7 @@ class TestBlueBubblesHelpers:
         assert all("(" not in chunk for chunk in chunks)
 
     @pytest.mark.asyncio
-    async def test_send_splits_paragraphs_into_multiple_bubbles(self, monkeypatch):
+    async def test_send_preserves_paragraphs_in_one_bubble(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
         sent = []
 
@@ -102,7 +102,7 @@ class TestBlueBubblesHelpers:
         result = await adapter.send("user@example.com", "first thought\n\nsecond thought")
 
         assert result.success is True
-        assert sent == ["first thought", "second thought"]
+        assert sent == ["first thought\n\nsecond thought"]
 
     def test_format_message_strips_markdown(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)

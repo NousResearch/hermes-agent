@@ -58,7 +58,6 @@ import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
-import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
@@ -70,6 +69,7 @@ import { ImageGenerationPlaceholder } from '@/components/chat/image-generation-p
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
@@ -136,6 +136,7 @@ export const Thread: FC<{
   loading?: ThreadLoadingState
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => Promise<void> | void
+  onRestoreToMessage?: (messageId: string) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
 }> = ({
@@ -146,6 +147,7 @@ export const Thread: FC<{
   loading,
   onBranchInNewChat,
   onCancel,
+  onRestoreToMessage,
   sessionId = null,
   sessionKey
 }) => {
@@ -154,9 +156,9 @@ export const Thread: FC<{
       AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
-      UserMessage: () => <UserMessage onCancel={onCancel} />
+      UserMessage: () => <UserMessage onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, sessionId]
+    [cwd, gateway, onBranchInNewChat, onCancel, onRestoreToMessage, sessionId]
   )
 
   const emptyPlaceholder = intro ? (
@@ -216,7 +218,6 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
-  const hoistedTodos = useMemo(() => todosFromMessageContent(content), [content])
 
   const previewTargets = useMemo(() => {
     if (!messageText || !/(https?:\/\/|file:\/\/)/i.test(messageText)) {
@@ -246,7 +247,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
         className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
-        {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
+        {/* Todos render in the composer status stack now, not inline. */}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
         {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}
         {previewTargets.length > 0 && (
@@ -737,11 +738,46 @@ const USER_ACTION_ICON_BUTTON_CLASS =
 const USER_ACTION_ICON_SIZE = '0.6875rem'
 const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -translate-y-px" />
 
+// Background-process notifications are injected into the conversation as user
+// messages (the agent must react to them, and message-role alternation forbids
+// a synthetic system row mid-loop). They are NOT something the human typed, so
+// render them as a compact system-style notice instead of a user bubble.
+// Shape: see tools/process_registry.py format_process_notification().
+const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
+
+const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
+  const body = text.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, '')
+  const newline = body.indexOf('\n')
+  const headline = (newline === -1 ? body : body.slice(0, newline)).trim()
+  const detail = newline === -1 ? '' : body.slice(newline + 1).trim()
+
+  return (
+    <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
+      <span className="flex items-center gap-1.5">
+        <Codicon className="shrink-0 text-muted-foreground/55" name="terminal" size="0.75rem" />
+        <span className="wrap-anywhere">{headline}</span>
+      </span>
+      {detail && (
+        <details className="pl-[1.3125rem]">
+          <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
+            output
+          </summary>
+          <pre className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55">
+            {detail}
+          </pre>
+        </details>
+      )}
+    </div>
+  )
+}
+
 const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
-}> = ({ onCancel }) => {
+  onRestoreToMessage?: (messageId: string) => Promise<void> | void
+}> = ({ onCancel, onRestoreToMessage }) => {
   const { t } = useI18n()
   const copy = t.assistant.thread
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false)
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -791,15 +827,32 @@ const UserMessage: FC<{
 
   useResizeObserver(measureClamp, clampInnerRef)
 
+  // Injected background-process notification, not a human prompt — render the
+  // compact system-style notice (after all hooks above have run).
+  if (PROCESS_NOTIFICATION_RE.test(messageText.trim())) {
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 flex-col items-stretch"
+        data-role="user"
+        data-slot="aui_user-message-root"
+      >
+        <ProcessNotificationNote text={messageText.trim()} />
+      </MessagePrimitive.Root>
+    )
+  }
+
   const hasBody = messageText.trim().length > 0
   const isLatestUser = messageId === latestUserId
   const showStop = isLatestUser && threadRunning && Boolean(onCancel)
-  const showRestore = !isLatestUser && !threadRunning
+  // Restore (re-run this exact prompt) is available everywhere the Stop button
+  // isn't — including mid-stream on older prompts, since the action interrupts
+  // the live turn before rewinding.
+  const showRestore = !showStop && Boolean(onRestoreToMessage) && hasBody
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'border-(--ui-stroke-tertiary) pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
-    !threadRunning && 'cursor-pointer hover:border-(--ui-stroke-secondary)'
+    'cursor-pointer pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
   const bubbleContent = (
@@ -828,21 +881,19 @@ const UserMessage: FC<{
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <div className="relative w-full">
-              {threadRunning ? (
-                <div className={bubbleClassName}>{bubbleContent}</div>
-              ) : (
-                <ActionBarPrimitive.Edit asChild>
-                  <button
-                    aria-label={copy.editMessage}
-                    className={bubbleClassName}
-                    onClick={() => triggerHaptic('selection')}
-                    title={copy.editMessage}
-                    type="button"
-                  >
-                    {bubbleContent}
-                  </button>
-                </ActionBarPrimitive.Edit>
-              )}
+              {/* Always editable — clicking opens the edit composer even while a
+                  turn streams; sending the edit reverts (interrupt + rewind). */}
+              <ActionBarPrimitive.Edit asChild>
+                <button
+                  aria-label={copy.editMessage}
+                  className={bubbleClassName}
+                  onClick={() => triggerHaptic('selection')}
+                  title={copy.editMessage}
+                  type="button"
+                >
+                  {bubbleContent}
+                </button>
+              </ActionBarPrimitive.Edit>
               {(showStop || showRestore) && (
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
                   {showStop ? (
@@ -860,13 +911,20 @@ const UserMessage: FC<{
                       {StopGlyph}
                     </button>
                   ) : (
-                    <span
-                      aria-hidden="true"
-                      className="flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary)"
-                      title={copy.editableCheckpoint}
+                    <button
+                      aria-label={copy.restoreCheckpoint}
+                      className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
+                      onClick={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        triggerHaptic('selection')
+                        setRestoreConfirmOpen(true)
+                      }}
+                      title={copy.restoreFromHere}
+                      type="button"
                     >
                       <Codicon name="discard" size="0.875rem" />
-                    </span>
+                    </button>
                   )}
                 </div>
               )}
@@ -894,6 +952,17 @@ const UserMessage: FC<{
             </BranchPickerPrimitive.Root>
           </div>
         </ActionBarPrimitive.Root>
+        {showRestore && (
+          <ConfirmDialog
+            confirmLabel={copy.restoreConfirm}
+            description={copy.restoreBody}
+            destructive
+            onClose={() => setRestoreConfirmOpen(false)}
+            onConfirm={() => onRestoreToMessage?.(messageId)}
+            open={restoreConfirmOpen}
+            title={copy.restoreTitle}
+          />
+        )}
       </StickyHumanMessageContainer>
     </MessagePrimitive.Root>
   )

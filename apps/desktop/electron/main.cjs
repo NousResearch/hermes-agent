@@ -26,7 +26,12 @@ const { pathToFileURL } = require('node:url')
 const { execFileSync, spawn } = require('node:child_process')
 const { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } = require('./bootstrap-platform.cjs')
 const { runBootstrap } = require('./bootstrap-runner.cjs')
-const { buildSessionWindowUrl, createSessionWindowRegistry } = require('./session-windows.cjs')
+const {
+  buildSessionWindowUrl,
+  createSessionWindowRegistry,
+  SESSION_WINDOW_MIN_HEIGHT,
+  SESSION_WINDOW_MIN_WIDTH
+} = require('./session-windows.cjs')
 const { canImportHermesCli, verifyHermesCli } = require('./backend-probes.cjs')
 const { probeGatewayWebSocket } = require('./gateway-ws-probe.cjs')
 const { adoptServedDashboardToken } = require('./dashboard-token.cjs')
@@ -36,10 +41,7 @@ const { fetchMarketplaceThemes, searchMarketplaceThemes } = require('./vscode-ma
 const { buildDesktopBackendEnv } = require('./backend-env.cjs')
 const { readDirForIpc } = require('./fs-read-dir.cjs')
 const { gitRootForIpc } = require('./git-root.cjs')
-const {
-  OFFICIAL_REPO_HTTPS_URL,
-  isOfficialSshRemote
-} = require('./update-remote.cjs')
+const { OFFICIAL_REPO_HTTPS_URL, isOfficialSshRemote } = require('./update-remote.cjs')
 const {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -348,8 +350,56 @@ const APP_ICON_PATHS = [
 let rendererTitleBarTheme = null
 const terminalSessions = new Map()
 
+// Force the NATIVE window appearance (vibrancy material, titlebar, the
+// pre-first-paint window background) to follow the APP theme instead of the
+// OS appearance. With `vibrancy` set, macOS paints an NSVisualEffectView that
+// tracks the window's effective appearance and ignores `backgroundColor` —
+// so a dark-themed app on a light-mode Mac flashes a white material on every
+// new window until the renderer covers it. The renderer reports its mode via
+// 'hermes:native-theme' ('dark' | 'light' | 'system'); we pin
+// nativeTheme.themeSource to it and persist the value so cold launches paint
+// correctly before the renderer has even loaded.
+const NATIVE_THEME_CONFIG_PATH = path.join(app.getPath('userData'), 'native-theme.json')
+const THEME_SOURCES = new Set(['dark', 'light', 'system'])
+
+function readPersistedThemeSource() {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(NATIVE_THEME_CONFIG_PATH, 'utf8'))
+
+    if (parsed && THEME_SOURCES.has(parsed.themeSource)) {
+      return parsed.themeSource
+    }
+  } catch {
+    // Missing / malformed → follow the OS like a fresh install.
+  }
+
+  return 'system'
+}
+
+function writePersistedThemeSource(mode) {
+  try {
+    fs.mkdirSync(path.dirname(NATIVE_THEME_CONFIG_PATH), { recursive: true })
+    fs.writeFileSync(NATIVE_THEME_CONFIG_PATH, JSON.stringify({ themeSource: mode }, null, 2), 'utf8')
+  } catch (error) {
+    rememberLog(`[theme] write native theme failed: ${error.message}`)
+  }
+}
+
+nativeTheme.themeSource = readPersistedThemeSource()
+
 function isHexColor(value) {
   return typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
+}
+
+// Background color to paint a window with BEFORE its renderer loads, so a new
+// (or reopened) window doesn't flash white/light in dark mode. Prefer the theme
+// the renderer last reported; fall back to the OS preference on first launch.
+function getWindowBackgroundColor() {
+  if (rendererTitleBarTheme && isHexColor(rendererTitleBarTheme.background)) {
+    return rendererTitleBarTheme.background
+  }
+
+  return nativeTheme.shouldUseDarkColors ? '#111111' : '#f7f7f7'
 }
 
 function getTitleBarOverlayOptions() {
@@ -1164,10 +1214,14 @@ function findSystemPython() {
   if (pyExe) {
     for (const version of SUPPORTED_VERSIONS) {
       try {
-        const out = execFileSync(pyExe, [`-${version}`, '-c', 'import sys; print(sys.executable)'], hiddenWindowsChildOptions({
-          encoding: 'utf8',
-          stdio: ['ignore', 'pipe', 'ignore']
-        }))
+        const out = execFileSync(
+          pyExe,
+          [`-${version}`, '-c', 'import sys; print(sys.executable)'],
+          hiddenWindowsChildOptions({
+            encoding: 'utf8',
+            stdio: ['ignore', 'pipe', 'ignore']
+          })
+        )
         const candidate = out.trim()
         if (candidate && fileExists(candidate)) return candidate
       } catch {
@@ -1302,11 +1356,15 @@ function resolveUpdateRoot() {
 
 function runGit(args, options = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(resolveGitBinary(), IS_WINDOWS ? ['-c', 'windows.appendAtomically=false', ...args] : args, hiddenWindowsChildOptions({
-      cwd: options.cwd,
-      env: { ...process.env, ...(options.env || {}), GIT_TERMINAL_PROMPT: '0' },
-      stdio: ['ignore', 'pipe', 'pipe']
-    }))
+    const child = spawn(
+      resolveGitBinary(),
+      IS_WINDOWS ? ['-c', 'windows.appendAtomically=false', ...args] : args,
+      hiddenWindowsChildOptions({
+        cwd: options.cwd,
+        env: { ...process.env, ...(options.env || {}), GIT_TERMINAL_PROMPT: '0' },
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+    )
 
     let stdout = ''
     let stderr = ''
@@ -1743,11 +1801,15 @@ function runStreamedUpdate(command, args, { cwd, env, stage } = {}) {
   return new Promise(resolve => {
     let child
     try {
-      child = spawn(command, args, hiddenWindowsChildOptions({
-        cwd,
-        env: { ...process.env, ...(env || {}) },
-        stdio: ['ignore', 'pipe', 'pipe']
-      }))
+      child = spawn(
+        command,
+        args,
+        hiddenWindowsChildOptions({
+          cwd,
+          env: { ...process.env, ...(env || {}) },
+          stdio: ['ignore', 'pipe', 'pipe']
+        })
+      )
     } catch (err) {
       resolve({ code: 1, error: err.message })
       return
@@ -4569,25 +4631,29 @@ async function spawnPoolBackend(profile, entry) {
 
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
-  const child = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
-    cwd: hermesCwd,
-    env: {
-      ...process.env,
-      HERMES_HOME,
-      ...backend.env,
-      // Pin the gateway's tool/terminal cwd to the same directory we chose for
-      // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
-      // can still point at the install dir even when spawn cwd is home.
-      TERMINAL_CWD: hermesCwd,
-      HERMES_DASHBOARD_SESSION_TOKEN: token,
-      // Marks this dashboard backend as desktop-spawned so it runs the cron
-      // scheduler tick loop (the gateway isn't running under the app).
-      HERMES_DESKTOP: '1',
-      HERMES_WEB_DIST: webDist
-    },
-    shell: backend.shell,
-    stdio: ['ignore', 'pipe', 'pipe']
-  }))
+  const child = spawn(
+    backend.command,
+    backend.args,
+    hiddenWindowsChildOptions({
+      cwd: hermesCwd,
+      env: {
+        ...process.env,
+        HERMES_HOME,
+        ...backend.env,
+        // Pin the gateway's tool/terminal cwd to the same directory we chose for
+        // the child process. Inherited TERMINAL_CWD (or a stale config bridge)
+        // can still point at the install dir even when spawn cwd is home.
+        TERMINAL_CWD: hermesCwd,
+        HERMES_DASHBOARD_SESSION_TOKEN: token,
+        // Marks this dashboard backend as desktop-spawned so it runs the cron
+        // scheduler tick loop (the gateway isn't running under the app).
+        HERMES_DESKTOP: '1',
+        HERMES_WEB_DIST: webDist
+      },
+      shell: backend.shell,
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+  )
   entry.process = child
   entry.port = port
   entry.token = token
@@ -4784,30 +4850,34 @@ async function startHermes() {
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
-    hermesProcess = spawn(backend.command, backend.args, hiddenWindowsChildOptions({
-      cwd: hermesCwd,
-      env: {
-        ...process.env,
-        // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
-        // resolves to the SAME location our resolveHermesHome() picked. Without
-        // this pin, Python falls back to ~/.hermes on every platform — fine on
-        // mac/linux (where our default matches), but on Windows our default is
-        // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
-        // Mismatch would split config / sessions / .env / logs across two
-        // directories. install.ps1 sets HERMES_HOME via setx; the desktop
-        // can't reliably do that, so we set it inline for every spawn.
-        HERMES_HOME,
-        ...backend.env,
-        TERMINAL_CWD: hermesCwd,
-        HERMES_DASHBOARD_SESSION_TOKEN: token,
-        // Marks this dashboard backend as desktop-spawned so it runs the cron
-        // scheduler tick loop (the gateway isn't running under the app).
-        HERMES_DESKTOP: '1',
-        HERMES_WEB_DIST: webDist
-      },
-      shell: backend.shell,
-      stdio: ['ignore', 'pipe', 'pipe']
-    }))
+    hermesProcess = spawn(
+      backend.command,
+      backend.args,
+      hiddenWindowsChildOptions({
+        cwd: hermesCwd,
+        env: {
+          ...process.env,
+          // Explicitly pin HERMES_HOME for the child so Python's get_hermes_home()
+          // resolves to the SAME location our resolveHermesHome() picked. Without
+          // this pin, Python falls back to ~/.hermes on every platform — fine on
+          // mac/linux (where our default matches), but on Windows our default is
+          // %LOCALAPPDATA%\hermes, which differs from C:\Users\<u>\.hermes.
+          // Mismatch would split config / sessions / .env / logs across two
+          // directories. install.ps1 sets HERMES_HOME via setx; the desktop
+          // can't reliably do that, so we set it inline for every spawn.
+          HERMES_HOME,
+          ...backend.env,
+          TERMINAL_CWD: hermesCwd,
+          HERMES_DASHBOARD_SESSION_TOKEN: token,
+          // Marks this dashboard backend as desktop-spawned so it runs the cron
+          // scheduler tick loop (the gateway isn't running under the app).
+          HERMES_DESKTOP: '1',
+          HERMES_WEB_DIST: webDist
+        },
+        shell: backend.shell,
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+    )
 
     hermesProcess.stdout.on('data', rememberLog)
     hermesProcess.stderr.on('data', rememberLog)
@@ -4945,21 +5015,28 @@ function focusWindow(win) {
 }
 
 // Open (or focus) a standalone window for a single chat session.
-function createSessionWindow(sessionId) {
+function createSessionWindow(sessionId, { watch = false } = {}) {
   return sessionWindows.openOrFocus(sessionId, () => {
     const icon = getAppIconPath()
     const win = new BrowserWindow({
-      width: 480,
-      height: 800,
-      minWidth: 420,
-      minHeight: 620,
+      width: SESSION_WINDOW_MIN_WIDTH,
+      height: SESSION_WINDOW_MIN_HEIGHT,
+      minWidth: SESSION_WINDOW_MIN_WIDTH,
+      minHeight: SESSION_WINDOW_MIN_HEIGHT,
       title: 'Hermes',
       titleBarStyle: 'hidden',
       titleBarOverlay: getTitleBarOverlayOptions(),
       trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
       vibrancy: IS_MAC ? 'sidebar' : undefined,
       icon,
-      backgroundColor: '#f7f7f7',
+      // Don't show until the renderer's first themed paint is ready. macOS
+      // `vibrancy` ignores `backgroundColor` and paints a translucent OS
+      // material (which follows the OS appearance, not the app theme), so a
+      // dark-themed app on a light-mode Mac flashes white until the renderer
+      // covers it. ready-to-show fires after the boot-time paint in
+      // themes/context.tsx, so the window appears already themed.
+      show: false,
+      backgroundColor: getWindowBackgroundColor(),
       webPreferences: {
         preload: path.join(__dirname, 'preload.cjs'),
         contextIsolation: true,
@@ -4974,6 +5051,10 @@ function createSessionWindow(sessionId) {
       win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
     }
 
+    win.once('ready-to-show', () => {
+      if (!win.isDestroyed()) win.show()
+    })
+
     win.on('will-enter-full-screen', () => sendWindowStateChanged(true))
     win.on('enter-full-screen', () => sendWindowStateChanged(true))
     win.on('will-leave-full-screen', () => sendWindowStateChanged(false))
@@ -4984,7 +5065,8 @@ function createSessionWindow(sessionId) {
     win.loadURL(
       buildSessionWindowUrl(sessionId, {
         devServer: DEV_SERVER,
-        rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex()
+        rendererIndexPath: DEV_SERVER ? undefined : resolveRendererIndex(),
+        watch
       })
     )
 
@@ -5011,7 +5093,11 @@ function createWindow() {
     trafficLightPosition: IS_MAC ? WINDOW_BUTTON_POSITION : undefined,
     vibrancy: IS_MAC ? 'sidebar' : undefined,
     icon,
-    backgroundColor: '#f7f7f7',
+    // Hidden until the first themed paint so macOS `vibrancy` (which ignores
+    // `backgroundColor` and follows the OS appearance) can't flash a light
+    // material before the renderer paints the app theme. See createSessionWindow.
+    show: false,
+    backgroundColor: getWindowBackgroundColor(),
     webPreferences: {
       preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true,
@@ -5046,6 +5132,10 @@ function createWindow() {
       })
     }
   }
+
+  mainWindow.once('ready-to-show', () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.show()
+  })
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
   mainWindow.on('enter-full-screen', () => sendWindowStateChanged(true))
@@ -5158,12 +5248,12 @@ ipcMain.handle('hermes:backend:touch', async (_event, profile) => {
   return { ok: true }
 })
 ipcMain.handle('hermes:gateway:ws-url', async (_event, profile) => freshGatewayWsUrl(profile))
-ipcMain.handle('hermes:window:openSession', async (_event, sessionId) => {
+ipcMain.handle('hermes:window:openSession', async (_event, sessionId, opts) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return { ok: false, error: 'invalid-session-id' }
   }
 
-  createSessionWindow(sessionId.trim())
+  createSessionWindow(sessionId.trim(), { watch: opts?.watch === true })
 
   return { ok: true }
 })
@@ -5569,6 +5659,18 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
     foreground: payload.foreground
   }
   mainWindow?.setTitleBarOverlay?.(getTitleBarOverlayOptions())
+})
+
+// Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).
+ipcMain.on('hermes:native-theme', (_event, mode) => {
+  if (!THEME_SOURCES.has(mode)) {
+    return
+  }
+
+  if (nativeTheme.themeSource !== mode) {
+    nativeTheme.themeSource = mode
+    writePersistedThemeSource(mode)
+  }
 })
 
 ipcMain.handle('hermes:openExternal', (_event, url) => {
@@ -6008,11 +6110,15 @@ async function getUninstallSummary() {
       resolve(value)
     }
     try {
-      const child = spawn(py, ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'], hiddenWindowsChildOptions({
-        cwd: agentRoot,
-        env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
-        stdio: ['ignore', 'pipe', 'ignore']
-      }))
+      const child = spawn(
+        py,
+        ['-m', 'hermes_cli.main', 'uninstall', '--gui-summary'],
+        hiddenWindowsChildOptions({
+          cwd: agentRoot,
+          env: { ...process.env, HERMES_HOME, NO_COLOR: '1' },
+          stdio: ['ignore', 'pipe', 'ignore']
+        })
+      )
       child.stdout.on('data', chunk => {
         stdout += chunk.toString()
       })
@@ -6170,7 +6276,7 @@ let _rendererReadyForDeepLink = false
 
 function _extractDeepLink(argv) {
   if (!Array.isArray(argv)) return null
-  return argv.find((a) => typeof a === 'string' && a.startsWith(`${HERMES_PROTOCOL}://`)) || null
+  return argv.find(a => typeof a === 'string' && a.startsWith(`${HERMES_PROTOCOL}://`)) || null
 }
 
 function handleDeepLink(url) {
@@ -6214,9 +6320,7 @@ ipcMain.handle('hermes:deep-link-ready', () => {
     _pendingDeepLink = null
     handleDeepLink(
       `${HERMES_PROTOCOL}://${queued.kind}/${encodeURIComponent(queued.name)}` +
-        (Object.keys(queued.params).length
-          ? '?' + new URLSearchParams(queued.params).toString()
-          : ''),
+        (Object.keys(queued.params).length ? '?' + new URLSearchParams(queued.params).toString() : '')
     )
   }
   return { ok: true }
@@ -6227,9 +6331,7 @@ function registerDeepLinkProtocol() {
     if (process.defaultApp && process.argv.length >= 2) {
       // Dev: register with the electron exec path + entry script so the OS can
       // relaunch us with the URL.
-      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [
-        path.resolve(process.argv[1]),
-      ])
+      app.setAsDefaultProtocolClient(HERMES_PROTOCOL, process.execPath, [path.resolve(process.argv[1])])
     } else {
       app.setAsDefaultProtocolClient(HERMES_PROTOCOL)
     }
@@ -6261,7 +6363,6 @@ app.on('open-url', (event, url) => {
   event.preventDefault()
   handleDeepLink(url)
 })
-
 
 app.whenReady().then(() => {
   if (IS_MAC) {

@@ -6,6 +6,7 @@ import { type FormEvent, type KeyboardEvent, useCallback, useMemo, useRef, useSt
 
 import { ToolFallback } from '@/components/assistant-ui/tool-fallback'
 import { Button } from '@/components/ui/button'
+import { KbdCombo } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -229,7 +230,10 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
             value={draft}
           />
           <div className="flex items-center justify-between gap-2">
-            <span className="text-[0.6875rem] text-muted-foreground/85">{copy.shortcut}</span>
+            <span className="inline-flex items-center gap-1 text-[0.6875rem] text-muted-foreground/85">
+              <KbdCombo combo="mod+enter" size="sm" />
+              {copy.shortcutSuffix}
+            </span>
             <div className="flex items-center gap-1.5">
               {hasChoices && (
                 <Button

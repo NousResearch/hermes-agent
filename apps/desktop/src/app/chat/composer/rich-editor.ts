@@ -184,3 +184,36 @@ export function placeCaretEnd(element: HTMLElement) {
   selection?.removeAllRanges()
   selection?.addRange(range)
 }
+
+/** Drop contenteditable junk that serializes as `\n` and falsely expands the composer. */
+export function normalizeComposerEditorDom(editor: HTMLElement) {
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
+    editor.replaceChildren()
+
+    return
+  }
+
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeType === Node.ELEMENT_NODE) {
+    const wrapper = editor.firstChild as HTMLElement
+
+    if (wrapper.tagName === 'DIV' && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
+      editor.replaceChildren(...Array.from(wrapper.childNodes))
+    }
+  }
+
+  const last = editor.lastChild
+
+  if (last?.nodeName !== 'BR') {
+    return
+  }
+
+  let prev: ChildNode | null = last.previousSibling
+
+  while (prev?.nodeType === Node.TEXT_NODE && !(prev.textContent || '').trim()) {
+    prev = prev.previousSibling
+  }
+
+  if ((prev as HTMLElement | null)?.dataset.refText) {
+    editor.removeChild(last)
+  }
+}

@@ -221,6 +221,36 @@ describe('useProjectTree', () => {
     expect(readDir).toHaveBeenLastCalledWith('/b')
   })
 
+  it('falls back to the sanitized workspace dir when the session cwd is gone', async () => {
+    const sanitizeWorkspaceCwd = vi.fn(async () => ({ cwd: '/home/me/projects', sanitized: true }))
+    readDir.mockImplementation(async path => {
+      if (path === '/deleted/worktree') return { entries: [], error: 'ENOENT' }
+      if (path === '/home/me/projects') return ok([{ name: 'repo', path: '/home/me/projects/repo', isDirectory: true }])
+      throw new Error(`unexpected path ${path}`)
+    })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { readDir, sanitizeWorkspaceCwd }
+
+    const { result } = renderHook(() => useProjectTree('/deleted/worktree'))
+
+    await waitFor(() => expect(result.current.data.length).toBe(1))
+
+    expect(sanitizeWorkspaceCwd).toHaveBeenCalledWith('/deleted/worktree')
+    expect(result.current.rootError).toBeNull()
+    expect(result.current.effectiveCwd).toBe('/home/me/projects')
+    expect(result.current.data[0]?.name).toBe('repo')
+  })
+
+  it('keeps the root error when sanitize offers no usable fallback', async () => {
+    const sanitizeWorkspaceCwd = vi.fn(async () => ({ cwd: '/deleted/worktree', sanitized: false }))
+    readDir.mockResolvedValue({ entries: [], error: 'ENOENT' })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = { readDir, sanitizeWorkspaceCwd }
+
+    const { result } = renderHook(() => useProjectTree('/deleted/worktree'))
+
+    await waitFor(() => expect(result.current.rootError).toBe('ENOENT'))
+    expect(result.current.effectiveCwd).toBe('/deleted/worktree')
+  })
+
   it('returns no-bridge gracefully when window.hermesDesktop is missing', async () => {
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
 

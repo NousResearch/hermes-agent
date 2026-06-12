@@ -102,7 +102,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   })
 
   const list = (
-    <div className={cn('relative min-h-0 flex-1 overflow-y-auto overscroll-contain', className)} ref={scrollerRef}>
+    <div className={cn('relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain', className)} ref={scrollerRef}>
       <div className="grid gap-px" style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>
         {rows}
       </div>

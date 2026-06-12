@@ -14,6 +14,7 @@ import {
 } from 'react'
 
 import { hermesDirectiveFormatter, type SlashChipKind } from '@/components/assistant-ui/directive-text'
+import { composerFill, composerSurfaceGlass } from '@/components/chat/composer-dock'
 import { Button } from '@/components/ui/button'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
@@ -48,6 +49,7 @@ import {
   shouldAutoDrainOnSettle,
   updateQueuedPrompt
 } from '@/store/composer-queue'
+import { $statusItemsBySession } from '@/store/composer-status'
 import { $gatewayState, $messages, setSessionPickerOpen } from '@/store/session'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 import { useTheme } from '@/themes'
@@ -80,12 +82,14 @@ import {
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
+  normalizeComposerEditorDom,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
   RICH_INPUT_SLOT,
   slashChipElement
 } from './rich-editor'
+import { ComposerStatusStack } from './status-stack'
 import { detectTrigger, extractClipboardImageBlobs, textBeforeCaret, type TriggerState } from './text-utils'
 import { ComposerTriggerPopover } from './trigger-popover'
 import type { ChatBarProps } from './types'
@@ -168,6 +172,7 @@ export function ChatBar({
   const draft = useAuiState(s => s.composer.text)
   const attachments = useStore($composerAttachments)
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
+  const statusItemsBySession = useStore($statusItemsBySession)
   const scrolledUp = useStore($threadScrolledUp)
   const sessionMessages = useStore($messages)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
@@ -175,6 +180,17 @@ export function ChatBar({
   const queuedPrompts = useMemo(
     () => (activeQueueSessionKey ? (queuedPromptsBySession[activeQueueSessionKey] ?? []) : []),
     [activeQueueSessionKey, queuedPromptsBySession]
+  )
+
+  // Status items (subagents, background processes) are keyed by the RUNTIME
+  // session id — gateway events and process.list both speak that id. Only the
+  // queue uses the stored-session fallback key (prompts can queue pre-resume).
+  const statusSessionId = sessionId ?? null
+
+  const statusStackVisible = useMemo(
+    () =>
+      queuedPrompts.length > 0 || (statusSessionId ? (statusItemsBySession[statusSessionId]?.length ?? 0) > 0 : false),
+    [queuedPrompts.length, statusItemsBySession, statusSessionId]
   )
 
   const composerRef = useRef<HTMLFormElement | null>(null)
@@ -602,9 +618,7 @@ export function ChatBar({
   // (which drives `hasComposerPayload` → the send button). Shared by the input
   // and compositionend paths so committed IME text reaches state through either.
   const flushEditorToDraft = (editor: HTMLDivElement) => {
-    if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
-      editor.replaceChildren()
-    }
+    normalizeComposerEditorDom(editor)
 
     const nextDraft = composerPlainText(editor)
 
@@ -688,8 +702,7 @@ export function ChatBar({
     // already an arg pick (`/personality alice`), so it commits normally.
     const command = (item.metadata as { command?: string } | undefined)?.command ?? ''
 
-    const expandsToArgs =
-      trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
+    const expandsToArgs = trigger.kind === '/' && !serialized.includes(' ') && desktopSlashCommandTakesArgs(command)
 
     const text = starter || serialized.endsWith(' ') ? serialized : `${serialized} `
     const directive = !starter && serialized.match(/^@([^:]+):(.+)$/)
@@ -1113,11 +1126,8 @@ export function ChatBar({
     }
   }
 
-  const stashAt = (
-    scope: string | null,
-    text = draftRef.current,
-    attachments = $composerAttachments.get()
-  ) => stashSessionDraft(scope, text, attachments)
+  const stashAt = (scope: string | null, text = draftRef.current, attachments = $composerAttachments.get()) =>
+    stashSessionDraft(scope, text, attachments)
 
   // Per-thread draft swap — the composer's only session coupling. Lifecycle
   // never clears composer state; this effect alone stashes on leave, restores
@@ -1669,6 +1679,7 @@ export function ChatBar({
           className="group/composer absolute bottom-0 left-1/2 z-30 w-[min(var(--composer-width),calc(100%-2rem))] max-w-full -translate-x-1/2 rounded-2xl pt-2 pb-[var(--composer-shell-pad-block-end)]"
           data-drag-active={dragActive ? '' : undefined}
           data-slot="composer-root"
+          data-status-stack={statusStackVisible ? '' : undefined}
           data-thread-scrolled-up={scrolledUp ? '' : undefined}
           onDragEnter={handleDragEnter}
           onDragLeave={handleDragLeave}
@@ -1696,26 +1707,30 @@ export function ChatBar({
               onPick={replaceTriggerWithChip}
             />
           )}
-          {activeQueueSessionKey && queuedPrompts.length > 0 && (
-            // Out of flow so the queue never inflates the composer's measured
-            // height (that drives thread bottom padding → chat resizes on
-            // queue). Overlaps -mb-2 onto the surface's top border for a shared
-            // edge; capped + scrollable. Overlays the chat instead of pushing it.
-            <div className="absolute inset-x-0 bottom-full z-6 -mb-2 max-h-[40vh] overflow-y-auto">
-              <QueuePanel
-                busy={busy}
-                editingId={queueEdit?.entryId ?? null}
-                entries={queuedPrompts}
-                onDelete={id => {
-                  if (removeQueuedPrompt(activeQueueSessionKey, id) && queueEdit?.entryId === id) {
-                    exitQueuedEdit('cancel')
-                  }
-                }}
-                onEdit={beginQueuedEdit}
-                onSendNow={id => void sendQueuedNow(id)}
-              />
-            </div>
-          )}
+          {/* Session-scoped status stack (todos, subagents, background tasks,
+              queue). Out of flow so it never inflates the composer's measured
+              height; it overlays the chat instead of pushing it, and publishes
+              its own --status-stack-measured-height so the thread's clearance
+              accounts for it. Collapses to nothing when every status is empty. */}
+          <ComposerStatusStack
+            queue={
+              activeQueueSessionKey && queuedPrompts.length > 0 ? (
+                <QueuePanel
+                  busy={busy}
+                  editingId={queueEdit?.entryId ?? null}
+                  entries={queuedPrompts}
+                  onDelete={id => {
+                    if (removeQueuedPrompt(activeQueueSessionKey, id) && queueEdit?.entryId === id) {
+                      exitQueuedEdit('cancel')
+                    }
+                  }}
+                  onEdit={beginQueuedEdit}
+                  onSendNow={id => void sendQueuedNow(id)}
+                />
+              ) : null
+            }
+            sessionId={statusSessionId}
+          />
           <div
             className="pointer-events-none absolute inset-0 rounded-[inherit]"
             style={{ background: COMPOSER_FADE_BACKGROUND }}
@@ -1723,10 +1738,10 @@ export function ChatBar({
           <div className="relative w-full rounded-[inherit]">
             <div
               className={cn(
-                'relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out',
+                'group/composer-surface relative z-4 isolate rounded-[inherit] border border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(18%*var(--composer-ring-strength)),var(--dt-input))] transition-[border-color] duration-200 ease-out focus-within:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
                 COMPOSER_DROP_FADE_CLASS,
-                'group-focus-within/composer:border-[color-mix(in_srgb,var(--dt-composer-ring)_calc(45%*var(--composer-ring-strength)),transparent)]',
                 'group-has-data-[state=open]/composer:border-t-transparent',
+                'group-data-[status-stack]/composer:border-t-transparent',
                 dragActive && COMPOSER_DROP_ACTIVE_CLASS
               )}
               data-slot="composer-surface"
@@ -1736,20 +1751,14 @@ export function ChatBar({
                 aria-hidden
                 className={cn(
                   'pointer-events-none absolute inset-0 -z-10 rounded-[inherit]',
-                  'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
-                  'backdrop-blur-[0.75rem] backdrop-saturate-[1.12]',
-                  '[-webkit-backdrop-filter:blur(0.75rem)_saturate(1.12)]',
-                  'transition-[background-color] duration-150 ease-out',
-                  'group-data-[thread-scrolled-up]/composer:bg-[color-mix(in_srgb,var(--dt-card)_48%,transparent)]',
-                  'group-focus-within/composer:bg-[color-mix(in_srgb,var(--dt-card)_85%,transparent)]'
+                  composerFill,
+                  composerSurfaceGlass
                 )}
               />
               <div
                 className={cn(
                   'relative z-1 flex min-h-0 w-full flex-col gap-(--composer-row-gap) overflow-hidden rounded-[inherit] px-(--composer-surface-pad-x) py-(--composer-surface-pad-y) transition-opacity duration-200 ease-out',
-                  scrolledUp
-                    ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer:opacity-100'
-                    : 'opacity-100'
+                  scrolledUp ? 'opacity-30 group-hover/composer:opacity-100 group-focus-within/composer-surface:opacity-100' : 'opacity-100'
                 )}
                 data-slot="composer-fade"
               >
@@ -1824,12 +1833,8 @@ export function ChatBarFallback() {
           aria-hidden
           className={cn(
             'pointer-events-none absolute inset-0 -z-10 rounded-[inherit]',
-            'bg-[color-mix(in_srgb,var(--dt-card)_72%,transparent)]',
-            'backdrop-blur-[0.75rem] backdrop-saturate-[1.12]',
-            '[-webkit-backdrop-filter:blur(0.75rem)_saturate(1.12)]',
-            'transition-[background-color] duration-150 ease-out',
-            'group-data-[thread-scrolled-up]/composer:bg-[color-mix(in_srgb,var(--dt-card)_48%,transparent)]',
-            'group-focus-within/composer:bg-[color-mix(in_srgb,var(--dt-card)_85%,transparent)]'
+            composerFill,
+            composerSurfaceGlass
           )}
         />
       </div>

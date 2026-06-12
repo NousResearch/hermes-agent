@@ -1332,7 +1332,38 @@ def test_minimax_config_base_url_ignored_for_different_provider(monkeypatch):
     assert resolved["base_url"] == "https://api.minimax.io/anthropic"
 
 
+def test_alibaba_coding_plan_default_domestic_endpoint(monkeypatch):
+    """Default coding-plan provider should use domestic base URL."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba-coding-plan")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+    monkeypatch.delenv("ALIBABA_CODING_PLAN_BASE_URL", raising=False)
+    monkeypatch.delenv("ALIBABA_CODING_PLAN_INTL_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="alibaba-coding-plan")
+
+    assert resolved["provider"] == "alibaba-coding-plan"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://coding.dashscope.aliyuncs.com/v1"
+
+
+def test_alibaba_coding_plan_intl_provider_uses_international_endpoint(monkeypatch):
+    """Intl coding-plan provider should use the international base URL by default."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba-coding-plan-intl")
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-dashscope-key")
+    monkeypatch.delenv("ALIBABA_CODING_PLAN_BASE_URL", raising=False)
+    monkeypatch.delenv("ALIBABA_CODING_PLAN_INTL_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="alibaba-coding-plan-intl")
+
+    assert resolved["provider"] == "alibaba-coding-plan-intl"
+    assert resolved["api_mode"] == "chat_completions"
+    assert resolved["base_url"] == "https://coding-intl.dashscope.aliyuncs.com/v1"
+
+
 def test_alibaba_default_coding_intl_endpoint_uses_chat_completions(monkeypatch):
+
     """Alibaba default coding-intl /v1 URL should use chat_completions mode."""
     monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "alibaba")
     monkeypatch.setattr(rp, "_get_model_config", lambda: {})

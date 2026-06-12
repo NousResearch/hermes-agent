@@ -380,7 +380,12 @@ model:
 
 ### 阿里云（Coding Plan）
 
-如果你订阅了阿里巴巴的 **Coding Plan**（独立于标准 DashScope API 访问的计费 SKU），Hermes 将其作为独立的一等提供商暴露：`alibaba-coding-plan`。端点：`https://coding-intl.dashscope.aliyuncs.com/v1`。与常规 `alibaba` 提供商一样兼容 OpenAI，但基础 URL 和计费面不同。
+阿里巴巴的 **Coding Plan**（独立于标准 DashScope API 访问的计费 SKU）现在分为两个终端：
+
+- `alibaba-coding-plan`（也叫 `alibaba_coding`、`dashscope-coding`）→ **国内** 端点：`https://coding.dashscope.aliyuncs.com/v1`
+- `alibaba-coding-plan-intl`（也叫 `alibaba-coding-intl`、`dashscope-coding-intl`）→ **国际** 端点：`https://coding-intl.dashscope.aliyuncs.com/v1`
+
+两者都兼容 OpenAI 并使用相同模型体系，但面向不同计费与网络区域。
 
 ```yaml
 model:
@@ -394,7 +399,13 @@ model:
 hermes chat --provider alibaba_coding --model qwen3-coder-plus
 ```
 
-`alibaba_coding` 使用与 `alibaba` 条目相同的 `DASHSCOPE_API_KEY`——无需单独的 key，只是路由目标不同。在此提供商注册之前，在 `config.yaml` 中设置 `provider: alibaba_coding` 的用户会静默回退到 OpenRouter 路由。
+如需明确使用国际端点：
+
+```bash
+hermes chat --provider alibaba-coding-plan-intl --model qwen3-coder-plus
+```
+
+`alibaba_coding` 使用与 `alibaba` 条目相同的 `DASHSCOPE_API_KEY`——无需单独的 key，只是路由目标不同。
 
 ### MiniMax（OAuth）
 

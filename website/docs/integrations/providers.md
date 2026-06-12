@@ -31,7 +31,8 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
 | **xAI Grok OAuth (SuperGrok)** | `hermes model` → "xAI Grok OAuth (SuperGrok / Premium+)" — browser login, no API key. See [guide](../guides/xai-grok-oauth.md) |
 | **Qwen Cloud (Alibaba DashScope)** | `DASHSCOPE_API_KEY` in `~/.hermes/.env` (provider: `alibaba`) |
-| **Alibaba Cloud (Coding Plan)** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, different endpoint |
+| **Alibaba Cloud (Coding Plan)** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan`, alias: `alibaba_coding`) — separate billing SKU, domestic endpoint `https://coding.dashscope.aliyuncs.com/v1` |
+| **Alibaba Cloud (Coding Plan Intl)** | `DASHSCOPE_API_KEY` (provider: `alibaba-coding-plan-intl`, aliases: `alibaba-coding-intl`, `dashscope-coding-intl`) — separate billing SKU on the international endpoint |
 | **Kilo Code** | `KILOCODE_API_KEY` in `~/.hermes/.env` (provider: `kilocode`) |
 | **Xiaomi MiMo** | `XIAOMI_API_KEY` in `~/.hermes/.env` (provider: `xiaomi`, aliases: `mimo`, `xiaomi-mimo`) |
 | **Tencent TokenHub** | `TOKENHUB_API_KEY` in `~/.hermes/.env` (provider: `tencent-tokenhub`, aliases: `tencent`, `tokenhub`, `tencentmaas`) |
@@ -401,7 +402,12 @@ Set `HERMES_QWEN_BASE_URL` only if the portal endpoint relocates (default: `http
 
 ### Alibaba Cloud (Coding Plan)
 
-If you're subscribed to Alibaba's **Coding Plan** (a pricing SKU separate from standard DashScope API access), Hermes exposes it as its own first-class provider: `alibaba-coding-plan`. Endpoint: `https://coding-intl.dashscope.aliyuncs.com/v1`. It's OpenAI-compatible like the regular `alibaba` provider but with a different base URL and billing surface.
+Hermes exposes Alibaba Coding Plan as two provider endpoints because the API hosts differ:
+
+- `alibaba-coding-plan` (or `alibaba_coding`, `dashscope-coding`) → **domestic** endpoint: `https://coding.dashscope.aliyuncs.com/v1`
+- `alibaba-coding-plan-intl` (or `alibaba-coding-intl`, `dashscope-coding-intl`) → **international** endpoint: `https://coding-intl.dashscope.aliyuncs.com/v1`
+
+Both are OpenAI-compatible and use the same model families with a dedicated billing tier.
 
 ```yaml
 model:
@@ -415,7 +421,13 @@ Or from the CLI:
 hermes chat --provider alibaba_coding --model qwen3-coder-plus
 ```
 
-`alibaba_coding` uses the same `DASHSCOPE_API_KEY` your `alibaba` entry already uses — no separate key needed, just a different routing target. Before this provider was registered, users who set `provider: alibaba_coding` in `config.yaml` silently fell through to OpenRouter routing.
+To use the international endpoint explicitly:
+
+```bash
+hermes chat --provider alibaba-coding-plan-intl --model qwen3-coder-plus
+```
+
+`alibaba_coding` uses the same `DASHSCOPE_API_KEY` your `alibaba` entry already uses — no separate key needed, just a different provider alias.
 
 ### MiniMax (OAuth)
 

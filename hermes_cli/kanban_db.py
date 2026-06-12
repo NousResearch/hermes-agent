@@ -2932,7 +2932,7 @@ def recompute_ready(
                 "WHERE l.child_id = ?",
                 (task_id,),
             ).fetchall()
-            if all(p["status"] in ("done", "archived") for p in parents):
+            if all(p["status"] in ("done", "archived", "cancelled") for p in parents):
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
                     # circuit-breaker failure limit.  Without this

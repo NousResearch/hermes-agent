@@ -1044,7 +1044,7 @@ function toolSubtitle(
 
     const command = firstStringField(argsRecord, ['command', 'code']) || contextValue(argsRecord)
 
-    return command ? compactPreview(command, 120) : 'Executed command'
+    return command ? compactPreview(command, 2000) : 'Executed command'
   }
 
   if (toolName === 'read_file' || toolName === 'write_file' || toolName === 'edit_file') {

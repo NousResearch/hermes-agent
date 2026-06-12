@@ -885,6 +885,37 @@ class TestSignalInboundMessageTypeClassification:
             "text/html must be classified as DOCUMENT so run.py injects file context."
         )
 
+    @pytest.mark.asyncio
+    async def test_video_attachment_sets_video_type(self, monkeypatch):
+        """A video/mp4 attachment must produce MessageType.VIDEO."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="video/mp4",
+            att_id="clip.mp4",
+            fetch_path="/tmp/clip.mp4",
+            fetch_ext=".mp4",
+        )
+
+        assert event.message_type == MessageType.VIDEO
+
+    @pytest.mark.asyncio
+    async def test_unknown_mime_attachment_falls_back_to_document(self, monkeypatch):
+        """Unknown/exotic MIME types fall through to DOCUMENT (catch-all),
+        matching the WhatsApp/Slack/BlueBubbles classification pattern."""
+        from gateway.platforms.base import MessageType
+
+        event = await self._dispatch_single_attachment(
+            monkeypatch,
+            content_type="chemical/x-pdb",
+            att_id="molecule.pdb",
+            fetch_path="/tmp/molecule.pdb",
+            fetch_ext=".pdb",
+        )
+
+        assert event.message_type == MessageType.DOCUMENT
+
 
 # ---------------------------------------------------------------------------
 # send_document now routes through _send_attachment (#5105 bonus)

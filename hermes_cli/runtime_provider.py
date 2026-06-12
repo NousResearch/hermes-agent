@@ -526,8 +526,10 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 continue
             # Match exact name or normalized name
             name_norm = _normalize_custom_provider_name(ep_name)
-            # Resolve the API key from the env var name stored in key_env
-            key_env = str(entry.get("key_env", "") or "").strip()
+            # Resolve the API key from the env var name stored in key_env.
+            # Accept both `key_env` (canonical Hermes field) and
+            # `api_key_env` (documented alias, see #25091, #44666).
+            key_env = str((entry.get("key_env") or entry.get("api_key_env") or entry.get("keyEnv") or entry.get("apiKeyEnv") or "")).strip()
             resolved_api_key = os.getenv(key_env, "").strip() if key_env else ""
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
@@ -614,7 +616,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             "base_url": base_url.strip(),
             "api_key": str(entry.get("api_key", "") or "").strip(),
         }
-        key_env = str(entry.get("key_env", "") or "").strip()
+        key_env = str((entry.get("key_env") or entry.get("api_key_env") or entry.get("keyEnv") or entry.get("apiKeyEnv") or "")).strip()
         if key_env:
             result["key_env"] = key_env
         if provider_key:

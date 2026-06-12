@@ -166,7 +166,7 @@ def test_auto_focus_skips_context_summary_handoff():
         {"role": "assistant", "content": "Latest tail response"},
     ]
 
-    focus_topic = compressor._derive_auto_focus_topic(messages, tail_start=1)
+    focus_topic = compressor._derive_auto_focus_topic(messages)
 
     assert "OpenViking" in focus_topic
     assert "Bybit" not in focus_topic

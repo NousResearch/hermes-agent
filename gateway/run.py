@@ -11654,6 +11654,78 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return prefix
         return user_text
 
+    @staticmethod
+    def _is_useful_stt_transcript(transcript: object) -> bool:
+        """Return True when STT output contains usable spoken text.
+
+        Some providers return success with an empty string, whitespace, or
+        punctuation-only placeholders for silence/noise. Treat those as no
+        useful transcript so voice messages do not silently enter the agent as
+        empty user turns.
+        """
+        if not isinstance(transcript, str):
+            return False
+        cleaned = transcript.strip()
+        if not cleaned:
+            return False
+        return any(ch.isalnum() for ch in cleaned)
+
+    @staticmethod
+    def _stt_transcript_length_bucket(transcript: object) -> str:
+        if not isinstance(transcript, str):
+            return "none"
+        length = len(transcript.strip())
+        if length == 0:
+            return "0"
+        if length <= 20:
+            return "1-20"
+        if length <= 100:
+            return "21-100"
+        return "100+"
+
+    @staticmethod
+    def _classify_stt_error(error: object) -> str:
+        text = str(error or "").lower()
+        if (
+            "no stt provider" in text
+            or "voice_tools_openai_key" in text
+            or "openai_api_key" in text
+            or "api key" in text
+            or "provider" in text and "configured" in text
+        ):
+            return "provider_unavailable"
+        if (
+            "decode" in text
+            or "codec" in text
+            or "ffmpeg" in text
+            or "audio" in text and ("invalid" in text or "corrupt" in text)
+        ):
+            return "audio_decode_error"
+        if "module" in text or "import" in text or "dependency" in text or "not installed" in text:
+            return "dependency_error"
+        return "unknown_error"
+
+    @staticmethod
+    def _log_stt_result_diagnostic(
+        *,
+        stt_attempted: bool,
+        stt_provider_available: str,
+        stt_result_class: str,
+        transcript_non_empty: bool,
+        transcript_length_bucket: str = "none",
+    ) -> None:
+        """Emit redacted STT outcome metadata without paths/transcript text."""
+        logger.info(
+            "Telegram voice STT result diagnostic: "
+            "stt_attempted=%s stt_provider_available=%s "
+            "stt_result_class=%s transcript_non_empty=%s transcript_length_bucket=%s",
+            "yes" if stt_attempted else "no",
+            stt_provider_available,
+            stt_result_class,
+            "yes" if transcript_non_empty else "no",
+            transcript_length_bucket,
+        )
+
     async def _enrich_message_with_transcription(
         self,
         user_text: str,
@@ -11677,6 +11749,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 this to echo transcripts back to the user before the agent loop.
         """
         if not getattr(self.config, "stt_enabled", True):
+            self._log_stt_result_diagnostic(
+                stt_attempted=False,
+                stt_provider_available="unknown",
+                stt_result_class="provider_unavailable",
+                transcript_non_empty=False,
+            )
             notes = []
             for path in audio_paths:
                 abs_path = os.path.abspath(path)
@@ -11706,18 +11784,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
-                    transcript = result["transcript"]
-                    successful_transcripts.append(transcript)
-                    enriched_parts.append(
-                        f'[The user sent a voice message~ '
-                        f'Here\'s what they said: "{transcript}"]'
+                    transcript = result.get("transcript", "")
+                    useful_transcript = self._is_useful_stt_transcript(transcript)
+                    self._log_stt_result_diagnostic(
+                        stt_attempted=True,
+                        stt_provider_available="yes",
+                        stt_result_class="success_non_empty" if useful_transcript else "success_empty",
+                        transcript_non_empty=useful_transcript,
+                        transcript_length_bucket=self._stt_transcript_length_bucket(transcript),
                     )
+                    if useful_transcript:
+                        successful_transcripts.append(transcript)
+                        enriched_parts.append(
+                            f'[The user sent a voice message~ '
+                            f'Here\'s what they said: "{transcript}"]'
+                        )
+                    else:
+                        enriched_parts.append(
+                            "[The user sent a voice message, but speech-to-text "
+                            "did not produce usable transcript text. Ask the user "
+                            "to resend the voice note or type the message.]"
+                        )
                 else:
                     error = result.get("error", "unknown error")
-                    if (
-                        "No STT provider" in error
-                        or error.startswith("Neither VOICE_TOOLS_OPENAI_KEY nor OPENAI_API_KEY is set")
-                    ):
+                    result_class = self._classify_stt_error(error)
+                    self._log_stt_result_diagnostic(
+                        stt_attempted=True,
+                        stt_provider_available="no" if result_class == "provider_unavailable" else "unknown",
+                        stt_result_class=result_class,
+                        transcript_non_empty=False,
+                    )
+                    if result_class == "provider_unavailable":
                         _no_stt_note = (
                             "[The user sent a voice message but I can't listen "
                             "to it right now — no STT provider is configured. "
@@ -11738,6 +11835,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             f"transcribing it~ ({error})]"
                         )
             except Exception as e:
+                result_class = self._classify_stt_error(e)
+                self._log_stt_result_diagnostic(
+                    stt_attempted=True,
+                    stt_provider_available="unknown",
+                    stt_result_class=result_class,
+                    transcript_non_empty=False,
+                )
                 logger.error("Transcription error: %s", e)
                 enriched_parts.append(
                     "[The user sent a voice message but something went wrong "

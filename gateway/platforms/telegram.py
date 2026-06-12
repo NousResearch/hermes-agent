@@ -1610,6 +1610,16 @@ class TelegramAdapter(BasePlatformAdapter):
             self._app = builder.build()
             self._bot = self._app.bot
             
+            # Earliest redacted media ingress diagnostic.  Registered in an
+            # earlier handler group so it observes voice/audio/media updates
+            # before the normal text/command/media routing filters decide which
+            # handler receives the update.  The diagnostic helper logs only
+            # shape metadata and returns without mutating the update.
+            self._app.add_handler(TelegramMessageHandler(
+                filters.ALL,
+                self._handle_ingress_diagnostic
+            ), group=-1)
+
             # Register handlers
             self._app.add_handler(TelegramMessageHandler(
                 filters.TEXT & ~filters.COMMAND,
@@ -5114,6 +5124,103 @@ class TelegramAdapter(BasePlatformAdapter):
             return MessageType.VOICE
         return MessageType.DOCUMENT
 
+    def _telegram_voice_media_event_kind(self, msg: Any) -> Optional[str]:
+        """Return the redacted diagnostic event kind for Telegram media ingress."""
+        if getattr(msg, "voice", None):
+            return "voice"
+        if any(
+            getattr(msg, attr, None)
+            for attr in ("audio", "photo", "video", "document", "sticker")
+        ):
+            return "media"
+        return None
+
+    def _telegram_ingress_message(self, update: Any) -> tuple[str, Any]:
+        """Return the first message-like object on a Telegram update.
+
+        Only the update/message shape is reported by diagnostics; identifiers,
+        bodies, file IDs, usernames, URLs, and paths are intentionally ignored.
+        """
+        for event_kind, attr in (
+            ("message", "message"),
+            ("edited_message", "edited_message"),
+            ("channel_post", "channel_post"),
+            ("edited_channel_post", "edited_channel_post"),
+        ):
+            msg = getattr(update, attr, None)
+            if msg is not None:
+                return event_kind, msg
+        return "none", None
+
+    def _log_telegram_media_ingress_diagnostic(self, update: Any) -> None:
+        """Emit earliest redacted Telegram media ingress diagnostics.
+
+        This runs before routing/media-handler matching and logs only update
+        shape metadata for voice/audio/media messages.  It deliberately omits
+        chat/user identifiers, file IDs, captions, message bodies, URLs, paths,
+        and config/env values.
+        """
+        event_kind, msg = self._telegram_ingress_message(update)
+        if msg is None:
+            return
+
+        has_voice = bool(getattr(msg, "voice", None))
+        has_audio = bool(getattr(msg, "audio", None))
+        has_photo = bool(getattr(msg, "photo", None))
+        has_video = bool(getattr(msg, "video", None))
+        has_document = bool(getattr(msg, "document", None))
+        has_sticker = bool(getattr(msg, "sticker", None))
+        has_media = any((has_voice, has_audio, has_photo, has_video, has_document, has_sticker))
+        if not has_media:
+            return
+
+        if has_voice:
+            message_kind = "voice"
+        elif has_audio:
+            message_kind = "audio"
+        else:
+            message_kind = "media"
+        thread_marker = "<ID>" if getattr(msg, "message_thread_id", None) is not None else "none"
+        logger.info(
+            "Telegram media ingress diagnostic: "
+            "event_kind=%s message_kind=%s has_voice=%s has_audio=%s has_media=%s "
+            "media_handler_expected=yes chat=<ID> thread=%s",
+            event_kind,
+            message_kind,
+            "yes" if has_voice else "no",
+            "yes" if has_audio else "no",
+            "yes" if has_media else "no",
+            thread_marker,
+        )
+
+    async def _handle_ingress_diagnostic(self, update: Any, context: Any) -> None:
+        """Observe Telegram update shape before normal routing without mutating it."""
+        self._log_telegram_media_ingress_diagnostic(update)
+
+    def _log_voice_media_route_decision(self, msg: Any, *, accepted: bool) -> None:
+        """Emit a redacted component-level route diagnostic for media ingress.
+
+        This intentionally avoids chat/user/thread values, captions, message
+        bodies, file IDs, URLs, paths, and config values. It only records the
+        route-gate outcome needed to tell whether Telegram media reached the
+        adapter and was accepted for downstream caching/STT.
+        """
+        event_kind = self._telegram_voice_media_event_kind(msg)
+        if event_kind is None:
+            return
+
+        decision = "accepted" if accepted else "dropped"
+        drop_gate = "none" if accepted else "route_gate"
+        thread_marker = "<ID>" if getattr(msg, "message_thread_id", None) is not None else "none"
+        logger.info(
+            "Telegram voice/media route diagnostic: "
+            "event_kind=%s route_decision=%s drop_gate=%s stt_reached=no chat=<ID> thread=%s",
+            event_kind,
+            decision,
+            drop_gate,
+            thread_marker,
+        )
+
     async def _cache_observed_media(self, msg: Message, event: MessageEvent) -> None:
         """Cache an unmentioned group attachment and annotate the observed text.
 
@@ -5560,7 +5667,9 @@ class TelegramAdapter(BasePlatformAdapter):
         """Handle incoming media messages, downloading images to local cache."""
         if not update.message:
             return
-        if not self._should_process_message(update.message):
+        accepted = self._should_process_message(update.message)
+        self._log_voice_media_route_decision(update.message, accepted=accepted)
+        if not accepted:
             if self._should_observe_unmentioned_group_message(update.message):
                 _m = update.message
                 _observe_type = self._media_message_type(_m)

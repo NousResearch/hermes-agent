@@ -18,6 +18,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
 import sys
 import time
@@ -362,6 +363,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
+    p_create.add_argument("--origin-platform", default=None,
+                          help="Gateway platform to notify for terminal ACKs")
+    p_create.add_argument("--origin-chat-id", default=None,
+                          help="Gateway chat/channel id to notify for terminal ACKs")
+    p_create.add_argument("--origin-thread-id", default=None,
+                          help="Optional gateway thread/topic id for terminal ACKs")
+    p_create.add_argument("--origin-user-id", default=None,
+                          help="Optional originating user id for notification records")
+    p_create.add_argument("--notifier-profile", default=None,
+                          help="Profile gateway that owns/delivers the ACK subscription")
+    p_create.add_argument("--ack-trigger-agent", action="store_true",
+                          help="Mark the ACK subscription as active-wake capable")
 
     # --- swarm ---
     p_swarm = sub.add_parser(
@@ -690,6 +703,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--notifier-profile", default=None,
         help="Profile gateway that owns/delivers this subscription (default: active profile)",
     )
+    p_nsub.add_argument("--trigger-agent", action="store_true",
+                        help="Mark this subscription as active-wake capable")
 
     p_nlist = sub.add_parser(
         "notify-list",
@@ -986,6 +1001,37 @@ def _profile_author() -> str:
         return get_active_profile_name() or "user"
     except Exception:
         return "user"
+
+def _infer_origin_subscription_from_body(body: Optional[str]) -> dict[str, str] | None:
+    """Infer a terminal ACK subscription from explicit Origin/return_to prose."""
+    if not body:
+        return None
+    origin_line = ""
+    for line in str(body).splitlines():
+        if re.search(r"\b(?:origin|return_to|return-to)\b", line, re.I):
+            origin_line = line.strip()
+            break
+    if not origin_line or not re.search(r"\bdiscord\b", origin_line, re.I):
+        return None
+    chat_match = re.search(r"<#(\d{5,})>", origin_line)
+    if chat_match is None:
+        chat_match = re.search(
+            r"\bchat_id\s*[=:]\s*(\d{5,})\b",
+            origin_line,
+            re.I,
+        )
+    if chat_match is None:
+        return None
+    thread_match = re.search(
+        r"\b(?:thread_id|topic_id)\s*[=:]\s*(\d{5,})\b",
+        origin_line,
+        re.I,
+    )
+    return {
+        "platform": "discord",
+        "chat_id": chat_match.group(1),
+        "thread_id": thread_match.group(1) if thread_match else "",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1288,6 +1334,21 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
+    origin_platform = (getattr(args, "origin_platform", None) or "").strip()
+    origin_chat_id = (getattr(args, "origin_chat_id", None) or "").strip()
+    inferred_origin = None
+    if not origin_platform and not origin_chat_id:
+        inferred_origin = _infer_origin_subscription_from_body(getattr(args, "body", None))
+        if inferred_origin:
+            origin_platform = inferred_origin["platform"]
+            origin_chat_id = inferred_origin["chat_id"]
+    if bool(origin_platform) ^ bool(origin_chat_id):
+        print(
+            "kanban: pass both --origin-platform and --origin-chat-id "
+            "to wire terminal ACKs",
+            file=sys.stderr,
+        )
+        return 2
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
@@ -1310,6 +1371,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    ack_subscription: dict[str, Any] | None = None
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1333,18 +1395,41 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
+        if task is None:
+            print(f"kanban: created task {task_id} but could not read it back", file=sys.stderr)
+            return 1
+        if origin_platform and origin_chat_id:
+            thread_id = (
+                getattr(args, "origin_thread_id", None)
+                or ((inferred_origin or {}).get("thread_id") or None)
+            )
+            trigger_agent = bool(getattr(args, "ack_trigger_agent", False)) or bool(inferred_origin)
+            notifier_profile = getattr(args, "notifier_profile", None) or _profile_author()
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=origin_platform,
+                chat_id=origin_chat_id,
+                thread_id=thread_id,
+                user_id=getattr(args, "origin_user_id", None),
+                notifier_profile=notifier_profile,
+                trigger_agent=trigger_agent,
+            )
+            ack_subscription = {
+                "task_id": task_id,
+                "platform": origin_platform,
+                "chat_id": origin_chat_id,
+                "thread_id": thread_id or "",
+                "trigger_agent": trigger_agent,
+                "notifier_profile": notifier_profile,
+            }
     if getattr(args, "json", False):
-        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+        payload = _task_to_dict(task)
+        if ack_subscription is not None:
+            payload["ack_subscription"] = ack_subscription
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
-
-        # Warn when the task would sit in `ready` because no dispatcher is
-        # present. Only warn on ready+assigned tasks — triage/todo are
-        # expected to sit idle until promoted, and unassigned tasks
-        # can't be dispatched. Skipped in --json mode so the stdout
-        # stream stays strictly machine-parseable for callers (the JSON
-        # response itself carries enough info for them to decide if
-        # they want to check dispatcher presence separately).
         if task.status == "ready" and task.assignee:
             running, message = _check_dispatcher_presence()
             if not running and message:
@@ -2410,6 +2495,7 @@ def _cmd_notify_subscribe(args: argparse.Namespace) -> int:
             platform=args.platform, chat_id=args.chat_id,
             thread_id=args.thread_id, user_id=args.user_id,
             notifier_profile=args.notifier_profile or _profile_author(),
+            trigger_agent=bool(getattr(args, "trigger_agent", False)),
         )
     print(f"Subscribed {args.platform}:{args.chat_id}"
           + (f":{args.thread_id}" if args.thread_id else "")

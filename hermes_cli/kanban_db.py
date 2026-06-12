@@ -1154,6 +1154,7 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     thread_id     TEXT NOT NULL DEFAULT '',
     user_id       TEXT,
     notifier_profile TEXT,
+    trigger_agent INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     last_event_id INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
@@ -1883,6 +1884,17 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "session_id", "session_id TEXT"
         )
 
+    notify_cols = {
+        row["name"] for row in conn.execute("PRAGMA table_info(kanban_notify_subs)")
+    }
+    if "trigger_agent" not in notify_cols:
+        _add_column_if_missing(
+            conn,
+            "kanban_notify_subs",
+            "trigger_agent",
+            "trigger_agent INTEGER NOT NULL DEFAULT 0",
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2455,6 +2467,54 @@ def create_task(
                         "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
                         (pid, task_id),
                     )
+                if parents:
+                    # ACK-edge inheritance: if a parent/root task is already
+                    # wired for terminal notifications, every child in the
+                    # durable graph must inherit that return path. Otherwise a
+                    # child can BLOCK while the origin lane never hears it.
+                    placeholders = ",".join("?" * len(parents))
+                    parent_subs = conn.execute(
+                        "SELECT * FROM kanban_notify_subs "
+                        f"WHERE task_id IN ({placeholders}) "
+                        "ORDER BY created_at ASC",
+                        parents,
+                    ).fetchall()
+                    for sub in parent_subs:
+                        conn.execute(
+                            """
+                            INSERT OR IGNORE INTO kanban_notify_subs
+                                (task_id, platform, chat_id, thread_id, user_id,
+                                 notifier_profile, trigger_agent, created_at)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                task_id,
+                                sub["platform"],
+                                sub["chat_id"],
+                                sub["thread_id"] or "",
+                                sub["user_id"],
+                                sub["notifier_profile"],
+                                1 if sub["trigger_agent"] else 0,
+                                now,
+                            ),
+                        )
+                        if sub["trigger_agent"]:
+                            conn.execute(
+                                """
+                                UPDATE kanban_notify_subs
+                                   SET trigger_agent = 1
+                                 WHERE task_id = ?
+                                   AND platform = ?
+                                   AND chat_id = ?
+                                   AND thread_id = ?
+                                """,
+                                (
+                                    task_id,
+                                    sub["platform"],
+                                    sub["chat_id"],
+                                    sub["thread_id"] or "",
+                                ),
+                            )
                 _append_event(
                     conn,
                     task_id,
@@ -7839,30 +7899,58 @@ def add_notify_sub(
     thread_id: Optional[str] = None,
     user_id: Optional[str] = None,
     notifier_profile: Optional[str] = None,
+    trigger_agent: bool = False,
 ) -> None:
-    """Register a gateway source that wants terminal-state notifications
-    for ``task_id``. Idempotent on (task, platform, chat, thread)."""
+    """Register a gateway source that wants terminal-state notifications.
+
+    Idempotent on (task, platform, chat, thread). Repeated calls preserve the
+    original notifier owner while allowing a later caller to upgrade the edge
+    to active-wake semantics.
+    """
     now = int(time.time())
     with write_txn(conn):
         conn.execute(
             """
             INSERT OR IGNORE INTO kanban_notify_subs
-                (task_id, platform, chat_id, thread_id, user_id, notifier_profile, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (task_id, platform, chat_id, thread_id, user_id,
+                 notifier_profile, trigger_agent, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (task_id, platform, chat_id, thread_id or "", user_id, notifier_profile, now),
+            (
+                task_id,
+                platform,
+                chat_id,
+                thread_id or "",
+                user_id,
+                notifier_profile,
+                1 if trigger_agent else 0,
+                now,
+            ),
         )
         if notifier_profile:
-            # Self-heal legacy rows that predate notifier ownership by
-            # backfilling only when the existing value is unset.
             conn.execute(
                 """
                 UPDATE kanban_notify_subs
                    SET notifier_profile = ?
-                 WHERE task_id = ? AND platform = ? AND chat_id = ? AND thread_id = ?
+                 WHERE task_id = ?
+                   AND platform = ?
+                   AND chat_id = ?
+                   AND thread_id = ?
                    AND (notifier_profile IS NULL OR notifier_profile = '')
                 """,
                 (notifier_profile, task_id, platform, chat_id, thread_id or ""),
+            )
+        if trigger_agent:
+            conn.execute(
+                """
+                UPDATE kanban_notify_subs
+                   SET trigger_agent = 1
+                 WHERE task_id = ?
+                   AND platform = ?
+                   AND chat_id = ?
+                   AND thread_id = ?
+                """,
+                (task_id, platform, chat_id, thread_id or ""),
             )
 
 

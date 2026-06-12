@@ -334,6 +334,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     detailed_after_first:     "_(Детальне використання доступне після першої відповіді агента)_"
     no_data:                  "Дані про використання для цього сеансу відсутні."
 
+  credits:
+    not_logged_in:            "Ви не ввійшли в Nous Portal. Увійдіть, щоб переглянути баланс кредитів і поповнити його."
+
   verbose:
     not_enabled:           "Команду `/verbose` не ввімкнено для платформ обміну повідомленнями.\n\nУвімкніть у `config.yaml`:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Прогрес інструментів: **OFF** — активність інструментів не показується."

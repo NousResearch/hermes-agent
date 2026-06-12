@@ -334,6 +334,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     detailed_after_first:     "_(자세한 사용량은 첫 에이전트 응답 이후 확인할 수 있습니다)_"
     no_data:                  "이 세션에 사용 가능한 사용량 데이터가 없습니다."
 
+  credits:
+    not_logged_in:            "Nous Portal에 로그인되어 있지 않습니다. 로그인하면 크레딧 잔액 확인 및 충전을 할 수 있습니다."
+
   verbose:
     not_enabled:           "`/verbose` 명령은 메시징 플랫폼에서 활성화되어 있지 않습니다.\n\n`config.yaml`에서 활성화하세요:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ 도구 진행 상황: **OFF** — 도구 활동이 표시되지 않습니다."

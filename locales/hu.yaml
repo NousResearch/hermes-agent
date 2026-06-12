@@ -334,6 +334,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     detailed_after_first:     "_(A részletes használat az első ügynökválasz után érhető el)_"
     no_data:                  "Ehhez a munkamenethez nincsenek elérhető használati adatok."
 
+  credits:
+    not_logged_in:            "Nincs bejelentkezve a Nous Portalra. Jelentkezz be a kreditegyenleg megtekintéséhez és feltöltéséhez."
+
   verbose:
     not_enabled:           "A `/verbose` parancs nincs engedélyezve az üzenetküldő platformokon.\n\nEngedélyezd a `config.yaml` fájlban:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Eszközfolyamat: **OFF** — nem jelenik meg eszközaktivitás."

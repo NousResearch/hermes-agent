@@ -334,6 +334,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     detailed_after_first:     "_(Detaillierte Nutzung nach der ersten Agentenantwort verfügbar)_"
     no_data:                  "Keine Nutzungsdaten für diese Sitzung verfügbar."
 
+  credits:
+    not_logged_in:            "Nicht bei Nous Portal angemeldet. Melde dich an, um dein Guthaben zu sehen und aufzuladen."
+
   verbose:
     not_enabled:           "Der Befehl `/verbose` ist für Messaging-Plattformen nicht aktiviert.\n\nIn `config.yaml` aktivieren:\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Tool-Fortschritt: **OFF** — keine Tool-Aktivität angezeigt."

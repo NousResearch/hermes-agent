@@ -4409,6 +4409,37 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, usage)
 
 
+@method("credits.view")
+def _(rid, params: dict) -> dict:
+    """Structured Nous credit view for the TUI /credits command.
+
+    Account-independent (a portal fetch gated on "a Nous account is logged in"),
+    so it works with no live agent / on a resumed session — same as the /usage
+    credits block. Returns the surface-agnostic CreditsView fields so the TUI can
+    render a clickable top-up <Link>. Fail-open: a portal hiccup or logged-out
+    account yields {logged_in: false}, never an error the user has to parse.
+    """
+    try:
+        from agent.account_usage import build_credits_view
+
+        view = build_credits_view()
+        return _ok(
+            rid,
+            {
+                "logged_in": bool(view.logged_in),
+                "balance_lines": [
+                    line for line in view.balance_lines if not line.lstrip().startswith("📈")
+                ],
+                "identity_line": view.identity_line,
+                "topup_url": view.topup_url,
+                "depleted": bool(view.depleted),
+            },
+        )
+    except Exception:
+        # Fail-open: TUI treats this as "not logged in" and shows the prompt.
+        return _ok(rid, {"logged_in": False, "balance_lines": [], "identity_line": None, "topup_url": None, "depleted": False})
+
+
 @method("session.status")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)

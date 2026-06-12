@@ -464,12 +464,12 @@ class TestNoticeCopy:
         assert "$12.34" in grant_notice.text
         assert "top-up left" in grant_notice.text
 
-    def test_depleted_mentions_usage_command(self):
+    def test_depleted_mentions_credits_command(self):
         latch = fresh_latch()
         s = CreditsState(paid_access=False)
         to_show, _ = evaluate_credits_notices(s, latch)
         depleted_notice = next(n for n in to_show if n.key == "credits.depleted")
-        assert "/usage" in depleted_notice.text
+        assert "/credits" in depleted_notice.text
 
 
 # ── Scenario 8: severity order in a single call ──────────────────────────────

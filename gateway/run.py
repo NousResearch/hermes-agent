@@ -16073,6 +16073,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "thread_id": _progress_thread_id,
                 "reply_to_message_id": event_message_id,
             }
+        elif _progress_thread_id and _progress_thread_id != source.thread_id:
+            # Slack reply-anchor fallback: source.thread_id is None but a
+            # triggering message id was carried as the progress/thread anchor
+            # (see the Platform.SLACK branch above where
+            # `_progress_thread_id = source.thread_id or event_message_id`).
+            # `_thread_metadata_for_source` keys off source.thread_id only and
+            # would return None here, dropping the thread anchor — so the
+            # queued-follow-up / stream-consumer delivery posts at the channel
+            # root. Mirror `_progress_metadata` and carry the anchor explicitly
+            # so the reply stays in-thread across compression/interrupt drains.
+            _status_thread_metadata = {"thread_id": _progress_thread_id}
         else:
             _status_thread_metadata = self._thread_metadata_for_source(source, event_message_id) if _progress_thread_id else None
 

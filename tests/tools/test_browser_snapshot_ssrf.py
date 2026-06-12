@@ -122,6 +122,27 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         assert result["success"] is True
         assert "snapshot" in result
 
+
+    def test_skips_check_for_local_sidecar_session(self, monkeypatch):
+        """Local sidecar sessions can legitimately access private URLs."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        # Simulate the effective_task_id being a local sidecar key
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: True)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "snapshot":
+                return _make_snapshot_result()
+            return {"success": False, "error": "should not be called"}
+
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result = json.loads(browser_browser_snapshot(task_id="test"))
+        assert result["success"] is True
+        assert "snapshot" in result
+
     def test_skips_check_when_private_urls_allowed(self, monkeypatch):
         """When allow_private_urls is enabled, SSRF check is skipped."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
@@ -323,6 +344,27 @@ class TestBrowserVisionPrivateNetworkGuard:
     def test_skips_check_in_local_backend_mode(self, monkeypatch):
         """Local backend mode skips SSRF check entirely."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "screenshot":
+                return _make_screenshot_result()
+            return {"success": False, "error": "should not be called"}
+
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result_raw = browser_browser_vision(question="what", task_id="test")
+        result = json.loads(result_raw)
+        assert "private or internal address" not in result.get("error", "")
+
+
+    def test_skips_check_for_local_sidecar_session(self, monkeypatch):
+        """Local sidecar sessions can legitimately access private URLs."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        # Simulate the effective_task_id being a local sidecar key
+        monkeypatch.setattr(browser_tool, "_is_local_sidecar_key", lambda key: True)
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "screenshot":

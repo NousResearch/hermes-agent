@@ -595,21 +595,17 @@ def run_conversation(
         # landed after an orphan tool result). Most providers return
         # empty content on malformed sequences, which would otherwise
         # retrigger the empty-retry loop indefinitely.
-        repaired_seq = agent._repair_message_sequence(messages)
+        # repair_message_sequence_with_cursor also recomputes the SessionDB
+        # flush cursor (_last_flushed_db_idx) when repair compacts the list,
+        # so the turn-end flush doesn't skip the assistant/tool chain (#44837).
+        from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+        repaired_seq = repair_message_sequence_with_cursor(agent, messages)
         if repaired_seq > 0:
             request_logger.info(
                 "Repaired %s message-alternation violations before request (session=%s)",
                 repaired_seq,
                 agent.session_id or "-",
             )
-            # Clamp the SessionDB flush cursor after compaction.  If repair
-            # merged or dropped messages, _last_flushed_db_idx may now point
-            # past the new end of `messages`, causing turn-end flush to skip
-            # the assistant/tool chain entirely (#44837).
-            if hasattr(agent, "_last_flushed_db_idx"):
-                agent._last_flushed_db_idx = min(
-                    agent._last_flushed_db_idx, len(messages)
-                )
 
         api_messages = []
         for idx, msg in enumerate(messages):

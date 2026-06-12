@@ -199,3 +199,102 @@ def test_repair_preserves_system_messages():
     AIAgent._repair_message_sequence(agent, messages)
 
     assert messages == original
+
+
+# ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
+
+from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
+
+
+def test_cursor_clamped_when_compaction_shrinks_below_cursor():
+    """Cursor past the new end of the list must come back in range so the
+    turn-end flush doesn't skip the assistant/tool chain (#44837)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": "second"},
+    ]
+    agent._last_flushed_db_idx = 2  # both rows already flushed
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 1
+    assert agent._last_flushed_db_idx == 1
+
+
+def test_cursor_rewinds_when_compaction_happens_before_cursor():
+    """Repair that drops/merges messages at indexes BELOW the cursor must
+    rewind it by the number removed, or unflushed rows get skipped.
+    A plain min() clamp does NOT catch this case."""
+    agent = _bare_agent()
+    flushed_a = {"role": "user", "content": "first"}
+    flushed_b = {"role": "user", "content": "second"}  # merged into flushed_a
+    unflushed_assistant = {"role": "assistant", "content": "answer"}
+    messages = [flushed_a, flushed_b, unflushed_assistant]
+    agent._last_flushed_db_idx = 2  # the two user rows are flushed
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 1
+    assert len(messages) == 2
+    # Cursor must now point at the assistant (index 1), not stay at 2 —
+    # min(2, len=2) would leave it at 2 and the flush would skip it.
+    assert agent._last_flushed_db_idx == 1
+    assert messages[agent._last_flushed_db_idx] is unflushed_assistant
+
+
+def test_cursor_untouched_when_no_repairs():
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+    agent._last_flushed_db_idx = 1
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 0
+    assert agent._last_flushed_db_idx == 1
+
+
+def test_cursor_helper_safe_without_cursor_attribute():
+    """Bare agents (no _last_flushed_db_idx) must not crash."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "a"},
+        {"role": "user", "content": "b"},
+    ]
+
+    repairs = repair_message_sequence_with_cursor(agent, messages)
+
+    assert repairs == 1
+    assert not hasattr(agent, "_last_flushed_db_idx")
+
+
+def test_flush_guard_clamps_overshooting_cursor():
+    """_flush_messages_to_session_db safety net: an overshooting cursor must
+    not produce a negative-start slice that skips everything (#44837)."""
+
+    class _DB:
+        def __init__(self):
+            self.rows = []
+
+        def append_message(self, **kw):
+            self.rows.append(kw)
+
+    agent = _bare_agent()
+    agent._session_db = _DB()
+    agent._session_db_created = True
+    agent.session_id = "s1"
+    agent._persist_user_message_override = None
+    agent._last_flushed_db_idx = 5  # stale — past end of compacted list
+    messages = [
+        {"role": "user", "content": "q"},
+        {"role": "assistant", "content": "a"},
+    ]
+
+    AIAgent._flush_messages_to_session_db(agent, messages, conversation_history=[])
+
+    # min(5, 2) = 2 → nothing skipped below start_idx, cursor settles at 2
+    assert agent._last_flushed_db_idx == 2

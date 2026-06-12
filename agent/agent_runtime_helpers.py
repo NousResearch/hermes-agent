@@ -445,6 +445,45 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
     return repairs
 
 
+def repair_message_sequence_with_cursor(agent, messages: List[Dict]) -> int:
+    """Run :func:`repair_message_sequence` and keep the SessionDB flush
+    cursor consistent with the compacted list (#44837).
+
+    ``repair_message_sequence`` merges/drops messages in place, shrinking
+    the list. ``_last_flushed_db_idx`` (the DB-write cursor) indexes into
+    that list, so after compaction it can point past the new end — the
+    turn-end flush would then skip the assistant/tool chain entirely — or
+    past unflushed messages shifted to lower indexes.
+
+    Repair preserves object identity for surviving messages, so counting
+    the survivors from the previously-flushed prefix gives the exact new
+    cursor even when messages are dropped/merged at indexes *before* the
+    cursor — a plain ``min()`` clamp would silently skip that many
+    unflushed rows. Falls back to the clamp when no prefix snapshot is
+    available.
+
+    Returns the number of repairs made (same as ``repair_message_sequence``).
+    """
+    pre_repair_flushed_ids = None
+    flush_cursor = getattr(agent, "_last_flushed_db_idx", None)
+    if isinstance(flush_cursor, int) and flush_cursor > 0:
+        pre_repair_flushed_ids = {id(m) for m in messages[:flush_cursor]}
+
+    repairs = repair_message_sequence(agent, messages)
+
+    if repairs > 0 and hasattr(agent, "_last_flushed_db_idx"):
+        if pre_repair_flushed_ids is not None:
+            agent._last_flushed_db_idx = sum(
+                1 for m in messages if id(m) in pre_repair_flushed_ids
+            )
+        else:
+            agent._last_flushed_db_idx = min(
+                agent._last_flushed_db_idx, len(messages)
+            )
+
+    return repairs
+
+
 
 def strip_think_blocks(agent, content: str) -> str:
     """Remove reasoning/thinking blocks from content, returning only visible text.

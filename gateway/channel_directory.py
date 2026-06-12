@@ -6,6 +6,7 @@ Built on gateway startup, refreshed periodically (every 5 min), and saved to
 action="list" and for resolving human-friendly channel names to numeric IDs.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -65,14 +66,15 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     """
     from gateway.config import Platform
 
-    platforms: Dict[str, List[Dict[str, str]]] = {}
+    platforms: Dict[str, List[Dict[str, Any]]] = {}
+    session_entries_by_platform = await asyncio.to_thread(_build_sessions_by_platform)
 
     for platform, adapter in adapters.items():
         try:
             if platform == Platform.DISCORD:
-                platforms["discord"] = _build_discord(adapter)
+                platforms["discord"] = _build_discord(adapter, session_entries_by_platform)
             elif platform == Platform.SLACK:
-                platforms["slack"] = await _build_slack(adapter)
+                platforms["slack"] = await _build_slack(adapter, session_entries_by_platform)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
@@ -84,7 +86,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         plat_name = plat.value
         if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
             continue
-        platforms[plat_name] = _build_from_sessions(plat_name)
+        platforms[plat_name] = _sessions_for_platform(plat_name, session_entries_by_platform)
 
     # Include plugin-registered platforms (dynamic enum members aren't in
     # Platform.__members__, so the loop above misses them).
@@ -92,7 +94,7 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             if entry.name not in _SKIP_SESSION_DISCOVERY and entry.name not in platforms:
-                platforms[entry.name] = _build_from_sessions(entry.name)
+                platforms[entry.name] = _sessions_for_platform(entry.name, session_entries_by_platform)
     except Exception:
         pass
 
@@ -102,14 +104,17 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     }
 
     try:
-        atomic_json_write(DIRECTORY_PATH, directory)
+        await asyncio.to_thread(atomic_json_write, DIRECTORY_PATH, directory)
     except Exception as e:
         logger.warning("Channel directory: failed to write: %s", e)
 
     return directory
 
 
-def _build_discord(adapter) -> List[Dict[str, str]]:
+def _build_discord(
+    adapter,
+    session_entries_by_platform: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+) -> List[Dict[str, Any]]:
     """Enumerate all text channels and forum channels the Discord bot can see."""
     channels = []
     client = getattr(adapter, "_client", None)
@@ -142,11 +147,14 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
         # feasible via guild enumeration; those come from sessions.
 
     # Merge any DMs from session history
-    channels.extend(_build_from_sessions("discord"))
+    channels.extend(_sessions_for_platform("discord", session_entries_by_platform))
     return channels
 
 
-async def _build_slack(adapter) -> List[Dict[str, Any]]:
+async def _build_slack(
+    adapter,
+    session_entries_by_platform: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+) -> List[Dict[str, Any]]:
     """List Slack channels the bot has joined across all workspaces.
 
     Uses ``users.conversations`` against each workspace's web client. Pulls
@@ -156,7 +164,7 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
     """
     team_clients = getattr(adapter, "_team_clients", None) or {}
     if not team_clients:
-        return _build_from_sessions("slack")
+        return _sessions_for_platform("slack", session_entries_by_platform)
 
     channels: List[Dict[str, Any]] = []
     seen_ids: set = set()
@@ -200,7 +208,7 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             continue
 
     # Merge in DM/group entries discovered from session history.
-    for entry in _build_from_sessions("slack"):
+    for entry in _sessions_for_platform("slack", session_entries_by_platform):
         if entry.get("id") not in seen_ids:
             channels.append(entry)
             seen_ids.add(entry.get("id"))
@@ -208,36 +216,54 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
     return channels
 
 
-def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
+def _build_from_sessions(platform_name: str) -> List[Dict[str, Any]]:
+    """Pull known channels/contacts from sessions.json origin data."""
+    return _sessions_for_platform(platform_name, _build_sessions_by_platform())
+
+
+def _sessions_for_platform(
+    platform_name: str,
+    session_entries_by_platform: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+) -> List[Dict[str, Any]]:
+    if session_entries_by_platform is None:
+        session_entries_by_platform = _build_sessions_by_platform()
+    return [dict(entry) for entry in session_entries_by_platform.get(platform_name, [])]
+
+
+def _build_sessions_by_platform() -> Dict[str, List[Dict[str, Any]]]:
     """Pull known channels/contacts from sessions.json origin data."""
     sessions_path = get_hermes_home() / "sessions" / "sessions.json"
     if not sessions_path.exists():
-        return []
+        return {}
 
-    entries = []
+    entries_by_platform: Dict[str, List[Dict[str, Any]]] = {}
+    seen_ids_by_platform: Dict[str, set] = {}
     try:
         with open(sessions_path, encoding="utf-8") as f:
             data = json.load(f)
 
-        seen_ids = set()
         for _key, session in data.items():
             origin = session.get("origin") or {}
-            if origin.get("platform") != platform_name:
+            platform_name = origin.get("platform")
+            if not platform_name:
                 continue
             entry_id = _session_entry_id(origin)
-            if not entry_id or entry_id in seen_ids:
+            if not entry_id:
+                continue
+            seen_ids = seen_ids_by_platform.setdefault(platform_name, set())
+            if entry_id in seen_ids:
                 continue
             seen_ids.add(entry_id)
-            entries.append({
+            entries_by_platform.setdefault(platform_name, []).append({
                 "id": entry_id,
                 "name": _session_entry_name(origin),
                 "type": session.get("chat_type", "dm"),
                 "thread_id": origin.get("thread_id"),
             })
     except Exception as e:
-        logger.debug("Channel directory: failed to read sessions for %s: %s", platform_name, e)
+        logger.debug("Channel directory: failed to read sessions: %s", e)
 
-    return entries
+    return entries_by_platform
 
 
 # ---------------------------------------------------------------------------

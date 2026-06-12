@@ -2701,6 +2701,7 @@ def browser_snapshot(
         # Re-check the current URL before returning the snapshot.
         if (
             not _is_local_backend()
+            and not _is_local_sidecar_key(effective_task_id)
             and not _allow_private_urls()
         ):
             try:
@@ -3320,6 +3321,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     # to the vision model.  Re-check the current URL before capturing anything.
     if (
         not _is_local_backend()
+        and not _is_local_sidecar_key(effective_task_id)
         and not _allow_private_urls()
     ):
         try:

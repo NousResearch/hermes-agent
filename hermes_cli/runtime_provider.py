@@ -1378,6 +1378,21 @@ def resolve_runtime_provider(
             if not _agent_key_is_usable(nous_state, min_ttl):
                 logger.debug("Nous pool entry agent_key expired/missing, falling through to runtime resolution")
                 pool_api_key = ""
+        # For bare `provider: custom`, the pool entry must carry its own
+        # base_url — _resolve_runtime_from_pool_entry has no PROVIDER_REGISTRY
+        # default to fall back to for "custom". A poison entry with an empty
+        # base_url (e.g. a stale `source: manual` row left over from a partial
+        # auth flow) would otherwise hijack resolution and surface as
+        # "Provider resolver returned an empty base URL". Skip such entries so
+        # we fall through to _resolve_openrouter_runtime, which honours
+        # model.base_url from config.yaml under the bare-custom trust check.
+        if (
+            provider == "custom"
+            and entry is not None
+            and not (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").strip()
+        ):
+            entry = None
+            pool_api_key = ""
         if entry is not None and pool_api_key:
             return _resolve_runtime_from_pool_entry(
                 provider=provider,

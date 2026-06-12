@@ -676,6 +676,50 @@ def test_bare_custom_does_not_trust_non_loopback_when_provider_not_custom(monkey
     assert "remote.example.com" not in resolved["base_url"]
 
 
+def test_bare_custom_skips_pool_entry_with_empty_base_url(monkeypatch):
+    """A poisoned `custom` pool entry (empty base_url, e.g. a stale manual row
+    from a partial auth flow) must not hijack resolution. Bare `provider:
+    custom` should fall through to the config base_url path instead of
+    returning an empty base_url. Regression for the "Provider resolver
+    returned an empty base URL" report (2026-06-13)."""
+
+    class _Entry:
+        access_token = "poison-token"
+        runtime_api_key = "poison-token"
+        source = "manual"
+        base_url = ""
+        runtime_base_url = None
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "custom")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "custom",
+            "base_url": "http://10.71.71.82:8081/v1",
+            "api_key": "config-key",
+        },
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://10.71.71.82:8081/v1"
+    assert resolved["api_key"] != "poison-token"
+    assert resolved["base_url"], "base_url must not be empty"
+
+
 def test_named_custom_provider_uses_saved_credentials(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

@@ -424,6 +424,41 @@ def _get_child_timeout() -> float:
     return float(DEFAULT_CHILD_TIMEOUT)
 
 
+def _get_subagent_complete_summary_max_chars() -> int:
+    """Bound the TUI completion-event summary payload.
+
+    The parent tool result can still include the complete child response, but
+    live UI/event payloads need a safety valve so a runaway child cannot push
+    arbitrarily large WebSocket/log/in-memory messages.
+    """
+    cfg = _load_config()
+    val = cfg.get("subagent_complete_summary_max_chars")
+    if val is None:
+        val = os.getenv("DELEGATION_SUBAGENT_COMPLETE_SUMMARY_MAX_CHARS")
+    if val is None:
+        return _DEFAULT_SUBAGENT_COMPLETE_SUMMARY_MAX_CHARS
+    try:
+        return max(_MIN_SUBAGENT_COMPLETE_SUMMARY_MAX_CHARS, int(val))
+    except (TypeError, ValueError):
+        logger.warning(
+            "delegation.subagent_complete_summary_max_chars=%r is not a valid integer; "
+            "using default %d",
+            val,
+            _DEFAULT_SUBAGENT_COMPLETE_SUMMARY_MAX_CHARS,
+        )
+        return _DEFAULT_SUBAGENT_COMPLETE_SUMMARY_MAX_CHARS
+
+
+def _cap_subagent_complete_summary(summary: str) -> str:
+    limit = _get_subagent_complete_summary_max_chars()
+    if len(summary) <= limit:
+        return summary
+
+    suffix = f"\n\n[summary truncated to {limit} chars for subagent event payload]"
+    keep = max(0, limit - len(suffix))
+    return summary[:keep].rstrip() + suffix
+
+
 def _get_max_spawn_depth() -> int:
     """Read delegation.max_spawn_depth from config, floored at 1 (no ceiling).
 
@@ -545,6 +580,8 @@ def _preserve_parent_mcp_toolsets(
 
 DEFAULT_MAX_ITERATIONS = 50
 DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+_DEFAULT_SUBAGENT_COMPLETE_SUMMARY_MAX_CHARS = 20_000
+_MIN_SUBAGENT_COMPLETE_SUMMARY_MAX_CHARS = 500
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
@@ -1851,10 +1888,13 @@ def _run_single_child(
         _output_tail = _extract_output_tail(result, max_entries=8, max_chars=600)
 
         complete_kwargs: Dict[str, Any] = {
+            # Keep preview compact for status lines, but send a much larger
+            # bounded summary in the structured payload.  The TUI /agents detail
+            # pane is scrollable; the cap prevents runaway event/log payloads.
             "preview": summary[:160] if summary else entry.get("error", ""),
             "status": status,
             "duration_seconds": duration,
-            "summary": summary[:500] if summary else entry.get("error", ""),
+            "summary": _cap_subagent_complete_summary(summary) if summary else entry.get("error", ""),
             "input_tokens": (
                 int(_input_tokens) if isinstance(_input_tokens, (int, float)) else 0
             ),

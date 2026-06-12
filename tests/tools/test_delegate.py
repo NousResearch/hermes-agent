@@ -555,6 +555,84 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertIn("result_bytes", entry["tool_trace"][0])
             self.assertEqual(entry["tool_trace"][0]["status"], "ok")
 
+    def test_completion_event_keeps_full_summary_for_tui_detail_view(self):
+        """The TUI /agents detail pane needs the full child summary.
+
+        The compact preview may be truncated, but the structured completion
+        payload should not be capped; otherwise the Summary section cuts off
+        long subagent findings even though the scrollable detail view can show
+        them.
+        """
+        parent = _make_mock_parent(depth=0)
+        parent.tool_progress_callback = MagicMock()
+        full_summary = "section-start " + ("detail line " * 80) + "section-end"
+
+        def _factory(*_args, **kwargs):
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.tool_progress_callback = kwargs.get("tool_progress_callback")
+            mock_child.run_conversation.return_value = {
+                "final_response": full_summary,
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            return mock_child
+
+        with patch("run_agent.AIAgent", side_effect=_factory):
+            delegate_task(goal="Long summary", parent_agent=parent)
+
+        complete_calls = [
+            call for call in parent.tool_progress_callback.call_args_list
+            if call.args and call.args[0] == "subagent.complete"
+        ]
+        self.assertEqual(len(complete_calls), 1)
+        complete_call = complete_calls[0]
+        self.assertEqual(complete_call.kwargs["summary"], full_summary)
+        preview = complete_call.kwargs.get("preview") or complete_call.args[2]
+        self.assertTrue(preview.startswith("section-start"))
+        self.assertLessEqual(len(preview), 160)
+        self.assertNotEqual(preview, full_summary)
+
+    @patch("tools.delegate_tool._load_config", return_value={"subagent_complete_summary_max_chars": 600})
+    def test_completion_event_bounds_extreme_summary_payload(self, _mock_cfg):
+        """Runaway child summaries should not create unbounded UI events."""
+        parent = _make_mock_parent(depth=0)
+        parent.tool_progress_callback = MagicMock()
+        full_summary = "section-start " + ("detail line " * 120) + "section-end"
+
+        def _factory(*_args, **kwargs):
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.tool_progress_callback = kwargs.get("tool_progress_callback")
+            mock_child.run_conversation.return_value = {
+                "final_response": full_summary,
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+            return mock_child
+
+        with patch("run_agent.AIAgent", side_effect=_factory):
+            result = json.loads(delegate_task(goal="Huge summary", parent_agent=parent))
+
+        complete_calls = [
+            call for call in parent.tool_progress_callback.call_args_list
+            if call.args and call.args[0] == "subagent.complete"
+        ]
+        self.assertEqual(result["results"][0]["summary"], full_summary)
+        self.assertEqual(len(complete_calls), 1)
+        event_summary = complete_calls[0].kwargs["summary"]
+        self.assertLessEqual(len(event_summary), 600)
+        self.assertTrue(event_summary.startswith("section-start"))
+        self.assertIn("summary truncated to 600 chars", event_summary)
+
     def test_tool_trace_handles_list_content_blocks(self):
         """Tool-result content blocks should not crash observability metadata."""
         parent = _make_mock_parent(depth=0)

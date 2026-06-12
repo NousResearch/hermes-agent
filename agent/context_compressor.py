@@ -69,6 +69,16 @@ SUMMARY_PREFIX = (
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
+# Appended to every standalone summary message (and to the merged-into-tail
+# prefix) so the model has an unambiguous "summary ends here" boundary.
+# Without it, weak models read the verbatim "## Active Task" quote as fresh
+# user input (#11475, #14521) or regurgitate an assistant-role summary as
+# their own output (#33256).
+_SUMMARY_END_MARKER = (
+    "--- END OF CONTEXT SUMMARY — "
+    "respond to the message below, not the summary above ---"
+)
+
 # Handoff prefixes that shipped in earlier releases. A summary persisted under
 # one of these can be inherited into a resumed lineage (#35344); when it is
 # re-normalized on re-compaction we must strip the OLD prefix too, otherwise the
@@ -1616,7 +1626,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         text = (summary or "").strip()
         for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
-                return text[len(prefix):].lstrip()
+                text = text[len(prefix):].lstrip()
+                break
+        # Strip the trailing end marker too — a rehydrated handoff body that
+        # keeps it would leak the boundary directive into the iterative-update
+        # summarizer prompt (and the marker is re-appended on insertion anyway).
+        if text.endswith(_SUMMARY_END_MARKER):
+            text = text[: -len(_SUMMARY_END_MARKER)].rstrip()
         return text
 
     @classmethod
@@ -2199,11 +2215,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # the explicit end marker so the model has a clear "summary ends
         # here, respond to the message below" signal.
         if not _merge_summary_into_tail:
-            summary = (
-                summary
-                + "\n\n--- END OF CONTEXT SUMMARY — "
-                "respond to the message below, not the summary above ---"
-            )
+            summary = summary + "\n\n" + _SUMMARY_END_MARKER
 
         if not _merge_summary_into_tail:
             compressed.append({"role": summary_role, "content": summary})
@@ -2211,11 +2223,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
             if _merge_summary_into_tail and i == compress_end:
-                merged_prefix = (
-                    summary
-                    + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
-                )
+                merged_prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
                 msg["content"] = _append_text_to_content(
                     msg.get("content"),
                     merged_prefix,

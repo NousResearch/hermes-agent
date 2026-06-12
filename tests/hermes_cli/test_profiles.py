@@ -33,6 +33,7 @@ from hermes_cli.profiles import (
     seed_profile_skills,
     has_bundled_skills_opt_out,
     NO_BUNDLED_SKILLS_MARKER,
+    backfill_profile_envs,
 )
 
 
@@ -471,6 +472,60 @@ class TestNoSkillsOptOut:
         r2 = seed_profile_skills(profile_dir, quiet=True)
         assert r2 == {"copied": []}
         assert len(called) == 1
+
+
+# ===================================================================
+# TestBackfillProfileEnvs
+# ===================================================================
+
+class TestBackfillProfileEnvs:
+    """Tests for backfill_profile_envs() — the `hermes update` pass that
+    gives pre-#44792 profiles (created before .env seeding) their own
+    .env, copied from the default install so credentials don't break."""
+
+    def test_copies_default_env_into_envless_profiles(self, profile_env):
+        import stat
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / ".env").write_text("OPENROUTER_API_KEY=root-key\n")
+        p1 = create_profile("old1", no_alias=True)
+        p2 = create_profile("old2", no_alias=True)
+        # Simulate pre-#44792 profiles: no .env
+        (p1 / ".env").unlink()
+        (p2 / ".env").unlink()
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert sorted(backfilled) == ["old1", "old2"]
+        for p in (p1, p2):
+            assert (p / ".env").read_text() == "OPENROUTER_API_KEY=root-key\n"
+            assert stat.S_IMODE((p / ".env").stat().st_mode) == 0o600
+
+    def test_never_overwrites_existing_profile_env(self, profile_env):
+        tmp_path = profile_env
+        (tmp_path / ".hermes" / ".env").write_text("KEY=root\n")
+        p = create_profile("hasenv", no_alias=True)
+        (p / ".env").write_text("KEY=mine\n")
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert backfilled == []
+        assert (p / ".env").read_text() == "KEY=mine\n"
+
+    def test_placeholder_when_default_has_no_env(self, profile_env):
+        p = create_profile("noroot", no_alias=True)
+        (p / ".env").unlink()
+
+        backfilled = backfill_profile_envs(quiet=True)
+
+        assert backfilled == ["noroot"]
+        content = (p / ".env").read_text(encoding="utf-8")
+        assert all(
+            line.startswith("#") or not line.strip()
+            for line in content.splitlines()
+        )
+
+    def test_no_profiles_root_is_noop(self, profile_env):
+        assert backfill_profile_envs(quiet=True) == []
 
 
 # ===================================================================

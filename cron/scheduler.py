@@ -784,6 +784,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         platform_name = target["platform"]
         chat_id = target["chat_id"]
         thread_id = target.get("thread_id")
+        # Normalize empty string to None so downstream _send_to_platform +
+        # _build_create_message_body do not write root_id="" to the Feishu API.
+        thread_id = thread_id or None
 
         # Diagnostic: log thread_id for topic-aware delivery debugging
         origin = _resolve_origin(job) or {}
@@ -821,7 +824,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
-        if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
+        _live_loop_running = getattr(loop, "is_running", lambda: False)() if loop is not None else False
+        logger.debug(
+            "Job '%s': live adapter delivery check for %s — runtime_adapter=%s loop=%s loop_running=%s",
+            job["id"], platform_name,
+            "present" if runtime_adapter is not None else "absent",
+            "present" if loop is not None else "absent",
+            _live_loop_running,
+        )
+        if runtime_adapter is not None and loop is not None and _live_loop_running:
             send_metadata = {"thread_id": thread_id} if thread_id else None
             try:
                 # Send cleaned text (MEDIA tags stripped) — not the raw content
@@ -920,6 +931,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             if result and result.get("error"):
                 msg = f"delivery error: {result['error']}"
                 logger.error("Job '%s': %s", job["id"], msg)
+                if "dependencies not installed" in result["error"]:
+                    import traceback
+                    try:
+                        import gateway.platforms.feishu
+                        logger.info("Job '%s': feishu import succeeded at scheduler level", job["id"])
+                    except Exception:
+                        logger.error("Job '%s': feishu import TRACEBACK at scheduler level:\n%s", job["id"], traceback.format_exc())
                 delivery_errors.append(msg)
                 continue
 

@@ -2033,6 +2033,79 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_thread_id_without_reply_to_uses_create_with_root_id(self):
+        """When metadata has thread_id but no reply_to, send must use
+        message.create with root_id, not message.reply."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                captured["method"] = "create"
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_create"),
+                )
+
+            def reply(self, request):
+                captured["method"] = "reply"
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_reply"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content="hello",
+                    metadata={"thread_id": "omt-thread"},
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_create")
+        self.assertEqual(captured["method"], "create")
+        self.assertEqual(captured["request"].receive_id_type, "chat_id")
+        self.assertEqual(captured["request"].request_body.root_id, "omt-thread")
+
+    @unittest.skipUnless(_HAS_LARK_OAPI, "lark_oapi not available")
+    def test_create_message_request_body_serialization_includes_root_id(self):
+        """When body.root_id is set dynamically, the attribute must appear in
+        the serialized representation (__dict__) so the SDK includes it in
+        the HTTP request body sent to the Feishu API."""
+        from lark_oapi.api.im.v1 import CreateMessageRequestBody
+
+        body = (
+            CreateMessageRequestBody.builder()
+            .receive_id("oc_test")
+            .msg_type("text")
+            .content("{}")
+            .uuid("test-uuid")
+            .build()
+        )
+        body.root_id = "omt_test_thread"
+
+        self.assertEqual(body.root_id, "omt_test_thread")
+        self.assertIn("root_id", body.__dict__)
+        self.assertEqual(body.__dict__["root_id"], "omt_test_thread")
+
+        from lark_oapi.core.json import JSON
+        marshalled = JSON.marshal(body)
+        self.assertEqual(json.loads(marshalled)["root_id"], "omt_test_thread")
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_retries_transient_failure(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter

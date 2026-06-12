@@ -4459,7 +4459,9 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         effective_reply_to = reply_to
-        if not effective_reply_to and metadata and metadata.get("thread_id"):
+        # Only reply_to_message_id in metadata acts as a reply target.
+        # thread_id is handled via root_id on the create path below.
+        if not effective_reply_to and metadata:
             effective_reply_to = metadata.get("reply_to_message_id")
         reply_in_thread = bool((metadata or {}).get("thread_id"))
         if effective_reply_to:
@@ -4472,34 +4474,25 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
-        _thread_id = (metadata or {}).get("thread_id")
-        if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request("thread_id", body)
-        else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
+        # Determine receive_id and receive_id_type from chat_id.
+        receive_id = chat_id
+        receive_id_type = "chat_id"
+        if chat_id.startswith("feishu_user_id:"):
+            receive_id = chat_id.split(":", 1)[1]
+            receive_id_type = "user_id"
+        elif chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
 
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+        root_id = (metadata or {}).get("thread_id")
+        body = self._build_create_message_body(
+            receive_id=receive_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+            root_id=root_id,
+        )
+
+        request = self._build_create_message_request(receive_id_type, body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
 
     @staticmethod
@@ -4785,9 +4778,9 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(message_id=message_id, request_body=request_body)
 
     @staticmethod
-    def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:
+    def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str, root_id: Optional[str] = None) -> Any:
         if "CreateMessageRequestBody" in globals():
-            return (
+            body = (
                 CreateMessageRequestBody.builder()
                 .receive_id(receive_id)
                 .msg_type(msg_type)
@@ -4795,11 +4788,15 @@ class FeishuAdapter(BasePlatformAdapter):
                 .uuid(uuid_value)
                 .build()
             )
+            if root_id:
+                body.root_id = root_id
+            return body
         return SimpleNamespace(
             receive_id=receive_id,
             msg_type=msg_type,
             content=content,
             uuid=uuid_value,
+            root_id=root_id,
         )
 
     @staticmethod

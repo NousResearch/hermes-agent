@@ -603,6 +603,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         from gateway.platforms.feishu import FeishuAdapter
         _feishu_available = True
     except ImportError:
+        logger.debug("_send_to_platform: Feishu adapter import failed, max_message_length unavailable", exc_info=True)
         _feishu_available = False
 
     media_files = media_files or []
@@ -1598,9 +1599,20 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
             return {"error": "Feishu requirements not met. Run: pip install 'hermes-agent[feishu]'"}
         FeishuAdapter = feishu_mod.FeishuAdapter
     except ImportError:
+        import traceback
+        tb = traceback.format_exc()
+        logger.warning("feishu import failed in _send_feishu:\n%s", tb)
+        try:
+            with open(os.path.expanduser("~/.hermes/tmp/feishu_import_traceback.txt"), "a") as f:
+                f.write(f"{__import__('datetime').datetime.now().isoformat()} _send_feishu ImportError:\n{tb}\n---\n")
+        except Exception:
+            pass
         return {"error": "Feishu dependencies not installed. Run: pip install 'hermes-agent[feishu]'"}
 
     media_files = media_files or []
+    # Normalize empty string thread_id → None to avoid writing empty root_id
+    # in _build_create_message_body (feishu API rejects "" as root_id).
+    thread_id = thread_id or None
 
     try:
         adapter = FeishuAdapter(pconfig)

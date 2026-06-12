@@ -1345,6 +1345,47 @@ class TestChutesProvider:
         assert profile is not None
         assert profile.default_aux_model
 
+    def test_chutes_pricing_from_catalog(self, monkeypatch):
+        """_fetch_chutes_pricing reads OpenAI-style per-model ``pricing``
+        (USD per million tokens) from /v1/models and converts to per-token
+        strings. The nested ``price`` field (dict values) must not interfere."""
+        from hermes_cli import models as models_mod
+        monkeypatch.setenv("CHUTES_API_KEY", "cpk_test-key")
+        monkeypatch.setenv("CHUTES_BASE_URL", "https://llm.chutes.ai/v1")
+        models_mod._pricing_cache.pop("https://llm.chutes.ai/v1", None)
+
+        fake_payload = {
+            "data": [
+                {
+                    "id": "deepseek-ai/DeepSeek-V3.2-TEE",
+                    "pricing": {"prompt": 0.25, "completion": 1.0},
+                    "price": {"input": {"usd": 0.25}, "output": {"usd": 1.0}},
+                }
+            ]
+        }
+
+        class _FakeResp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self):
+                import json as _json
+                return _json.dumps(fake_payload).encode()
+
+        def fake_urlopen(req, timeout=None):
+            return _FakeResp()
+
+        monkeypatch.setattr(models_mod.urllib.request, "urlopen", fake_urlopen)
+
+        result = models_mod._fetch_chutes_pricing(force_refresh=True)
+        assert "deepseek-ai/DeepSeek-V3.2-TEE" in result
+        entry = result["deepseek-ai/DeepSeek-V3.2-TEE"]
+        assert float(entry["prompt"]) == 0.25 / 1_000_000
+        assert float(entry["completion"]) == 1.0 / 1_000_000
+
 
 # =============================================================================
 # MiniMax OAuth provider tests (added by feat/minimax-oauth-provider)

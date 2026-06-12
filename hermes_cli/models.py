@@ -1585,7 +1585,7 @@ def _resolve_nous_pricing_credentials() -> tuple[str, str]:
 
 
 def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> dict[str, dict[str, str]]:
-    """Return live pricing for providers that support it (openrouter, nous, novita)."""
+    """Return live pricing for providers that support it (openrouter, nous, novita, chutes)."""
     normalized = normalize_provider(provider)
     if normalized == "openrouter":
         return fetch_models_with_pricing(
@@ -1595,6 +1595,8 @@ def get_pricing_for_provider(provider: str, *, force_refresh: bool = False) -> d
         )
     if normalized == "novita":
         return _fetch_novita_pricing(force_refresh=force_refresh)
+    if normalized == "chutes":
+        return _fetch_chutes_pricing(force_refresh=force_refresh)
     if normalized == "nous":
         api_key, base_url = _resolve_nous_pricing_credentials()
         if base_url:
@@ -1663,6 +1665,66 @@ def _fetch_novita_pricing(
         result[str(mid)] = {
             "prompt": str(float(inp or 0) / 10_000 / 1_000_000),
             "completion": str(float(out or 0) / 10_000 / 1_000_000),
+        }
+
+    _pricing_cache[cache_key] = result
+    return result
+
+
+def _fetch_chutes_pricing(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> dict[str, dict[str, str]]:
+    """Fetch pricing from the Chutes /v1/models catalog.
+
+    Chutes returns OpenAI-style per-model pricing under ``pricing`` with
+    ``prompt``/``completion`` expressed in USD per million tokens. Convert to
+    the per-token strings used by the shared pricing formatter.
+
+    Results are cached in ``_pricing_cache`` keyed on the resolved base URL.
+    """
+    api_key = os.getenv("CHUTES_API_KEY", "").strip()
+    if not api_key:
+        return {}
+
+    base_url = os.getenv("CHUTES_BASE_URL", "").strip() or "https://llm.chutes.ai/v1"
+    cache_key = base_url.rstrip("/")
+    if not force_refresh and cache_key in _pricing_cache:
+        return _pricing_cache[cache_key]
+
+    url = cache_key + "/models"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "User-Agent": _HERMES_USER_AGENT,
+    }
+
+    try:
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _pricing_cache[cache_key] = {}
+        return {}
+
+    result: dict[str, dict[str, str]] = {}
+    for item in payload.get("data", []):
+        if not isinstance(item, dict):
+            continue
+        mid = item.get("id")
+        if not mid:
+            continue
+        pricing = item.get("pricing")
+        if not isinstance(pricing, dict):
+            continue
+        inp = pricing.get("prompt")
+        out = pricing.get("completion")
+        if inp is None and out is None:
+            continue
+        result[str(mid)] = {
+            "prompt": str(float(inp or 0) / 1_000_000),
+            "completion": str(float(out or 0) / 1_000_000),
         }
 
     _pricing_cache[cache_key] = result

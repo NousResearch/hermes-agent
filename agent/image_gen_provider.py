@@ -225,6 +225,17 @@ def save_url_image(
     """
     import requests
 
+    # SSRF guard: validate the provider-returned URL against the same
+    # private-network policy used for user-supplied URLs.  A compromised
+    # or malicious provider could return a URL targeting internal hosts,
+    # loopback addresses, or cloud metadata endpoints.
+    from tools.url_safety import is_safe_url
+
+    if not is_safe_url(url):
+        raise ValueError(
+            f"Blocked: provider-returned URL targets a private or internal address: {url}"
+        )
+
     response = requests.get(url, timeout=timeout, stream=True)
     response.raise_for_status()
 

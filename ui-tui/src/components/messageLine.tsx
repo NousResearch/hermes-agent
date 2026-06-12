@@ -216,7 +216,7 @@ export const MessageLine = memo(function MessageLine({
       )}
 
       {showResponseSeparator && (
-        <Box marginBottom={1}>
+        <Box flexDirection="row" marginBottom={1}>
           <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
             <Text color={t.color.border}>└─ </Text>
           </NoSelect>
@@ -226,7 +226,7 @@ export const MessageLine = memo(function MessageLine({
         </Box>
       )}
 
-      <Box>
+      <Box flexDirection="row">
         <NoSelect flexShrink={0} fromLeftEdge width={gutterWidth}>
           <Text bold={msg.role === 'user'} color={prefix}>
             {glyph}{' '}

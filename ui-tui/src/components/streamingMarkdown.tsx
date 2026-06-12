@@ -20,9 +20,9 @@
 // the ref resets naturally.
 //
 // Layout: the two <Md> subtrees MUST render stacked (column). The parent
-// container in messageLine.tsx is a default `flexDirection: 'row'` Box
-// (Ink's default), so returning a bare Fragment of two <Md> siblings
-// laid them out side-by-side — producing the "two jumbled columns while
+// container in messageLine.tsx is a `flexDirection: 'row'` Box (glyph
+// gutter + body), so returning a bare Fragment of two <Md> siblings laid
+// them out side-by-side — producing the "two jumbled columns while
 // streaming" rendering bug. Wrapping in a flexDirection="column" Box
 // here localizes the fix to the streaming path; the non-streaming <Md>
 // already returns its own column Box, so its single-child case was never

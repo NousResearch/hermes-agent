@@ -4813,6 +4813,17 @@ async function startHermes() {
   }
   if (connectionPromise) return connectionPromise
 
+  // Kill any previous backend process that may still be running from a prior
+  // startup attempt that timed out. Without this guard, a timed-out process A
+  // keeps running (it just took too long to announce its port), and when the
+  // renderer retries, process B spawns without killing A first — leading to a
+  // port conflict (EADDRINUSE) if both processes eventually try to bind the
+  // same OS-assigned ephemeral port. (#44707)
+  if (hermesProcess && !hermesProcess.killed) {
+    rememberLog('[startHermes] killing lingering backend process from previous attempt before retry')
+    await teardownPrimaryBackendAndWait()
+  }
+
   connectionPromise = (async () => {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
@@ -5294,6 +5305,9 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
   // startHermes() re-runs the full installer (refreshing a broken/partial
   // venv), and clear any latched failure + live connection. The renderer
   // reloads afterwards to re-drive the boot flow from scratch.
+  // Uses teardownPrimaryBackendAndWait() rather than the fire-and-forget
+  // resetHermesConnection() so the old process is dead before the renderer
+  // triggers the next startHermes(), preventing EADDRINUSE from orphans. (#44707)
   rememberLog('[bootstrap] repair requested by renderer; clearing marker + latched failure')
   try {
     if (fileExists(BOOTSTRAP_COMPLETE_MARKER)) {
@@ -5303,7 +5317,7 @@ ipcMain.handle('hermes:bootstrap:repair', async () => {
     rememberLog(`[bootstrap] failed to remove marker during repair: ${error.message}`)
   }
   bootstrapFailure = null
-  resetHermesConnection()
+  await teardownPrimaryBackendAndWait()
   return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:cancel', async () => {

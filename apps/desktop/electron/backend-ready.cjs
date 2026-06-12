@@ -1,5 +1,12 @@
 const _READY_RE = /^HERMES_DASHBOARD_READY port=(\d+)/m
 
+// Default boot timeout for the HERMES_DASHBOARD_READY announcement.
+// Cold starts on machines with a large SQLite DB or many installed skills can
+// take well over a minute before uvicorn binds and emits the ready line.
+// 120 s keeps things responsive while allowing room for slow first-boot scans.
+// Override with HERMES_DESKTOP_BOOT_TIMEOUT_MS (milliseconds) if needed.
+const DEFAULT_BOOT_TIMEOUT_MS = Number(process.env.HERMES_DESKTOP_BOOT_TIMEOUT_MS) || 120_000
+
 /**
  * Watch a child process's stdout for the `HERMES_DASHBOARD_READY port=<N>`
  * line that web_server.py prints after uvicorn binds its socket.
@@ -13,7 +20,7 @@ const _READY_RE = /^HERMES_DASHBOARD_READY port=(\d+)/m
  * on every terminal path — resolve, reject, or timeout — so repeated
  * backend spawns don't leak listener slots on the child.
  */
-function waitForDashboardPort(child, timeoutMs = 45_000) {
+function waitForDashboardPort(child, timeoutMs = DEFAULT_BOOT_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
     let buf = ''
     let done = false

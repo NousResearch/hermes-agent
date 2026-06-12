@@ -2418,6 +2418,15 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
 
+    # --- API Key Validation ---
+    # When enabled, validates api_key + base_url with a lightweight probe
+    # request before saving configuration changes.
+    "api_validation": {
+        "enabled": False,
+        "timeout": 10,
+        "probe_model_chat": True,
+        "always_validate_envs": [],
+    },
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 27,
@@ -5567,6 +5576,37 @@ def save_env_value(key: str, value: str):
 
     os.environ[key] = value
     invalidate_env_cache()
+
+    # ── API Key validation ──
+    # If api_validation is enabled, validate known API keys with a lightweight
+    # probe request before returning.
+    try:
+        _cfg = load_config()
+        _av_cfg = _cfg.get("api_validation", {})
+        if _av_cfg.get("enabled", False):
+            from agent.api_validator import validate_api_key, provider_for_env_var
+
+            provider = provider_for_env_var(key)
+            if provider:
+                _timeout = int(_av_cfg.get("timeout", 10))
+                ok, msg = validate_api_key(provider, value, timeout=_timeout)
+                if not ok:
+                    print(
+                        f"⚠️  API key validation failed for {key} ({provider}): {msg}",
+                        file=sys.stderr,
+                    )
+                elif msg == "billing_warning":
+                    print(
+                        f"⚠️  {key} ({provider}): Key is valid but billing/credits appear exhausted.",
+                        file=sys.stderr,
+                    )
+                else:
+                    print(
+                        f"✓ API key validation passed for {key} ({provider})",
+                        file=sys.stderr,
+                    )
+    except Exception:
+        pass  # Never let validation break the config save
 
 
 def remove_env_value(key: str) -> bool:

@@ -17,6 +17,8 @@ Model / provider selection mirrors `hermes chat`:
 
 Env var fallbacks (used when the corresponding arg is not passed):
     - HERMES_INFERENCE_MODEL
+    - HERMES_INFERENCE_REASONING_EFFORT (none|minimal|low|medium|high|xhigh)
+    - HERMES_INFERENCE_SERVICE_TIER (fast|priority|normal|off)
 """
 
 from __future__ import annotations
@@ -120,6 +122,45 @@ def _validate_explicit_toolsets(toolsets: object = None) -> tuple[list[str] | No
         return None, "hermes -z: --toolsets did not contain any valid toolsets.\n"
 
     return valid, None
+
+
+def _parse_env_reasoning_config() -> dict | None:
+    """Return a oneshot reasoning override from env, or None for default."""
+    effort = os.getenv("HERMES_INFERENCE_REASONING_EFFORT", "").strip()
+    if not effort:
+        return None
+    try:
+        parse_reasoning_effort = __import__("hermes_constants").parse_reasoning_effort
+    except Exception:
+        return None
+    result = parse_reasoning_effort(effort)
+    if result is None:
+        logging.warning("Unknown HERMES_INFERENCE_REASONING_EFFORT '%s', using provider default", effort)
+    return result
+
+
+def _parse_env_service_tier() -> str | None:
+    """Parse env fast/priority toggle into the API service tier value."""
+    value = os.getenv("HERMES_INFERENCE_SERVICE_TIER", "").strip().lower()
+    if not value or value in {"normal", "default", "standard", "off", "none"}:
+        return None
+    if value in {"fast", "priority", "on"}:
+        return "priority"
+    logging.warning("Unknown HERMES_INFERENCE_SERVICE_TIER '%s', ignoring", value)
+    return None
+
+
+def _fast_mode_request_overrides(model_id: str, service_tier: str | None) -> dict | None:
+    if not service_tier:
+        return None
+    try:
+        resolve_fast_mode_overrides = __import__(
+            "hermes_cli.models", fromlist=["resolve_fast_mode_overrides"]
+        ).resolve_fast_mode_overrides
+
+        return resolve_fast_mode_overrides(model_id)
+    except Exception:
+        return {"service_tier": service_tier}
 
 
 def run_oneshot(
@@ -332,6 +373,10 @@ def _run_agent(
     # honour the same merge semantics as interactive CLI and gateway sessions.
     _fb = get_fallback_chain(cfg)
 
+    reasoning_config = _parse_env_reasoning_config()
+    service_tier = _parse_env_service_tier()
+    request_overrides = _fast_mode_request_overrides(effective_model, service_tier)
+
     agent = AIAgent(
         api_key=runtime.get("api_key"),
         base_url=runtime.get("base_url"),
@@ -344,6 +389,9 @@ def _run_agent(
         session_db=session_db,
         credential_pool=runtime.get("credential_pool"),
         fallback_model=_fb or None,
+        reasoning_config=reasoning_config,
+        service_tier=service_tier,
+        request_overrides=request_overrides,
         # Interactive callbacks are intentionally NOT wired beyond this
         # one.  In oneshot mode there's no user sitting at a terminal:
         #   - clarify  → returns a synthetic "pick a default" instruction

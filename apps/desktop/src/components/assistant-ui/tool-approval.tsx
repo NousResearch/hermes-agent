@@ -1,7 +1,7 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type FC, useCallback, useEffect, useState } from 'react'
+import { type FC, useCallback, useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -14,17 +14,18 @@ import {
 } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { triggerHaptic } from '@/lib/haptics'
-import { ChevronDown, Loader2 } from '@/lib/icons'
+import { ChevronDown, ChevronUp, Loader2 } from '@/lib/icons'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/store/prompts'
+import { cn } from '@/lib/utils'
 
 import type { ToolPart } from './tool-fallback-model'
 
 // Inline approval control. Rendered as a compact button strip
-// under the pending tool row that raised the approval (the row already shows
-// the command, so the strip deliberately doesn't repeat it) instead of as a
-// modal overlay.
+// under the pending tool row that raised the approval, with a
+// collapsible command preview so the user can review the full
+// command before approving or rejecting.
 //
 // Binding is POSITIONAL, not command-matched: the desktop `tool.start` payload
 // carries no structured args (only tool_id/name/context — see
@@ -50,6 +51,66 @@ export const PendingToolApproval: FC<{ part: ToolPart }> = ({ part }) => {
 }
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iP(hone|ad|od)/.test(navigator.platform)
+
+const CommandPreview: FC<{ command: string }> = ({ command }) => {
+  const trimmed = command.trim()
+  const ref = useRef<HTMLPreElement>(null)
+  const [expanded, setExpanded] = useState(false)
+  const [overflows, setOverflows] = useState(false)
+
+  // Measure whether the content exceeds the collapsed max-height on mount
+  // and when the command changes.
+  useEffect(() => {
+    const el = ref.current
+
+    if (!el) {
+      return
+    }
+
+    // Collapse to measure intrinsic height vs. the clamped threshold
+    el.style.maxHeight = ''
+    el.style.maxHeight = '4.5rem'
+    setOverflows(el.scrollHeight > el.clientHeight)
+  }, [command])
+
+  if (!trimmed) {
+    return null
+  }
+
+  return (
+    <div className="mt-1.5 overflow-hidden rounded-md border border-(--ui-stroke-tertiary) ps-5">
+      <pre
+        ref={ref}
+        className={cn(
+          'overflow-auto whitespace-pre-wrap break-words bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-[0.7rem] leading-snug text-foreground transition-[max-height] duration-200 ease-out',
+          !expanded && 'max-h-18'
+        )}
+        data-slot="command-preview"
+      >
+        {trimmed}
+      </pre>
+      {overflows && (
+        <button
+          className="flex w-full cursor-pointer items-center justify-center gap-1 border-t border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2 py-1 text-[0.65rem] font-medium text-(--ui-text-tertiary) hover:text-foreground"
+          onClick={() => setExpanded(!expanded)}
+          type="button"
+        >
+          {expanded ? (
+            <>
+              <ChevronUp className="size-3" />
+              Show less
+            </>
+          ) : (
+            <>
+              <ChevronDown className="size-3" />
+              Show full command
+            </>
+          )}
+        </button>
+      )}
+    </div>
+  )
+}
 
 const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   const gateway = useStore($gateway)
@@ -114,8 +175,9 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   }, [confirmAlways, respond])
 
   return (
-    <div className="mt-1 flex items-center gap-2.5 ps-5" data-slot="tool-approval-inline">
-      <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
+    <div className="mt-1 ps-5" data-slot="tool-approval-inline">
+      <div className="flex items-center gap-2.5">
+        <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
         <Button
           className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
           disabled={busy}
@@ -168,6 +230,9 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
         {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : 'Reject'}
         {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
       </Button>
+      </div>
+
+      <CommandPreview command={request.command} />
 
       <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
         <DialogContent className="max-w-md">

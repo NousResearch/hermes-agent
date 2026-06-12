@@ -112,6 +112,87 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_embeds_child_plan_contract(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {
+                "title": "build endpoint",
+                "body": "Implement the endpoint.",
+                "assignee": "engineer",
+                "parents": [],
+                "acceptance_criteria": ["GET /items returns 200 for a valid request"],
+                "verification": ["pytest tests/api/test_items.py -q"],
+                "traceability": ["REQ-1 item listing"],
+            },
+        ],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    assert outcome.child_ids and len(outcome.child_ids) == 1
+    with kb.connect() as conn:
+        child = kb.get_task(conn, outcome.child_ids[0])
+    assert child is not None
+    assert child.body is not None
+    assert "## Plan contract" in child.body
+    assert "Acceptance criteria:" in child.body
+    assert "- GET /items returns 200 for a valid request" in child.body
+    assert "Verification evidence:" in child.body
+    assert "- pytest tests/api/test_items.py -q" in child.body
+    assert "Traceability:" in child.body
+    assert "- REQ-1 item listing" in child.body
+
+
+def test_decompose_single_task_embeds_plan_contract_without_body(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="one task", triage=True)
+
+    llm_payload = jsonlib.dumps({
+        "fanout": False,
+        "rationale": "single unit",
+        "title": "Tightened title",
+        "assignee": "engineer",
+        "acceptance_criteria": ["Worker records the generated artifact path"],
+        "verification": ["Inspect the artifact manually"],
+        "traceability": ["Original triage request"],
+    })
+
+    patches = _patch_list_profiles(["orchestrator", "engineer"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body():
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert outcome.ok, outcome.reason
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.body is not None
+    assert task.title == "Tightened title"
+    assert task.body.startswith("## Plan contract")
+    assert "- Worker records the generated artifact path" in task.body
+    assert "- Inspect the artifact manually" in task.body
+    assert "- Original triage request" in task.body
+
+
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="just one thing", triage=True)

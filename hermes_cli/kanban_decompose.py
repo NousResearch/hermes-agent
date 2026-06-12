@@ -70,7 +70,10 @@ Output a single JSON object with this exact shape:
         "title": "<concrete task title, imperative voice, <= 80 chars>",
         "body":  "<detailed spec for the worker on this child task>",
         "assignee": "<profile name from the roster, or null for default>",
-        "parents": [<int>, ...]
+        "parents": [<int>, ...],
+        "acceptance_criteria": ["<observable pass condition>", ...],
+        "verification": ["<evidence or command the worker should produce>", ...],
+        "traceability": ["<source requirement or dependency this task satisfies>", ...]
       },
       ...
     ]
@@ -98,12 +101,19 @@ return:
     "rationale": "<one sentence>",
     "title": "<tightened title>",
     "body":  "<concrete spec for a single worker>",
-    "assignee": "<profile name from the roster, or null for default>"
+    "assignee": "<profile name from the roster, or null for default>",
+    "acceptance_criteria": ["<observable pass condition>", ...],
+    "verification": ["<evidence or command the worker should produce>", ...],
+    "traceability": ["<source requirement or decision this task satisfies>", ...]
   }
 
 In that case the task stays as one work item, just with a tightened spec and
 a concrete assignee. If no profile fits, use null and the system will route to
 the default_assignee.
+
+The structured acceptance_criteria / verification / traceability fields are
+the plan contract. Keep them short and public-safe; they will be copied into
+the task body so the eventual worker and reviewer can trace intent to evidence.
 
 No preamble, no closing remarks, no code fences. Output only the JSON object.
 """
@@ -268,6 +278,75 @@ def _normalize_assignee_choice(
     return chosen
 
 
+def _coerce_contract_list(value: object, *, max_items: int = 8) -> list[str]:
+    """Return short string items from a decomposer-supplied contract field."""
+    if isinstance(value, str):
+        raw_items: list[object] = [value]
+    elif isinstance(value, list):
+        raw_items = value
+    else:
+        return []
+
+    items: list[str] = []
+    for raw in raw_items:
+        if not isinstance(raw, str):
+            continue
+        text = re.sub(r"\s+", " ", raw).strip()
+        text = text.lstrip("-*• ").strip()
+        if not text:
+            continue
+        items.append(_truncate(text, 240))
+        if len(items) >= max_items:
+            break
+    return items
+
+
+def _append_plan_contract(body: str, source: dict) -> str:
+    """Append a compact plan contract section to a task body.
+
+    The decomposer output remains backward compatible: old responses that only
+    include free-form ``body`` are preserved exactly. Newer responses can add
+    structured acceptance / verification / traceability fields, which are
+    normalized into the durable task body instead of being discarded.
+    """
+    clean_body = body.strip()
+    if "## Plan contract" in clean_body:
+        return clean_body
+
+    acceptance = _coerce_contract_list(
+        source.get("acceptance_criteria") or source.get("acceptance")
+    )
+    verification = _coerce_contract_list(
+        source.get("verification")
+        or source.get("verification_evidence")
+        or source.get("evidence")
+    )
+    traceability = _coerce_contract_list(
+        source.get("traceability") or source.get("traceability_links")
+    )
+    if not (acceptance or verification or traceability):
+        return clean_body
+
+    lines: list[str] = []
+    if clean_body:
+        lines.extend([clean_body, ""])
+    lines.append("## Plan contract")
+    if acceptance:
+        lines.append("Acceptance criteria:")
+        lines.extend(f"- {item}" for item in acceptance)
+    if verification:
+        if acceptance:
+            lines.append("")
+        lines.append("Verification evidence:")
+        lines.extend(f"- {item}" for item in verification)
+    if traceability:
+        if acceptance or verification:
+            lines.append("")
+        lines.append("Traceability:")
+        lines.extend(f"- {item}" for item in traceability)
+    return "\n".join(lines)
+
+
 def decompose_task(
     task_id: str,
     *,
@@ -358,7 +437,9 @@ def decompose_task(
         new_title = parsed.get("title")
         new_body = parsed.get("body")
         title_val = new_title.strip() if isinstance(new_title, str) and new_title.strip() else None
-        body_val = new_body if isinstance(new_body, str) and new_body.strip() else None
+        base_body = new_body if isinstance(new_body, str) else ""
+        contracted_body = _append_plan_contract(base_body, parsed)
+        body_val = contracted_body if contracted_body else None
         assignee_val = None
         if not task.assignee:
             assignee_val = _normalize_assignee_choice(
@@ -433,7 +514,7 @@ def decompose_task(
         clean_parents = [p for p in parents if isinstance(p, int) and 0 <= p < len(raw_tasks) and p != idx]
         children.append({
             "title": title.strip()[:200],
-            "body": body.strip(),
+            "body": _append_plan_contract(body, entry),
             "assignee": chosen,
             "parents": clean_parents,
         })

@@ -4868,15 +4868,23 @@ _PR_GOVERNANCE_TITLE_PREFIXES = (
     "stale_requires_decision:",
     "merged_needs_deploy_verify:",
 )
+_PR_GOVERNANCE_ASSIGNEES = ("orion",)
+_PR_GOVERNANCE_TITLE_HINT_RE = re.compile(r"\bPR\s*#\d+\b", re.IGNORECASE)
 
 
 def _is_pr_governance_task(row: sqlite3.Row) -> bool:
-    """Return True for watchdog-created PR governance/escalation tasks."""
+    """Return True for PR governance/review/merge handoff tasks."""
     created_by = (row["created_by"] or "").strip().casefold()
     if created_by == _PR_REVIEW_WATCHDOG_AUTHOR:
         return True
     title = (row["title"] or "").strip().casefold()
-    return title.startswith(_PR_GOVERNANCE_TITLE_PREFIXES)
+    if title.startswith(_PR_GOVERNANCE_TITLE_PREFIXES):
+        return True
+    assignee = (row["assignee"] or "").strip().casefold()
+    return (
+        assignee in _PR_GOVERNANCE_ASSIGNEES
+        and bool(_PR_GOVERNANCE_TITLE_HINT_RE.search(title))
+    )
 
 
 @dataclass
@@ -5917,7 +5925,8 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT title, created_by, last_failure_error FROM tasks WHERE id = ?",
+        "SELECT title, assignee, created_by, last_failure_error "
+        "FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:

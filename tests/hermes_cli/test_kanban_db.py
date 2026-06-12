@@ -1764,6 +1764,51 @@ def test_respawn_guard_allows_pr_governance_title_prefixes(
     assert reason is None
 
 
+def test_respawn_guard_allows_orion_pr_review_handoff_title(
+    kanban_home,
+):
+    """Ready Orion PR handoff cards must dispatch even with PR evidence comments."""
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="Fix PR #197 duplicate Rust test definitions",
+            assignee="orion",
+            created_by="orion",
+        )
+        kb.add_comment(
+            conn, t, "dev",
+            "Review-ready handoff: https://github.com/org/repo/pull/197",
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
+
+
+def test_dispatch_spawns_orion_pr_review_handoff_despite_active_pr_comment(
+    kanban_home, all_assignees_spawnable
+):
+    """Regression: active_pr must not strand Orion review cards in ready."""
+    spawned_ids = []
+
+    def fake_spawn(task, workspace):
+        spawned_ids.append(task.id)
+
+    with kb.connect() as conn:
+        t = kb.create_task(
+            conn,
+            title="Fix PR #197 duplicate Rust test definitions",
+            assignee="orion",
+            created_by="orion",
+        )
+        kb.add_comment(
+            conn, t, "dev",
+            "Review-ready handoff: https://github.com/org/repo/pull/197",
+        )
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+    assert t in spawned_ids
+    assert (t, "active_pr") not in res.respawn_guarded
+
+
 def test_respawn_guard_allows_only_watchdog_authored_recent_pr_comments(
     kanban_home,
 ):

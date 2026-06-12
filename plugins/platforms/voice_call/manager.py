@@ -587,6 +587,16 @@ class CallManager:
                 "playback on %s: %.80r", record.call_id, text,
             )
             return
+        if self._realtime_owns_audio(record):
+            # The realtime model converses directly; its bridge mirrors
+            # transcripts via append_transcript. A stray carrier transcript
+            # here (transcription left running across an upgrade) must not
+            # spawn a SECOND responder — that's two voices answering.
+            logger.info(
+                "voice_call: ignoring carrier transcript on realtime call "
+                "%s: %.80r", record.call_id, text,
+            )
+            return
         record.transcript.append(
             TranscriptEntry(timestamp=event.timestamp, speaker="user", text=text)
         )
@@ -676,15 +686,17 @@ class CallManager:
 
     async def speak(self, call_id: str, text: str) -> None:
         record = self._require_call(call_id)
-        # Realtime calls: route through the bridge (the model speaks it);
-        # carrier TTS would talk over the media stream. The bridge mirrors
-        # the model's actual words into the transcript, so skip the append.
-        if self._realtime_owns_audio(record) and self.realtime_speaker is not None:
-            if await self.realtime_speaker(record, text):
+        # INVARIANT: once the realtime model owns a call's audio, carrier
+        # TTS must NEVER fire on it — two voices talking over each other is
+        # worse than a dropped message. No fallback.
+        if self._realtime_owns_audio(record):
+            if self.realtime_speaker is not None and await self.realtime_speaker(
+                record, text
+            ):
                 return
-            logger.warning(
-                "voice_call: realtime delivery failed for %s; falling back "
-                "to carrier TTS", call_id,
+            raise RuntimeError(
+                f"realtime bridge could not deliver to {call_id} — "
+                "not falling back to carrier TTS over the media stream"
             )
         # Speaking again on a notify call: hold the auto-hangup while the
         # new message plays, then re-arm it (notify semantics: hang up a
@@ -739,7 +751,18 @@ class CallManager:
                         logger.exception(
                             "voice_call: realtime upgrade hook failed"
                         )
-                if not upgraded:
+                if upgraded:
+                    # Make sure carrier transcription is OFF — the bridge's
+                    # transcripts are authoritative now, and a second
+                    # transcript source means a second responder.
+                    try:
+                        await self.provider.stop_listening(record)
+                    except Exception:  # noqa: BLE001
+                        logger.debug(
+                            "voice_call: stop_listening after realtime "
+                            "upgrade failed", exc_info=True,
+                        )
+                else:
                     try:
                         await self.provider.start_listening(record)
                     except Exception as e:  # noqa: BLE001

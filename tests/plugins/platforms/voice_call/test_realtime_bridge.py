@@ -1036,6 +1036,93 @@ async def test_speak_and_continue_route_through_bridge_on_realtime_calls(
 
 
 @pytest.mark.asyncio
+async def test_realtime_invariant_no_carrier_fallback_or_double_responder(
+    vc_config, provider, store
+):
+    """Once the realtime model owns a call's audio: a failed bridge delivery
+    must NOT fall back to carrier TTS (two voices), and a stray carrier
+    transcript must NOT dispatch a second responder."""
+    from plugins.platforms.voice_call.events import EventType, NormalizedEvent
+    from plugins.platforms.voice_call.manager import CallManager
+
+    dispatched = []
+
+    async def on_transcript(record, text):
+        dispatched.append(text)
+
+    manager = CallManager(vc_config, provider, store,
+                          on_final_transcript=on_transcript)
+    provider.event_sink = manager.process_event
+
+    async def failing_bridge_speaker(record, text):
+        return False  # bridge gone / not ready
+
+    manager.prepare_call = lambda record: record.metadata.update(realtime=True)
+    manager.realtime_speaker = failing_bridge_speaker
+
+    record = await manager.initiate_call("+15555550001")
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while not record.answered_at and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+
+    with pytest.raises(RuntimeError, match="not falling back"):
+        await manager.speak(record.call_id, "hello?")
+    assert provider.spoken == []  # carrier TTS never fired
+
+    # Stray carrier transcript on a realtime call → ignored, no dispatch.
+    await manager.process_event(NormalizedEvent(
+        type=EventType.CALL_SPEECH, provider="mock",
+        provider_call_id=record.provider_call_id, text="hello bot",
+    ))
+    await asyncio.sleep(0.05)
+    assert dispatched == []
+    assert all(t.speaker != "user" for t in record.transcript)
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_realtime_upgrade_stops_carrier_transcription(
+    vc_config, provider, store
+):
+    """A successful mid-call realtime upgrade turns carrier transcription
+    OFF so the bridge is the only transcript source."""
+    from plugins.platforms.voice_call.manager import CallManager
+
+    vc_config.outbound.default_mode = "notify"
+    vc_config.outbound.notify_hangup_delay_s = 5  # keep the call alive
+    manager = CallManager(vc_config, provider, store)
+    provider.event_sink = manager.process_event
+    # Simulate transcription having been started at some earlier point.
+    spoken_via_bridge = []
+
+    async def upgrade(record):
+        record.metadata["realtime"] = True
+        return True
+
+    async def bridge_speaker(record, text):
+        spoken_via_bridge.append(text)
+        return True
+
+    manager.upgrade_realtime = upgrade
+    manager.realtime_speaker = bridge_speaker
+    record = await manager.initiate_call("+15555550001", message="hi")
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while not record.answered_at and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+    provider.listening = [record.provider_call_id]  # pretend STT was on
+
+    async def caller_replies():
+        await asyncio.sleep(0.1)
+        manager.append_transcript(record.call_id, "user", "yes")
+
+    asyncio.get_running_loop().create_task(caller_replies())
+    reply = await manager.continue_call(record.call_id, "ok?")
+    assert reply == "yes"
+    assert provider.listening == []  # stop_listening ran after the upgrade
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_manager_skips_carrier_tts_for_realtime_calls(
     vc_config, provider, store
 ):

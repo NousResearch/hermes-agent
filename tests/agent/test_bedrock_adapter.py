@@ -1181,6 +1181,22 @@ class TestBedrockContextLength:
         # Opus 4.6 has 1M context generally available (no beta header required).
         assert get_bedrock_context_length("anthropic.claude-opus-4-6-20250514-v1:0") == 1_000_000
 
+    def test_claude_fable_5(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # Fable is a 1M-context model. DEFAULT_CONTEXT_LENGTHS already maps
+        # claude-fable-5 -> 1M, but the Bedrock resolution path short-circuits
+        # to this table before consulting it, so without entries here every
+        # Fable inference profile fell through to
+        # BEDROCK_DEFAULT_CONTEXT_LENGTH (128K).
+        assert get_bedrock_context_length("us.anthropic.claude-fable-5") == 1_000_000
+        assert get_bedrock_context_length("global.anthropic.claude-fable-5") == 1_000_000
+        assert get_bedrock_context_length("anthropic.claude-fable-5-v1:0") == 1_000_000
+
+    def test_claude_opus_4_base_stays_200k(self):
+        from agent.bedrock_adapter import get_bedrock_context_length
+        # The original Opus 4 (no minor version) keeps the 200K window.
+        assert get_bedrock_context_length("anthropic.claude-opus-4-20250514-v1:0") == 200_000
+
     def test_claude_sonnet_versioned(self):
         from agent.bedrock_adapter import get_bedrock_context_length
         # Sonnet 4.6 has 1M context generally available (no beta header required).

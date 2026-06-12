@@ -2175,6 +2175,12 @@ def get_model_context_length(
     if endpoint_context is not None:
         return endpoint_context
 
+    is_bedrock_context = provider == "bedrock" or (
+        base_url
+        and base_url_hostname(base_url).startswith("bedrock-runtime.")
+        and base_url_host_matches(base_url, "amazonaws.com")
+    )
+
     # 1. Check persistent cache (model+provider)
     # LM Studio is excluded — its loaded context length is transient (the
     # user can reload the model with a different context_length at any time
@@ -2243,6 +2249,26 @@ def get_model_context_length(
                     model, base_url,
                 )
                 # Fall through; step 5b reconciles and overwrites if portal responds.
+            # Invalidate stale Bedrock entries seeded before the Claude 4.6+
+            # long-context table was corrected to 1M.
+            elif is_bedrock_context:
+                try:
+                    from agent.bedrock_adapter import get_bedrock_context_length
+                    bedrock_ctx = get_bedrock_context_length(model)
+                    if cached != bedrock_ctx:
+                        logger.info(
+                            "Dropping stale Bedrock cache entry %s@%s -> %s; "
+                            "using static Bedrock table value %s",
+                            model,
+                            base_url,
+                            f"{cached:,}",
+                            f"{bedrock_ctx:,}",
+                        )
+                        _invalidate_cached_context_length(model, base_url)
+                        return bedrock_ctx
+                except ImportError:
+                    pass
+                return cached
             else:
                 if is_local_endpoint(base_url):
                     return _reconcile_local_cached_context_length(
@@ -2253,17 +2279,13 @@ def get_model_context_length(
     # 1b. AWS Bedrock — use static context length table.
     # Bedrock's ListFoundationModels API doesn't expose context window sizes,
     # so we maintain a curated table in bedrock_adapter.py that reflects
-    # AWS-imposed limits (e.g. 200K for Claude models vs 1M on the native
-    # Anthropic API).  This must run BEFORE the custom-endpoint probe at
+    # Bedrock-hosted model limits (e.g. older Claude 4 at 200K; Claude
+    # Opus/Sonnet 4.6+ at 1M).  This must run BEFORE the custom-endpoint probe at
     # step 2 — bedrock-runtime.<region>.amazonaws.com is not in
     # _URL_TO_PROVIDER, so it would otherwise be treated as a custom endpoint,
     # fail the /models probe (Bedrock doesn't expose that shape), and fall
     # back to the 128K default before reaching the original step 4b branch.
-    if provider == "bedrock" or (
-        base_url
-        and base_url_hostname(base_url).startswith("bedrock-runtime.")
-        and base_url_host_matches(base_url, "amazonaws.com")
-    ):
+    if is_bedrock_context:
         try:
             from agent.bedrock_adapter import get_bedrock_context_length
             return get_bedrock_context_length(model)

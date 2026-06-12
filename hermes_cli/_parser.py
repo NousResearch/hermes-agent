@@ -366,7 +366,8 @@ def build_top_level_parser():
         default=argparse.SUPPRESS,
         help="Skip auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills. Combine with --ignore-user-config for a fully isolated run.",
     )
-    chat_parser.add_argument(
+    _inherited_flag(
+        chat_parser,
         "--source",
         default=None,
         help="Session source tag for filtering (default: cli). Use 'tool' for third-party integrations that should not appear in user session lists.",

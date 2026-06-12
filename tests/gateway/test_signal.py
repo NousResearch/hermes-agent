@@ -186,6 +186,32 @@ class TestSignalHelpers:
         monkeypatch.setenv("SIGNAL_ACCOUNT", "+15551234567")
         assert check_signal_requirements() is True
 
+    def test_detect_inbound_message_type_image(self):
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.signal import _detect_inbound_message_type
+
+        assert _detect_inbound_message_type(["image/png"]) == MessageType.PHOTO
+
+    def test_detect_inbound_message_type_video(self):
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.signal import _detect_inbound_message_type
+
+        assert _detect_inbound_message_type(["video/mp4"]) == MessageType.VIDEO
+
+    def test_detect_inbound_message_type_pdf(self):
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.signal import _detect_inbound_message_type
+
+        assert _detect_inbound_message_type(["application/pdf"]) == MessageType.DOCUMENT
+
+    def test_detect_inbound_message_type_document_wins_for_mixed_media(self):
+        from gateway.platforms.base import MessageType
+        from gateway.platforms.signal import _detect_inbound_message_type
+
+        assert _detect_inbound_message_type(
+            ["image/png", "application/pdf"]
+        ) == MessageType.DOCUMENT
+
     def test_render_mentions(self):
         from gateway.platforms.signal import _render_mentions
         text = "Hello \uFFFC, how are you?"
@@ -273,10 +299,134 @@ class TestSignalAttachmentFetch:
         assert path == "/tmp/test.pdf"
         assert ext == ".pdf"
 
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_preserves_docx_filename(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        docx_like_data = b"PK\x03\x04" + b"\x00" * 100
+        b64_data = base64.b64encode(docx_like_data).decode()
+
+        adapter._rpc, _ = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_document_from_bytes", return_value="/tmp/proposal.docx") as cache_doc:
+            path, ext = await adapter._fetch_attachment(
+                "docx-789",
+                attachment_meta={
+                    "contentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "filename": "proposal.docx",
+                },
+            )
+
+        assert path == "/tmp/proposal.docx"
+        assert ext == ".docx"
+        cache_doc.assert_called_once_with(docx_like_data, "proposal.docx")
+
+    @pytest.mark.asyncio
+    async def test_fetch_attachment_uses_content_type_when_filename_missing(self, monkeypatch):
+        adapter = _make_signal_adapter(monkeypatch)
+
+        docx_like_data = b"PK\x03\x04" + b"\x00" * 100
+        b64_data = base64.b64encode(docx_like_data).decode()
+
+        adapter._rpc, _ = _stub_rpc({"data": b64_data})
+
+        with patch("gateway.platforms.signal.cache_document_from_bytes", return_value="/tmp/attachment.docx") as cache_doc:
+            path, ext = await adapter._fetch_attachment(
+                "docx-790",
+                attachment_meta={
+                    "contentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                },
+            )
+
+        assert path == "/tmp/attachment.docx"
+        assert ext == ".docx"
+        cache_doc.assert_called_once_with(docx_like_data, "attachment.docx")
+
 
 # ---------------------------------------------------------------------------
 # Session Source
 # ---------------------------------------------------------------------------
+
+class TestSignalInboundAttachments:
+    @pytest.mark.asyncio
+    async def test_handle_envelope_marks_pdf_attachment_as_document(self, monkeypatch):
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+        adapter._fetch_attachment = AsyncMock(return_value=("/tmp/inbound-document.pdf", ".pdf"))
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "can you read this?",
+                    "attachments": [
+                        {
+                            "id": "att-pdf-1",
+                            "contentType": "application/pdf",
+                            "size": 1024,
+                        }
+                    ],
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.text == "can you read this?"
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/inbound-document.pdf"]
+        assert event.media_types == ["application/pdf"]
+
+    @pytest.mark.asyncio
+    async def test_handle_envelope_marks_docx_attachment_as_document(self, monkeypatch):
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+        adapter._fetch_attachment = AsyncMock(return_value=("/tmp/inbound-document.docx", ".docx"))
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "word doc attached",
+                    "attachments": [
+                        {
+                            "id": "att-docx-1",
+                            "contentType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "filename": "proposal.docx",
+                            "size": 2048,
+                        }
+                    ],
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.text == "word doc attached"
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/inbound-document.docx"]
+        assert event.media_types == [
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ]
+
 
 class TestSignalSessionSource:
     def test_session_source_alt_fields(self):
@@ -1112,6 +1262,46 @@ class TestSignalQuoteExtraction:
         event = captured["event"]
         assert event.reply_to_message_id == "123"
         assert event.reply_to_text is None
+
+
+class TestSignalInboundAttachments:
+    @pytest.mark.asyncio
+    async def test_handle_envelope_marks_pdf_attachment_as_document(self, monkeypatch):
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured = {}
+
+        async def fake_handle(event):
+            captured["event"] = event
+
+        adapter.handle_message = fake_handle
+        adapter._fetch_attachment = AsyncMock(return_value=("/tmp/inbound-document.pdf", ".pdf"))
+
+        await adapter._handle_envelope({
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceUuid": "uuid-sender",
+                "sourceName": "Tester",
+                "timestamp": 1000000000,
+                "dataMessage": {
+                    "message": "can you read this?",
+                    "attachments": [
+                        {
+                            "id": "att-pdf-1",
+                            "contentType": "application/pdf",
+                            "size": 1024,
+                        }
+                    ],
+                },
+            }
+        })
+
+        event = captured["event"]
+        assert event.text == "can you read this?"
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == ["/tmp/inbound-document.pdf"]
+        assert event.media_types == ["application/pdf"]
 
 # ---------------------------------------------------------------------------
 # _rpc rate-limit detection

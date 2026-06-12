@@ -15,6 +15,7 @@ import asyncio
 import base64
 import json
 import logging
+import mimetypes
 import os
 import random
 import time
@@ -33,6 +34,7 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    SUPPORTED_DOCUMENT_TYPES,
     cache_image_from_bytes,
     cache_audio_from_bytes,
     cache_document_from_bytes,
@@ -118,6 +120,59 @@ _EXT_TO_MIME = {
 def _ext_to_mime(ext: str) -> str:
     """Map file extension to MIME type."""
     return _EXT_TO_MIME.get(ext.lower(), "application/octet-stream")
+
+
+_DOCUMENT_MIME_TO_EXT: Dict[str, str] = {}
+for _document_ext, _document_mime in SUPPORTED_DOCUMENT_TYPES.items():
+    _DOCUMENT_MIME_TO_EXT.setdefault(str(_document_mime).lower(), _document_ext)
+
+
+def _mime_to_ext(content_type: str) -> str:
+    """Best-effort extension lookup for inbound attachments."""
+    normalized = str(content_type or "").split(";", 1)[0].strip().lower()
+    if not normalized:
+        return ""
+    explicit = _DOCUMENT_MIME_TO_EXT.get(normalized)
+    if explicit:
+        return explicit
+    guessed = mimetypes.guess_extension(normalized, strict=False) or ""
+    return guessed.lower()
+
+
+def _build_document_cache_name(attachment: Dict[str, Any], guessed_ext: str) -> str:
+    """Return a stable cache filename for non-image Signal attachments."""
+    for key in ("filename", "fileName", "name", "originalFilename"):
+        raw_name = attachment.get(key)
+        if isinstance(raw_name, str) and raw_name.strip():
+            return raw_name.strip()
+
+    content_type = attachment.get("contentType")
+    derived_ext = _mime_to_ext(content_type) or guessed_ext or ".bin"
+    if not derived_ext.startswith("."):
+        derived_ext = f".{derived_ext}"
+    return f"attachment{derived_ext}"
+
+
+def _detect_inbound_message_type(media_types: List[str]) -> MessageType:
+    """Classify inbound Signal attachments for gateway routing.
+
+    Signal attachments already carry MIME types. Anything that's not an
+    image, audio, or video should surface as a document so the gateway
+    injects the saved file path into the agent context instead of silently
+    treating the turn as plain text.
+    """
+    normalized = [str(mtype or "").lower() for mtype in media_types if str(mtype or "").strip()]
+    if not normalized:
+        return MessageType.TEXT
+    if any(not mtype.startswith(("image/", "audio/", "video/")) for mtype in normalized):
+        return MessageType.DOCUMENT
+    if any(mtype.startswith("video/") for mtype in normalized):
+        return MessageType.VIDEO
+    if any(mtype.startswith("audio/") for mtype in normalized):
+        return MessageType.VOICE
+    if any(mtype.startswith("image/") for mtype in normalized):
+        return MessageType.PHOTO
+    return MessageType.TEXT
 
 
 def _render_mentions(text: str, mentions: list) -> str:
@@ -563,7 +618,7 @@ class SignalAdapter(BasePlatformAdapter):
                     logger.warning("Signal: attachment too large (%d bytes), skipping", att_size)
                     continue
                 try:
-                    cached_path, ext = await self._fetch_attachment(att_id)
+                    cached_path, ext = await self._fetch_attachment(att_id, attachment_meta=att)
                     if cached_path:
                         # Use contentType from Signal if available, else map from extension
                         content_type = att.get("contentType") or _ext_to_mime(ext)
@@ -595,13 +650,8 @@ class SignalAdapter(BasePlatformAdapter):
             chat_id_alt=group_id if is_group else None,
         )
 
-        # Determine message type from media
-        msg_type = MessageType.TEXT
-        if media_types:
-            if any(mt.startswith("audio/") for mt in media_types):
-                msg_type = MessageType.VOICE
-            elif any(mt.startswith("image/") for mt in media_types):
-                msg_type = MessageType.PHOTO
+        # Determine message type from media.
+        msg_type = _detect_inbound_message_type(media_types)
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
@@ -695,7 +745,12 @@ class SignalAdapter(BasePlatformAdapter):
     # Attachment Handling
     # ------------------------------------------------------------------
 
-    async def _fetch_attachment(self, attachment_id: str) -> tuple:
+    async def _fetch_attachment(
+        self,
+        attachment_id: str,
+        *,
+        attachment_meta: Optional[Dict[str, Any]] = None,
+    ) -> tuple:
         """Fetch an attachment via JSON-RPC and cache it. Returns (path, ext)."""
         result = await self._rpc("getAttachment", {
             "account": self.account,
@@ -721,7 +776,9 @@ class SignalAdapter(BasePlatformAdapter):
         elif _is_audio_ext(ext):
             path = cache_audio_from_bytes(raw_data, ext)
         else:
-            path = cache_document_from_bytes(raw_data, ext)
+            cache_name = _build_document_cache_name(attachment_meta or {}, ext)
+            path = cache_document_from_bytes(raw_data, cache_name)
+            ext = Path(cache_name).suffix.lower() or ext
 
         return path, ext
 

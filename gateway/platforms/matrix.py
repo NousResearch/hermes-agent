@@ -2875,14 +2875,23 @@ class MatrixAdapter(BasePlatformAdapter):
         """Auto-join rooms when invited."""
 
         room_id = str(getattr(event, "room_id", ""))
+        sender = str(getattr(event, "sender", ""))
+        event_content = getattr(event, "content", {}) or {}
+        is_direct = bool(event_content.get("is_direct", False))
 
         logger.info(
-            "Matrix: invited to %s — joining",
-            room_id,
+            "Matrix: invited to %s (sender=%s, is_direct=%s) — joining",
+            room_id, sender, is_direct,
         )
-        await self._join_room_by_id(room_id)
+        await self._join_room_by_id(room_id, is_direct=is_direct, sender=sender)
 
-    async def _join_room_by_id(self, room_id: str) -> bool:
+    async def _join_room_by_id(
+        self,
+        room_id: str,
+        *,
+        is_direct: bool = False,
+        sender: str = "",
+    ) -> bool:
         """Join a room by ID and refresh local caches on success."""
         if not room_id:
             return False
@@ -2894,6 +2903,8 @@ class MatrixAdapter(BasePlatformAdapter):
             self._room_identities.pop(room_id, None)
             self._room_identity_cached_at.pop(room_id, None)
             logger.info("Matrix: joined %s", room_id)
+            if is_direct and sender:
+                await self._update_m_direct(room_id, sender)
             await self._refresh_dm_cache()
             return True
         except Exception as exc:
@@ -2911,6 +2922,37 @@ class MatrixAdapter(BasePlatformAdapter):
                 continue
             logger.info("Matrix: reconciling pending invite for %s", room_id)
             await self._join_room_by_id(str(room_id))
+
+    async def _update_m_direct(self, room_id: str, user_id: str) -> None:
+        """Update m.direct account data to mark a room as a DM."""
+        if not self._client:
+            return
+        try:
+            resp = await self._client.get_account_data("m.direct")
+            dm_data = resp.content if hasattr(resp, "content") else resp
+        except Exception:
+            dm_data = {}
+        if not isinstance(dm_data, dict):
+            dm_data = {}
+
+        room_list = dm_data.get(user_id, [])
+        if not isinstance(room_list, list):
+            room_list = []
+        if room_id not in room_list:
+            room_list.append(room_id)
+        dm_data[user_id] = room_list
+
+        try:
+            await self._client.put_account_data("m.direct", dm_data)
+            self._dm_rooms[room_id] = True
+            self._room_identities.pop(room_id, None)
+            self._room_identity_cached_at.pop(room_id, None)
+            logger.info(
+                "Matrix: updated m.direct — room %s marked as DM with %s",
+                room_id, user_id,
+            )
+        except Exception as exc:
+            logger.warning("Matrix: failed to update m.direct for %s: %s", room_id, exc)
 
     # ------------------------------------------------------------------
     # Reactions (send, receive, processing lifecycle)
@@ -3674,7 +3716,14 @@ class MatrixAdapter(BasePlatformAdapter):
         has_explicit_name = bool(room_name)
         is_direct = bool(self._dm_rooms.get(room_id, False))
         conflict = bool(is_direct and has_explicit_name)
-        chat_type = "dm" if is_direct and not has_explicit_name else "room"
+        if is_direct and not has_explicit_name:
+            chat_type = "dm"
+        elif (not is_direct) and (not has_explicit_name) and member_count == 2:
+            chat_type = "dm"
+            is_direct = True
+            self._dm_rooms[room_id] = True
+        else:
+            chat_type = "room"
         display_name = room_name or canonical_alias or room_id
 
         identity = MatrixRoomIdentity(

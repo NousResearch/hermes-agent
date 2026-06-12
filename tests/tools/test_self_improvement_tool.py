@@ -1702,6 +1702,17 @@ def test_operator_value_alignment_links_focus_to_codex_ids_from_entry_context(tm
     }
     assert not missing_ids.intersection(run_ids)
     assert operator_value["metrics"]["operator_decision_support_count"] >= len(run_ids)
+    assert set(run_ids).issubset(
+        set(operator_value["metrics"]["journal_operator_support_codex_run_ids"])
+    )
+    support_examples = operator_value["metrics"]["journal_operator_support_examples"]
+    first_evidence = support_examples[0]["evidence"][0]
+    assert first_evidence["journal_entry_id"].startswith("follow-through-codex_")
+    assert first_evidence["journal_focus_path"].endswith("selfImprovementFocus[0]")
+    support_by_id = {item["run_id"]: item for item in support_examples}
+    assert support_by_id["codex_c5bc43777a63"]["evidence"][0][
+        "journal_focus_title"
+    ] == "Preserve completed delivery as operator decision support"
 
 
 def test_failed_codex_runs_with_completed_at_do_not_count_as_deliveries(tmp_path):

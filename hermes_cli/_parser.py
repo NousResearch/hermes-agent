@@ -41,6 +41,8 @@ _EPILOGUE = """
 Examples:
     hermes                        Start interactive chat
     hermes chat -q "Hello"        Single query mode
+    hermes --tui                  Launch the modern TUI (or set display.interface: tui)
+    hermes --cli                  Force the classic REPL (overrides display.interface: tui)
     hermes -c                     Resume the most recent session
     hermes -c "my project"        Resume a session by name (latest in lineage)
     hermes --resume <session_id>  Resume a specific session by ID
@@ -220,6 +222,13 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--cli",
+        action="store_true",
+        default=False,
+        help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)",
+    )
+    _inherited_flag(
+        parser,
         "--dev",
         dest="tui_dev",
         action="store_true",
@@ -368,6 +377,13 @@ def build_top_level_parser():
         action="store_true",
         default=False,
         help="Launch the modern TUI instead of the classic REPL",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--cli",
+        action="store_true",
+        default=False,
+        help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)",
     )
     _inherited_flag(
         chat_parser,

@@ -1,3 +1,8 @@
+---
+title: 电脑操控
+sidebar_position: 16
+---
+
 # 电脑操控（macOS）
 
 Hermes Agent 可以在**后台**驱动你的 Mac 桌面——点击、输入、滚动、拖拽。你的光标不会移动，键盘焦点不会改变，macOS 也不会切换 Spaces。你和 Agent 可以在同一台机器上协同工作。

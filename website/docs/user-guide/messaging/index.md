@@ -31,7 +31,7 @@ Bots need both a model provider and tool providers (TTS, web). A [Nous Portal](/
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
+| WeCom | ✅ | ✅ | ✅ | — | — | — | — |
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
@@ -388,6 +388,23 @@ journalctl -u hermes-gateway -f
 
 Use the user service on laptops and dev boxes. Use the system service on VPS or headless hosts that should come back at boot without relying on systemd linger.
 
+:::tip Headless VMs: user service + linger avoids root prompts
+A system service needs root for every restart — including the automatic gateway restart at the end of `hermes update`. When `hermes update` runs as a non-root user, it tries passwordless `sudo systemctl`; if that's unavailable, it skips the restart and prints the manual `sudo systemctl restart hermes-gateway` command (it never blocks on an interactive password prompt).
+
+For a headless VM you never log into, a **user** service with lingering enabled gives you the same start-at-boot behavior with zero root involvement:
+
+```bash
+hermes gateway install          # user service
+sudo loginctl enable-linger $USER   # one-time: start at boot, survive logout
+```
+
+After that, `hermes update` can restart the gateway without any privileges. If you prefer to keep the system service, either run updates with `sudo hermes update`, or grant the service account passwordless sudo for systemctl, e.g. in `sudo visudo -f /etc/sudoers.d/hermes-gateway`:
+
+```
+hermes ALL=(root) NOPASSWD: /usr/bin/systemctl --no-ask-password reset-failed hermes-gateway*, /usr/bin/systemctl --no-ask-password start hermes-gateway*, /usr/bin/systemctl --no-ask-password restart hermes-gateway*
+```
+:::
+
 Avoid keeping both the user and system gateway units installed at once unless you really mean to. Hermes will warn if it detects both because start/stop/status behavior gets ambiguous.
 
 :::info Multiple installations
@@ -428,6 +445,7 @@ Each platform has its own toolset:
 | Telegram | `hermes-telegram` | Full tools including terminal |
 | Discord | `hermes-discord` | Full tools including terminal |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
+| WhatsApp Cloud API | `hermes-whatsapp` | Full tools including terminal (shares toolset with the Baileys bridge) |
 | Slack | `hermes-slack` | Full tools including terminal |
 | Google Chat | `hermes-google_chat` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
@@ -557,6 +575,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Slack Setup](slack.md)
 - [Google Chat Setup](google_chat.md)
 - [WhatsApp Setup](whatsapp.md)
+- [WhatsApp Business Cloud API Setup](whatsapp-cloud.md)
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)

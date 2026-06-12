@@ -55,7 +55,6 @@ class TestCronCommandLifecycle:
                 repeat=None,
                 skill=None,
                 skills=["maps", "blogwatcher"],
-                profile="default",
                 clear_skills=False,
             )
         )
@@ -64,7 +63,6 @@ class TestCronCommandLifecycle:
         assert updated["name"] == "Edited Job"
         assert updated["prompt"] == "Revised prompt"
         assert updated["schedule_display"] == "every 120m"
-        assert updated["profile"] == "default"
 
         cron_command(
             Namespace(
@@ -77,14 +75,12 @@ class TestCronCommandLifecycle:
                 repeat=None,
                 skill=None,
                 skills=None,
-                profile="",
                 clear_skills=True,
             )
         )
         cleared = get_job(job["id"])
         assert cleared["skills"] == []
         assert cleared["skill"] is None
-        assert cleared["profile"] is None
 
         out = capsys.readouterr().out
         assert "Updated job" in out
@@ -100,7 +96,6 @@ class TestCronCommandLifecycle:
                 repeat=None,
                 skill=None,
                 skills=["blogwatcher", "maps"],
-                profile="default",
             )
         )
         out = capsys.readouterr().out
@@ -110,4 +105,19 @@ class TestCronCommandLifecycle:
         assert len(jobs) == 1
         assert jobs[0]["skills"] == ["blogwatcher", "maps"]
         assert jobs[0]["name"] == "Skill combo"
-        assert jobs[0]["profile"] == "default"
+
+    def test_list_does_not_crash_when_repeat_is_null(self, tmp_cron_dir, capsys):
+        """A one-shot job can be persisted with ``"repeat": null``. `cron
+        list` must render it as ∞ rather than crashing on .get(...)\\.get."""
+        from cron.jobs import load_jobs, save_jobs
+
+        create_job(prompt="One shot", schedule="every 1h")
+        # Force the present-but-null shape that .get("repeat", {}) mishandles.
+        jobs = load_jobs()
+        jobs[0]["repeat"] = None
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        assert "Repeat:    ∞" in out

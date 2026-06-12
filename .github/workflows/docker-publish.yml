@@ -26,6 +26,10 @@ on:
 
 permissions:
   contents: read
+  # Needed so the arm64 job can push/pull its registry-backed build cache
+  # to ghcr.io (cache-to/cache-from type=registry).  See the build-arm64
+  # job for why registry cache replaced the gha cache on that arch.
+  packages: write
 
 # Concurrency: push/release runs are NEVER cancelled so every merge gets
 # its own image.  PR runs reuse a PR-scoped group with
@@ -54,8 +58,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          submodules: recursive
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
@@ -88,7 +90,7 @@ jobs:
       # (see `_SKIP_PARTS` in scripts/run_tests_parallel.py) because each
       # shard would otherwise reach the session-scoped ``built_image``
       # fixture in ``tests/docker/conftest.py`` and start a 3-7min
-      # ``docker build`` under a 180s pytest-timeout cap — guaranteed to
+      # ``docker build`` — guaranteed to
       # die in fixture setup.
       #
       # Piggybacking here avoids a second image build: the smoke test
@@ -112,7 +114,7 @@ jobs:
         run: |
           uv venv .venv --python 3.11
           source .venv/bin/activate
-          # ``dev`` extra pulls in pytest, pytest-asyncio, pytest-timeout —
+          # ``dev`` extra pulls in pytest, pytest-asyncio —
           # everything tests/docker/ needs.  We deliberately avoid ``all``
           # here because the docker tests only drive the container via
           # subprocess and don't import hermes_agent's optional deps.
@@ -190,17 +192,38 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          submodules: recursive
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f  # v3
 
-      # Build once, load into the local daemon for smoke testing. PR arm64
-      # builds deliberately avoid the gha cache: cold-cache arm64 builds can
-      # outlive GitHub's short-lived Azure cache SAS token, then fail while
-      # reading or writing cache blobs before the smoke test can run.
-      - name: Build image (arm64, smoke test, uncached PR)
+      # Log in to ghcr.io so the registry-backed build cache below can be
+      # read (cache-from) on every event and written (cache-to) on
+      # push/release.  Uses the workflow's GITHUB_TOKEN, which is valid for
+      # the whole job — unlike the gha cache backend's short-lived Azure SAS
+      # token, which expired mid-build on slow cold-cache arm64 runs and
+      # crashed the build before the smoke test (the reason the gha cache
+      # was removed from arm64 PRs in the first place).
+      - name: Log in to ghcr.io (build cache)
+        uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121  # v4.1.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build once, load into the local daemon for smoke testing.
+      #
+      # PR builds use the registry-backed cache READ-ONLY (cache-from only):
+      # they pull warm layers pushed by the most recent main build but never
+      # write, so rapid PR pushes don't race on cache writes or pollute the
+      # cache ref.  This restores warm-cache speed to arm64 PR builds (which
+      # were running fully uncached and were ~45% slower than amd64, making
+      # them the job most often cancelled on supersede).
+      #
+      # Registry cache (type=registry on ghcr.io) is used instead of the gha
+      # cache that previously broke here: its credential is the job-lifetime
+      # GITHUB_TOKEN, not a short-lived SAS token, so the cold-build-outlives-
+      # token failure mode cannot recur.
+      - name: Build image (arm64, smoke test, cache read-only PR)
         if: github.event_name == 'pull_request'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
         with:
@@ -211,9 +234,11 @@ jobs:
           tags: ${{ env.IMAGE_NAME }}:test
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
+          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
 
-      # Main/release builds still use the per-arch gha cache so the digest
-      # push below can reuse layers from this smoke-test build.
+      # Main/release builds read AND write the registry cache so the digest
+      # push below reuses layers from this smoke-test build, and so the next
+      # PR/main build starts warm.
       - name: Build image (arm64, smoke test, cached publish)
         if: github.event_name != 'pull_request'
         uses: docker/build-push-action@bcafcacb16a39f128d818304e6c9c0c18556b85f  # v7.1.0
@@ -225,8 +250,8 @@ jobs:
           tags: ${{ env.IMAGE_NAME }}:test
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
-          cache-from: type=gha,scope=docker-arm64
-          cache-to: type=gha,mode=max,scope=docker-arm64
+          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
+          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
 
       - name: Smoke test image
         uses: ./.github/actions/hermes-smoke-test
@@ -253,8 +278,8 @@ jobs:
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=docker-arm64
-          cache-to: type=gha,mode=max,scope=docker-arm64
+          cache-from: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64
+          cache-to: type=registry,ref=ghcr.io/nousresearch/hermes-agent:buildcache-arm64,mode=max
 
       - name: Export digest
         if: github.event_name == 'push' && github.ref == 'refs/heads/main' || github.event_name == 'release'

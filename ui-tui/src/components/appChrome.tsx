@@ -640,7 +640,7 @@ export function StatusRule({
       {rightWidth > 0 ? (
         <>
           <Text color={t.color.border}>{separatorWidth >= 3 ? ' ─ ' : ' '}</Text>
-          <Box flexShrink={0} width={rightWidth}>
+          <Box flexShrink={0} overflow="hidden" width={rightWidth}>
             <Text color={t.color.label} wrap="truncate-end">
               {cwdLabel}
             </Text>

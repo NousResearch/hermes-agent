@@ -3,6 +3,7 @@ const {
   BrowserWindow,
   Menu,
   Notification,
+  Tray,
   clipboard,
   dialog,
   ipcMain,
@@ -602,6 +603,11 @@ function registerMediaProtocol() {
 let mainWindow = null
 let hermesProcess = null
 let connectionPromise = null
+let tray = null
+let isQuitting = false
+// `true` between the user's X-click and the close event firing; the close
+// handler intercepts it to hide the window instead of tearing it down.
+let closeSuppressedToTray = false
 // Additional per-profile backends, keyed by profile name. The PRIMARY backend
 // (the desktop's launch profile) stays managed by hermesProcess +
 // connectionPromise + startHermes(); this pool only holds EXTRA profile
@@ -3263,6 +3269,90 @@ function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
 
+// System tray integration. Closing the main window hides it to the tray
+// instead of quitting the app; the user brings it back from the tray menu
+// (or a single click on macOS, double-click on Windows/Linux). A "Quit"
+// menu item is the only way to actually exit the process — that path sets
+// `isQuitting = true` so the window's close handler lets the destroy
+// through instead of re-hiding it.
+function createTray() {
+  if (tray) return tray
+  const iconPath = getAppIconPath()
+  let image = null
+  if (iconPath) {
+    image = nativeImage.createFromPath(iconPath)
+    if (image.isEmpty()) image = null
+  }
+  // Fall back to a small empty image so the tray still has a clickable slot
+  // on systems where the bundled icon fails to load (rare).
+  if (!image) image = nativeImage.createEmpty()
+
+  try {
+    tray = new Tray(image)
+  } catch (err) {
+    rememberLog(`[tray] failed to create system tray: ${err?.message || err}`)
+    return null
+  }
+
+  tray.setToolTip('Hermes')
+
+  const toggleWindow = () => {
+    if (!mainWindow || mainWindow.isDestroyed()) {
+      // Window was destroyed (e.g. after a renderer crash + recovery).
+      // Re-create it from scratch so the tray click still works.
+      createWindow()
+      return
+    }
+    if (mainWindow.isVisible() && !mainWindow.isMinimized()) {
+      mainWindow.hide()
+    } else {
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+  }
+
+  const buildMenu = () =>
+    Menu.buildFromTemplate([
+      { label: 'Show Hermes', click: () => toggleWindow() },
+      {
+        label: 'Hide to Tray',
+        enabled: mainWindow?.isVisible() ? true : false,
+        click: () => mainWindow?.hide()
+      },
+      { type: 'separator' },
+      {
+        label: 'Quit Hermes',
+        click: () => {
+          isQuitting = true
+          if (mainWindow && !mainWindow.isDestroyed()) mainWindow.close()
+          else app.quit()
+        }
+      }
+    ])
+
+  tray.setContextMenu(buildMenu())
+  // On Windows/Linux a single click is conventionally a "primary action" —
+  // map it to toggle. macOS uses a click to open the menu by default; leave
+  // that alone since the platform behavior is what users expect there.
+  if (!IS_MAC) {
+    tray.on('click', () => toggleWindow())
+  }
+  tray.on('double-click', () => toggleWindow())
+
+  return tray
+}
+
+function destroyTray() {
+  if (!tray) return
+  try {
+    tray.destroy()
+  } catch (err) {
+    rememberLog(`[tray] destroy failed: ${err?.message || err}`)
+  }
+  tray = null
+}
+
 function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const { webContents } = mainWindow
@@ -5125,6 +5215,24 @@ function createWindow() {
   }
 
   if (!IS_MAC) {
+    // Hide-to-tray: intercept the user's X-click so closing the window
+    // doesn't tear down the renderer. The renderer keeps running, sessions
+    // stay loaded, and the user can reopen from the tray icon. `isQuitting`
+    // is the only escape hatch — set by the tray's "Quit" item (or by the
+    // platform shutdown handler) so the real close path is preserved.
+    mainWindow.on('close', (event) => {
+      if (isQuitting) return
+      event.preventDefault()
+      closeSuppressedToTray = true
+      mainWindow.hide()
+      closeSuppressedToTray = false
+    })
+    // Spawn the tray the first time we get a window. Subsequent window
+    // recreations (e.g. after a crash) leave the existing tray in place.
+    createTray()
+  }
+
+  if (!IS_MAC) {
     if (!nativeThemeListenerInstalled) {
       nativeThemeListenerInstalled = true
       nativeTheme.on('updated', () => {
@@ -6433,6 +6541,7 @@ app.on('before-quit', () => {
   }
   flushDesktopLogBufferSync()
   closePreviewWatchers()
+  destroyTray()
 
   if (hermesProcess && !hermesProcess.killed) {
     hermesProcess.kill('SIGTERM')
@@ -6441,5 +6550,11 @@ app.on('before-quit', () => {
 })
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') app.quit()
+  // Hide-to-tray mode: on Windows/Linux we deliberately keep the process
+  // alive after the window is hidden, so the 'all windows closed' event is
+  // expected and not a quit signal. The tray menu (or platform shutdown)
+  // sets `isQuitting` and drives a real exit.
+  if (process.platform === 'darwin') return
+  if (isQuitting) app.quit()
+  // else: tray is still alive, do nothing
 })

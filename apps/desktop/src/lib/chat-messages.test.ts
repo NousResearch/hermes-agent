@@ -109,6 +109,18 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('hello from object content')
   })
 
+  it('keeps single newlines in hydrated assistant content', () => {
+    const [message] = toChatMessages([
+      {
+        content: 'Line one\nLine two\nLine three',
+        role: 'assistant',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('Line one\nLine two\nLine three')
+  })
+
   it('applies attached-context filtering when user content is object-shaped', () => {
     const [message] = toChatMessages([
       {

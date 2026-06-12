@@ -838,6 +838,14 @@ canvas {
   margin-block: var(--paragraph-gap) 0;
 }
 
+/* Chat transcripts are not articles: model/tool status text often arrives as
+   deliberate single-newline lines. Markdown collapses those to spaces by
+   default, which makes streamed text look correct while the completed replay
+   appears to "lose" lines after message.complete replaces the live parts. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(p, li, blockquote) {
+  white-space: pre-wrap;
+}
+
 /* First rendered element of a prose block is flush — the block-level gap above
    (tool / paragraph) already provides the separation. Reach one level deep too:
    Streamdown wraps blocks in a `div.space-y-*`, so the real first line is the

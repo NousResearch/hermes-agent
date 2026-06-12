@@ -340,19 +340,29 @@ export function useMessageStream({
 
         queue.delete(id)
 
-        if (queued.assistant) {
-          mutateStream(
-            id,
-            parts => appendAssistantTextPart(parts, queued.assistant),
-            () => [assistantTextPart(queued.assistant)]
-          )
-        }
-
+        // Flush reasoning BEFORE assistant text. A single flush window can
+        // straddle the reasoning→answer boundary (the model finishes thinking
+        // and starts the answer inside the same ~33ms batch). If we appended
+        // the answer text first, the trailing reasoning would land *after* it
+        // as a brand-new reasoning part, splitting the answer in two with a
+        // "Thinking" block wedged in the middle while streaming — even though
+        // message.complete later re-collapses reasoning ahead of the text.
+        // Reasoning-first keeps the live order consistent with the finalized
+        // message (reasoning merges into the existing reasoning block, then the
+        // answer text appends after it).
         if (queued.reasoning) {
           mutateStream(
             id,
             parts => appendReasoningPart(parts, queued.reasoning),
             () => [reasoningPart(queued.reasoning)]
+          )
+        }
+
+        if (queued.assistant) {
+          mutateStream(
+            id,
+            parts => appendAssistantTextPart(parts, queued.assistant),
+            () => [assistantTextPart(queued.assistant)]
           )
         }
       }
@@ -537,7 +547,8 @@ export function useMessageStream({
         }
 
         const streamId = state.streamId
-        const finalText = renderMediaTags(text).trim()
+        const finalText = renderMediaTags(text)
+        const hasFinalText = finalText.trim().length > 0
         const completionError = completionErrorText(finalText)
         const normalize = (value: string) => value.replace(/\s+/g, ' ').trim()
         const dedupeReference = normalize(finalText)
@@ -557,7 +568,7 @@ export function useMessageStream({
             return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
           })
 
-          return finalText ? [...kept, assistantTextPart(finalText)] : kept
+          return hasFinalText ? [...kept, assistantTextPart(finalText)] : kept
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
@@ -577,7 +588,7 @@ export function useMessageStream({
         const newAssistantFromCompletion = (): ChatMessage => ({
           id: `assistant-${Date.now()}`,
           role: 'assistant',
-          parts: completionError ? [] : [assistantTextPart(finalText)],
+          parts: completionError || !hasFinalText ? [] : [assistantTextPart(finalText)],
           branchGroupId: state.pendingBranchGroup ?? undefined,
           ...(completionError && { error: completionError })
         })
@@ -601,10 +612,10 @@ export function useMessageStream({
               nextMessages = prev.map((message, messageIndex) =>
                 messageIndex === index ? completeMessage(message) : message
               )
-            } else if (finalText) {
+            } else if (hasFinalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }
-          } else if (finalText) {
+          } else if (hasFinalText) {
             nextMessages = [...prev, newAssistantFromCompletion()]
           }
         }
@@ -613,7 +624,7 @@ export function useMessageStream({
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
         shouldHydrate =
-          !completionError && !hasInlineError && !unresolvedUserTail && (!state.sawAssistantPayload || !finalText)
+          !completionError && !hasInlineError && !unresolvedUserTail && (!state.sawAssistantPayload || !hasFinalText)
 
         return {
           ...state,

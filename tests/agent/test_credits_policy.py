@@ -477,17 +477,17 @@ class TestNoticeCopy:
 
 class TestSeverityOrder:
     def test_multiple_new_notices_ordered_ascending_severity(self):
-        """warn90 < grant_spent < depleted in to_show when all fire in one call."""
-        # Construct a state where all three conditions fire simultaneously
-        # on first call (no latch state yet):
-        # - warn90: uf >= 0.9 AND seen_below_90 must be True → won't fire fresh latch
-        # So we pre-seed seen_below_90=True to allow warn90 to fire.
+        """grant_spent < depleted in to_show when both fire in one call.
+
+        (usage is suppressed here: purchased>0 — see TestTopUpSuppression.
+        usage + grant_spent are now mutually exclusive by design.)
+        """
         latch = {"active": set(), "seen_below_90": True, "usage_band": None}
 
         # Build state: subscription_cap, uf >= 1.0, purchased_micros > 0, NOT paid_access
-        # warn90_cond: uf >= 0.9 ✓ (uf=1.0)
         # grant_cond: subscription_cap + uf >= 1.0 + purchased > 0 ✓
         # depleted_cond: not paid_access ✓
+        # usage band: suppressed (purchased > 0)
         s = CreditsState(
             subscription_limit_micros=20_000_000,
             subscription_limit_usd="20.00",
@@ -499,12 +499,99 @@ class TestSeverityOrder:
         )
         to_show, _ = evaluate_credits_notices(s, latch)
         keys = [n.key for n in to_show]
-        assert "credits.usage" in keys
+        assert "credits.usage" not in keys
         assert "credits.grant_spent" in keys
         assert "credits.depleted" in keys
-        # Ascending severity: warn90 before grant_spent before depleted
-        assert keys.index("credits.usage") < keys.index("credits.grant_spent")
+        # Ascending severity: grant_spent before depleted
         assert keys.index("credits.grant_spent") < keys.index("credits.depleted")
+
+    def test_usage_before_depleted_without_topup(self):
+        """With no top-up funds, usage fires and precedes depleted."""
+        latch = {"active": set(), "seen_below_90": True, "usage_band": None}
+        s = CreditsState(
+            subscription_limit_micros=20_000_000,
+            subscription_limit_usd="20.00",
+            subscription_micros=0,  # uf = 1.0
+            denominator_kind="subscription_cap",
+            purchased_micros=0,
+            purchased_usd="0.00",
+            paid_access=False,
+        )
+        to_show, _ = evaluate_credits_notices(s, latch)
+        keys = [n.key for n in to_show]
+        assert "credits.usage" in keys
+        assert "credits.depleted" in keys
+        assert keys.index("credits.usage") < keys.index("credits.depleted")
+
+
+# ── Scenario 8b: top-up suppression of the usage gauge ───────────────────────
+
+
+class TestTopUpSuppression:
+    """purchased_micros > 0 suppresses the sub-cap usage gauge: the cap is the
+    wrong denominator for an account that can keep spending top-up funds."""
+
+    def test_no_usage_band_with_topup_at_90pct(self):
+        latch = fresh_latch()
+        evaluate_credits_notices(
+            state_with_fraction(0.10, purchased_micros=5_000_000, purchased_usd="5.00"),
+            latch,
+        )
+        to_show, to_clear = evaluate_credits_notices(
+            state_with_fraction(0.95, purchased_micros=5_000_000, purchased_usd="5.00"),
+            latch,
+        )
+        assert all(n.key != "credits.usage" for n in to_show)
+        assert latch["usage_band"] is None
+
+    def test_topup_landing_mid_session_clears_active_band(self):
+        """A showing 90% warn must clear when a top-up lands (purchased 0 → >0)."""
+        latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.10), latch)
+        evaluate_credits_notices(state_with_fraction(0.95), latch)
+        assert latch["usage_band"] == 90
+        to_show, to_clear = evaluate_credits_notices(
+            state_with_fraction(0.95, purchased_micros=10_000_000, purchased_usd="10.00"),
+            latch,
+        )
+        assert "credits.usage" in to_clear
+        assert latch["usage_band"] is None
+        assert all(n.key != "credits.usage" for n in to_show)
+
+    def test_band_resumes_after_topup_spent(self):
+        """purchased back to 0 with usage still in-band → gauge resumes."""
+        latch = fresh_latch()
+        evaluate_credits_notices(state_with_fraction(0.10), latch)
+        evaluate_credits_notices(
+            state_with_fraction(0.95, purchased_micros=10_000_000, purchased_usd="10.00"),
+            latch,
+        )
+        assert latch["usage_band"] is None
+        to_show, _ = evaluate_credits_notices(state_with_fraction(0.95), latch)
+        n = next(n for n in to_show if n.key == "credits.usage")
+        assert "90%" in n.text
+        assert latch["usage_band"] == 90
+
+    def test_grant_spent_still_fires_with_topup(self):
+        """Suppression only affects the gauge — grant_spent (which NEEDS purchased>0)
+        is untouched."""
+        latch = fresh_latch()
+        s = state_with_fraction(
+            1.0,
+            denominator_kind="subscription_cap",
+            purchased_micros=12_340_000,
+            purchased_usd="12.34",
+        )
+        to_show, _ = evaluate_credits_notices(s, latch)
+        keys = [n.key for n in to_show]
+        assert "credits.grant_spent" in keys
+        assert "credits.usage" not in keys
+
+    def test_depleted_unaffected_by_topup_suppression(self):
+        latch = fresh_latch()
+        s = CreditsState(paid_access=False, purchased_micros=5_000_000, purchased_usd="5.00")
+        to_show, _ = evaluate_credits_notices(s, latch)
+        assert any(n.key == "credits.depleted" for n in to_show)
 
 
 # ── Invariant: never fire + clear same key in one call ────────────────────────

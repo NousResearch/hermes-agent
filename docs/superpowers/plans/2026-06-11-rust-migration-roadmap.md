@@ -184,6 +184,8 @@ language-specific setup where needed.
   archive contents.
 - Rust stage planning now reports native-first, probe-only, and script-only coverage counts so later bootstrap work can
   target the remaining script-owned dependency stages explicitly.
+- Script-only stage planning now records a reason for each remaining script-owned stage and includes those reasons in
+  the bootstrap orchestrator summary, distinguishing post-install UI stages from unported script fallbacks.
 - Bootstrap stage manifests are now generated in Rust for both Windows and Unix scripts, so setup no longer starts
   PowerShell or bash just to discover the stage list.
 - Non-interactive post-install stages that require user input are now skipped in Rust with the same successful skipped

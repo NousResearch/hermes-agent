@@ -16,6 +16,8 @@ use std::process::{Command, Stdio};
 
 const BOOTSTRAP_TOOLS_MANIFEST: &str = "bootstrap-tools-manifest.json";
 const BOOTSTRAP_TOOLS_MANIFEST_SCHEMA_VERSION: u32 = 1;
+const SCRIPT_REASON_INTERACTIVE: &str = "requires user input; handled by post-install UI";
+const SCRIPT_REASON_UNPORTED: &str = "not yet ported to Rust; delegated to install script";
 
 /// PATH probe result for one external tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +42,7 @@ pub struct PlannedStage {
     pub execution: StageExecutionMode,
     pub rust_probe: bool,
     pub script_fallback: bool,
+    pub script_reason: Option<String>,
 }
 
 /// Native Python virtual environment stage execution plan.
@@ -286,9 +289,21 @@ pub fn build_stage_plan(stages: &[StageInfo], _include_desktop: bool) -> Vec<Pla
                         | StageExecutionMode::ProbeThenScript
                         | StageExecutionMode::Script
                 ),
+                script_reason: script_stage_reason(stage, execution),
             }
         })
         .collect()
+}
+
+fn script_stage_reason(stage: &StageInfo, execution: StageExecutionMode) -> Option<String> {
+    if execution != StageExecutionMode::Script {
+        return None;
+    }
+    if stage.needs_user_input {
+        Some(SCRIPT_REASON_INTERACTIVE.to_string())
+    } else {
+        Some(SCRIPT_REASON_UNPORTED.to_string())
+    }
 }
 
 /// Return a Rust-side skip result for stages that must be handled by UI.
@@ -300,7 +315,7 @@ pub fn interactive_stage_skip_result(stage: &StageInfo) -> Option<crate::events:
         stage: stage.name.clone(),
         ok: true,
         skipped: true,
-        reason: Some("requires user input; handled by post-install UI".to_string()),
+        reason: Some(SCRIPT_REASON_INTERACTIVE.to_string()),
         data: None,
     })
 }
@@ -704,10 +719,21 @@ pub fn summarize_plan(report: &InstallStateReport, plan: &[PlannedStage]) -> Str
         .iter()
         .filter(|stage| stage.execution == StageExecutionMode::Script)
         .count();
+    let script_reasons = plan
+        .iter()
+        .filter_map(|stage| {
+            stage
+                .script_reason
+                .as_ref()
+                .map(|reason| format!("{}={}", stage.name, reason))
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         concat!(
             "[bootstrap] rust orchestrator: install_root={} marker_exists={} ",
-            "native_stages={} probe_stages={} script_stages={} total_stages={} tools=[{}]"
+            "native_stages={} probe_stages={} script_stages={} total_stages={} tools=[{}] ",
+            "script_reasons=[{}]"
         ),
         report.install_root.display(),
         report.bootstrap_marker_exists,
@@ -715,7 +741,8 @@ pub fn summarize_plan(report: &InstallStateReport, plan: &[PlannedStage]) -> Str
         probe_count,
         script_count,
         plan.len(),
-        tool_summary
+        tool_summary,
+        script_reasons
     )
 }
 
@@ -3574,6 +3601,31 @@ mod tests {
     }
 
     #[test]
+    fn build_stage_plan_records_script_only_reasons() {
+        let stages = vec![
+            StageInfo {
+                name: "configure".to_string(),
+                title: "Configure".to_string(),
+                category: "post-install".to_string(),
+                needs_user_input: true,
+            },
+            stage("legacy"),
+        ];
+        let plan = build_stage_plan(&stages, false);
+
+        assert_eq!(plan[0].execution, StageExecutionMode::Script);
+        assert_eq!(
+            plan[0].script_reason.as_deref(),
+            Some("requires user input; handled by post-install UI")
+        );
+        assert_eq!(plan[1].execution, StageExecutionMode::Script);
+        assert_eq!(
+            plan[1].script_reason.as_deref(),
+            Some("not yet ported to Rust; delegated to install script")
+        );
+    }
+
+    #[test]
     fn node_deps_stage_is_native_first_on_desktop_platforms() {
         for target_os in ["windows", "macos", "linux"] {
             assert!(
@@ -3627,6 +3679,25 @@ mod tests {
         assert!(summary.contains("script_stages=0"));
         assert!(summary.contains("total_stages=4"));
         assert!(summary.contains("uv=missing"));
+    }
+
+    #[test]
+    fn summarize_plan_reports_script_only_reasons() {
+        let hermes_home = PathBuf::from("C:/Users/example/AppData/Local/hermes");
+        let report = install_state_report(&hermes_home, Vec::new());
+        let stages = vec![StageInfo {
+            name: "configure".to_string(),
+            title: "Configure".to_string(),
+            category: "post-install".to_string(),
+            needs_user_input: true,
+        }];
+        let plan = build_stage_plan(&stages, false);
+
+        let summary = summarize_plan(&report, &plan);
+
+        assert!(summary.contains(
+            "script_reasons=[configure=requires user input; handled by post-install UI]"
+        ));
     }
 
     #[test]

@@ -67,6 +67,22 @@
   gap: 0.75rem;
   align-items: start;
   overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--color-muted-foreground) 45%, transparent) transparent;
+  padding-bottom: 0.35rem;
+}
+.hermes-kanban-columns::-webkit-scrollbar {
+  height: 0.6rem;
+}
+.hermes-kanban-columns::-webkit-scrollbar-track {
+  background: transparent;
+}
+.hermes-kanban-columns::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--color-muted-foreground) 45%, transparent);
+  border-radius: 999px;
+}
+.hermes-kanban-columns::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-muted-foreground) 65%, transparent);
 }
 
 .hermes-kanban-column {

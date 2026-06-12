@@ -22,6 +22,7 @@ Install: pip install hermes-agent[llm-guard]
 
 from __future__ import annotations
 
+import json as _json
 import logging
 import os
 from typing import Any
@@ -164,12 +165,37 @@ def _get_scanners() -> tuple[list, list]:
 # Public API
 # ---------------------------------------------------------------------------
 
+
+def _serialize_for_scan(content: Any) -> str | None:
+    """Convert structured tool results to a string for scanning.
+
+    Dicts and lists are serialized to JSON so tools like ``read_file``,
+    ``terminal``, ``search_files``, and ``web_search`` are covered.
+    Returns None for types that cannot carry injection payloads
+    (None, bool, int, float).
+    """
+    if isinstance(content, (dict, list)):
+        try:
+            return _json.dumps(content, default=str)
+        except Exception:
+            return str(content)
+    if isinstance(content, str):
+        return content
+    # None, bool, int, float — not injection vectors.
+    return None
+
+
 def scan_tool_result(tool_name: str, content: Any) -> Any:
-    """Scan a tool result string for prompt injection.
+    """Scan a tool result for prompt injection.
+
+    Structured content (dicts / lists) is serialized to JSON before
+    scanning so tools like ``read_file``, ``terminal``, ``search_files``,
+    and ``web_search`` are covered.
 
     Behaviour depends on config:
 
-    - Disabled / not a string → content returned unchanged.
+    - Disabled → content returned unchanged.
+    - Content that can't carry injection (None, bool, int, float) → unchanged.
     - llm-guard not installed or scanner raises:
         fail_open=true  → content returned unchanged (logged at WARNING)
         fail_open=false → raises LLMGuardInjectionError
@@ -181,7 +207,10 @@ def scan_tool_result(tool_name: str, content: Any) -> Any:
 
     if not cfg["enabled"]:
         return content
-    if not isinstance(content, str):
+
+    # Serialize structured content to a scan-able string.
+    scan_text = _serialize_for_scan(content)
+    if scan_text is None:
         return content
 
     input_scanners, output_scanners = _get_scanners()
@@ -197,7 +226,7 @@ def scan_tool_result(tool_name: str, content: Any) -> Any:
 
         all_results: dict = {}
         all_scores: dict = {}
-        current = content
+        current = scan_text
 
         # PromptInjection (input scanner) — classify the text for injection
         if input_scanners:
@@ -214,7 +243,7 @@ def scan_tool_result(tool_name: str, content: Any) -> Any:
 
         failed = [name for name, passed in all_results.items() if not passed]
         if not failed:
-            return current
+            return content
 
         logger.warning(
             "llm-guard flagged tool result from %r: failed scanners %s (scores: %s)",

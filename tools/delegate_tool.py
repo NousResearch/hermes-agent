@@ -2851,7 +2851,7 @@ DELEGATE_TASK_SCHEMA = {
                                 "model": {"type": "string", "description": "Model identifier (e.g. 'gpt-4o', 'claude-sonnet-4-20250514', 'gemini-2.0-flash')."},
                             },
                             "required": [],
-                            "additionalProperties": false,
+                            "additionalProperties": False,
                             "description": "Per-task model override. Overrides both the default delegation model and the top-level model for this task only.",
                         },
                     },
@@ -2869,7 +2869,7 @@ DELEGATE_TASK_SCHEMA = {
                     "model": {"type": "string", "description": "Model identifier (e.g. 'gpt-4o', 'claude-sonnet-4-20250514', 'gemini-2.0-flash')."},
                 },
                 "required": [],
-                "additionalProperties": false,
+                "additionalProperties": False,
                 "description": "Override the model used by subagents. Same structure as cronjob's model parameter. When only 'model' is set, the current default provider is pinned. Example: {'provider': 'openai', 'model': 'gpt-4o'}.",
             },
             "role": {

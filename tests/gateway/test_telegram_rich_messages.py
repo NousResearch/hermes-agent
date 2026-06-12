@@ -27,8 +27,17 @@ RICH_CONTENT = "## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n- 
 
 
 def _make_adapter(extra=None):
-    """Build a TelegramAdapter with a mock bot wired for the rich path."""
-    config = PlatformConfig(enabled=True, token="fake-token", extra=extra or {})
+    """Build a TelegramAdapter with a mock bot wired for the rich path.
+
+    Rich messages are opt-in (default off) while the Bot API 10.1 endpoint
+    is validated live, so tests that exercise the rich path enable it
+    explicitly here; opt-out tests pass their own ``extra``.
+    """
+    config = PlatformConfig(
+        enabled=True,
+        token="fake-token",
+        extra={"rich_messages": True} if extra is None else extra,
+    )
     adapter = TelegramAdapter(config)
     bot = MagicMock()
     # do_api_request as an AsyncMock makes inspect.iscoroutinefunction(...) True,
@@ -134,6 +143,44 @@ async def test_unknown_endpoint_error_falls_back_to_legacy():
 
 
 @pytest.mark.asyncio
+async def test_capability_error_latches_rich_send_off():
+    """Endpoint-missing errors latch rich off so later sends skip the
+    doomed extra roundtrip entirely."""
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=RuntimeError("Method not found"))
+
+    result = await adapter.send("12345", RICH_CONTENT)
+    assert result.success is True
+    assert adapter._rich_send_disabled is True
+
+    # Second send skips rich entirely (no second do_api_request call).
+    adapter._bot.do_api_request.reset_mock()
+    adapter._bot.send_message.reset_mock()
+    result2 = await adapter.send("12345", RICH_CONTENT)
+    assert result2.success is True
+    adapter._bot.do_api_request.assert_not_called()
+    adapter._bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_per_message_bad_request_does_not_latch_off():
+    """A parser/limit BadRequest is per-message — rich must stay enabled
+    for subsequent messages."""
+    adapter = _make_adapter()
+    adapter._bot.do_api_request = AsyncMock(side_effect=BadRequest("can't parse rich message"))
+
+    result = await adapter.send("12345", RICH_CONTENT)
+    assert result.success is True
+    assert adapter._rich_send_disabled is False
+
+    # Next message re-attempts rich.
+    adapter._bot.do_api_request = AsyncMock(return_value=SimpleNamespace(message_id=124))
+    result2 = await adapter.send("12345", RICH_CONTENT)
+    assert result2.success is True
+    adapter._bot.do_api_request.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("exc", [TimedOut("timed out"), NetworkError("connection reset")])
 async def test_transient_rich_error_does_not_legacy_resend(exc):
     """Transient transport errors must NOT trigger a legacy resend (duplicate risk)."""
@@ -184,13 +231,17 @@ async def test_routing_direct_messages_topic_id_drops_message_thread_id():
 
 
 @pytest.mark.asyncio
-async def test_reply_to_propagates_as_scalar():
+async def test_reply_to_propagates_as_reply_parameters():
     adapter = _make_adapter()
 
     await adapter.send("-100123", RICH_CONTENT, reply_to="999")
 
     api_kwargs = _rich_api_kwargs(adapter)
-    assert api_kwargs["reply_to_message_id"] == 999
+    # Spec: sendRichMessage documents reply_parameters (ReplyParameters), not
+    # the legacy reply_to_message_id scalar — unknown params are silently
+    # ignored, which would quietly drop the reply anchor.
+    assert api_kwargs["reply_parameters"] == {"message_id": 999}
+    assert "reply_to_message_id" not in api_kwargs
 
 
 @pytest.mark.asyncio

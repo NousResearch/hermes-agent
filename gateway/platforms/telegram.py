@@ -419,10 +419,11 @@ class TelegramAdapter(BasePlatformAdapter):
         # Bot API 10.1 Rich Messages: opportunistically send final replies via
         # sendRichMessage with the raw agent markdown so tables/task lists/etc.
         # render natively. Opt-out via platforms.telegram.extra.rich_messages.
-        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", True)
-        # Latched off after a capability failure on sendRichMessageDraft (e.g.
-        # older python-telegram-bot without the endpoint) so streaming drafts
-        # stop re-attempting rich and use the legacy plain-text draft instead.
+        self._rich_messages_enabled: bool = self._coerce_bool_extra("rich_messages", False)
+        # Latched off after a capability failure on sendRichMessage /
+        # sendRichMessageDraft (e.g. older python-telegram-bot without the
+        # endpoint) so later sends skip the doomed rich attempt entirely.
+        self._rich_send_disabled: bool = False
         self._rich_draft_disabled: bool = False
         # Buffer rapid/album photo updates so Telegram image bursts are handled
         # as a single MessageEvent instead of self-interrupting multiple turns.
@@ -948,10 +949,12 @@ class TelegramAdapter(BasePlatformAdapter):
         return inspect.iscoroutinefunction(getattr(self._bot, "do_api_request", None))
 
     def _should_attempt_rich(self, content: str) -> bool:
-        # getattr default: tests build adapters via object.__new__() (no
-        # __init__), so ``_rich_messages_enabled`` may be unset — default ON.
+        # getattr defaults: tests build adapters via object.__new__() (no
+        # __init__), so the flags may be unset — default rich OFF (the
+        # feature is opt-in via platforms.telegram.extra.rich_messages).
         return bool(
-            getattr(self, "_rich_messages_enabled", True)
+            getattr(self, "_rich_messages_enabled", False)
+            and not getattr(self, "_rich_send_disabled", False)
             and content
             and content.strip()
             and self._content_fits_rich_limits(content)
@@ -971,16 +974,14 @@ class TelegramAdapter(BasePlatformAdapter):
             payload["skip_entity_detection"] = True
         return payload
 
-    def _is_rich_fallback_error(self, exc: Exception) -> bool:
-        """True ⇒ permanent/capability error ⇒ safe to fall back to legacy.
+    def _is_rich_capability_error(self, exc: Exception) -> bool:
+        """True ⇒ the rich endpoint itself is unavailable (old PTB/server).
 
-        Conservative on purpose: only clearly-permanent failures (BadRequest,
-        capability errors, unknown/unsupported endpoint) qualify. Everything
-        else is treated as transient — the rich request may have reached
-        Telegram, so we must NOT legacy-resend and risk a duplicate.
+        These latch rich off for the rest of the adapter's life — retrying is
+        pointless and would cost a failed roundtrip on every send. Per-message
+        rejections (BadRequest from a parser/limit issue) are NOT capability
+        errors: the next message may be fine.
         """
-        if self._is_bad_request_error(exc):
-            return True
         if isinstance(exc, (AttributeError, TypeError, NotImplementedError)):
             return True
         if getattr(exc, "error_code", None) == 404:
@@ -991,6 +992,18 @@ class TelegramAdapter(BasePlatformAdapter):
         if "unsupported" in s or "not implemented" in s:
             return True
         return False
+
+    def _is_rich_fallback_error(self, exc: Exception) -> bool:
+        """True ⇒ permanent/capability error ⇒ safe to fall back to legacy.
+
+        Conservative on purpose: only clearly-permanent failures (BadRequest,
+        capability errors, unknown/unsupported endpoint) qualify. Everything
+        else is treated as transient — the rich request may have reached
+        Telegram, so we must NOT legacy-resend and risk a duplicate.
+        """
+        if self._is_bad_request_error(exc):
+            return True
+        return self._is_rich_capability_error(exc)
 
     def _compute_single_send_routing(
         self,
@@ -1064,9 +1077,11 @@ class TelegramAdapter(BasePlatformAdapter):
         payload.update({k: v for k, v in thread_kwargs.items() if v is not None})
         payload.update(self._notification_kwargs(metadata))
         if reply_to_id is not None:
-            # Scalar alias — safer to serialize through api_kwargs than the
-            # nested reply_parameters object on the raw endpoint.
-            payload["reply_to_message_id"] = reply_to_id
+            # Spec: sendRichMessage takes reply_parameters (ReplyParameters
+            # object), NOT the legacy reply_to_message_id scalar. Unknown
+            # params are silently ignored by the Bot API, so the scalar would
+            # quietly drop the reply anchor instead of erroring.
+            payload["reply_parameters"] = {"message_id": reply_to_id}
 
         try:
             msg = await self._bot.do_api_request(
@@ -1074,6 +1089,10 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             if self._is_rich_fallback_error(exc):
+                if self._is_rich_capability_error(exc):
+                    # Endpoint missing (old PTB/server) — latch rich off so
+                    # every later send doesn't pay a doomed extra roundtrip.
+                    self._rich_send_disabled = True
                 logger.debug(
                     "[%s] sendRichMessage rejected (%s) — falling back to MarkdownV2",
                     self.name, exc,
@@ -1113,7 +1132,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
         return bool(
-            getattr(self, "_rich_messages_enabled", True)
+            getattr(self, "_rich_messages_enabled", False)
+            and not getattr(self, "_rich_send_disabled", False)
             and not getattr(self, "_rich_draft_disabled", False)
             and content
             and content.strip()
@@ -1148,7 +1168,7 @@ class TelegramAdapter(BasePlatformAdapter):
             ok = await self._bot.do_api_request("sendRichMessageDraft", api_kwargs=payload)
             return bool(ok)
         except Exception as exc:
-            if self._is_rich_fallback_error(exc):
+            if self._is_rich_capability_error(exc):
                 self._rich_draft_disabled = True
                 logger.debug(
                     "[%s] sendRichMessageDraft unsupported (%s) — using legacy drafts",

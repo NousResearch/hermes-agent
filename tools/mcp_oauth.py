@@ -162,6 +162,55 @@ def _can_open_browser() -> bool:
     return False
 
 
+def _nginx_domain_callback_url() -> str:
+    """Return the public MCP OAuth callback URL for nginx-backed deploys.
+
+    ``HERMES_NGINX_DOMAIN`` is a deployment-level hint used by hosted/headless
+    Hermes installs. When it is present, the user can complete OAuth in an
+    external browser through the reverse proxy, so MCP OAuth should advertise
+    the public callback instead of an unreachable localhost URL.
+    """
+    raw = os.environ.get("HERMES_NGINX_DOMAIN", "").strip()
+    if not raw:
+        return ""
+    if any(c in raw for c in ('"', "'", "<", ">", " ", "\n", "\r", "\t")):
+        logger.warning("Ignoring malformed HERMES_NGINX_DOMAIN value")
+        return ""
+
+    candidate = raw if "://" in raw else f"https://{raw}"
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        logger.warning("Ignoring malformed HERMES_NGINX_DOMAIN value")
+        return ""
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        logger.warning("Ignoring malformed HERMES_NGINX_DOMAIN value")
+        return ""
+    if parsed.path not in {"", "/"} or parsed.params or parsed.query or parsed.fragment:
+        logger.warning("Ignoring malformed HERMES_NGINX_DOMAIN value")
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}/callback"
+
+
+def _oauth_callback_redirect_uri(cfg: dict) -> str:
+    """Return the redirect URI to register/advertise for this OAuth flow."""
+    public_callback = _nginx_domain_callback_url()
+    if public_callback:
+        return public_callback
+
+    port = cfg.get("_resolved_port")
+    if port is None:
+        raise ValueError(
+            "_configure_callback_port() must be called before building callback URLs"
+        )
+    return f"http://127.0.0.1:{port}/callback"
+
+
+def _can_complete_oauth_flow() -> bool:
+    """Return True when first-time OAuth can be completed by a present user."""
+    return _is_interactive() or bool(_nginx_domain_callback_url())
+
+
 def _read_json(path: Path) -> dict | None:
     """Read a JSON file, returning None if it doesn't exist or is invalid."""
     if not path.exists():
@@ -674,7 +723,7 @@ def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
         )
     client_name = cfg.get("client_name", "Hermes Agent")
     scope = cfg.get("scope")
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = _oauth_callback_redirect_uri(cfg)
 
     metadata_kwargs: dict[str, Any] = {
         "client_name": client_name,
@@ -700,8 +749,7 @@ def _maybe_preregister_client(
     client_id = cfg.get("client_id")
     if not client_id:
         return
-    port = cfg["_resolved_port"]
-    redirect_uri = f"http://127.0.0.1:{port}/callback"
+    redirect_uri = _oauth_callback_redirect_uri(cfg)
 
     info_dict: dict[str, Any] = {
         "client_id": client_id,
@@ -753,7 +801,7 @@ def build_oauth_auth(
     cfg = dict(oauth_config or {})  # copy — we mutate _resolved_port
     storage = HermesTokenStorage(server_name)
 
-    if not _is_interactive() and not storage.has_cached_tokens():
+    if not _can_complete_oauth_flow() and not storage.has_cached_tokens():
         logger.warning(
             "MCP OAuth for '%s': non-interactive environment and no cached tokens "
             "found. The OAuth flow requires browser authorization. Run "

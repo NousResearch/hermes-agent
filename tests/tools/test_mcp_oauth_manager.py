@@ -139,3 +139,31 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     assert isinstance(provider, _HERMES_PROVIDER_CLS)
     assert provider._hermes_server_name == "srv"
 
+
+def test_manager_treats_nginx_domain_as_remote_interactive(tmp_path, monkeypatch, caplog):
+    """Manager path must allow first-time OAuth when a public nginx callback exists."""
+    import logging
+
+    import tools.mcp_oauth_manager as manager
+
+    captured: dict = {}
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("HERMES_NGINX_DOMAIN", "mcp.example.com")
+    monkeypatch.setattr(manager, "_HERMES_PROVIDER_CLS", FakeProvider)
+
+    mgr = manager.MCPOAuthManager()
+    with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth_manager"):
+        provider = mgr.get_or_build_provider("srv", "https://example.com/mcp", None)
+
+    assert isinstance(provider, FakeProvider)
+    assert [str(uri) for uri in captured["client_metadata"].redirect_uris] == [
+        "https://mcp.example.com/callback"
+    ]
+    assert "non-interactive environment" not in caplog.text
+

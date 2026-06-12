@@ -546,6 +546,66 @@ def test_build_client_metadata_basic():
     assert "refresh_token" in md.grant_types
 
 
+def test_build_client_metadata_uses_nginx_domain_for_remote_callback(monkeypatch):
+    """HERMES_NGINX_DOMAIN makes MCP OAuth advertise a public callback URL."""
+    from types import SimpleNamespace
+    from tools import mcp_oauth
+    from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
+
+    class _FakeMetadata:
+        @classmethod
+        def model_validate(cls, data):
+            return SimpleNamespace(**data)
+
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("HERMES_NGINX_DOMAIN", "mcp.example.com")
+    monkeypatch.setattr(mcp_oauth, "OAuthClientMetadata", _FakeMetadata)
+    monkeypatch.setattr(mcp_oauth, "AnyUrl", str)
+
+    cfg = {"redirect_port": 54321}
+    _configure_callback_port(cfg)
+    md = _build_client_metadata(cfg)
+
+    assert md.redirect_uris == ["https://mcp.example.com/callback"]
+
+
+def test_remote_callback_suppresses_noninteractive_cached_token_warning(tmp_path, monkeypatch, caplog):
+    """Remote callback mode is user-interactive through the browser, not a dead daemon path."""
+    from types import SimpleNamespace
+    from tools import mcp_oauth
+
+    class _FakeMetadata:
+        @classmethod
+        def model_validate(cls, data):
+            return SimpleNamespace(**data)
+
+    captured: dict = {}
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = False
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_DASHBOARD_PUBLIC_URL", raising=False)
+    monkeypatch.setenv("HERMES_NGINX_DOMAIN", "mcp.example.com")
+    monkeypatch.setattr(mcp_oauth.sys, "stdin", mock_stdin)
+    monkeypatch.setattr(mcp_oauth, "_OAUTH_AVAILABLE", True)
+    monkeypatch.setattr(mcp_oauth, "OAuthClientProvider", _FakeProvider)
+    monkeypatch.setattr(mcp_oauth, "OAuthClientMetadata", _FakeMetadata)
+    monkeypatch.setattr(mcp_oauth, "AnyUrl", str)
+
+    import logging
+    with caplog.at_level(logging.WARNING, logger="tools.mcp_oauth"):
+        auth = build_oauth_auth("notion", "https://mcp.notion.com/mcp")
+
+    assert isinstance(auth, _FakeProvider)
+    assert captured["client_metadata"].redirect_uris == ["https://mcp.example.com/callback"]
+    assert "no cached tokens found" not in caplog.text.lower()
+
+
 def test_build_client_metadata_without_secret_is_public():
     """Without client_secret, token endpoint auth is 'none' (public client)."""
     pytest.importorskip("mcp")

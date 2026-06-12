@@ -427,6 +427,8 @@ language-specific setup where needed.
   after bundling so release builds fail before packaging if any manifest archive is missing, truncated, or hash-mismatched.
 - The validate-only gate now also requires every archive record to retain its download URL, keeping the packaged
   runtime archive update path auditable alongside size and SHA-256.
+- Archive URLs in the retained bootstrap-tools manifest must be HTTPS, so release review cannot accidentally accept an
+  insecure update source for a packaged runtime archive.
 - The same gate requires every archive record to retain its target architecture label, preserving review visibility for
   mixed Windows/Linux/macOS bootstrap-tool bundles.
 

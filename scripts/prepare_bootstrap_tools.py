@@ -285,6 +285,8 @@ def validate_manifest(output_dir: Path) -> int:
         url = archive.get("url")
         if not isinstance(url, str) or not url:
             raise RuntimeError(f"manifest archive is missing url: {name}")
+        if not url.startswith("https://"):
+            raise RuntimeError(f"manifest archive has invalid url: {name}")
         path = output_dir / name
         if not path.is_file():
             raise RuntimeError(f"manifest archive is missing: {path}")

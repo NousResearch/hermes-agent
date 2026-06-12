@@ -218,6 +218,31 @@ class TestMattermostSend:
         assert payload["root_id"] == "root_post"
 
     @pytest.mark.asyncio
+    async def test_send_prefers_metadata_thread_id(self):
+        """Mattermost root_id must be the thread root, not a nested reply."""
+        self.adapter._reply_mode = "thread"
+
+        mock_resp = AsyncMock()
+        mock_resp.status = 200
+        mock_resp.json = AsyncMock(return_value={"id": "post456"})
+        mock_resp.text = AsyncMock(return_value="")
+        mock_resp.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(return_value=mock_resp)
+
+        result = await self.adapter.send(
+            "channel_1",
+            "Reply!",
+            reply_to="nested_post",
+            metadata={"thread_id": "root_post"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args[1]["json"]
+        assert payload["root_id"] == "root_post"
+
+    @pytest.mark.asyncio
     async def test_send_without_thread_no_root_id(self):
         """When reply_mode is 'off', reply_to should NOT set root_id."""
         self.adapter._reply_mode = "off"
@@ -544,6 +569,120 @@ class TestMattermostFileUpload:
 
         assert result.success is True
         assert result.message_id == "post_with_file"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("method_name", "path_arg", "helper_name"),
+        [
+            ("send_image", "https://img.example.com/cat.png", "_send_url_as_file"),
+            ("send_image_file", "/tmp/cat.png", "_send_local_file"),
+            ("send_voice", "/tmp/voice.ogg", "_send_local_file"),
+            ("send_video", "/tmp/video.mp4", "_send_local_file"),
+        ],
+    )
+    async def test_media_helpers_use_metadata_thread_id(
+        self, method_name, path_arg, helper_name
+    ):
+        """Media helpers should preserve metadata.thread_id for file posts."""
+        helper = AsyncMock(return_value=MagicMock(success=True, message_id="post_with_file"))
+        setattr(self.adapter, helper_name, helper)
+
+        method = getattr(self.adapter, method_name)
+        await method(
+            "channel_1",
+            path_arg,
+            reply_to="nested_post",
+            metadata={"thread_id": "root_post"},
+        )
+
+        assert helper.await_args.args[3] == "nested_post"
+        assert helper.await_args.kwargs["metadata"] == {"thread_id": "root_post"}
+
+    @pytest.mark.asyncio
+    async def test_send_document_uses_metadata_thread_id(self, tmp_path):
+        """File posts should use metadata.thread_id as the Mattermost root_id."""
+        self.adapter._reply_mode = "thread"
+        document = tmp_path / "report.txt"
+        document.write_text("hello", encoding="utf-8")
+
+        mock_upload_resp = AsyncMock()
+        mock_upload_resp.status = 200
+        mock_upload_resp.json = AsyncMock(return_value={
+            "file_infos": [{"id": "file_abc123"}]
+        })
+        mock_upload_resp.text = AsyncMock(return_value="")
+        mock_upload_resp.__aenter__ = AsyncMock(return_value=mock_upload_resp)
+        mock_upload_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_post_resp = AsyncMock()
+        mock_post_resp.status = 200
+        mock_post_resp.json = AsyncMock(return_value={"id": "post_with_file"})
+        mock_post_resp.text = AsyncMock(return_value="")
+        mock_post_resp.__aenter__ = AsyncMock(return_value=mock_post_resp)
+        mock_post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(side_effect=[mock_upload_resp, mock_post_resp])
+
+        result = await self.adapter.send_document(
+            "channel_1",
+            str(document),
+            reply_to="nested_post",
+            metadata={"thread_id": "root_post"},
+        )
+
+        assert result.success is True
+        payload = self.adapter._session.post.call_args_list[-1][1]["json"]
+        assert payload["root_id"] == "root_post"
+
+    @pytest.mark.asyncio
+    async def test_send_multiple_images_uses_metadata_thread_id(self, tmp_path):
+        """Batched image posts should stay in the Mattermost thread."""
+        self.adapter._reply_mode = "thread"
+        image = tmp_path / "cat.png"
+        image.write_bytes(b"\x89PNG\r\n\x1a\nfake-image-data")
+
+        mock_upload_resp = AsyncMock()
+        mock_upload_resp.status = 200
+        mock_upload_resp.json = AsyncMock(return_value={
+            "file_infos": [{"id": "file_abc123"}]
+        })
+        mock_upload_resp.text = AsyncMock(return_value="")
+        mock_upload_resp.__aenter__ = AsyncMock(return_value=mock_upload_resp)
+        mock_upload_resp.__aexit__ = AsyncMock(return_value=False)
+
+        mock_post_resp = AsyncMock()
+        mock_post_resp.status = 200
+        mock_post_resp.json = AsyncMock(return_value={"id": "post_with_file"})
+        mock_post_resp.text = AsyncMock(return_value="")
+        mock_post_resp.__aenter__ = AsyncMock(return_value=mock_post_resp)
+        mock_post_resp.__aexit__ = AsyncMock(return_value=False)
+
+        self.adapter._session.post = MagicMock(side_effect=[mock_upload_resp, mock_post_resp])
+
+        await self.adapter.send_multiple_images(
+            "channel_1",
+            [(f"file://{image}", "A cat")],
+            metadata={"thread_id": "root_post"},
+        )
+
+        payload = self.adapter._session.post.call_args_list[-1][1]["json"]
+        assert payload["root_id"] == "root_post"
+
+    @pytest.mark.asyncio
+    async def test_send_typing_uses_metadata_thread_id(self):
+        """Mattermost typing accepts parent_id for thread-scoped indicators."""
+        self.adapter._bot_user_id = "bot_user"
+        self.adapter._api_post = AsyncMock()
+
+        await self.adapter.send_typing(
+            "channel_1",
+            metadata={"thread_id": "root_post"},
+        )
+
+        self.adapter._api_post.assert_awaited_once_with(
+            "users/bot_user/typing",
+            {"channel_id": "channel_1", "parent_id": "root_post"},
+        )
 
 
 # ---------------------------------------------------------------------------

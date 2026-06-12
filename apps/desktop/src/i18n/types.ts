@@ -1346,6 +1346,7 @@ export interface Translations {
       gatewayDisconnected: string
       sendFailed: string
       run: string
+      command: string
       moreOptions: string
       allowSession: string
       alwaysAllowMenu: string

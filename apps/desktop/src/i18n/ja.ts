@@ -1827,6 +1827,7 @@ export const ja = defineLocale({
       gatewayDisconnected: 'Hermes ゲートウェイが接続されていません',
       sendFailed: '承認応答を送信できませんでした',
       run: '実行',
+      command: 'コマンド',
       moreOptions: 'その他の承認オプション',
       allowSession: 'このセッションで許可',
       alwaysAllowMenu: '常に許可…',

@@ -447,10 +447,9 @@ def repair_message_sequence(agent, messages: List[Dict]) -> int:
         # first assistant row appended after repair and drops it from
         # state.db — leaving an orphan user that grows via \n\n merge
         # on the next turn.
-        if hasattr(agent, "_last_flushed_db_idx"):
-            agent._last_flushed_db_idx = min(
-                agent._last_flushed_db_idx, len(messages)
-            )
+        _last = getattr(agent, "_last_flushed_db_idx", None)
+        if isinstance(_last, int):
+            agent._last_flushed_db_idx = min(_last, len(messages))
 
     return repairs
 

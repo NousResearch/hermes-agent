@@ -1560,11 +1560,14 @@ class AIAgent:
             if not self._session_db_created:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
-            flush_from = max(start_idx, self._last_flushed_db_idx)
             # repair_message_sequence / compression may shrink `messages`
             # after early persist advanced the cursor past the new length.
-            if self._last_flushed_db_idx > len(messages):
-                flush_from = start_idx
+            # Clamp the cursor itself (don't reset flush_from to start_idx —
+            # that re-appends already-persisted rows when start_idx == 0).
+            _last = getattr(self, "_last_flushed_db_idx", 0)
+            if isinstance(_last, int) and _last > len(messages):
+                self._last_flushed_db_idx = len(messages)
+            flush_from = max(start_idx, self._last_flushed_db_idx)
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")

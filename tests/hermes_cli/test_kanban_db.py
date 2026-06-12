@@ -1682,6 +1682,38 @@ def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
     assert reason == "blocker_auth"
 
 
+def test_respawn_guard_no_false_positive_on_bare_auth_word(kanban_home):
+    """Regression: a task whose work description mentions 'auth' but did NOT
+    hit an auth error (e.g. an iteration_cap handoff for a credential-rotation
+    task that says "hermes auth add") must not be parked by blocker_auth.
+    Reproduces the bug where ``auth\\w*`` matched the bare word "auth" anywhere
+    in the failure text, permanently deferring tasks that were never auth-failed.
+
+    The new regex requires an error qualifier (failed / error / denied /
+    invalid / failure) or one of the common structured forms
+    (authentication / authorization) so incidental mentions no longer trip.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="cred-rotation", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (
+                "[iteration_cap] budget=90/90 (100%) — tests exercise "
+                "save_env_value directly with the same key the rotation "
+                "tool would use, but a manual `hermes auth add` from both "
+                "root and profile contexts and a follow-up `hermes doctor` "
+                "from inside each profile would close the loop.",
+                t,
+            ),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None, (
+        f"expected None (not guarded) for an iteration_cap handoff that "
+        f"mentions 'auth' as a verb; got {reason!r} — the regex regressed "
+        f"and is back to matching the bare word 'auth'."
+    )
+
+
 def test_respawn_guard_recent_success(kanban_home):
     """A completed run within the guard window triggers recent_success."""
     with kb.connect() as conn:

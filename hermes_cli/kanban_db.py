@@ -4830,8 +4830,20 @@ KANBAN_TERMINAL_TIMEOUT_GRACE_SECONDS = 30
 
 # Patterns in last_failure_error that indicate a quota / auth blocker.
 # These errors won't resolve by retrying immediately — auto-block instead.
+#
+# Note: the ``auth\w*`` arm previously matched the bare word "auth" anywhere
+# in the failure text. That made the guard hypersensitive: a task whose work
+# description happened to mention "auth" (e.g. a credential-rotation task
+# whose ``iteration_cap`` handoff mentions ``hermes auth add``) would be
+# permanently parked by ``blocker_auth`` even though it never hit an auth
+# error. The pattern below requires an error qualifier
+# (failed / error / denied / invalid / failure) or one of the common
+# structured forms (authentication / authorization) so incidental mentions
+# no longer trip the guard. Tests in tests/hermes_cli/test_kanban_db.py
+# ``test_respawn_guard_blocker_auth_*`` cover the true-positive cases.
 _RESPAWN_BLOCKER_RE = re.compile(
-    r"\b(quota|rate[\s_\-]?limit|429|403|auth\w*|"
+    r"\b(quota|rate[\s_\-]?limit|\b429\b|\b403\b|"
+    r"auth(?:entication|orization)?\s*[\s_]?(?:failed|error|denied|invalid|failure)|"
     r"unauthorized|forbidden|billing|subscription|"
     r"access[\s_]denied|permission[\s_]denied|"
     r"invalid[\s_]api[\s_]key)\b",

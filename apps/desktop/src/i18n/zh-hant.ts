@@ -104,10 +104,13 @@ export const zhHant = defineLocale({
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒絕了該 API 金鑰 (401)。',
       methodNotAllowed: '桌面後端拒絕了該請求 (405 Method Not Allowed)。請嘗試重新啟動 Hermes Desktop。',
+      localSttUnavailable: '本機語音轉文字尚未就緒。請安裝 faster-whisper，或在設定中選擇其他 STT 提供者。',
       microphonePermission: '麥克風權限已被拒絕。',
       openaiRejectedApiKey: 'OpenAI 拒絕了該 API 金鑰。',
       openaiRejectedApiKeyWithStatus: status => `OpenAI 拒絕了該 API 金鑰 (${status} invalid_api_key)。`,
-      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。'
+      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
+      sttProviderUnavailable: '尚未設定語音轉文字提供者。請安裝本機 STT，或在設定中新增轉寫 API 金鑰。',
+      voiceTranscriptionStillStarting: '語音轉寫仍在啟動中。首次本機 STT 設定可能需要幾分鐘；請等模型載入完成後再試。'
     },
     voice: {
       configureSpeechToText: '設定語音轉文字後即可使用語音模式。',

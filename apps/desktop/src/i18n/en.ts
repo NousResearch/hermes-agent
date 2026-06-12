@@ -108,10 +108,16 @@ export const en: Translations = {
       elevenLabsRejectedKey: 'ElevenLabs rejected the API key (401).',
       methodNotAllowed:
         'The desktop backend rejected that request (405 Method Not Allowed). Try restarting Hermes Desktop.',
+      localSttUnavailable:
+        'Local speech-to-text is not ready. Install faster-whisper or choose another STT provider in Settings.',
       microphonePermission: 'Microphone permission was denied.',
       openaiRejectedApiKey: 'OpenAI rejected the API key.',
       openaiRejectedApiKeyWithStatus: status => `OpenAI rejected the API key (${status} invalid_api_key).`,
-      openaiTtsNeedsKey: 'OpenAI TTS needs VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY.'
+      openaiTtsNeedsKey: 'OpenAI TTS needs VOICE_TOOLS_OPENAI_KEY or OPENAI_API_KEY.',
+      sttProviderUnavailable:
+        'No speech-to-text provider is configured. Install local STT or add a transcription API key in Settings.',
+      voiceTranscriptionStillStarting:
+        'Transcription is still starting. First local STT setup can take a few minutes; try again once the model finishes loading.'
     },
     voice: {
       configureSpeechToText: 'Configure speech-to-text to use voice mode.',

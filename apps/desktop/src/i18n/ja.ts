@@ -109,10 +109,16 @@ export const ja = defineLocale({
       elevenLabsRejectedKey: 'ElevenLabs が API キーを拒否しました (401)。',
       methodNotAllowed:
         'デスクトップバックエンドがそのリクエストを拒否しました (405 Method Not Allowed)。Hermes Desktop を再起動してください。',
+      localSttUnavailable:
+        'ローカル音声文字起こしの準備ができていません。faster-whisper をインストールするか、設定で別の STT プロバイダーを選択してください。',
       microphonePermission: 'マイクのアクセス許可が拒否されました。',
       openaiRejectedApiKey: 'OpenAI が API キーを拒否しました。',
       openaiRejectedApiKeyWithStatus: status => `OpenAI が API キーを拒否しました (${status} invalid_api_key)。`,
-      openaiTtsNeedsKey: 'OpenAI TTS には VOICE_TOOLS_OPENAI_KEY または OPENAI_API_KEY が必要です。'
+      openaiTtsNeedsKey: 'OpenAI TTS には VOICE_TOOLS_OPENAI_KEY または OPENAI_API_KEY が必要です。',
+      sttProviderUnavailable:
+        '音声文字起こしプロバイダーが設定されていません。ローカル STT をインストールするか、設定で文字起こし API キーを追加してください。',
+      voiceTranscriptionStillStarting:
+        '文字起こしはまだ起動中です。初回のローカル STT セットアップには数分かかることがあります。モデルの読み込みが終わってからもう一度お試しください。'
     },
     voice: {
       configureSpeechToText: '音声モードを使用するには音声認識を設定してください。',

@@ -50,6 +50,14 @@ function cleanErrorText(value: string) {
 
 const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string) => string }[] = [
   {
+    test: msg => /No STT provider available/i.test(msg),
+    summarize: () => translateNow('notifications.errors.sttProviderUnavailable')
+  },
+  {
+    test: msg => /faster-whisper not installed/i.test(msg) || /STT provider 'local' configured but unavailable/i.test(msg),
+    summarize: () => translateNow('notifications.errors.localSttUnavailable')
+  },
+  {
     test: msg => /incorrect api key provided/i.test(msg) || /['"]code['"]\s*:\s*['"]invalid_api_key['"]/i.test(msg),
     summarize: msg => {
       const status = msg.match(/(?:error code|status(?:Code)?)[^\d]*(\d{3})/i)?.[1]
@@ -81,6 +89,10 @@ const ERROR_SUMMARIES: { test: (msg: string) => boolean; summarize: (msg: string
 ]
 
 function summarizeErrorMessage(message: string, fallback: string) {
+  if (/transcription/i.test(fallback) && /Timed out connecting to Hermes backend after \d+ms/i.test(message)) {
+    return translateNow('notifications.errors.voiceTranscriptionStillStarting')
+  }
+
   const rule = ERROR_SUMMARIES.find(r => r.test(message))
 
   if (rule) {

@@ -104,10 +104,13 @@ export const zh: Translations = {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
       elevenLabsRejectedKey: 'ElevenLabs 拒绝了该 API key (401)。',
       methodNotAllowed: '桌面后端拒绝了该请求 (405 Method Not Allowed)。请尝试重启 Hermes Desktop。',
+      localSttUnavailable: '本地语音转文字尚未就绪。请安装 faster-whisper，或在设置中选择其他 STT 提供方。',
       microphonePermission: '麦克风权限已被拒绝。',
       openaiRejectedApiKey: 'OpenAI 拒绝了该 API key。',
       openaiRejectedApiKeyWithStatus: status => `OpenAI 拒绝了该 API key (${status} invalid_api_key)。`,
-      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。'
+      openaiTtsNeedsKey: 'OpenAI TTS 需要 VOICE_TOOLS_OPENAI_KEY 或 OPENAI_API_KEY。',
+      sttProviderUnavailable: '尚未配置语音转文字提供方。请安装本地 STT，或在设置中添加转写 API key。',
+      voiceTranscriptionStillStarting: '语音转写仍在启动中。首次本地 STT 设置可能需要几分钟；请等模型加载完成后再试。'
     },
     voice: {
       configureSpeechToText: '配置语音转文字后即可使用语音模式。',

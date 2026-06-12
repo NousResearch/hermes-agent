@@ -106,6 +106,27 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     companion_producer.add_argument("--interval-ms", type=int, default=None)
     companion_producer.add_argument("--timeout-seconds", type=int, default=None)
 
+    color_depth_pairing = subs.add_parser(
+        "color-depth-pairing-selftest",
+        help="Run FH6VR live color + companion depth pairing self-test (0.19 gate)",
+    )
+    color_depth_pairing.add_argument("--launcher-exe", default="")
+    color_depth_pairing.add_argument("--approve", action="store_true")
+    color_depth_pairing.add_argument("--attempt-window-capture", action="store_true")
+    color_depth_pairing.add_argument("--metadata", default="")
+    color_depth_pairing.add_argument("--output-dir", default="")
+    color_depth_pairing.add_argument("--timeout-seconds", type=int, default=None)
+
+    openxr_presentation = subs.add_parser(
+        "openxr-presentation-selftest",
+        help="Run FH6VR OpenXR presentation self-test (0.19 gate)",
+    )
+    openxr_presentation.add_argument("--launcher-exe", default="")
+    openxr_presentation.add_argument("--approve", action="store_true")
+    openxr_presentation.add_argument("--attempt-window-capture", action="store_true")
+    openxr_presentation.add_argument("--require-pairing", action="store_true")
+    openxr_presentation.add_argument("--timeout-seconds", type=int, default=None)
+
     support_report = subs.add_parser(
         "support-report", help="Create redacted JSON and HTML support reports"
     )
@@ -133,7 +154,8 @@ def questframe_command(args: argparse.Namespace) -> int:
             "graphics-session,frame-loop,"
             "dibr-swapchain,capture-preflight,live-capture-selftest,"
             "depth-surface-selftest,depth-reader-selftest,depth-producer-selftest,"
-            "companion-depth-producer-selftest,"
+            "companion-depth-producer-selftest,color-depth-pairing-selftest,"
+            "openxr-presentation-selftest,"
             "support-report,unity-scan}"
         )
         return 2
@@ -288,6 +310,42 @@ def questframe_command(args: argparse.Namespace) -> int:
         return _print(
             core.run_launcher(
                 "fh6-companion-depth-producer-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "color-depth-pairing-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "approve", False)):
+            extra.append("--approve")
+        if bool(getattr(args, "attempt_window_capture", False)):
+            extra.append("--attempt-window-capture")
+        metadata_path = str(getattr(args, "metadata", "") or "").strip()
+        if metadata_path:
+            extra.extend(["--metadata", metadata_path])
+        output_dir = str(getattr(args, "output_dir", "") or "").strip()
+        if output_dir:
+            extra.extend(["--output-dir", output_dir])
+        return _print(
+            core.run_launcher(
+                "fh6-color-depth-pairing-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "openxr-presentation-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "approve", False)):
+            extra.append("--approve")
+        if bool(getattr(args, "attempt_window_capture", False)):
+            extra.append("--attempt-window-capture")
+        if bool(getattr(args, "require_pairing", False)):
+            extra.append("--require-pairing")
+        return _print(
+            core.run_launcher(
+                "openxr-presentation-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),

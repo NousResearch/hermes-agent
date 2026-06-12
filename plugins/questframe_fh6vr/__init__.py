@@ -77,6 +77,18 @@ _TOOLS = (
         "Q",
     ),
     (
+        "questframe_color_depth_pairing_selftest",
+        core.COLOR_DEPTH_PAIRING_SELFTEST_SCHEMA,
+        core.handle_color_depth_pairing_selftest,
+        "Q",
+    ),
+    (
+        "questframe_openxr_presentation_selftest",
+        core.OPENXR_PRESENTATION_SELFTEST_SCHEMA,
+        core.handle_openxr_presentation_selftest,
+        "Q",
+    ),
+    (
         "questframe_support_report",
         core.SUPPORT_REPORT_SCHEMA,
         core.handle_support_report,
@@ -107,7 +119,9 @@ def register(ctx) -> None:
             "[status|preflight|profiles|rtx3060-selftest|session|"
             "graphics-session|frame-loop|dibr-swapchain|capture-preflight|"
             "live-capture-selftest|depth-surface-selftest|depth-reader-selftest|"
-            "depth-producer-selftest|companion-depth-producer-selftest|support-report|unity-scan]"
+            "depth-producer-selftest|companion-depth-producer-selftest|"
+            "color-depth-pairing-selftest|openxr-presentation-selftest|"
+            "support-report|unity-scan]"
         ),
     )
     ctx.register_cli_command(

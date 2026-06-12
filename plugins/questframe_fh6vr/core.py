@@ -370,6 +370,74 @@ COMPANION_DEPTH_PRODUCER_SELFTEST_SCHEMA = {
     },
 }
 
+COLOR_DEPTH_PAIRING_SELFTEST_SCHEMA = {
+    "name": "questframe_color_depth_pairing_selftest",
+    "description": "Run the FH6VR live color + companion depth pairing self-test (0.19 gate).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": "When true, pass --approve for companion depth export.",
+            },
+            "attempt_window_capture": {
+                "type": "boolean",
+                "description": "When true, pass --attempt-window-capture for live FH6 color.",
+            },
+            "metadata_path": {
+                "type": "string",
+                "description": "Optional companion producer metadata JSON path.",
+            },
+            "output_dir": {
+                "type": "string",
+                "description": "Optional companion export directory.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
+OPENXR_PRESENTATION_SELFTEST_SCHEMA = {
+    "name": "questframe_openxr_presentation_selftest",
+    "description": "Run the FH6VR OpenXR presentation self-test with optional color/depth pairing (0.19 gate).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": "When true, pass --approve to run pairing before presentation.",
+            },
+            "attempt_window_capture": {
+                "type": "boolean",
+                "description": "When true, pass --attempt-window-capture during pairing.",
+            },
+            "require_pairing": {
+                "type": "boolean",
+                "description": "When true, pass --require-pairing and fail if pairing did not pass.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 SUPPORT_REPORT_SCHEMA = {
     "name": "questframe_support_report",
     "description": "Create redacted QuestFrame/FH6VR JSON and HTML support reports.",
@@ -816,6 +884,8 @@ def status() -> dict[str, Any]:
             "questframe_depth_reader_selftest",
             "questframe_depth_producer_selftest",
             "questframe_companion_depth_producer_selftest",
+            "questframe_color_depth_pairing_selftest",
+            "questframe_openxr_presentation_selftest",
             "questframe_support_report",
             "questframe_unity_scan",
         ],
@@ -1022,6 +1092,48 @@ def handle_companion_depth_producer_selftest(args: dict[str, Any] | None = None,
     )
 
 
+def handle_color_depth_pairing_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    if bool(args.get("approve")):
+        extra.append("--approve")
+    if bool(args.get("attempt_window_capture")):
+        extra.append("--attempt-window-capture")
+    metadata_path = str(args.get("metadata_path") or "").strip()
+    if metadata_path:
+        extra.extend(["--metadata", metadata_path])
+    output_dir = str(args.get("output_dir") or "").strip()
+    if output_dir:
+        extra.extend(["--output-dir", output_dir])
+    return _json(
+        run_launcher(
+            "fh6-color-depth-pairing-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
+def handle_openxr_presentation_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    if bool(args.get("approve")):
+        extra.append("--approve")
+    if bool(args.get("attempt_window_capture")):
+        extra.append("--attempt-window-capture")
+    if bool(args.get("require_pairing")):
+        extra.append("--require-pairing")
+    return _json(
+        run_launcher(
+            "openxr-presentation-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 def support_report(
     *,
     launcher_exe: str | None = None,
@@ -1107,6 +1219,8 @@ HELP = """questframe commands:
   /questframe depth-reader-selftest [--fixture]
   /questframe depth-producer-selftest [--fixture] [--metadata PATH]
   /questframe companion-depth-producer-selftest [--approve] [--metadata PATH] [--output-dir PATH]
+  /questframe color-depth-pairing-selftest [--approve] [--attempt-window-capture]
+  /questframe openxr-presentation-selftest [--approve] [--require-pairing]
   /questframe support-report
   /questframe unity-scan [project_path]
 """
@@ -1163,6 +1277,36 @@ def handle_slash(raw_args: str) -> str:
             if index + 1 < len(argv):
                 args["output_dir"] = argv[index + 1]
         return handle_companion_depth_producer_selftest(args)
+    if command in {
+        "color-depth-pairing-selftest",
+        "color-depth-pairing",
+        "pairing-selftest",
+    }:
+        args = {
+            "approve": "--approve" in argv,
+            "attempt_window_capture": "--attempt-window-capture" in argv,
+        }
+        if "--metadata" in argv:
+            index = argv.index("--metadata")
+            if index + 1 < len(argv):
+                args["metadata_path"] = argv[index + 1]
+        if "--output-dir" in argv:
+            index = argv.index("--output-dir")
+            if index + 1 < len(argv):
+                args["output_dir"] = argv[index + 1]
+        return handle_color_depth_pairing_selftest(args)
+    if command in {
+        "openxr-presentation-selftest",
+        "openxr-presentation",
+        "presentation-selftest",
+    }:
+        return handle_openxr_presentation_selftest(
+            {
+                "approve": "--approve" in argv,
+                "attempt_window_capture": "--attempt-window-capture" in argv,
+                "require_pairing": "--require-pairing" in argv,
+            }
+        )
     if command in {"support-report", "report"}:
         return handle_support_report({})
     if command == "unity-scan":

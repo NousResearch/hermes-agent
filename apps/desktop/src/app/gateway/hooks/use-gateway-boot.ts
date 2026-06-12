@@ -21,7 +21,8 @@ import {
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
   setPrimaryGateway,
-  touchSecondaryGateways
+  touchSecondaryGateways,
+  touchWorkingProfileBackends
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, normalizeProfileKey, touchActiveGatewayBackend } from '@/store/profile'
@@ -269,6 +270,7 @@ export function useGatewayBoot({
     const keepaliveTimer = setInterval(() => {
       touchActiveGatewayBackend()
       touchSecondaryGateways()
+      touchWorkingProfileBackends()
     }, 60_000)
 
     // Bound concurrency cost to live work: keep a background socket only while
@@ -286,6 +288,7 @@ export function useGatewayBoot({
       }
 
       pruneSecondaryGateways(keep)
+      touchWorkingProfileBackends()
     }
 
     const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())

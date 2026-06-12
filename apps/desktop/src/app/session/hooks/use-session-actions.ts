@@ -707,9 +707,21 @@ export function useSessionActions({
         notifyError(err, copy.resumeFailed)
       } finally {
         if (isCurrentResume()) {
-          busyRef.current = false
-          setBusy(false)
-          setAwaitingResponse(false)
+          // Sync the global composer busy flags from the per-session cache.
+          // Blindly clearing here undid resumedRunning above and left a running
+          // session looking idle (or the prior session's spinner stuck on).
+          const runtimeId = activeSessionIdRef.current
+          const cached = runtimeId ? sessionStateByRuntimeIdRef.current.get(runtimeId) : undefined
+
+          if (cached) {
+            busyRef.current = cached.busy
+            setBusy(cached.busy)
+            setAwaitingResponse(cached.awaitingResponse)
+          } else {
+            busyRef.current = false
+            setBusy(false)
+            setAwaitingResponse(false)
+          }
         }
       }
     },

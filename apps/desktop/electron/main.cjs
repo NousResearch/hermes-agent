@@ -339,10 +339,12 @@ const WINDOW_BUTTON_POSITION = {
 // position via getWindowButtonPosition(), so this width is non-zero only on
 // non-macOS platforms.
 const NATIVE_OVERLAY_BUTTON_WIDTH = 144
+// Prefer unpacked dist/ first: nativeImage cannot load from inside app.asar,
+// but fs.statSync still succeeds on asar virtual paths under public/.
 const APP_ICON_PATHS = [
-  path.join(APP_ROOT, 'public', 'apple-touch-icon.png'),
+  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png'),
   path.join(APP_ROOT, 'dist', 'apple-touch-icon.png'),
-  path.join(unpackedPathFor(APP_ROOT), 'dist', 'apple-touch-icon.png')
+  path.join(APP_ROOT, 'public', 'apple-touch-icon.png')
 ]
 
 let rendererTitleBarTheme = null

@@ -34,6 +34,37 @@ from agent.model_metadata import estimate_request_tokens_rough
 logger = logging.getLogger(__name__)
 
 
+def _normalize_hook_reasoning_config(value: Any) -> Optional[Dict[str, Any]]:
+    """Return a safe reasoning_config override from a pre_llm_call hook result.
+
+    Hooks are allowed to lower, raise, or disable reasoning for the current user
+    turn, but only through the same public effort vocabulary Hermes already
+    accepts in config.yaml. Malformed hook output is ignored instead of leaking
+    arbitrary provider kwargs into model requests.
+    """
+    if not isinstance(value, dict):
+        return None
+
+    if value.get("enabled") is False:
+        return {"enabled": False}
+
+    effort = value.get("effort")
+    if isinstance(effort, str) and effort.strip():
+        try:
+            from hermes_constants import parse_reasoning_effort
+            parsed = parse_reasoning_effort(effort)
+        except Exception:
+            parsed = None
+        if parsed is not None:
+            return parsed
+        return None
+
+    if value.get("enabled") is True:
+        return {"enabled": True}
+
+    return None
+
+
 @dataclass
 class TurnContext:
     """Values produced by the turn prologue and consumed by the turn loop."""
@@ -314,7 +345,11 @@ def build_turn_context(
                     break
 
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
+    # Hooks may also return a per-turn reasoning_config override.  Clear any stale
+    # value before running hooks so a no-op/failed hook cannot leak a lower or
+    # higher reasoning tier into the next user turn.
     plugin_user_context = ""
+    agent._turn_reasoning_config_override = None
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
@@ -330,13 +365,20 @@ def build_turn_context(
             sender_id=getattr(agent, "_user_id", None) or "",
         )
         _ctx_parts: list[str] = []
+        _turn_reasoning_config = None
         for r in _pre_results:
             if isinstance(r, dict) and r.get("context"):
                 _ctx_parts.append(str(r["context"]))
             elif isinstance(r, str) and r.strip():
                 _ctx_parts.append(r)
+            if isinstance(r, dict) and _turn_reasoning_config is None:
+                _turn_reasoning_config = _normalize_hook_reasoning_config(
+                    r.get("reasoning_config")
+                )
         if _ctx_parts:
             plugin_user_context = "\n\n".join(_ctx_parts)
+        if _turn_reasoning_config is not None:
+            agent._turn_reasoning_config_override = _turn_reasoning_config
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 

@@ -482,6 +482,7 @@ def init_agent(
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+    agent._turn_reasoning_config_override = None  # set by pre_llm_call hooks for the active turn only
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns

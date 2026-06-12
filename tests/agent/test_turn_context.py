@@ -9,6 +9,7 @@ confirm the prologue produces the right ``TurnContext`` and applies the
 from __future__ import annotations
 
 import types
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -68,6 +69,7 @@ class _FakeAgent:
         self._invalid_tool_retries = -1
         self._vision_supported = None
         self._persist_calls = 0
+        self._turn_reasoning_config_override: dict[str, Any] | None = None
 
     # --- methods the prologue calls ---
     def _ensure_db_session(self):
@@ -185,3 +187,29 @@ def test_no_review_when_memory_disabled():
     agent = _FakeAgent()
     ctx = _build(agent)
     assert ctx.should_review_memory is False
+
+
+def test_pre_llm_hook_can_set_turn_reasoning_override():
+    agent = _FakeAgent()
+    with patch(
+        "hermes_cli.plugins.invoke_hook",
+        return_value=[
+            {
+                "context": "routing context",
+                "reasoning_config": {"enabled": False},
+            }
+        ],
+    ):
+        ctx = _build(agent, user_message="please do a quick lookup")
+
+    assert ctx.plugin_user_context == "routing context"
+    assert agent._turn_reasoning_config_override == {"enabled": False}
+
+
+def test_pre_llm_hook_clears_stale_turn_reasoning_override_when_absent():
+    agent = _FakeAgent()
+    agent._turn_reasoning_config_override = {"enabled": False}
+    with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        _build(agent, user_message="now do the next thing")
+
+    assert agent._turn_reasoning_config_override is None

@@ -552,9 +552,24 @@ def interruptible_api_call(agent, api_kwargs: dict):
 
 
 
+def _effective_reasoning_config(agent):
+    """Return the reasoning config for the current request.
+
+    ``agent.reasoning_config`` is the session/static config. ``pre_llm_call``
+    hooks may set ``_turn_reasoning_config_override`` for exactly the active
+    user turn so declarative routing can alter provider reasoning without
+    rebuilding the agent or mutating cached prompt context.
+    """
+    override = getattr(agent, "_turn_reasoning_config_override", None)
+    if isinstance(override, dict):
+        return override
+    return agent.reasoning_config
+
+
 def build_api_kwargs(agent, api_messages: list) -> dict:
     """Build the keyword arguments dict for the active API mode."""
     tools_for_api = agent.tools
+    reasoning_config = _effective_reasoning_config(agent)
 
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
@@ -569,7 +584,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             messages=anthropic_messages,
             tools=tools_for_api,
             max_tokens=ephemeral_out if ephemeral_out is not None else agent.max_tokens,
-            reasoning_config=agent.reasoning_config,
+            reasoning_config=reasoning_config,
             is_oauth=agent._is_anthropic_oauth,
             preserve_dots=agent._anthropic_preserve_dots(),
             context_length=ctx_len,
@@ -645,7 +660,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             model=agent.model,
             messages=_msgs_for_codex,
             tools=tools_for_api,
-            reasoning_config=agent.reasoning_config,
+            reasoning_config=reasoning_config,
             session_id=getattr(agent, "session_id", None),
             max_tokens=agent.max_tokens,
             timeout=agent._resolved_api_call_timeout(),
@@ -750,7 +765,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             max_tokens=agent.max_tokens,
             ephemeral_max_output_tokens=_ephemeral_out,
             max_tokens_param_fn=agent._max_tokens_param,
-            reasoning_config=agent.reasoning_config,
+            reasoning_config=reasoning_config,
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
             provider_profile=_profile,
@@ -782,7 +797,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
         max_tokens=agent.max_tokens,
         ephemeral_max_output_tokens=_ephemeral_out,
         max_tokens_param_fn=agent._max_tokens_param,
-        reasoning_config=agent.reasoning_config,
+        reasoning_config=reasoning_config,
         request_overrides=agent.request_overrides,
         session_id=getattr(agent, "session_id", None),
         model_lower=(agent.model or "").lower(),
@@ -1360,6 +1375,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         # turns so Anthropic-family providers don't 400 the summary call.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
 
+        reasoning_config = _effective_reasoning_config(agent)
         summary_extra_body = {}
         try:
             from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE as _OMIT_TEMP
@@ -1387,8 +1403,8 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if _is_lmstudio_summary else None
         )
         if not _is_lmstudio_summary and agent._supports_reasoning_extra_body():
-            if agent.reasoning_config is not None:
-                summary_extra_body["reasoning"] = agent.reasoning_config
+            if reasoning_config is not None:
+                summary_extra_body["reasoning"] = reasoning_config
             else:
                 summary_extra_body["reasoning"] = {
                     "enabled": True,
@@ -1460,7 +1476,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             if agent.api_mode == "anthropic_messages":
                 _tsum = agent._get_transport()
                 _ant_kw = _tsum.build_kwargs(model=agent.model, messages=api_messages, tools=None,
-                               max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
+                               max_tokens=agent.max_tokens, reasoning_config=reasoning_config,
                                is_oauth=agent._is_anthropic_oauth,
                                preserve_dots=agent._anthropic_preserve_dots())
                 summary_response = agent._anthropic_messages_create(_ant_kw)
@@ -1491,7 +1507,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                 _tretry = agent._get_transport()
                 _ant_kw2 = _tretry.build_kwargs(model=agent.model, messages=api_messages, tools=None,
                                 is_oauth=agent._is_anthropic_oauth,
-                                max_tokens=agent.max_tokens, reasoning_config=agent.reasoning_config,
+                                max_tokens=agent.max_tokens, reasoning_config=reasoning_config,
                                 preserve_dots=agent._anthropic_preserve_dots())
                 retry_response = agent._anthropic_messages_create(_ant_kw2)
                 _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=agent._is_anthropic_oauth)

@@ -287,7 +287,7 @@ const MARKDOWN_COMPONENTS = {
 
 function MarkdownPreview({ text }: { text: string }) {
   return (
-    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground">
+    <div className="preview-markdown mx-auto max-w-3xl px-4 py-3 text-sm text-foreground" data-selectable-text="true">
       <Streamdown components={MARKDOWN_COMPONENTS} controls={false} mode="static" parseIncompleteMarkdown={false}>
         {text}
       </Streamdown>
@@ -383,7 +383,10 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
           )
         })}
       </div>
-      <div className="relative [&_pre]:m-0 [&_pre]:px-3 [&_pre]:py-3 [&_pre]:bg-transparent!">
+      <div
+        className="relative [&_pre]:m-0 [&_pre]:px-3 [&_pre]:py-3 [&_pre]:bg-transparent!"
+        data-selectable-text="true"
+      >
         {selection && (
           <div
             aria-hidden

@@ -381,16 +381,14 @@ class SlackAdapter(BasePlatformAdapter):
         """Env var holding the Socket Mode app token."""
         return "SLACK_APP_TOKEN"
 
-    def _api_base_url(self):
+    def _api_base_url(self) -> Optional[str]:
         """Web API base URL. None = slack_bolt default (https://slack.com/api/)."""
         return None
 
     def _make_async_app(self, token: str):
         """Build the AsyncApp, honoring a custom base_url when set."""
-        base = self._api_base_url()
-        if base:
-            client = AsyncWebClient(token=token, base_url=base)
-            return AsyncApp(token=token, client=client)
+        if self._api_base_url():
+            return AsyncApp(token=token, client=self._make_web_client(token))
         return AsyncApp(token=token)
 
     def _make_web_client(self, token: str):
@@ -770,7 +768,7 @@ class SlackAdapter(BasePlatformAdapter):
             logger.error("[Slack] SLACK_BOT_TOKEN not set")
             return False
         if not app_token:
-            logger.error("[Slack] SLACK_APP_TOKEN not set")
+            logger.error("[Slack] %s not set", self._app_token_env())
             return False
 
         proxy_url = _resolve_slack_proxy_url()

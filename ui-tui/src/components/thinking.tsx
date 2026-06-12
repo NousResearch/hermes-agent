@@ -75,7 +75,7 @@ function TreeRow({
   const lead = treeLead(rails, branch)
 
   return (
-    <Box>
+    <Box alignItems="stretch">
       <NoSelect flexShrink={0} fromLeftEdge width={lead.length}>
         <Text color={stemColor ?? t.color.muted} dim={stemDim}>
           {lead}

@@ -1133,6 +1133,37 @@ fn stage_script_extra_env(
             ));
         }
     }
+    if matches!(
+        stage_name.to_ascii_lowercase().as_str(),
+        "python" | "venv" | "dependencies" | "python-deps"
+    ) {
+        if let Some(home) = hermes_home {
+            env.push((
+                "UV_CACHE_DIR".to_string(),
+                home.join("uv-cache").display().to_string(),
+            ));
+            env.push((
+                "UV_PYTHON_INSTALL_DIR".to_string(),
+                home.join("python").display().to_string(),
+            ));
+            env.push((
+                "UV_PYTHON_BIN_DIR".to_string(),
+                home.join("bin").display().to_string(),
+            ));
+            env.push((
+                "PIP_CACHE_DIR".to_string(),
+                home.join("pip-cache").display().to_string(),
+            ));
+        }
+    }
+    if stage_name.eq_ignore_ascii_case("platform-sdks") {
+        if let Some(home) = hermes_home {
+            env.push((
+                "PIP_CACHE_DIR".to_string(),
+                home.join("pip-cache").display().to_string(),
+            ));
+        }
+    }
     env
 }
 
@@ -1582,6 +1613,35 @@ mod tests {
                     hermes_home.join("playwright-browsers").display().to_string()
                 )
             ]
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_fallback_scripts_use_managed_runtime_dirs() {
+        let root = unique_tmp_dir("python-fallback-env");
+        let install_root = root.join("hermes-agent");
+        let hermes_home = root.join("home");
+
+        assert_eq!(
+            stage_script_extra_env("python-deps", &install_root, Some(&hermes_home)),
+            vec![
+                ("UV_CACHE_DIR".to_string(), hermes_home.join("uv-cache").display().to_string()),
+                (
+                    "UV_PYTHON_INSTALL_DIR".to_string(),
+                    hermes_home.join("python").display().to_string()
+                ),
+                (
+                    "UV_PYTHON_BIN_DIR".to_string(),
+                    hermes_home.join("bin").display().to_string()
+                ),
+                ("PIP_CACHE_DIR".to_string(), hermes_home.join("pip-cache").display().to_string())
+            ]
+        );
+        assert_eq!(
+            stage_script_extra_env("platform-sdks", &install_root, Some(&hermes_home)),
+            vec![("PIP_CACHE_DIR".to_string(), hermes_home.join("pip-cache").display().to_string())]
         );
 
         let _ = std::fs::remove_dir_all(&root);

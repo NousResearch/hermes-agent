@@ -248,6 +248,8 @@ language-specific setup where needed.
 - Script fallback for `node-deps` and desktop npm stages now receives the same managed npm cache and Playwright browser
   path environment where applicable, so native fallback does not spill browser/runtime caches back into global user
   locations.
+- Script fallback for Python, venv, dependency, and platform-SDK stages now receives the same managed uv and pip cache
+  environment as the native Rust path, keeping retry/recovery installs under Hermes-owned runtime directories.
 - `venv` now runs native-first through Rust by invoking `uv venv venv --python 3.11` in the checkout, with script
   fallback preserved if native venv creation fails.
 - Python dependency installation now has a Rust native-first lockfile path using `uv sync --extra all --locked` with

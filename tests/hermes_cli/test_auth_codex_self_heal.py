@@ -118,3 +118,27 @@ def test_happy_path_unchanged(monkeypatch):
     assert out["refresh_token"] == "rotated-r"
     assert saved["access_token"] == "rotated"
     assert import_calls["n"] == 0  # happy path must not consult ~/.codex
+
+
+def test_reraises_when_imported_token_lacks_refresh_token(monkeypatch):
+    """relogin-required, but ~/.codex returns an access_token with NO refresh_token →
+    re-raise rather than persist a half-token that would break the next refresh."""
+    saved = {}
+
+    def _rejected(*_a, **_k):
+        raise AuthError(
+            "refresh token rejected",
+            provider="openai-codex",
+            code="invalid_grant",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth, "refresh_codex_oauth_pure", _rejected)
+    monkeypatch.setattr(auth, "_import_codex_cli_tokens", lambda: {"access_token": "fresh-only"})
+    monkeypatch.setattr(auth, "_save_codex_tokens", lambda t, *a, **k: saved.update(t))
+
+    with pytest.raises(AuthError) as ei:
+        _refresh_codex_auth_tokens(STALE, 20.0)
+
+    assert ei.value.code == "invalid_grant"
+    assert saved == {}  # nothing was persisted

@@ -65,16 +65,16 @@ class TestApprovalDescription:
     def test_recursive_delete_gets_human_message(self):
         text = format_approval_description("rm -rf /tmp/hermes-test", "recursive delete")
 
-        assert "Recursieve delete" in text
-        assert "map inclusief inhoud" in text
-        assert "tijdelijke/build-output" in text
+        assert "Recursive delete" in text
+        assert "directory and its contents" in text
+        assert "temporary/build output" in text
         assert text != "recursive delete"
 
     def test_missing_description_gets_fallback_message(self):
         text = format_approval_description("rm -rf project", "")
 
-        assert "Geen specifieke reden" in text
-        assert "Controleer" in text
+        assert "No specific reason" in text
+        assert "Review" in text
 
 
 class TestDetectDangerousSudo:

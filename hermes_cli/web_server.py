@@ -482,7 +482,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "approvals.mode": {
         "type": "select",
         "description": "Dangerous command approval mode",
-        "options": ["ask", "yolo", "deny"],
+        "options": ["manual", "smart", "off"],
+        "option_descriptions": {
+            "manual": "Prompt for every dangerous command",
+            "smart": "LLM auto-approves low-risk commands",
+            "off": "Skip all approval prompts (--yolo equivalent)",
+        },
     },
     "context.engine": {
         "type": "select",

@@ -823,6 +823,37 @@ canvas {
    content's --message-text-indent). No extra prose indent — a single gutter
    reads cleaner than a ragged tool-vs-reply column. */
 
+/* RTL/bidi chat text (#44150): each block resolves its own base direction from
+   its first strong char (UAX#9 plaintext). text-align:start makes that resolved
+   direction drive alignment too — load-bearing, since the user bubble pins
+   text-left. direction is never set, so chrome/layout/list-indent stay LTR (the
+   issue asks not to flip the whole UI). Covers assistant prose, user lines, and
+   both composers (main + edit share composer-rich-input). */
+[data-slot='aui_assistant-message-content'] .aui-md :where(p, h1, h2, h3, h4, h5, h6, li, blockquote),
+[data-slot='aui_user-inline-text'],
+[data-slot='composer-rich-input'] {
+  unicode-bidi: plaintext;
+  text-align: start;
+}
+
+/* Inline code/KaTeX don't vote on direction and keep their own order: isolate
+   makes bidi treat each as one neutral, so a block that *starts* with `./run.sh`
+   then Arabic still resolves RTL, and the command's neutrals (dots/slashes)
+   aren't reordered by the surrounding RTL run. */
+[data-slot='aui_assistant-message-content'] .aui-md :where(:not(pre) > code),
+[data-slot='aui_user-inline-code'],
+[data-slot='aui_assistant-message-content'] .aui-md .katex {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+
+/* Fenced code stays LTR even inside an RTL list item/blockquote — never mirrors. */
+[data-slot='aui_assistant-message-content'] .aui-md [data-slot='code-card'],
+[data-slot='aui_user-fence'] {
+  direction: ltr;
+  text-align: left;
+}
+
 [data-slot='aui_user-message-root'] {
   top: var(--sticky-human-top);
 }

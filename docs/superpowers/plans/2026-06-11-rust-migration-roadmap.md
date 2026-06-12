@@ -286,11 +286,14 @@ language-specific setup where needed.
   Windows/Linux/macOS installer lifecycle smoke matrix runs the manager and archive lifecycle smoke tests on each OS.
 
 **Still script-backed:**
-- Language/runtime setup: Python dependency fallback tiers when `uv.lock` sync is unavailable, script fallback for
-  Windows/macOS/Linux npm recovery, Windows uv, Windows Git, Windows Node, Windows/macOS/Linux desktop recovery, and
-  platform SDK recovery.
-- Repository update refresh parity and broader Git/ZIP fallback coverage beyond the current native fresh-install path.
-- Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers.
+- Recovery tiers remain script-backed for failure cases that still need package-manager or mirror-specific handling:
+  Python dependency fallback when `uv sync --locked` cannot complete, Linux Playwright system-library recovery,
+  Electron/npm cache purge and mirror recovery, privileged Linux `chrome-sandbox` repair, ffmpeg/package-manager
+  recovery, and messaging-platform SDK recovery if the native targeted pip path fails.
+- Git is still installed natively only on Windows. Fresh archive installs and archive updates do not require Git, but
+  Unix Git acquisition remains a shell fallback when archive recovery is unavailable or direct script installs are used.
+- Remaining platform shell/profile edge cases that are not covered by the current Rust path-stage helpers, plus direct
+  `install.ps1` / `install.sh` invocation paths that intentionally stay supported for one release cycle.
 
 **Exit Criteria:**
 - First-launch desktop bootstrap can complete the platform/file-management stages without shell scripts.
@@ -355,6 +358,9 @@ language-specific setup where needed.
 - `hermes-manager` now has a CLI smoke test that runs `install-metadata`, `uninstall-lite`, and `repair-clean` against
   an isolated Hermes home, proving the command surface preserves user config while cleaning every current
   Hermes-managed runtime directory and staged installer file.
+- The cross-platform lifecycle smoke matrix now builds the `hermes-manager` release binary and reruns the same
+  install/repair/uninstall smoke through that binary, moving lifecycle coverage from test harness binaries toward
+  release-packaged executables.
 
 **Exit Criteria:**
 - Rust manager can perform platform cleanup with parity to Python/shell uninstall.
@@ -405,6 +411,24 @@ language-specific setup where needed.
   the Unix Rust Node/uv installer asset matrix when future macOS/Linux installer packaging wires in bundled tools.
 - A manual Unix installer workflow now builds Linux and macOS Tauri setup artifacts with matching bundled Node, `uv`, and
   ripgrep archives and uploads the generated `bootstrap-tools-manifest.json` alongside the installer artifacts.
+- Runtime bootstrap archive resolution now reads `bootstrap-tools-manifest.json` when present and only uses a bundled
+  Node/uv/ripgrep/Git archive if the manifest record exists and its SHA-256 matches the file on disk; otherwise the
+  installer falls back to the managed download cache path with the same expected checksum when available.
+- Bundled Node.js archive selection now treats the bootstrap-tools manifest as the source of truth when it exists, so
+  stray or stale files in the resource directory cannot override the release-reviewed archive list.
+- Bootstrap-tools manifest parsing now enforces schema version 1 before trusting archive checksum records, leaving
+  future manifest schema changes on the safe download-cache fallback path until the Rust reader is updated.
+- Bundled archive validation now also honors manifest `sizeBytes` when present, so truncated or partially copied
+  release resources fall back to the managed cache path instead of being extracted.
+- Windows installer builds now upload `bootstrap-tools-manifest.json` as a release artifact, matching the Unix
+  installer workflow so every packaged bootstrap tool archive has a retained checksum record for review; Windows
+  installer, raw exe, and manifest artifact uploads now fail the workflow if any expected file is missing.
+- The bootstrap tool preparation helper now has a validate-only mode, and Windows/Linux/macOS installer workflows run it
+  after bundling so release builds fail before packaging if any manifest archive is missing, truncated, or hash-mismatched.
+- The validate-only gate now also requires every archive record to retain its download URL, keeping the packaged
+  runtime archive update path auditable alongside size and SHA-256.
+- The same gate requires every archive record to retain its target architecture label, preserving review visibility for
+  mixed Windows/Linux/macOS bootstrap-tool bundles.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

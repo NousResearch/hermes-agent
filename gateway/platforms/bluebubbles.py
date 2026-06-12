@@ -947,10 +947,14 @@ class BlueBubblesAdapter(BasePlatformAdapter):
                 else:
                     msg_type = MessageType.DOCUMENT
 
-        # With multiple attachments, prefer PHOTO if any images present
+        # Document must win over PHOTO for mixed attachments: image delivery
+        # still keys off each per-path image/* mime type, but document-context
+        # injection only runs for MessageType.DOCUMENT.
         if len(media_urls) > 1:
             mime_prefixes = {(m or "").split("/")[0] for m in media_types}
-            if "image" in mime_prefixes:
+            if "application" in mime_prefixes or "text" in mime_prefixes:
+                msg_type = MessageType.DOCUMENT
+            elif "image" in mime_prefixes:
                 msg_type = MessageType.PHOTO
 
         if not text and media_urls:

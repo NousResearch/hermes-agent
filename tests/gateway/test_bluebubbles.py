@@ -405,6 +405,59 @@ class TestBlueBubblesWebhookParsing:
         record = adapter._extract_payload_record(payload)
         assert record["text"] == "hello"
 
+    @pytest.mark.asyncio
+    async def test_mixed_image_and_document_prefers_document(self, monkeypatch):
+        """Mixed image+document attachments must stay DOCUMENT so file-context
+        injection still runs for the document sibling."""
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_adapter(monkeypatch, send_read_receipts=False)
+        handled = []
+
+        async def fake_handle_message(event):
+            handled.append(event)
+
+        async def fake_download(att_guid, att_meta):
+            if att_guid == "img-1":
+                return "/tmp/photo.png"
+            if att_guid == "doc-1":
+                return "/tmp/report.pdf"
+            return None
+
+        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
+        monkeypatch.setattr(adapter, "_download_attachment", fake_download)
+
+        response = await adapter._handle_webhook(_FakeBlueBubblesRequest({
+            "type": "new-message",
+            "data": {
+                "guid": "msg-mixed-1",
+                "text": "",
+                "handle": {"address": "user@example.com"},
+                "isFromMe": False,
+                "chatGuid": "iMessage;-;user@example.com",
+                "chatIdentifier": "user@example.com",
+                "attachments": [
+                    {
+                        "guid": "img-1",
+                        "mimeType": "image/png",
+                        "transferName": "photo.png",
+                    },
+                    {
+                        "guid": "doc-1",
+                        "mimeType": "application/pdf",
+                        "transferName": "report.pdf",
+                    },
+                ],
+            },
+        }))
+        await asyncio.sleep(0)
+
+        assert response.status == 200
+        assert len(handled) == 1
+        assert handled[0].message_type == MessageType.DOCUMENT
+        assert handled[0].media_urls == ["/tmp/photo.png", "/tmp/report.pdf"]
+        assert handled[0].media_types == ["image/png", "application/pdf"]
+
 
 class TestBlueBubblesGuidResolution:
     def test_raw_guid_returned_as_is(self, monkeypatch):

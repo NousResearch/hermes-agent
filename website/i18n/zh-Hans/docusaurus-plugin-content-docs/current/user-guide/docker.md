@@ -79,7 +79,6 @@ docker run -d \
 | `HERMES_DASHBOARD` | 设为 `1`（或 `true` / `yes`）以在主命令旁启动 dashboard | *（未设置——不启动 dashboard）* |
 | `HERMES_DASHBOARD_HOST` | dashboard HTTP 服务器的绑定地址 | `127.0.0.1` |
 | `HERMES_DASHBOARD_PORT` | dashboard HTTP 服务器的端口 | `9119` |
-| `HERMES_DASHBOARD_TUI` | 设为 `1` 以启用浏览器内 Chat 标签页（通过 PTY/WebSocket 嵌入 `hermes --tui`） | *（未设置）* |
 | `HERMES_DASHBOARD_INSECURE` | 设为 `1`（或 `true` / `yes`）以在不启用 OAuth 鉴权门控的情况下绑定。仅在可信网络（且通过没有 OAuth 契约的反向代理时）使用——dashboard 会暴露 API 密钥与会话数据 | *（未设置——当注册了 `DashboardAuthProvider` 时启用门控）* |
 
 默认情况下，dashboard 保持在回环地址（`127.0.0.1`），以避免将
@@ -109,8 +108,7 @@ dashboard 进程崩溃，s6-overlay 会在短暂退避后自动
 重启它——你会看到新的 PID，无需重启容器。日志和崩溃输出可通过
 `docker logs <container>` 查看（s6 将服务的 stdout/stderr 转发至此）。
 
-不支持将 dashboard 作为独立容器运行：其
-gateway 存活检测需要与 gateway 进程共享 PID 命名空间。
+当独立的 dashboard 容器与宿主机共享 PID 与网络命名空间时（例如 `network_mode: host`，正如仓库自带的 `docker-compose.yml` 中的 `dashboard` 服务那样），**是**支持将 dashboard 作为独立容器运行的。其 gateway 存活检测需要与 gateway 进程共享 PID 命名空间，因此该限制仅适用于在隔离的 bridge 网络容器中、且未共享 PID 命名空间的 dashboard。
 :::
 
 ## 交互式运行（CLI 聊天）

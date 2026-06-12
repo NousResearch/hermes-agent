@@ -37,7 +37,12 @@ import {
 } from '@/app/chat/composer/focus'
 import { useAtCompletions } from '@/app/chat/composer/hooks/use-at-completions'
 import { useSlashCompletions } from '@/app/chat/composer/hooks/use-slash-completions'
-import { dragHasAttachments, droppedFileInlineRef, insertInlineRefsIntoEditor } from '@/app/chat/composer/inline-refs'
+import {
+  dragHasAttachments,
+  droppedFileInlineRefs,
+  type InlineRefInput,
+  insertInlineRefsIntoEditor
+} from '@/app/chat/composer/inline-refs'
 import {
   composerPlainText,
   placeCaretEnd,
@@ -47,12 +52,12 @@ import {
 } from '@/app/chat/composer/rich-editor'
 import { detectTrigger, textBeforeCaret, type TriggerState } from '@/app/chat/composer/text-utils'
 import { ComposerTriggerPopover } from '@/app/chat/composer/trigger-popover'
-import { extractDroppedFiles, HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { extractDroppedFiles, HERMES_PATHS_MIME, isImagePath, partitionDroppedFiles } from '@/app/chat/hooks/use-composer-actions'
+import { uploadComposerAttachment } from '@/app/session/hooks/use-prompt-actions'
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
-import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
@@ -64,6 +69,7 @@ import { ImageGenerationPlaceholder } from '@/components/chat/image-generation-p
 import { Intro, type IntroProps } from '@/components/chat/intro'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { CopyButton } from '@/components/ui/copy-button'
 import {
   DropdownMenu,
@@ -75,14 +81,19 @@ import {
 import { Loader } from '@/components/ui/loader'
 import type { HermesGateway } from '@/hermes'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
+import { useI18n } from '@/i18n'
+import { attachmentDisplayText, attachmentId, pathLabel } from '@/lib/chat-runtime'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
+import { LinkifiedText } from '@/lib/external-link'
 import { triggerHaptic } from '@/lib/haptics'
 import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icons'
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
+import { $connection } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 
 type ThreadLoadingState = 'response' | 'session'
@@ -117,10 +128,6 @@ function messageContentText(content: unknown): string {
   return Array.isArray(content) ? content.map(partText).join('').trim() : ''
 }
 
-const INTERRUPTED_ONLY_RE = /^_?\[interrupted\]_?$/i
-
-const isInterruptedOnlyMessage = (text: string) => INTERRUPTED_ONLY_RE.test(text.trim())
-
 export const Thread: FC<{
   clampToComposer?: boolean
   cwd?: string | null
@@ -129,6 +136,7 @@ export const Thread: FC<{
   loading?: ThreadLoadingState
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => Promise<void> | void
+  onRestoreToMessage?: (messageId: string) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
 }> = ({
@@ -139,6 +147,7 @@ export const Thread: FC<{
   loading,
   onBranchInNewChat,
   onCancel,
+  onRestoreToMessage,
   sessionId = null,
   sessionKey
 }) => {
@@ -147,16 +156,13 @@ export const Thread: FC<{
       AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
-      UserMessage: () => <UserMessage onCancel={onCancel} />
+      UserMessage: () => <UserMessage onCancel={onCancel} onRestoreToMessage={onRestoreToMessage} />
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, sessionId]
+    [cwd, gateway, onBranchInNewChat, onCancel, onRestoreToMessage, sessionId]
   )
 
   const emptyPlaceholder = intro ? (
-    <div
-      className="flex min-h-0 w-full flex-col items-center justify-center"
-      style={{ paddingBottom: 'var(--composer-measured-height)' }}
-    >
+    <div className="flex min-h-0 w-full flex-col items-center justify-center pt-[var(--composer-measured-height)]">
       <Intro {...intro} />
     </div>
   ) : undefined
@@ -187,28 +193,31 @@ function pickPrimaryPreviewTarget(targets: string[]): string[] {
   return [localUrl || targets[targets.length - 1]]
 }
 
-const CenteredThreadSpinner: FC = () => (
-  <div
-    aria-label="Loading session"
-    className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
-    role="status"
-  >
-    <Loader
-      aria-hidden="true"
-      className="size-12 text-midground/70"
-      pathSteps={220}
-      role="presentation"
-      strokeScale={0.72}
-      type="rose-curve"
-    />
-  </div>
-)
+const CenteredThreadSpinner: FC = () => {
+  const { t } = useI18n()
+
+  return (
+    <div
+      aria-label={t.assistant.thread.loadingSession}
+      className="pointer-events-none absolute inset-0 z-1 grid place-items-center"
+      role="status"
+    >
+      <Loader
+        aria-hidden="true"
+        className="size-12 text-midground/70"
+        pathSteps={220}
+        role="presentation"
+        strokeScale={0.72}
+        type="rose-curve"
+      />
+    </div>
+  )
+}
 
 const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> = ({ onBranchInNewChat }) => {
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
-  const hoistedTodos = useMemo(() => todosFromMessageContent(content), [content])
 
   const previewTargets = useMemo(() => {
     if (!messageText || !/(https?:\/\/|file:\/\/)/i.test(messageText)) {
@@ -220,7 +229,6 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
 
   const messageStatus = useAuiState(s => s.message.status?.type)
   const isPlaceholder = messageStatus === 'running' && content.length === 0
-  const interruptedOnly = useMemo(() => isInterruptedOnlyMessage(messageText), [messageText])
   const enterRef = useEnterAnimation(messageStatus === 'running', `assistant-message:${messageId}`)
 
   if (isPlaceholder) {
@@ -236,14 +244,12 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
       ref={enterRef}
     >
       <div
-        className={cn(
-          'wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground',
-          interruptedOnly && 'text-[0.8rem] leading-5 text-muted-foreground/82'
-        )}
+        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
-        {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
+        {/* Todos render in the composer status stack now, not inline. */}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+        {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}
         {previewTargets.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {previewTargets.map(target => (
@@ -260,7 +266,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
           </ErrorPrimitive.Root>
         </MessagePrimitive.Error>
       </div>
-      {messageText.trim().length > 0 && !interruptedOnly && (
+      {messageText.trim().length > 0 && (
         <AssistantFooter messageId={messageId} messageText={messageText} onBranchInNewChat={onBranchInNewChat} />
       )}
     </MessagePrimitive.Root>
@@ -285,10 +291,44 @@ const StatusRow: FC<{ children: ReactNode; label: string } & React.ComponentProp
 )
 
 const ResponseLoadingIndicator: FC = () => {
+  const { t } = useI18n()
   const elapsed = useElapsedSeconds()
 
   return (
-    <StatusRow data-slot="aui_response-loading" label="Hermes is loading a response">
+    <StatusRow data-slot="aui_response-loading" label={t.assistant.thread.loadingResponse}>
+      <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
+      <ActivityTimerText seconds={elapsed} />
+    </StatusRow>
+  )
+}
+
+// Seconds of no visible output (text or part count) before a still-running turn
+// is treated as stalled and the thinking indicator returns at the tail.
+const STREAM_STALL_S = 2
+
+// Tail "still thinking" indicator: the pre-first-token spinner goes away once
+// text flows, but if the stream then goes quiet mid-turn (tool think-time,
+// provider stall) nothing signals that work continues. Watch a per-render
+// activity signal; when it hasn't changed for STREAM_STALL_S, re-show the
+// dither + a timer counting from the last activity.
+const StreamStallIndicator: FC<{ activity: string }> = ({ activity }) => {
+  const [stalled, setStalled] = useState(false)
+
+  useEffect(() => {
+    setStalled(false)
+    const id = window.setTimeout(() => setStalled(true), STREAM_STALL_S * 1000)
+
+    return () => window.clearTimeout(id)
+  }, [activity])
+
+  const elapsed = useElapsedSeconds(stalled)
+
+  if (!stalled) {
+    return null
+  }
+
+  return (
+    <StatusRow className="mt-1.5" data-slot="aui_stream-stall" label="Hermes is thinking">
       <span aria-hidden="true" className="dither inline-block size-3 rounded-[2px] text-midground/80 animate-pulse" />
       <ActivityTimerText seconds={elapsed} />
     </StatusRow>
@@ -337,6 +377,7 @@ const ThinkingDisclosure: FC<{
   pending?: boolean
   timerKey?: string
 }> = ({ children, messageRunning = false, pending = false, timerKey }) => {
+  const { t } = useI18n()
   // `null` = no explicit user toggle yet, defer to the streaming default.
   // The default is "auto-open while streaming, auto-collapse when done" so
   // reasoning surfaces a live preview without manual interaction. The first
@@ -375,7 +416,9 @@ const ThinkingDisclosure: FC<{
     observer.observe(content)
 
     return () => observer.disconnect()
-  }, [isPreview])
+    // Re-run when the disclosure toggles so the observer attaches to the new
+    // DOM after expand/collapse (refs are conditionally rendered on `open`).
+  }, [isPreview, open])
 
   return (
     <div
@@ -391,7 +434,7 @@ const ThinkingDisclosure: FC<{
               pending && 'shimmer text-foreground/55'
             )}
           >
-            Thinking
+            {t.assistant.thread.thinking}
           </span>
           {pending && (
             <ActivityTimerText
@@ -436,9 +479,25 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
       s.thread.isRunning &&
       s.message.status?.type === 'running' &&
       s.message.parts
-        .slice(Math.max(0, startIndex), Math.min(s.message.parts.length, endIndex))
+        .slice(Math.max(0, startIndex), endIndex + 1)
         .some(p => p?.type === 'reasoning' && p.status?.type !== 'complete')
   )
+
+  // A reasoning group with no actual text is pure noise — drop the whole
+  // "Thinking" disclosure rather than leave an empty header eating a row. This
+  // applies live too: encrypted/spinner-coerced reasoning (Opus reasoning max)
+  // never carries visible text, and the bottom-of-thread loader already signals
+  // "thinking", so an empty header is never wanted. Real reasoning surfaces the
+  // instant its first token lands.
+  const hasContent = useAuiState(s =>
+    s.message.parts
+      .slice(Math.max(0, startIndex), endIndex + 1)
+      .some(p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0)
+  )
+
+  if (!hasContent) {
+    return null
+  }
 
   return (
     <ThinkingDisclosure messageRunning={messageRunning} pending={pending} timerKey={`reasoning:${messageId}`}>
@@ -455,7 +514,7 @@ const ReasoningTextPart: FC<{ text: string; status?: { type: string } }> = ({ te
   return (
     <MarkdownTextContent
       containerClassName={cn(
-        'text-xs leading-relaxed text-muted-foreground/85',
+        'text-xs leading-snug text-muted-foreground/85',
         isRunning && 'shimmer text-muted-foreground/55'
       )}
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
@@ -493,7 +552,10 @@ function startOfDay(d: Date): number {
   return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()
 }
 
-function formatMessageTimestamp(value: Date | string | number | undefined): string {
+function formatMessageTimestamp(
+  value: Date | string | number | undefined,
+  labels: { today: (time: string) => string; yesterday: (time: string) => string }
+): string {
   if (!value) {
     return ''
   }
@@ -507,17 +569,19 @@ function formatMessageTimestamp(value: Date | string | number | undefined): stri
   const dayDelta = Math.round((startOfDay(new Date()) - startOfDay(date)) / 86_400_000)
 
   if (dayDelta === 0) {
-    return `Today, ${TIME_FMT.format(date)}`
+    return labels.today(TIME_FMT.format(date))
   }
 
   if (dayDelta === 1) {
-    return `Yesterday, ${TIME_FMT.format(date)}`
+    return labels.yesterday(TIME_FMT.format(date))
   }
 
   return SHORT_FMT.format(date)
 }
 
 const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, onBranchInNewChat }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
   const [menuOpen, setMenuOpen] = useState(false)
 
   return (
@@ -536,15 +600,15 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
         )}
         data-slot="aui_msg-actions"
       >
-        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label="Copy" text={messageText} />
+        <CopyButton appearance="icon" buttonSize="icon" disabled={!messageText} label={copy.copy} text={messageText} />
         <ActionBarPrimitive.Reload asChild>
-          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip="Refresh">
+          <TooltipIconButton onClick={() => triggerHaptic('submit')} tooltip={copy.refresh}>
             <Codicon name="refresh" />
           </TooltipIconButton>
         </ActionBarPrimitive.Reload>
         <DropdownMenu onOpenChange={setMenuOpen} open={menuOpen}>
           <DropdownMenuTrigger asChild>
-            <TooltipIconButton tooltip="More actions">
+            <TooltipIconButton tooltip={copy.moreActions}>
               <Codicon name="ellipsis" />
             </TooltipIconButton>
           </DropdownMenuTrigger>
@@ -552,7 +616,7 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
             <MessageTimestamp />
             <DropdownMenuItem onSelect={() => onBranchInNewChat?.(messageId)}>
               <GitBranchIcon />
-              Branch in new chat
+              {copy.branchNewChat}
             </DropdownMenuItem>
             <ReadAloudItem messageId={messageId} text={messageText} />
           </DropdownMenuContent>
@@ -563,6 +627,8 @@ const AssistantActionBar: FC<MessageActionProps> = ({ messageId, messageText, on
 }
 
 const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, text }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
   const voicePlayback = useStore($voicePlayback)
 
   const readAloudStatus =
@@ -581,9 +647,9 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
     try {
       await playSpeechText(text, { messageId, source: 'read-aloud' })
     } catch (error) {
-      notifyError(error, 'Read aloud failed')
+      notifyError(error, copy.readAloudFailed)
     }
-  }, [messageId, text])
+  }, [copy.readAloudFailed, messageId, text])
 
   return (
     <DropdownMenuItem
@@ -594,14 +660,15 @@ const ReadAloudItem: FC<{ messageId: string; text: string }> = ({ messageId, tex
       }}
     >
       <Icon className={isPreparing ? 'animate-spin' : undefined} />
-      {isPreparing ? 'Preparing audio...' : isSpeaking ? 'Stop reading' : 'Read aloud'}
+      {isPreparing ? copy.preparingAudio : isSpeaking ? copy.stopReading : copy.readAloud}
     </DropdownMenuItem>
   )
 }
 
 const MessageTimestamp: FC = () => {
+  const { t } = useI18n()
   const createdAt = useAuiState(s => s.message.createdAt)
-  const label = formatMessageTimestamp(createdAt)
+  const label = formatMessageTimestamp(createdAt, t.assistant.thread)
 
   if (!label) {
     return null
@@ -616,13 +683,13 @@ const AssistantFooter: FC<MessageActionProps> = props => (
       className="inline-flex h-6 items-center gap-1 text-xs text-muted-foreground"
       hideWhenSingleBranch
     >
-      <BranchPickerPrimitive.Previous className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Previous className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-left" size="0.875rem" />
       </BranchPickerPrimitive.Previous>
       <span className="tabular-nums">
         <BranchPickerPrimitive.Number /> / <BranchPickerPrimitive.Count />
       </span>
-      <BranchPickerPrimitive.Next className="grid size-6 cursor-pointer place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
+      <BranchPickerPrimitive.Next className="grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:cursor-default disabled:opacity-35">
         <Codicon name="chevron-right" size="0.875rem" />
       </BranchPickerPrimitive.Next>
     </BranchPickerPrimitive.Root>
@@ -653,21 +720,64 @@ function StickyHumanMessageContainer({ children }: { children: ReactNode }) {
 }
 
 // Shared "user bubble" base. Both the read-only message and the inline
-// edit composer render the same bubble surface (rounded glass card,
-// shadow-composer); they only differ in border weight, cursor, and
-// padding-right (the read-only view reserves room for the restore icon).
+// edit composer render the same bubble surface (rounded glass card);
+// they only differ in border weight, cursor, and padding-right (the
+// read-only view reserves room for the restore icon).
+//
+// no-drag: sticky bubbles park at --sticky-human-top (~4px), sliding under the
+// titlebar's [-webkit-app-region:drag] strips (app-shell.tsx). Electron resolves
+// drag regions at the compositor level — z-index and pointer-events don't help —
+// so without the carve-out, clicking a stuck bubble drags the window instead of
+// opening the edit composer.
 const USER_BUBBLE_BASE_CLASS =
-  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left shadow-composer'
+  'composer-human-message standalone-glass relative flex w-full min-w-0 max-w-full flex-col gap-1.5 overflow-hidden rounded-xl border bg-(--dt-user-bubble) px-3 py-2 text-left [-webkit-app-region:no-drag]'
 
 const USER_ACTION_ICON_BUTTON_CLASS =
-  'grid cursor-pointer place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
+  'grid place-items-center rounded-md bg-transparent text-(--ui-text-secondary) transition-colors hover:bg-(--ui-control-active-background) hover:text-foreground disabled:cursor-default disabled:text-(--ui-text-quaternary) disabled:opacity-70'
 
 const USER_ACTION_ICON_SIZE = '0.6875rem'
 const StopGlyph = <IconPlayerStopFilled aria-hidden className="size-3.5 -translate-y-px" />
 
+// Background-process notifications are injected into the conversation as user
+// messages (the agent must react to them, and message-role alternation forbids
+// a synthetic system row mid-loop). They are NOT something the human typed, so
+// render them as a compact system-style notice instead of a user bubble.
+// Shape: see tools/process_registry.py format_process_notification().
+const PROCESS_NOTIFICATION_RE = /^\[IMPORTANT: Background process [\s\S]*\]$/
+
+const ProcessNotificationNote: FC<{ text: string }> = ({ text }) => {
+  const body = text.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, '')
+  const newline = body.indexOf('\n')
+  const headline = (newline === -1 ? body : body.slice(0, newline)).trim()
+  const detail = newline === -1 ? '' : body.slice(newline + 1).trim()
+
+  return (
+    <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
+      <span className="flex items-center gap-1.5">
+        <Codicon className="shrink-0 text-muted-foreground/55" name="terminal" size="0.75rem" />
+        <span className="wrap-anywhere">{headline}</span>
+      </span>
+      {detail && (
+        <details className="pl-[1.3125rem]">
+          <summary className="cursor-pointer select-none text-muted-foreground/45 hover:text-muted-foreground/70">
+            output
+          </summary>
+          <pre className="mt-0.5 max-h-48 overflow-auto whitespace-pre-wrap font-mono text-[0.625rem] leading-4 text-muted-foreground/55">
+            {detail}
+          </pre>
+        </details>
+      )}
+    </div>
+  )
+}
+
 const UserMessage: FC<{
   onCancel?: () => Promise<void> | void
-}> = ({ onCancel }) => {
+  onRestoreToMessage?: (messageId: string) => Promise<void> | void
+}> = ({ onCancel, onRestoreToMessage }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
+  const [restoreConfirmOpen, setRestoreConfirmOpen] = useState(false)
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
@@ -717,15 +827,32 @@ const UserMessage: FC<{
 
   useResizeObserver(measureClamp, clampInnerRef)
 
+  // Injected background-process notification, not a human prompt — render the
+  // compact system-style notice (after all hooks above have run).
+  if (PROCESS_NOTIFICATION_RE.test(messageText.trim())) {
+    return (
+      <MessagePrimitive.Root
+        className="flex w-full min-w-0 flex-col items-stretch"
+        data-role="user"
+        data-slot="aui_user-message-root"
+      >
+        <ProcessNotificationNote text={messageText.trim()} />
+      </MessagePrimitive.Root>
+    )
+  }
+
   const hasBody = messageText.trim().length > 0
   const isLatestUser = messageId === latestUserId
   const showStop = isLatestUser && threadRunning && Boolean(onCancel)
-  const showRestore = !isLatestUser && !threadRunning
+  // Restore (re-run this exact prompt) is available everywhere the Stop button
+  // isn't — including mid-stream on older prompts, since the action interrupts
+  // the live turn before rewinding.
+  const showRestore = !showStop && Boolean(onRestoreToMessage) && hasBody
 
   const bubbleClassName = cn(
     USER_BUBBLE_BASE_CLASS,
-    'border-(--ui-stroke-tertiary) pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
-    !threadRunning && 'cursor-pointer hover:border-(--ui-stroke-secondary)'
+    'cursor-pointer pr-9 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 transition-colors',
+    'border-(--ui-stroke-tertiary) hover:border-(--ui-stroke-secondary)'
   )
 
   const bubbleContent = (
@@ -754,45 +881,50 @@ const UserMessage: FC<{
         <ActionBarPrimitive.Root className="relative w-full max-w-full" data-slot="aui_user-bubble-actions">
           <div className="human-message-with-todos-wrapper flex w-full flex-col gap-0">
             <div className="relative w-full">
-              {threadRunning ? (
-                <div className={bubbleClassName}>{bubbleContent}</div>
-              ) : (
-                <ActionBarPrimitive.Edit asChild>
-                  <button
-                    aria-label="Edit message"
-                    className={bubbleClassName}
-                    onClick={() => triggerHaptic('selection')}
-                    title="Edit message"
-                    type="button"
-                  >
-                    {bubbleContent}
-                  </button>
-                </ActionBarPrimitive.Edit>
-              )}
+              {/* Always editable — clicking opens the edit composer even while a
+                  turn streams; sending the edit reverts (interrupt + rewind). */}
+              <ActionBarPrimitive.Edit asChild>
+                <button
+                  aria-label={copy.editMessage}
+                  className={bubbleClassName}
+                  onClick={() => triggerHaptic('selection')}
+                  title={copy.editMessage}
+                  type="button"
+                >
+                  {bubbleContent}
+                </button>
+              </ActionBarPrimitive.Edit>
               {(showStop || showRestore) && (
                 <div className="pointer-events-none absolute right-2 bottom-2 z-10 flex items-center justify-center opacity-0 transition-opacity group-hover/user-message:opacity-100 group-focus-within/user-message:opacity-100">
                   {showStop ? (
                     <button
-                      aria-label="Stop"
+                      aria-label={copy.stop}
                       className={cn('pointer-events-auto size-5', USER_ACTION_ICON_BUTTON_CLASS)}
                       onClick={event => {
                         event.preventDefault()
                         event.stopPropagation()
                         void onCancel?.()
                       }}
-                      title="Stop"
+                      title={copy.stop}
                       type="button"
                     >
                       {StopGlyph}
                     </button>
                   ) : (
-                    <span
-                      aria-hidden="true"
-                      className="flex size-6 items-center justify-center rounded-md text-(--ui-text-tertiary)"
-                      title="Editable checkpoint"
+                    <button
+                      aria-label={copy.restoreCheckpoint}
+                      className={cn('pointer-events-auto size-6', USER_ACTION_ICON_BUTTON_CLASS)}
+                      onClick={event => {
+                        event.preventDefault()
+                        event.stopPropagation()
+                        triggerHaptic('selection')
+                        setRestoreConfirmOpen(true)
+                      }}
+                      title={copy.restoreFromHere}
+                      type="button"
                     >
                       <Codicon name="discard" size="0.875rem" />
-                    </span>
+                    </button>
                   )}
                 </div>
               )}
@@ -803,29 +935,41 @@ const UserMessage: FC<{
             >
               <span aria-hidden className="checkpoint-icon size-1.5 rounded-full border border-current" />
               <BranchPickerPrimitive.Previous
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore previous checkpoint"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                title={copy.restorePrevious}
               >
-                Restore checkpoint
+                {copy.restoreCheckpoint}
               </BranchPickerPrimitive.Previous>
               <span className="checkpoint-divider opacity-55">
                 <BranchPickerPrimitive.Number />/<BranchPickerPrimitive.Count />
               </span>
               <BranchPickerPrimitive.Next
-                className="checkpoint-restore-text cursor-pointer rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
-                title="Restore next checkpoint"
+                className="checkpoint-restore-text rounded-sm bg-transparent px-1 opacity-65 hover:opacity-100 disabled:hidden disabled:cursor-default"
+                title={copy.restoreNext}
               >
-                Go forward
+                {copy.goForward}
               </BranchPickerPrimitive.Next>
             </BranchPickerPrimitive.Root>
           </div>
         </ActionBarPrimitive.Root>
+        {showRestore && (
+          <ConfirmDialog
+            confirmLabel={copy.restoreConfirm}
+            description={copy.restoreBody}
+            destructive
+            onClose={() => setRestoreConfirmOpen(false)}
+            onConfirm={() => onRestoreToMessage?.(messageId)}
+            open={restoreConfirmOpen}
+            title={copy.restoreTitle}
+          />
+        )}
       </StickyHumanMessageContainer>
     </MessagePrimitive.Root>
   )
 }
 
 const SLASH_STATUS_RE = /^slash:(?<command>\/[^\n]+)\n(?<output>[\s\S]*)$/
+const STEER_NOTE_RE = /^steer:(?<text>[\s\S]+)$/
 
 const SystemMessage: FC = () => {
   const text = useAuiState(s => messageContentText(s.message.content))
@@ -834,29 +978,66 @@ const SystemMessage: FC = () => {
     return null
   }
 
-  const slashStatus = text.match(SLASH_STATUS_RE)
+  const steerNote = text.match(STEER_NOTE_RE)
 
-  if (slashStatus?.groups) {
+  if (steerNote?.groups) {
     return (
       <MessagePrimitive.Root
-        className="max-w-[min(86%,44rem)] self-center px-2 py-0.5 text-center text-[0.6875rem] leading-5 text-muted-foreground/60"
+        className="flex max-w-[min(86%,44rem)] items-center gap-1.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60"
         data-role="system"
         data-slot="aui_system-message-root"
       >
-        <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
-        <span className="mx-1.5 text-muted-foreground/35">·</span>
-        <span className="whitespace-pre-wrap">{slashStatus.groups.output.trim()}</span>
+        <Codicon className="text-muted-foreground/55" name="compass" size="0.75rem" />
+        <span className="text-muted-foreground/55">steered</span>
+        <span className="text-muted-foreground/35">·</span>
+        <span className="whitespace-pre-wrap">{steerNote.groups.text.trim()}</span>
       </MessagePrimitive.Root>
     )
   }
 
+  const slashStatus = text.match(SLASH_STATUS_RE)
+
+  if (slashStatus?.groups) {
+    const output = slashStatus.groups.output.trim()
+    // Single-line status (e.g. "model → x") reads best centered inline; padded
+    // multiline output (catalogs, usage tables) needs left-aligned, wider room
+    // or the column alignment breaks.
+    const multiline = output.includes('\n')
+
+    return (
+      <MessagePrimitive.Root
+        className={cn(
+          'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60',
+          multiline ? 'text-left' : 'text-center'
+        )}
+        data-role="system"
+        data-slot="aui_system-message-root"
+      >
+        <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
+        {multiline ? (
+          <LinkifiedText className="mt-0.5 block whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+        ) : (
+          <>
+            <span className="mx-1.5 text-muted-foreground/35">·</span>
+            <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+          </>
+        )}
+      </MessagePrimitive.Root>
+    )
+  }
+
+  const multiline = text.includes('\n')
+
   return (
     <MessagePrimitive.Root
-      className="max-w-[min(86%,44rem)] self-center px-2 py-0.5 text-center text-[0.6875rem] leading-5 text-muted-foreground/55"
+      className={cn(
+        'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/55',
+        multiline ? 'text-left' : 'text-center'
+      )}
       data-role="system"
       data-slot="aui_system-message-root"
     >
-      <span className="whitespace-pre-wrap">{text}</span>
+      <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={text} />
     </MessagePrimitive.Root>
   )
 }
@@ -868,6 +1049,8 @@ interface UserEditComposerProps {
 }
 
 const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }) => {
+  const { t } = useI18n()
+  const copy = t.assistant.thread
   const aui = useAui()
   const draft = useAuiState(s => s.composer.text)
   const rootRef = useRef<HTMLDivElement | null>(null)
@@ -885,6 +1068,10 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const [triggerPlacement, setTriggerPlacement] = useState<'bottom' | 'top'>('top')
   const [focusRequestId, setFocusRequestId] = useState(0)
   const [submitting, setSubmitting] = useState(false)
+  // True while OS-drop files are being staged/uploaded into the session. Blocks
+  // submit and shows a spinner so confirming the edit can't race the async
+  // upload and drop the gateway-side ref before it lands in the draft.
+  const [staging, setStaging] = useState(false)
   const expanded = draft.includes('\n')
   const canSubmit = draft.trim().length > 0
   const at = useAtCompletions({ cwd, gateway, sessionId })
@@ -1101,17 +1288,13 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     [aui, closeTrigger, refreshTrigger, requestEditFocus, trigger]
   )
 
-  const insertDroppedRefs = useCallback(
-    (candidates: ReturnType<typeof extractDroppedFiles>) => {
+  const insertRefStrings = useCallback(
+    (refs: InlineRefInput[]) => {
       const editor = editorRef.current
 
-      if (!editor) {
+      if (!editor || refs.length === 0) {
         return false
       }
-
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, cwd))
-        .filter((ref): ref is string => Boolean(ref))
 
       const nextDraft = insertInlineRefsIntoEditor(editor, refs)
 
@@ -1125,7 +1308,60 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
 
       return true
     },
-    [aui, cwd, requestEditFocus]
+    [aui, requestEditFocus]
+  )
+
+  const insertDroppedRefs = useCallback(
+    (candidates: ReturnType<typeof extractDroppedFiles>) => insertRefStrings(droppedFileInlineRefs(candidates, cwd)),
+    [cwd, insertRefStrings]
+  )
+
+  // OS/Finder drops carry an absolute path on THIS machine — the gateway can't
+  // read it in remote mode, and an image needs its bytes uploaded for vision.
+  // Stage each through the same file.attach/image.attach_bytes pipeline the main
+  // composer uses, then insert the *gateway-side* ref the agent can resolve —
+  // never the raw local path (the MahmoudR remote-attach bug, which the main
+  // composer fixes but this edit composer used to reproduce).
+  const uploadOsDropRefs = useCallback(
+    async (osDrops: ReturnType<typeof extractDroppedFiles>): Promise<InlineRefInput[]> => {
+      if (!gateway || !sessionId) {
+        // No session to stage into — best-effort inline refs (matches old path).
+        return droppedFileInlineRefs(osDrops, cwd)
+      }
+
+      const remote = $connection.get()?.mode === 'remote'
+      const requestGateway = <T,>(method: string, params?: Record<string, unknown>) => gateway.request<T>(method, params)
+      const refs: InlineRefInput[] = []
+
+      for (const candidate of osDrops) {
+        const path = candidate.path || ''
+
+        if (!path) {
+          continue
+        }
+
+        const kind: ComposerAttachment['kind'] =
+          candidate.file?.type.startsWith('image/') || isImagePath(candidate.file?.name || path) ? 'image' : 'file'
+
+        try {
+          const uploaded = await uploadComposerAttachment(
+            { detail: path, id: attachmentId(kind, path), kind, label: pathLabel(path), path },
+            { remote, requestGateway, sessionId }
+          )
+
+          const ref = attachmentDisplayText(uploaded)
+
+          if (ref) {
+            refs.push(ref)
+          }
+        } catch (err) {
+          notifyError(err, t.desktop.dropFiles)
+        }
+      }
+
+      return refs
+    },
+    [cwd, gateway, sessionId, t.desktop.dropFiles]
   )
 
   const resetDragState = useCallback(() => {
@@ -1179,8 +1415,24 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
     event.stopPropagation()
     resetDragState()
 
-    if (insertDroppedRefs(candidates)) {
+    // In-app drags (project tree / gutter) are workspace-relative paths that
+    // resolve on the gateway as-is, so they stay inline refs. OS drops need to
+    // be staged + uploaded first, then their gateway-side ref is inserted.
+    const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+
+    if (insertDroppedRefs(inAppRefs)) {
       triggerHaptic('selection')
+    }
+
+    if (osDrops.length) {
+      setStaging(true)
+      void uploadOsDropRefs(osDrops)
+        .then(refs => {
+          if (insertRefStrings(refs)) {
+            triggerHaptic('selection')
+          }
+        })
+        .finally(() => setStaging(false))
     }
   }
 
@@ -1212,7 +1464,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
   const submitEdit = (editor: HTMLDivElement) => {
     const nextDraft = syncDraftFromEditor(editor)
 
-    if (submitting || !nextDraft.trim()) {
+    if (submitting || staging || !nextDraft.trim()) {
       return
     }
 
@@ -1344,7 +1596,9 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
             data-expanded={expanded ? 'true' : undefined}
           >
             <div
-              aria-label="Edit message"
+              aria-label={copy.editMessage}
+              autoCapitalize="off"
+              autoCorrect="off"
               autoFocus
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
@@ -1353,7 +1607,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
                 expanded ? 'min-h-16' : 'min-h-[1.25rem]'
               )}
               contentEditable
-              data-placeholder="Edit message"
+              data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
               onBlur={() => window.setTimeout(closeTrigger, 80)}
               onDragOver={handleDragOver}
@@ -1366,13 +1620,39 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               onPaste={handlePaste}
               ref={editorRef}
               role="textbox"
+              spellCheck={false}
               suppressContentEditableWarning
             />
-            <ComposerPrimitive.Input className="sr-only" tabIndex={-1} unstable_focusOnScrollToBottom={false} />
+            <ComposerPrimitive.Input
+              asChild
+              className="sr-only"
+              submitMode="ctrlEnter"
+              tabIndex={-1}
+              unstable_focusOnScrollToBottom={false}
+            >
+              <textarea
+                aria-hidden
+                autoCapitalize="off"
+                autoComplete="off"
+                autoCorrect="off"
+                className="sr-only"
+                spellCheck={false}
+                tabIndex={-1}
+              />
+            </ComposerPrimitive.Input>
+            {staging && (
+              <span
+                className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-background/80 px-1.5 py-0.5 text-[0.62rem] text-muted-foreground backdrop-blur-[1px]"
+                data-slot="aui_edit-staging"
+              >
+                <Loader2Icon className="size-3 animate-spin" />
+                {copy.attachingFile}
+              </span>
+            )}
             <button
-              aria-label="Send edited message"
+              aria-label={copy.sendEdited}
               className={cn('absolute right-2 bottom-2 size-5', USER_ACTION_ICON_BUTTON_CLASS)}
-              disabled={!canSubmit || submitting}
+              disabled={!canSubmit || submitting || staging}
               onClick={() => {
                 const editor = editorRef.current
 
@@ -1380,7 +1660,7 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
                   submitEdit(editor)
                 }
               }}
-              title="Send edited message"
+              title={copy.sendEdited}
               type="button"
             >
               {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}

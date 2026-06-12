@@ -9,6 +9,7 @@ from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _apply_toolset_change,
+    _checklist_toolset_keys,
     _configure_provider,
     _reconfigure_provider,
     _get_platform_tools,
@@ -20,6 +21,7 @@ from hermes_cli.tools_config import (
     _toolset_needs_configuration_prompt,
     CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
+    gui_toolset_label,
     _visible_providers,
     tools_command,
 )
@@ -76,6 +78,13 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
 
     assert enabled
     assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
+
+
+def test_gui_toolset_label_strips_leading_emoji():
+    assert gui_toolset_label("🔍 Web Search & Scraping") == "Web Search & Scraping"
+    assert gui_toolset_label("👁️  Vision / Image Analysis") == "Vision / Image Analysis"
+    assert gui_toolset_label("🔌 My Plugin") == "My Plugin"
+    assert gui_toolset_label("Terminal & Processes") == "Terminal & Processes"
 
 
 def test_configurable_toolsets_include_messaging():
@@ -966,6 +975,19 @@ def test_toolset_has_keys_treats_no_key_providers_as_configured():
     assert _toolset_has_keys("computer_use", config) is True
 
 
+def test_web_no_prompt_when_usable_keyless():
+    """Fresh install: web works via the free Parallel MCP, so enabling the web
+    toolset should not force provider setup."""
+    with patch("tools.web_tools.check_web_api_key", return_value=True):
+        assert _toolset_needs_configuration_prompt("web", {}) is False
+
+
+def test_web_no_prompt_when_extract_backend_is_extract_capable():
+    with patch("tools.web_tools.check_web_api_key", return_value=True):
+        cfg = {"web": {"extract_backend": "parallel"}}
+        assert _toolset_needs_configuration_prompt("web", cfg) is False
+
+
 def test_computer_use_needs_configuration_when_cua_driver_post_setup_pending():
     """No-key providers can still need setup when their post_setup is unsatisfied.
 
@@ -1487,4 +1509,59 @@ def test_apply_provider_selection_does_not_prompt_or_post_setup(monkeypatch):
     config = {}
     tools_config.apply_provider_selection("tts", "Microsoft Edge TTS", config)
     assert config["tts"]["provider"] == "edge"
+
+
+# ── Checklist diff scope: non-configurable toolsets (kanban) must not be
+#    reported as added/removed by `hermes tools` ──────────────────────────
+
+
+def test_checklist_toolset_keys_excludes_kanban():
+    """``kanban`` is check_fn-gated and never appears in the checklist, so it
+    must not be in the checklist's offered universe for any platform."""
+    for plat in ("cli", "telegram", "discord"):
+        keys = _checklist_toolset_keys(plat)
+        assert "kanban" not in keys
+        # Configurable toolsets that ARE offered must be present.
+        assert "web" in keys
+
+
+def test_kanban_not_reported_as_removed_in_diff():
+    """Reproduces the false-signal bug: `hermes tools` printed ``- kanban``
+    when saving a platform that resolves kanban as enabled, even though the
+    checklist never offered kanban as a toggle.
+
+    The printed diff must be scoped to ``_checklist_toolset_keys`` so a tool
+    the user could not deselect is never reported as removed. The persisted
+    config still keeps kanban (verified separately by _save_platform_tools).
+    """
+    config = {"platform_toolsets": {"telegram": ["kanban", "web", "terminal"]}}
+    current = _get_platform_tools(config, "telegram", include_default_mcp_servers=False)
+    assert "kanban" in current  # resolved as enabled at read time
+
+    # The checklist can only return configurable keys it was shown; kanban
+    # is never one of them.
+    universe = _checklist_toolset_keys("telegram")
+    new_enabled = {t for t in current if t != "kanban"}
+
+    # Unscoped (old, buggy) diff would surface kanban.
+    assert (current - new_enabled) == {"kanban"}
+    # Scoped (fixed) diff drops it.
+    assert ((current - new_enabled) & universe) == set()
+
+
+def test_real_configurable_changes_still_reported_in_diff():
+    """Scoping the diff to the checklist universe must NOT swallow genuine
+    add/remove of configurable toolsets."""
+    config = {"platform_toolsets": {"cli": ["kanban", "web", "terminal", "skills"]}}
+    current = _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+    universe = _checklist_toolset_keys("cli")
+
+    # User unticks 'terminal' (configurable) — must still report as removed.
+    new_enabled = {t for t in current if t not in ("kanban", "terminal")}
+    assert ((current - new_enabled) & universe) == {"terminal"}
+
+    # User adds 'vision' (configurable) — must still report as added.
+    new_enabled2 = (current - {"kanban"}) | {"vision"}
+    assert ((new_enabled2 - current) & universe) == {"vision"}
+
 

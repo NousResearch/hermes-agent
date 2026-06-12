@@ -337,24 +337,43 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
     # NOTE: when the centralized index is available, parallel_search_sources
     # skips the external API sources and serves everything from "hermes-index".
-    # That source MUST therefore carry a high limit, or browse silently caps
-    # the entire hub at the default (50) — it shipped that way and surfaced
-    # ~136 of 88k skills. The external-source limits below only apply when the
-    # index is unavailable (offline / first run before the cache populates).
+    # That source MUST therefore carry a limit large enough to cover the whole
+    # catalog, or browse silently caps the hub — it shipped at 50 (surfaced
+    # ~136 of 88k skills), then 5000 (surfaced ~5.4k of 90k). The index is
+    # disk-cached and browse paginates client-side, so a ceiling above the
+    # current catalog size is the right call. The external-source limits below
+    # only apply when the index is unavailable (offline / first run before the
+    # cache populates).
     _PER_SOURCE_LIMIT = {
-        "hermes-index": 5000,
+        "hermes-index": 1000000,
         "official": 200, "skills-sh": 200, "well-known": 50,
         "github": 200, "clawhub": 500, "claude-marketplace": 100,
         "lobehub": 500, "browse-sh": 500,
     }
 
-    with c.status("[bold]Fetching skills from registries..."):
+    with c.status("[bold]Fetching skills from registries...") as status:
+        # Live progress: tick off each source as it resolves so the wait is
+        # visible instead of a frozen spinner. parallel_search_sources invokes
+        # this callback from the collecting thread as each source completes;
+        # the page itself is still rendered once, after the correctly-merged
+        # and trust-sorted result set is final (browse's ordering contract is
+        # computed over the whole set, so we never render a half-sorted page).
+        _done: List[str] = []
+
+        def _on_source_done(sid: str, count: int) -> None:
+            _done.append(f"{sid} ({count})")
+            status.update(
+                "[bold]Fetching skills from registries...[/]  "
+                f"[dim]done: {', '.join(_done)}[/]"
+            )
+
         all_results, source_counts, timed_out = parallel_search_sources(
             sources,
             query="",
             per_source_limits=_PER_SOURCE_LIMIT,
             source_filter=source,
             overall_timeout=30,
+            on_source_done=_on_source_done,
         )
 
     if not all_results:
@@ -671,6 +690,47 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     from tools.skills_hub import SKILLS_DIR
     c.print(f"[bold green]Installed:[/] {install_dir.relative_to(SKILLS_DIR)}")
     c.print(f"[dim]Files: {', '.join(bundle.files.keys())}[/]\n")
+
+    # Blueprint detection: if the installed skill declares a
+    # metadata.hermes.blueprint block, it is a runnable automation. Register it as
+    # a Suggested Cron Job rather than auto-scheduling — installing never
+    # silently creates a recurring job; the user accepts it via /suggestions.
+    # This is the single surface every automation proposal flows through.
+    try:
+        from tools.blueprints import BlueprintError, blueprint_spec_for_installed, register_blueprint_suggestion
+
+        try:
+            spec = blueprint_spec_for_installed(bundle.name)
+        except BlueprintError as _rec_err:
+            c.print(f"[yellow]Blueprint block present but invalid:[/] {_rec_err}\n")
+            spec = None
+        if spec is not None:
+            registered = register_blueprint_suggestion(spec)
+            if registered is not None:
+                c.print(
+                    f"[bold cyan]Blueprint:[/] '{bundle.name}' is an automation "
+                    f"(schedule [bold]{spec.schedule}[/])."
+                )
+                c.print(
+                    "[dim]Added to your suggestions — run[/] [bold]/suggestions[/] "
+                    "[dim]to schedule or dismiss it.[/]\n"
+                )
+            else:
+                # Dropped: already offered/dismissed (latched) or the pending
+                # list is at its cap. Say so instead of silently doing nothing —
+                # the user can still schedule it by hand.
+                c.print(
+                    f"[bold cyan]Blueprint:[/] '{bundle.name}' is an automation "
+                    f"(schedule [bold]{spec.schedule}[/]), but it wasn't added to "
+                    "your suggestions (already offered/dismissed, or the pending "
+                    "list is full — run [bold]/suggestions[/] to review)."
+                )
+                c.print(
+                    "[dim]You can still schedule it any time by asking the agent "
+                    "or via[/] [bold]hermes cron add[/][dim].[/]\n"
+                )
+    except Exception:  # pragma: no cover - blueprint detection is best-effort
+        pass
 
     if invalidate_cache:
         # Invalidate the skills prompt cache so the new skill appears immediately

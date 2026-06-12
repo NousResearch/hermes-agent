@@ -4,13 +4,13 @@ on:
   push:
     branches: [main]
     paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
+      - "**/*.md"
+      - "docs/**"
   pull_request:
     branches: [main]
     paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
+      - "**/*.md"
+      - "docs/**"
 
 permissions:
   contents: read
@@ -30,13 +30,17 @@ jobs:
         slice: [1, 2, 3, 4, 5, 6]
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Restore duration cache
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test_durations.json
-          # Single stable key. main always overwrites, PRs always find it.
+          # main always writes a new suffix, but jobs pick the latest one with the same prefix
+          # quote from https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#cache-hits-and-misses
+          # If you provide restore-keys, the cache action sequentially searches for any caches that match the list of restore-keys.
+          # If there are no exact matches, the action searches for partial matches of the restore keys.
+          # When the action finds a partial match, the most recent cache is restored to the path directory.
           key: test-durations
 
       - name: Install ripgrep (prebuilt binary)
@@ -54,16 +58,32 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
 
       - name: Run tests (slice ${{ matrix.slice }}/6)
         # Per-file isolation via scripts/run_tests_parallel.py: discovers
@@ -99,7 +119,7 @@ jobs:
           NOUS_API_KEY: ""
 
       - name: Upload per-slice durations
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: test-durations-slice-${{ matrix.slice }}
           path: test_durations.json
@@ -109,11 +129,11 @@ jobs:
   # (including PRs) get balanced slicing.
   save-durations:
     needs: test
-    if: always() && github.ref == 'refs/heads/main'
+    if: needs.test.result == 'success' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - name: Download all slice durations
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: test-durations-slice-*
           path: durations
@@ -133,17 +153,17 @@ jobs:
           "
 
       - name: Save merged duration cache
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: test_durations.json
-          key: test-durations
+          key: test-durations-${{ github.run_id }}
 
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: Install ripgrep (prebuilt binary)
         run: |
@@ -160,16 +180,32 @@ jobs:
           rg --version
 
       - name: Install uv
-        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86  # v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
+        with:
+          # Persist uv's download/wheel cache (~/.cache/uv) across runs.
+          # Keyed on the dependency manifests, so the cache is reused until
+          # pyproject.toml or uv.lock changes. `uv sync` still runs every
+          # time, but resolves from the warm cache instead of re-downloading
+          # and re-building wheels.
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
 
       - name: Set up Python 3.11
         run: uv python install 3.11
 
       - name: Install dependencies
-        run: |
-          uv venv .venv --python 3.11
-          source .venv/bin/activate
-          uv pip install -e ".[all,dev]"
+        # `uv sync --locked` installs the exact pinned set from uv.lock (and
+        # fails if the lock is out of sync with pyproject.toml), giving a
+        # reproducible env. It also creates .venv itself, so no separate
+        # `uv venv` step is needed.
+        run: uv sync --locked --python 3.11 --extra all --extra dev
+
+      - name: Minimize uv cache
+        # Optimized for CI: prunes pre-built wheels that are cheap to
+        # re-download, keeping the persisted cache small and fast to restore.
+        run: uv cache prune --ci
 
       - name: Packaged-wheel i18n smoke test
         run: |

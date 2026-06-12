@@ -65,6 +65,15 @@ def test_resolve_provider_full_finds_named_custom_provider():
     assert resolved.source == "user-config"
 
 
+def test_is_aggregator_recognizes_named_custom_provider():
+    assert providers_mod.is_aggregator("custom:hpc-ai") is True
+    assert providers_mod.is_aggregator("custom:litellm") is True
+
+
+def test_is_aggregator_leaves_unknown_provider_non_aggregator():
+    assert providers_mod.is_aggregator("not-a-provider") is False
+
+
 def test_switch_model_accepts_explicit_named_custom_provider(monkeypatch):
     """Shared /model switch pipeline should accept --provider for custom_providers."""
     monkeypatch.setattr(
@@ -606,3 +615,107 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
         "gateway-model-c",
     ], "Live models must replace the static subset"
     assert gateway_prov["total_models"] == 3
+
+
+def test_custom_providers_discover_models_false_keeps_explicit_subset(monkeypatch):
+    """Custom providers (section 4) with ``discover_models: false`` must keep
+    their explicit ``models:`` subset instead of replacing it with live
+    /models, even when an api_key is present.
+
+    This mirrors section 3 (user ``providers:``) behaviour and supports
+    endpoints that expose a full aggregator catalog via /models but only
+    serve a configured subset.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "my-gateway",
+            "api_key": "***",
+            "base_url": "https://gateway.example.com/v1",
+            "discover_models": False,
+            "model": "gateway-model-a",
+            "models": {
+                "gateway-model-a": {"context_length": 128000},
+                "gateway-model-b": {"context_length": 128000},
+            },
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        (
+            p
+            for p in providers
+            if p.get("api_url") == "https://gateway.example.com/v1"
+        ),
+        None,
+    )
+
+    assert gateway_prov is not None, "Custom provider group not found in results"
+    assert calls == [], (
+        "fetch_api_models must NOT be called when discover_models is false"
+    )
+    assert gateway_prov["models"] == [
+        "gateway-model-a",
+        "gateway-model-b",
+    ], "Explicit models: subset must be preserved when discovery is disabled"
+    assert gateway_prov["total_models"] == 2
+
+
+def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch):
+    """String ``discover_models: "false"`` (hand-edited / env-style configs)
+    must be treated as a disable, same as the boolean ``False`` and section 3.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url):
+        calls.append((api_key, base_url))
+        return ["live-a", "live-b"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    custom_providers = [
+        {
+            "name": "my-gateway",
+            "api_key": "***",
+            "base_url": "https://gateway.example.com/v1",
+            "discover_models": "false",
+            "model": "only-model",
+            "models": {"only-model": {"context_length": 128000}},
+        }
+    ]
+
+    providers = list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+        custom_providers=custom_providers,
+        max_models=50,
+    )
+
+    gateway_prov = next(
+        (p for p in providers if p.get("api_url") == "https://gateway.example.com/v1"),
+        None,
+    )
+
+    assert gateway_prov is not None
+    assert calls == [], "string 'false' must disable live discovery"
+    assert gateway_prov["models"] == ["only-model"]

@@ -24,12 +24,6 @@
 
 ### Install with Hermes (recommended)
 
-Add `--include-desktop` to the [one-line installer](../../README.md#quick-install) and it sets up the agent and builds the desktop app in one go:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
-```
-
 Already have the Hermes CLI? Just run:
 
 ```bash
@@ -40,7 +34,7 @@ It builds and launches the GUI against your existing install — same config, ke
 
 ### Prebuilt installers
 
-When a release ships desktop installers they're attached to its [releases page](https://github.com/NousResearch/hermes-agent/releases) — `.dmg` (macOS), `.exe` / `.msi` (Windows), `.AppImage` / `.deb` / `.rpm` (Linux). These are published manually, so the install-with-Hermes path above is the most reliable way to get the latest.
+Prebuilt installers are built and distributed via [the Hermes Desktop website.](https://hermes-agent.nousresearch.com/desktop).
 
 ---
 
@@ -56,10 +50,7 @@ hermes update
 
 ## Requirements
 
-The installer handles everything for you (Python 3.11+, a portable Git, ripgrep). The only thing worth knowing:
-
-- **Windows** — the installer bundles its own Git and Python; no admin rights or system changes required.
-- **macOS / Linux** — uses your system Python 3.11+ (installed automatically if missing).
+The installer handles everything for you (Python 3.11+, a portable Git, ripgrep).
 
 ---
 
@@ -94,7 +85,7 @@ Installers are built and uploaded to GitHub Releases manually. macOS/Windows sig
 
 ### How it works
 
-The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — the **same layout a CLI install uses**, so the two are interchangeable. The renderer (React, in `src/`) talks to a `hermes dashboard --tui` backend over the standard gateway APIs and reuses the embedded TUI rather than reimplementing chat. The install, backend-resolution, and self-update logic all live in `electron/main.cjs`.
+The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — the **same layout a CLI install uses**, so the two are interchangeable. The renderer (React, in `src/`) talks to a `hermes dashboard` backend over the standard gateway APIs and reuses the embedded TUI rather than reimplementing chat. The install, backend-resolution, and self-update logic all live in `electron/main.cjs`.
 
 ### Verification
 
@@ -102,7 +93,7 @@ Run before opening a PR (lint may surface pre-existing warnings but must exit cl
 
 ```bash
 npm run fix
-npm run type-check
+npm run typecheck
 npm run lint
 npm run test:desktop:all
 ```

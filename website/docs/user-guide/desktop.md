@@ -22,19 +22,7 @@ Pick whichever fits the moment. They share state, so you can start a session in 
 
 ## Install
 
-### With the Hermes Desktop installer on MacOS or Windows (recommended)
-
-[Download the Hermes Desktop installer](https://hermes-agent.nousresearch.com/desktop) from our website and run it.
-
-### With the CLI installer on Linux, MacOS, or Windows
-
-Add `--include-desktop` to the regular install script.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash -s -- --include-desktop
-```
-
-### With an existing Hermes installation
+Follow the [installation instructions for Hermes Desktop](../getting-started/installation.md).
 
 If you already have Hermes installed, simply run
 
@@ -56,8 +44,16 @@ The center of the app. You get:
 - **The same conversation history** as every other Hermes surface — sessions started here resume in the CLI/TUI and vice versa.
 - **Drag-and-drop files** anywhere in the chat area to attach them to your next message.
 - **A right-hand preview rail** — render web pages, files, and tool outputs side by side while you keep chatting.
+- **Composer history and queue editing** — press the up/down arrow keys in an empty composer to recall and reuse previous prompts, and edit messages you've queued up before they're sent.
 
-Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the `/api/ws` chat socket, the `--tui` requirement, session-token pinning, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
+#### Status bar
+
+The bar along the bottom of the chat shows live session state and exposes quick controls without opening Settings:
+
+- **Inline model picker** — switch the model for the active session straight from the status bar.
+- **Per-session YOLO toggle** — flip YOLO on or off for just this session (matching the TUI). YOLO bypasses the dangerous-command approval prompts, so know what you're turning off — see [Security → YOLO Mode](./security.md#yolo-mode).
+
+Chatting against a Hermes instance on another machine instead of the bundled local backend? See [Connecting to a remote backend](#connecting-to-a-remote-backend) below — and for the full picture of how the remote-hosted dashboard connection works (the auth gate, the `/api/ws` chat socket, and WebSocket close-code triage), see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend).
 
 ### File browser
 
@@ -71,6 +67,14 @@ Talk to Hermes and hear it back, the same [voice mode](./features/voice-mode.md)
 
 Manage providers, models, tools, and credentials from a real UI instead of editing YAML. First-run onboarding gets you to your first message in seconds. The settings panes cover providers/keys, model selection, toolset configuration, MCP servers, the gateway, and session management.
 
+- **Providers settings pane** — a dedicated place to manage inference providers, with an Accounts / API-keys UX for signing in and storing credentials per provider.
+- **Every provider and model in the menus** — the GUI surfaces the full provider list and every model that `hermes model` knows about, so you pick from the same catalog the CLI sees rather than a curated subset.
+- **xAI Grok OAuth** — Grok is a first-class OAuth provider in the launcher; sign in through the browser flow like the other OAuth providers.
+- **Tool-backend installs from the GUI** — run a tool backend's post-setup install steps directly from the app instead of dropping to a terminal.
+- **Auxiliary-model warning** — if you switch the main model to a new provider while auxiliary tasks (titling, summarization, and similar helpers) are still pinned to another provider, the app warns you so you don't unknowingly split work across two providers.
+
+First-run onboarding has been redesigned on a unified overlay design system, and you can pick **Choose provider later** to skip provider setup and get into the app first.
+
 ### Management panes
 
 The app also surfaces the broader Hermes management surface so you don't have to drop to a terminal:
@@ -81,11 +85,40 @@ The app also surfaces the broader Hermes management surface so you don't have to
 - **Messaging** — set up gateway channels.
 - **Agents** and **Command Center** — orchestration surfaces for multi-agent work.
 
+### Keyboard & navigation
+
+- **Command palette** — press **Cmd+K** (Ctrl+K on Windows/Linux) to jump to actions and navigate the app from the keyboard.
+- **Rebindable shortcuts** — a shortcuts panel in Settings lets you remap the app's keyboard shortcuts to your own keys.
+- **Custom zoom shortcuts** — zoom the interface in half-step increments for finer control over text size.
+- **UI language switcher** — change the app's interface language in-app, including Simplified Chinese (zh-Hans).
+
+### Sessions & profiles
+
+- **Session-list overhaul** — a reworked session list with archiving and general session hygiene to keep the list manageable as it grows.
+- **Search sessions by id** — find a specific session directly by its id.
+- **Concurrent multi-profile sessions** — run sessions across multiple [profiles](./profiles.md) at the same time, and reference a session in another profile with cross-profile `@session` links.
+
 ## Updating
 
 The app checks for updates in the background and offers a one-click update when one is ready.
 
 The [manual update process](https://hermes-agent.nousresearch.com/docs/getting-started/updating) also works with the GUI.
+
+## Uninstalling
+
+Open **Settings → About → Danger zone** and pick how much to remove:
+
+- **Uninstall Chat GUI only** — removes the desktop app and its data; the Hermes agent, your config, and your chats stay. (Same as `hermes uninstall --gui`.)
+- **Uninstall GUI + agent, keep my data** — removes the app and the agent but keeps config, chats, and secrets for a future reinstall. (Same as `hermes uninstall`.)
+- **Uninstall everything** — removes the app, the agent, and all user data. (Same as `hermes uninstall --full`.)
+
+The app closes to finish the job (the cleanup runs after it exits so it can remove the running app bundle and its own venv). The agent-removing options are hidden automatically when no local agent is installed (for example, a GUI-only "lite" client connected to a remote backend).
+
+You can do the same from the terminal — `hermes uninstall --gui` for the GUI alone, or `hermes uninstall` / `hermes uninstall --full` for the agent too.
+
+:::note
+Running `hermes uninstall --gui` from a **source checkout** (a `hermes desktop` dev build) also removes the workspace `node_modules` and `apps/desktop/{dist,release}` build output, since those are GUI build artifacts. They're recoverable with `hermes desktop` (or `npm install` + a rebuild) — but if you're actively hacking on the desktop app, expect to reinstall dependencies afterward.
+:::
 
 ## CLI reference: `hermes desktop`
 
@@ -104,43 +137,56 @@ To launch via the CLI, simply run `hermes desktop`. By default it installs works
 
 ## How it works
 
-The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. The React renderer talks to a `hermes dashboard --tui` backend over the standard gateway APIs and reuses the agent rather than reimplementing it. Install, backend-resolution, and self-update logic live in the Electron main process.
+The packaged app ships only the Electron shell. On first launch it installs the Hermes Agent runtime into `HERMES_HOME` (`~/.hermes`, or `%LOCALAPPDATA%\hermes` on Windows) — **the same layout a CLI install uses**, which is why the two are interchangeable. The React renderer talks to a `hermes dashboard` backend over the standard gateway APIs and reuses the agent rather than reimplementing it. Install, backend-resolution, and self-update logic live in the Electron main process.
 
 ## Connecting to a remote backend
 
-By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale — under **Settings → Gateway → Remote gateway**. It asks for two things:
+By default the app starts and manages its own **local** backend. You can instead point it at a Hermes backend running on another machine — a VPS, a home server, or a Mini behind Tailscale.
 
-- **Remote URL** — the backend's dashboard URL, e.g. `http://<host>:9119`
-- **Session token** — the backend's dashboard session token
+:::info The remote backend is a running `hermes dashboard` process
+"Remote backend" means a **`hermes dashboard`** server running on the remote machine — that is the process the desktop app connects to. Nothing in this section works unless that dashboard is actually up and reachable. The desktop app does not start it for you; you (or a `systemd` service) keep `hermes dashboard` running on the remote host, and the app attaches to it. If you also use messaging channels (Telegram, Discord, etc.), the **gateway** is a *separate* long-running process you start independently — see the note after the setup steps.
+:::
 
-The session token is the part that trips people up. **Hermes does not print it for you to copy** — by default the backend mints a fresh random token on every boot and injects it straight into the served HTML, so there is nothing in `config.yaml`, in `/gateway`, or in the logs to grab. For a remote connection you pin the token yourself on the backend, then paste that same value into the app.
+The connection has two halves: on the backend you protect the dashboard with an **auth provider**, and in the app you enter the backend's URL and sign in. Binding the dashboard to a non-loopback address automatically engages its auth gate, and the provider you configure is what lets the desktop app through.
 
-The backend also has to be started with **`--tui`** (or `HERMES_DASHBOARD_TUI=1`). The desktop's chat runs over the dashboard's `/api/ws` + `/api/pty` WebSockets, and those endpoints are refused unless the embedded-chat surface is enabled. Without `--tui` the connection still passes the `/api/status` health check and the app reports "Remote Hermes backend is ready" — but chat never works because the WebSocket is closed immediately. A plain `hermes dashboard` or `hermes gateway` is not enough.
+**Pick a provider based on where the backend lives:**
+
+- **OAuth (Nous Portal) — preferred for anything reachable beyond your own machine.** Logins are verified against your Nous account, so this is the option suitable for a VPS, a public host, or any remote backend. Register the dashboard with `hermes dashboard register` (or the Portal [`/local-dashboards`](https://portal.nousresearch.com/local-dashboards) page) to provision its OAuth client, then sign in from the app with **Sign in with Nous Research**. A self-hosted OIDC provider works the same way if you run your own identity provider.
+- **Username/password — local / trusted-network use only.** The simplest option when the backend is on the same trusted LAN or reachable only over a VPN (e.g. Tailscale). It protects a single shared credential with no external identity provider, so **do not use it for a dashboard exposed to the public internet** — reach for OAuth there instead.
+
+The rest of this section shows the username/password path because it's the quickest to stand up on a trusted network; for the OAuth path see [Web Dashboard → Default provider: Nous Research](./features/web-dashboard.md#default-provider-nous-research).
 
 ### On the backend (the remote machine)
 
-```bash
-# 1. Mint a stable token and store it in ~/.hermes/.env (secrets file, 0600).
-#    Without HERMES_DASHBOARD_SESSION_TOKEN the token is random per boot and
-#    uncopyable; setting it pins the value the desktop app will use.
-TOKEN=$(openssl rand -base64 32)
-echo "HERMES_DASHBOARD_SESSION_TOKEN=$TOKEN" >> ~/.hermes/.env
-chmod 600 ~/.hermes/.env
-echo "$TOKEN"   # copy this value into the desktop app
+Set a username and password, then start the dashboard bound to a reachable address. The credentials live in `~/.hermes/.env` (the secrets file, mode 0600):
 
-# 2. Run the dashboard bound to a reachable address.
-#    --tui enables the embedded chat (the /api/ws + /api/pty WebSockets the
-#    desktop drives) — without it the app connects but chat stays dead.
-#    --insecure is required for any non-loopback bind and keeps the legacy
-#    session-token auth path (a non-loopback bind WITHOUT --insecure engages
-#    the OAuth gate, which ignores the session token).
-hermes dashboard --tui --no-open --insecure --host 0.0.0.0 --port 9119
+```bash
+# 1. Set the dashboard login credentials.
+cat >> ~/.hermes/.env <<'EOF'
+HERMES_DASHBOARD_BASIC_AUTH_USERNAME=admin
+HERMES_DASHBOARD_BASIC_AUTH_PASSWORD=choose-a-strong-password
+# Recommended: a stable signing secret so sessions survive restarts.
+# Without it a random key is generated per boot and you'll be logged out
+# on every restart.
+HERMES_DASHBOARD_BASIC_AUTH_SECRET=$(openssl rand -base64 32)
+EOF
+chmod 600 ~/.hermes/.env
+
+# 2. Run the dashboard bound to a reachable address. The non-loopback bind
+#    engages the auth gate; the username/password provider handles login.
+hermes dashboard --no-open --host 0.0.0.0 --port 9119
 ```
 
-Running the dashboard as a systemd service? Give the unit `EnvironmentFile=%h/.hermes/.env` so the token is in the environment at boot.
+Keep that `hermes dashboard` process running for as long as you want the desktop app to be able to connect — if it stops, the app can no longer reach the backend. Run it under `systemd`, `tmux`, or your process manager of choice so it survives logout and reboots.
+
+Separately, make sure the **gateway is running** on the remote host if you rely on messaging channels — the dashboard backend is what the desktop app talks to, but your Telegram/Discord/Slack gateway sessions are a different process that you start and keep running on their own. See [Messaging](./messaging/index.md) for gateway setup.
+
+Prefer not to keep a plaintext password at rest? Set `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD_HASH` to a scrypt hash instead — compute it with `python -c "from plugins.dashboard_auth.basic import hash_password; print(hash_password('PW'))"`. Full configuration surface (config.yaml keys, every env var, the rate limiter): [Web Dashboard → Username/password provider](./features/web-dashboard.md#usernamepassword-provider-no-oauth-idp).
+
+Running the dashboard as a systemd service? Give the unit `EnvironmentFile=%h/.hermes/.env` so the credentials are in the environment at boot.
 
 :::warning
-`--insecure` exposes a port that reads/writes your `.env` (API keys, secrets) and can run agent commands. Never expose it to the open internet — put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL so only your tailnet can reach it.
+The dashboard reads and writes your `.env` (API keys, secrets) and can run agent commands. The **username/password** setup shown above is for a trusted network — never expose a password-protected dashboard directly to the open internet; put it behind a VPN. [Tailscale](https://tailscale.com/) is the clean option: bind to the machine's tailscale IP (`--host <tailscale-ip>`) and use `http://<tailscale-ip>:9119` as the Remote URL so only your tailnet can reach it. To reach a backend over the public internet, use the **OAuth (Nous Portal)** provider instead.
 :::
 
 ### In the app
@@ -148,18 +194,21 @@ Running the dashboard as a systemd service? Give the unit `EnvironmentFile=%h/.h
 **Settings → Gateway → Remote gateway:**
 
 1. **Remote URL** — `http://<backend-host>:9119` (path prefixes like `/hermes` work if you front it with a reverse proxy)
-2. **Session token** — paste the `$TOKEN` value from step 1
-3. **Test remote** — confirms the backend is reachable and the token is accepted
-4. **Save and reconnect** — switches the desktop shell onto the remote backend
+2. **Sign in** — the app detects which provider the backend advertises and adapts the button. For a username/password backend it shows a **Sign in** button that opens a credential form (enter the credentials from step 1). For an OAuth backend it shows **Sign in with `<provider>`** (e.g. *Sign in with Nous Research*), which runs the provider's browser sign-in. Either way the app ends up with an authenticated session against the backend.
+3. **Save and reconnect** — switches the desktop shell onto the remote backend. The session refreshes automatically; you stay signed in across restarts when `HERMES_DASHBOARD_BASIC_AUTH_SECRET` is set.
 
-The token is stored encrypted in the app's local config; leave the field blank on a later edit to keep the saved one. You can also set it without the UI via the `HERMES_DESKTOP_REMOTE_URL` + `HERMES_DESKTOP_REMOTE_TOKEN` environment variables before launching the app (both must be set together; they override the in-app settings).
+You can also set the backend URL without the UI via the `HERMES_DESKTOP_REMOTE_URL` environment variable before launching the app (it overrides the in-app setting); you still sign in from the Gateway settings panel.
+
+:::note Per-profile remote hosts
+The remote gateway host is configured per [profile](./profiles.md), so each profile can point at its own remote backend (or stay on its local one). Switching profiles switches which remote host the app connects to.
+:::
 
 ### Troubleshooting
 
-- **Test fails with 401** — the token doesn't match the backend's `HERMES_DASHBOARD_SESSION_TOKEN`, or the backend is bound non-loopback *without* `--insecure` (OAuth gate is on, ignoring the token). Verify with `curl -s -H "X-Hermes-Session-Token: $TOKEN" http://<host>:9119/api/status` — that should return JSON, not a 401.
-- **App says "Remote Hermes backend is ready" but chat does nothing** — the backend was started without `--tui` (or `HERMES_DASHBOARD_TUI=1`). The status probe passes, but the chat WebSocket (`/api/ws` / `/api/pty`) is refused. Restart the backend with `--tui`.
+- **Sign-in fails with 401 / "Invalid credentials"** — the username or password doesn't match the backend's `HERMES_DASHBOARD_BASIC_AUTH_USERNAME` / `HERMES_DASHBOARD_BASIC_AUTH_PASSWORD`. The backend returns the same generic error for an unknown user and a wrong password (no enumeration oracle), so double-check both. Confirm the gate is on with `curl -s http://<host>:9119/api/status | jq '.auth_required, .auth_providers'` — it should report `true` and include `"basic"`.
+- **No "Sign in" button — it asks for a session token instead** — the backend's username/password provider isn't active. `/api/status` won't list `"basic"` in `auth_providers`. Make sure both the username and a password (or password hash) are set in `~/.hermes/.env` and that the dashboard process actually loaded them.
+- **Signed out on every restart** — set `HERMES_DASHBOARD_BASIC_AUTH_SECRET` to a stable value. Without it the token-signing key is regenerated per boot, invalidating all sessions.
 - **Connection refused / times out** — the backend bound to `127.0.0.1` (the default) or a firewall/VPN is blocking the port. Bind to `0.0.0.0` or the tailscale IP and open the port to your trusted network.
-- **No token to copy** — expected. You mint it yourself; Hermes never surfaces the default ephemeral one.
 
 For the same setup from the web-dashboard angle, see [Web Dashboard → Connecting Hermes Desktop to a remote backend](./features/web-dashboard.md#connecting-hermes-desktop-to-a-remote-backend); the env vars are catalogued under [Environment Variables → Web Dashboard & Hermes Desktop](../reference/environment-variables.md#web-dashboard--hermes-desktop).
 
@@ -182,6 +231,26 @@ rm -rf "$HOME/.hermes/hermes-agent/venv"
 
 # Reset a stuck macOS microphone prompt
 tccutil reset Microphone com.nousresearch.hermes
+```
+
+### "Build desktop app" stuck on Electron download
+
+The build downloads the Electron runtime (~114&nbsp;MB) from `github.com/electron/electron/releases`. If the installer hangs on the **Build desktop app** step with the live output repeating `retrying attempt=…`, GitHub is being blocked or throttled on your network (firewall, proxy, or region).
+
+The installer self-heals this automatically: on a failed build it (1) clears a corrupt cached Electron zip and retries, then (2) if it still fails and you haven't set `ELECTRON_MIRROR`, retries once more through `npmmirror.com`, the de-facto Electron community mirror. `@electron/get` SHASUM-checks the download, but the checksums come from the same mirror — that catches a corrupt or partial download, not a compromised mirror. If you'd rather not trust a third-party host, pin your own `ELECTRON_MIRROR` (below); the build never overrides one you've set.
+
+To **choose your own mirror** (e.g. a corporate/trusted one), set `ELECTRON_MIRROR` before installing or rebuild manually — the build honors it and won't override it:
+
+```bash
+ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ \
+  bash -c 'cd "$HOME/.hermes/hermes-agent/apps/desktop" && CSC_IDENTITY_AUTO_DISCOVERY=false npm run pack'
+```
+
+To clear a corrupt cached zip by hand:
+
+```bash
+rm -f "$HOME/Library/Caches/electron"/electron-*.zip   # macOS
+rm -f "$HOME/.cache/electron"/electron-*.zip            # Linux
 ```
 
 ## Building from source

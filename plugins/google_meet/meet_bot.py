@@ -699,7 +699,13 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             context.close()
             browser.close()
-            # v2: teardown realtime speaker + audio bridge.
+            # v2: teardown PCM pump, speaker thread, and audio bridge.
+            if rt.get("pcm_pump"):
+                try:
+                    rt["pcm_pump"].terminate()
+                    rt["pcm_pump"].wait(timeout=3)
+                except Exception:
+                    pass
             if rt["speaker_stop"]:
                 try:
                     rt["speaker_stop"]()

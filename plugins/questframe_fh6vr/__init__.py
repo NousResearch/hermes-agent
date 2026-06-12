@@ -89,6 +89,12 @@ _TOOLS = (
         "Q",
     ),
     (
+        "questframe_immersive_presentation_loop_selftest",
+        core.IMMERSIVE_PRESENTATION_LOOP_SELFTEST_SCHEMA,
+        core.handle_immersive_presentation_loop_selftest,
+        "Q",
+    ),
+    (
         "questframe_support_report",
         core.SUPPORT_REPORT_SCHEMA,
         core.handle_support_report,

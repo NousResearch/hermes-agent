@@ -129,6 +129,17 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     openxr_presentation.add_argument("--frames", type=int, default=None)
     openxr_presentation.add_argument("--timeout-seconds", type=int, default=None)
 
+    immersive_presentation_loop = subs.add_parser(
+        "immersive-presentation-loop-selftest",
+        help="Run sustained FH6VR immersive OpenXR presentation loop (0.20 gate)",
+    )
+    immersive_presentation_loop.add_argument("--launcher-exe", default="")
+    immersive_presentation_loop.add_argument("--approve", action="store_true")
+    immersive_presentation_loop.add_argument("--attempt-window-capture", action="store_true")
+    immersive_presentation_loop.add_argument("--seconds", type=int, default=None)
+    immersive_presentation_loop.add_argument("--target-hz", type=int, default=None)
+    immersive_presentation_loop.add_argument("--timeout-seconds", type=int, default=None)
+
     live_color_loop = subs.add_parser(
         "live-color-loop-selftest",
         help="Run FH6 live color + companion depth loop self-test (0.19.2 gate, DXGI capture)",
@@ -169,6 +180,7 @@ def questframe_command(args: argparse.Namespace) -> int:
             "depth-surface-selftest,depth-reader-selftest,depth-producer-selftest,"
             "companion-depth-producer-selftest,color-depth-pairing-selftest,"
             "openxr-presentation-selftest,live-color-loop-selftest,"
+            "immersive-presentation-loop-selftest,"
             "support-report,unity-scan}"
         )
         return 2
@@ -364,6 +376,26 @@ def questframe_command(args: argparse.Namespace) -> int:
         return _print(
             core.run_launcher(
                 "openxr-presentation-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "immersive-presentation-loop-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "approve", False)):
+            extra.append("--approve")
+        if bool(getattr(args, "attempt_window_capture", False)):
+            extra.append("--attempt-window-capture")
+        seconds = getattr(args, "seconds", None)
+        if seconds:
+            extra.extend(["--seconds", str(seconds)])
+        target_hz = getattr(args, "target_hz", None)
+        if target_hz:
+            extra.extend(["--target-hz", str(target_hz)])
+        return _print(
+            core.run_launcher(
+                "immersive-presentation-loop-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),

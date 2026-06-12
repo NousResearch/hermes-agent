@@ -442,6 +442,46 @@ OPENXR_PRESENTATION_SELFTEST_SCHEMA = {
     },
 }
 
+IMMERSIVE_PRESENTATION_LOOP_SELFTEST_SCHEMA = {
+    "name": "questframe_immersive_presentation_loop_selftest",
+    "description": "Run sustained FH6VR immersive OpenXR presentation loop (0.20 gate).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": "When true, pass --approve (required).",
+            },
+            "attempt_window_capture": {
+                "type": "boolean",
+                "description": "When true, pass --attempt-window-capture for live FH6 color.",
+            },
+            "seconds": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 30,
+                "description": "Loop duration in seconds (default 5).",
+            },
+            "target_hz": {
+                "type": "integer",
+                "minimum": 24,
+                "maximum": 120,
+                "description": "Target presentation rate (default 72).",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 600,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 SUPPORT_REPORT_SCHEMA = {
     "name": "questframe_support_report",
     "description": "Create redacted QuestFrame/FH6VR JSON and HTML support reports.",
@@ -890,6 +930,7 @@ def status() -> dict[str, Any]:
             "questframe_companion_depth_producer_selftest",
             "questframe_color_depth_pairing_selftest",
             "questframe_openxr_presentation_selftest",
+            "questframe_immersive_presentation_loop_selftest",
             "questframe_support_report",
             "questframe_unity_scan",
         ],
@@ -1140,6 +1181,29 @@ def handle_openxr_presentation_selftest(args: dict[str, Any] | None = None, **_:
     )
 
 
+def handle_immersive_presentation_loop_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    if bool(args.get("approve")):
+        extra.append("--approve")
+    if bool(args.get("attempt_window_capture")):
+        extra.append("--attempt-window-capture")
+    seconds = int(args.get("seconds") or 0)
+    if seconds > 0:
+        extra.extend(["--seconds", str(seconds)])
+    target_hz = int(args.get("target_hz") or 0)
+    if target_hz > 0:
+        extra.extend(["--target-hz", str(target_hz)])
+    return _json(
+        run_launcher(
+            "immersive-presentation-loop-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 def support_report(
     *,
     launcher_exe: str | None = None,
@@ -1311,8 +1375,27 @@ def handle_slash(raw_args: str) -> str:
                 "approve": "--approve" in argv,
                 "attempt_window_capture": "--attempt-window-capture" in argv,
                 "require_pairing": "--require-pairing" in argv,
+                "immersive_check": "--immersive-check" in argv,
             }
         )
+    if command in {
+        "immersive-presentation-loop-selftest",
+        "immersive-presentation-loop",
+        "immersive-loop-selftest",
+    }:
+        args = {
+            "approve": "--approve" in argv,
+            "attempt_window_capture": "--attempt-window-capture" in argv,
+        }
+        if "--seconds" in argv:
+            index = argv.index("--seconds")
+            if index + 1 < len(argv):
+                args["seconds"] = int(argv[index + 1])
+        if "--target-hz" in argv:
+            index = argv.index("--target-hz")
+            if index + 1 < len(argv):
+                args["target_hz"] = int(argv[index + 1])
+        return handle_immersive_presentation_loop_selftest(args)
     if command in {"support-report", "report"}:
         return handle_support_report({})
     if command == "unity-scan":

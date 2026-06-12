@@ -2559,7 +2559,7 @@ class TestReactions:
         await adapter._handle_slack_reaction_added({
             "type": "reaction_added",
             "user": "U_REACTOR",
-            "reaction": "plankton",
+            "reaction": "karen",
             "item": {
                 "type": "message",
                 "channel": "C_DEV",
@@ -2577,10 +2577,77 @@ class TestReactions:
         assert msg_event.raw_message["_hermes_reaction_source_channel"] == "C_DEV"
         assert "Train on this" in msg_event.text
         assert "Original Slack message: https://fleet.slack.com/archives/C_DEV/p1710000000000100" in msg_event.text
+        assert ":karen: on #fleetsmarts-dev or #karen-train" in msg_event.text
+        assert "verify the linked issue is still unresolved" in msg_event.text
+        assert "do not make the code change again" in msg_event.text
         adapter._app.client.chat_getPermalink.assert_awaited_once_with(
             channel="C_DEV",
             message_ts="1710000000.000100",
         )
+
+    @pytest.mark.asyncio
+    async def test_reaction_source_channel_allowlist_accepts_dev_and_train(self, adapter):
+        """Configured source allowlist should permit both Dev and Karen Train."""
+        adapter.config.extra["trigger_reaction_source_channels"] = ["C_DEV", "C_TRAIN"]
+        adapter.config.extra["trigger_reaction_target_channel"] = "C_TRAIN"
+        adapter._app.client.conversations_history = AsyncMock(return_value={
+            "messages": [{
+                "type": "message",
+                "user": "U_ORIGINAL",
+                "text": "Build this once",
+                "ts": "1710000000.000100",
+            }]
+        })
+        adapter._app.client.chat_getPermalink = AsyncMock(return_value={
+            "ok": True,
+            "permalink": "https://fleet.slack.com/archives/C_TRAIN/p1710000000000100",
+        })
+        adapter._app.client.conversations_replies = AsyncMock(return_value={"messages": []})
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Kevin"}}
+        })
+
+        await adapter._handle_slack_reaction_added({
+            "type": "reaction_added",
+            "user": "U_REACTOR",
+            "reaction": "karen",
+            "item": {
+                "type": "message",
+                "channel": "C_TRAIN",
+                "ts": "1710000000.000100",
+            },
+            "event_ts": "1710000001.000201",
+            "team": "T_TEAM",
+        })
+
+        adapter.handle_message.assert_awaited_once()
+        msg_event = adapter.handle_message.await_args.args[0]
+        assert msg_event.source.chat_id == "C_TRAIN"
+        assert not msg_event.source.thread_id
+        assert "Build this once" in msg_event.text
+        assert "verify the linked issue is still unresolved" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_reaction_source_channel_allowlist_blocks_other_channels(self, adapter):
+        """Configured source allowlist should ignore reactions elsewhere."""
+        adapter.config.extra["trigger_reaction_source_channels"] = ["C_DEV", "C_TRAIN"]
+        adapter._app.client.conversations_history = AsyncMock()
+
+        await adapter._handle_slack_reaction_added({
+            "type": "reaction_added",
+            "user": "U_REACTOR",
+            "reaction": "karen",
+            "item": {
+                "type": "message",
+                "channel": "C_RANDOM",
+                "ts": "1710000000.000100",
+            },
+            "event_ts": "1710000001.000201",
+            "team": "T_TEAM",
+        })
+
+        adapter._app.client.conversations_history.assert_not_called()
+        adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_reaction_target_with_thread_routes_to_target_thread(self, adapter):

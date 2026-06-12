@@ -1046,6 +1046,11 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["SLACK_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "reactions" in slack_cfg and not os.getenv("SLACK_REACTIONS"):
                     os.environ["SLACK_REACTIONS"] = str(slack_cfg["reactions"]).lower()
+                if "trigger_reaction_source_channels" in slack_cfg and not os.getenv("SLACK_TRIGGER_REACTION_SOURCE_CHANNELS"):
+                    value = slack_cfg["trigger_reaction_source_channels"]
+                    if isinstance(value, list):
+                        value = ",".join(str(v) for v in value)
+                    os.environ["SLACK_TRIGGER_REACTION_SOURCE_CHANNELS"] = str(value)
                 # allowed_channels: if set, bot ONLY responds in these channels (whitelist)
                 ac = slack_cfg.get("allowed_channels")
                 if ac is not None and not os.getenv("SLACK_ALLOWED_CHANNELS"):

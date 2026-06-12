@@ -1723,7 +1723,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Return reaction names that should route the reacted-to message."""
         raw = self.config.extra.get("trigger_reactions") or os.getenv(
             "SLACK_TRIGGER_REACTIONS",
-            "plankton",
+            "plankton,karen",
         )
         if isinstance(raw, str):
             parts = re.split(r"[,\s]+", raw)
@@ -1744,6 +1744,24 @@ class SlackAdapter(BasePlatformAdapter):
         raw = self.config.extra.get("trigger_reaction_users")
         if raw is None:
             raw = os.getenv("SLACK_TRIGGER_REACTION_USERS", "")
+        if isinstance(raw, str):
+            parts = re.split(r"[,\s]+", raw)
+        elif isinstance(raw, (list, tuple, set)):
+            parts = [str(p) for p in raw]
+        else:
+            parts = []
+        return {p.strip() for p in parts if p and p.strip()}
+
+    def _slack_trigger_reaction_source_channels(self) -> set[str]:
+        """Return optional source channel allowlist for trigger reactions.
+
+        Empty means any channel. Set ``slack.trigger_reaction_source_channels``
+        or ``SLACK_TRIGGER_REACTION_SOURCE_CHANNELS`` to restrict emoji
+        handoffs to specific Slack channels.
+        """
+        raw = self.config.extra.get("trigger_reaction_source_channels")
+        if raw is None:
+            raw = os.getenv("SLACK_TRIGGER_REACTION_SOURCE_CHANNELS", "")
         if isinstance(raw, str):
             parts = re.split(r"[,\s]+", raw)
         elif isinstance(raw, (list, tuple, set)):
@@ -1872,11 +1890,27 @@ class SlackAdapter(BasePlatformAdapter):
         if not channel_id or not message_ts:
             return
 
-        event_key = (
-            event.get("event_ts")
-            or f"{reactor_user}:{channel_id}:{message_ts}:{reaction}"
-        )
+        source_channels = self._slack_trigger_reaction_source_channels()
+        if source_channels and channel_id not in source_channels:
+            logger.debug(
+                "[Slack] Ignoring :%s: reaction trigger from unconfigured source channel %s",
+                reaction,
+                channel_id,
+            )
+            return
+
+        # De-dupe by reacted-to message + trigger emoji, not by Slack event_ts.
+        # Socket Mode retries keep event_ts stable, but remove/re-add races or
+        # multiple reactors can generate fresh events for the same requested
+        # handoff.  Routing those twice can start duplicate code-change work.
+        event_key = f"{channel_id}:{message_ts}:{reaction}"
         if event_key in self._processed_reaction_events:
+            logger.debug(
+                "[Slack] Ignoring duplicate :%s: reaction trigger for %s at %s",
+                reaction,
+                channel_id,
+                message_ts,
+            )
             return
         self._processed_reaction_events.add(event_key)
         if len(self._processed_reaction_events) > self._PROCESSED_REACTIONS_MAX:
@@ -1925,6 +1959,15 @@ class SlackAdapter(BasePlatformAdapter):
         source_lines = [prefix]
         if permalink:
             source_lines.append(f"Original Slack message: {permalink}")
+        if reaction == "karen":
+            source_lines.append(
+                "Workflow note: :karen: on #fleetsmarts-dev or #karen-train "
+                "is a request to start the code-change workflow. Before editing, "
+                "verify the linked issue is still unresolved and not already "
+                "handled or in progress. If it is resolved/duplicate, do not "
+                "make the code change again; report the no-op and link the "
+                "existing resolution."
+            )
         if original_text:
             source_lines.append(original_text)
         routed_text = "\n".join(source_lines)

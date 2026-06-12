@@ -315,8 +315,11 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       allowTransparency: true,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'SF Mono', 'Menlo', 'Cascadia Code', 'JetBrains Mono', monospace",
+      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
+      fontWeight: '400',
+      fontWeightBold: '700',
+      letterSpacing: 0,
       lineHeight: 1.12,
       // Full-screen TUIs (hermes --tui, vim) grab the mouse, so a plain drag
       // can't select — ⌥-drag (macOS) / Shift-drag (else) forces a native
@@ -598,13 +601,13 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       startSession()
     }
 
-    const fonts = typeof document !== 'undefined' ? document.fonts : undefined
+    // fonts.ready settles only already-requested faces; bold/italic aren't asked
+    // for until styled output paints (past atlas init), so warm them up front.
+    const warm = document.fonts?.load
+      ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
+      : Promise.resolve()
 
-    if (fonts?.ready) {
-      void fonts.ready.then(mount, mount)
-    } else {
-      mount()
-    }
+    void warm.then(mount, mount)
 
     return () => {
       disposed = true

@@ -5914,6 +5914,40 @@ class TestStreamingApiCall:
         assert tc[1].function.name == "read"
         assert tc[1].function.arguments == '{}'
 
+    def test_kimi_fresh_id_per_fragment_merges_into_one_tool_call(self, agent):
+        """Kimi (kimi-for-coding/K2.6) and LM-Studio keep index=0 fixed but
+        emit a FRESH id on every streamed argument fragment; the function
+        name appears only on the first chunk.
+
+        The "different id at same index -> new slot" rule must not fire for
+        these argument-continuation fragments (they carry no name), or one
+        call shatters into many invalid-JSON pieces — which the agent then
+        misreports as "Response truncated due to output length limit".
+        """
+        chunks = [
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool_aaaa", "skill_view", "")]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool_bbbb", None, '{"')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool_cccc", None, "name")]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool_dddd", None, '": "')]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool_eeee", None, "paperclip")]),
+            _make_chunk(tool_calls=[_make_tc_delta(0, "tool_ffff", None, '"}')]),
+            _make_chunk(finish_reason="tool_calls"),
+        ]
+        agent.client.chat.completions.create.return_value = iter(chunks)
+
+        resp = agent._interruptible_streaming_api_call({"messages": []})
+
+        tc = resp.choices[0].message.tool_calls
+        assert len(tc) == 1, (
+            f"Kimi fragments shattered into {len(tc)} calls: "
+            f"{[(t.function.name, t.function.arguments) for t in tc]}"
+        )
+        assert tc[0].function.name == "skill_view"
+        assert tc[0].function.arguments == '{"name": "paperclip"}'
+        assert json.loads(tc[0].function.arguments) == {"name": "paperclip"}
+        # The stream must NOT be upgraded to a length truncation.
+        assert resp.choices[0].finish_reason == "tool_calls"
+
     def test_content_and_tool_calls_together(self, agent):
         chunks = [
             _make_chunk(content="I'll search"),

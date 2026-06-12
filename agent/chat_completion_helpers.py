@@ -1934,12 +1934,27 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
                     # Ollama fix: detect a new tool call reusing the same
                     # raw index (different id) and redirect to a fresh slot.
+                    #
+                    # Only treat a changed id as a NEW tool call when this delta
+                    # also carries a function.name.  Per the OpenAI streaming
+                    # convention only the first chunk of a tool call carries the
+                    # name; argument-continuation chunks never do.  Some
+                    # providers (Kimi `kimi-for-coding`/K2.6, LM-Studio) keep
+                    # index=0 fixed but emit a FRESH id on every argument
+                    # fragment — without the name guard each fragment opens a
+                    # new slot, shattering one call into many invalid-JSON
+                    # pieces, which then gets misreported as
+                    # "Response truncated due to output length limit".
+                    _delta_has_name = bool(
+                        tc_delta.function is not None and tc_delta.function.name
+                    )
                     if raw_idx not in _active_slot_by_idx:
                         _active_slot_by_idx[raw_idx] = raw_idx
                     if (
                         delta_id
                         and raw_idx in _last_id_at_idx
                         and delta_id != _last_id_at_idx[raw_idx]
+                        and _delta_has_name
                     ):
                         new_slot = max(tool_calls_acc, default=-1) + 1
                         _active_slot_by_idx[raw_idx] = new_slot

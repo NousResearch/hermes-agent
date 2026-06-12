@@ -16,16 +16,16 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { ChevronDown, Loader2 } from '@/lib/icons'
+import { cn } from '@/lib/utils'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $approvalRequest, type ApprovalRequest, clearApprovalRequest } from '@/store/prompts'
 
 import type { ToolPart } from './tool-fallback-model'
 
-// Inline approval control. Rendered as a compact button strip
-// under the pending tool row that raised the approval (the row already shows
-// the command, so the strip deliberately doesn't repeat it) instead of as a
-// modal overlay.
+// Inline approval control.  Rendered under the pending tool row that raised
+// the approval.  When the command exceeds a short threshold a collapsible
+// <pre> block lets the user inspect the full command before deciding.
 //
 // Binding is POSITIONAL, not command-matched: the desktop `tool.start` payload
 // carries no structured args (only tool_id/name/context — see
@@ -60,6 +60,7 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
   // "Always allow" persists the pattern to ~/.hermes/config.yaml permanently, so
   // it goes through a confirm step rather than firing straight from the menu.
   const [confirmAlways, setConfirmAlways] = useState(false)
+  const [commandExpanded, setCommandExpanded] = useState(false)
   const busy = submitting !== null
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   const allowPermanent = request.allowPermanent !== false
@@ -118,8 +119,26 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
     return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [confirmAlways, respond])
 
+  const trimmed = request.command.trim()
+  // Collapse long commands by default so the approval strip doesn't dominate
+  // the viewport; short commands (≤ 120 chars, single line) are shown inline.
+  const isLong = trimmed.length > 120 || trimmed.includes('\n')
+
   return (
-    <div className="mt-1 flex items-center gap-2.5 ps-5" data-slot="tool-approval-inline">
+    <div className="mt-1 flex flex-col gap-1.5 ps-5" data-slot="tool-approval-inline">
+      {trimmed && (
+        <pre
+          className={cn(
+            'mx-0 max-w-full overflow-x-auto whitespace-pre-wrap break-all rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-2.5 py-1.5 font-mono text-xs leading-snug text-foreground',
+            !commandExpanded && isLong && 'max-h-12 cursor-pointer'
+          )}
+          onClick={isLong && !commandExpanded ? () => setCommandExpanded(true) : undefined}
+          title={isLong && !commandExpanded ? 'Click to expand' : undefined}
+        >
+          {trimmed}
+        </pre>
+      )}
+      <div className="flex items-center gap-2.5">
       <div className="inline-flex h-6 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
         <Button
           className="h-full gap-1 rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
@@ -175,6 +194,8 @@ const ApprovalBar: FC<{ request: ApprovalRequest }> = ({ request }) => {
         {submitting === 'deny' ? <Loader2 className="size-3 animate-spin" /> : copy.reject}
         {submitting !== 'deny' && <span className="text-[0.625rem] opacity-55">Esc</span>}
       </Button>
+
+      </div>
 
       <Dialog onOpenChange={setConfirmAlways} open={confirmAlways}>
         <DialogContent className="max-w-md">

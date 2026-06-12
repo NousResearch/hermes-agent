@@ -315,7 +315,7 @@ def _run_one_file(
             output = "(file timeout exceeded; output unavailable)"
         rc = 124  # de facto convention for "killed by timeout".
         output = (
-            f"({timeout_note}: {file_timeout:.0f}s exceeded; "
+            f"({file_timeout:.0f}s exceeded; "
             f"process tree SIGKILL'd)\n{output}"
         )
     except BaseException:
@@ -328,36 +328,7 @@ def _run_one_file(
         # case it left grandchildren behind; already-dead is a no-op.
         _kill_tree(proc, pgid=pgid)
 
-    if rc == 4:
-        # the file wasn't found.
-        # this shouldn't be possible.
-        # Capture filesystem forensics so a CI-only "file not found" can
-        # be diagnosed from the log instead of guessed at: does the file
-        # exist NOW, what does the parent dir hold, and is the git tree
-        # clean?
-        forensics = [f"--- file-not-found forensics for {file} ---"]
-        try:
-            forensics.append(f"exists={file.exists()}")
-            parent = file.parent
-            if parent.exists():
-                names = sorted(p.name for p in parent.iterdir())
-                sibling_hint = [n for n in names if file.stem[:12] in n]
-                forensics.append(
-                    f"parent={parent} entries={len(names)} "
-                    f"similar={sibling_hint[:5]}"
-                )
-            else:
-                forensics.append(f"parent={parent} MISSING")
-            git_st = subprocess.run(
-                ["git", "status", "--porcelain"],
-                cwd=repo_root, capture_output=True, text=True, timeout=10,
-            )
-            dirty = git_st.stdout.strip().splitlines()
-            forensics.append(f"git_dirty_entries={len(dirty)}")
-            forensics.extend(f"  {line}" for line in dirty[:10])
-        except Exception as exc:  # noqa: BLE001 — forensics must never mask rc=4
-            forensics.append(f"(forensics error: {exc})")
-        output = output + "\n" + "\n".join(forensics)
+        output +=  "\n"
 
     if rc == 5:
         # No tests collected — every test in the file was filtered out.

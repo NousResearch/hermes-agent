@@ -365,6 +365,40 @@ class TestPluginDiscovery:
         }
         assert len(non_bundled) == 1
 
+    def test_failed_discovery_is_not_cached(self, tmp_path, monkeypatch):
+        """A sweep that raises must not cache 'discovered' with no plugins.
+
+        Regression for the stranded-empty-registry class of failures: callers
+        (e.g. tools.web_tools._ensure_web_plugins_loaded) swallow discovery
+        exceptions as warnings, so if a failed sweep flipped ``_discovered``
+        permanently, every later call would early-return against an empty
+        registry ("No web provider configured") for the process lifetime.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(plugins_dir, "retry_plugin")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+
+        def _boom(self_inner):
+            raise RuntimeError("sweep failed")
+
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", _boom)
+        with pytest.raises(RuntimeError, match="sweep failed"):
+            mgr.discover_and_load()
+        assert mgr._discovered is False, "failed sweep was cached as discovered"
+
+        # A later call (with discovery healthy again) must do the real scan.
+        monkeypatch.undo()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+        mgr.discover_and_load()
+        assert mgr._discovered is True
+        non_bundled = {
+            n: p for n, p in mgr._plugins.items()
+            if p.manifest.source != "bundled"
+        }
+        assert len(non_bundled) == 1
+
     def test_discover_skips_dir_without_manifest(self, tmp_path, monkeypatch):
         """Directories without plugin.yaml are silently skipped."""
         plugins_dir = tmp_path / "hermes_test" / "plugins"

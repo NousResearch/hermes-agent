@@ -108,6 +108,12 @@ function inlineErrorMessage(error: unknown, fallback: string): string {
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
 }
 
+function isSessionNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /session not found/i.test(message)
+}
+
 function base64FromDataUrl(dataUrl: string): string {
   const comma = dataUrl.indexOf(',')
 
@@ -661,9 +667,7 @@ export function usePromptActions({
         try {
           await requestGateway('prompt.submit', { session_id: sessionId, text })
         } catch (firstErr) {
-          const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
-
-          if (/session not found/i.test(firstMsg) && selectedStoredSessionIdRef.current) {
+          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
             // Re-register the session in the gateway and get a fresh live ID.
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
               session_id: selectedStoredSessionIdRef.current
@@ -1273,11 +1277,39 @@ export function usePromptActions({
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
     } catch (err) {
+      let stopError = err
+
+      if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
+        try {
+          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+            session_id: selectedStoredSessionIdRef.current
+          })
+          const recoveredId = resumed?.session_id
+
+          if (recoveredId) {
+            activeSessionIdRef.current = recoveredId
+            await requestGateway('session.interrupt', { session_id: recoveredId })
+
+            return
+          }
+        } catch (resumeErr) {
+          stopError = resumeErr
+        }
+      }
+
       setMutableRef(busyRef, false)
       setBusy(false)
-      notifyError(err, copy.stopFailed)
+      notifyError(stopError, copy.stopFailed)
     }
-  }, [activeSessionId, activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, updateSessionState])
+  }, [
+    activeSessionId,
+    activeSessionIdRef,
+    busyRef,
+    copy.stopFailed,
+    requestGateway,
+    selectedStoredSessionIdRef,
+    updateSessionState
+  ])
 
   // Steer = nudge the live turn without interrupting: the gateway appends the
   // text to the next tool result so the model reads it on its next iteration

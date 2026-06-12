@@ -25,7 +25,8 @@ import {
   AlertTriangle,
   Sparkles,
   Loader2,
-  Users,
+  Pencil,
+  Plus,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -36,10 +37,10 @@ import type {
   SkillHubInstalledEntry,
   SkillHubPreview,
   SkillHubScan,
-  ProfileInfo,
 } from "@/lib/api";
-import { useSearchParams } from "react-router-dom";
+import { useProfileScope } from "@/contexts/useProfileScope";
 import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
+import { SkillEditorDialog } from "@/components/SkillEditorDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
@@ -132,56 +133,23 @@ export default function SkillsPage() {
   const [activeCategory, setActiveCategory] = useState<string | null>(null);
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const [configToolset, setConfigToolset] = useState<ToolsetInfo | null>(null);
+  // Skill editor dialog: open + which skill is being edited (null = create).
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorSkill, setEditorSkill] = useState<string | null>(null);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
   // ── Profile scoping ──
-  // The dashboard process runs under ONE profile, but skills/toolsets are
-  // per-profile state. Without an explicit selector, users who "activated"
-  // a profile on the Profiles page (which only affects FUTURE CLI/gateway
-  // runs) toggled skills here and silently wrote into the dashboard's own
-  // profile. The selector makes the write target explicit and deep-linkable
-  // via /skills?profile=<name>.
-  const [searchParams, setSearchParams] = useSearchParams();
-  const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
-  const [currentProfile, setCurrentProfile] = useState<string>("");
-  const urlProfile = searchParams.get("profile") ?? "";
-  // "" = the dashboard's own profile (legacy behavior).
-  const selectedProfile = urlProfile;
-
-  const setSelectedProfile = useCallback(
-    (name: string) => {
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          if (name) next.set("profile", name);
-          else next.delete("profile");
-          return next;
-        },
-        { replace: true },
-      );
-    },
-    [setSearchParams],
-  );
-
-  // The profile actually being managed, for display purposes.
-  const managedProfile = selectedProfile || currentProfile || "default";
-  const managingOtherProfile =
-    !!selectedProfile && selectedProfile !== currentProfile;
-
-  useEffect(() => {
-    // Profile list + the dashboard's own profile, for the selector. Failure
-    // leaves the selector hidden — the page still works profile-unscoped.
-    api
-      .getProfiles()
-      .then((res) => setProfiles(res.profiles))
-      .catch(() => {});
-    api
-      .getActiveProfile()
-      .then((info) => setCurrentProfile(info.current || "default"))
-      .catch(() => setCurrentProfile("default"));
-  }, []);
+  // The write target comes from the GLOBAL profile switcher (sidebar) via
+  // ProfileContext — one selector for the whole dashboard, deep-linkable
+  // as ?profile=<name>. This page just consumes it: the fetchJSON layer
+  // appends the param automatically; we still pass it explicitly where the
+  // call signature supports it (clearer, and robust if a caller bypasses
+  // the auto-injection).
+  const {
+    profile: selectedProfile,
+  } = useProfileScope();
 
   useEffect(() => {
     // Promise-chain shape: setState fires only inside async callbacks so the
@@ -238,6 +206,28 @@ export default function SkillsPage() {
       /* non-fatal: the drawer already toasted on the failing write */
     }
   };
+
+  /* ---- Skill editor (create / edit SKILL.md) ---- */
+  const openCreateEditor = useCallback(() => {
+    setEditorSkill(null);
+    setEditorOpen(true);
+  }, []);
+  const openEditEditor = useCallback((skillName: string) => {
+    setEditorSkill(skillName);
+    setEditorOpen(true);
+  }, []);
+  const handleEditorSaved = useCallback(
+    (skillName: string) => {
+      showToast(`${skillName} saved ✓`, "success");
+      // Reload the list so a newly created skill (or an edited description)
+      // shows up immediately.
+      api
+        .getSkills(selectedProfile || undefined)
+        .then(setSkills)
+        .catch(() => {});
+    },
+    [selectedProfile, showToast],
+  );
 
   /* ---- Derived data ---- */
   const lowerSearch = search.toLowerCase();
@@ -298,33 +288,6 @@ export default function SkillsPage() {
         {t.skills.enabledOf
           .replace("{enabled}", String(enabledCount))
           .replace("{total}", String(skills.length))}
-        {profiles.length > 1 && (
-          <span className="flex items-center gap-1">
-            <Users className="h-3 w-3" />
-            <select
-              aria-label={t.skills.profileSelector ?? "Profile"}
-              className="h-6 rounded-none border border-border bg-background px-1 text-xs text-foreground"
-              value={selectedProfile}
-              onChange={(e: React.ChangeEvent<HTMLSelectElement>) =>
-                setSelectedProfile(e.target.value)
-              }
-            >
-              <option value="">
-                {(t.skills.currentProfile ?? "current ({name})").replace(
-                  "{name}",
-                  currentProfile || "default",
-                )}
-              </option>
-              {profiles
-                .filter((p) => p.name !== currentProfile)
-                .map((p) => (
-                  <option key={p.name} value={p.name}>
-                    {p.name}
-                  </option>
-                ))}
-            </select>
-          </span>
-        )}
       </span>,
     );
     setEnd(
@@ -361,10 +324,6 @@ export default function SkillsPage() {
     setEnd,
     skills.length,
     t,
-    profiles,
-    selectedProfile,
-    currentProfile,
-    setSelectedProfile,
   ]);
 
   const filteredToolsets = useMemo(() => {
@@ -390,18 +349,6 @@ export default function SkillsPage() {
     <div className="flex flex-col gap-4">
       <PluginSlot name="skills:top" />
       <Toast toast={toast} />
-
-      {managingOtherProfile && (
-        <div className="flex items-center gap-2 border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-300">
-          <Users className="h-3.5 w-3.5 shrink-0" />
-          <span>
-            {(
-              t.skills.managingProfile ??
-              "Managing profile “{name}” — toggles apply to that profile, not this dashboard’s."
-            ).replace("{name}", managedProfile)}
-          </span>
-        </div>
-      )}
 
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
@@ -517,6 +464,7 @@ export default function SkillsPage() {
                         skill={skill}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
+                        onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -538,11 +486,22 @@ export default function SkillsPage() {
                         )
                       : t.skills.all}
                   </CardTitle>
-                  <Badge tone="secondary" className="text-xs">
-                    {t.skills.skillCount
-                      .replace("{count}", String(activeSkills.length))
-                      .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge tone="secondary" className="text-xs">
+                      {t.skills.skillCount
+                        .replace("{count}", String(activeSkills.length))
+                        .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
+                    </Badge>
+                    <Button
+                      size="xs"
+                      outlined
+                      className="uppercase"
+                      onClick={openCreateEditor}
+                      prefix={<Plus />}
+                    >
+                      New skill
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="px-4 pb-4">
@@ -560,6 +519,7 @@ export default function SkillsPage() {
                         skill={skill}
                         toggling={togglingSkills.has(skill.name)}
                         onToggle={() => handleToggleSkill(skill)}
+                        onEdit={() => openEditEditor(skill.name)}
                         noDescriptionLabel={t.skills.noDescription}
                       />
                     ))}
@@ -664,6 +624,13 @@ export default function SkillsPage() {
           onChanged={() => void refreshToolsets()}
         />
       )}
+      <SkillEditorDialog
+        open={editorOpen}
+        editName={editorSkill}
+        profile={selectedProfile || undefined}
+        onClose={() => setEditorOpen(false)}
+        onSaved={handleEditorSaved}
+      />
       <PluginSlot name="skills:bottom" />
     </div>
   );
@@ -673,6 +640,7 @@ function SkillRow({
   skill,
   toggling,
   onToggle,
+  onEdit,
   noDescriptionLabel,
 }: SkillRowProps) {
   return (
@@ -698,6 +666,16 @@ function SkillRow({
           {skill.description || noDescriptionLabel}
         </p>
       </div>
+      <Button
+        ghost
+        size="icon"
+        className="shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100 hover:text-foreground"
+        title="Edit SKILL.md"
+        aria-label={`Edit ${skill.name}`}
+        onClick={onEdit}
+      >
+        <Pencil />
+      </Button>
     </div>
   );
 }
@@ -729,6 +707,7 @@ interface PanelItemProps {
 interface SkillRowProps {
   noDescriptionLabel: string;
   onToggle: () => void;
+  onEdit: () => void;
   skill: SkillInfo;
   toggling: boolean;
 }

@@ -84,6 +84,12 @@ class TestParseResponse:
         )
         assert r == {"context": "today is Friday"}
 
+    def test_pre_api_request_context_passthrough(self):
+        r = shell_hooks._parse_response(
+            "pre_api_request", '{"context": "wrap up; budget is low"}',
+        )
+        assert r == {"context": "wrap up; budget is low"}
+
     def test_subagent_stop_context_passthrough(self):
         r = shell_hooks._parse_response(
             "subagent_stop", '{"context": "child role=leaf"}',

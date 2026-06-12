@@ -3473,6 +3473,74 @@ class TestRunConversation:
         assert all("usage" in c and "response" in c for c in post_request_calls)
         assert all("assistant_message" in c["response"] for c in post_request_calls)
 
+    def test_pre_api_request_hook_context_feeds_steer_queue(self, agent):
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        resp1 = _mock_response(content="", finish_reason="tool_calls", tool_calls=[tc])
+        resp2 = _mock_response(content="Done searching", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [resp1, resp2]
+
+        def _hook(name, **kwargs):
+            if name == "pre_api_request":
+                return [{"context": "focus on summarising"}, {"note": "no context here"}]
+            return []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name == "pre_api_request",
+            ),
+            patch("hermes_cli.plugins.invoke_hook", side_effect=_hook),
+            patch.object(agent, "steer", wraps=agent.steer) as steer_spy,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("search something")
+
+        assert result["final_response"] == "Done searching"
+        # The hook fired before each of the two API calls; only the dict
+        # carrying a non-empty "context" was enqueued each time.
+        assert steer_spy.call_count == 2
+        steer_spy.assert_any_call("focus on summarising")
+        # The steer enqueued before API call 1 drained onto the tool result
+        # after the batch ran, so the model saw it right before its reply.
+        tool_msgs = [
+            m for m in result["messages"]
+            if isinstance(m, dict) and m.get("role") == "tool"
+        ]
+        assert tool_msgs
+        assert any(
+            "focus on summarising" in str(m.get("content", "")) for m in tool_msgs
+        )
+        # The steer enqueued before the final (stop) call had no tool batch
+        # left to drain into; the finalizer hands it back to the caller.
+        assert result.get("pending_steer") == "focus on summarising"
+
+    def test_pre_api_request_hook_without_context_is_steer_noop(self, agent):
+        self._setup_agent(agent)
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Done", finish_reason="stop",
+        )
+        with (
+            patch(
+                "hermes_cli.plugins.has_hook",
+                side_effect=lambda name: name == "pre_api_request",
+            ),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+            patch.object(agent, "steer", wraps=agent.steer) as steer_spy,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["final_response"] == "Done"
+        steer_spy.assert_not_called()
+        assert getattr(agent, "_pending_steer", None) is None
+        assert "pending_steer" not in result
+
     def test_api_request_error_hook_skips_payload_work_without_listener(self, agent, monkeypatch):
         payload_built = False
         hook_called = False

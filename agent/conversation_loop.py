@@ -923,7 +923,7 @@ def run_conversation(
                         # provider client.  New consumers should read the
                         # sanitised view from ``request["body"]["messages"]``.
                         _request_payload = agent._api_request_payload_for_hook(api_kwargs)
-                        _invoke_hook(
+                        _pre_api_hook_results = _invoke_hook(
                             "pre_api_request",
                             task_id=effective_task_id,
                             turn_id=turn_id,
@@ -949,6 +949,23 @@ def run_conversation(
                             middleware_trace=list(_llm_middleware_trace),
                             request=_request_payload,
                         )
+                        # Hooks may return {"context": "..."} (see
+                        # agent/shell_hooks.py wire protocol).  Route that
+                        # text into the pending-steer queue: agent.steer()
+                        # is thread-safe and the steer drains onto the LAST
+                        # tool result as soon as the current tool batch
+                        # finishes (apply_pending_steer_to_tool_results /
+                        # the pre-API-call steer drain above), so the
+                        # context lands immediately before the model's next
+                        # reply — unlike pre_llm_call context, which sits in
+                        # the user message before the whole tool-call loop.
+                        for _pre_api_hook_result in _pre_api_hook_results or []:
+                            if not isinstance(_pre_api_hook_result, dict):
+                                continue
+                            _pre_api_hook_context = _pre_api_hook_result.get("context")
+                            if (isinstance(_pre_api_hook_context, str)
+                                    and _pre_api_hook_context.strip()):
+                                agent.steer(_pre_api_hook_context)
                 except Exception:
                     pass
 

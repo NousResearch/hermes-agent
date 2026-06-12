@@ -44,7 +44,10 @@ Wire protocol
     {"decision": "block", "reason":  "Forbidden command"}   # Claude-Code-style
     {"action":   "block", "message": "Forbidden command"}   # Hermes-canonical
 
-    # Inject context for pre_llm_call:
+    # Inject context for pre_llm_call (appended to this turn's user
+    # message) or pre_api_request (routed into the agent's pending-steer
+    # queue and appended to the last tool result, so it lands immediately
+    # before the model's next reply):
     {"context": "Today is Friday"}
 
     # Silent no-op:
@@ -505,7 +508,11 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     block directive.
 
     For ``pre_llm_call``, ``{"context": "..."}`` is passed through
-    unchanged to match the existing plugin-hook contract.
+    unchanged to match the existing plugin-hook contract.  The same
+    shape is honoured for ``pre_api_request``: the conversation loop
+    routes that context into the agent's pending-steer queue, so it is
+    appended to the last tool result right before the model's next
+    reply (useful for late-iteration nudges in long agentic runs).
 
     Anything else returns ``None``.
     """

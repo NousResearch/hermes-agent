@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/pagination'
 import { TextTab, TextTabMeta } from '@/components/ui/text-tab'
 import { Tip } from '@/components/ui/tooltip'
-import { getSessionMessages, listSessions } from '@/hermes'
+import { getSessionMessages, listAllProfileSessions } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { ExternalLink, ExternalLinkIcon, hostPathLabel, urlSlugTitleLabel, useLinkTitle } from '@/lib/external-link'
@@ -388,8 +388,8 @@ export function ArtifactsView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     setRefreshing(true)
 
     try {
-      const sessions = (await listSessions(30, 1)).sessions
-      const results = await Promise.allSettled(sessions.map(session => getSessionMessages(session.id)))
+      const sessions = (await listAllProfileSessions(30, 1)).sessions
+      const results = await Promise.allSettled(sessions.map(session => getSessionMessages(session.id, session.profile)))
       const nextArtifacts: ArtifactRecord[] = []
 
       results.forEach((result, index) => {

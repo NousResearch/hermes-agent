@@ -74,6 +74,8 @@ interface MountOptions {
   sessions?: FakeSession[]
   truncated?: boolean
   initialTab?: 'recent' | 'cron' | 'gateways' | 'all'
+  /** The TUI's cwd — drives the this-directory-first grouping. */
+  currentCwd?: string
   /** Per-id peek delay (ms) — drives the stale-cancellation test. */
   peekDelay?: (id: string) => number
   /** Paged list: serve `sessions` windowed by offset/limit instead of whole. */
@@ -118,6 +120,7 @@ async function mountPicker(options: MountOptions = {}): Promise<Harness> {
         <SessionPicker
           ops={ops}
           initialTab={options.initialTab ?? 'recent'}
+          currentCwd={() => options.currentCwd}
           peekDebounceMs={20}
           onResume={id => resumed.push(id)}
           onClose={() => (closed.value = true)}
@@ -351,6 +354,68 @@ describe('SessionPicker — pagination', () => {
       expect(h.listCalls[1]).toMatchObject({ limit: 100, offset: 100 })
       expect(frame).not.toContain('load more') // short second page → exhausted
       expect(h.resumed).toEqual([]) // Enter loaded, never resumed
+    } finally {
+      h.probe.destroy()
+    }
+  })
+})
+
+describe('this-directory grouping', () => {
+  const CWD = '/home/u/projects/alpha'
+  const GROUPED: FakeSession[] = [
+    { cwd: '/elsewhere/beta', id: 'g1', last_active: NOW_S - 60, message_count: 5, source: 'tui', title: 'beta work' },
+    { cwd: CWD, id: 'g2', last_active: NOW_S - 120, message_count: 8, source: 'tui', title: 'alpha here' },
+    { id: 'g3', last_active: NOW_S - 180, message_count: 2, source: 'cli', title: 'no cwd at all' },
+    {
+      cwd: CWD + '/',
+      id: 'g4',
+      last_active: NOW_S - 240,
+      message_count: 4,
+      source: 'tui',
+      title: 'alpha trailing slash'
+    }
+  ]
+
+  test('sessions started in the current cwd group first under a caption', async () => {
+    const h = await mountPicker({ currentCwd: CWD, sessions: GROUPED })
+    try {
+      const frame = h.probe.frame()
+      const at = (needle: string) => frame.indexOf(needle)
+      expect(at('▾ this directory (2)')).toBeGreaterThanOrEqual(0)
+      expect(at('▾ other directories')).toBeGreaterThan(at('▾ this directory (2)'))
+      // here-rows (incl. trailing-slash normalization) above the caption split,
+      // elsewhere rows below it; selection starts on the first here-row.
+      expect(at('alpha here')).toBeLessThan(at('▾ other directories'))
+      expect(at('alpha trailing slash')).toBeLessThan(at('▾ other directories'))
+      expect(at('beta work')).toBeGreaterThan(at('▾ other directories'))
+      expect(at('no cwd at all')).toBeGreaterThan(at('▾ other directories'))
+      expect(frame).toContain('❯ alpha here')
+      // Enter resumes the first here-session
+      h.probe.keys.pressEnter()
+      await h.probe.settle()
+      expect(h.resumed).toEqual(['g2'])
+    } finally {
+      h.probe.destroy()
+    }
+  })
+
+  test('search drops the grouping (fuzzy relevance owns the order)', async () => {
+    const h = await mountPicker({ currentCwd: CWD, sessions: GROUPED })
+    try {
+      await h.probe.keys.typeText('beta')
+      await h.probe.settle()
+      const frame = await h.probe.waitForFrame(f => f.includes('beta work'))
+      expect(frame).not.toContain('▾ this directory')
+      expect(frame).not.toContain('▾ other directories')
+    } finally {
+      h.probe.destroy()
+    }
+  })
+
+  test('no current cwd (or no matches) → plain recency list, no captions', async () => {
+    const h = await mountPicker({ sessions: GROUPED })
+    try {
+      expect(h.probe.frame()).not.toContain('▾ this directory')
     } finally {
       h.probe.destroy()
     }

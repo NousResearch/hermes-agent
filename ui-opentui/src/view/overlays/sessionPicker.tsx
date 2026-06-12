@@ -34,6 +34,7 @@ import { visibleRows, type PickerRow } from '../../logic/fuzzy.ts'
 import {
   filterSessions,
   listParamsFor,
+  orderRowsForCwd,
   mapSessionRows,
   relativeTime,
   routeSessionPickerKey,
@@ -79,6 +80,9 @@ export function SessionPicker(props: {
   onResume: (sessionId: string) => void
   onClose: () => void
   initialTab?: SessionTabId
+  /** The TUI's working directory — sessions started here group first while
+   *  browsing (no effect during search). */
+  currentCwd?: () => string | undefined
   /** Test seam: override the peek debounce (default PEEK_DEBOUNCE_MS). */
   peekDebounceMs?: number
 }) {
@@ -134,7 +138,12 @@ export function SessionPicker(props: {
     })
   )
 
-  const filtered = createMemo(() => filterSessions(query(), rows()))
+  // Display order: this-directory sessions first while browsing (design ask
+  // 2026-06-12); search keeps pure fuzzy relevance. One flat list, so the
+  // selection/windowing math below is order-agnostic.
+  const ordered = createMemo(() => orderRowsForCwd(filterSessions(query(), rows()), props.currentCwd?.(), query()))
+  const filtered = createMemo(() => ordered().rows)
+  const hereCount = createMemo(() => ordered().hereCount)
   createEffect(on(query, () => setSel(0), { defer: true }))
 
   // "load more" pseudo-row: selectable index === filtered().length. Offered
@@ -371,6 +380,12 @@ export function SessionPicker(props: {
         {row =>
           row.kind === 'item' && row.item ? (
             <box style={{ flexDirection: 'column' }} onMouseDown={() => setSel(row.index)}>
+              <Show when={hereCount() > 0 && row.index === 0}>
+                <text fg={theme().color.muted}>{`  ▾ this directory (${hereCount()})`}</text>
+              </Show>
+              <Show when={hereCount() > 0 && row.index === hereCount()}>
+                <text fg={theme().color.muted}>{'  ▾ other directories'}</text>
+              </Show>
               <text bg={row.index === sel() ? theme().color.selectionBg : 'transparent'}>
                 <span style={{ fg: row.index === sel() ? theme().color.text : theme().color.muted }}>
                   {row.index === sel() ? '❯ ' : '  '}

@@ -156,6 +156,7 @@ export function App(props: AppProps) {
                         <SessionPicker
                           ops={props.sessionOps ?? NOOP_OPS}
                           initialTab={sp().tab}
+                          currentCwd={() => props.store.state.info.cwd}
                           onResume={resume}
                           onClose={closeSessionPicker}
                         />

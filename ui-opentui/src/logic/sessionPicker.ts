@@ -163,6 +163,36 @@ export function filterSessions(query: string, rows: readonly SessionRow[]): Sess
   return fuzzyFilter(query, rows, sessionFields)
 }
 
+// ── this-directory grouping ───────────────────────────────────────────────
+
+/** Path equality for cwd grouping: trim + drop trailing slashes. Pure string
+ *  work (no fs) — rows carry the gateway's already-absolute paths. */
+export function normalizeCwd(path: string | undefined): string {
+  return (path ?? '').trim().replace(/\/+$/, '')
+}
+
+/** Display order with sessions started in the CURRENT directory first.
+ *
+ * Browse mode only: while a search query is active the fuzzy score owns the
+ * order (relevance beats locality), so `hereCount` is 0 and rows pass through.
+ * Stable within both groups (each keeps the gateway's recency order). The
+ * view renders section captions off `hereCount`; selection math is untouched
+ * because this just reorders the one flat list.
+ */
+export function orderRowsForCwd(
+  rows: SessionRow[],
+  currentCwd: string | undefined,
+  query: string
+): { rows: SessionRow[]; hereCount: number } {
+  const here = normalizeCwd(currentCwd)
+  if (!here || query.trim()) return { hereCount: 0, rows }
+  const local: SessionRow[] = []
+  const elsewhere: SessionRow[] = []
+  for (const row of rows) (normalizeCwd(row.cwd) === here ? local : elsewhere).push(row)
+  if (!local.length) return { hereCount: 0, rows }
+  return { hereCount: local.length, rows: [...local, ...elsewhere] }
+}
+
 // ── key routing (pattern: completionMenu.ts routeMenuKey) ────────────────
 
 export interface SessionPickerKeyContext {

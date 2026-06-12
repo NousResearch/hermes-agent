@@ -180,7 +180,13 @@ const postSessionSetup = (gateway: GatewayServiceShape, store: SessionStore, sid
 const createFreshSession = (gateway: GatewayServiceShape, store: SessionStore, input: TuiInput) =>
   Effect.gen(function* () {
     const created = yield* gateway.request<{ session_id?: string; info?: Record<string, unknown> }>('session.create', {
-      cols: input.cols
+      cols: input.cols,
+      // The launch directory IS the workspace choice in a terminal (you cd'd
+      // here) — passing it makes the gateway treat it as explicit, so the
+      // session row gets a persisted cwd on first message and /sessions can
+      // group this directory's sessions first. (The desktop deliberately
+      // omits cwd — its launch dir is meaningless; see _ensure_session_db_row.)
+      cwd: process.cwd()
     })
     const sid = created?.session_id ?? gateway.sessionId()
     if (!sid) {

@@ -22,7 +22,9 @@ import {
   SESSION_TABS,
   tabAccepts,
   tailTruncate,
-  type SessionRow
+  type SessionRow,
+  normalizeCwd,
+  orderRowsForCwd
 } from '../logic/sessionPicker.ts'
 
 const row = (over: Partial<SessionRow>): SessionRow => ({
@@ -252,5 +254,30 @@ describe('slash entry points', () => {
     expect(resolveSessionArg(rows, 'adopt')?.id).toBe('abc-123') // unique substring
     expect(resolveSessionArg(rows, 'goal')).toBeUndefined() // ambiguous substring
     expect(resolveSessionArg(rows, '')).toBeUndefined()
+  })
+})
+
+describe('orderRowsForCwd — pure edges', () => {
+  const row = (id: string, cwd?: string) =>
+    ({ cwd, id, lastActive: 0, messageCount: 0, preview: '', source: 'tui', startedAt: 0, title: id }) as never
+
+  test('normalizeCwd trims and strips trailing slashes; empty-safe', () => {
+    expect(normalizeCwd(' /a/b// ')).toBe('/a/b')
+    expect(normalizeCwd(undefined)).toBe('')
+    expect(normalizeCwd('   ')).toBe('')
+  })
+
+  test('identity passthrough when nothing matches or no cwd known', () => {
+    const rows = [row('a', '/x'), row('b')]
+    expect(orderRowsForCwd(rows, undefined, '')).toEqual({ hereCount: 0, rows })
+    expect(orderRowsForCwd(rows, '/nowhere', '')).toEqual({ hereCount: 0, rows })
+    expect(orderRowsForCwd(rows, '/x', 'query')).toEqual({ hereCount: 0, rows })
+  })
+
+  test('stable partition: here first, recency kept within groups', () => {
+    const rows = [row('a', '/y'), row('b', '/x'), row('c'), row('d', '/x/')]
+    const out = orderRowsForCwd(rows, '/x', '')
+    expect(out.hereCount).toBe(2)
+    expect(out.rows.map(r => (r as { id: string }).id)).toEqual(['b', 'd', 'a', 'c'])
   })
 })

@@ -14,13 +14,21 @@ import {
 
 import { setMutableRef } from '@/lib/mutable-ref'
 import { cn } from '@/lib/utils'
-import { setThreadScrolledUp } from '@/store/thread-scroll'
+import {
+  onScrollToBottomRequest,
+  resetThreadScroll,
+  setThreadJumpButtonVisible,
+  setThreadScrolledUp
+} from '@/store/thread-scroll'
 
 import { MessageRenderBoundary } from './message-render-boundary'
 
 const ESTIMATED_ITEM_HEIGHT = 220
 const OVERSCAN = 4
 const AT_BOTTOM_THRESHOLD = 4
+// Reveal the floating jump button only once scrolled meaningfully away — above
+// AT_BOTTOM_THRESHOLD so a sub-pixel settle never flashes it.
+const JUMP_BUTTON_THRESHOLD = 10
 
 type ThreadMessageComponents = ComponentProps<typeof ThreadPrimitive.MessageByIndex>['components']
 
@@ -309,7 +317,7 @@ function useThreadScrollAnchor({
     })
   }, [groupCount, pinToBottom, stickyBottomRef, virtualizer])
 
-  useEffect(() => () => setThreadScrolledUp(false), [])
+  useEffect(() => () => resetThreadScroll(), [])
 
   // Track at-bottom state, dim composer when scrolled up, disarm on user
   // scroll/wheel/touch.
@@ -323,6 +331,13 @@ function useThreadScrollAnchor({
     const disarm = () => {
       setMutableRef(stickyBottomRef, false)
       programmaticScrollPendingRef.current = 0
+    }
+
+    // Dim the composer the instant we leave the bottom; reveal the jump button
+    // only once scrolled meaningfully away.
+    const publishScrollDistance = (dist: number) => {
+      setThreadScrolledUp(dist > AT_BOTTOM_THRESHOLD)
+      setThreadJumpButtonVisible(dist > JUMP_BUTTON_THRESHOLD)
     }
 
     const onScroll = () => {
@@ -342,22 +357,19 @@ function useThreadScrollAnchor({
         lastClientHeightRef.current = el.clientHeight
         // Always re-arm — sticky-bottom should hold through clamp races.
         setMutableRef(stickyBottomRef, true)
-        const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
-        setThreadScrolledUp(!atBottom)
+        publishScrollDistance(el.scrollHeight - (top + el.clientHeight))
 
         return
       }
 
-      // Disarm only when `scrollTop` decreases while both content height and
-      // viewport height are stable. A bare `top < lastTopRef.current` check is
-      // unsafe: virtualizer measurement, streaming markdown, composer resizing,
-      // window resizing, and toolbar/status updates can all move scrollTop as a
-      // layout side effect. Wheel-up and touchmove still disarm immediately via
-      // their own listeners below, so real user intent remains covered.
+      // Disarm on ANY upward movement (even 1px), but only while content +
+      // viewport height are stable — virtualizer measurement, streaming
+      // markdown, and composer/window resize all shift scrollTop as a layout
+      // side effect. Wheel-up and touchmove disarm immediately too (below).
       const heightGrew = el.scrollHeight > lastHeightRef.current
       const clientHeightChanged = Math.abs(el.clientHeight - lastClientHeightRef.current) > 1
 
-      if (!heightGrew && !clientHeightChanged && top + 1 < lastTopRef.current) {
+      if (!heightGrew && !clientHeightChanged && top < lastTopRef.current) {
         setMutableRef(stickyBottomRef, false)
       }
 
@@ -365,13 +377,14 @@ function useThreadScrollAnchor({
       lastHeightRef.current = el.scrollHeight
       lastClientHeightRef.current = el.clientHeight
 
-      const atBottom = el.scrollHeight - (top + el.clientHeight) <= AT_BOTTOM_THRESHOLD
+      const distFromBottom = el.scrollHeight - (top + el.clientHeight)
 
-      if (atBottom) {
+      // Re-arm follow only once genuinely back at the bottom.
+      if (distFromBottom <= AT_BOTTOM_THRESHOLD) {
         setMutableRef(stickyBottomRef, true)
       }
 
-      setThreadScrolledUp(!atBottom)
+      publishScrollDistance(distFromBottom)
     }
 
     const onWheel = (event: WheelEvent) => {
@@ -391,15 +404,28 @@ function useThreadScrollAnchor({
     }
   }, [scrollerRef, stickyBottomRef])
 
-  // Intentionally NO streaming auto-follow. Earlier builds ran a
-  // ResizeObserver here that re-pinned the viewport to the bottom on every
-  // content growth while a turn was running, so the chat tracked tokens as
-  // they streamed. That behavior is removed by request: once a turn is in
-  // flight the viewport stays exactly where the user left it. The viewport
-  // is still moved to the bottom ONCE per user submit / new turn / session
-  // change (see the layout effect and the session-change effect below) so a
-  // freshly submitted message lands in view — but it does not chase the
-  // stream afterward.
+  // Streaming auto-follow: while — and ONLY while — parked at the bottom, chase
+  // content growth (streaming tokens, late measurement, Shiki re-highlight) so
+  // the tail stays in view. One upward pixel (scroll/wheel/touch above) flips
+  // the gate false and following stops until the user returns to the bottom.
+  // Keyed on the virtualizer's own size signal and pinned in useLayoutEffect —
+  // the virtualizer's scrollToFn runs in the same pre-paint pass, so the two
+  // don't fight (no rubber-banding). pinToBottom no-ops at bottom, so rapid
+  // growth is cheap.
+  const totalSize = virtualizer.getTotalSize()
+  const prevTotalSizeRef = useRef<number | null>(null)
+  useLayoutEffect(() => {
+    const prev = prevTotalSizeRef.current
+    prevTotalSizeRef.current = totalSize
+
+    if (enabled && prev !== null && totalSize > prev && stickyBottomRef.current) {
+      pinToBottom()
+    }
+  }, [enabled, pinToBottom, stickyBottomRef, totalSize])
+
+  // The floating jump button asks us to return to the bottom; same re-arm + pin
+  // path as a new turn.
+  useEffect(() => onScrollToBottomRequest(jumpToBottom), [jumpToBottom])
 
   // Jump to bottom on session change OR when an empty thread first gets
   // content. Both share the same intent and the same effect.

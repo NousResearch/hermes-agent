@@ -1846,6 +1846,7 @@ export const zh: Translations = {
       stopReading: '停止朗读',
       readAloud: '朗读',
       editMessage: '编辑消息',
+      scrollToBottom: '滚动到底部',
       stop: '停止',
       restorePrevious: '恢复上一个检查点',
       restoreCheckpoint: '恢复检查点',

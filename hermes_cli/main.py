@@ -9849,7 +9849,10 @@ def cmd_profile(args):
                     getattr(args, "clone_from", None) or get_active_profile_name()
                 )
                 if clone_all:
-                    print(f"Full copy from {source_label}.")
+                    print(
+                        f"Full copy from {source_label} "
+                        "(excluding session history, backups, and snapshots)."
+                    )
                 else:
                     print(
                         f"Cloned config, .env, SOUL.md, and skills from {source_label}."

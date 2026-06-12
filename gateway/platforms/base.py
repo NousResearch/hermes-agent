@@ -4740,11 +4740,13 @@ class BasePlatformAdapter(ABC):
 
     @staticmethod
     def _last_row_boundary(text: str, end: int) -> Optional[int]:
-        """Return the position of the last ``|``-prefix row boundary
-        before *end*, or None.
+        """Return the position of the last newline before a ``|``-prefix
+        table row boundary before *end*, or None.
 
         Handles both flush-left and indented table rows (``\\n|…``
-        and ``\\n  |…``)."""
+        and ``\\n  |…``).  The return value is always the *newline* index
+        (consistent with ``rfind(\"\\n|\")``), so callers can uniformly use
+        ``_pos + 1`` to land at the ``|``."""
         # Try flush-left first (common case).
         _pos = text.rfind("\n|", 0, end)
         if _pos >= 0:
@@ -4753,9 +4755,9 @@ class BasePlatformAdapter(ABC):
         _pos = text.rfind("\n", 0, end)
         if _pos < 0:
             return None
-        _stripped = text[_pos + 1 : end].lstrip()
-        if _stripped.startswith("|"):
-            return _pos + len(text[_pos + 1 : end]) - len(_stripped)
+        _trailing = text[_pos + 1 : end]
+        if _trailing.lstrip().startswith("|"):
+            return _pos
         return None
 
     @staticmethod
@@ -4798,10 +4800,10 @@ class BasePlatformAdapter(ABC):
                 if _prev_nl is not None:
                     return _prev_nl + 1
                 # Table starts at position 0 in ``remaining`` — no
-                # preceding newline.  Split after the current row.
-                if "\n" not in candidate:
-                    _next_nl = remaining.find("\n", split_at)
-                    return _next_nl + 1 if _next_nl > 0 else split_at
+                # preceding newline to walk back to.  Returning the
+                # original *split_at* (which is guaranteed ≤ the
+                # computed safe split) preserves the max-length
+                # invariant; never forward-adjust.
                 return split_at
             if not _line.startswith("|"):
                 break
@@ -4816,10 +4818,7 @@ class BasePlatformAdapter(ABC):
                 _prev_nl = BasePlatformAdapter._last_row_boundary(candidate, split_at)
                 if _prev_nl is not None:
                     return _prev_nl + 1
-                # Table starts at position 0 in ``remaining``.
-                if "\n" not in candidate:
-                    _next_nl = remaining.find("\n", split_at)
-                    return _next_nl + 1 if _next_nl > 0 else split_at
+                # Table starts at position 0 — same reasoning as step 2.
                 return split_at
             if not _next_line.strip().startswith("|"):
                 break

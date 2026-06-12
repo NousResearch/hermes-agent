@@ -1343,15 +1343,16 @@ class TestAdjustSplitForMarkdownTable:
         # split_at at the newline between header and separator
         split_at = text.index("\n  |---|")
         result = BasePlatformAdapter._adjust_split_for_markdown_table(text, split_at)
-        # Walks back to the | of the indented header row
-        assert result == text.index("| Header |")
+        # Walks back to the newline before the indented header row
+        assert result == text.index("\n  | Header |") + 1  # +1 = | position
 
     def test_indented_table_data_row(self):
         text = "before\n  | Hdr |\n  |---|\n  | data |\nmore"
         # split_at lands inside the data row
         split_at = text.index("| data |") + 3
         result = BasePlatformAdapter._adjust_split_for_markdown_table(text, split_at)
-        assert result == text.index("| data |")
+        # Walks back to the newline before the data row
+        assert result == text.index("\n  | data |") + 1  # +1 = | position
 
     # ── Table at position 0 ─────────────────────────────────────
 
@@ -1366,9 +1367,9 @@ class TestAdjustSplitForMarkdownTable:
         # split_at at the newline right after the header (table at pos 0)
         split_at = text.index("\n|---|")
         result = BasePlatformAdapter._adjust_split_for_markdown_table(text, split_at)
-        # No preceding newline before header → candidate has no \n.
-        # Table at pos 0: split after header row → start of separator row.
-        assert result == text.index("\n|---|") + 1
+        # Table at position 0, no backward boundary exists.
+        # Must return the original split_at to preserve max_length.
+        assert result == split_at
 
 
 class TestTruncateMessageTableAware:
@@ -1412,6 +1413,7 @@ class TestTruncateMessageTableAware:
         import re
         indicator_re = re.compile(r" \(\d+/\d+\)$")
         for chunk in chunks:
+            assert len(chunk) <= 90, f"Chunk exceeds max_length: {len(chunk)} chars"
             for line in chunk.split("\n"):
                 stripped = line.strip()
                 # Strip chunk indicator suffix if present
@@ -1436,6 +1438,7 @@ class TestTruncateMessageTableAware:
         chunks = BasePlatformAdapter.truncate_message(msg, max_length=120)
         assert len(chunks) > 1
         for chunk in chunks:
+            assert len(chunk) <= 120, f"Chunk exceeds max_length: {len(chunk)} chars"
             # If chunk contains | lines, check they're complete
             lines = chunk.split("\n")
             for line in lines:
@@ -1460,6 +1463,7 @@ class TestTruncateMessageTableAware:
         chunks = BasePlatformAdapter.truncate_message(msg, max_length=100)
         assert len(chunks) > 1
         for chunk in chunks:
+            assert len(chunk) <= 100, f"Chunk exceeds max_length: {len(chunk)} chars"
             for line in chunk.split("\n"):
                 stripped = line.strip()
                 if stripped.startswith("|"):
@@ -1482,12 +1486,13 @@ class TestTruncateMessageTableAware:
         assert len(chunks) > 1
         # Check that the first chunk either has no table rows or complete ones
         for chunk in chunks:
+            assert len(chunk) <= 150, f"Chunk exceeds max_length: {len(chunk)} chars"
             for line in chunk.split("\n"):
                 stripped = line.strip()
                 if stripped.startswith("|") and not stripped.startswith("|---"):
-                    assert stripped.endswith("|"), f"Broken row: {stripped!r}"
-
-
+                    assert stripped.endswith("|"), (
+                        f"Partial table row in chunk: {stripped!r}"
+                    )
 # ---------------------------------------------------------------------------
 # _get_human_delay
 # ---------------------------------------------------------------------------

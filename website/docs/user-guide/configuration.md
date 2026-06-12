@@ -1723,6 +1723,7 @@ Configure the `execute_code` tool:
 code_execution:
   mode: project                # project (default) | strict
   timeout: 300                 # Max execution time in seconds
+  rpc_timeout: 300             # Max seconds per sandbox tool-call round-trip
   max_tool_calls: 50           # Max tool calls within code execution
 ```
 
@@ -1732,6 +1733,8 @@ code_execution:
 - **`strict`** — scripts run in a temp staging directory with `sys.executable` (Hermes's own python). Maximum reproducibility, but project deps and relative paths won't resolve.
 
 Environment scrubbing (strips `*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `*_CREDENTIAL`, `*_PASSWD`, `*_AUTH`) and the tool whitelist apply identically in both modes — switching mode does not change the security posture.
+
+`rpc_timeout` controls how long one `execute_code` tool call may wait for a Hermes tool response over the internal RPC bridge. Leave it at `300` for normal usage. If you raise `code_execution.timeout` for long-lived workflows that make slow tool calls, raise `rpc_timeout` too.
 
 ## Web Search Backends
 

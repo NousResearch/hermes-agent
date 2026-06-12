@@ -105,6 +105,7 @@ class TestHermesToolsGeneration(unittest.TestCase):
     def test_rpc_infrastructure_present(self):
         src = generate_hermes_tools_module(["terminal"])
         self.assertIn("HERMES_RPC_SOCKET", src)
+        self.assertIn("HERMES_CODE_EXEC_RPC_TIMEOUT", src)
         self.assertIn("AF_UNIX", src)
         self.assertIn("def _connect(", src)
         self.assertIn("def _call(", src)
@@ -160,7 +161,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         env = FakeEnv()
         fake_thread = MagicMock()
 
-        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "max_tool_calls": 5}), \
+        with patch("tools.code_execution_tool._load_config", return_value={"timeout": 30, "rpc_timeout": 45, "max_tool_calls": 5}), \
              patch("tools.code_execution_tool._get_or_create_env", return_value=(env, "ssh")), \
              patch("tools.code_execution_tool._ship_file_to_remote"), \
              patch("tools.code_execution_tool.threading.Thread", return_value=fake_thread):
@@ -172,6 +173,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         cleanup_cmd = env.commands[-1][0]
         self.assertIn("mkdir -p /data/data/com.termux/files/usr/tmp/hermes_exec_", mkdir_cmd)
         self.assertIn("HERMES_RPC_DIR=/data/data/com.termux/files/usr/tmp/hermes_exec_", run_cmd)
+        self.assertIn("HERMES_CODE_EXEC_RPC_TIMEOUT=45", run_cmd)
         self.assertIn("rm -rf /data/data/com.termux/files/usr/tmp/hermes_exec_", cleanup_cmd)
         self.assertNotIn("mkdir -p /tmp/hermes_exec_", mkdir_cmd)
 

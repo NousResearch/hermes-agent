@@ -7887,6 +7887,31 @@ def _(rid, params: dict) -> dict:
                 },
             )
 
+    # ── Built-in commands that route to dedicated RPC methods ────────
+    # These mirror the CLI's slash command handlers.  The TUI client
+    # types e.g. /compress which arrives here via command.dispatch;
+    # we forward to the canonical session.* RPC so the handler logic
+    # lives in one place.
+    if name == "compress":
+        # Parse optional focus topic from the raw arg.
+        # /compress                  → compress full history
+        # /compress focus:topic      → compress with focus
+        focus_topic = ""
+        arg_stripped = (arg or "").strip()
+        if arg_stripped.lower().startswith("focus:"):
+            focus_topic = arg_stripped[6:].strip()
+        # Forward to session.compress handler.
+        handler = _methods.get("session.compress")
+        if handler:
+            return handler(
+                rid,
+                {
+                    "session_id": params.get("session_id", ""),
+                    "focus_topic": focus_topic,
+                },
+            )
+        return _err(rid, 4018, "compress handler not available")
+
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
 

@@ -39,6 +39,7 @@ declare global {
       }
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
+      setBadgeCount?: (count: number) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
       readFileDataUrl: (filePath: string) => Promise<string>
       readFileText: (filePath: string) => Promise<HermesReadFileTextResult>
@@ -404,6 +405,7 @@ export interface HermesApiRequest {
 export interface HermesNotification {
   title?: string
   body?: string
+  sessionId?: string
   silent?: boolean
 }
 

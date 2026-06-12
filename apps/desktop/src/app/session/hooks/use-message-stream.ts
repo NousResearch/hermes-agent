@@ -33,6 +33,7 @@ import {
   setCurrentReasoningEffort,
   setCurrentServiceTier,
   setCurrentUsage,
+  setSessionNotified,
   setTurnStartedAt,
   setYoloActive
 } from '@/store/session'
@@ -148,6 +149,28 @@ function completionErrorText(finalText: string): string | null {
   const text = finalText.trim()
 
   return text && COMPLETION_ERROR_PATTERNS.some(re => re.test(text)) ? text : null
+}
+
+function sendSessionDesktopNotification(
+  sessionId: string,
+  title: string,
+  body: string,
+  options: { isActiveEvent: boolean; silent?: boolean }
+) {
+  const visibleActive = options.isActiveEvent && typeof document !== 'undefined' && document.visibilityState === 'visible'
+
+  if (!visibleActive) {
+    setSessionNotified(sessionId, true)
+  }
+
+  // Do not interrupt the user with a native push while they are actively looking
+  // at the session. If the app is hidden/minimized, even the focused session
+  // should still surface through the OS notification center.
+  if (visibleActive) {
+    return
+  }
+
+  void window.hermesDesktop?.notify?.({ body, sessionId, silent: options.silent, title }).catch(() => undefined)
 }
 
 const SUBAGENT_EVENT_TYPES = new Set([
@@ -616,13 +639,6 @@ export function useMessageStream({
       if (shouldHydrate) {
         void hydrateFromStoredSession(3, completedState.storedSessionId, sessionId)
       }
-
-      if (document.hidden && sessionId === activeSessionIdRef.current) {
-        void window.hermesDesktop?.notify({
-          title: 'Hermes finished',
-          body: text.slice(0, 140) || 'The response is ready.'
-        })
-      }
     },
     [activeSessionIdRef, hydrateFromStoredSession, refreshSessions, updateSessionState]
   )
@@ -852,6 +868,10 @@ export function useMessageStream({
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText)
 
+        if (!isActiveEvent || (typeof document !== 'undefined' && document.visibilityState !== 'visible')) {
+          sendSessionDesktopNotification(sessionId, 'Hermes reply ready', 'A background session has a new reply.', { isActiveEvent, silent: false })
+        }
+
         if (isActiveEvent) {
           setTurnStartedAt(null)
         }
@@ -923,6 +943,7 @@ export function useMessageStream({
           // too, and survives alt-tab / window blur (unlike a toast).
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+            sendSessionDesktopNotification(sessionId, 'Hermes needs input', 'A background session is waiting for your response.', { isActiveEvent, silent: false })
           }
         }
       } else if (event.type === 'approval.request') {
@@ -942,6 +963,10 @@ export function useMessageStream({
 
         if (sessionId) {
           updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          sendSessionDesktopNotification(sessionId, 'Hermes needs approval', 'A command is waiting for approval.', {
+            isActiveEvent,
+            silent: false
+          })
         }
       } else if (event.type === 'sudo.request') {
         // Sudo password capture (tools/terminal_tool.py). Blocked on
@@ -953,6 +978,10 @@ export function useMessageStream({
 
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+            sendSessionDesktopNotification(sessionId, 'Hermes needs input', 'A secure prompt is waiting.', {
+              isActiveEvent,
+              silent: false
+            })
           }
         }
       } else if (event.type === 'secret.request') {
@@ -970,6 +999,10 @@ export function useMessageStream({
 
           if (sessionId) {
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+            sendSessionDesktopNotification(sessionId, 'Hermes needs input', 'A secure prompt is waiting.', {
+              isActiveEvent,
+              silent: false
+            })
           }
         }
       } else if (event.type === 'terminal.read.request') {

@@ -1111,6 +1111,7 @@ export const en: Translations = {
       sessionActions: 'Session actions',
       sessionRunning: 'Session running',
       needsInput: 'Needs your input',
+      newNotification: 'New response',
       waitingForAnswer: 'Waiting for your answer',
       handoffOrigin: platform => `Handed off from ${platform}`,
       renamed: 'Renamed',

@@ -11,6 +11,18 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { cn, themedBody } from "@/lib/utils";
 import { fuzzyRank } from "@/lib/fuzzy";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
+
+function interpolate(
+  template: string,
+  values: Record<string, string | number>,
+): string {
+  return Object.entries(values).reduce(
+    (result, [key, value]) => result.replaceAll(`{${key}}`, String(value)),
+    template,
+  );
+}
 
 /**
  * Two-stage model picker modal.
@@ -96,9 +108,12 @@ export function ModelPickerDialog(props: Props) {
     loader,
     onApply,
     onClose,
-    title = "Switch Model",
+    title,
     alwaysGlobal = false,
   } = props;
+  const { t } = useI18n();
+  const copy = t.modelsPage ?? en.modelsPage!;
+  const dialogTitle = title ?? copy.switchModel;
   const standalone = !!loader && !!onApply;
 
   const [providers, setProviders] = useState<ModelOptionProvider[]>([]);
@@ -227,9 +242,7 @@ export function ModelPickerDialog(props: Props) {
             model,
             persistGlobal: shouldPersistGlobal,
             message:
-              result.confirm_message ||
-              result.warning ||
-              "This model has unusually high known pricing.",
+              result.confirm_message || result.warning || copy.expensiveDefault,
           });
           return;
         }
@@ -255,9 +268,7 @@ export function ModelPickerDialog(props: Props) {
             model,
             persistGlobal: shouldPersistGlobal,
             message:
-              result.confirm_message ||
-              result.warning ||
-              "This model has unusually high known pricing.",
+              result.confirm_message || result.warning || copy.expensiveDefault,
           });
           return;
         }
@@ -294,13 +305,18 @@ export function ModelPickerDialog(props: Props) {
       aria-modal="true"
       aria-labelledby="model-picker-title"
     >
-      <div className={cn(themedBody, "relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col")}>
+      <div
+        className={cn(
+          themedBody,
+          "relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col",
+        )}
+      >
         <Button
           ghost
           size="icon"
           onClick={onClose}
-          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
-          aria-label="Close"
+          className="absolute end-2 top-2 text-muted-foreground hover:text-foreground"
+          aria-label={copy.close}
         >
           <X />
         </Button>
@@ -310,23 +326,25 @@ export function ModelPickerDialog(props: Props) {
             id="model-picker-title"
             className="font-mondwest text-display text-base tracking-wider"
           >
-            {title}
+            {dialogTitle}
           </h2>
           <p className="text-xs text-muted-foreground mt-1 font-mono">
-            current: {currentModel || "(unknown)"}
+            {interpolate(copy.currentModel, {
+              model: currentModel || copy.unknown,
+            })}
             {currentProviderSlug && ` · ${currentProviderSlug}`}
           </p>
         </header>
 
         <div className="px-5 pt-3 pb-2 border-b border-border">
           <div className="relative">
-            <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+            <Search className="absolute start-2 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
             <Input
               autoFocus
-              placeholder="Filter providers and models…"
+              placeholder={copy.filterProvidersModels}
               value={query}
               onChange={(e) => setQuery(e.target.value)}
-              className="pl-7 h-8 text-sm"
+              className="ps-7 h-8 text-sm"
             />
           </div>
         </div>
@@ -368,7 +386,7 @@ export function ModelPickerDialog(props: Props) {
         <footer className="border-t border-border p-3 flex items-center justify-between gap-3 flex-wrap">
           {alwaysGlobal ? (
             <span className="text-xs text-muted-foreground">
-              Saves to config.yaml — applies to new sessions.
+              {copy.savesToConfig}
             </span>
           ) : (
             <div className="flex items-center gap-2">
@@ -384,28 +402,28 @@ export function ModelPickerDialog(props: Props) {
                 className="font-mondwest normal-case tracking-normal text-xs text-muted-foreground cursor-pointer"
                 htmlFor="model-picker-persist-global"
               >
-                Persist globally (otherwise this session only)
+                {copy.persistGlobally}
               </Label>
             </div>
           )}
 
-          <div className="flex items-center gap-2 ml-auto">
+          <div className="flex items-center gap-2 ms-auto">
             <Button outlined onClick={onClose} disabled={applying}>
-              Cancel
+              {copy.cancel}
             </Button>
             <Button onClick={confirm} disabled={!canConfirm}>
-              {applying ? <Spinner /> : "Switch"}
+              {applying ? <Spinner /> : copy.switch}
             </Button>
           </div>
         </footer>
       </div>
       <ConfirmDialog
         open={!!pendingConfirm}
-        title="Expensive Model Warning"
+        title={copy.expensiveWarning}
         description={pendingConfirm?.message}
         destructive
-        confirmLabel="Switch anyway"
-        cancelLabel="Cancel"
+        confirmLabel={copy.switchAnyway}
+        cancelLabel={copy.cancel}
         loading={applying}
         onCancel={() => setPendingConfirm(null)}
         onConfirm={() => {
@@ -441,11 +459,13 @@ function ProviderColumn({
   query: string;
   onSelect(slug: string): void;
 }) {
+  const { t } = useI18n();
+  const copy = t.modelsPage ?? en.modelsPage!;
   return (
-    <div className="border-r border-border overflow-y-auto">
+    <div className="border-e border-border overflow-y-auto">
       {loading && (
         <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
-          <Spinner className="text-xs" /> loading…
+          <Spinner className="text-xs" /> {copy.loading}
         </div>
       )}
 
@@ -454,10 +474,10 @@ function ProviderColumn({
       {!loading && !error && providers.length === 0 && (
         <div className="p-4 text-xs text-muted-foreground italic">
           {query
-            ? "no matches"
+            ? copy.noMatches
             : total === 0
-              ? "no authenticated providers"
-              : "no matches"}
+              ? copy.noAuthenticatedProviders
+              : copy.noMatches}
         </div>
       )}
 
@@ -468,8 +488,8 @@ function ProviderColumn({
             key={p.slug}
             active={active}
             onClick={() => onSelect(p.slug)}
-            className={`items-start text-xs border-l-2 ${
-              active ? "border-l-primary" : "border-l-transparent"
+            className={`items-start text-xs border-s-2 ${
+              active ? "border-s-primary" : "border-s-transparent"
             }`}
           >
             <div className="flex-1 min-w-0">
@@ -478,7 +498,10 @@ function ProviderColumn({
                 {p.is_current && <CurrentTag />}
               </div>
               <div className="text-xs text-text-secondary font-mono truncate">
-                {p.slug} · {p.total_models ?? p.models?.length ?? 0} models
+                {p.slug} ·{" "}
+                {interpolate(copy.modelsCount, {
+                  count: p.total_models ?? p.models?.length ?? 0,
+                })}
               </div>
             </div>
           </ListItem>
@@ -511,11 +534,13 @@ function ModelColumn({
   onSelect(model: string): void;
   onConfirm(model: string): void;
 }) {
+  const { t } = useI18n();
+  const copy = t.modelsPage ?? en.modelsPage!;
   if (!provider) {
     return (
       <div className="overflow-y-auto">
         <div className="p-4 text-xs text-muted-foreground italic">
-          pick a provider →
+          {copy.pickProvider}
         </div>
       </div>
     );
@@ -531,9 +556,7 @@ function ModelColumn({
 
       {models.length === 0 ? (
         <div className="p-4 text-xs text-muted-foreground italic">
-          {allModels.length
-            ? "no models match your filter"
-            : "no models listed for this provider"}
+          {allModels.length ? copy.noModelsMatch : copy.noModelsProvider}
         </div>
       ) : (
         models.map(({ model: m, positions }) => {
@@ -565,9 +588,11 @@ function ModelColumn({
 }
 
 function CurrentTag() {
+  const { t } = useI18n();
+  const copy = t.modelsPage ?? en.modelsPage!;
   return (
     <span className="text-display text-xs tracking-wider text-primary shrink-0">
-      current
+      {copy.current}
     </span>
   );
 }

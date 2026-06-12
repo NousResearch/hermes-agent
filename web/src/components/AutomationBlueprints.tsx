@@ -11,6 +11,7 @@ import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { api } from "@/lib/api";
 import type { AutomationBlueprint, AutomationBlueprintField } from "@/lib/api";
+import { useI18n } from "@/i18n";
 import { cn, themedBody } from "@/lib/utils";
 
 interface AutomationBlueprintsProps {
@@ -24,6 +25,16 @@ function initialValues(blueprint: AutomationBlueprint): Record<string, string> {
   const out: Record<string, string> = {};
   for (const f of blueprint.fields) out[f.name] = f.default ?? "";
   return out;
+}
+
+function interpolate(
+  template: string,
+  values: Record<string, string | number>,
+): string {
+  return Object.entries(values).reduce(
+    (result, [key, value]) => result.replaceAll(`{${key}}`, String(value)),
+    template,
+  );
 }
 
 function FieldInput({
@@ -78,17 +89,29 @@ function BlueprintCard({
   onCreated?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [values, setValues] = useState<Record<string, string>>(() => initialValues(blueprint));
+  const [values, setValues] = useState<Record<string, string>>(() =>
+    initialValues(blueprint),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const { t } = useI18n();
 
   const submit = useCallback(async () => {
     setSubmitting(true);
     setError(null);
     try {
-      const job = await api.instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile);
+      const job = await api.instantiateAutomationBlueprint(
+        { blueprint: blueprint.key, values },
+        profile,
+      );
       const when = job.schedule_display ? ` — ${job.schedule_display}` : "";
-      showToast(`${blueprint.title} scheduled${when}`, "success");
+      showToast(
+        interpolate(t.cron.blueprintScheduled ?? "{title} scheduled{when}", {
+          title: blueprint.title,
+          when,
+        }),
+        "success",
+      );
       setOpen(false);
       setValues(initialValues(blueprint));
       onCreated?.();
@@ -99,7 +122,14 @@ function BlueprintCard({
     } finally {
       setSubmitting(false);
     }
-  }, [blueprint, values, profile, showToast, onCreated]);
+  }, [
+    blueprint,
+    values,
+    profile,
+    showToast,
+    onCreated,
+    t.cron.blueprintScheduled,
+  ]);
 
   return (
     <Card className={cn("overflow-hidden", themedBody)}>
@@ -119,12 +149,10 @@ function BlueprintCard({
               ))}
             </div>
           </div>
-          <Button
-            ghost={open}
-            size="sm"
-            onClick={() => setOpen((o) => !o)}
-          >
-            {open ? "Cancel" : "Set up"}
+          <Button ghost={open} size="sm" onClick={() => setOpen((o) => !o)}>
+            {open
+              ? (t.cron.cancelBlueprint ?? t.common.cancel)
+              : (t.cron.setupBlueprint ?? t.common.set)}
           </Button>
         </div>
 
@@ -136,7 +164,9 @@ function BlueprintCard({
                 <FieldInput
                   field={f}
                   value={values[f.name] ?? ""}
-                  onChange={(v) => setValues((prev) => ({ ...prev, [f.name]: v }))}
+                  onChange={(v) =>
+                    setValues((prev) => ({ ...prev, [f.name]: v }))
+                  }
                 />
                 {f.help && f.type !== "text" ? (
                   <p className="text-xs opacity-60">{f.help}</p>
@@ -150,8 +180,12 @@ function BlueprintCard({
             ) : null}
             <div className="flex items-center gap-2">
               <Button onClick={() => void submit()} disabled={submitting}>
-                {submitting ? <Spinner className="h-4 w-4" /> : <Clock className="h-4 w-4" />}
-                Schedule it
+                {submitting ? (
+                  <Spinner className="h-4 w-4" />
+                ) : (
+                  <Clock className="h-4 w-4" />
+                )}
+                {t.cron.scheduleBlueprint ?? t.cron.schedule}
               </Button>
             </div>
           </div>
@@ -167,9 +201,15 @@ function BlueprintCard({
  * to /api/cron/blueprints/instantiate which fills the blueprint and creates the job
  * via the same create_job path as everything else.
  */
-export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprintsProps) {
+export function AutomationBlueprints({
+  profile,
+  onCreated,
+}: AutomationBlueprintsProps) {
   const { toast, showToast } = useToast();
-  const [blueprints, setBlueprints] = useState<AutomationBlueprint[] | null>(null);
+  const { t } = useI18n();
+  const [blueprints, setBlueprints] = useState<AutomationBlueprint[] | null>(
+    null,
+  );
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -180,7 +220,8 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
         if (!cancelled) setBlueprints(r.blueprints);
       })
       .catch((e) => {
-        if (!cancelled) setLoadError(e instanceof Error ? e.message : String(e));
+        if (!cancelled)
+          setLoadError(e instanceof Error ? e.message : String(e));
       });
     return () => {
       cancelled = true;
@@ -188,17 +229,29 @@ export function AutomationBlueprints({ profile, onCreated }: AutomationBlueprint
   }, []);
 
   if (loadError) {
-    return <p className="text-sm text-red-500">Couldn't load blueprints: {loadError}</p>;
+    return (
+      <p className="text-sm text-red-500">
+        {interpolate(
+          t.cron.blueprintLoadFailed ?? "Couldn't load blueprints: {error}",
+          { error: loadError },
+        )}
+      </p>
+    );
   }
   if (blueprints === null) {
     return (
       <div className="flex items-center gap-2 opacity-70">
-        <Spinner className="h-4 w-4" /> Loading blueprints…
+        <Spinner className="h-4 w-4" />{" "}
+        {t.cron.blueprintLoading ?? "Loading blueprints…"}
       </div>
     );
   }
   if (blueprints.length === 0) {
-    return <p className="opacity-70">No automation blueprints available.</p>;
+    return (
+      <p className="opacity-70">
+        {t.cron.noBlueprints ?? "No automation blueprints available."}
+      </p>
+    );
   }
 
   return (

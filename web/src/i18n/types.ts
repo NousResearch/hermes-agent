@@ -194,6 +194,25 @@ export interface Translations {
     resumeInChat: string;
     previousPage: string;
     nextPage: string;
+    renameSession?: string;
+    exportSession?: string;
+    sessionTitle?: string;
+    saveTitle?: string;
+    cancelRename?: string;
+    sessionRenamed?: string;
+    renameFailed?: string;
+    exportFailed?: string;
+    invalidPruneDays?: string;
+    prunedSessions?: string;
+    pruneFailed?: string;
+    pruneTitle?: string;
+    pruneDescription?: string;
+    olderThanDays?: string;
+    prune?: string;
+    total?: string;
+    activeInStore?: string;
+    archived?: string;
+    messages?: string;
     roles: {
       user: string;
       assistant: string;
@@ -380,6 +399,13 @@ export interface Translations {
   >;
 
   systemPage?: Record<string, string>;
+  profileBuilderPage?: Record<string, string>;
+  mcpPage?: Record<string, string>;
+  modelsPage?: Record<string, string>;
+  chatPage?: Record<string, string>;
+  toolsetDrawer?: Record<string, string>;
+  skillEditor?: Record<string, string>;
+  skillsHub?: Record<string, string>;
 
   // ── Analytics page ──
   analytics: {
@@ -406,6 +432,11 @@ export interface Translations {
     perDayAvg: string;
     acrossModels: string;
     inOut: string;
+    hiddenTitle?: string;
+    hiddenBody1?: string;
+    hiddenBody2?: string;
+    hiddenBody3?: string;
+    hiddenConfigLink?: string;
   };
 
   // ── Models page ──
@@ -485,6 +516,26 @@ export interface Translations {
     pause: string;
     resume: string;
     triggerNow: string;
+    jobs?: string;
+    blueprints?: string;
+    profile?: string;
+    skillsOptional?: string;
+    skills?: string;
+    skillsHint?: string;
+    saveChanges?: string;
+    allProfiles?: string;
+    noSkillsProfile?: string;
+    close?: string;
+    editJob?: string;
+    requiredFields?: string;
+    savedChanges?: string;
+    setupBlueprint?: string;
+    cancelBlueprint?: string;
+    scheduleBlueprint?: string;
+    blueprintLoadFailed?: string;
+    blueprintLoading?: string;
+    noBlueprints?: string;
+    blueprintScheduled?: string;
     delivery: {
       local: string;
       telegram: string;
@@ -625,6 +676,10 @@ export interface Translations {
     profileSelector?: string;
     currentProfile?: string;
     managingProfile?: string;
+    browseHub?: string;
+    editSkill?: string;
+    saved?: string;
+    newSkill?: string;
   };
 
   // ── Config page ──
@@ -688,6 +743,11 @@ export interface Translations {
     showLess: string;
     showMore: string;
     showValue: string;
+    oauthSection?: string;
+    providersSection?: string;
+    toolsSection?: string;
+    settingsSection?: string;
+    jumpToSection?: string;
   };
 
   // ── OAuth ──
@@ -713,6 +773,13 @@ export interface Translations {
     connectedClosing: string;
     loginFailed: string;
     sessionExpired: string;
+    connectedToast?: string;
+    startFailed?: string;
+    submitFailed?: string;
+    tokenExchangeFailed?: string;
+    loginStatusFailed?: string;
+    pollingFailed?: string;
+    retryFailed?: string;
     reOpenAuth: string;
     reOpenVerification: string;
     submitCode: string;

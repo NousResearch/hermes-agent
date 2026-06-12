@@ -15,6 +15,7 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
   "/webhooks": "webhooks",
   "/pairing": "pairing",
   "/profiles": "profiles",
+  "/profiles/new": "profiles",
   "/config": "config",
   "/env": "keys",
   "/system": "system",

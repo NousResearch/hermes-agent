@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -20,9 +26,15 @@ import { timeAgo } from "@/lib/utils";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { Stats } from "@nous-research/ui/ui/components/stats";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@nous-research/ui/ui/components/card";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 import { PluginSlot } from "@/plugins";
 
 const PERIODS = [
@@ -124,8 +136,6 @@ function SortHeader({
     </th>
   );
 }
-
-
 
 function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
   const { t } = useI18n();
@@ -234,7 +244,11 @@ function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
 
 function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
   const { t } = useI18n();
-  const { sorted, sortKey, sortDir, toggle } = useTableSort(daily, "day", "desc");
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(
+    daily,
+    "day",
+    "desc",
+  );
 
   if (daily.length === 0) return null;
 
@@ -253,33 +267,59 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
-                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader
+                  label={t.analytics.date}
+                  col="day"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-left py-2 pr-4 font-medium"
+                />
+                <SortHeader
+                  label={t.sessions.title}
+                  col="sessions"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.input}
+                  col="input_tokens"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.output}
+                  col="output_tokens"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 pl-4 font-medium"
+                />
               </tr>
             </thead>
             <tbody>
               {sorted.map((d) => (
                 <tr
-                    key={d.day}
-                    className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
-                  >
-                  <td className="py-2 pr-4 font-medium">
-                      {formatDate(d.day)}
-                    </td>
+                  key={d.day}
+                  className="border-b border-border/50 hover:bg-secondary/20 transition-colors"
+                >
+                  <td className="py-2 pr-4 font-medium">{formatDate(d.day)}</td>
                   <td className="text-right py-2 px-4 text-muted-foreground">
-                      {d.sessions}
-                    </td>
+                    {d.sessions}
+                  </td>
                   <td className="text-right py-2 px-4">
                     <span style={{ color: "var(--series-input-token)" }}>
-                        {formatTokens(d.input_tokens)}
-                      </span>
+                      {formatTokens(d.input_tokens)}
+                    </span>
                   </td>
                   <td className="text-right py-2 pl-4">
                     <span style={{ color: "var(--series-output-token)" }}>
-                        {formatTokens(d.output_tokens)}
-                      </span>
+                      {formatTokens(d.output_tokens)}
+                    </span>
                   </td>
                 </tr>
               ))}
@@ -293,7 +333,11 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
 
 function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
   const { t } = useI18n();
-  const { sorted, sortKey, sortDir, toggle } = useTableSort(models, "input_tokens", "desc");
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(
+    models,
+    "input_tokens",
+    "desc",
+  );
 
   if (models.length === 0) return null;
 
@@ -312,9 +356,30 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
-                <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader
+                  label={t.analytics.model}
+                  col="model"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-left py-2 pr-4 font-medium"
+                />
+                <SortHeader
+                  label={t.sessions.title}
+                  col="sessions"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.tokens}
+                  col="input_tokens"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 pl-4 font-medium"
+                />
               </tr>
             </thead>
             <tbody>
@@ -350,7 +415,11 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
 
 function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
   const { t } = useI18n();
-  const { sorted, sortKey, sortDir, toggle } = useTableSort(skills, "total_count", "desc");
+  const { sorted, sortKey, sortDir, toggle } = useTableSort(
+    skills,
+    "total_count",
+    "desc",
+  );
 
   if (skills.length === 0) return null;
 
@@ -367,11 +436,46 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
           <table className="w-full font-mondwest normal-case text-sm">
             <thead>
               <tr className="border-b border-border text-muted-foreground text-xs">
-                <SortHeader label={t.analytics.skill} col="skill" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
-                <SortHeader label={t.analytics.loads} col="view_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.edits} col="manage_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.total} col="total_count" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.lastUsed} col="last_used_at" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader
+                  label={t.analytics.skill}
+                  col="skill"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-left py-2 pr-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.loads}
+                  col="view_count"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.edits}
+                  col="manage_count"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.total}
+                  col="total_count"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 px-4 font-medium"
+                />
+                <SortHeader
+                  label={t.analytics.lastUsed}
+                  col="last_used_at"
+                  sortKey={sortKey}
+                  sortDir={sortDir}
+                  toggle={toggle}
+                  className="text-right py-2 pl-4 font-medium"
+                />
               </tr>
             </thead>
             <tbody>
@@ -414,13 +518,16 @@ export default function AnalyticsPage() {
   // they diverge from provider billing in ways that mislead users.
   const [showTokens, setShowTokens] = useState<boolean | null>(null);
   const { t } = useI18n();
+  const analyticsCopy = { ...en.analytics, ...t.analytics };
   const { setAfterTitle, setEnd } = usePageHeader();
 
   useEffect(() => {
     api
       .getConfig()
       .then((cfg) => {
-        const dash = (cfg?.dashboard ?? {}) as { show_token_analytics?: unknown };
+        const dash = (cfg?.dashboard ?? {}) as {
+          show_token_analytics?: unknown;
+        };
         setShowTokens(dash.show_token_analytics === true);
       })
       .catch(() => setShowTokens(false));
@@ -475,7 +582,15 @@ export default function AnalyticsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh, showTokens]);
+  }, [
+    days,
+    loading,
+    load,
+    setAfterTitle,
+    setEnd,
+    t.common.refresh,
+    showTokens,
+  ]);
 
   useEffect(() => {
     load();
@@ -490,32 +605,15 @@ export default function AnalyticsPage() {
           <CardContent className="py-12">
             <div className="mx-auto flex max-w-2xl flex-col gap-3 text-sm text-muted-foreground">
               <h2 className="font-mondwest text-display text-base tracking-wider text-foreground">
-                Token analytics hidden
+                {analyticsCopy.hiddenTitle}
               </h2>
+              <p>{analyticsCopy.hiddenBody1}</p>
+              <p>{analyticsCopy.hiddenBody2}</p>
               <p>
-                The token, cost, and per-day analytics on this page are a
-                local debug estimate. They only count successful main-agent
-                responses with a usable <span className="font-mono">usage</span>{" "}
-                block, and silently exclude auxiliary calls (context
-                compression, title generation, vision, session search, web
-                extract, smart approvals, MCP routing, plugin LLM access)
-                plus provider-side retries and fallback attempts. Cache
-                writes are missing entirely.
-              </p>
-              <p>
-                On models with heavy auxiliary traffic (Kimi K2.6, MiniMax
-                M2.7) the local total can be 10x–100x lower than what your
-                provider bills. Hiding these numbers is safer than letting
-                them look authoritative.
-              </p>
-              <p>
-                Check your provider dashboard (OpenRouter, Anthropic, etc.)
-                for actual usage and billing. To re-enable the local debug
-                estimate anyway, set{" "}
-                <span className="font-mono">
-                  dashboard.show_token_analytics: true
-                </span>{" "}
-                in <a href="/config" className="underline">Config</a>.
+                {analyticsCopy.hiddenBody3}{" "}
+                <a href="/config" className="underline">
+                  {analyticsCopy.hiddenConfigLink ?? t.app.nav.config}
+                </a>
               </p>
             </div>
           </CardContent>

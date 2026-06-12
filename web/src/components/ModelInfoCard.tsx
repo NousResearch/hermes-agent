@@ -4,6 +4,8 @@ import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
 import type { ModelInfoResponse } from "@/lib/api";
 import { formatTokenCount } from "@/lib/format";
+import { useI18n } from "@/i18n";
+import { en } from "@/i18n/en";
 
 interface ModelInfoCardProps {
   /** Current model string from config state — used to detect changes */
@@ -19,6 +21,8 @@ export function ModelInfoCard({
   const [info, setInfo] = useState<ModelInfoResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const lastFetchKeyRef = useRef("");
+  const { t } = useI18n();
+  const copy = t.modelsPage ?? en.modelsPage!;
 
   useEffect(() => {
     if (!currentModel) return;
@@ -38,7 +42,7 @@ export function ModelInfoCard({
     return (
       <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
         <Spinner className="text-xs" />
-        Loading model info…
+        {copy.modelInfoLoading ?? "Loading model info…"}
       </div>
     );
   }
@@ -53,7 +57,9 @@ export function ModelInfoCard({
       <div className="flex items-center gap-4 text-xs">
         <div className="flex items-center gap-1.5 text-muted-foreground">
           <Gauge className="h-3.5 w-3.5" />
-          <span className="font-medium">Context Window</span>
+          <span className="font-medium">
+            {copy.contextWindow ?? "Context Window"}
+          </span>
         </div>
         <div className="flex items-center gap-2">
           <span className="font-mono font-semibold text-foreground">
@@ -61,11 +67,14 @@ export function ModelInfoCard({
           </span>
           {info.config_context_length > 0 ? (
             <span className="text-amber-500 text-xs">
-              (override — auto: {formatTokenCount(info.auto_context_length)})
+              {(copy.overrideAuto ?? "(override — auto: {value})").replace(
+                "{value}",
+                formatTokenCount(info.auto_context_length),
+              )}
             </span>
           ) : (
             <span className="text-text-tertiary text-xs">
-              auto-detected
+              {copy.autoDetected ?? "auto-detected"}
             </span>
           )}
         </div>
@@ -75,7 +84,9 @@ export function ModelInfoCard({
         <div className="flex items-center gap-4 text-xs">
           <div className="flex items-center gap-1.5 text-muted-foreground">
             <Lightbulb className="h-3.5 w-3.5" />
-            <span className="font-medium">Max Output</span>
+            <span className="font-medium">
+              {copy.maxOutput ?? "Max Output"}
+            </span>
           </div>
           <span className="font-mono font-semibold text-foreground">
             {formatTokenCount(caps.max_output_tokens)}
@@ -87,17 +98,20 @@ export function ModelInfoCard({
         <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
           {caps.supports_tools && (
             <span className="inline-flex items-center gap-1 bg-success/10 px-2 py-0.5 text-xs font-medium text-success">
-              <Wrench className="h-2.5 w-2.5" /> Tools
+              <Wrench className="h-2.5 w-2.5" />
+              <span>{copy.capabilityTools ?? "Tools"}</span>
             </span>
           )}
           {caps.supports_vision && (
             <span className="inline-flex items-center gap-1 bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-600 dark:text-blue-400">
-              <Eye className="h-2.5 w-2.5" /> Vision
+              <Eye className="h-2.5 w-2.5" />
+              <span>{copy.capabilityVision ?? "Vision"}</span>
             </span>
           )}
           {caps.supports_reasoning && (
             <span className="inline-flex items-center gap-1 bg-purple-500/10 px-2 py-0.5 text-xs font-medium text-purple-600 dark:text-purple-400">
-              <Brain className="h-2.5 w-2.5" /> Reasoning
+              <Brain className="h-2.5 w-2.5" />
+              <span>{copy.capabilityReasoning ?? "Reasoning"}</span>
             </span>
           )}
           {caps.model_family && (

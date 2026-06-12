@@ -358,3 +358,54 @@ class TestHandleMessageUsesAuthenticatedRead:
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls == ["/tmp/img_from_read.png"]
         assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_referenced_image_attachment_is_forwarded_to_media(self, monkeypatch):
+        """Replying to an image message forwards the referenced attachment."""
+        adapter = _make_adapter()
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+        adapter.handle_message = AsyncMock()
+
+        with patch(
+            "gateway.platforms.discord.cache_image_from_bytes",
+            return_value="/tmp/referenced_img.png",
+        ), patch(
+            "gateway.platforms.discord.cache_image_from_url",
+            new_callable=AsyncMock,
+        ) as mock_url_download:
+            att = SimpleNamespace(
+                url="https://cdn.discordapp.com/attachments/fake/referenced.png",
+                filename="referenced.png",
+                content_type="image/png",
+                size=len(_PNG_BYTES),
+                read=AsyncMock(return_value=_PNG_BYTES),
+            )
+            from datetime import datetime, timezone
+
+            class _FakeDMChannel:
+                id = 100
+                name = "dm"
+
+            monkeypatch.setattr(
+                "gateway.platforms.discord.discord.DMChannel",
+                _FakeDMChannel,
+            )
+            chan = _FakeDMChannel()
+            referenced = SimpleNamespace(content="", attachments=[att])
+            msg = SimpleNamespace(
+                id=2,
+                content="what is this?",
+                attachments=[],
+                mentions=[],
+                reference=SimpleNamespace(message_id=1, resolved=referenced),
+                created_at=datetime.now(timezone.utc),
+                channel=chan,
+                author=SimpleNamespace(id=42, display_name="U", name="U"),
+            )
+            await adapter._handle_message(msg)
+
+        mock_url_download.assert_not_called()
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == ["/tmp/referenced_img.png"]
+        assert event.media_types == ["image/png"]
+        assert event.reply_to_message_id == "1"

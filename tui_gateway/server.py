@@ -3237,7 +3237,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         _attach_worker(
             sid,
             _sessions[sid],
-            _SlashWorker(key, getattr(agent, "model", _resolve_model())),
+            _SlashWorker(key, getattr(agent, "model", _resolve_model()), session_id=sid),
         )
     except Exception:
         # Defer hard-failure to slash.exec; chat still works without slash worker.
@@ -8749,6 +8749,7 @@ def _(rid, params: dict) -> dict:
             worker = _SlashWorker(
                 session["session_key"],
                 getattr(session.get("agent"), "model", _resolve_model()),
+                session_id=params.get("session_id", ""),
             )
             _attach_worker(params.get("session_id", ""), session, worker)
         except Exception as e:

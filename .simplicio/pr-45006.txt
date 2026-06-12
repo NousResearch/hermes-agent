@@ -1,0 +1,1 @@
+Fix #45006: [Bug]: /model Discord command shows wrong provider when typing model name manually (not via dropdown)

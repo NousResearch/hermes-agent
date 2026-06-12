@@ -9,6 +9,7 @@ Subcommands:
   hermes fallback [list]   Show the current fallback chain (default when no subcommand)
   hermes fallback add      Pick provider + model via the same picker as `hermes model`,
                            then append the selection to the chain
+  hermes fallback move     Reorder an existing fallback entry by position
   hermes fallback remove   Pick an entry to delete from the chain
   hermes fallback clear    Remove all fallback entries
 
@@ -276,6 +277,53 @@ def cmd_fallback_remove(args) -> None:  # noqa: ARG001
     print()
 
 
+def cmd_fallback_move(args) -> None:
+    """Move a fallback entry from one 1-based position to another."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    chain = _read_chain(config)
+
+    if not chain:
+        print()
+        print("  No fallback providers configured — nothing to move.")
+        print()
+        return
+
+    from_position = getattr(args, "from_position", None)
+    to_position = getattr(args, "to_position", None)
+    try:
+        from_index = int(from_position) - 1
+        to_index = int(to_position) - 1
+    except (TypeError, ValueError):
+        print("FROM and TO must be numeric positions from `hermes fallback list`.")
+        raise SystemExit(2)
+
+    max_position = len(chain)
+    if not 0 <= from_index < max_position:
+        print(f"FROM must be between 1 and {max_position}.")
+        raise SystemExit(2)
+    if not 0 <= to_index < max_position:
+        print(f"TO must be between 1 and {max_position}.")
+        raise SystemExit(2)
+
+    moved = chain.pop(from_index)
+    chain.insert(to_index, moved)
+    _write_chain(config, chain)
+    save_config(config)
+
+    print()
+    if from_index == to_index:
+        print(f"  Fallback already at position {to_position}: {_format_entry(moved)}")
+    else:
+        print(f"  Moved fallback from position {from_position} to {to_position}: {_format_entry(moved)}")
+    print()
+    print(f"  Fallback chain ({len(chain)} {'entry' if len(chain) == 1 else 'entries'}):")
+    for i, entry in enumerate(chain, 1):
+        print(f"    {i}. {_format_entry(entry)}")
+    print()
+
+
 def cmd_fallback_clear(args) -> None:  # noqa: ARG001
     """Remove all fallback entries (with confirmation)."""
     from hermes_cli.config import load_config, save_config
@@ -344,11 +392,13 @@ def cmd_fallback(args) -> None:
         cmd_fallback_list(args)
     elif sub == "add":
         cmd_fallback_add(args)
+    elif sub == "move":
+        cmd_fallback_move(args)
     elif sub in {"remove", "rm"}:
         cmd_fallback_remove(args)
     elif sub == "clear":
         cmd_fallback_clear(args)
     else:
         print(f"Unknown fallback subcommand: {sub}")
-        print("Use one of: list, add, remove, clear")
+        print("Use one of: list, add, move, remove, clear")
         raise SystemExit(2)

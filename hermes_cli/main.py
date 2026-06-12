@@ -12098,6 +12098,13 @@ def main():
         "add",
         help="Pick a provider + model (same picker as `hermes model`) and append to the chain",
     )
+    fallback_move = fallback_subparsers.add_parser(
+        "move",
+        help="Move a fallback entry from one position to another",
+        description="Reorder fallback providers using the 1-based positions shown by `hermes fallback list`.",
+    )
+    fallback_move.add_argument("from_position", metavar="FROM", type=int)
+    fallback_move.add_argument("to_position", metavar="TO", type=int)
     fallback_subparsers.add_parser(
         "remove",
         aliases=["rm"],

@@ -538,58 +538,79 @@ def _make_callback_handler() -> tuple[type, dict]:
 # ---------------------------------------------------------------------------
 
 
-async def _redirect_handler(authorization_url: str) -> None:
-    """Show the authorization URL to the user.
+def _make_redirect_handler(port: int):
+    """Return a redirect handler closure that closes over the given port.
 
-    Opens the browser automatically when possible; always prints the URL
-    as a fallback for headless/SSH/gateway environments.
+    Using a closure instead of reading the module-level ``_oauth_port`` avoids
+    cross-server state pollution when multiple MCP servers run OAuth
+    concurrently (fixes #44588).
     """
-    # Fail fast at the authorization boundary in non-interactive contexts
-    # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
-    # token (expired/revoked, refresh rejected) makes the SDK fall through to
-    # the authorization-code flow even though build_oauth_auth's token-file
-    # guard passed. Without this check we would print a URL and launch a
-    # browser flow no operator can complete, then block in _wait_for_callback
-    # for the full timeout. Raise before launching so gateway adapters start
-    # promptly and the caller can skip this server with an actionable warning.
-    # This intentionally re-checks interactivity here rather than trusting the
-    # token-file existence guard alone. See #57836.
-    _raise_if_non_interactive(
-        "MCP OAuth requires browser authorization but no interactive "
-        "session is available (non-interactive/background context)."
-    )
+    async def _redirect_handler(authorization_url: str) -> None:
+        """Show the authorization URL to the user.
 
-    msg = (
-        f"\n  MCP OAuth: authorization required.\n"
-        f"  Open this URL in your browser:\n\n"
-        f"    {authorization_url}\n"
-    )
-    print(msg, file=sys.stderr)
-
-    # On a remote SSH session the OAuth provider redirects to
-    # http://127.0.0.1:<port>/callback, which reaches the callback server on
-    # the *remote* machine — not the user's local machine where the browser
-    # opened.  Two ways out: paste the redirect URL back (default fallback,
-    # offered by _wait_for_callback on interactive TTYs), or set up an SSH
-    # port forward so the redirect tunnels through.
-    if _oauth_port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
-        print(
-            f"  Remote session detected. After you authorize, the provider redirects to\n"
-            f"    http://127.0.0.1:{_oauth_port}/callback\n"
-            f"  which only the listener on THIS machine can receive. Two options:\n"
-            f"\n"
-            f"    1. Easiest — when your browser shows a connection error after\n"
-            f"       authorizing, copy the full URL from the address bar and paste\n"
-            f"       it at the prompt below. The pasted ``code=...&state=...`` is\n"
-            f"       enough to complete the flow.\n"
-            f"\n"
-            f"    2. Or forward the port first in a separate terminal:\n"
-            f"         ssh -N -L {_oauth_port}:127.0.0.1:{_oauth_port} <user>@<this-host>\n"
-            f"       then open the URL above and let it redirect normally.\n"
-            f"\n"
-            f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
-            file=sys.stderr,
+        Opens the browser automatically when possible; always prints the URL
+        as a fallback for headless/SSH/gateway environments.
+        """
+        # Fail fast at the authorization boundary in non-interactive contexts
+        # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
+        # token (expired/revoked, refresh rejected) makes the SDK fall through to
+        # the authorization-code flow even though build_oauth_auth's token-file
+        # guard passed. Without this check we would print a URL and launch a
+        # browser flow no operator can complete, then block in _wait_for_callback
+        # for the full timeout. Raise before launching so gateway adapters start
+        # promptly and the caller can skip this server with an actionable warning.
+        # This intentionally re-checks interactivity here rather than trusting the
+        # token-file existence guard alone. See #57836.
+        _raise_if_non_interactive(
+            "MCP OAuth requires browser authorization but no interactive "
+            "session is available (non-interactive/background context)."
         )
+
+        msg = (
+            f"\n  MCP OAuth: authorization required.\n"
+            f"  Open this URL in your browser:\n\n"
+            f"    {authorization_url}\n"
+        )
+        print(msg, file=sys.stderr)
+
+        # On a remote SSH session the OAuth provider redirects to
+        # http://127.0.0.1:<port>/callback, which reaches the callback server on
+        # the *remote* machine — not the user's local machine where the browser
+        # opened.  Two ways out: paste the redirect URL back (default fallback,
+        # offered by _wait_for_callback on interactive TTYs), or set up an SSH
+        # port forward so the redirect tunnels through.
+        if port and (os.getenv("SSH_CLIENT") or os.getenv("SSH_TTY")):
+            print(
+                f"  Remote session detected. After you authorize, the provider redirects to\n"
+                f"    http://127.0.0.1:{port}/callback\n"
+                f"  which only the listener on THIS machine can receive. Two options:\n"
+                f"\n"
+                f"    1. Easiest — when your browser shows a connection error after\n"
+                f"       authorizing, copy the full URL from the address bar and paste\n"
+                f"       it at the prompt below. The pasted ``code=...&state=...`` is\n"
+                f"       enough to complete the flow.\n"
+                f"\n"
+                f"    2. Or forward the port first in a separate terminal:\n"
+                f"         ssh -N -L {port}:127.0.0.1:{port} <user>@<this-host>\n"
+                f"       then open the URL above and let it redirect normally.\n"
+                f"\n"
+                f"  See: https://hermes-agent.nousresearch.com/docs/guides/oauth-over-ssh\n",
+                file=sys.stderr,
+            )
+
+        if _can_open_browser():
+            try:
+                opened = webbrowser.open(authorization_url)
+                if opened:
+                    print("  (Browser opened automatically.)\n", file=sys.stderr)
+                else:
+                    print("  (Could not open browser — please open the URL manually.)\n", file=sys.stderr)
+            except Exception:
+                print("  (Could not open browser — please open the URL manually.)\n", file=sys.stderr)
+        else:
+            print("  (Headless environment detected — open the URL manually.)\n", file=sys.stderr)
+
+    return _redirect_handler
 
     if _can_open_browser():
         try:
@@ -650,9 +671,13 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     # We just need to poll for the result.
     handler_cls, result = _make_callback_handler()
 
-    # Start a temporary server on the known port
+    # Start a temporary server on the known port.
+    # allow_reuse_address prevents TIME_WAIT on the socket after the flow
+    # completes, so the next OAuth flow on the same port can bind immediately
+    # (fixes #44590).
     try:
         server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
+        server.allow_reuse_address = True
     except OSError:
         # Port already in use — the server from build_oauth_auth is running.
         # Fall back to polling the server started by build_oauth_auth.
@@ -938,11 +963,15 @@ def build_oauth_auth(
     client_metadata = _build_client_metadata(cfg)
     _maybe_preregister_client(storage, cfg, client_metadata)
 
+    # Use closure factories to avoid global state pollution (#44588).
+    resolved_port = cfg.get("_resolved_port", _oauth_port)
+    redirect_handler = _make_redirect_handler(resolved_port)
+
     return OAuthClientProvider(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
-        redirect_handler=_redirect_handler,
+        redirect_handler=redirect_handler,
         callback_handler=_wait_for_callback,
         timeout=float(cfg.get("timeout", 300)),
     )

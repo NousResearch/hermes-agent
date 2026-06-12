@@ -1,0 +1,1 @@
+Fix #44837: Session DB turn-end flush drops assistant after repair_message_sequence compacts list (orphan user → \n\n merge)

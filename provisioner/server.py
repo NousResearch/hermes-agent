@@ -289,13 +289,41 @@ class FleetController:
 
     def _start_poller(self, tenant_id: str) -> None:
         self._stop_poller(tenant_id)
-        self._pollers[tenant_id] = asyncio.create_task(
+        task = asyncio.create_task(
             self._poll_unpaired(tenant_id), name=f"poller-{tenant_id}",
         )
+        self._pollers[tenant_id] = task
+
+        def _log_poller_exit(t: asyncio.Task, _tid: str = tenant_id) -> None:
+            # Surface unexpected poller deaths LOUDLY. Without this, an
+            # exception inside the poller task is swallowed silently (the
+            # task is never awaited) — exactly how the 2026-06-12 pairing
+            # incident hid: the chain died and nothing was logged.
+            if t.cancelled():
+                log.info("poller for %s cancelled", _tid)
+                return
+            exc = t.exception()
+            if exc is not None:
+                log.error("poller for %s DIED: %r", _tid, exc, exc_info=exc)
+            else:
+                log.info("poller for %s exited cleanly", _tid)
+
+        task.add_done_callback(_log_poller_exit)
 
     def _stop_poller(self, tenant_id: str) -> None:
         task = self._pollers.pop(tenant_id, None)
-        if task is not None and not task.done():
+        # NEVER cancel the task we're running inside of. _finalize_pairing
+        # runs IN the poller task and calls this to retire itself — the
+        # original code cancelled the current task here, which raised
+        # CancelledError at the next await and silently killed the whole
+        # post-pairing chain (profile create / gateway start / welcome).
+        # The poller returns naturally after pairing; popping the registry
+        # entry is all that's needed in the self-call case.
+        if (
+            task is not None
+            and not task.done()
+            and task is not asyncio.current_task()
+        ):
             task.cancel()
 
     async def _poll_unpaired(self, tenant_id: str) -> None:
@@ -348,14 +376,17 @@ class FleetController:
                         await _tg_say(self._http, token, chat_id, MSG_PRIVATE)
                     continue
                 code = m.group(1)
+                log.info("/start received for %s — verifying code with app", slug)
                 paired = await self._attempt_pairing(
-                    tenant_id, code, str(from_id), chat_id,
+                    tenant_id, code, str(from_id), chat_id, offset,
                 )
                 if paired:
+                    log.info("pairing complete for %s — poller retiring", slug)
                     return  # poller's job is done; gateway owns the bot now
 
     async def _attempt_pairing(self, tenant_id: str, code: str,
-                               telegram_user_id: str, chat_id: Any) -> bool:
+                               telegram_user_id: str, chat_id: Any,
+                               last_update_offset: int = 0) -> bool:
         """Verify the code with the Avocado app; finalize on 200."""
         rec = self.registry.get(tenant_id)
         if rec is None:
@@ -380,6 +411,7 @@ class FleetController:
             return False
 
         if status == 403:
+            log.info("pair callback rejected (403 wrong code) for %s", rec["slug"])
             await _tg_say(self._http, token, chat_id, MSG_WRONG_CODE)
             return False
         if status != 200:
@@ -387,8 +419,15 @@ class FleetController:
             await _tg_say(self._http, token, chat_id, MSG_TRANSIENT)
             return False
 
-        async with self._lock(tenant_id):
-            ok = await self._finalize_pairing(tenant_id, telegram_user_id)
+        log.info("pair callback OK (200) for %s — finalizing", rec["slug"])
+        try:
+            async with self._lock(tenant_id):
+                ok = await self._finalize_pairing(
+                    tenant_id, telegram_user_id, last_update_offset,
+                )
+        except Exception:
+            log.exception("finalize_pairing CRASHED for %s", rec["slug"])
+            ok = False
         if ok:
             await _tg_say(self._http, token, chat_id, MSG_WELCOME)
         else:
@@ -396,32 +435,60 @@ class FleetController:
         return ok
 
     async def _finalize_pairing(self, tenant_id: str,
-                                telegram_user_id: str) -> bool:
-        """Create + start the real Hermes profile, locked to the paired user."""
+                                telegram_user_id: str,
+                                last_update_offset: int = 0) -> bool:
+        """Create + start the real Hermes profile, locked to the paired user.
+
+        Every step logs before it runs — this chain died silently once
+        (self-cancellation via _stop_poller) and we never want to grep in
+        the dark for it again.
+        """
         rec = self.registry.get(tenant_id)
         if rec is None:
+            log.error("finalize: tenant vanished from registry")
             return False
         slug = rec["slug"]
-        # Stop our poller BEFORE the gateway starts: two getUpdates
-        # consumers on one token fight each other with 409s.
+        # Retire our poller entry BEFORE the gateway starts: two getUpdates
+        # consumers on one token fight each other with 409s. (_stop_poller
+        # is self-call-safe: it never cancels the current task.)
+        log.info("finalize[%s] 1/6: retiring pairing poller", slug)
         self._stop_poller(tenant_id)
 
+        # Ack the consumed /start update with Telegram so the real gateway
+        # doesn't re-receive it as the first message after takeover.
+        if last_update_offset and self._http is not None:
+            log.info("finalize[%s] 2/6: acking telegram updates", slug)
+            try:
+                await _tg(self._http, rec["botToken"], "getUpdates",
+                          offset=last_update_offset, timeout=0)
+            except Exception:
+                log.warning("finalize[%s]: update ack failed (gateway may "
+                            "see the /start message once — harmless)", slug)
+
+        log.info("finalize[%s] 3/6: creating hermes profile", slug)
         rc, out = await _run_hermes("profile", "create", slug)
         if rc != 0 and "exist" not in out.lower():
-            log.error("profile create failed for %s (rc=%s)", slug, rc)
+            log.error("finalize[%s] FAILED at profile create (rc=%s): %s",
+                      slug, rc, out[-300:])
             return False
+
+        log.info("finalize[%s] 4/6: writing config + env (allowlist locked)", slug)
         _write_profile_files(
             slug,
             bot_token=rec["botToken"],
             telegram_user_id=telegram_user_id,
             avocado_mcp_key=rec["avocadoMcpKey"],
         )
+
+        log.info("finalize[%s] 5/6: starting gateway", slug)
         await _run_hermes("-p", slug, "gateway", "stop", timeout=60)
         rc, out = await _run_hermes("-p", slug, "gateway", "start", timeout=120)
         if rc != 0:
-            log.error("gateway start failed for %s (rc=%s)", slug, rc)
+            log.error("finalize[%s] FAILED at gateway start (rc=%s): %s",
+                      slug, rc, out[-300:])
             return False
 
+        log.info("finalize[%s] 6/6: flipping registry to paired", slug)
         rec.update(status="paired", telegramUserId=telegram_user_id)
         rec.pop("pairingCode", None)  # single-use
         self.registry.put(tenant_id, rec)

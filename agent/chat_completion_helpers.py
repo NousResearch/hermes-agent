@@ -1615,6 +1615,8 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     _get_bedrock_runtime_client,
                     invalidate_runtime_client,
                     is_stale_connection_error,
+                    is_streaming_access_denied_error,
+                    normalize_converse_response,
                     stream_converse_with_callbacks,
                 )
                 region = api_kwargs.pop("__bedrock_region__", "us-east-1")
@@ -1623,6 +1625,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 try:
                     raw_response = client.converse_stream(**api_kwargs)
                 except Exception as _bedrock_exc:
+                    # IAM policies scoped to bedrock:InvokeModel only (no
+                    # InvokeModelWithResponseStream) reject converse_stream()
+                    # with AccessDeniedException. That denial is permanent for
+                    # the session — fall back to the non-streaming converse()
+                    # inline (it maps to bedrock:InvokeModel) and disable
+                    # streaming for subsequent calls so we don't re-fail every
+                    # turn.
+                    if is_streaming_access_denied_error(_bedrock_exc):
+                        agent._disable_streaming = True
+                        agent._safe_print(
+                            "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream — "
+                            "falling back to non-streaming InvokeModel.\n"
+                            "   Grant that action to restore streaming output.\n"
+                        )
+                        logger.info(
+                            "bedrock: converse_stream denied by IAM (%s) — "
+                            "using non-streaming converse() for this session.",
+                            type(_bedrock_exc).__name__,
+                        )
+                        result["response"] = normalize_converse_response(
+                            client.converse(**api_kwargs)
+                        )
+                        return
                     # Evict the cached client on stale-connection failures
                     # so the outer retry loop builds a fresh client/pool.
                     if is_stale_connection_error(_bedrock_exc):
@@ -2424,9 +2449,34 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                             "stream" in _err_lower
                             and "not supported" in _err_lower
                         )
-                        if _is_stream_unsupported:
+                        # AWS Bedrock (AnthropicBedrock SDK path): IAM policies
+                        # with bedrock:InvokeModel but not
+                        # InvokeModelWithResponseStream reject messages.stream()
+                        # with a permission error naming the streaming action.
+                        # Permanent for the session — flip to non-streaming
+                        # (messages.create() maps to bedrock:InvokeModel).
+                        _is_bedrock_stream_denied = False
+                        if (
+                            not _is_stream_unsupported
+                            and "invokemodelwithresponsestream" in _err_lower
+                        ):
+                            # Cheap message pre-check before importing the
+                            # adapter — bedrock_adapter triggers a lazy boto3
+                            # install at import time, which must not run for
+                            # unrelated providers' stream errors.
+                            from agent.bedrock_adapter import (
+                                is_streaming_access_denied_error,
+                            )
+                            _is_bedrock_stream_denied = (
+                                is_streaming_access_denied_error(e)
+                            )
+                        if _is_stream_unsupported or _is_bedrock_stream_denied:
                             agent._disable_streaming = True
                             agent._safe_print(
+                                "\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream. "
+                                "Switching to non-streaming.\n"
+                                "   Grant that action to restore streaming output.\n"
+                                if _is_bedrock_stream_denied else
                                 "\n⚠  Streaming is not supported for this "
                                 "model/provider. Switching to non-streaming.\n"
                                 "   To avoid this delay, set display.streaming: false "

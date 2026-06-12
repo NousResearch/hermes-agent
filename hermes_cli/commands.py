@@ -179,6 +179,11 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
+    CommandDef("suggestions", "Review suggested automations (accept/dismiss)",
+               "Tools & Skills", aliases=("suggest",), args_hint="[accept|dismiss N | catalog]",
+               subcommands=("accept", "dismiss", "catalog", "clear")),
+    CommandDef("blueprint", "Set up an automation from a blueprint template",
+               "Tools & Skills", aliases=("bp",), args_hint="[name] [slot=value ...]"),
     CommandDef("curator", "Background skill maintenance (status, run, pin, archive, list-archived)",
                "Tools & Skills", args_hint="[subcommand]",
                subcommands=("status", "run", "pause", "resume", "pin", "unpin", "restore", "list-archived")),
@@ -1025,6 +1030,19 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "topic", "mute", "pro", "shortcuts",
 })
 
+# High-value aliases that must survive Slack's 50-slash cap even when the
+# registry fills up. Without this, adding a new canonical command silently
+# clamps off low-priority aliases (they're added in the second pass), so a
+# long-standing native slash like /btw could disappear just because an
+# unrelated command landed. These claim their slots right after /hermes,
+# ahead of both canonical names and the rest of the aliases. Anything not
+# listed here still degrades gracefully (reachable via /hermes <command>).
+# Keep this list TIGHT: every pinned alias takes a slot a canonical command
+# would otherwise get, and the Telegram-parity test fails when a canonical
+# gets clamped ("reset" was unpinned for exactly that — /new keeps its
+# native slot, the alias spelling stays reachable via /hermes reset).
+_SLACK_PRIORITY_ALIASES = ("btw", "bg")
+
 
 def _sanitize_slack_name(raw: str) -> str:
     """Convert a command name to a valid Slack slash command name.
@@ -1078,6 +1096,21 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         # Slack description cap is 2000 chars; keep it short.
         entries.append((slack_name, desc[:140], hint[:100]))
         seen.add(slack_name)
+
+    # Priority pass: pin high-value aliases (e.g. /btw, /bg, /reset) ahead of
+    # everything except /hermes, so a new canonical command can never silently
+    # clamp them off the 50-slash cap. Each alias borrows its parent command's
+    # description and hint.
+    _alias_to_cmd = {
+        alias: cmd
+        for cmd in COMMAND_REGISTRY
+        if _is_gateway_available(cmd, overrides)
+        for alias in cmd.aliases
+    }
+    for alias in _SLACK_PRIORITY_ALIASES:
+        cmd = _alias_to_cmd.get(alias)
+        if cmd is not None:
+            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
 
     # First pass: canonical names (so they win slots if we hit the cap).
     for cmd in COMMAND_REGISTRY:

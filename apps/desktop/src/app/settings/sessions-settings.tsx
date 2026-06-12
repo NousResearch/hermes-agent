@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Tip } from '@/components/ui/tooltip'
-import { deleteSession, listSessions, setSessionArchived } from '@/hermes'
+import { deleteSession, listAllProfileSessions, setSessionArchived } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
@@ -43,14 +43,14 @@ export function SessionsSettings() {
     setLoading(true)
 
     try {
-      const result = await listSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
+      const result = await listAllProfileSessions(ARCHIVED_FETCH_LIMIT, 0, 'only')
       setLocalSessions(result.sessions)
     } catch (err) {
       notifyError(err, s.failedLoad)
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [s.failedLoad])
 
   useEffect(() => {
     void load()

@@ -1218,17 +1218,30 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(matrix_cfg, dict):
                 if "require_mention" in matrix_cfg and not os.getenv("MATRIX_REQUIRE_MENTION"):
                     os.environ["MATRIX_REQUIRE_MENTION"] = str(matrix_cfg["require_mention"]).lower()
+                allowed_users = matrix_cfg.get("allowed_users")
+                if allowed_users is not None and not os.getenv("MATRIX_ALLOWED_USERS"):
+                    if isinstance(allowed_users, list):
+                        allowed_users = ",".join(str(v) for v in allowed_users)
+                    os.environ["MATRIX_ALLOWED_USERS"] = str(allowed_users)
+                allowed_rooms = matrix_cfg.get("allowed_rooms")
+                if allowed_rooms is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
+                    if isinstance(allowed_rooms, list):
+                        allowed_rooms = ",".join(str(v) for v in allowed_rooms)
+                    os.environ["MATRIX_ALLOWED_ROOMS"] = str(allowed_rooms)
                 frc = matrix_cfg.get("free_response_rooms")
                 if frc is not None and not os.getenv("MATRIX_FREE_RESPONSE_ROOMS"):
                     if isinstance(frc, list):
                         frc = ",".join(str(v) for v in frc)
                     os.environ["MATRIX_FREE_RESPONSE_ROOMS"] = str(frc)
-                # allowed_rooms: if set, bot ONLY responds in these rooms (whitelist)
-                ar = matrix_cfg.get("allowed_rooms")
-                if ar is not None and not os.getenv("MATRIX_ALLOWED_ROOMS"):
-                    if isinstance(ar, list):
-                        ar = ",".join(str(v) for v in ar)
-                    os.environ["MATRIX_ALLOWED_ROOMS"] = str(ar)
+                ignore_patterns = matrix_cfg.get("ignore_user_patterns")
+                if ignore_patterns is not None and not os.getenv("MATRIX_IGNORE_USER_PATTERNS"):
+                    if isinstance(ignore_patterns, list):
+                        ignore_patterns = ",".join(str(v) for v in ignore_patterns)
+                    os.environ["MATRIX_IGNORE_USER_PATTERNS"] = str(ignore_patterns)
+                if "process_notices" in matrix_cfg and not os.getenv("MATRIX_PROCESS_NOTICES"):
+                    os.environ["MATRIX_PROCESS_NOTICES"] = str(matrix_cfg["process_notices"]).lower()
+                if "session_scope" in matrix_cfg and not os.getenv("MATRIX_SESSION_SCOPE"):
+                    os.environ["MATRIX_SESSION_SCOPE"] = str(matrix_cfg["session_scope"]).lower()
                 if "auto_thread" in matrix_cfg and not os.getenv("MATRIX_AUTO_THREAD"):
                     os.environ["MATRIX_AUTO_THREAD"] = str(matrix_cfg["auto_thread"]).lower()
                 if "dm_mention_threads" in matrix_cfg and not os.getenv("MATRIX_DM_MENTION_THREADS"):
@@ -1497,8 +1510,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         matrix_password = os.getenv("MATRIX_PASSWORD", "")
         if matrix_password:
             matrix_config.extra["password"] = matrix_password
-        matrix_e2ee = os.getenv("MATRIX_ENCRYPTION", "").lower() in {"true", "1", "yes"}
+        matrix_e2ee_mode = os.getenv("MATRIX_E2EE_MODE", "").strip().lower()
+        matrix_e2ee = (
+            matrix_e2ee_mode in ("required", "require", "optional", "prefer", "preferred")
+            or os.getenv("MATRIX_ENCRYPTION", "").lower() in ("true", "1", "yes")
+        )
         matrix_config.extra["encryption"] = matrix_e2ee
+        if matrix_e2ee_mode:
+            matrix_config.extra["e2ee_mode"] = matrix_e2ee_mode
         matrix_device_id = os.getenv("MATRIX_DEVICE_ID", "")
         if matrix_device_id:
             matrix_config.extra["device_id"] = matrix_device_id

@@ -40,9 +40,11 @@ Activation (config ``agent.coding_context``):
 
   * ``auto`` (default) — posture (brief + snapshot) on an interactive coding
     surface sitting in a code workspace (git repo or recognised project root).
-    Prompt-only; toolsets untouched.
+    Prompt-only; toolsets and the skill index untouched.
   * ``focus`` — like ``auto``, but additionally collapses the toolset to the
-    ``coding`` set + enabled MCP servers. Explicit opt-in for a lean schema.
+    ``coding`` set + enabled MCP servers and demotes non-coding skill
+    categories to names-only in the prompt's skill index (no skill is ever
+    hidden). Explicit opt-in for a lean schema.
   * ``on`` — force the posture anywhere (incl. non-workspaces). Prompt-only.
   * ``off`` — disable entirely.
 """
@@ -104,13 +106,19 @@ _GIT_TIMEOUT = 2.5
 # multi-file) and mode="replace" (find-and-swap). We nudge each family toward
 # its native format. Unknown families get nothing (the brief's neutral wording
 # stands). Substrings match the model id; aligned with TOOL_USE_ENFORCEMENT_MODELS.
+#
+# GPT/Codex get V4A for ALL edits, single-file included: in codex-rs,
+# apply_patch (V4A — apply_patch.lark) is the ONLY file editor, no
+# str_replace-style tool exists, and the shipped model prompts say to use
+# apply_patch even "for single file edits" — so a replace-mode nudge would
+# steer those models toward a format their first-party harness never taught
+# them.
 _EDIT_FORMAT_GUIDANCE: dict[str, tuple[tuple[str, ...], str]] = {
     "patch": (
         ("gpt", "codex"),
         "- Edit format: author new files with `write_file`; for edits to "
-        "existing code prefer `patch` with `mode='patch'` (V4A multi-file diff) "
-        "for structured or multi-file changes — it's the diff format you handle "
-        "most reliably. Use `mode='replace'` for a single small swap.",
+        "existing code use `patch` with `mode='patch'` (V4A diff) — including "
+        "single-file edits. It's the edit format you handle most reliably.",
     ),
     "replace": (
         ("claude", "sonnet", "opus", "haiku",
@@ -182,6 +190,10 @@ CODING_AGENT_GUIDANCE = (
     "Verify, and know when to stop:\n"
     "- Use `terminal` for git, builds, tests, and inspection. Run the relevant "
     "tests/linter/build and confirm they pass before claiming the work is done.\n"
+    "- Terminal state persists across calls: current directory and exported "
+    "environment variables carry forward. Activate a virtualenv or export setup "
+    "vars once, then reuse that state instead of re-sourcing it before every "
+    "test command.\n"
     "- Fix root causes, not symptoms: when you find a bug, check sibling call "
     "paths for the same flaw and fix the class, not just the reported site.\n"
     "- When fixing linter/type errors on a file, stop after about three "
@@ -212,11 +224,13 @@ class ContextProfile:
     ``model_hint``   — routing preference key for smart model routing
                        (extension seam; not yet consumed by the router).
     ``memory_policy``— memory namespace/weighting hint (extension seam).
-    ``hidden_skill_categories`` — skill categories pruned from the system-prompt
-                       skill index while this posture is active. Discovery-only:
-                       nothing is disabled — ``skills_list`` still returns the
-                       full catalog and ``skill_view`` loads anything. Deny-list
-                       semantics so unknown/custom categories stay visible.
+    ``compact_skill_categories`` — skill categories DEMOTED to names-only in
+                       the system-prompt skill index under the opt-in ``focus``
+                       mode. Never hidden: every skill name stays visible
+                       (so memory-anchored recall keeps working) — only the
+                       descriptions are dropped to cut index noise. Deny-list
+                       semantics so unknown/custom categories keep full
+                       entries.
     """
 
     name: str
@@ -224,14 +238,14 @@ class ContextProfile:
     guidance: str = ""
     model_hint: Optional[str] = None
     memory_policy: str = "default"
-    hidden_skill_categories: tuple[str, ...] = ()
+    compact_skill_categories: tuple[str, ...] = ()
 
 
-# Skill categories that are clearly not part of a coding workflow. Hidden from
-# the prompt's skill index in the coding posture (deny-list — anything not
-# listed here, incl. custom user categories, stays visible). Coding-adjacent
-# categories (devops, github, mcp, data-science, diagramming, research,
-# security, …) are intentionally absent.
+# Skill categories that are clearly not part of a coding workflow. Demoted to
+# names-only in the prompt's skill index under the opt-in ``focus`` mode only
+# (deny-list — anything not listed here, incl. custom user categories, keeps
+# full entries). Coding-adjacent categories (devops, github, mcp,
+# data-science, diagramming, research, security, …) are intentionally absent.
 _NON_CODING_SKILL_CATEGORIES = (
     "apple", "communication", "cooking", "creative", "email", "finance",
     "gaming", "gifs", "health", "media", "music", "note-taking",
@@ -247,7 +261,7 @@ CODING_PROFILE = ContextProfile(
     guidance=CODING_AGENT_GUIDANCE,
     model_hint="coding",
     memory_policy="project",
-    hidden_skill_categories=_NON_CODING_SKILL_CATEGORIES,
+    compact_skill_categories=_NON_CODING_SKILL_CATEGORIES,
 )
 
 _PROFILES: dict[str, ContextProfile] = {
@@ -432,9 +446,27 @@ class RuntimeMode:
             blocks.append(workspace)
         return blocks
 
-    def hidden_skill_categories(self) -> frozenset[str]:
-        """Skill categories to prune from the prompt's skill index (may be empty)."""
-        return frozenset(self.profile.hidden_skill_categories)
+    def compact_skill_categories(self) -> frozenset[str]:
+        """Skill categories to demote to names-only in the prompt's skill index.
+
+        Gated on the opt-in ``focus`` mode, like the toolset collapse: the
+        default posture leaves the skill index untouched. Users who didn't ask
+        for a lean prompt keep full entries for every category — index changes
+        under ``auto`` proved too surprising in practice, even names-only ones
+        (a demoted description is information the model no longer weighs when
+        deciding what to load).
+
+        Demoted — never hidden — even under ``focus``. An earlier revision
+        fully pruned these categories from the index, which caused silent
+        capability loss in a real workflow: agent-created skills are the
+        model's accumulated project memory (server-ops runbooks, learned
+        pitfalls, …), and models do not reliably reach for ``skills_list`` to
+        rediscover what the index stopped showing them. Names-only keeps every
+        skill loadable on recall while still cutting the description noise.
+        """
+        if not self.is_coding or self.config_mode != "focus":
+            return frozenset()
+        return frozenset(self.profile.compact_skill_categories)
 
 
 def resolve_runtime_mode(
@@ -512,20 +544,23 @@ def coding_system_blocks(
     ).system_blocks()
 
 
-def coding_hidden_skill_categories(
+def coding_compact_skill_categories(
     *,
     platform: Optional[str] = None,
     cwd: Optional[str | Path] = None,
     config: Optional[dict[str, Any]] = None,
 ) -> frozenset[str]:
-    """Skill categories the active posture prunes from the prompt's skill index.
+    """Skill categories the active posture demotes to names-only in the index.
 
-    Empty outside the coding posture. Discovery-only: hidden skills remain
-    loadable via ``skills_list`` / ``skill_view``.
+    Empty outside the coding posture and outside the opt-in ``focus`` mode —
+    the default posture never touches the skill index. Under ``focus``,
+    demoted — never hidden: every skill name stays in the index and remains
+    loadable via ``skill_view`` / ``skills_list``; only descriptions are
+    dropped.
     """
     return resolve_runtime_mode(
         platform=platform, cwd=cwd, config=config
-    ).hidden_skill_categories()
+    ).compact_skill_categories()
 
 
 def _enabled_mcp_servers(config: Optional[dict[str, Any]]) -> list[str]:
@@ -680,10 +715,13 @@ def build_coding_workspace_block(cwd: Optional[str | Path] = None) -> str:
             lines.append("- Branch: (detached HEAD)")
 
         # Linked worktree: the per-worktree git dir differs from the shared common dir.
+        # We surface the fact that it's a worktree (so the model knows branches/stashes
+        # are shared state) but deliberately do NOT expose the primary tree path —
+        # giving the model a second absolute path causes it to sometimes run commands
+        # in the wrong directory.
         git_dir, common_dir = _git(root, "rev-parse", "--git-dir"), _git(root, "rev-parse", "--git-common-dir")
         if git_dir and common_dir and Path(git_dir).resolve() != Path(common_dir).resolve():
-            main_tree = Path(common_dir).resolve().parent
-            lines.append(f"- Worktree: linked (primary tree at {main_tree})")
+            lines.append("- Worktree: linked (git state shared with primary tree)")
 
         dirty = [f"{n} {label}" for label, n in (
             ("staged", counts["staged"]), ("modified", counts["modified"]),

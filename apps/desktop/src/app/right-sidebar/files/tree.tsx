@@ -7,6 +7,7 @@ import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
+import { getFileTreeDndManager } from './dnd-manager'
 import type { TreeNode } from './use-project-tree'
 
 const ROW_HEIGHT = 22
@@ -94,6 +95,7 @@ export function ProjectTree({
           disableDrag
           disableDrop
           disableEdit
+          dndManager={getFileTreeDndManager()}
           height={size.height}
           indent={INDENT}
           initialOpenState={openState}
@@ -145,7 +147,8 @@ function ProjectTreeRow({
   }
 
   const isFolder = node.data.isDirectory
-  const isPlaceholder = node.data.id.endsWith('::__loading__')
+  const isPlaceholder = Boolean(node.data.placeholder)
+  const isErrorPlaceholder = node.data.placeholder === 'error'
 
   return (
     <div
@@ -210,8 +213,10 @@ function ProjectTreeRow({
       )}
       {!isFolder && <span aria-hidden className="w-3 shrink-0" />}
       <span aria-hidden className="flex w-3.5 items-center justify-center text-(--ui-text-tertiary)">
-        {isPlaceholder ? (
+        {isPlaceholder && !isErrorPlaceholder ? (
           <Codicon name="loading" size="0.75rem" spinning />
+        ) : isErrorPlaceholder ? (
+          <Codicon name="warning" size="0.75rem" />
         ) : isFolder ? (
           <Codicon name={node.isOpen ? 'folder-opened' : 'folder'} size="0.875rem" />
         ) : (

@@ -1388,14 +1388,14 @@ export const zh: Translations = {
       '/quit': '退出 hermes'
     },
     hotkeyDescs: {
-      '@': '引用文件、文件夹、URL、git',
-      '/': '斜杠命令面板',
-      '?': '此快速帮助 (删除以关闭)',
-      Enter: '发送 · Shift+Enter 换行',
-      'Cmd/Ctrl+K': '发送下一条排队的回合',
-      'Cmd/Ctrl+L': '重绘',
-      Esc: '关闭弹窗 · 取消运行',
-      '↑ / ↓': '循环弹窗 / 历史'
+      'composer.mention': '引用文件、文件夹、URL、git',
+      'composer.slash': '斜杠命令面板',
+      'composer.help': '此快速帮助 (删除以关闭)',
+      'composer.sendNewline': '发送 · Shift+Enter 换行',
+      'composer.sendQueued': '发送下一条排队的回合',
+      'keybinds.openPanel': '所有键盘快捷键',
+      'composer.cancel': '关闭弹窗 · 取消运行',
+      'composer.history': '循环弹窗 / 历史'
     },
     attachUrlTitle: '附加 URL',
     attachUrlDesc: 'Hermes 将抓取该页面并作为本回合的上下文。',
@@ -1408,10 +1408,10 @@ export const zh: Translations = {
     attachments: count => `${count} 个附件`,
     editingInComposer: '正在输入框中编辑',
     editingQueuedInComposer: '正在输入框中编辑排队回合',
-    editQueued: '编辑排队回合',
-    sendQueuedNext: '下一个发送排队回合',
-    sendQueuedNow: '立即发送排队回合',
-    deleteQueued: '删除排队回合',
+    queueEdit: '编辑',
+    queueSendNext: '下一个',
+    queueSend: '发送',
+    queueDelete: '删除',
     previewUnavailable: '预览不可用',
     previewLabel: label => `预览 ${label}`,
     couldNotPreview: label => `无法预览 ${label}`,
@@ -1454,6 +1454,17 @@ export const zh: Translations = {
         text: '请解释这是如何工作的，并指给我关键文件。'
       }
     }
+  },
+
+  statusStack: {
+    agents: '代理',
+    background: count => `${count} 个后台任务`,
+    subagents: count => `${count} 个子代理`,
+    todos: (done, total) => `任务 ${done}/${total}`,
+    running: '运行中',
+    stop: '停止',
+    dismiss: '关闭',
+    exit: code => `退出码 ${code}`
   },
 
   updates: {
@@ -1572,6 +1583,7 @@ export const zh: Translations = {
     getKey: '获取密钥',
     replaceCurrent: '替换当前值',
     pasteApiKey: '粘贴 API 密钥',
+    localApiKeyPlaceholder: 'API 密钥（可选 — 仅当端点需要时填写）',
     couldNotSave: '无法保存凭据。',
     connecting: '连接中',
     update: '更新',
@@ -1849,9 +1861,12 @@ export const zh: Translations = {
       readAloud: '朗读',
       editMessage: '编辑消息',
       stop: '停止',
-      editableCheckpoint: '可编辑检查点',
       restorePrevious: '恢复上一个检查点',
       restoreCheckpoint: '恢复检查点',
+      restoreFromHere: '恢复检查点 — 从此提示重新运行',
+      restoreTitle: '恢复到此检查点？',
+      restoreBody: '此提示之后的所有消息将从对话中移除，并从此处重新运行该提示。',
+      restoreConfirm: '恢复并重新运行',
       restoreNext: '恢复下一个检查点',
       goForward: '前进',
       sendEdited: '发送编辑后的消息',
@@ -1877,7 +1892,7 @@ export const zh: Translations = {
       loadingQuestion: '正在加载问题…',
       other: '其他 (输入你的答案)',
       placeholder: '输入你的答案…',
-      shortcut: '⌘/Ctrl + Enter 发送',
+      shortcutSuffix: ' 发送',
       back: '返回',
       skip: '跳过',
       send: '发送'

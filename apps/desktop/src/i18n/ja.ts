@@ -1338,14 +1338,14 @@ export const ja = defineLocale({
       '/quit': 'hermes を終了'
     },
     hotkeyDescs: {
-      '@': 'ファイル、フォルダー、URL、Git を参照',
-      '/': 'スラッシュコマンドパレット',
-      '?': 'クイックヘルプ（削除で閉じる）',
-      Enter: '送信 · 改行は Shift+Enter',
-      'Cmd/Ctrl+K': '次のキュー済みターンを送信',
-      'Cmd/Ctrl+L': '再描画',
-      Esc: 'ポップオーバーを閉じる · 実行をキャンセル',
-      '↑ / ↓': 'ポップオーバー / 履歴を切り替え'
+      'composer.mention': 'ファイル、フォルダー、URL、Git を参照',
+      'composer.slash': 'スラッシュコマンドパレット',
+      'composer.help': 'クイックヘルプ（削除で閉じる）',
+      'composer.sendNewline': '送信 · 改行は Shift+Enter',
+      'composer.sendQueued': '次のキュー済みターンを送信',
+      'keybinds.openPanel': 'すべてのキーボードショートカット',
+      'composer.cancel': 'ポップオーバーを閉じる · 実行をキャンセル',
+      'composer.history': 'ポップオーバー / 履歴を切り替え'
     },
     attachUrlTitle: 'URL を添付',
     attachUrlDesc: 'Hermes がページを取得し、このターンのコンテキストとして含めます。',
@@ -1358,9 +1358,10 @@ export const ja = defineLocale({
     attachments: count => `${count} 件の添付`,
     editingInComposer: 'コンポーザーで編集中',
     editingQueuedInComposer: 'コンポーザーでキュー済みターンを編集中',
-    editQueued: 'キュー済みターンを編集',
-    sendQueuedNow: 'キュー済みターンを今すぐ送信',
-    deleteQueued: 'キュー済みターンを削除',
+    queueEdit: '編集',
+    queueSendNext: '次に送信',
+    queueSend: '送信',
+    queueDelete: '削除',
     previewUnavailable: 'プレビューは利用できません',
     previewLabel: label => `${label} のプレビュー`,
     couldNotPreview: label => `${label} をプレビューできませんでした`,
@@ -1403,6 +1404,17 @@ export const ja = defineLocale({
         text: 'これがどのように機能するか説明し、主要なファイルを教えてください。'
       }
     }
+  },
+
+  statusStack: {
+    agents: 'エージェント',
+    background: count => `バックグラウンド ${count} 件`,
+    subagents: count => `サブエージェント ${count} 件`,
+    todos: (done, total) => `タスク ${done}/${total}`,
+    running: '実行中',
+    stop: '停止',
+    dismiss: '閉じる',
+    exit: code => `終了コード ${code}`
   },
 
   updates: {
@@ -1810,9 +1822,12 @@ export const ja = defineLocale({
       readAloud: '読み上げ',
       editMessage: 'メッセージを編集',
       stop: '停止',
-      editableCheckpoint: '編集可能なチェックポイント',
       restorePrevious: '前のチェックポイントに戻す',
       restoreCheckpoint: 'チェックポイントを復元',
+      restoreFromHere: 'チェックポイントを復元 — このプロンプトから再実行',
+      restoreTitle: 'このチェックポイントに復元しますか？',
+      restoreBody: 'このプロンプト以降のメッセージは会話から削除され、ここからプロンプトが再実行されます。',
+      restoreConfirm: '復元して再実行',
       restoreNext: '次のチェックポイントに戻す',
       goForward: '進む',
       sendEdited: '編集済みメッセージを送信',
@@ -1838,7 +1853,7 @@ export const ja = defineLocale({
       loadingQuestion: '質問を読み込み中…',
       other: 'その他（回答を入力）',
       placeholder: '回答を入力…',
-      shortcut: '⌘/Ctrl + Enter で送信',
+      shortcutSuffix: ' で送信',
       back: '戻る',
       skip: 'スキップ',
       send: '送信'

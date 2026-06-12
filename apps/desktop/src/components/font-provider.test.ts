@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { FONT_OPTIONS, FONT_SIZE_OPTIONS, fontStore, fontSizeStore, initializeFontSettings } from './font-provider'
+import {
+  FONT_OPTIONS,
+  FONT_SIZE_OPTIONS,
+  fontStore,
+  fontSizeStore,
+  initializeFontSettings,
+} from './font-provider'
 
 describe('font-provider', () => {
   beforeEach(() => {

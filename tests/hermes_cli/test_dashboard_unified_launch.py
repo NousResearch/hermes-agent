@@ -82,6 +82,29 @@ class TestUnifiedDashboardRouting:
         # Profile HERMES_HOME dropped so the child binds the machine root.
         assert "HERMES_HOME" not in env
 
+    def test_desktop_profile_backend_skips_machine_dashboard_reroute(self, main_mod, monkeypatch):
+        """A desktop-spawned named-profile backend (HERMES_DESKTOP=1) must NOT
+        reroute into the machine dashboard. The reroute re-execs as the default
+        profile and exits, so the desktop never sees a ready backend → boot
+        loop. The guard keeps desktop pool backends per-profile."""
+        monkeypatch.setenv("HERMES_DESKTOP", "1")
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
+        )
+        listening_calls = []
+        monkeypatch.setattr(
+            main_mod, "_dashboard_listening",
+            lambda host, port: listening_calls.append(1) or False,
+        )
+        execs = []
+        monkeypatch.setattr(main_mod.os, "execvpe", lambda *a, **k: execs.append(a))
+        monkeypatch.setitem(sys.modules, "fastapi", None)
+
+        with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
+            main_mod.cmd_dashboard(_args())
+        assert listening_calls == []
+        assert execs == []
+
     def test_isolated_flag_skips_routing(self, main_mod, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name", lambda: "worker_x"
@@ -128,3 +151,45 @@ class TestUnifiedDashboardRouting:
         with pytest.raises((SystemExit, AttributeError, ImportError, TypeError)):
             main_mod.cmd_dashboard(_args(open_profile="worker_x"))
         assert execs == []
+
+    def test_dashboard_starts_mcp_discovery_for_ws_backend(self, main_mod, monkeypatch):
+        """The dashboard process serves the /api/ws gateway but never runs
+        tui_gateway/entry.py, so it must kick off MCP discovery itself or
+        desktop sessions never see a profile's MCP tools."""
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+        )
+        monkeypatch.delenv("HERMES_WEB_DIST", raising=False)
+        monkeypatch.setattr(main_mod, "_sync_bundled_skills_quietly", lambda: None)
+        monkeypatch.setattr(main_mod, "_build_web_ui", lambda *_a, **_k: True)
+        monkeypatch.setitem(sys.modules, "fastapi", types.SimpleNamespace())
+        monkeypatch.setitem(sys.modules, "uvicorn", types.SimpleNamespace())
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_logging",
+            types.SimpleNamespace(setup_logging=lambda **_k: None),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.plugins",
+            types.SimpleNamespace(discover_plugins=lambda: None),
+        )
+        calls = []
+        monkeypatch.setattr(
+            "hermes_cli.mcp_startup.start_background_mcp_discovery",
+            lambda **kwargs: calls.append(kwargs),
+        )
+        monkeypatch.setitem(
+            sys.modules,
+            "hermes_cli.web_server",
+            types.SimpleNamespace(start_server=lambda **_kwargs: None),
+        )
+
+        main_mod.cmd_dashboard(_args())
+
+        assert calls == [
+            {
+                "logger": main_mod.logger,
+                "thread_name": "dashboard-mcp-discovery",
+            }
+        ]

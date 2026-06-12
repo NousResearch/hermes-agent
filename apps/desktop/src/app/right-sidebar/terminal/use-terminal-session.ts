@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
+import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
 import { makeTerminalReader, setActiveTerminalReader } from './buffer'
@@ -19,6 +20,17 @@ import {
 } from './selection'
 
 type TerminalStatus = 'closed' | 'open' | 'starting'
+
+// ⌘/Ctrl+L is a global shortcut, so a text selection in the file preview pane
+// lands in this handler with no xterm selection. Label those with the previewed
+// file's name instead of the shell, so the composer ref reads as a file quote
+// rather than a bogus "zsh:N lines".
+function previewSelectionLabel(): string {
+  const target = $filePreviewTarget.get() ?? $previewTarget.get()
+  const source = target?.path || target?.url || ''
+
+  return source.split(/[\\/]/).filter(Boolean).pop() || target?.label?.trim() || ''
+}
 
 const HERMES_PATHS_MIME = 'application/x-hermes-paths'
 
@@ -257,16 +269,20 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   )
 
   const addSelectionToChat = useCallback(() => {
-    const selectedText = readSelection() || selectionRef.current
+    const termSelection = (termRef.current?.getSelection() || selectionRef.current).trim()
+    const selectedText = termSelection || window.getSelection()?.toString() || ''
     const trimmed = selectedText.trim()
 
     if (!trimmed) {
       return
     }
 
-    const label =
-      selectionLabelRef.current ||
-      (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
+    // Terminal selection → shell-anchored label; anything else came from the
+    // preview pane sharing this global shortcut → label it with the file.
+    const label = termSelection
+      ? selectionLabelRef.current ||
+        (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
+      : previewSelectionLabel() || 'selection'
 
     onAddSelectionToChatRef.current(trimmed, label)
     termRef.current?.clearSelection()
@@ -275,7 +291,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     setSelection('')
     setSelectionStyle(null)
     triggerHaptic('selection')
-  }, [readSelection])
+  }, [])
 
   // Always listen — gating on the React selection state misses selections the
   // TUI redraw races. Only swallow ⌘/Ctrl+L when there's text to send, else it
@@ -315,8 +331,11 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       allowTransparency: true,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'SF Mono', 'Menlo', 'Cascadia Code', 'JetBrains Mono', monospace",
+      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
       fontSize: 11,
+      fontWeight: '400',
+      fontWeightBold: '700',
+      letterSpacing: 0,
       lineHeight: 1.12,
       // Full-screen TUIs (hermes --tui, vim) grab the mouse, so a plain drag
       // can't select — ⌥-drag (macOS) / Shift-drag (else) forces a native
@@ -598,13 +617,13 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
       startSession()
     }
 
-    const fonts = typeof document !== 'undefined' ? document.fonts : undefined
+    // fonts.ready settles only already-requested faces; bold/italic aren't asked
+    // for until styled output paints (past atlas init), so warm them up front.
+    const warm = document.fonts?.load
+      ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
+      : Promise.resolve()
 
-    if (fonts?.ready) {
-      void fonts.ready.then(mount, mount)
-    } else {
-      mount()
-    }
+    void warm.then(mount, mount)
 
     return () => {
       disposed = true

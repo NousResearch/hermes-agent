@@ -251,6 +251,17 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     foreground: c.foreground
   })
 
+  // Raw (non-JSON) keys read by the inline pre-paint script in index.html —
+  // they let a brand-new window paint the themed background on its very first
+  // frame, before this module has even loaded.
+  try {
+    window.localStorage.setItem('hermes-boot-background', c.background)
+    window.localStorage.setItem('hermes-boot-color-scheme', rendered)
+  } catch {
+    // Storage may be unavailable (private mode / quota); the inline script
+    // falls back to prefers-color-scheme.
+  }
+
   if (typo.fontUrl && !INJECTED_FONT_URLS.has(typo.fontUrl)) {
     const link = document.createElement('link')
     link.rel = 'stylesheet'
@@ -261,13 +272,23 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
   }
 }
 
+// Pin Electron's nativeTheme to the app's mode so the NATIVE window chrome
+// (macOS vibrancy material, titlebar, pre-paint background) matches the app
+// theme instead of the OS appearance. An explicit light/dark pick is forced;
+// 'system' stays 'system' so prefers-color-scheme keeps tracking the OS.
+const syncNativeTheme = (pref: ThemeMode, rendered: 'light' | 'dark') =>
+  window.hermesDesktop?.setNativeTheme?.(pref === 'system' ? 'system' : rendered)
+
 // Boot-time paint to avoid a flash before <ThemeProvider> mounts. Use the last
 // active profile's appearance so a non-default profile relaunch paints its own
 // skin + light/dark mode.
 if (typeof window !== 'undefined') {
   const profile = readBootProfileKey()
-  const resolved = resolveMode(modePref.resolve(profile))
-  applyTheme(deriveTheme(skinPref.resolve(profile), resolved), resolved)
+  const pref = modePref.resolve(profile)
+  const resolved = resolveMode(pref)
+  const theme = deriveTheme(skinPref.resolve(profile), resolved)
+  applyTheme(theme, resolved)
+  syncNativeTheme(pref, renderedModeFor(theme.colors, resolved))
 }
 
 // ─── Context ────────────────────────────────────────────────────────────────
@@ -351,6 +372,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   const fontSize = useStore(fontSizeStore)
 
   useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode, font, fontSize])
+
+  // Keep the native window appearance pinned to the app theme (vibrancy
+  // material, titlebar, new-window pre-paint background).
+  useEffect(() => syncNativeTheme(mode, renderedMode), [mode, renderedMode])
 
   // Assign to whichever profile is live right now (read fresh so the callbacks
   // stay stable across profile switches).

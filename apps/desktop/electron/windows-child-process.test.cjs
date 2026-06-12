@@ -8,7 +8,7 @@ const path = require('node:path')
 const ELECTRON_DIR = __dirname
 
 function readElectronFile(name) {
-  return fs.readFileSync(path.join(ELECTRON_DIR, name), 'utf8')
+  return fs.readFileSync(path.join(ELECTRON_DIR, name), 'utf8').replace(/\r\n/g, '\n')
 }
 
 function requireHiddenChildOptions(source, needle) {

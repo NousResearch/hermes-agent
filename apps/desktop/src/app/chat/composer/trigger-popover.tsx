@@ -1,16 +1,12 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
 import { Fragment } from 'react'
 
-import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { Codicon } from '@/components/ui/codicon'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 
-import {
-  COMPLETION_DRAWER_BELOW_CLASS,
-  COMPLETION_DRAWER_CLASS,
-  CompletionDrawerEmpty
-} from './completion-drawer'
+import { COMPLETION_DRAWER_BELOW_CLASS, COMPLETION_DRAWER_CLASS, CompletionDrawerEmpty } from './completion-drawer'
 
 const AT_ICON_BY_TYPE: Record<string, string> = {
   diff: 'diff',
@@ -87,7 +83,7 @@ export function ComposerTriggerPopover({
       {items.length === 0 ? (
         loading ? (
           <div className="flex items-center gap-2 px-2 py-1.5 text-(--ui-text-tertiary)">
-            <BrailleSpinner ariaLabel={copy.lookupLoading} className="text-foreground/70" spinner="braille" />
+            <GlyphSpinner ariaLabel={copy.lookupLoading} className="text-foreground/70" spinner="braille" />
             <span>{copy.lookupLoading}</span>
           </div>
         ) : (

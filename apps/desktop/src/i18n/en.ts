@@ -1200,14 +1200,14 @@ export const en: Translations = {
       '/quit': 'exit hermes'
     },
     hotkeyDescs: {
-      '@': 'reference files, folders, urls, git',
-      '/': 'slash command palette',
-      '?': 'this quick help (delete to dismiss)',
-      Enter: 'send · Shift+Enter for newline',
-      'Cmd/Ctrl+Shift+K': 'send next queued turn',
-      'Cmd/Ctrl+/': 'all keyboard shortcuts',
-      Esc: 'close popover · cancel run',
-      '↑ / ↓': 'cycle popover / history'
+      'composer.mention': 'reference files, folders, urls, git',
+      'composer.slash': 'slash command palette',
+      'composer.help': 'this quick help (delete to dismiss)',
+      'composer.sendNewline': 'send · Shift+Enter for newline',
+      'composer.sendQueued': 'send next queued turn',
+      'keybinds.openPanel': 'all keyboard shortcuts',
+      'composer.cancel': 'close popover · cancel run',
+      'composer.history': 'cycle popover / history'
     },
     attachUrlTitle: 'Attach a URL',
     attachUrlDesc: 'Hermes will fetch the page and include it as context for this turn.',
@@ -1220,10 +1220,10 @@ export const en: Translations = {
     attachments: count => `${count} attachment${count === 1 ? '' : 's'}`,
     editingInComposer: 'Editing in composer',
     editingQueuedInComposer: 'Editing queued turn in composer',
-    editQueued: 'Edit queued turn',
-    sendQueuedNext: 'Send queued turn next',
-    sendQueuedNow: 'Send queued turn now',
-    deleteQueued: 'Delete queued turn',
+    queueEdit: 'Edit',
+    queueSendNext: 'Next',
+    queueSend: 'Send',
+    queueDelete: 'Delete',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,
@@ -1266,6 +1266,17 @@ export const en: Translations = {
         text: 'Please explain how this works and point me to the key files.'
       }
     }
+  },
+
+  statusStack: {
+    agents: 'Agents',
+    background: count => `${count} Background`,
+    subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
+    todos: (done, total) => `Tasks ${done}/${total}`,
+    running: 'Running',
+    stop: 'Stop',
+    dismiss: 'Dismiss',
+    exit: code => `exit ${code}`
   },
 
   updates: {
@@ -1389,6 +1400,7 @@ export const en: Translations = {
     getKey: 'Get a key',
     replaceCurrent: 'Replace current value',
     pasteApiKey: 'Paste API key',
+    localApiKeyPlaceholder: 'API key (optional — only if your endpoint requires one)',
     couldNotSave: 'Could not save credential.',
     connecting: 'Connecting',
     update: 'Update',
@@ -1669,9 +1681,12 @@ export const en: Translations = {
       readAloud: 'Read aloud',
       editMessage: 'Edit message',
       stop: 'Stop',
-      editableCheckpoint: 'Editable checkpoint',
       restorePrevious: 'Restore previous checkpoint',
       restoreCheckpoint: 'Restore checkpoint',
+      restoreFromHere: 'Restore checkpoint — rerun from this prompt',
+      restoreTitle: 'Restore to this checkpoint?',
+      restoreBody: 'Everything after this prompt is removed from the conversation, and the prompt runs again from here.',
+      restoreConfirm: 'Restore & rerun',
       restoreNext: 'Restore next checkpoint',
       goForward: 'Go forward',
       sendEdited: 'Send edited message',
@@ -1697,7 +1712,7 @@ export const en: Translations = {
       loadingQuestion: 'Loading question…',
       other: 'Other (type your answer)',
       placeholder: 'Type your answer…',
-      shortcut: '⌘/Ctrl + Enter to send',
+      shortcutSuffix: ' to send',
       back: 'Back',
       skip: 'Skip',
       send: 'Send'

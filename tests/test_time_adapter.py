@@ -24,3 +24,26 @@ def test_seam_override_flows_through_factories():
     assert str(client.base_url).rstrip("/") == "https://example.test/api"
     app = a._make_async_app("tok")
     assert app is not None
+
+
+def test_time_adapter_overrides(monkeypatch):
+    monkeypatch.setenv("TIME_API_BASE_URL", "https://time.tbank.ru/api/")
+    from plugins.platforms.time.adapter import TimeAdapter
+    a = TimeAdapter(_cfg())
+    assert a._app_token_env() == "TIME_APP_TOKEN"
+    assert a._api_base_url() == "https://time.tbank.ru/api/"
+
+
+def test_time_make_web_client_uses_base_url(monkeypatch):
+    monkeypatch.setenv("TIME_API_BASE_URL", "https://time.tbank.ru/api/")
+    from plugins.platforms.time.adapter import TimeAdapter
+    a = TimeAdapter(_cfg())
+    client = a._make_web_client("t-bot")
+    assert str(client.base_url).rstrip("/") == "https://time.tbank.ru/api"
+
+
+def test_time_api_base_url_none_when_env_unset(monkeypatch):
+    monkeypatch.delenv("TIME_API_BASE_URL", raising=False)
+    from plugins.platforms.time.adapter import TimeAdapter
+    a = TimeAdapter(_cfg())
+    assert a._api_base_url() is None

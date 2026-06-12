@@ -234,6 +234,19 @@ def _is_cron_session() -> bool:
         return env_var_enabled("HERMES_CRON_SESSION")
 
 
+def _is_context_cron_session() -> bool:
+    """Return True only when cron state is bound to the current ContextVar scope."""
+    try:
+        from gateway.session_context import _UNSET, _VAR_MAP
+
+        value = _VAR_MAP["HERMES_CRON_SESSION"].get()
+        if value is _UNSET:
+            return False
+        return is_truthy_value(value)
+    except Exception:
+        return False
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -241,15 +254,17 @@ def _is_gateway_approval_context() -> bool:
     Newer concurrent gateway paths bind HERMES_SESSION_PLATFORM via
     contextvars so approval mode does not depend on process-global flags.
 
-    Cron jobs are NEVER gateway-approval contexts. The scheduler binds a
-    context-local cron flag so a leaked process-global env var cannot
-    override a live gateway turn in the same process.
+    Cron jobs are NEVER gateway-approval contexts. A context-local cron flag is
+    authoritative over stale process-global gateway markers, while live gateway
+    contextvars still suppress a leaked process-global cron marker.
     """
+    if _is_context_cron_session():
+        return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
-    if _is_cron_session():
-        return False
-    return bool(_get_session_platform())
+    if _get_session_platform():
+        return True
+    return False
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME, or by the resolved absolute
@@ -3237,12 +3252,13 @@ def check_all_command_guards(command: str, env_type: str,
     is_cli = _is_interactive_cli()
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
+    is_cron = _is_cron_session()
 
     # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
     # flows, we do not block on approvals and we skip external guard work.
-    if not is_cli and not is_gateway and not is_ask:
+    if not is_cli and not is_gateway and (is_cron or not is_ask):
         # Cron sessions: respect cron_mode config
-        if _is_cron_session():
+        if is_cron:
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -3663,9 +3679,9 @@ def check_execute_code_guard(code: str, env_type: str,
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
     is_cron = _is_cron_session()
 
-    # Cron with no live approval surface: no user is present to approve
-    # arbitrary code. If a gateway/ask surface is active, let that win.
-    if is_cron and not is_gateway and not is_ask:
+    # Cron with no live gateway surface: no user is present to approve
+    # arbitrary code. An inherited ask-mode flag must not weaken cron policy.
+    if is_cron and not is_gateway:
         if _get_cron_approval_mode() == "deny":
             return {
                 "approved": False,

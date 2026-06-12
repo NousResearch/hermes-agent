@@ -139,17 +139,17 @@ def test_get_session_env_falls_back_to_os_environ(monkeypatch):
     assert get_session_env("HERMES_SESSION_PLATFORM") == ""
 
 
-def test_cron_session_context_overrides_stale_os_environ(monkeypatch):
-    """Gateway session context must suppress leaked cron env state."""
+def test_scoped_cron_session_restores_env_fallback(monkeypatch):
+    """Cron scope cleanup must restore, not permanently mask, env fallback."""
     monkeypatch.setenv("HERMES_CRON_SESSION", "1")
 
     assert get_session_env("HERMES_CRON_SESSION") == "1"
 
-    tokens = set_session_vars(platform="telegram")
+    tokens = set_session_vars(platform="telegram", cron_session="")
     assert get_session_env("HERMES_CRON_SESSION") == ""
 
     clear_session_vars(tokens)
-    assert get_session_env("HERMES_CRON_SESSION") == ""
+    assert get_session_env("HERMES_CRON_SESSION") == "1"
 
 
 def test_get_session_env_default_when_nothing_set(monkeypatch):
@@ -406,4 +406,3 @@ async def test_gateway_executor_refuses_resurrection_after_shutdown():
             await runner._run_in_executor_with_context(lambda: "second")
     finally:
         runner._shutdown_executor()
-

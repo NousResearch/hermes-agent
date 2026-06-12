@@ -351,6 +351,55 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("total_duration_seconds", result)
 
     @patch("tools.delegate_tool._run_single_child")
+    def test_batch_mode_propagates_cron_context_to_worker(self, mock_run):
+        parent = _make_mock_parent()
+        observed = []
+        old_cron_env = os.environ.pop("HERMES_CRON_SESSION", None)
+
+        def _fake_run(**kwargs):
+            from gateway.session_context import get_session_env
+
+            observed.append(
+                {
+                    "ctx": get_session_env("HERMES_CRON_SESSION"),
+                    "env": os.getenv("HERMES_CRON_SESSION"),
+                    "goal": kwargs["goal"],
+                }
+            )
+            return {
+                "task_index": kwargs["task_index"],
+                "status": "completed",
+                "summary": kwargs["goal"],
+                "api_calls": 1,
+                "duration_seconds": 0.1,
+            }
+
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(cron_session="1")
+        try:
+            mock_run.side_effect = _fake_run
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "A"}, {"goal": "B"}],
+                    parent_agent=parent,
+                )
+            )
+        finally:
+            clear_session_vars(tokens)
+            if old_cron_env is not None:
+                os.environ["HERMES_CRON_SESSION"] = old_cron_env
+
+        self.assertEqual(len(result["results"]), 2)
+        self.assertEqual(
+            sorted(observed, key=lambda item: item["goal"]),
+            [
+                {"ctx": "1", "env": None, "goal": "A"},
+                {"ctx": "1", "env": None, "goal": "B"},
+            ],
+        )
+
+    @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode_accepts_json_string_tasks(self, mock_run):
         mock_run.side_effect = [
             {
@@ -2041,6 +2090,92 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
 
 
 class TestChildCredentialLeasing(unittest.TestCase):
+    def test_run_single_child_propagates_cron_context_to_conversation_thread(self):
+        from tools.delegate_tool import _run_single_child
+
+        observed = {}
+        old_cron_env = os.environ.pop("HERMES_CRON_SESSION", None)
+
+        child = MagicMock()
+        child._credential_pool = None
+
+        def _run_conversation(*args, **kwargs):
+            from gateway.session_context import get_session_env
+
+            observed["ctx"] = get_session_env("HERMES_CRON_SESSION")
+            observed["env"] = os.getenv("HERMES_CRON_SESSION")
+            return {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+
+        child.run_conversation.side_effect = _run_conversation
+
+        from gateway.session_context import clear_session_vars, set_session_vars
+
+        tokens = set_session_vars(cron_session="1")
+        try:
+            result = _run_single_child(
+                task_index=0,
+                goal="Investigate delegated cron work",
+                child=child,
+                parent_agent=_make_mock_parent(),
+            )
+        finally:
+            clear_session_vars(tokens)
+            if old_cron_env is not None:
+                os.environ["HERMES_CRON_SESSION"] = old_cron_env
+
+        self.assertEqual(result["status"], "completed")
+        self.assertEqual(observed, {"ctx": "1", "env": None})
+
+    def test_run_single_child_keeps_subagent_approval_callback(self):
+        from tools.delegate_tool import _run_single_child
+        from tools.terminal_tool import _get_approval_callback, set_approval_callback
+
+        def parent_callback(*args, **kwargs):
+            return "parent"
+
+        def subagent_callback(*args, **kwargs):
+            return "subagent"
+
+        observed = {}
+        child = MagicMock()
+        child._credential_pool = None
+
+        def _run_conversation(*args, **kwargs):
+            observed["callback"] = _get_approval_callback()
+            return {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 1,
+                "messages": [],
+            }
+
+        child.run_conversation.side_effect = _run_conversation
+
+        set_approval_callback(parent_callback)
+        try:
+            with patch(
+                "tools.delegate_tool._get_subagent_approval_callback",
+                return_value=subagent_callback,
+            ):
+                result = _run_single_child(
+                    task_index=0,
+                    goal="Keep subagent approval callback",
+                    child=child,
+                    parent_agent=_make_mock_parent(),
+                )
+        finally:
+            set_approval_callback(None)
+
+        self.assertEqual(result["status"], "completed")
+        self.assertIs(observed["callback"], subagent_callback)
+
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 

@@ -1821,7 +1821,7 @@ class TestRunJobSessionPersistence:
         assert os.getenv("HERMES_CRON_AUTO_DELIVER_THREAD_ID") is None
         assert fake_db.close.call_count == 2
 
-    def test_run_job_restores_cron_session_env_after_completion(self, tmp_path, monkeypatch):
+    def test_run_job_keeps_cron_session_env_unchanged(self, tmp_path, monkeypatch):
         job = {
             "id": "cron-env-job",
             "name": "cron env test",
@@ -1867,9 +1867,9 @@ class TestRunJobSessionPersistence:
         assert error is None
         assert final_response == "ok"
         assert "ok" in output
-        assert seen == {"env": "1", "ctx": "1"}
+        assert seen == {"env": "legacy", "ctx": "1"}
         assert os.getenv("HERMES_CRON_SESSION") == "legacy"
-        assert get_session_env("HERMES_CRON_SESSION") == ""
+        assert get_session_env("HERMES_CRON_SESSION") == "legacy"
 
 
 class TestRunJobConfigLogging:

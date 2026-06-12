@@ -18,6 +18,7 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import contextvars
 import json
 import logging
 
@@ -26,7 +27,6 @@ import os
 import threading
 import time
 from concurrent.futures import (
-    ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
 )
 from typing import Any, Dict, List, Optional
@@ -115,6 +115,16 @@ def _get_subagent_approval_callback():
 # NOTE: nested delegation is granted by role='orchestrator' (which re-adds the
 # "delegation" toolset in _build_child_agent), NOT by the model naming toolsets
 # — the model has no toolsets argument. Subagents inherit the parent's toolsets.
+
+
+def _propagate_contextvars_to_thread(target):
+    """Propagate ContextVars without overriding subagent thread-local callbacks."""
+    ctx = contextvars.copy_context()
+
+    def _runner(*args, **kwargs):
+        return ctx.run(target, *args, **kwargs)
+
+    return _runner
 
 _DEFAULT_MAX_CONCURRENT_CHILDREN = 3
 # One-shot guard: the high-concurrency cost advisory is emitted at most once
@@ -2008,7 +2018,9 @@ def _run_single_child(
                 stream_callback=_relay_child_text,
             )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        _child_future = _timeout_executor.submit(
+            _propagate_contextvars_to_thread(_run_with_thread_capture)
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2653,7 +2665,7 @@ def delegate_task(
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
-                        _run_single_child,
+                        _propagate_contextvars_to_thread(_run_single_child),
                         task_index=i,
                         goal=t["goal"],
                         child=child,

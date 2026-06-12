@@ -173,6 +173,7 @@ def set_session_vars(
     cwd: str = "",
     async_delivery: bool = True,
     ui_session_id: str = "",
+    cron_session: Any = _UNSET,
 ) -> list:
     """Set all session context variables and return reset tokens.
 
@@ -188,6 +189,11 @@ def set_session_vars(
     background completion back to the agent after the turn ends (see
     ``_SESSION_ASYNC_DELIVERY`` / ``async_delivery_supported``). Stateless
     request/response adapters (the API server) pass ``False``.
+
+    ``cron_session`` is intentionally separate from ordinary session cleanup:
+    ``_UNSET`` leaves cron scope untouched, while ``"1"`` binds cron policy
+    for a nested context and returns a token that ``clear_session_vars`` resets.
+    This preserves the legacy process-environment fallback after cleanup.
     """
     # Mark the session-context machinery engaged for this process. The
     # subprocess-env bridge uses this to switch from "os.environ fallback" to
@@ -209,6 +215,8 @@ def set_session_vars(
         _SESSION_PROFILE.set(profile),
         _SESSION_ASYNC_DELIVERY.set(bool(async_delivery)),
     ]
+    if cron_session is not _UNSET:
+        tokens.append(_CRON_SESSION.set(cron_session))
     try:
         from agent.runtime_cwd import set_session_cwd
 
@@ -221,13 +229,10 @@ def set_session_vars(
 def clear_session_vars(tokens: list) -> None:
     """Mark session context variables as explicitly cleared.
 
-    Sets all variables to ``""`` so that ``get_session_env`` returns an empty
-    string instead of falling back to (potentially stale) ``os.environ``
-    values.  The *tokens* argument is accepted for API compatibility with
-    callers that saved the return value of ``set_session_vars``, but the
-    actual clearing uses ``var.set("")`` rather than ``var.reset(token)``
-    to ensure the "explicitly cleared" state is distinguishable from
-    "never set" (which holds the ``_UNSET`` sentinel).
+    Sets ordinary session variables to ``""`` so that ``get_session_env``
+    does not fall back to stale ``os.environ`` values. Dedicated nested scope
+    variables such as ``HERMES_CRON_SESSION`` instead reset their saved token,
+    preserving the pre-scope state and legacy fallback semantics.
     """
     for var in (
         _SESSION_PLATFORM,
@@ -244,6 +249,9 @@ def clear_session_vars(tokens: list) -> None:
         _SESSION_PROFILE,
     ):
         var.set("")
+    for token in tokens:
+        if getattr(token, "var", None) is _CRON_SESSION:
+            _CRON_SESSION.reset(token)
     # Reset async-delivery capability to the "never set" sentinel rather than a
     # falsy value: a cleared context should fall back to the default-supported
     # behavior (CLI / unaware paths), not be mistaken for an opted-out

@@ -397,31 +397,46 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
-def _get_child_timeout() -> float:
+def _get_child_timeout() -> Optional[float]:
     """Read delegation.child_timeout_seconds from config.
 
     Returns the number of seconds a single child agent is allowed to run
-    before being considered stuck.  Default: 600 s (10 minutes).
+    before being cut off, or ``None`` when no wall-clock cap applies.
+
+    Default: ``None`` (no timeout). Subagents doing legitimate heavy work
+    (deep code review, large research fan-outs, slow reasoning models) were
+    routinely killed mid-task by the old blanket cap even though they were
+    making steady progress. Failures should come from what the child is
+    actually doing — API errors, tool errors, iteration budget — not from a
+    generic delegation-level stopwatch. Stuck-child protection is handled
+    separately by the heartbeat staleness monitor, which stops refreshing
+    parent activity so the gateway inactivity timeout can fire.
+
+    Set ``delegation.child_timeout_seconds`` to a positive number to opt back
+    in to a hard cap (floor 30 s); ``0`` or a negative value means disabled.
     """
     cfg = _load_config()
     val = cfg.get("child_timeout_seconds")
     if val is not None:
         try:
-            return max(30.0, float(val))
+            parsed = float(val)
         except (TypeError, ValueError):
             logger.warning(
                 "delegation.child_timeout_seconds=%r is not a valid number; "
-                "using default %d",
+                "using default (no timeout)",
                 val,
-                DEFAULT_CHILD_TIMEOUT,
             )
+        else:
+            return None if parsed <= 0 else max(30.0, parsed)
     env_val = os.getenv("DELEGATION_CHILD_TIMEOUT_SECONDS")
     if env_val:
         try:
-            return max(30.0, float(env_val))
+            parsed = float(env_val)
         except (TypeError, ValueError):
             pass
-    return float(DEFAULT_CHILD_TIMEOUT)
+        else:
+            return None if parsed <= 0 else max(30.0, parsed)
+    return DEFAULT_CHILD_TIMEOUT
 
 
 def _get_max_spawn_depth() -> int:
@@ -544,7 +559,12 @@ def _preserve_parent_mcp_toolsets(
 
 
 DEFAULT_MAX_ITERATIONS = 50
-DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+# No default wall-clock cap on child agents: legitimate heavy subagent work
+# (deep reviews, research fan-outs, slow reasoning models) was being killed
+# mid-task. Errors should come from what the child actually does; stuck-child
+# detection lives in the heartbeat staleness monitor below. Users can opt back
+# in via delegation.child_timeout_seconds.
+DEFAULT_CHILD_TIMEOUT: Optional[float] = None
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
@@ -552,7 +572,8 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 #     operation (terminal command, web fetch, large file read)
 # The idle ceiling stays tight so genuinely stuck children don't mask the gateway
 # timeout. The in-tool ceiling is much higher so legit long-running tools get
-# time to finish; child_timeout_seconds (default 600s) is still the hard cap.
+# time to finish; delegation.child_timeout_seconds (off by default) remains an
+# optional hard cap for users who want one.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -1556,8 +1577,9 @@ def _run_single_child(
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
         )
 
-        # Run child with a hard timeout to prevent indefinite blocking
-        # when the child's API call or tool-level HTTP request hangs.
+        # Run child with an optional hard timeout (off by default —
+        # result(timeout=None) blocks until the child finishes). Stuck-child
+        # protection comes from the heartbeat staleness monitor instead.
         child_timeout = _get_child_timeout()
         _timeout_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -1615,7 +1637,9 @@ def _run_single_child(
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
                     child=child,
                     task_index=task_index,
-                    timeout_seconds=float(child_timeout),
+                    # is_timeout implies a cap was configured (result(timeout=None)
+                    # never raises FuturesTimeoutError); guard for the type checker.
+                    timeout_seconds=float(child_timeout or 0.0),
                     duration_seconds=float(duration),
                     worker_thread=_worker_thread_holder.get("t"),
                     goal=goal,

@@ -8,10 +8,14 @@ use crate::events::{Manifest, StageInfo};
 use crate::install_script::ScriptKind;
 use anyhow::{anyhow, Context, Result};
 use chrono::{SecondsFormat, Utc};
+use serde::Deserialize;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+
+const BOOTSTRAP_TOOLS_MANIFEST: &str = "bootstrap-tools-manifest.json";
+const BOOTSTRAP_TOOLS_MANIFEST_SCHEMA_VERSION: u32 = 1;
 
 /// PATH probe result for one external tool.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -216,6 +220,22 @@ struct ResolvedBootstrapArchive {
     path: PathBuf,
     cache_path: PathBuf,
     kind: BootstrapArchiveSourceKind,
+    expected_sha256: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BootstrapToolsManifest {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    archives: Vec<BootstrapToolsManifestArchive>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BootstrapToolsManifestArchive {
+    name: String,
+    #[serde(rename = "sizeBytes", default)]
+    size_bytes: Option<u64>,
+    sha256: String,
 }
 
 /// Build the bootstrap stage manifest without invoking the platform script.
@@ -1068,11 +1088,12 @@ pub async fn install_windows_node_runtime_stage(
     let archive_source =
         resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
     if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        let expected_sha256 = archive_source.expected_sha256.as_deref();
         crate::artifact::download_to_cache(
             crate::artifact::DownloadSpec {
                 url: plan.download_url.clone(),
                 user_agent: "Hermes-Setup",
-                expected_sha256: None,
+                expected_sha256,
             },
             &archive_source.path,
         )
@@ -1174,11 +1195,12 @@ pub async fn install_unix_node_runtime_stage(
     let archive_source =
         resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
     if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        let expected_sha256 = archive_source.expected_sha256.as_deref();
         crate::artifact::download_to_cache(
             crate::artifact::DownloadSpec {
                 url: plan.download_url.clone(),
                 user_agent: "Hermes-Setup",
-                expected_sha256: None,
+                expected_sha256,
             },
             &archive_source.path,
         )
@@ -1261,11 +1283,12 @@ pub async fn install_windows_uv_runtime_stage(
     let archive_source =
         resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
     if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        let expected_sha256 = archive_source.expected_sha256.as_deref();
         crate::artifact::download_to_cache(
             crate::artifact::DownloadSpec {
                 url: plan.download_url.clone(),
                 user_agent: "Hermes-Setup",
-                expected_sha256: None,
+                expected_sha256,
             },
             &archive_source.path,
         )
@@ -1306,11 +1329,12 @@ pub async fn install_unix_uv_runtime_stage(
     let archive_source =
         resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
     if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        let expected_sha256 = archive_source.expected_sha256.as_deref();
         crate::artifact::download_to_cache(
             crate::artifact::DownloadSpec {
                 url: plan.download_url.clone(),
                 user_agent: "Hermes-Setup",
-                expected_sha256: None,
+                expected_sha256,
             },
             &archive_source.path,
         )
@@ -1469,11 +1493,12 @@ pub async fn install_windows_system_packages_stage(
         let archive_source =
             resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
         if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+            let expected_sha256 = archive_source.expected_sha256.as_deref();
             crate::artifact::download_to_cache(
                 crate::artifact::DownloadSpec {
                     url: plan.download_url.clone(),
                     user_agent: "Hermes-Setup",
-                    expected_sha256: None,
+                    expected_sha256,
                 },
                 &archive_source.path,
             )
@@ -1545,11 +1570,12 @@ pub async fn install_unix_system_packages_stage(
         let archive_source =
             resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
         if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+            let expected_sha256 = archive_source.expected_sha256.as_deref();
             crate::artifact::download_to_cache(
                 crate::artifact::DownloadSpec {
                     url: plan.download_url.clone(),
                     user_agent: "Hermes-Setup",
-                    expected_sha256: None,
+                    expected_sha256,
                 },
                 &archive_source.path,
             )
@@ -1607,11 +1633,12 @@ pub async fn install_windows_git_runtime_stage(
     let archive_source =
         resolve_bootstrap_archive_source(hermes_home, bundled_tools_dir, &plan.archive_name);
     if archive_source.kind == BootstrapArchiveSourceKind::Cache {
+        let expected_sha256 = archive_source.expected_sha256.as_deref();
         crate::artifact::download_to_cache(
             crate::artifact::DownloadSpec {
                 url: plan.download_url.clone(),
                 user_agent: "Hermes-Setup",
-                expected_sha256: None,
+                expected_sha256,
             },
             &archive_source.path,
         )
@@ -2417,6 +2444,7 @@ fn latest_bundled_windows_node_archive_name(
         .filter_map(|entry| entry.ok())
         .filter_map(|entry| entry.file_name().into_string().ok())
         .filter(|name| windows_node_archive_matches(name, version_major, arch))
+        .filter(|name| bundled_archive_is_manifest_listed(bundled_tools_dir, name))
         .max_by(|left, right| compare_node_archive_versions(left, right))
 }
 
@@ -2462,6 +2490,7 @@ fn latest_bundled_unix_node_archive_name_with_extension(
                 && name.ends_with(&expected_suffix)
                 && node_archive_version_tuple(name).0 == version_major
         })
+        .filter(|name| bundled_archive_is_manifest_listed(bundled_tools_dir, name))
         .max_by(|left, right| compare_node_archive_versions(left, right))
 }
 
@@ -2482,21 +2511,101 @@ fn resolve_bootstrap_archive_source(
     archive_name: &str,
 ) -> ResolvedBootstrapArchive {
     let cache_path = bootstrap_archive_cache_path(hermes_home, archive_name);
+    let expected_sha256 =
+        bundled_tools_dir.and_then(|dir| bootstrap_tools_manifest_sha256(dir, archive_name));
+    let expected_size_bytes =
+        bundled_tools_dir.and_then(|dir| bootstrap_tools_manifest_size_bytes(dir, archive_name));
     let bundled_path = bundled_tools_dir
         .map(|dir| dir.join(archive_name))
-        .filter(|path| path.is_file());
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            bundled_archive_matches_manifest(path, expected_sha256.as_deref(), expected_size_bytes)
+        });
     if let Some(path) = bundled_path {
         return ResolvedBootstrapArchive {
             path,
             cache_path,
             kind: BootstrapArchiveSourceKind::Bundled,
+            expected_sha256,
         };
     }
     ResolvedBootstrapArchive {
         path: cache_path.clone(),
         cache_path,
         kind: BootstrapArchiveSourceKind::Cache,
+        expected_sha256,
     }
+}
+
+fn bootstrap_tools_manifest_sha256(bundled_tools_dir: &Path, archive_name: &str) -> Option<String> {
+    bootstrap_tools_manifest_archive(bundled_tools_dir, archive_name).map(|record| record.sha256)
+}
+
+fn bootstrap_tools_manifest_size_bytes(bundled_tools_dir: &Path, archive_name: &str) -> Option<u64> {
+    bootstrap_tools_manifest_archive(bundled_tools_dir, archive_name).and_then(|record| record.size_bytes)
+}
+
+fn bootstrap_tools_manifest_archive(
+    bundled_tools_dir: &Path,
+    archive_name: &str,
+) -> Option<BootstrapToolsManifestArchive> {
+    let manifest_path = bundled_tools_dir.join(BOOTSTRAP_TOOLS_MANIFEST);
+    if !manifest_path.is_file() {
+        return None;
+    }
+    let manifest = fs::read_to_string(&manifest_path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<BootstrapToolsManifest>(&text).ok())?;
+    if manifest.schema_version != BOOTSTRAP_TOOLS_MANIFEST_SCHEMA_VERSION {
+        return None;
+    }
+    manifest
+        .archives
+        .into_iter()
+        .find(|archive| archive.name == archive_name)
+        .and_then(|record| {
+            let valid = record.sha256.len() == 64
+                && record.sha256.chars().all(|ch| ch.is_ascii_hexdigit());
+            valid.then_some(record)
+        })
+}
+
+fn bundled_archive_is_manifest_listed(bundled_tools_dir: &Path, archive_name: &str) -> bool {
+    let manifest_path = bundled_tools_dir.join(BOOTSTRAP_TOOLS_MANIFEST);
+    if !manifest_path.is_file() {
+        return true;
+    }
+    bootstrap_tools_manifest_sha256(bundled_tools_dir, archive_name).is_some()
+}
+
+fn bundled_archive_matches_manifest(
+    archive_path: &Path,
+    expected_sha256: Option<&str>,
+    expected_size_bytes: Option<u64>,
+) -> bool {
+    let Some(bundled_tools_dir) = archive_path.parent() else {
+        return false;
+    };
+    let manifest_path = bundled_tools_dir.join(BOOTSTRAP_TOOLS_MANIFEST);
+    if !manifest_path.is_file() {
+        return true;
+    }
+    let Some(expected_sha256) = expected_sha256 else {
+        return false;
+    };
+    if let Some(expected_size_bytes) = expected_size_bytes {
+        let Ok(metadata) = fs::metadata(archive_path) else {
+            return false;
+        };
+        if metadata.len() != expected_size_bytes {
+            return false;
+        }
+    }
+    let bytes = match fs::read(archive_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+    crate::artifact::sha256_hex(&bytes).eq_ignore_ascii_case(expected_sha256)
 }
 
 fn windows_uv_archive_name(arch: &str) -> Option<&'static str> {
@@ -3933,6 +4042,153 @@ mod tests {
     }
 
     #[test]
+    fn bootstrap_archive_source_accepts_manifest_verified_bundled_resource() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bootstrap-archive-verified-source-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let bundled = root.join("resources").join("bootstrap-tools");
+        let archive_name = "uv-x86_64-pc-windows-msvc.zip";
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(bundled.join(archive_name), b"uv").unwrap();
+        std::fs::write(
+            bundled.join("bootstrap-tools-manifest.json"),
+            r#"{
+                "schemaVersion": 1,
+                "archives": [
+                    {
+                        "name": "uv-x86_64-pc-windows-msvc.zip",
+                        "sha256": "e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let source = resolve_bootstrap_archive_source(&hermes_home, Some(&bundled), archive_name);
+
+        assert_eq!(source.kind, BootstrapArchiveSourceKind::Bundled);
+        assert_eq!(source.path, bundled.join(archive_name));
+        assert_eq!(
+            source.expected_sha256.as_deref(),
+            Some("e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_archive_source_rejects_manifest_mismatched_bundled_resource() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bootstrap-archive-mismatch-source-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let bundled = root.join("resources").join("bootstrap-tools");
+        let archive_name = "uv-x86_64-pc-windows-msvc.zip";
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(bundled.join(archive_name), b"uv").unwrap();
+        std::fs::write(
+            bundled.join("bootstrap-tools-manifest.json"),
+            r#"{
+                "schemaVersion": 1,
+                "archives": [
+                    {
+                        "name": "uv-x86_64-pc-windows-msvc.zip",
+                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let source = resolve_bootstrap_archive_source(&hermes_home, Some(&bundled), archive_name);
+
+        assert_eq!(source.kind, BootstrapArchiveSourceKind::Cache);
+        assert_eq!(
+            source.path,
+            hermes_home.join("bootstrap-cache").join(archive_name)
+        );
+        assert_eq!(
+            source.expected_sha256.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_archive_source_rejects_unsupported_tools_manifest_schema() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bootstrap-archive-schema-source-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let bundled = root.join("resources").join("bootstrap-tools");
+        let archive_name = "uv-x86_64-pc-windows-msvc.zip";
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(bundled.join(archive_name), b"uv").unwrap();
+        std::fs::write(
+            bundled.join("bootstrap-tools-manifest.json"),
+            r#"{
+                "schemaVersion": 2,
+                "archives": [
+                    {
+                        "name": "uv-x86_64-pc-windows-msvc.zip",
+                        "sha256": "e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let source = resolve_bootstrap_archive_source(&hermes_home, Some(&bundled), archive_name);
+
+        assert_eq!(source.kind, BootstrapArchiveSourceKind::Cache);
+        assert_eq!(source.expected_sha256, None);
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bootstrap_archive_source_rejects_manifest_size_mismatched_bundled_resource() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bootstrap-archive-size-source-test-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let bundled = root.join("resources").join("bootstrap-tools");
+        let archive_name = "uv-x86_64-pc-windows-msvc.zip";
+        std::fs::create_dir_all(&bundled).unwrap();
+        std::fs::write(bundled.join(archive_name), b"uv").unwrap();
+        std::fs::write(
+            bundled.join("bootstrap-tools-manifest.json"),
+            r#"{
+                "schemaVersion": 1,
+                "archives": [
+                    {
+                        "name": "uv-x86_64-pc-windows-msvc.zip",
+                        "sizeBytes": 99,
+                        "sha256": "e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
+
+        let source = resolve_bootstrap_archive_source(&hermes_home, Some(&bundled), archive_name);
+
+        assert_eq!(source.kind, BootstrapArchiveSourceKind::Cache);
+        assert_eq!(
+            source.expected_sha256.as_deref(),
+            Some("e6184ce10e266134fdcfa401e8f1a95005bcd4f18d16b62b757323e2833fe9a9")
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn bootstrap_archive_source_falls_back_to_cache_when_resource_is_absent() {
         let root = std::env::temp_dir().join(format!(
             "hermes-bootstrap-archive-cache-test-{}",
@@ -3976,6 +4232,41 @@ mod tests {
         ] {
             std::fs::write(bundled.join(name), b"node").unwrap();
         }
+
+        let picked = latest_bundled_windows_node_archive_name(Some(&bundled), 22, "x64");
+
+        assert_eq!(picked.as_deref(), Some("node-v22.19.1-win-x64.zip"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn bundled_node_archive_picker_ignores_unmanifested_archive_when_manifest_exists() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-bundled-node-manifest-picker-test-{}",
+            std::process::id()
+        ));
+        let bundled = root.join("resources").join("bootstrap-tools");
+        std::fs::create_dir_all(&bundled).unwrap();
+        for name in [
+            "node-v22.19.1-win-x64.zip",
+            "node-v22.20.0-win-x64.zip",
+        ] {
+            std::fs::write(bundled.join(name), b"node").unwrap();
+        }
+        std::fs::write(
+            bundled.join("bootstrap-tools-manifest.json"),
+            r#"{
+                "schemaVersion": 1,
+                "archives": [
+                    {
+                        "name": "node-v22.19.1-win-x64.zip",
+                        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    }
+                ]
+            }"#,
+        )
+        .unwrap();
 
         let picked = latest_bundled_windows_node_archive_name(Some(&bundled), 22, "x64");
 

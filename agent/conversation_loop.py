@@ -111,13 +111,18 @@ def _consume_forced_tool_choice(agent: Any, api_kwargs: dict) -> bool:
     Pinning tool_choice to the failed tool makes grammar-enforcing backends
     (vLLM) regenerate the call schema-valid by construction.  The flag is
     always cleared on read; injection happens only when the config is
-    "auto", the tool exists, and the per-turn cap (3) isn't exhausted.
+    "auto", the tool exists, the per-turn cap (3) isn't exhausted, and
+    nothing upstream already set tool_choice for this request.
     Returns True when tool_choice was injected.
     """
     forced = getattr(agent, "_forced_tool_choice", None)
     if forced is None:
         return False
     agent._forced_tool_choice = None  # one-shot: always consume
+    if "tool_choice" in api_kwargs:
+        # An upstream layer already pinned tool_choice (e.g. a safety
+        # guard's "none"); never clobber it with a forced retry.
+        return False
     if (
         getattr(agent, "_forced_tool_retry", "off") == "auto"
         and forced in agent.valid_tool_names

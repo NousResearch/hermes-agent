@@ -7709,6 +7709,22 @@ class TestForcedToolRetry:
         assert "tool_choice" not in api_kwargs
         assert agent._forced_tool_choice is None
 
+    def test_consume_never_overrides_existing_tool_choice(self):
+        """A tool_choice already present in api_kwargs (e.g. a safety
+        guard's "none") is never clobbered; the flag is still cleared."""
+        from agent.conversation_loop import _consume_forced_tool_choice
+
+        agent = self._make_agent()
+        agent._forced_tool_choice = "terminal"
+        api_kwargs = {"tool_choice": "none"}
+
+        result = _consume_forced_tool_choice(agent, api_kwargs)
+
+        assert result is False
+        assert api_kwargs["tool_choice"] == "none"
+        assert agent._forced_tool_choice is None
+        assert agent._forced_tool_retry_count == 0
+
     def test_consume_noop_when_unarmed(self):
         """No injection and no mutation when no tool choice is pending."""
         from agent.conversation_loop import _consume_forced_tool_choice

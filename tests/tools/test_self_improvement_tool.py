@@ -1804,6 +1804,84 @@ def test_operator_value_alignment_links_focus_issue_ids_to_codex_external_keys(t
 
 
 
+def test_operator_value_alignment_reports_missing_decision_support_fields(tmp_path):
+    now = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    history_path = tmp_path / "history.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(journal_path, {"entries": []})
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_verified_without_operator_support": {
+                    "run_id": "codex_verified_without_operator_support",
+                    "status": "completed",
+                    "completed_at": recent,
+                    "final_message": (
+                        "CHANGED_FILES\n"
+                        "- tools/self_improvement_tool.py\n"
+                        "VERIFICATION\n"
+                        "- pytest tests/tools/test_self_improvement_tool.py passed\n"
+                        "COMMIT\n"
+                        "- abcdef1234567890abcdef1234567890abcdef12\n"
+                        "PULL_REQUEST\n"
+                        "- https://github.com/taboularasa/hermes-agent/pull/273\n"
+                    ),
+                    "exit_code": 0,
+                }
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {}})
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=history_path,
+        now=now,
+        persist=True,
+    )
+
+    operator_value = benchmark["checks"]["operator_value_alignment"]
+    metrics = operator_value["metrics"]
+    assert metrics["missing_operator_decision_support_fields"] == [
+        "blocker",
+        "decision",
+        "nextDecision",
+        "operatorDecisionSupport",
+        "selectedWork",
+        "tradeoff",
+    ]
+    missing_example = metrics["missing_operator_decision_support_examples"][0]
+    assert missing_example["id"] == "codex_verified_without_operator_support"
+    assert missing_example["missing_operator_decision_support_fields"] == metrics[
+        "missing_operator_decision_support_fields"
+    ]
+    assert "operatorDecisionSupport or nextDecision" in missing_example["remediation"]
+    assert "Missing operator decision-support fields" in operator_value["detail"]
+    assert benchmark["operator_value_checks"]["missing_operator_decision_support_fields"] == metrics[
+        "missing_operator_decision_support_fields"
+    ]
+
+    history = json.loads(history_path.read_text())
+    persisted_run = history["runs"][-1]
+    assert persisted_run["operator_value_checks"]["missing_operator_decision_support_fields"] == metrics[
+        "missing_operator_decision_support_fields"
+    ]
+    assert persisted_run["checks"]["operator_value_alignment"]["metrics"][
+        "missing_operator_decision_support_examples"
+    ][0]["missing_operator_decision_support_fields"] == metrics[
+        "missing_operator_decision_support_fields"
+    ]
+
+
 def test_failed_codex_runs_with_completed_at_do_not_count_as_deliveries(tmp_path):
     now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
     recent = now.isoformat()

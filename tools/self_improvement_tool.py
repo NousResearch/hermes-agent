@@ -2019,6 +2019,17 @@ def _benchmark_history_check_snapshot(check_id: str, check: dict[str, Any]) -> d
         "score": check.get("score"),
         "status": check.get("status"),
     }
+    if check_id == "operator_value_alignment":
+        metrics = check.get("metrics") or {}
+        snapshot["detail"] = check.get("detail")
+        snapshot["metrics"] = {
+            "missing_operator_decision_support_fields": metrics.get("missing_operator_decision_support_fields") or [],
+            "missing_operator_decision_support_examples": metrics.get("missing_operator_decision_support_examples") or [],
+            "operator_decision_support_fields": metrics.get("operator_decision_support_fields") or [],
+            "operator_decision_support_examples": metrics.get("operator_decision_support_examples") or [],
+        }
+        return snapshot
+
     if check_id != "leading_indicator_drift":
         return snapshot
 
@@ -3556,6 +3567,23 @@ def _assess_operator_value_item(
             item_score = 0.25
             issue = "durable_evidence_without_operator_value_signal"
 
+    missing_operator_decision_support_fields: list[str] = []
+    operator_value_remediation = None
+    if verified_change_signals and not decision_support_signals:
+        missing_operator_decision_support_fields = sorted([
+            "operatorDecisionSupport",
+            "nextDecision",
+            "selectedWork",
+            "decision",
+            "blocker",
+            "tradeoff",
+        ])
+        operator_value_remediation = (
+            "Backfill operator decision-support evidence on the claimed work item: "
+            "operatorDecisionSupport or nextDecision, plus selectedWork, decision, "
+            "blocker, or tradeoff when applicable."
+        )
+
     return {
         "source": make_work.get("source"),
         "id": make_work.get("id"),
@@ -3566,6 +3594,8 @@ def _assess_operator_value_item(
         "operator_decision_support": bool(decision_support_signals),
         "operator_decision_support_signals": sorted(decision_support_signals),
         "operator_decision_support_evidence": operator_decision_support_evidence,
+        "missing_operator_decision_support_fields": missing_operator_decision_support_fields,
+        "operator_value_remediation": operator_value_remediation,
         "verified_system_change": bool(verified_change_signals),
         "verified_system_change_signals": sorted(verified_change_signals),
         "aligned": bool(decision_support_signals and verified_change_signals),
@@ -3711,6 +3741,8 @@ def _operator_value_example(item: dict[str, Any]) -> dict[str, Any]:
         "verified_system_change": item.get("verified_system_change"),
         "verified_system_change_signals": item.get("verified_system_change_signals") or [],
         "operator_decision_support_signals": item.get("operator_decision_support_signals") or [],
+        "missing_operator_decision_support_fields": item.get("missing_operator_decision_support_fields") or [],
+        "remediation": item.get("operator_value_remediation"),
         "evidence": item.get("operator_decision_support_evidence") or [],
     }
 
@@ -3779,6 +3811,14 @@ def _evaluate_operator_value_alignment_check(
         for item in assessments
         if item["verified_system_change"] and not item["operator_decision_support"]
     ][:5]
+    missing_decision_support_fields = sorted(
+        {
+            field
+            for item in missing_decision_support_examples
+            for field in item.get("missing_operator_decision_support_fields", [])
+            if str(field).strip()
+        }
+    )
     decision_support_fields = sorted(
         {
             evidence.get("field")
@@ -3821,6 +3861,12 @@ def _evaluate_operator_value_alignment_check(
                 + ", ".join(decision_support_fields)
                 + "."
             )
+        if missing_decision_support_fields:
+            detail += (
+                " Missing operator decision-support fields for verified changes: "
+                + ", ".join(missing_decision_support_fields)
+                + "."
+            )
 
     return _build_benchmark_item(
         "operator_value_alignment",
@@ -3835,6 +3881,7 @@ def _evaluate_operator_value_alignment_check(
             "operator_decision_support_count": decision_support_count,
             "operator_decision_support_evidence_count": decision_support_evidence_count,
             "operator_decision_support_fields": decision_support_fields,
+            "missing_operator_decision_support_fields": missing_decision_support_fields,
             "verified_system_change_count": verified_change_count,
             "aligned_work_item_count": aligned_count,
             "operator_decision_support_rate": (
@@ -4874,6 +4921,9 @@ def evaluate_self_improvement_benchmark(
         "operator_value_score": operator_value_alignment.get("score"),
         "operator_decision_support_evidence": (
             operator_value_metrics.get("operator_decision_support_examples") or []
+        ),
+        "missing_operator_decision_support_fields": (
+            operator_value_metrics.get("missing_operator_decision_support_fields") or []
         ),
         "missing_operator_decision_support": (
             operator_value_metrics.get("missing_operator_decision_support_examples") or []

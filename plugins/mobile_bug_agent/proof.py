@@ -161,9 +161,12 @@ class ProofRunner:
                 "MONICA_RUN_ID": str(getattr(run, "id", "") or ""),
                 "MONICA_LINEAR_IDENTIFIER": str(getattr(run, "linear_identifier", "") or ""),
                 "MONICA_PROOF_PLATFORM_ORDER": ",".join(self.config.proof.platform_order),
+                "MONICA_DEV_CLIENT_SCHEME": self.config.proof.dev_client_scheme,
                 "MONICA_IOS_SIMULATOR_UDID": self.config.proof.ios_simulator_udid,
+                "MONICA_IOS_BUNDLE_ID": self.config.proof.ios_bundle_id,
                 "MONICA_ANDROID_SERIAL": self.config.proof.android_serial,
                 "MONICA_ANDROID_AVD": self.config.proof.android_avd,
+                "MONICA_ANDROID_PACKAGE": self.config.proof.android_package,
                 "PYTHONPATH": os.pathsep.join(pythonpath_parts),
             }
         )

@@ -55,8 +55,11 @@ def test_proof_runner_passes_when_command_creates_artifact(tmp_path):
                 cwd,
                 timeout,
                 env["MONICA_PROOF_DIR"],
+                env["MONICA_DEV_CLIENT_SCHEME"],
+                env["MONICA_IOS_BUNDLE_ID"],
                 env["MONICA_ANDROID_SERIAL"],
                 env["MONICA_ANDROID_AVD"],
+                env["MONICA_ANDROID_PACKAGE"],
             )
         )
         proof_path = tmp_path / "monica-runtime" / "proof" / "run-123" / "ios-screenshot.png"
@@ -67,8 +70,11 @@ def test_proof_runner_passes_when_command_creates_artifact(tmp_path):
         config=_config(
             tmp_path,
             timeout_minutes=3,
+            dev_client_scheme="elixir-card",
+            ios_bundle_id="com.elixir.card",
             android_serial="emulator-5554",
             android_avd="MonicaPixel",
+            android_package="com.joinelixir.elixirclub",
         ),
         run_command=run,
     )
@@ -96,8 +102,11 @@ def test_proof_runner_passes_when_command_creates_artifact(tmp_path):
             tmp_path / "worktree",
             180,
             str(tmp_path / "monica-runtime" / "proof" / "run-123"),
+            "elixir-card",
+            "com.elixir.card",
             "emulator-5554",
             "MonicaPixel",
+            "com.joinelixir.elixirclub",
         )
     ]
 

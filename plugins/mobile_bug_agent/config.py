@@ -53,9 +53,12 @@ class ProofConfig:
     platform_order: tuple[str, ...] = ("ios", "android")
     artifact_dir: str = "proof"
     commands: tuple[str, ...] = ()
+    dev_client_scheme: str = ""
     ios_simulator_udid: str = ""
+    ios_bundle_id: str = ""
     android_serial: str = ""
     android_avd: str = ""
+    android_package: str = ""
     timeout_minutes: int = 10
 
 
@@ -180,9 +183,12 @@ def config_from_mapping(data: Mapping[str, Any] | None) -> MonicaConfig:
             platform_order=_as_tuple(proof.get("platform_order")) or ("ios", "android"),
             artifact_dir=str(proof.get("artifact_dir") or "proof").strip() or "proof",
             commands=_as_tuple(proof.get("commands")),
+            dev_client_scheme=str(proof.get("dev_client_scheme") or "").strip(),
             ios_simulator_udid=str(proof.get("ios_simulator_udid") or "").strip(),
+            ios_bundle_id=str(proof.get("ios_bundle_id") or "").strip(),
             android_serial=str(proof.get("android_serial") or "").strip(),
             android_avd=str(proof.get("android_avd") or "").strip(),
+            android_package=str(proof.get("android_package") or "").strip(),
             timeout_minutes=_as_int(proof.get("timeout_minutes"), 10),
         ),
         runtime=RuntimeConfig(

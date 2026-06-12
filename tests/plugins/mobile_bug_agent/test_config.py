@@ -26,6 +26,7 @@ def test_config_defaults_are_safe():
     assert cfg.proof.platform_order == ("ios", "android")
     assert cfg.proof.artifact_dir == "proof"
     assert cfg.proof.commands == ()
+    assert cfg.proof.dev_client_scheme == ""
 
 
 def test_default_config_shape_matches_monica_parser():
@@ -87,9 +88,12 @@ def test_config_loads_nested_values():
                 "platform_order": ["ios"],
                 "artifact_dir": "monica-proof",
                 "commands": ["npm run proof:ios"],
+                "dev_client_scheme": "elixir-card",
                 "ios_simulator_udid": "SIM-UDID",
+                "ios_bundle_id": "com.elixir.card",
                 "android_serial": "emulator-5554",
                 "android_avd": "MonicaPixel",
+                "android_package": "com.joinelixir.elixirclub",
                 "timeout_minutes": 8,
             },
         }
@@ -121,9 +125,12 @@ def test_config_loads_nested_values():
     assert cfg.proof.platform_order == ("ios",)
     assert cfg.proof.artifact_dir == "monica-proof"
     assert cfg.proof.commands == ("npm run proof:ios",)
+    assert cfg.proof.dev_client_scheme == "elixir-card"
     assert cfg.proof.ios_simulator_udid == "SIM-UDID"
+    assert cfg.proof.ios_bundle_id == "com.elixir.card"
     assert cfg.proof.android_serial == "emulator-5554"
     assert cfg.proof.android_avd == "MonicaPixel"
+    assert cfg.proof.android_package == "com.joinelixir.elixirclub"
     assert cfg.proof.timeout_minutes == 8
 
 

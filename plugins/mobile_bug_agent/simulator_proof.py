@@ -6,6 +6,8 @@ import os
 import subprocess
 import tempfile
 import time
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Callable, Sequence
 
@@ -13,7 +15,11 @@ from typing import Callable, Sequence
 RunText = Callable[[tuple[str, ...], Path, int], str]
 RunBytes = Callable[[tuple[str, ...], Path, int], bytes]
 RunAndroidUntilForeground = Callable[
-    [tuple[str, ...], Path, int, tuple[str, ...], str, Callable[[], None]],
+    [tuple[str, ...], Path, int, tuple[str, ...], str, Path | None, Callable[[], None]],
+    None,
+]
+RunIosUntilReady = Callable[
+    [tuple[str, ...], Path, int, str, str, str, Path | None, Callable[[], None]],
     None,
 ]
 
@@ -25,10 +31,12 @@ class SimulatorProofHarness:
         run_text: RunText | None = None,
         run_bytes: RunBytes | None = None,
         run_android_until_foreground: RunAndroidUntilForeground | None = None,
+        run_ios_until_ready: RunIosUntilReady | None = None,
     ) -> None:
         self._run_text = run_text or _run_text_command
         self._run_bytes = run_bytes or _run_bytes_command
         self._run_android_until_foreground = run_android_until_foreground or _run_android_until_foreground
+        self._run_ios_until_ready = run_ios_until_ready or _run_ios_until_ready
 
     def run(
         self,
@@ -36,7 +44,9 @@ class SimulatorProofHarness:
         worktree: str | Path,
         proof_dir: str | Path,
         platforms: Sequence[str],
+        dev_client_scheme: str = "",
         ios_simulator_udid: str = "",
+        ios_bundle_id: str = "",
         android_serial: str = "",
         android_avd: str = "",
         android_package: str = "",
@@ -59,6 +69,8 @@ class SimulatorProofHarness:
                         worktree=worktree_path,
                         proof_dir=proof_path,
                         simulator_udid=ios_simulator_udid,
+                        dev_client_scheme=dev_client_scheme,
+                        bundle_id=ios_bundle_id,
                         deep_link=deep_link,
                         timeout_seconds=timeout_seconds,
                     )
@@ -71,6 +83,7 @@ class SimulatorProofHarness:
                         android_serial=android_serial,
                         android_avd=android_avd,
                         android_package=android_package,
+                        dev_client_scheme=dev_client_scheme,
                         deep_link=deep_link,
                         timeout_seconds=timeout_seconds,
                     )
@@ -94,6 +107,8 @@ class SimulatorProofHarness:
         worktree: Path,
         proof_dir: Path,
         simulator_udid: str,
+        dev_client_scheme: str,
+        bundle_id: str,
         deep_link: str,
         timeout_seconds: int,
     ) -> str:
@@ -102,13 +117,49 @@ class SimulatorProofHarness:
         screenshot = proof_dir / "ios-screenshot.png"
         self._run_text(("xcrun", "--find", "simctl"), worktree, timeout_seconds)
         self._run_text(("xcodebuild", "-version"), worktree, timeout_seconds)
-        self._run_text(("npm", "run", "ios"), worktree, timeout_seconds)
-        if deep_link.strip():
-            self._run_text(("xcrun", "simctl", "openurl", target, deep_link.strip()), worktree, timeout_seconds)
-        self._run_text(("xcrun", "simctl", "io", target, "screenshot", str(screenshot)), worktree, timeout_seconds)
+        app_dir = _expo_project_dir(worktree)
+        packager_host = _ios_packager_hostname()
+        packager_url = _packager_url(packager_host, 8081)
+        self._prepare_ios_native_project(app_dir, timeout_seconds)
+        _ensure_ios_fingerprint_config(app_dir)
+
+        def capture_ready_app() -> None:
+            if deep_link.strip():
+                self._run_text(("xcrun", "simctl", "openurl", target, deep_link.strip()), worktree, timeout_seconds)
+                time.sleep(_ios_settle_seconds())
+            self._run_text(("xcrun", "simctl", "io", target, "screenshot", str(screenshot)), worktree, timeout_seconds)
+
+        clean_bundle_id = bundle_id.strip()
+        if clean_bundle_id:
+            _uninstall_ios_bundle(target, app_dir, clean_bundle_id)
+            self._run_text(
+                ("npx", "expo", "run:ios", "--no-install", "--no-bundler"),
+                app_dir,
+                timeout_seconds,
+            )
+            self._run_ios_until_ready(
+                ("npx", "expo", "start", "--dev-client", "--host", _ios_expo_host(), "--port", "8081"),
+                app_dir,
+                timeout_seconds,
+                target,
+                clean_bundle_id,
+                _expo_dev_client_url(dev_client_scheme, packager_url),
+                proof_dir,
+                capture_ready_app,
+            )
+        else:
+            self._run_text(("npx", "expo", "run:ios", "--no-install"), app_dir, timeout_seconds)
+            capture_ready_app()
         if not screenshot.is_file():
             raise RuntimeError(f"iOS simulator screenshot was not created: {screenshot}")
+        _assert_screenshot_has_visual_content(screenshot)
         return str(screenshot)
+
+    def _prepare_ios_native_project(self, app_dir: Path, timeout_seconds: int) -> None:
+        self._run_text(("npx", "expo", "prebuild", "--platform", "ios", "--no-install"), app_dir, timeout_seconds)
+        ios_dir = app_dir / "ios"
+        self._run_text(("pod", "install", "--ansi"), ios_dir, timeout_seconds)
+        _patch_ios_fmt_cxx_standard(ios_dir)
 
     def _capture_android(
         self,
@@ -118,6 +169,7 @@ class SimulatorProofHarness:
         android_serial: str,
         android_avd: str,
         android_package: str,
+        dev_client_scheme: str,
         deep_link: str,
         timeout_seconds: int,
     ) -> str:
@@ -140,21 +192,26 @@ class SimulatorProofHarness:
             self._run_text((*adb, "reverse", "tcp:8081", "tcp:8081"), worktree, timeout_seconds)
 
             def capture_ready_app() -> None:
-                if deep_link.strip():
-                    self._run_text(
-                        (
-                            *adb,
-                            "shell",
-                            "am",
-                            "start",
-                            "-a",
-                            "android.intent.action.VIEW",
-                            "-d",
-                            deep_link.strip(),
-                        ),
+                if dev_client_scheme.strip():
+                    _open_android_url(
+                        self._run_text,
+                        adb,
                         worktree,
                         timeout_seconds,
+                        _expo_dev_client_url(dev_client_scheme, _packager_url(_android_packager_hostname(), 8081)),
+                        android_package.strip(),
                     )
+                    time.sleep(_android_settle_seconds())
+                if deep_link.strip():
+                    _open_android_url(
+                        self._run_text,
+                        adb,
+                        worktree,
+                        timeout_seconds,
+                        deep_link.strip(),
+                        android_package.strip(),
+                    )
+                    time.sleep(_android_settle_seconds())
                 screenshot.write_bytes(
                     self._run_bytes((*adb, "exec-out", "screencap", "-p"), worktree, timeout_seconds)
                 )
@@ -168,6 +225,7 @@ class SimulatorProofHarness:
                     timeout_seconds,
                     adb,
                     package,
+                    proof_dir,
                     capture_ready_app,
                 )
             else:
@@ -344,15 +402,238 @@ def _shutdown_started_android_emulator(
     stderr_path.unlink(missing_ok=True)
 
 
+def _run_ios_until_ready(
+    args: tuple[str, ...],
+    cwd: Path,
+    timeout: int,
+    target: str,
+    bundle_id: str,
+    dev_client_url: str,
+    log_dir: Path | None,
+    while_ready: Callable[[], None],
+) -> None:
+    stdout_path, stderr_path = _start_log_files("ios-metro-", log_dir)
+    try:
+        with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
+            "w", encoding="utf-8"
+        ) as stderr_file:
+            try:
+                proc = subprocess.Popen(
+                    list(args),
+                    cwd=str(cwd),
+                    env=_ios_metro_env(),
+                    text=True,
+                    stdout=stdout_file,
+                    stderr=stderr_file,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError(f"executable not found: {args[0]}") from exc
+
+            try:
+                deadline = time.monotonic() + timeout
+                while time.monotonic() < deadline:
+                    if (
+                        _ios_app_is_installed(target, cwd, bundle_id)
+                        and _ios_metro_is_ready()
+                        and _terminate_ios_bundle(target, cwd, bundle_id)
+                        and _launch_ios_bundle(target, cwd, bundle_id, dev_client_url, log_dir)
+                    ):
+                        _wait_for_metro_bundle_request(
+                            stdout_path,
+                            stderr_path,
+                            "ios",
+                            deadline,
+                            redeliver=(
+                                (lambda: _open_ios_url(target, cwd, dev_client_url.strip(), attempts=1))
+                                if dev_client_url.strip()
+                                else None
+                            ),
+                        )
+                        time.sleep(min(_ios_settle_seconds(), max(deadline - time.monotonic(), 0)))
+                        while_ready()
+                        return
+
+                    returncode = proc.poll()
+                    if returncode is not None:
+                        if returncode != 0:
+                            raise RuntimeError(
+                                "\n".join(
+                                    [
+                                        f"command failed ({returncode}): {' '.join(args)}",
+                                        f"stdout: {_tail_text(stdout_path)}",
+                                        f"stderr: {_tail_text(stderr_path)}",
+                                    ]
+                                )
+                            )
+                        raise RuntimeError(
+                            "\n".join(
+                                [
+                                    f"iOS bundle did not become launchable: {bundle_id}",
+                                    f"command exited successfully before proof capture: {' '.join(args)}",
+                                    f"stdout: {_tail_text(stdout_path)}",
+                                    f"stderr: {_tail_text(stderr_path)}",
+                                ]
+                            )
+                        )
+                    time.sleep(2)
+
+                raise RuntimeError(
+                    "\n".join(
+                        [
+                            f"timed out waiting for iOS bundle to become launchable: {bundle_id}",
+                            f"command: {' '.join(args)}",
+                            f"stdout: {_tail_text(stdout_path)}",
+                            f"stderr: {_tail_text(stderr_path)}",
+                        ]
+                    )
+                )
+            finally:
+                _terminate_process(proc)
+    finally:
+        if log_dir is None:
+            stdout_path.unlink(missing_ok=True)
+            stderr_path.unlink(missing_ok=True)
+
+
+def _ios_app_is_installed(target: str, cwd: Path, bundle_id: str) -> bool:
+    try:
+        proc = subprocess.run(
+            ["xcrun", "simctl", "get_app_container", target, bundle_id, "app"],
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=15,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return proc.returncode == 0 and bool(str(proc.stdout or "").strip())
+
+
+def _ios_metro_is_ready() -> bool:
+    if not _ios_wait_for_metro():
+        return True
+    try:
+        with urllib.request.urlopen(_metro_status_url(), timeout=1) as response:
+            body = response.read(200).decode("utf-8", errors="replace")
+    except Exception:
+        return False
+    return "packager-status:running" in body or body.strip().lower() == "running"
+
+
+def _ios_wait_for_metro() -> bool:
+    raw_value = os.environ.get("MONICA_IOS_WAIT_FOR_METRO", "1").strip().lower()
+    return raw_value not in {"0", "false", "no", "off"}
+
+
+def _metro_status_url() -> str:
+    return os.environ.get("MONICA_METRO_STATUS_URL", "http://localhost:8081/status").strip() or "http://localhost:8081/status"
+
+
+def _uninstall_ios_bundle(target: str, cwd: Path, bundle_id: str) -> None:
+    try:
+        subprocess.run(
+            ["xcrun", "simctl", "uninstall", target, bundle_id],
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return
+
+
+def _terminate_ios_bundle(target: str, cwd: Path, bundle_id: str) -> bool:
+    try:
+        subprocess.run(
+            ["xcrun", "simctl", "terminate", target, bundle_id],
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
+    return True
+
+
+def _launch_ios_bundle(
+    target: str,
+    cwd: Path,
+    bundle_id: str,
+    dev_client_url: str = "",
+    log_dir: Path | None = None,
+) -> bool:
+    stdout_path, stderr_path = _start_log_files("ios-app-launch-", log_dir)
+    args = [
+        "xcrun",
+        "simctl",
+        "launch",
+        f"--stdout={stdout_path}",
+        f"--stderr={stderr_path}",
+        target,
+        bundle_id,
+    ]
+
+    def _cleanup_logs() -> None:
+        if log_dir is None:
+            stdout_path.unlink(missing_ok=True)
+            stderr_path.unlink(missing_ok=True)
+
+    try:
+        proc = subprocess.run(
+            args,
+            cwd=str(cwd),
+            text=True,
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        _cleanup_logs()
+        return False
+    if proc.returncode != 0:
+        _cleanup_logs()
+        return False
+    clean_url = dev_client_url.strip()
+    if clean_url and not _open_ios_url(target, cwd, clean_url):
+        _cleanup_logs()
+        return False
+    _cleanup_logs()
+    return True
+
+
+def _open_ios_url(target: str, cwd: Path, url: str, attempts: int = 3) -> bool:
+    for _attempt in range(max(attempts, 1)):
+        time.sleep(min(_ios_settle_seconds(), 2))
+        try:
+            proc = subprocess.run(
+                ["xcrun", "simctl", "openurl", target, url],
+                cwd=str(cwd),
+                text=True,
+                capture_output=True,
+                timeout=30,
+                check=False,
+            )
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+        if proc.returncode == 0:
+            return True
+    return False
+
+
 def _run_android_until_foreground(
     args: tuple[str, ...],
     cwd: Path,
     timeout: int,
     adb: tuple[str, ...],
     package: str,
+    log_dir: Path | None,
     while_foreground: Callable[[], None],
 ) -> None:
-    stdout_path, stderr_path = _start_log_files()
+    stdout_path, stderr_path = _start_log_files("android-metro-", log_dir)
     try:
         with stdout_path.open("w", encoding="utf-8") as stdout_file, stderr_path.open(
             "w", encoding="utf-8"
@@ -379,6 +660,12 @@ def _run_android_until_foreground(
                         if not _android_package_is_foreground(adb, cwd, package):
                             continue
                         while_foreground()
+                        _wait_for_metro_bundle_request(
+                            stdout_path,
+                            stderr_path,
+                            "android",
+                            deadline,
+                        )
                         if not _android_package_is_foreground(adb, cwd, package):
                             raise RuntimeError(
                                 "\n".join(
@@ -434,8 +721,9 @@ def _run_android_until_foreground(
             finally:
                 _terminate_process(proc)
     finally:
-        stdout_path.unlink(missing_ok=True)
-        stderr_path.unlink(missing_ok=True)
+        if log_dir is None:
+            stdout_path.unlink(missing_ok=True)
+            stderr_path.unlink(missing_ok=True)
 
 
 def _android_package_is_foreground(adb: tuple[str, ...], cwd: Path, package: str) -> bool:
@@ -503,6 +791,29 @@ def _launch_android_package(adb: tuple[str, ...], cwd: Path, package: str) -> No
         return
 
 
+def _open_android_url(
+    run_text: RunText,
+    adb: tuple[str, ...],
+    cwd: Path,
+    timeout: int,
+    url: str,
+    package: str = "",
+) -> None:
+    args = [
+        *adb,
+        "shell",
+        "am",
+        "start",
+        "-a",
+        "android.intent.action.VIEW",
+        "-d",
+        url,
+    ]
+    if package.strip():
+        args.extend(("-p", package.strip()))
+    run_text(tuple(args), cwd, timeout)
+
+
 def _resolve_android_launch_activity(adb: tuple[str, ...], cwd: Path, package: str) -> str:
     try:
         proc = subprocess.run(
@@ -535,9 +846,20 @@ def _terminate_process(proc: subprocess.Popen[str]) -> None:
         proc.wait(timeout=10)
 
 
-def _start_log_files() -> tuple[Path, Path]:
-    stdout_file = tempfile.NamedTemporaryFile(prefix="monica-android-run-", suffix=".stdout.log", delete=False)
-    stderr_file = tempfile.NamedTemporaryFile(prefix="monica-android-run-", suffix=".stderr.log", delete=False)
+def _start_log_files(prefix: str = "monica-android-run-", log_dir: Path | None = None) -> tuple[Path, Path]:
+    if log_dir is not None:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        stem = prefix.rstrip("-") or "monica-run"
+        stdout_path = log_dir / f"{stem}.stdout.log"
+        stderr_path = log_dir / f"{stem}.stderr.log"
+        stdout_path.unlink(missing_ok=True)
+        stderr_path.unlink(missing_ok=True)
+        stdout_path.touch()
+        stderr_path.touch()
+        return stdout_path, stderr_path
+
+    stdout_file = tempfile.NamedTemporaryFile(prefix=prefix, suffix=".stdout.log", delete=False)
+    stderr_file = tempfile.NamedTemporaryFile(prefix=prefix, suffix=".stderr.log", delete=False)
     stdout_path = Path(stdout_file.name)
     stderr_path = Path(stderr_file.name)
     stdout_file.close()
@@ -545,9 +867,55 @@ def _start_log_files() -> tuple[Path, Path]:
     return stdout_path, stderr_path
 
 
+def _wait_for_metro_bundle_request(
+    stdout_path: Path,
+    stderr_path: Path,
+    platform: str,
+    deadline: float,
+    redeliver: Callable[[], None] | None = None,
+    redeliver_interval: float = 10.0,
+) -> None:
+    last_delivery = time.monotonic()
+    while time.monotonic() < deadline:
+        if _metro_bundle_was_requested(stdout_path, stderr_path, platform):
+            return
+        if redeliver is not None and time.monotonic() - last_delivery >= redeliver_interval:
+            redeliver()
+            last_delivery = time.monotonic()
+        time.sleep(1)
+    raise RuntimeError(
+        "\n".join(
+            [
+                f"Metro did not receive a {platform} bundle request before proof capture.",
+                f"stdout log: {stdout_path}",
+                f"stderr log: {stderr_path}",
+                f"stdout tail: {_tail_text(stdout_path)}",
+                f"stderr tail: {_tail_text(stderr_path)}",
+            ]
+        )
+    )
+
+
+def _metro_bundle_was_requested(stdout_path: Path, stderr_path: Path, platform: str) -> bool:
+    platform = platform.strip().lower()
+    text = "\n".join((_tail_text(stdout_path, 12000), _tail_text(stderr_path, 12000))).lower()
+    return any(
+        marker in text
+        for marker in (
+            f"platform={platform}",
+            f"{platform} bundled",
+            f"{platform} bundle",
+            f"bundling `{platform}`",
+        )
+    )
+
+
 def _android_run_env() -> dict[str, str]:
     env = _simulator_run_env()
-    env.setdefault("REACT_NATIVE_PACKAGER_HOSTNAME", "127.0.0.1")
+    if not os.environ.get("MONICA_PACKAGER_HOSTNAME", "").strip() and not os.environ.get(
+        "REACT_NATIVE_PACKAGER_HOSTNAME", ""
+    ).strip():
+        env["REACT_NATIVE_PACKAGER_HOSTNAME"] = _android_packager_hostname()
     android_sdk = (
         env.get("ANDROID_HOME", "").strip()
         or env.get("ANDROID_SDK_ROOT", "").strip()
@@ -562,9 +930,84 @@ def _android_run_env() -> dict[str, str]:
 
 def _simulator_run_env() -> dict[str, str]:
     env = os.environ.copy()
+    env.setdefault("REACT_NATIVE_PACKAGER_HOSTNAME", _default_packager_hostname())
     _prepend_path_dirs(env, _user_gem_bin_dirs())
     _ensure_ruby_logger_preload(env)
     return env
+
+
+def _default_packager_hostname() -> str:
+    configured = os.environ.get("MONICA_PACKAGER_HOSTNAME", "").strip()
+    if configured:
+        return configured
+    return _first_non_loopback_ipv4() or "localhost"
+
+
+def _android_packager_hostname() -> str:
+    return (
+        os.environ.get("MONICA_ANDROID_PACKAGER_HOSTNAME", "").strip()
+        or os.environ.get("MONICA_PACKAGER_HOSTNAME", "").strip()
+        or os.environ.get("REACT_NATIVE_PACKAGER_HOSTNAME", "").strip()
+        or "127.0.0.1"
+    )
+
+
+def _ios_packager_hostname() -> str:
+    return (
+        os.environ.get("MONICA_IOS_PACKAGER_HOSTNAME", "").strip()
+        or os.environ.get("MONICA_PACKAGER_HOSTNAME", "").strip()
+        or os.environ.get("REACT_NATIVE_PACKAGER_HOSTNAME", "").strip()
+        or "localhost"
+    )
+
+
+def _ios_expo_host() -> str:
+    return os.environ.get("MONICA_IOS_EXPO_HOST", "").strip() or "localhost"
+
+
+def _ios_metro_env() -> dict[str, str]:
+    # Metro must listen on 127.0.0.1: the Expo manifest hardcodes the literal IP
+    # in launchAsset URLs, while Node resolves localhost to ::1 first by default.
+    env = _simulator_run_env()
+    node_options = env.get("NODE_OPTIONS", "").strip()
+    if "--dns-result-order" not in node_options:
+        env["NODE_OPTIONS"] = f"{node_options} --dns-result-order=ipv4first".strip()
+    return env
+
+
+def _packager_url(host: str, port: int) -> str:
+    clean_host = host.strip() or "localhost"
+    if ":" in clean_host and not clean_host.startswith("["):
+        clean_host = f"[{clean_host}]"
+    return f"http://{clean_host}:{port}"
+
+
+def _expo_dev_client_url(scheme: str, packager_url: str) -> str:
+    clean_scheme = scheme.strip()
+    if not clean_scheme:
+        return ""
+    encoded_url = urllib.parse.quote(packager_url.strip(), safe="")
+    return f"{clean_scheme}://expo-development-client/?url={encoded_url}&disableOnboarding=1"
+
+
+def _first_non_loopback_ipv4() -> str:
+    try:
+        proc = subprocess.run(
+            ["ifconfig"],
+            text=True,
+            capture_output=True,
+            timeout=3,
+            check=False,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    for line in str(proc.stdout or "").splitlines():
+        parts = line.strip().split()
+        if len(parts) >= 2 and parts[0] == "inet" and not parts[1].startswith("127."):
+            return parts[1]
+    return ""
 
 
 def _prepend_path_dirs(env: dict[str, str], dirs: Sequence[Path]) -> None:
@@ -589,22 +1032,153 @@ def _ensure_ruby_logger_preload(env: dict[str, str]) -> None:
     env["RUBYOPT"] = " ".join(("-rlogger", *current))
 
 
+def _expo_project_dir(worktree: Path) -> Path:
+    app_dir = worktree / "apps" / "elixir-card"
+    if (app_dir / "package.json").is_file():
+        return app_dir
+    return worktree
+
+
+_FINGERPRINT_CONFIG_CONTENT = """\
+// Written by the Monica proof harness (not committed; see .git/info/exclude).
+// The dev client aborts manifest requests after 10s, and the fingerprint
+// runtime-version policy recomputes the project fingerprint per request.
+/** @type {import('@expo/fingerprint').Config} */
+module.exports = {
+  ignorePaths: ['**/*'],
+};
+"""
+
+
+def _ensure_ios_fingerprint_config(app_dir: Path) -> None:
+    if (app_dir / "fingerprint.config.js").exists() or (app_dir / "fingerprint.config.cjs").exists():
+        return
+    (app_dir / "fingerprint.config.js").write_text(_FINGERPRINT_CONFIG_CONTENT, encoding="utf-8")
+
+
+def _patch_ios_fmt_cxx_standard(ios_dir: Path) -> None:
+    fmt_dir = ios_dir / "Pods" / "Target Support Files" / "fmt"
+    for xcconfig in (fmt_dir / "fmt.debug.xcconfig", fmt_dir / "fmt.release.xcconfig"):
+        if not xcconfig.is_file():
+            continue
+        content = xcconfig.read_text(encoding="utf-8")
+        patched = content.replace("CLANG_CXX_LANGUAGE_STANDARD = c++20", "CLANG_CXX_LANGUAGE_STANDARD = c++17")
+        if patched != content:
+            xcconfig.write_text(patched, encoding="utf-8")
+    pbxproj_path = ios_dir / "Pods" / "Pods.xcodeproj" / "project.pbxproj"
+    _patch_ios_pbxproj_cxx_standard(
+        pbxproj_path,
+        xcconfig_names=("fmt.debug.xcconfig", "fmt.release.xcconfig"),
+        cxx_standard="c++17",
+    )
+    _patch_ios_mmkvcore_cxx_standard(ios_dir, pbxproj_path)
+
+
+def _patch_ios_mmkvcore_cxx_standard(ios_dir: Path, pbxproj_path: Path) -> None:
+    mmkvcore_dir = ios_dir / "Pods" / "Target Support Files" / "MMKVCore"
+    for xcconfig in (mmkvcore_dir / "MMKVCore.debug.xcconfig", mmkvcore_dir / "MMKVCore.release.xcconfig"):
+        if not xcconfig.is_file():
+            continue
+        content = xcconfig.read_text(encoding="utf-8")
+        patched = content
+        for current_standard in ("c++17", "c++20", "gnu++17"):
+            patched = patched.replace(
+                f"CLANG_CXX_LANGUAGE_STANDARD = {current_standard}",
+                "CLANG_CXX_LANGUAGE_STANDARD = gnu++20",
+            )
+        if patched != content:
+            xcconfig.write_text(patched, encoding="utf-8")
+    _patch_ios_pbxproj_cxx_standard(
+        pbxproj_path,
+        xcconfig_names=("MMKVCore.debug.xcconfig", "MMKVCore.release.xcconfig"),
+        cxx_standard="gnu++20",
+    )
+
+
+def _patch_ios_pbxproj_cxx_standard(
+    pbxproj_path: Path,
+    *,
+    xcconfig_names: Sequence[str],
+    cxx_standard: str,
+) -> None:
+    if not pbxproj_path.is_file():
+        return
+
+    content = pbxproj_path.read_text(encoding="utf-8")
+    markers = tuple(f"/* {name} */" for name in xcconfig_names)
+    lines = content.splitlines(keepends=True)
+    output: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if "/*" not in line or "*/ = {" not in line:
+            output.append(line)
+            index += 1
+            continue
+
+        block = [line]
+        depth = line.count("{") - line.count("}")
+        index += 1
+        while index < len(lines) and depth > 0:
+            block_line = lines[index]
+            block.append(block_line)
+            depth += block_line.count("{") - block_line.count("}")
+            index += 1
+
+        block_text = "".join(block)
+        if (
+            "isa = XCBuildConfiguration;" in block_text
+            and any(marker in block_text for marker in markers)
+        ):
+            for current_standard in ("c++17", "c++20", "gnu++17", "gnu++20"):
+                block_text = block_text.replace(
+                    f'CLANG_CXX_LANGUAGE_STANDARD = "{current_standard}";',
+                    f'CLANG_CXX_LANGUAGE_STANDARD = "{cxx_standard}";',
+                ).replace(
+                    f"CLANG_CXX_LANGUAGE_STANDARD = {current_standard};",
+                    f"CLANG_CXX_LANGUAGE_STANDARD = {cxx_standard};",
+                )
+        output.append(block_text)
+
+    patched = "".join(output)
+    if patched != content:
+        pbxproj_path.write_text(patched, encoding="utf-8")
+
+
 def _prepare_react_native_worktree(worktree: Path) -> None:
     _exclude_local_worktree_artifacts(worktree)
     _link_sibling_app_env_files(worktree)
     node_modules = worktree / "node_modules"
-    if node_modules.exists() or node_modules.is_symlink():
+    if node_modules.exists() and not node_modules.is_dir() and not node_modules.is_symlink():
         return
 
     source = _node_modules_source(worktree)
     if not source:
         return
+    _mirror_node_modules(source, node_modules)
+
+
+def _mirror_node_modules(source: Path, target: Path) -> None:
     try:
-        node_modules.symlink_to(source, target_is_directory=True)
-    except FileExistsError:
-        return
+        if target.is_symlink():
+            target.unlink()
+        target.mkdir(parents=True, exist_ok=True)
+        for item in source.iterdir():
+            if item.name.startswith("@") and item.is_dir():
+                scope_target = target / item.name
+                scope_target.mkdir(exist_ok=True)
+                for scoped_item in item.iterdir():
+                    _symlink_node_module(scoped_item, scope_target / scoped_item.name)
+                continue
+            _symlink_node_module(item, target / item.name)
     except OSError as exc:
-        raise RuntimeError(f"failed to link node_modules for simulator proof: {source}") from exc
+        raise RuntimeError(f"failed to mirror node_modules for simulator proof: {source}") from exc
+
+
+def _symlink_node_module(source: Path, target: Path) -> None:
+    if target.exists() or target.is_symlink():
+        return
+    target.symlink_to(source, target_is_directory=source.is_dir())
 
 
 def _prepare_android_worktree(worktree: Path) -> None:
@@ -621,6 +1195,7 @@ def _exclude_local_worktree_artifacts(worktree: Path) -> None:
         "/node_modules",
         "/apps/elixir-card/.env",
         "/apps/elixir-card/.env.*",
+        "fingerprint.config.js",
     )
     missing = [entry for entry in entries if entry not in set(existing.splitlines())]
     if not missing:
@@ -723,6 +1298,14 @@ def _android_settle_seconds() -> int:
         return 30
 
 
+def _ios_settle_seconds() -> int:
+    raw_value = os.environ.get("MONICA_IOS_SETTLE_SECONDS", "30")
+    try:
+        return max(int(raw_value), 0)
+    except ValueError:
+        return 30
+
+
 def _tail_text(path: Path, limit: int = 2000) -> str:
     try:
         return path.read_text(encoding="utf-8", errors="replace").strip()[-limit:]
@@ -815,7 +1398,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--worktree", default="")
     parser.add_argument("--proof-dir", default="")
     parser.add_argument("--platform", dest="platforms", action="append", default=[])
+    parser.add_argument("--dev-client-scheme", default="")
     parser.add_argument("--ios-simulator-udid", default="")
+    parser.add_argument("--ios-bundle-id", default="")
     parser.add_argument("--android-serial", default="")
     parser.add_argument("--android-avd", default="")
     parser.add_argument("--android-package", default="")
@@ -839,7 +1424,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             worktree=worktree,
             proof_dir=proof_dir,
             platforms=platforms,
+            dev_client_scheme=args.dev_client_scheme or os.getenv("MONICA_DEV_CLIENT_SCHEME", ""),
             ios_simulator_udid=args.ios_simulator_udid or os.getenv("MONICA_IOS_SIMULATOR_UDID", ""),
+            ios_bundle_id=args.ios_bundle_id or os.getenv("MONICA_IOS_BUNDLE_ID", ""),
             android_serial=args.android_serial or os.getenv("MONICA_ANDROID_SERIAL", ""),
             android_avd=args.android_avd or os.getenv("MONICA_ANDROID_AVD", ""),
             android_package=args.android_package or os.getenv("MONICA_ANDROID_PACKAGE", ""),

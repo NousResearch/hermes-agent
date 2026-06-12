@@ -2257,11 +2257,18 @@ def _get_usage(agent) -> dict:
 
 
 def _probe_credentials(agent) -> str:
-    """Light credential check at session creation — returns warning or ''."""
+    """Light credential check at session creation — returns warning or ''.
+
+    'no-key-required' is a valid sentinel for keyless custom providers (local
+    models, self-hosted endpoints, 9router-style routers that accept any key).
+    Only warn when the key is genuinely missing — empty string or None.
+    """
     try:
         key = getattr(agent, "api_key", "") or ""
         provider = getattr(agent, "provider", "") or ""
-        if not key or key == "no-key-required":
+        # 'no-key-required' means the provider intentionally needs no credential
+        # (e.g. custom:9router, local llama.cpp).  This is valid — don't warn.
+        if not key:
             return f"No API key configured for provider '{provider}'. First message will fail."
     except Exception:
         pass

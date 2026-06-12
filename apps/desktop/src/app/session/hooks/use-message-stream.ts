@@ -798,7 +798,12 @@ export function useMessageStream({
         }
 
         if (typeof payload?.credential_warning === 'string' && payload.credential_warning) {
-          requestDesktopOnboarding(payload.credential_warning)
+          // Only pop the onboarding overlay when the warning is a genuine
+          // "no provider configured" error — not auxiliary/compression warnings
+          // that happen to mention env var names (e.g. with custom:9router).
+          if (isProviderSetupErrorMessage(payload.credential_warning)) {
+            requestDesktopOnboarding(payload.credential_warning)
+          }
         }
 
         void refreshHermesConfig()

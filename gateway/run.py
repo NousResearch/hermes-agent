@@ -4031,7 +4031,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter=adapter,
                 )
 
-                result = await adapter.send(chat_id, msg, metadata=metadata)
+                if platform == Platform.SLACK:
+                    result = await _send_or_update_status_coro(
+                        adapter,
+                        chat_id,
+                        "gateway_restart" if self._restart_requested else "gateway_shutdown",
+                        msg,
+                        metadata,
+                    )
+                else:
+                    result = await adapter.send(chat_id, msg, metadata=metadata)
                 if result is not None and getattr(result, "success", True) is False:
                     logger.debug(
                         "Failed to send shutdown notification to %s:%s: %s",
@@ -4085,7 +4094,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     home.thread_id,
                     adapter=adapter,
                 )
-                if metadata:
+                if platform == Platform.SLACK:
+                    result = await _send_or_update_status_coro(
+                        adapter,
+                        str(home.chat_id),
+                        "gateway_restart" if self._restart_requested else "gateway_shutdown",
+                        msg,
+                        metadata,
+                    )
+                elif metadata:
                     result = await adapter.send(str(home.chat_id), msg, metadata=metadata)
                 else:
                     result = await adapter.send(str(home.chat_id), msg)
@@ -14926,28 +14943,40 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _heartbeat_text = f"⏳ Working — {_elapsed_mins} min{_status_detail}"
                 try:
                     _notify_res = None
-                    if _heartbeat_msg_id:
-                        try:
-                            _notify_res = await _notify_adapter.edit_message(
-                                source.chat_id,
-                                _heartbeat_msg_id,
-                                _heartbeat_text,
-                            )
-                        except Exception as _ee:
-                            logger.debug("Heartbeat edit failed: %s", _ee)
-                            _notify_res = None
-                    if not (_notify_res and getattr(_notify_res, "success", False)):
-                        _notify_res = await _notify_adapter.send(
+                    if source.platform == Platform.SLACK:
+                        # Slack has a native non-permanent Assistant thread
+                        # status. Use it for heartbeat state instead of posting
+                        # durable "Working" messages into the thread.
+                        _notify_res = await _send_or_update_status_coro(
+                            _notify_adapter,
                             source.chat_id,
+                            "long_running",
                             _heartbeat_text,
-                            metadata=_status_thread_metadata,
+                            _status_thread_metadata,
                         )
-                        if getattr(_notify_res, "success", False) and getattr(
-                            _notify_res, "message_id", None
-                        ):
-                            _heartbeat_msg_id = str(_notify_res.message_id)
-                            if _cleanup_progress:
-                                _cleanup_msg_ids.append(_heartbeat_msg_id)
+                    else:
+                        if _heartbeat_msg_id:
+                            try:
+                                _notify_res = await _notify_adapter.edit_message(
+                                    source.chat_id,
+                                    _heartbeat_msg_id,
+                                    _heartbeat_text,
+                                )
+                            except Exception as _ee:
+                                logger.debug("Heartbeat edit failed: %s", _ee)
+                                _notify_res = None
+                        if not (_notify_res and getattr(_notify_res, "success", False)):
+                            _notify_res = await _notify_adapter.send(
+                                source.chat_id,
+                                _heartbeat_text,
+                                metadata=_status_thread_metadata,
+                            )
+                            if getattr(_notify_res, "success", False) and getattr(
+                                _notify_res, "message_id", None
+                            ):
+                                _heartbeat_msg_id = str(_notify_res.message_id)
+                                if _cleanup_progress:
+                                    _cleanup_msg_ids.append(_heartbeat_msg_id)
                 except Exception as _ne:
                     logger.debug("Long-running notification error: %s", _ne)
 

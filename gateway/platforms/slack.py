@@ -1270,6 +1270,103 @@ class SlackAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    @staticmethod
+    def _status_thread_ts(metadata: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        if not metadata:
+            return None
+        return metadata.get("thread_id") or metadata.get("thread_ts")
+
+    @staticmethod
+    def _assistant_activity_status(text: str) -> str:
+        """Turn heartbeat detail into a truthful Slack Assistant status."""
+        lowered = text.lower()
+        activity_map = [
+            (("session_search", "recall"), "is recalling prior context"),
+            (("search_files", "grep", "find"), "is searching files"),
+            (("read_file",), "is reading files"),
+            (("web_search",), "is searching the web"),
+            (("web_extract",), "is reading web pages"),
+            (("browser", "mcp_chrome_devtools"), "is using the browser"),
+            (("terminal", "process"), "is running a command"),
+            (("delegate_task",), "is coordinating agents"),
+            (("todo",), "is updating the task list"),
+            (("memory", "skill_manage", "skill_view"), "is checking operating memory"),
+            (("mcp_zoblin_connections_close", "close_"), "is checking Close"),
+            (("mcp_zoblin_connections_growth_n8n", "n8n"), "is checking n8n"),
+            (("mcp_zoblin_connections_railway", "railway"), "is checking Railway"),
+            (("mcp_google_sheets", "sheet"), "is checking Sheets"),
+            (("mcp_ga4", "analytics"), "is checking analytics"),
+            (("waiting for non-streaming", "waiting for model"), "is waiting on the model"),
+            (("receiving stream", "stream response"), "is drafting the reply"),
+        ]
+        for needles, status in activity_map:
+            if any(needle in lowered for needle in needles):
+                return status
+        return "is working through the request"
+
+    @staticmethod
+    def _assistant_status_text(content: str) -> str:
+        """Convert gateway status text into Slack Assistant status grammar."""
+        text = str(content or "").strip()
+        text = re.sub(r"^[\s:!\w-]+:\s*", "", text) if text.startswith(":") else text
+        text = re.sub(r"^[\s📦🗜️⏳⚠️✅✓•*-]+", "", text).strip()
+        text = re.sub(r"\s+", " ", text)
+        lowered = text.lower()
+
+        if lowered.startswith("preflight compression") or lowered.startswith("compacting context"):
+            return "is compacting context..."
+        if lowered.startswith("gateway restarting"):
+            return ("is restarting" + text[len("Gateway restarting"):])[:96]
+        if lowered.startswith("gateway shutting down"):
+            return ("is shutting down" + text[len("Gateway shutting down"):])[:96]
+        if lowered.startswith("working") or lowered.startswith("still working"):
+            return SlackAdapter._assistant_activity_status(text)[:96]
+
+        if text and not text.lower().startswith(("is ", "has ", "was ")):
+            text = f"is {text[0].lower()}{text[1:]}"
+        return text[:96]
+
+    async def _set_assistant_thread_status(
+        self,
+        chat_id: str,
+        thread_ts: Optional[str],
+        status: str,
+    ) -> bool:
+        if not self._app or not thread_ts:
+            return False
+        self._active_status_threads[chat_id] = thread_ts
+        try:
+            await self._get_client(chat_id).assistant_threads_setStatus(
+                channel_id=chat_id,
+                thread_ts=thread_ts,
+                status=status,
+            )
+            return True
+        except Exception as e:
+            logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+            return False
+
+    async def send_or_update_status(
+        self,
+        chat_id: str,
+        status_key: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Use Slack Assistant thread status for transient gateway state.
+
+        This intentionally never falls back to chat_postMessage: a permanent
+        Slack message would recreate the thread spam this path exists to avoid.
+        """
+        thread_ts = self._status_thread_ts(metadata)
+        status = self._assistant_status_text(content)
+        ok = await self._set_assistant_thread_status(chat_id, thread_ts, status)
+        return SendResult(
+            success=ok or thread_ts is None,
+            message_id=None,
+            error=None if ok or thread_ts is None else "assistant_status_failed",
+        )
+
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """Show a typing/status indicator using assistant.threads.setStatus.
 
@@ -1277,27 +1374,8 @@ class SlackAdapter(BasePlatformAdapter):
         Requires the assistant:write or chat:write scope.
         Auto-clears when the bot sends a reply to the thread.
         """
-        if not self._app:
-            return
-
-        thread_ts = None
-        if metadata:
-            thread_ts = metadata.get("thread_id") or metadata.get("thread_ts")
-
-        if not thread_ts:
-            return  # Can only set status in a thread context
-
-        self._active_status_threads[chat_id] = thread_ts
-        try:
-            await self._get_client(chat_id).assistant_threads_setStatus(
-                channel_id=chat_id,
-                thread_ts=thread_ts,
-                status="is thinking...",
-            )
-        except Exception as e:
-            # Silently ignore — may lack assistant:write scope or not be
-            # in an assistant-enabled context. Falls back to reactions.
-            logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+        thread_ts = self._status_thread_ts(metadata)
+        await self._set_assistant_thread_status(chat_id, thread_ts, "is thinking...")
 
     async def stop_typing(self, chat_id: str, metadata=None) -> None:
         """Clear the assistant thread status indicator."""

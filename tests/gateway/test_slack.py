@@ -1756,6 +1756,113 @@ class TestSendTyping:
     """Test typing indicator via assistant.threads.setStatus."""
 
     @pytest.mark.asyncio
+    async def test_send_or_update_status_sets_assistant_status_without_posting(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg"})
+
+        result = await adapter.send_or_update_status(
+            "C123",
+            "compression",
+            "📦 Preflight compression: ~264,618 tokens >= 217,600 threshold. This may take a moment.",
+            metadata={"thread_id": "parent_ts"},
+        )
+
+        assert result.success
+        assert result.message_id is None
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is compacting context...",
+        )
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_or_update_status_noops_without_thread(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg"})
+
+        result = await adapter.send_or_update_status(
+            "C123",
+            "compression",
+            "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
+        )
+
+        assert result.success
+        assert result.message_id is None
+        adapter._app.client.assistant_threads_setStatus.assert_not_called()
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_or_update_status_handles_api_error_without_posting(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock(
+            side_effect=Exception("missing_scope")
+        )
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg"})
+
+        result = await adapter.send_or_update_status(
+            "C123",
+            "long_running",
+            "⏳ Working — 3 min — iteration 7/200",
+            metadata={"thread_ts": "parent_ts"},
+        )
+
+        assert not result.success
+        assert result.error == "assistant_status_failed"
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_send_or_update_status_uses_real_activity_words(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg"})
+
+        await adapter.send_or_update_status(
+            "C123",
+            "long_running",
+            "⏳ Working — 3 min — iteration 7/200, session_search",
+            metadata={"thread_id": "parent_ts"},
+        )
+        await adapter.send_or_update_status(
+            "C123",
+            "long_running",
+            "⏳ Working — 6 min — iteration 12/200, read_file",
+            metadata={"thread_id": "parent_ts"},
+        )
+        await adapter.send_or_update_status(
+            "C123",
+            "long_running",
+            "⏳ Working — 9 min — mcp_zoblin_connections_close_fetch_lead_context",
+            metadata={"thread_id": "parent_ts"},
+        )
+
+        statuses = [call.kwargs["status"] for call in adapter._app.client.assistant_threads_setStatus.call_args_list]
+        assert statuses == [
+            "is recalling prior context",
+            "is reading files",
+            "is checking Close",
+        ]
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_gateway_restart_status_wording_is_natural(self, adapter):
+        adapter._app.client.assistant_threads_setStatus = AsyncMock()
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "msg"})
+
+        result = await adapter.send_or_update_status(
+            "C123",
+            "gateway_restart",
+            "⚠️ Gateway restarting — Your current task will be interrupted.",
+            metadata={"thread_id": "parent_ts"},
+        )
+
+        assert result.success
+        adapter._app.client.assistant_threads_setStatus.assert_called_once_with(
+            channel_id="C123",
+            thread_ts="parent_ts",
+            status="is restarting — Your current task will be interrupted.",
+        )
+        adapter._app.client.chat_postMessage.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_sets_status_in_thread(self, adapter):
         adapter._app.client.assistant_threads_setStatus = AsyncMock()
         await adapter.send_typing("C123", metadata={"thread_id": "parent_ts"})

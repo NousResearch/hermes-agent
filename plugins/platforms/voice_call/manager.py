@@ -70,6 +70,15 @@ class CallManager:
         self._by_chat: Dict[str, str] = {}  # peer E.164 → most recent call_id
         self._processed: "OrderedDict[str, float]" = OrderedDict()
         self._waiters: Dict[str, asyncio.Future] = {}
+        # Speak-playback tracking (carrier call.speak.ended events): lets
+        # continue_call wait until its question finished playing before
+        # listening for the reply.
+        self._speak_ended_at: Dict[str, float] = {}
+        self._speak_done_waiters: Dict[str, asyncio.Future] = {}
+        # Calls whose caller speech should be discarded right now (e.g. the
+        # caller reacting to the previous message while the continue_call
+        # question is still playing — that's not the answer).
+        self._drop_speech: set = set()
         self._timers: Dict[Tuple[str, str], asyncio.Task] = {}
         # Events that arrived for an outbound call before initiate_call()
         # returned the provider call id (webhook/initiate race).
@@ -128,6 +137,11 @@ class CallManager:
             if not fut.done():
                 fut.cancel()
         self._waiters.clear()
+        for fut in list(self._speak_done_waiters.values()):
+            if not fut.done():
+                fut.cancel()
+        self._speak_done_waiters.clear()
+        self._drop_speech.clear()
 
     # -- lookups ------------------------------------------------------------
 
@@ -307,6 +321,11 @@ class CallManager:
             waiter.set_exception(
                 RuntimeError(f"call ended ({state.value}) while waiting for transcript")
             )
+        self._drop_speech.discard(record.call_id)
+        self._speak_ended_at.pop(record.call_id, None)
+        speak_waiter = self._speak_done_waiters.pop(record.call_id, None)
+        if speak_waiter is not None and not speak_waiter.done():
+            speak_waiter.cancel()
         if self.on_call_ended is not None:
             try:
                 await self.on_call_ended(record)
@@ -438,6 +457,11 @@ class CallManager:
             pass  # the silence timer is authoritative
         elif event.type == EventType.CALL_SPEAKING:
             self._transition(record, CallState.SPEAKING)
+        elif event.type == EventType.CALL_SPEAK_ENDED:
+            self._speak_ended_at[record.call_id] = time.time()
+            waiter = self._speak_done_waiters.pop(record.call_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(True)
         elif event.type == EventType.CALL_ENDED:
             await self._finalize(
                 record,
@@ -531,6 +555,15 @@ class CallManager:
             return
         if not event.is_final:
             return  # partial transcripts are realtime-phase territory
+        if record.call_id in self._drop_speech:
+            # continue_call's question is still playing — the caller is
+            # reacting to the PREVIOUS message ("thanks", "okay"), not
+            # answering the question that hasn't finished yet.
+            logger.info(
+                "voice_call: discarding caller speech during question "
+                "playback on %s: %.80r", record.call_id, text,
+            )
+            return
         record.transcript.append(
             TranscriptEntry(timestamp=event.timestamp, speaker="user", text=text)
         )
@@ -680,7 +713,21 @@ class CallManager:
                         "voice_call: start_listening failed during notify "
                         "upgrade of %s: %s", call_id, e,
                     )
-        await self.speak(call_id, text)
+
+        realtime = self._realtime_owns_audio(record)
+        spoke_at = time.time()
+        if not realtime:
+            # Anything the caller says while our question is still playing
+            # is a reaction to the PREVIOUS message, not the answer —
+            # discard it until playback completes.
+            self._drop_speech.add(call_id)
+        try:
+            await self.speak(call_id, text)
+            if not realtime:
+                await self._wait_speak_done(call_id, spoke_at, text)
+        finally:
+            self._drop_speech.discard(call_id)
+
         fut: asyncio.Future = asyncio.get_running_loop().create_future()
         self._waiters[call_id] = fut
         try:
@@ -690,6 +737,28 @@ class CallManager:
         finally:
             if self._waiters.get(call_id) is fut:
                 self._waiters.pop(call_id, None)
+
+    async def _wait_speak_done(
+        self, call_id: str, spoke_at: float, text: str
+    ) -> None:
+        """Block until the carrier reports our TTS finished playing
+        (call.speak.ended), or a duration estimate elapses for carriers
+        that don't send one."""
+        if self._speak_ended_at.get(call_id, 0.0) >= spoke_at:
+            return  # already finished (short text / fast event)
+        estimate = min(30.0, 2.0 + 0.08 * len(text))
+        fut: asyncio.Future = asyncio.get_running_loop().create_future()
+        self._speak_done_waiters[call_id] = fut
+        try:
+            await asyncio.wait_for(fut, timeout=estimate)
+        except asyncio.TimeoutError:
+            logger.debug(
+                "voice_call: no speak.ended within %.1fs for %s — proceeding",
+                estimate, call_id,
+            )
+        finally:
+            if self._speak_done_waiters.get(call_id) is fut:
+                self._speak_done_waiters.pop(call_id, None)
 
     async def send_dtmf(self, call_id: str, digits: str) -> None:
         record = self._require_call(call_id)

@@ -67,6 +67,7 @@ _EVENT_TYPE_MAP = {
     "call.answered": EventType.CALL_ANSWERED,
     "call.bridged": EventType.CALL_ACTIVE,
     "call.speak.started": EventType.CALL_SPEAKING,
+    "call.speak.ended": EventType.CALL_SPEAK_ENDED,
     "call.transcription": EventType.CALL_SPEECH,
     "call.hangup": EventType.CALL_ENDED,
     "call.dtmf.received": EventType.CALL_DTMF,

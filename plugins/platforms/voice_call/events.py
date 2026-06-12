@@ -94,8 +94,9 @@ class EventType(str, Enum):
     CALL_RINGING = "call.ringing"
     CALL_ANSWERED = "call.answered"
     CALL_ACTIVE = "call.active"
-    CALL_SPEAKING = "call.speaking"  # outbound TTS started/finished
-    CALL_SPEECH = "call.speech"      # inbound transcript (text, is_final)
+    CALL_SPEAKING = "call.speaking"      # outbound TTS started
+    CALL_SPEAK_ENDED = "call.speak.ended"  # outbound TTS finished playing
+    CALL_SPEECH = "call.speech"          # inbound transcript (text, is_final)
     CALL_SILENCE = "call.silence"
     CALL_DTMF = "call.dtmf"
     CALL_ENDED = "call.ended"

@@ -160,6 +160,17 @@ class MockProvider(VoiceCallProvider):
 
     async def speak(self, call: CallRecord, text: str) -> None:
         self.spoken.append((call.provider_call_id, text))
+        # Like a real carrier, report playback completion asynchronously.
+        if self.event_sink is not None:
+            async def _speak_ended(pid=call.provider_call_id, cid=call.call_id):
+                await asyncio.sleep(0.02)
+                sink = self.event_sink
+                if sink is not None and pid not in self._terminal:
+                    await sink(NormalizedEvent(
+                        type=EventType.CALL_SPEAK_ENDED, provider=self.name,
+                        provider_call_id=pid, call_id=cid,
+                    ))
+            asyncio.get_running_loop().create_task(_speak_ended())
 
     async def send_dtmf(self, call: CallRecord, digits: str) -> None:
         self.dtmf_sent.append((call.provider_call_id, digits))

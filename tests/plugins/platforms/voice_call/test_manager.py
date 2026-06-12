@@ -207,6 +207,56 @@ async def test_speech_resolves_continue_call_waiter(manager, provider):
 
 
 @pytest.mark.asyncio
+async def test_continue_call_ignores_speech_during_question_playback(
+    vc_config, store
+):
+    """The caller reacting to the PREVIOUS message ('thanks') while the
+    question is still playing must not be captured as the answer — the real
+    answer comes after call.speak.ended."""
+
+    class SlowSpeakProvider(MockProvider):
+        async def speak(self, call, text):
+            self.spoken.append((call.provider_call_id, text))
+            if self.event_sink is not None:
+                async def _ended(pid=call.provider_call_id, cid=call.call_id):
+                    await asyncio.sleep(0.3)  # playback takes a while
+                    await self.event_sink(NormalizedEvent(
+                        type=EventType.CALL_SPEAK_ENDED, provider=self.name,
+                        provider_call_id=pid, call_id=cid,
+                    ))
+                asyncio.get_running_loop().create_task(_ended())
+
+    provider = SlowSpeakProvider(vc_config)
+    manager = CallManager(vc_config, provider, store)
+    provider.event_sink = manager.process_event
+    record = await manager.initiate_call("+15555550001")
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while record.state != CallState.LISTENING and \
+            asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+
+    async def caller_talks():
+        await asyncio.sleep(0.1)   # mid-playback: reaction to part two
+        await manager.process_event(NormalizedEvent(
+            type=EventType.CALL_SPEECH, provider="mock",
+            provider_call_id=record.provider_call_id, text="thanks",
+        ))
+        await asyncio.sleep(0.4)   # after speak.ended: the real answer
+        await manager.process_event(NormalizedEvent(
+            type=EventType.CALL_SPEECH, provider="mock",
+            provider_call_id=record.provider_call_id, text="eggs and toast",
+        ))
+
+    asyncio.get_running_loop().create_task(caller_talks())
+    reply = await manager.continue_call(record.call_id, "what was breakfast?")
+    assert reply == "eggs and toast"   # not "thanks"
+    # The discarded reaction never entered the transcript either.
+    user_lines = [t.text for t in record.transcript if t.speaker == "user"]
+    assert user_lines == ["eggs and toast"]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_continue_call_times_out(manager):
     record = await manager.initiate_call("+15555550001")
     await wait_for_state(manager, record.call_id, CallState.LISTENING)

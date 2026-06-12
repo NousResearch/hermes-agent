@@ -1,0 +1,1 @@
+Fix #44883: WhatsApp gateway: 5s default debounce introduced in PR#35391 adds 5s latency to every response

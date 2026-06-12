@@ -1,0 +1,1 @@
+Fix #44785: Desktop: image upload crashes renderer with Maximum call stack size exceeded

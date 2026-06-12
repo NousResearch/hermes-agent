@@ -69,6 +69,21 @@ SUMMARY_PREFIX = (
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
+# Metadata key added to context compression summary messages so that frontends
+# (CLI, Desktop, gateway, TUI) can distinguish them from real assistant/user
+# messages and filter or render them appropriately without content-prefix
+# heuristics. See https://github.com/NousResearch/hermes-agent/issues/38389
+#
+# Underscore-prefixed ON PURPOSE: the wire sanitizers
+# (agent/transports/chat_completions.py convert_messages and the summary-path
+# mirror in agent/chat_completion_helpers.py) strip every top-level message
+# key starting with "_" before the request leaves the process. Strict
+# OpenAI-compatible gateways (Fireworks, Mistral, Moonshot/Kimi, opencode-go)
+# reject payloads carrying unknown keys with "Extra inputs are not permitted",
+# poisoning every subsequent request in the session — a bare key like
+# "is_compressed_summary" would reach the wire and trip exactly that.
+COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
+
 # Appended to every standalone summary message (and to the merged-into-tail
 # prefix) so the model has an unambiguous "summary ends here" boundary.
 # Without it, weak models read the verbatim "## Active Task" quote as fresh
@@ -1653,6 +1668,19 @@ This compaction should PRIORITISE preserving all information related to the focu
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
 
+    @staticmethod
+    def _has_compressed_summary_metadata(message: Any) -> bool:
+        """Return True if *message* carries the compressed-summary flag.
+
+        Callers (frontends, CLI, gateway) can use this to distinguish context
+        compaction summaries from real assistant or user messages without
+        relying on content-prefix heuristics.  The flag is in-process only —
+        the wire sanitizers strip underscore-prefixed keys before API calls.
+        """
+        if not isinstance(message, dict):
+            return False
+        return bool(message.get(COMPRESSED_SUMMARY_METADATA_KEY))
+
     @classmethod
     def _derive_auto_focus_topic(
         cls,
@@ -2341,7 +2369,11 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary = summary + "\n\n" + _SUMMARY_END_MARKER
 
         if not _merge_summary_into_tail:
-            compressed.append({"role": summary_role, "content": summary})
+            compressed.append({
+                "role": summary_role,
+                "content": summary,
+                COMPRESSED_SUMMARY_METADATA_KEY: True,
+            })
 
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
@@ -2352,6 +2384,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                     merged_prefix,
                     prepend=True,
                 )
+                # Mark the merged message so frontends can identify it as
+                # containing a compression summary prefix.
+                msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
                 _merge_summary_into_tail = False
             compressed.append(msg)
 

@@ -1162,3 +1162,76 @@ def test_unmentioned_unsupported_document_observed_without_caching(monkeypatch):
         assert "unsupported" in message["content"].lower()
 
     asyncio.run(_run())
+
+
+def test_allowed_chats_with_thread_id_strict_mode():
+    """When any allowed_chats entry uses chat_id:thread_id, exact match is required."""
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100:1", "-200:5"])
+
+    # Exact matches pass
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=1)) is True
+    assert adapter._should_process_message(_group_message("hello", chat_id=-200, thread_id=5)) is True
+
+    # Wrong thread_id is blocked
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=2)) is False
+    assert adapter._should_process_message(_group_message("hello", chat_id=-200, thread_id=1)) is False
+
+    # Chat not in list at all is blocked
+    assert adapter._should_process_message(_group_message("hello", chat_id=-300, thread_id=1)) is False
+
+
+def test_allowed_chats_strict_mode_allows_chat_id_without_thread():
+    """In strict mode, a bare chat_id entry still allows that chat in any thread."""
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100:1", "-200"])
+
+    # Exact thread match
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=1)) is True
+    # Bare chat_id allows any thread in that chat
+    assert adapter._should_process_message(_group_message("hello", chat_id=-200, thread_id=99)) is True
+    assert adapter._should_process_message(_group_message("hello", chat_id=-200, thread_id=None)) is True
+    # Other chat blocked
+    assert adapter._should_process_message(_group_message("hello", chat_id=-300, thread_id=1)) is False
+
+
+def test_allowed_chats_legacy_mode_without_colon():
+    """When no entry uses chat_id:thread_id, legacy chat-only matching applies."""
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100", "-200"])
+
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=1)) is True
+    assert adapter._should_process_message(_group_message("hello", chat_id=-100, thread_id=None)) is True
+    assert adapter._should_process_message(_group_message("hello", chat_id=-200, thread_id=99)) is True
+    assert adapter._should_process_message(_group_message("hello", chat_id=-300, thread_id=1)) is False
+
+
+def test_allowed_chats_strict_mode_does_not_filter_dms():
+    """DMs bypass allowed_chats regardless of strict mode."""
+    adapter = _make_adapter(require_mention=False, allowed_chats=["-100:1"])
+
+    assert adapter._should_process_message(_dm_message("hello")) is True
+
+
+def test_allowed_chats_strict_mode_with_guest_mode_mention():
+    """Guest mention outside strict allowed_chats still passes."""
+    adapter = _make_adapter(
+        require_mention=True,
+        allowed_chats=["-100:1"],
+        guest_mode=True,
+    )
+
+    # Mentioned in allowed chat+thread passes
+    mentioned = _group_message(
+        "hi @hermes_bot", chat_id=-100, thread_id=1,
+        entities=[_mention_entity("hi @hermes_bot")],
+    )
+    assert adapter._should_process_message(mentioned) is True
+
+    # Mentioned outside allowed chat+thread also passes (guest mode)
+    mentioned_outside = _group_message(
+        "hi @hermes_bot", chat_id=-100, thread_id=2,
+        entities=[_mention_entity("hi @hermes_bot")],
+    )
+    assert adapter._should_process_message(mentioned_outside) is True
+
+    # Not mentioned outside allowed chat+thread is blocked
+    not_mentioned = _group_message("hello", chat_id=-100, thread_id=2)
+    assert adapter._should_process_message(not_mentioned) is False

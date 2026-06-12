@@ -5285,9 +5285,25 @@ class TelegramAdapter(BasePlatformAdapter):
         # allowed_chats check (whitelist). When set, group messages from chats
         # outside the whitelist are ignored unless guest_mode permits this
         # exact message as an explicit direct mention. DMs are excluded above.
+        # Supports chat_id alone (legacy, matches any thread) and chat_id:thread_id
+        # (matches only that specific topic). If any entry uses :thread_id format,
+        # strict thread-level filtering is applied.
         allowed = self._telegram_allowed_chats()
-        if allowed and chat_id_str not in allowed:
-            return guest_mention
+        if allowed:
+            has_thread_entries = any(":" in a for a in allowed)
+            if has_thread_entries:
+                # Strict mode: check chat_id:thread_id first, then chat_id bare
+                if thread_id is not None:
+                    candidate = f"{chat_id_str}:{thread_id}"
+                    if candidate not in allowed and chat_id_str not in allowed:
+                        return guest_mention
+                else:
+                    if chat_id_str not in allowed:
+                        return guest_mention
+            else:
+                # Legacy mode: chat_id match only
+                if chat_id_str not in allowed:
+                    return guest_mention
 
         if guest_mention:
             return True

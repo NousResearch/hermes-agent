@@ -915,6 +915,8 @@ def _build_child_agent(
     override_base_url: Optional[str] = None,
     override_api_key: Optional[str] = None,
     override_api_mode: Optional[str] = None,
+    # Per-task reasoning effort override (batch tasks may pin their own level)
+    override_reasoning_effort: Optional[str] = None,
     # ACP transport overrides — lets a non-ACP parent spawn ACP child agents
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
@@ -1091,22 +1093,32 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config: per-task override > delegation override > parent inherit
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
     child_reasoning = parent_reasoning
     try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
+        from hermes_constants import parse_reasoning_effort
 
+        parsed = None
+        task_effort = str(override_reasoning_effort or "").strip()
+        if task_effort:
+            parsed = parse_reasoning_effort(task_effort)
+            if parsed is None:
+                logger.warning(
+                    "Unknown per-task reasoning_effort '%s', falling back to "
+                    "delegation.reasoning_effort",
+                    task_effort,
+                )
+        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
+        if parsed is None and delegation_effort:
             parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-            else:
+            if parsed is None:
                 logger.warning(
                     "Unknown delegation.reasoning_effort '%s', inheriting parent level",
                     delegation_effort,
                 )
+        if parsed is not None:
+            child_reasoning = parsed
     except Exception as exc:
         logger.debug("Could not load delegation reasoning_effort: %s", exc)
 
@@ -2111,26 +2123,41 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model/provider override (batch mode) — falls back to
+            # the call-level creds bundle when the task carries no override.
+            task_creds = _resolve_task_credentials(t, creds, parent_agent)
+            task_effort = t.get("reasoning_effort")
+            task_effort = (
+                task_effort.strip() if isinstance(task_effort, str) else ""
+            )
+            if task_creds is not creds:
+                logger.info(
+                    "delegate_task: task %d uses per-task override model=%s provider=%s",
+                    i,
+                    task_creds.get("model"),
+                    task_creds.get("provider"),
+                )
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=task_creds["model"],
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
-                override_base_url=creds["base_url"],
-                override_api_key=creds["api_key"],
-                override_api_mode=creds["api_mode"],
+                override_provider=task_creds["provider"],
+                override_base_url=task_creds["base_url"],
+                override_api_key=task_creds["api_key"],
+                override_api_mode=task_creds["api_mode"],
+                override_reasoning_effort=task_effort or None,
                 override_acp_command=t.get("acp_command")
                 or acp_command
-                or creds.get("command"),
+                or task_creds.get("command"),
                 override_acp_args=(
                     task_acp_args
                     if task_acp_args is not None
-                    else (acp_args if acp_args is not None else creds.get("args"))
+                    else (acp_args if acp_args is not None else task_creds.get("args"))
                 ),
                 role=effective_role,
             )
@@ -2569,6 +2596,45 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     }
 
 
+def _resolve_task_credentials(task: Dict[str, Any], creds: dict, parent_agent) -> dict:
+    """Resolve per-task model/provider overrides for one batch task.
+
+    Returns ``creds`` unchanged when the task carries no override, so the
+    default path is byte-identical to today's behavior.  Empty or non-string
+    values are ignored.  An unresolvable per-task provider logs a warning and
+    falls back to the call-level credentials so one bad task does not change
+    sibling behavior.
+    """
+    task_model = task.get("model")
+    task_model = task_model.strip() if isinstance(task_model, str) else ""
+    task_provider = task.get("provider")
+    task_provider = task_provider.strip() if isinstance(task_provider, str) else ""
+
+    if not task_model and not task_provider:
+        return creds
+
+    if task_provider:
+        try:
+            return _resolve_delegation_credentials(
+                {"provider": task_provider, "model": task_model or creds.get("model")},
+                parent_agent,
+            )
+        except ValueError as exc:
+            logger.warning(
+                "Per-task provider '%s' could not be resolved (%s); "
+                "falling back to delegation credentials for this task",
+                task_provider,
+                exc,
+            )
+            if not task_model:
+                return creds
+
+    # Model-only override: keep the call-level credential bundle, swap model.
+    task_creds = dict(creds)
+    task_creds["model"] = task_model
+    return task_creds
+
+
 def _load_config() -> dict:
     """Load delegation config from CLI_CONFIG or persistent config.
 
@@ -2848,6 +2914,30 @@ DELEGATE_TASK_SCHEMA = {
                             "type": "string",
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": (
+                                "Per-task model override for this subagent only. "
+                                "Default: the delegation-configured or parent model."
+                            ),
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": (
+                                "Per-task provider override for this subagent only "
+                                "(e.g. 'openrouter', 'nous'). Default: the "
+                                "delegation-configured or parent provider."
+                            ),
+                        },
+                        "reasoning_effort": {
+                            "type": "string",
+                            "description": (
+                                "Per-task reasoning effort override for this subagent "
+                                "only ('none', 'minimal', 'low', 'medium', 'high', "
+                                "'xhigh'). Default: delegation.reasoning_effort or "
+                                "the parent's level."
+                            ),
                         },
                     },
                     "required": ["goal"],

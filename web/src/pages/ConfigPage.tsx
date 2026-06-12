@@ -111,6 +111,9 @@ export default function ConfigPage() {
     Record<string, unknown>
   > | null>(null);
   const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
+  const [categoryDescriptions, setCategoryDescriptions] = useState<
+    Record<string, string>
+  >({});
   const [defaults, setDefaults] = useState<Record<string, unknown> | null>(
     null,
   );
@@ -174,6 +177,7 @@ export default function ConfigPage() {
       .then((resp) => {
         setSchema(resp.fields as Record<string, Record<string, unknown>>);
         setCategoryOrder(resp.category_order ?? []);
+        setCategoryDescriptions(resp.category_descriptions ?? {});
       })
       .catch(() => {});
     api
@@ -397,7 +401,10 @@ export default function ConfigPage() {
                 category={cat}
                 className="h-4 w-4 text-muted-foreground"
               />
-              <span className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground">
+              <span
+                className="font-mondwest text-display text-xs font-semibold tracking-wider text-muted-foreground"
+                title={categoryDescriptions[cat]}
+              >
                 {prettyCategoryName(cat)}
               </span>
               <div className="flex-1 border-t border-border" />
@@ -584,7 +591,10 @@ export default function ConfigPage() {
                           category={cat}
                           className="h-3.5 w-3.5 shrink-0"
                         />
-                        <span className="flex-1 truncate">
+                        <span
+                          className="flex-1 truncate"
+                          title={categoryDescriptions[cat]}
+                        >
                           {prettyCategoryName(cat)}
                         </span>
                         <span
@@ -652,6 +662,11 @@ export default function ConfigPage() {
                       )}
                     </Badge>
                   </div>
+                  {categoryDescriptions[activeCategory] && (
+                    <p className="pt-1 text-xs text-muted-foreground">
+                      {categoryDescriptions[activeCategory]}
+                    </p>
+                  )}
                 </CardHeader>
                 <CardContent className="grid gap-2 px-4 pb-4">
                   {renderFields(activeFields)}

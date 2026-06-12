@@ -829,6 +829,46 @@ _CATEGORY_ORDER = [
     "tts", "stt", "logging", "discord", "auxiliary",
 ]
 
+# One-line description per section (category) shown in the dashboard's Config
+# page.  Keys are post-merge categories (see _CATEGORY_MERGE below).
+# test_every_category_has_description keeps this in sync with the schema.
+_CATEGORY_DESCRIPTIONS: Dict[str, str] = {
+    "general": "Core settings: default model, context length, toolsets, fallback providers, session caps, timezone, update behavior, and paste handling.",
+    "agent": "Agent runtime: turn limits, timeouts, retries, prompt features, image input, checkpoints, prompt caching, context engine, skills, cron, and code execution.",
+    "terminal": "Terminal execution: backend (local, docker, ssh, modal, ...), timeouts, container images and resources, and shell environment.",
+    "display": "Output and UI: streaming, themes, language, resume recaps, per-platform display overrides, runtime footer, and simulated typing delay.",
+    "delegation": "Subagent delegation: child model/provider, iteration and concurrency caps, timeouts, and orchestrator controls.",
+    "memory": "Persistent memory: MEMORY.md/USER.md injection, size budgets, write approval, and external memory providers.",
+    "compression": "Automatic context compression: trigger threshold, preserved head/tail messages, and failure handling.",
+    "security": "Security and privacy: dangerous-command approvals, secret redaction, tirith pre-exec scanning, website blocklist, advisories, and lazy installs.",
+    "browser": "Browser automation: engine, timeouts, session recording, private-URL policy, CDP attachment, dialogs, and Camofox identity.",
+    "voice": "CLI voice mode: record key, recording limits, auto-TTS, beeps, and silence detection.",
+    "tts": "Text-to-speech: provider and per-provider voices/models (Edge, ElevenLabs, OpenAI, xAI, Gemini, Mistral, local engines).",
+    "stt": "Speech-to-text: provider and per-provider transcription models and language options.",
+    "logging": "Logging: agent.log level, rotation size, and backup count.",
+    "discord": "Discord and Telegram platforms: mention rules, channel allowlists, threads, reactions, attachments, and Discord voice FX.",
+    "auxiliary": "Auxiliary models for side tasks (vision, web extract, compression, approval, titles, kanban, curator, monitor): provider, model, endpoint, and timeout per task.",
+    "bedrock": "AWS Bedrock provider: region, model discovery, and guardrail configuration.",
+    "curator": "Skills curator: run cadence, idle requirements, stale/archive thresholds, built-in pruning, and pre-run backups.",
+    "dashboard": "Web dashboard: theme, public URL, OAuth, and basic-auth settings.",
+    "gateway": "Messaging gateway: strict mode, media delivery directories, and recent-file trust window.",
+    "kanban": "Kanban multi-agent coordination: dispatcher cadence, concurrency caps, failure limits, decomposition, and worker logs.",
+    "lsp": "Language Server Protocol integration: master toggle, diagnostic wait mode, and server install policy.",
+    "matrix": "Matrix platform: mention requirements and room allowlists.",
+    "mattermost": "Mattermost platform: mention requirements and channel allowlists.",
+    "model_catalog": "Remote curated model catalog: enable, manifest URL, cache TTL, and per-provider overrides.",
+    "openrouter": "OpenRouter-specific settings: response caching and Pareto Code router score floor.",
+    "secrets": "Bitwarden Secrets Manager integration: access token, project, caching, and install policy.",
+    "sessions": "Session storage maintenance: auto-pruning, retention, vacuum, and JSON snapshots.",
+    "slack": "Slack platform: mention requirements and channel allowlists.",
+    "streaming": "Streaming delivery to messaging platforms: transport, edit interval, buffering, and cursor.",
+    "tool_loop_guardrails": "Repeated-failure guardrails: warning and hard-stop thresholds for non-progressing tool calls.",
+    "tool_output": "Tool output caps: terminal output bytes, read_file line limits, and per-line length.",
+    "tools": "Tool subsystem settings: tool_search activation and result limits.",
+    "web": "Web search/extract backends: shared default and per-capability overrides.",
+    "x_search": "X (Twitter) search via xAI: model, timeout, and retries.",
+}
+
 
 def _infer_type(value: Any) -> str:
     """Infer a UI field type from a Python value."""
@@ -3200,7 +3240,11 @@ async def get_defaults():
 
 @app.get("/api/config/schema")
 async def get_schema():
-    return {"fields": CONFIG_SCHEMA, "category_order": _CATEGORY_ORDER}
+    return {
+        "fields": CONFIG_SCHEMA,
+        "category_order": _CATEGORY_ORDER,
+        "category_descriptions": _CATEGORY_DESCRIPTIONS,
+    }
 
 
 _EMPTY_MODEL_INFO: dict = {

@@ -1025,6 +1025,9 @@ class TestWebServerEndpoints:
         assert isinstance(data["category_order"], list)
         assert len(data["category_order"]) > 0
         assert "general" in data["category_order"]
+        # Section descriptions for the dashboard sidebar / section headers.
+        assert "category_descriptions" in data
+        assert data["category_descriptions"]["general"]
 
     def test_get_config_defaults(self):
         resp = self.client.get("/api/config/defaults")
@@ -2297,6 +2300,18 @@ class TestBuildSchemaFromConfig:
         from hermes_cli.web_server import CONFIG_SCHEMA
         desc = CONFIG_SCHEMA["auxiliary.title_generation.model"]["description"]
         assert "session title generation" in desc
+
+    def test_every_category_has_description(self):
+        """Every section (post-merge category) shown in the dashboard sidebar
+        must have an entry in _CATEGORY_DESCRIPTIONS."""
+        from hermes_cli.web_server import CONFIG_SCHEMA, _CATEGORY_DESCRIPTIONS
+        categories = {e["category"] for e in CONFIG_SCHEMA.values()}
+        missing = sorted(categories - set(_CATEGORY_DESCRIPTIONS))
+        assert not missing, (
+            f"Config sections without a description (add to "
+            f"_CATEGORY_DESCRIPTIONS): {missing}"
+        )
+        assert all(_CATEGORY_DESCRIPTIONS.values())
 
 
 # ---------------------------------------------------------------------------

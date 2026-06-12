@@ -247,6 +247,29 @@ class TestFileDedup(unittest.TestCase):
         self.assertNotIn("content", r2)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_suppress_dedup_returns_content_on_repeated_reads(self, mock_ops):
+        """Programmatic callers can opt out of model-facing read dedup stubs."""
+        mock_ops.return_value = _make_fake_ops(
+            content="line one\nline two\n", file_size=20,
+        )
+
+        r1 = json.loads(read_file_tool(
+            self._tmpfile,
+            task_id="sandbox",
+            suppress_dedup=True,
+        ))
+        r2 = json.loads(read_file_tool(
+            self._tmpfile,
+            task_id="sandbox",
+            suppress_dedup=True,
+        ))
+
+        self.assertEqual(r1.get("content"), "line one\nline two\n")
+        self.assertEqual(r2.get("content"), "line one\nline two\n")
+        self.assertNotIn("dedup", r1)
+        self.assertNotIn("dedup", r2)
+
+    @patch("tools.file_tools._get_file_ops")
     def test_write_rejects_internal_read_status_text(self, mock_ops):
         """write_file must not persist internal read_file status text."""
         fake = MagicMock()

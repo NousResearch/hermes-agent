@@ -888,6 +888,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    suppress_read_dedup: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -909,6 +910,9 @@ def handle_function_call(
                        matching ``get_tool_definitions`` semantics.
         disabled_toolsets: The session's disabled toolsets, applied as a
                        subtraction when scoping the bridge catalog.
+        suppress_read_dedup: Internal execute_code path flag.  Programmatic
+                       sandbox reads should return actual content on repeated
+                       calls instead of the model-facing dedup status stub.
 
     Returns:
         Function result as a JSON string.
@@ -1119,6 +1123,13 @@ def handle_function_call(
                     )
             else:
                 def _dispatch(next_args: Dict[str, Any]) -> Any:
+                    if function_name == "read_file" and suppress_read_dedup:
+                        return registry.dispatch(
+                            function_name, next_args,
+                            task_id=task_id,
+                            user_task=user_task,
+                            suppress_dedup=True,
+                        )
                     return registry.dispatch(
                         function_name, next_args,
                         task_id=task_id,

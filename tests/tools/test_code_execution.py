@@ -47,7 +47,7 @@ from tools.code_execution_tool import (
 )
 
 
-def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None, **kwargs):
     """Mock dispatcher that returns canned responses for each tool."""
     if function_name == "terminal":
         cmd = function_args.get("command", "")
@@ -229,6 +229,36 @@ print(f"file lines: {r2['total_lines']}")
         result = self._run(code)
         self.assertEqual(result["status"], "success")
         self.assertEqual(result["tool_calls_made"], 2)
+
+    def test_read_file_calls_suppress_parent_dedup(self):
+        """Sandbox read_file calls must not receive the model-facing dedup stub."""
+        calls = []
+
+        def mock_dispatch(function_name, function_args, **kwargs):
+            calls.append((function_name, kwargs))
+            if function_name == "read_file":
+                return json.dumps({"content": "line 1\n", "total_lines": 1})
+            return json.dumps({"error": f"unexpected tool: {function_name}"})
+
+        code = """
+from hermes_tools import read_file
+first = read_file("notes.txt")
+second = read_file("notes.txt")
+print(first["content"].strip())
+print(second["content"].strip())
+"""
+        with patch("model_tools.handle_function_call", side_effect=mock_dispatch):
+            result = json.loads(execute_code(
+                code=code,
+                task_id="test-task",
+                enabled_tools=["read_file"],
+            ))
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(result["tool_calls_made"], 2)
+        read_kwargs = [kwargs for name, kwargs in calls if name == "read_file"]
+        self.assertEqual(len(read_kwargs), 2)
+        self.assertTrue(all(kwargs.get("suppress_read_dedup") is True for kwargs in read_kwargs))
 
     def test_syntax_error(self):
         """Script with a syntax error returns error status."""

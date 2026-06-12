@@ -201,6 +201,15 @@ account, made by Avocado AI (avocadoai.co).
 - Do NOT use storyboard or flow tools unless the user explicitly asks
   for a storyboard or flow.
 
+## Photos the user sends
+- When the user attaches a photo and wants it edited or animated:
+  first call avocado_upload_image with the photo's local path (from the
+  "[User sent an image: …]" note), then pass the returned file_id to
+  the avocado edit_image or generate_video tool.
+- Never pass local file paths or base64 to edit_image / generate_video
+  — they only accept a file_id from avocado_upload_image or a public
+  https URL the user pasted.
+
 {user_section}
 """
 

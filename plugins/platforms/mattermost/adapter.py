@@ -9,6 +9,7 @@ Environment variables:
     MATTERMOST_TOKEN            Bot token or personal-access token
     MATTERMOST_ALLOWED_USERS    Comma-separated user IDs
     MATTERMOST_HOME_CHANNEL     Channel ID for cron/notification delivery
+    MATTERMOST_IGNORE_PREFIX    Prefix that suppresses a response (default: "!")
 """
 
 from __future__ import annotations
@@ -48,6 +49,10 @@ _CHANNEL_TYPE_MAP = {
 _RECONNECT_BASE_DELAY = 2.0
 _RECONNECT_MAX_DELAY = 60.0
 _RECONNECT_JITTER = 0.2
+
+# Ignore prefix: messages starting with this prefix are stored but don't trigger response.
+# Set to empty string to disable.
+_IGNORE_PREFIX = os.getenv("MATTERMOST_IGNORE_PREFIX", "!")
 
 
 def check_mattermost_requirements() -> bool:
@@ -781,6 +786,15 @@ class MattermostAdapter(BasePlatformAdapter):
                     message_text = re.sub(
                         re.escape(pattern), "", message_text, flags=re.IGNORECASE
                     ).strip()
+
+        # Ignore prefix: messages starting with prefix are stored but don't trigger response.
+        # This allows posting reference material that will appear in context for later messages.
+        if _IGNORE_PREFIX and message_text.startswith(_IGNORE_PREFIX):
+            logger.debug(
+                "Mattermost: ignoring message with '%s' prefix (channel=%s, post=%s)",
+                _IGNORE_PREFIX, channel_id, post_id,
+            )
+            return
 
         # Resolve sender info.
         sender_id = post.get("user_id", "")

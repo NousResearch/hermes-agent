@@ -47,3 +47,7 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_IGNORE_PREFIX
+    description: "Messages starting with this prefix are stored for context but do not trigger a response. Empty to disable. Default: !"
+    prompt: "Ignore prefix"
+    password: false

@@ -151,6 +151,26 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _resolve_bedrock_runtime_region(base_url: Optional[str]) -> str:
+    """Resolve the AWS region for the Bedrock runtime init paths.
+
+    An explicit region embedded in the endpoint host
+    (``bedrock-runtime.<region>.amazonaws.com``) is the highest-priority
+    signal and always wins. When base_url carries no region, fall back to
+    ``resolve_bedrock_region()`` so the runtime honors the same AWS-SDK
+    precedence (AWS_REGION env, then AWS_DEFAULT_REGION, then the
+    ~/.aws/config profile region, then us-east-1) that model discovery, the
+    model picker, doctor, and auth already use. Previously these paths
+    hardcoded us-east-1 on no base_url match, which silently routed an
+    EU/AP user with a profile-configured region to us-east-1 at inference
+    time even though discovery showed their real region.
+    """
+    from agent.bedrock_adapter import resolve_bedrock_region
+
+    _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
+    return _region_match.group(1) if _region_match else resolve_bedrock_region()
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -623,8 +643,8 @@ def init_agent(
         _is_bedrock_anthropic = agent.provider == "bedrock"
         if _is_bedrock_anthropic:
             from agent.anthropic_adapter import build_anthropic_bedrock_client
-            _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-            _br_region = _region_match.group(1) if _region_match else "us-east-1"
+            # base_url region wins; otherwise consult AWS-SDK precedence.
+            _br_region = _resolve_bedrock_runtime_region(base_url)
             agent._bedrock_region = _br_region
             agent._anthropic_client = build_anthropic_bedrock_client(_br_region)
             agent._anthropic_api_key = "aws-sdk"
@@ -697,9 +717,10 @@ def init_agent(
                     print(f"🔑 Using token: {effective_key[:8]}...{effective_key[-4:]}")
     elif agent.api_mode == "bedrock_converse":
         # AWS Bedrock — uses boto3 directly, no OpenAI client needed.
-        # Region is extracted from the base_url or defaults to us-east-1.
-        _region_match = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url or "")
-        agent._bedrock_region = _region_match.group(1) if _region_match else "us-east-1"
+        # base_url region wins; otherwise consult AWS-SDK precedence
+        # (env, then ~/.aws/config profile, then us-east-1) instead of
+        # silently hardcoding us-east-1.
+        agent._bedrock_region = _resolve_bedrock_runtime_region(base_url)
         # Guardrail config — read from config.yaml at init time.
         agent._bedrock_guardrail_config = None
         try:

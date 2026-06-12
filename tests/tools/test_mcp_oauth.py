@@ -2,8 +2,11 @@
 
 import json
 import os
+import socket
 import stat
 import sys
+import threading
+import time
 from io import BytesIO
 from unittest.mock import patch, MagicMock
 
@@ -21,6 +24,7 @@ from tools.mcp_oauth import (
     _is_interactive,
     _wait_for_callback,
     _make_callback_handler,
+    _make_callback_server,
     _redirect_handler,
     _paste_callback_reader,
 )
@@ -474,6 +478,60 @@ class TestWaitForCallbackNoBlocking:
             with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
                 with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
                     asyncio.run(_wait_for_callback())
+
+
+class TestCallbackServerReuse:
+    """Callback listener should tolerate sequential flows on a fixed port."""
+
+    def test_callback_server_enables_address_reuse(self):
+        handler_cls, _ = _make_callback_handler()
+        port = _find_free_port()
+        server = _make_callback_server(port, handler_cls)
+        try:
+            assert server.allow_reuse_address is True
+            assert server.__class__.allow_reuse_address is True
+        finally:
+            server.server_close()
+
+    def test_wait_for_callback_can_rebind_same_port(self, monkeypatch):
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        port = _find_free_port()
+        mod._oauth_port = port
+
+        def run_round(code: str) -> tuple[str, str | None]:
+            errors: list[Exception] = []
+
+            def send_callback():
+                deadline = time.time() + 5
+                while time.time() < deadline:
+                    try:
+                        with socket.create_connection(("127.0.0.1", port), timeout=0.2) as sock:
+                            request = (
+                                f"GET /callback?code={code}&state=state-{code} HTTP/1.1\r\n"
+                                f"Host: 127.0.0.1:{port}\r\n"
+                                "Connection: close\r\n\r\n"
+                            )
+                            sock.sendall(request.encode())
+                            sock.recv(4096)
+                            return
+                    except OSError:
+                        time.sleep(0.01)
+                errors.append(TimeoutError(f"callback sender timed out for {code}"))
+
+            sender = threading.Thread(target=send_callback, daemon=True)
+            sender.start()
+            result = asyncio.run(_wait_for_callback())
+            sender.join(timeout=1)
+            assert not errors, errors
+            return result
+
+        first = run_round("first")
+        second = run_round("second")
+
+        assert first == ("first", "state-first")
+        assert second == ("second", "state-second")
 
 
 class TestBuildOAuthAuthNonInteractive:

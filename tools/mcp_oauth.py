@@ -392,6 +392,22 @@ def _make_callback_handler() -> tuple[type, dict]:
     return _Handler, result
 
 
+class _ReusableCallbackHTTPServer(HTTPServer):
+    """One-shot callback server that can immediately rebind the same port."""
+
+    allow_reuse_address = True
+
+
+def _make_callback_server(port: int, handler_cls: type[BaseHTTPRequestHandler]) -> HTTPServer:
+    """Build the ephemeral callback server with address reuse enabled.
+
+    OAuth flows often reuse a fixed redirect port. Explicitly enabling
+    ``SO_REUSEADDR`` avoids spurious ``Address already in use`` failures when
+    the previous one-shot listener just accepted a callback on the same port.
+    """
+    return _ReusableCallbackHTTPServer(("127.0.0.1", port), handler_cls)
+
+
 # ---------------------------------------------------------------------------
 # Async redirect + callback handlers for OAuthClientProvider
 # ---------------------------------------------------------------------------
@@ -480,7 +496,7 @@ async def _wait_for_callback() -> tuple[str, str | None]:
 
     # Start a temporary server on the known port
     try:
-        server = HTTPServer(("127.0.0.1", _oauth_port), handler_cls)
+        server = _make_callback_server(_oauth_port, handler_cls)
     except OSError:
         # Port already in use — the server from build_oauth_auth is running.
         # Fall back to polling the server started by build_oauth_auth.

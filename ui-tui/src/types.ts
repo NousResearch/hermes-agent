@@ -138,6 +138,8 @@ export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 
 export interface McpServerStatus {
   connected: boolean
+  disabled?: boolean
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
   name: string
   tools: number
   transport: string
@@ -170,6 +172,7 @@ export interface Usage {
   context_used?: number
   cost_status?: string
   cost_usd?: number
+  dev_credits_spent_micros?: number
   input: number
   output: number
   reasoning?: number

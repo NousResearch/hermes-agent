@@ -1,4 +1,4 @@
-"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax, AI Gateway)."""
+"""Tests for API-key provider support (z.ai/GLM, Kimi, MiniMax)."""
 
 import os
 
@@ -6,7 +6,6 @@ import pytest
 
 from hermes_cli.auth import (
     PROVIDER_REGISTRY,
-    ProviderConfig,
     resolve_provider,
     get_api_key_provider_status,
     resolve_api_key_provider_credentials,
@@ -40,7 +39,6 @@ class TestProviderRegistry:
         ("stepfun", "StepFun Step Plan", "api_key"),
         ("minimax", "MiniMax", "api_key"),
         ("minimax-cn", "MiniMax (China)", "api_key"),
-        ("ai-gateway", "Vercel AI Gateway", "api_key"),
         ("kilocode", "Kilo Code", "api_key"),
         ("gmi", "GMI Cloud", "api_key"),
     ])
@@ -97,11 +95,6 @@ class TestProviderRegistry:
         assert pconfig.api_key_env_vars == ("MINIMAX_CN_API_KEY",)
         assert pconfig.base_url_env_var == "MINIMAX_CN_BASE_URL"
 
-    def test_ai_gateway_env_vars(self):
-        pconfig = PROVIDER_REGISTRY["ai-gateway"]
-        assert pconfig.api_key_env_vars == ("AI_GATEWAY_API_KEY",)
-        assert pconfig.base_url_env_var == "AI_GATEWAY_BASE_URL"
-
     def test_kilocode_env_vars(self):
         pconfig = PROVIDER_REGISTRY["kilocode"]
         assert pconfig.api_key_env_vars == ("KILOCODE_API_KEY",)
@@ -125,7 +118,6 @@ class TestProviderRegistry:
         assert PROVIDER_REGISTRY["stepfun"].inference_base_url == STEPFUN_STEP_PLAN_INTL_BASE_URL
         assert PROVIDER_REGISTRY["minimax"].inference_base_url == "https://api.minimax.io/anthropic"
         assert PROVIDER_REGISTRY["minimax-cn"].inference_base_url == "https://api.minimaxi.com/anthropic"
-        assert PROVIDER_REGISTRY["ai-gateway"].inference_base_url == "https://ai-gateway.vercel.sh/v1"
         assert PROVIDER_REGISTRY["kilocode"].inference_base_url == "https://api.kilo.ai/api/gateway"
         assert PROVIDER_REGISTRY["gmi"].inference_base_url == "https://api.gmi-serving.com/v1"
         assert PROVIDER_REGISTRY["huggingface"].inference_base_url == "https://router.huggingface.co/v1"
@@ -149,7 +141,6 @@ PROVIDER_ENV_VARS = (
     "GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY",
     "KIMI_API_KEY", "KIMI_BASE_URL", "STEPFUN_API_KEY", "STEPFUN_BASE_URL",
     "MINIMAX_API_KEY", "MINIMAX_CN_API_KEY",
-    "AI_GATEWAY_API_KEY", "AI_GATEWAY_BASE_URL",
     "KILOCODE_API_KEY", "KILOCODE_BASE_URL",
     "GMI_API_KEY", "GMI_BASE_URL",
     "DASHSCOPE_API_KEY", "OPENCODE_ZEN_API_KEY", "OPENCODE_GO_API_KEY",
@@ -184,9 +175,6 @@ class TestResolveProvider:
     def test_explicit_minimax_cn(self):
         assert resolve_provider("minimax-cn") == "minimax-cn"
 
-    def test_explicit_ai_gateway(self):
-        assert resolve_provider("ai-gateway") == "ai-gateway"
-
     def test_explicit_gmi(self):
         assert resolve_provider("gmi") == "gmi"
 
@@ -210,12 +198,6 @@ class TestResolveProvider:
 
     def test_alias_minimax_underscore(self):
         assert resolve_provider("minimax_cn") == "minimax-cn"
-
-    def test_alias_aigateway(self):
-        assert resolve_provider("aigateway") == "ai-gateway"
-
-    def test_alias_vercel(self):
-        assert resolve_provider("vercel") == "ai-gateway"
 
     def test_alias_gmi_cloud(self):
         assert resolve_provider("gmi-cloud") == "gmi"
@@ -290,10 +272,6 @@ class TestResolveProvider:
     def test_auto_detects_minimax_cn_key(self, monkeypatch):
         monkeypatch.setenv("MINIMAX_CN_API_KEY", "test-mm-cn-key")
         assert resolve_provider("auto") == "minimax-cn"
-
-    def test_auto_detects_ai_gateway_key(self, monkeypatch):
-        monkeypatch.setenv("AI_GATEWAY_API_KEY", "test-gw-key")
-        assert resolve_provider("auto") == "ai-gateway"
 
     def test_auto_detects_gmi_key(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "test-gmi-key")
@@ -535,13 +513,6 @@ class TestResolveApiKeyProviderCredentials:
         assert creds["api_key"] == "mmcn-secret-key"
         assert creds["base_url"] == "https://api.minimaxi.com/anthropic"
 
-    def test_resolve_ai_gateway_with_key(self, monkeypatch):
-        monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-secret-key")
-        creds = resolve_api_key_provider_credentials("ai-gateway")
-        assert creds["provider"] == "ai-gateway"
-        assert creds["api_key"] == "gw-secret-key"
-        assert creds["base_url"] == "https://ai-gateway.vercel.sh/v1"
-
     def test_resolve_kilocode_with_key(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-secret-key")
         creds = resolve_api_key_provider_credentials("kilocode")
@@ -640,15 +611,6 @@ class TestRuntimeProviderResolution:
         result = resolve_runtime_provider(requested="minimax")
         assert result["provider"] == "minimax"
         assert result["api_key"] == "mm-key"
-
-    def test_runtime_ai_gateway(self, monkeypatch):
-        monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-key")
-        from hermes_cli.runtime_provider import resolve_runtime_provider
-        result = resolve_runtime_provider(requested="ai-gateway")
-        assert result["provider"] == "ai-gateway"
-        assert result["api_mode"] == "chat_completions"
-        assert result["api_key"] == "gw-key"
-        assert "ai-gateway.vercel.sh" in result["base_url"]
 
     def test_runtime_kilocode(self, monkeypatch):
         monkeypatch.setenv("KILOCODE_API_KEY", "kilo-key")
@@ -1317,6 +1279,20 @@ class TestMinimaxOAuthProvider:
         assert len(models) >= 1
 
     def test_minimax_oauth_aux_model_registered(self):
-        from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
-        assert "minimax-oauth" in _API_KEY_PROVIDER_AUX_MODELS
-        assert _API_KEY_PROVIDER_AUX_MODELS["minimax-oauth"]  # non-empty
+        # Aux model for the minimax-oauth provider now lives on the
+        # ProviderProfile (plugins/model-providers/minimax/__init__.py),
+        # not the legacy _API_KEY_PROVIDER_AUX_MODELS dict in
+        # agent/auxiliary_client.py. The profile layer is the source
+        # of truth; _get_aux_model_for_provider() reads from it first
+        # and only falls back to the dict when no profile is registered.
+        import model_tools  # noqa: F401  -- triggers plugin discovery
+        import providers
+
+        profile = providers.get_provider_profile("minimax-oauth")
+        assert profile is not None, "minimax-oauth provider profile must be registered"
+        assert profile.default_aux_model, (
+            "minimax-oauth profile must advertise a non-empty default_aux_model "
+            "so the auxiliary client (compression / vision / session-search) "
+            "doesn't fire the 'No auxiliary LLM provider configured' warning "
+            "for every minimax-oauth session."
+        )

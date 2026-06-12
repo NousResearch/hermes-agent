@@ -106,20 +106,30 @@ def test_worker_block_on_child_with_done_parents_is_still_sticky(kanban_home: Pa
 
 def test_circuit_breaker_block_still_auto_promotes(kanban_home: Path) -> None:
     """A child that was put into ``blocked`` *without* a worker-issued
-    ``kanban_block`` (e.g. circuit-breaker after repeated spawn
-    failures, manual DB triage) must still get auto-promoted when its
-    parents complete — preserves the pre-#28712 recovery semantics."""
+    ``kanban_block`` (e.g. a transient crash, manual DB triage) and whose
+    ``consecutive_failures`` is still *below* the circuit-breaker limit
+    must get auto-promoted when its parents complete — preserves the
+    pre-#28712 recovery semantics for genuinely transient failures.
+
+    The complementary case — a block whose failure count has *reached*
+    the limit must stay blocked — is covered by
+    ``test_kanban_db.py::test_recompute_ready_skips_tasks_at_failure_limit``
+    (#35072).  Together they pin the contract: ``recompute_ready`` defers
+    the give-up decision to the same effective limit the breaker uses, so
+    the two never disagree.
+    """
     with kb.connect() as conn:
         parent = kb.create_task(conn, title="parent")
         child = kb.create_task(conn, title="child", parents=[parent])
         kb.complete_task(conn, parent, result="ok")
 
-        # Simulate a circuit-breaker / direct triage that flips status
-        # without emitting a ``blocked`` event — exactly what
-        # ``_record_task_failure`` does after a ``gave_up``.
+        # Simulate a transient circuit-breaker / direct triage that flips
+        # status without emitting a ``blocked`` event — exactly what
+        # ``_record_task_failure`` does below the limit.  One failure is
+        # under the default limit (2), so recovery is still correct.
         conn.execute(
-            "UPDATE tasks SET status='blocked', consecutive_failures=5, "
-            "last_failure_error='persistent error' WHERE id=?",
+            "UPDATE tasks SET status='blocked', consecutive_failures=1, "
+            "last_failure_error='transient error' WHERE id=?",
             (child,),
         )
         conn.commit()
@@ -128,8 +138,9 @@ def test_circuit_breaker_block_still_auto_promotes(kanban_home: Path) -> None:
         assert promoted == 1
         task = kb.get_task(conn, child)
         assert task.status == "ready"
-        assert task.consecutive_failures == 0
-        assert task.last_failure_error is None
+        # Counter is preserved across recovery (not reset) so the breaker
+        # can still accumulate if the task keeps failing (#35072).
+        assert task.consecutive_failures == 1
 
 
 def test_gave_up_event_alone_does_not_make_block_sticky(kanban_home: Path) -> None:

@@ -2,7 +2,6 @@
 
 import os
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -10,6 +9,7 @@ import hermes_constants
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     get_default_hermes_root,
+    get_hermes_home,
     is_container,
     parse_reasoning_effort,
     secure_parent_dir,
@@ -68,6 +68,41 @@ class TestGetDefaultHermesRoot:
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
         monkeypatch.setenv("HERMES_HOME", str(profile))
         assert get_default_hermes_root() == docker_root
+
+    def test_no_hermes_home_returns_localappdata_root_on_windows(self, tmp_path, monkeypatch):
+        """Native Windows falls back to %LOCALAPPDATA%\\hermes, not ~/.hermes."""
+        local_appdata = tmp_path / "LocalAppData"
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+        assert get_default_hermes_root() == local_appdata / "hermes"
+
+    def test_no_hermes_home_uses_windows_path_when_localappdata_missing(self, tmp_path, monkeypatch):
+        """Windows fallback still uses AppData/Local/hermes without LOCALAPPDATA."""
+        home = tmp_path / "Home"
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.delenv("LOCALAPPDATA", raising=False)
+        monkeypatch.setattr(Path, "home", lambda: home)
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+
+        assert get_default_hermes_root() == home / "AppData" / "Local" / "hermes"
+
+
+class TestGetHermesHome:
+    """Tests for get_hermes_home() platform-aware fallback."""
+
+    def test_windows_fallback_uses_localappdata(self, tmp_path, monkeypatch):
+        """When HERMES_HOME is unset on Windows, use %LOCALAPPDATA%\\hermes."""
+        local_appdata = tmp_path / "LocalAppData"
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(local_appdata))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path / "Home")
+        monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
+        monkeypatch.setattr(hermes_constants, "_profile_fallback_warned", False)
+
+        assert get_hermes_home() == local_appdata / "hermes"
 
 
 class TestIsContainer:
@@ -262,5 +297,4 @@ class TestSecureParentDir:
         secure_parent_dir(link_target)
         assert len(called_with) == 1
         assert called_with[0] == (str(real_dir), 0o700)
-
 

@@ -20,7 +20,15 @@ from agent.skill_utils import is_excluded_skill_path
 
 
 def _get_git_commit(project_root: Path) -> str:
-    """Return short git commit hash, or '(unknown)'."""
+    """Return short git commit hash, or '(unknown)'.
+
+    Source installs and dev images resolve this live via ``git rev-parse``.
+    The published Docker image excludes ``.git`` from the build context, so
+    that lookup always fails — we fall back to the baked-in build SHA written
+    to ``<project_root>/.hermes_build_sha`` by the Dockerfile's
+    ``HERMES_GIT_SHA`` build-arg (see ``hermes_cli/build_info.py``).
+    The output format is identical regardless of source.
+    """
     try:
         result = subprocess.run(
             ["git", "rev-parse", "--short=8", "HEAD"],
@@ -28,9 +36,23 @@ def _get_git_commit(project_root: Path) -> str:
             cwd=str(project_root),
         )
         if result.returncode == 0:
-            return result.stdout.strip()
+            value = result.stdout.strip()
+            if value:
+                return value
     except Exception:
         pass
+
+    # Fall back to the build-time baked SHA (populated in published Docker
+    # images, absent otherwise).  Defers the import so the dump module
+    # stays cheap on non-dump code paths.
+    try:
+        from hermes_cli.build_info import get_build_sha
+        baked = get_build_sha(short=8)
+        if baked:
+            return baked
+    except Exception:
+        pass
+
     return "(unknown)"
 
 
@@ -279,7 +301,6 @@ def run_dump(args):
         ("DASHSCOPE_API_KEY", "dashscope"),
         ("HF_TOKEN", "huggingface"),
         ("NVIDIA_API_KEY", "nvidia"),
-        ("AI_GATEWAY_API_KEY", "ai_gateway"),
         ("OPENCODE_ZEN_API_KEY", "opencode_zen"),
         ("OPENCODE_GO_API_KEY", "opencode_go"),
         ("KILOCODE_API_KEY", "kilocode"),
@@ -297,6 +318,17 @@ def run_dump(args):
             display = _redact(val)
         else:
             display = "set" if val else "not set"
+        # A credential added via `hermes auth add openrouter` lives in the
+        # credential pool, not as an env var — surface it so the dump doesn't
+        # misleadingly read "not set" while `hermes auth list` shows it (#42130).
+        if not val and label == "openrouter":
+            try:
+                from agent.credential_pool import load_pool as _load_pool
+
+                if _load_pool("openrouter").has_credentials():
+                    display = "set (auth pool)"
+            except Exception:
+                pass
         lines.append(f"  {label:<20} {display}")
 
     # Features summary

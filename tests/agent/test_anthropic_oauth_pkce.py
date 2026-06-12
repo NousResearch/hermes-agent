@@ -15,7 +15,6 @@ History:
 
 from __future__ import annotations
 
-import io
 import json
 from typing import Any, Dict
 from urllib.parse import parse_qs, urlparse
@@ -53,6 +52,13 @@ def _patch_oauth_flow(
         return True
 
     monkeypatch.setattr("webbrowser.open", fake_open)
+    # The flow now gates webbrowser.open() behind a graphical-browser check so
+    # it never launches a console browser (w3m/lynx) inside the terminal. Tests
+    # run headless, so force the GUI path to True — the URL capture relies on
+    # webbrowser.open() being invoked.
+    monkeypatch.setattr(
+        "hermes_cli.auth._can_open_graphical_browser", lambda: True
+    )
     monkeypatch.setattr("builtins.input", lambda *_a, **_kw: callback_code)
 
     class _FakeResponse:

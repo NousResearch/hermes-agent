@@ -20,6 +20,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+from contextlib import contextmanager
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -359,6 +361,34 @@ class _ReadWriteLock:
 # Serializes the per-job TERMINAL_CWD override against every other concurrently
 # running cron job.  See _ReadWriteLock and run_job for the usage contract.
 _terminal_cwd_lock = _ReadWriteLock()
+
+
+def _resolve_job_max_iterations(job: dict, cfg: dict) -> int:
+    """Resolve the turn ceiling for a cron run.
+
+    Precedence: per-job ``max_turns`` > config.yaml ``agent.max_turns`` >
+    top-level ``max_turns`` > 90.  Invalid per-job values (non-int, <= 0)
+    fall through to the global config rather than capping the job at a
+    bogus value.
+    """
+    job_cap = job.get("max_turns")
+    if not isinstance(job_cap, bool) and isinstance(job_cap, int) and job_cap > 0:
+        return job_cap
+    return cfg.get("agent", {}).get("max_turns") or cfg.get("max_turns") or 90
+
+
+def _resolve_job_wall_clock_limit(job: dict) -> Optional[float]:
+    """Resolve the per-job wall-clock ceiling (seconds), or None when unset.
+
+    Unlike the inactivity limit (HERMES_CRON_TIMEOUT), this caps *total*
+    runtime — retry storms touch the activity tracker on every attempt, so an
+    agent stuck retrying never trips the inactivity watcher.  The wall-clock
+    cap interrupts it regardless of activity.
+    """
+    raw = job.get("timeout")
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return None
+    return float(raw) if raw > 0 else None
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
@@ -2797,8 +2827,9 @@ def run_job(
                     logger.warning("Job '%s': failed to parse prefill messages file '%s': %s", job_id, pfpath, e)
                     prefill_messages = None
 
-        # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        # Max iterations — per-job cap wins over global config (issue: cron
+        # sessions previously had no per-job ceiling).
+        max_iterations = _resolve_job_max_iterations(job, _cfg)
 
         # Provider routing
         pr = _cfg.get("provider_routing") or {}
@@ -2999,16 +3030,22 @@ def run_job(
         else:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+        # Per-job wall-clock ceiling — caps total runtime regardless of
+        # activity (retry storms touch the activity tracker on every attempt,
+        # so the inactivity watcher alone never catches a stuck retry loop).
+        _wall_clock_limit = _resolve_job_wall_clock_limit(job)
         _POLL_INTERVAL = 5.0
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
+        _run_started_at = time.monotonic()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
+        _wall_clock_timeout = False
         try:
-            if _cron_inactivity_limit is None:
+            if _cron_inactivity_limit is None and _wall_clock_limit is None:
                 # Unlimited — just wait for the result.
                 result = _cron_future.result()
             else:
@@ -3020,7 +3057,17 @@ def run_job(
                     if done:
                         result = _cron_future.result()
                         break
-                    # Agent still running — check inactivity.
+                    # Agent still running — check the wall-clock cap first
+                    # (activity must not keep a job alive past it).
+                    if (
+                        _wall_clock_limit is not None
+                        and time.monotonic() - _run_started_at >= _wall_clock_limit
+                    ):
+                        _wall_clock_timeout = True
+                        break
+                    # Check inactivity.
+                    if _cron_inactivity_limit is None:
+                        continue
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
                         try:
@@ -3036,6 +3083,31 @@ def run_job(
             raise
         finally:
             _cron_pool.shutdown(wait=False, cancel_futures=True)
+
+        if _wall_clock_timeout:
+            _elapsed = time.monotonic() - _run_started_at
+            _activity = {}
+            if hasattr(agent, "get_activity_summary"):
+                try:
+                    _activity = agent.get_activity_summary()
+                except Exception:
+                    pass
+            logger.error(
+                "Job '%s' exceeded wall-clock limit (%.0fs >= %.0fs) "
+                "| last_activity=%s | iteration=%s/%s | tool=%s",
+                job_name, _elapsed, _wall_clock_limit,
+                _activity.get("last_activity_desc", "unknown"),
+                _activity.get("api_call_count", 0),
+                _activity.get("max_iterations", 0),
+                _activity.get("current_tool") or "none",
+            )
+            if hasattr(agent, "interrupt"):
+                agent.interrupt("Cron job timed out (wall-clock)")
+            raise TimeoutError(
+                f"Cron job '{job_name}' exceeded its wall-clock limit "
+                f"({int(_elapsed)}s >= {int(_wall_clock_limit)}s) "
+                f"— last activity: {_activity.get('last_activity_desc', 'unknown')}"
+            )
 
         if _inactivity_timeout:
             # Build diagnostic summary from the agent's activity tracker.

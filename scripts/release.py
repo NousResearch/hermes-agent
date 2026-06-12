@@ -74,6 +74,7 @@ AUTHOR_MAP = {
     "matt@vestigial.dev": "m4dni5",
     "harjoth.khara@gmail.com": "harjothkhara",
     "129007007+HeLLGURD@users.noreply.github.com": "HeLLGURD",
+    "aaronwong1989@live.cn": "hrygo",
     "290859878+synapsesx@users.noreply.github.com": "synapsesx",
     "dirtyren@users.noreply.github.com": "dirtyren",
     "kdunn926@gmail.com": "kdunn926",

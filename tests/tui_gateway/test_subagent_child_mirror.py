@@ -76,7 +76,7 @@ def test_no_live_child_session_no_mirror(server, emits):
 
 def test_live_child_session_gets_native_stream(server, emits):
     # A window resumed the child session: live sid differs from the stored key.
-    server._sessions["live-1"] = {"session_key": "child-1", "agent": object()}
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
 
     _relay(server, "subagent.tool", tool_name="terminal", preview="ls", child_session_id="child-1")
     _relay(server, "subagent.thinking", preview="hmm", child_session_id="child-1")
@@ -121,7 +121,7 @@ def test_live_child_session_gets_native_stream(server, emits):
 
 
 def test_window_closed_midrun_drops_state_then_fresh_turn_on_reopen(server, emits):
-    server._sessions["live-1"] = {"session_key": "child-1", "agent": object()}
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
     _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
     assert "child-1" in server._child_mirrors
 
@@ -132,12 +132,36 @@ def test_window_closed_midrun_drops_state_then_fresh_turn_on_reopen(server, emit
 
     # Reopen under a new live sid → a fresh synthetic turn starts.
     emits.clear()
-    server._sessions["live-2"] = {"session_key": "child-1", "agent": object()}
+    server._sessions["live-2"] = {"session_key": "child-1", "agent": None}
     _relay(server, "subagent.tool", tool_name="web_search", child_session_id="child-1")
     assert [(e, s) for e, s, _ in emits if s == "live-2"] == [
         ("message.start", "live-2"),
         ("tool.start", "live-2"),
     ]
+
+
+def test_upgraded_child_session_not_mirrored(server, emits):
+    """A watch window upgraded to a full session (agent built) owns a real
+    native stream — mirroring on top would interleave two turns on one sid."""
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": object()}
+
+    _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
+
+    assert [(e, s) for e, s, _ in emits] == [("subagent.tool", "parent-sid")]
+    assert server._child_mirrors == {}
+    # Liveness registry still updates — it serves resume, not the mirror.
+    assert "child-1" in server._active_child_runs
+
+
+def test_stale_child_run_not_reported_active(server, emits):
+    """A leaked registry entry (lost completion event) must age out instead of
+    pinning running=true on every future lazy resume of that child."""
+    server._active_child_runs["child-1"] = 0.0  # epoch — ancient
+
+    assert server._child_run_active("child-1") is False
+
+    _relay(server, "subagent.tool", tool_name="terminal", child_session_id="child-1")
+    assert server._child_run_active("child-1") is True
 
 
 def test_active_child_runs_registry_tracks_liveness(server, emits):
@@ -155,7 +179,7 @@ def test_active_child_runs_registry_tracks_liveness(server, emits):
 
 
 def test_start_and_progress_mirror_as_immediate_text_activity(server, emits):
-    server._sessions["live-1"] = {"session_key": "child-1", "agent": object()}
+    server._sessions["live-1"] = {"session_key": "child-1", "agent": None}
 
     _relay(server, "subagent.start", preview="starting child branch", child_session_id="child-1")
     _relay(server, "subagent.progress", preview="step 1/3", child_session_id="child-1")

@@ -2658,6 +2658,15 @@ _child_mirrors_lock = threading.Lock()
 # watch resume report running=true so the window shows a busy indicator even
 # while the child is silent inside a long tool call (no events for 25s+).
 _active_child_runs: dict[str, float] = {}
+# Staleness bound for the registry: entries refresh on every relayed event, so
+# anything this quiet means the completion event was lost (callback raised,
+# parent crashed) — don't let a leaked entry pin "running" forever.
+_CHILD_RUN_STALE_S = 3600.0
+
+
+def _child_run_active(child_key: str) -> bool:
+    ts = _active_child_runs.get(child_key)
+    return ts is not None and (time.time() - ts) < _CHILD_RUN_STALE_S
 
 
 def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
@@ -2675,6 +2684,13 @@ def _mirror_subagent_to_child(event_type: str, payload: dict) -> None:
     # mirror; drop state so a reopened window starts a fresh synthetic turn.
     live = _find_live_session_by_key(child_key)
     if live is None:
+        with _child_mirrors_lock:
+            _child_mirrors.pop(child_key, None)
+        return
+    if live[1].get("agent") is not None:
+        # The watch window was upgraded to a full session (user submitted a
+        # prompt) — it now owns a real native stream. Mirroring on top of it
+        # would interleave two turns on one sid; stop and drop mirror state.
         with _child_mirrors_lock:
             _child_mirrors.pop(child_key, None)
         return
@@ -3915,7 +3931,7 @@ def _(rid, params: dict) -> dict:
             # running flag is always False — overlay the child-run registry so
             # a reconnecting watch window keeps its busy indicator while the
             # delegated child is still mid-run.
-            if session.get("agent") is None and target in _active_child_runs:
+            if session.get("agent") is None and _child_run_active(target):
                 payload["running"] = True
                 payload["status"] = "streaming"
             return _ok(rid, payload)
@@ -3950,7 +3966,7 @@ def _(rid, params: dict) -> dict:
         # A delegated child mid-run emits no native session events of its own —
         # report its liveness from the relay registry so the window paints a
         # busy indicator instead of a dead idle transcript.
-        child_running = target in _active_child_runs
+        child_running = _child_run_active(target)
         with _session_resume_lock:
             live = _find_live_session_by_key(target)
             if live is not None:

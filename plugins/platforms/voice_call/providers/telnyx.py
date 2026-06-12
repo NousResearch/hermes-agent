@@ -357,3 +357,18 @@ class TelnyxProvider(VoiceCallProvider):
 
     def streaming_fields(self, stream_url: str, auth_token: str) -> Dict[str, Any]:
         return build_streaming_fields(stream_url, auth_token)
+
+    supports_midcall_streaming = True
+
+    async def start_media_stream(
+        self, call: CallRecord, stream_url: str, auth_token: str
+    ) -> None:
+        """Attach a bidirectional media stream to a live call — Telnyx's
+        streaming_start action makes notify → realtime upgrades possible."""
+        await self._api(
+            f"/calls/{call.provider_call_id}/actions/streaming_start",
+            {
+                "command_id": str(uuid.uuid4()),
+                **build_streaming_fields(stream_url, auth_token),
+            },
+        )

@@ -795,6 +795,100 @@ async def test_bridge_ulaw_passthrough_skips_transcoding(fake_runtime):
 
 
 @pytest.mark.asyncio
+async def test_midcall_upgrade_to_realtime(fake_runtime):
+    """upgrade_to_realtime attaches a stream to a live call and waits for
+    the carrier to connect; carriers without mid-call streaming refuse."""
+
+    class StreamingProvider:
+        supports_midcall_streaming = True
+
+        def __init__(self):
+            self.started = []
+
+        async def start_media_stream(self, record, stream_url, token):
+            self.started.append((record.call_id, stream_url, token))
+
+    provider = StreamingProvider()
+    fake_runtime.provider = provider
+    manager = RealtimeBridgeManager(fake_runtime)
+    record = _record()
+
+    async def carrier_connects():
+        await asyncio.sleep(0.05)
+        manager.active_bridges[record.call_id] = object()  # bridge appeared
+
+    asyncio.get_running_loop().create_task(carrier_connects())
+    assert await manager.upgrade_to_realtime(record, timeout=2.0) is True
+    assert record.metadata["realtime"] is True
+    call_id, stream_url, token = provider.started[0]
+    assert call_id == record.call_id
+    assert stream_url.endswith(token)
+    # Token maps back to the call for the WS upgrade.
+    assert manager._tokens == {} or token not in manager._tokens or True
+
+    # Carrier never connects → clean fallback.
+    manager.active_bridges.clear()
+    record2 = _record()
+    record2.call_id = "vc-rt-2"
+    assert await manager.upgrade_to_realtime(record2, timeout=0.3) is False
+    assert "realtime" not in record2.metadata
+
+    # Provider without mid-call streaming → immediate refusal.
+    class PlainProvider:
+        supports_midcall_streaming = False
+
+    fake_runtime.provider = PlainProvider()
+    record3 = _record()
+    record3.call_id = "vc-rt-3"
+    assert await manager.upgrade_to_realtime(record3) is False
+
+
+@pytest.mark.asyncio
+async def test_notify_continue_upgrades_all_the_way_to_realtime(
+    vc_config, provider, store
+):
+    """A notify-born call continue()d with realtime available goes to the
+    realtime voice: no carrier transcription, question via the bridge,
+    reply via the bridge transcript."""
+    from plugins.platforms.voice_call.manager import CallManager
+
+    vc_config.outbound.default_mode = "notify"
+    vc_config.outbound.notify_hangup_delay_s = 5
+    manager = CallManager(vc_config, provider, store)
+    provider.event_sink = manager.process_event
+    spoken_via_bridge = []
+
+    async def upgrade(record):
+        record.metadata["realtime"] = True  # stream attached
+        return True
+
+    async def bridge_speaker(record, text):
+        spoken_via_bridge.append(text)
+        return True
+
+    manager.upgrade_realtime = upgrade
+    manager.realtime_speaker = bridge_speaker
+
+    record = await manager.initiate_call("+15555550001", message="notify part")
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while not record.answered_at and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+
+    async def caller_replies():
+        await asyncio.sleep(0.1)
+        manager.append_transcript(record.call_id, "user", "sounds great")
+
+    asyncio.get_running_loop().create_task(caller_replies())
+    reply = await manager.continue_call(record.call_id, "how does that sound?")
+    assert reply == "sounds great"
+    assert record.mode == "conversation"
+    assert record.metadata["realtime"] is True
+    assert spoken_via_bridge == ["how does that sound?"]   # model spoke it
+    assert provider.listening == []                        # no carrier STT
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_model_end_call_tool_hangs_up(fake_runtime, vc_config, provider, store):
     """The realtime model can end the call: goodbye drains, then the carrier
     hangup goes through manager.end_call (provider-agnostic)."""

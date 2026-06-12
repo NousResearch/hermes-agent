@@ -108,6 +108,7 @@ class VoiceCallRuntime:
             )
             self.manager.prepare_call = self.bridge_manager.prepare_call
             self.manager.realtime_speaker = self._bridge_speak
+            self.manager.upgrade_realtime = self.bridge_manager.upgrade_to_realtime
             logger.info(
                 "voice_call realtime enabled (model provider=%s)",
                 self.config.realtime.provider,

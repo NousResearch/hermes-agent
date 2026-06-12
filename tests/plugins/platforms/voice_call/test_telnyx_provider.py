@@ -309,6 +309,23 @@ async def test_action_request_shapes(provider, api_calls):
 
 
 @pytest.mark.asyncio
+async def test_midcall_streaming_start_shape(provider, api_calls):
+    """Telnyx can attach a media stream to a LIVE call (streaming_start) —
+    the basis for notify → realtime upgrades."""
+    assert provider.supports_midcall_streaming is True
+    record = _call_record()
+    await provider.start_media_stream(
+        record, "wss://hooks.example/voice/stream/tok2", "tok2"
+    )
+    request = api_calls[0]
+    assert request["url"].endswith("/calls/v3:abc/actions/streaming_start")
+    body = request["json_body"]
+    assert body["stream_url"] == "wss://hooks.example/voice/stream/tok2"
+    assert body["stream_bidirectional_mode"] == "rtp"
+    assert body["stream_auth_token"] == "tok2"
+
+
+@pytest.mark.asyncio
 async def test_get_call_status_mapping(provider, monkeypatch):
     import plugins.platforms.voice_call.providers.telnyx as telnyx_mod
 

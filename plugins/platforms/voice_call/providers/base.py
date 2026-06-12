@@ -144,6 +144,18 @@ class VoiceCallProvider(abc.ABC):
         """
         return {}
 
+    # True when the carrier can attach a media stream to an ALREADY LIVE
+    # call (Telnyx streaming_start) — enables notify → realtime upgrades.
+    supports_midcall_streaming: bool = False
+
+    async def start_media_stream(
+        self, call: CallRecord, stream_url: str, auth_token: str
+    ) -> None:
+        """Attach a media stream to a live call (mid-call realtime upgrade)."""
+        raise NotImplementedError(
+            f"{self.name} cannot attach a media stream mid-call"
+        )
+
     def finalize_response(
         self, ctx: WebhookContext, result: WebhookParseResult
     ) -> WebhookParseResult:

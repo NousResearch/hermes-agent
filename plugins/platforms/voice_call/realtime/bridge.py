@@ -150,6 +150,55 @@ class RealtimeBridgeManager:
         if provider is not None and hasattr(provider, "register_pending_stream"):
             provider.register_pending_stream(record, stream_url)
 
+    async def upgrade_to_realtime(self, record: CallRecord, timeout: float = 10.0) -> bool:
+        """Attach a media stream to an already-live call (notify-born calls
+        have none) and wait for the carrier to open the WebSocket. Telnyx
+        supports this via streaming_start; carriers that can't attach
+        mid-call return False and stay on carrier TTS."""
+        if self.active_bridges.get(record.call_id) is not None:
+            return True  # already realtime
+        provider = self.runtime.provider
+        if provider is None or not getattr(provider, "supports_midcall_streaming", False):
+            return False
+        public = (self.runtime.public_url or "").rstrip("/")
+        if not public:
+            return False
+        wss_base = public.replace("https://", "wss://").replace("http://", "ws://")
+        token = self.mint_token(record.call_id)
+        stream_url = f"{wss_base}{self.runtime.config.serve.stream_path}/{token}"
+        record.metadata["stream_url"] = stream_url
+        record.metadata["stream_auth_token"] = token
+        record.metadata["realtime"] = True
+        logger.info(
+            "voice_call realtime: mid-call upgrade requested call=%s",
+            record.call_id,
+        )
+        try:
+            await provider.start_media_stream(record, stream_url, token)
+        except Exception as e:  # noqa: BLE001
+            logger.warning(
+                "voice_call realtime: streaming_start failed for %s: %s",
+                record.call_id, e,
+            )
+            record.metadata.pop("realtime", None)
+            return False
+        # The carrier now dials our /voice/stream/{token} endpoint.
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self.active_bridges.get(record.call_id) is not None:
+                logger.info(
+                    "voice_call realtime: mid-call upgrade complete call=%s",
+                    record.call_id,
+                )
+                return True
+            await asyncio.sleep(0.1)
+        logger.warning(
+            "voice_call realtime: carrier never opened the stream for %s — "
+            "falling back to carrier TTS", record.call_id,
+        )
+        record.metadata.pop("realtime", None)
+        return False
+
     # -- WS upgrade (installed as webhook_server.stream_handler) -----------------
 
     async def handle_stream_request(self, request):

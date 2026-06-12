@@ -64,6 +64,12 @@ class CallManager:
         self.realtime_speaker: Optional[
             Callable[[CallRecord, str], Awaitable[bool]]
         ] = None
+        # Optional hook to attach a media stream to a LIVE call (Telnyx
+        # streaming_start) — lets a notify-born call upgrade all the way to
+        # the realtime voice instead of carrier TTS. Returns True on success.
+        self.upgrade_realtime: Optional[
+            Callable[[CallRecord], Awaitable[bool]]
+        ] = None
 
         self.active: Dict[str, CallRecord] = {}
         self._by_provider_id: Dict[str, str] = {}
@@ -705,14 +711,25 @@ class CallManager:
             self._cancel_timer(call_id, "notify")
             record.mode = "conversation"
             self._persist(record)
+            # Prefer the full realtime upgrade (mid-call media stream →
+            # speech-to-speech voice); fall back to carrier transcription.
             if not self._realtime_owns_audio(record):
-                try:
-                    await self.provider.start_listening(record)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning(
-                        "voice_call: start_listening failed during notify "
-                        "upgrade of %s: %s", call_id, e,
-                    )
+                upgraded = False
+                if self.upgrade_realtime is not None:
+                    try:
+                        upgraded = await self.upgrade_realtime(record)
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "voice_call: realtime upgrade hook failed"
+                        )
+                if not upgraded:
+                    try:
+                        await self.provider.start_listening(record)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning(
+                            "voice_call: start_listening failed during notify "
+                            "upgrade of %s: %s", call_id, e,
+                        )
 
         realtime = self._realtime_owns_audio(record)
         spoke_at = time.time()

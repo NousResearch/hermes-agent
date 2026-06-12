@@ -1035,6 +1035,7 @@ stt:
 # Intermediate tool results stay out of the LLM's context window.
 code_execution:
   timeout: 300         # Max seconds per script before kill (default: 300 = 5 min)
+  rpc_timeout: 300     # Max seconds per tool-call RPC round-trip (default: 300)
   max_tool_calls: 50   # Max RPC tool calls per execution (default: 50)
 
 # =============================================================================

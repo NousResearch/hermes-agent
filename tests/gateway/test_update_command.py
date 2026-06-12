@@ -34,6 +34,7 @@ def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._voice_mode = {}
+    runner._update_prompt_pending = {}
     return runner
 
 
@@ -904,6 +905,38 @@ class TestSendUpdateNotification:
         assert not exit_code_path.exists()
         assert not (hermes_home / ".update_pending.claimed.json").exists()
 
+    @pytest.mark.asyncio
+    async def test_completion_notification_tolerates_invalid_utf8_output(self, tmp_path):
+        """Completion-only update notifications must not crash on bad bytes."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        pending = {"platform": "discord", "chat_id": "111", "user_id": "222"}
+        pending_path = hermes_home / ".update_pending.json"
+        output_path = hermes_home / ".update_output.txt"
+        exit_code_path = hermes_home / ".update_exit_code"
+        pending_path.write_text(json.dumps(pending))
+        output_path.write_bytes(b"ok before\ninvalid byte: \x96\ncontinued after\n")
+        exit_code_path.write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.DISCORD: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            delivered = await runner._send_update_notification()
+
+        assert delivered is True
+        mock_adapter.send.assert_called_once()
+        sent_text = mock_adapter.send.call_args[0][1]
+        assert "ok before" in sent_text
+        assert "invalid byte" in sent_text
+        assert "continued after" in sent_text
+        assert "Hermes update finished" in sent_text
+        assert not pending_path.exists()
+        assert not output_path.exists()
+        assert not exit_code_path.exists()
+
 
 # ---------------------------------------------------------------------------
 # /update in help and known_commands
@@ -929,3 +962,32 @@ class TestUpdateInHelp:
         import inspect
         source = inspect.getsource(GatewayRunner._handle_message)
         assert '"update"' in source
+
+class TestWatchUpdateProgress:
+    @pytest.mark.asyncio
+    async def test_invalid_utf8_update_output_does_not_crash_watcher(self, tmp_path):
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        (hermes_home / ".update_pending.json").write_text(json.dumps({
+            "platform": "telegram",
+            "chat_id": "67890",
+            "user_id": "12345",
+        }))
+        (hermes_home / ".update_output.txt").write_bytes(
+            b"ok before\n\xe2\x9c invalid-continuation: \x96\ncontinued after\n"
+        )
+        (hermes_home / ".update_exit_code").write_text("0")
+
+        mock_adapter = AsyncMock()
+        runner.adapters = {Platform.TELEGRAM: mock_adapter}
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            await runner._watch_update_progress(poll_interval=0.01, stream_interval=0.01, timeout=1.0)
+
+        sent = "\n".join(call.args[1] for call in mock_adapter.send.call_args_list)
+        assert "ok before" in sent
+        assert "continued after" in sent
+        assert "Hermes update finished" in sent
+        assert not (hermes_home / ".update_pending.json").exists()

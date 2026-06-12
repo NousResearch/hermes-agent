@@ -14706,6 +14706,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         def _strip_ansi(text: str) -> str:
             return re.sub(r'\x1b\[[0-9;]*[A-Za-z]', '', text)
 
+        def _read_output_since(path: Path, offset: int) -> tuple[str, int]:
+            """Read update output defensively; logs may contain invalid UTF-8."""
+            try:
+                data = path.read_bytes()
+            except OSError:
+                return "", offset
+            if len(data) <= offset:
+                return "", len(data)
+            return data[offset:].decode("utf-8", errors="replace"), len(data)
+
         bytes_sent = 0
         last_stream_time = loop.time()
         buffer = ""
@@ -14741,10 +14751,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Read any remaining output
                 if output_path.exists():
                     try:
-                        content = output_path.read_text()
-                        if len(content) > bytes_sent:
-                            buffer += content[bytes_sent:]
-                            bytes_sent = len(content)
+                        chunk, bytes_sent = _read_output_since(output_path, bytes_sent)
+                        if chunk:
+                            buffer += chunk
                     except OSError:
                         pass
                 await _flush_buffer()
@@ -14780,10 +14789,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Check for new output
             if output_path.exists():
                 try:
-                    content = output_path.read_text()
-                    if len(content) > bytes_sent:
-                        buffer += content[bytes_sent:]
-                        bytes_sent = len(content)
+                    chunk, bytes_sent = _read_output_since(output_path, bytes_sent)
+                    if chunk:
+                        buffer += chunk
                 except OSError:
                     pass
 
@@ -14912,7 +14920,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Read the captured update output
             output = ""
             if output_path.exists():
-                output = output_path.read_text()
+                output = output_path.read_bytes().decode("utf-8", errors="replace")
 
             # Resolve adapter
             platform = Platform(platform_str)

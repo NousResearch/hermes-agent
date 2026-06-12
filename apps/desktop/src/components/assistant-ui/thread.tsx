@@ -149,14 +149,38 @@ export const Thread: FC<{
   sessionId = null,
   sessionKey
 }) => {
+  // The values in this map are component *types*: when their identity
+  // changes, React unmounts and remounts every visible message — async
+  // re-rendered parts (shiki code blocks) collapse and re-expand, so the
+  // whole thread visibly jumps. Parents re-render on unrelated state
+  // (e.g. the 15s status-snapshot poll in the desktop controller) and
+  // can't be trusted to keep callback identities stable (see #38333), so
+  // route the callbacks through a ref instead of listing them as memo
+  // deps. Only their definedness stays a dep — it gates UI (the user
+  // Stop button).
+  const callbacksRef = useRef({ onBranchInNewChat, onCancel })
+
+  useEffect(() => {
+    callbacksRef.current = { onBranchInNewChat, onCancel }
+  })
+
+  const hasBranchInNewChat = Boolean(onBranchInNewChat)
+  const hasCancel = Boolean(onCancel)
+
   const messageComponents = useMemo(
     () => ({
-      AssistantMessage: () => <AssistantMessage onBranchInNewChat={onBranchInNewChat} />,
+      AssistantMessage: () => (
+        <AssistantMessage
+          onBranchInNewChat={
+            hasBranchInNewChat ? messageId => callbacksRef.current.onBranchInNewChat?.(messageId) : undefined
+          }
+        />
+      ),
       SystemMessage,
       UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
-      UserMessage: () => <UserMessage onCancel={onCancel} />
+      UserMessage: () => <UserMessage onCancel={hasCancel ? () => callbacksRef.current.onCancel?.() : undefined} />
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, sessionId]
+    [cwd, gateway, hasBranchInNewChat, hasCancel, sessionId]
   )
 
   const emptyPlaceholder = intro ? (

@@ -39,6 +39,12 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
+function formatCost(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return "$0.00";
+  if (n < 0.01) return `$${n.toFixed(4)}`;
+  return `$${n.toFixed(2)}`;
+}
+
 function formatDate(day: string): string {
   try {
     const d = new Date(day + "T00:00:00");
@@ -256,7 +262,8 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                 <SortHeader label={t.analytics.date} col="day" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
                 <SortHeader label={t.analytics.input} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label={t.analytics.output} col="output_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.models.estimatedCost} col="estimated_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -276,10 +283,13 @@ function DailyTable({ daily }: { daily: AnalyticsDailyEntry[] }) {
                         {formatTokens(d.input_tokens)}
                       </span>
                   </td>
-                  <td className="text-right py-2 pl-4">
+                  <td className="text-right py-2 px-4">
                     <span style={{ color: "var(--series-output-token)" }}>
                         {formatTokens(d.output_tokens)}
                       </span>
+                  </td>
+                  <td className="text-right py-2 pl-4 text-muted-foreground">
+                    {formatCost(d.estimated_cost)}
                   </td>
                 </tr>
               ))}
@@ -314,7 +324,8 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
               <tr className="border-b border-border text-muted-foreground text-xs">
                 <SortHeader label={t.analytics.model} col="model" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-left py-2 pr-4 font-medium" />
                 <SortHeader label={t.sessions.title} col="sessions" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
-                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
+                <SortHeader label={t.analytics.tokens} col="input_tokens" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 px-4 font-medium" />
+                <SortHeader label={t.models.estimatedCost} col="estimated_cost" sortKey={sortKey} sortDir={sortDir} toggle={toggle} className="text-right py-2 pl-4 font-medium" />
               </tr>
             </thead>
             <tbody>
@@ -329,7 +340,7 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                   <td className="text-right py-2 px-4 text-muted-foreground">
                     {m.sessions}
                   </td>
-                  <td className="text-right py-2 pl-4">
+                  <td className="text-right py-2 px-4">
                     <span style={{ color: "var(--series-input-token)" }}>
                       {formatTokens(m.input_tokens)}
                     </span>
@@ -337,6 +348,9 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
                     <span style={{ color: "var(--series-output-token)" }}>
                       {formatTokens(m.output_tokens)}
                     </span>
+                  </td>
+                  <td className="text-right py-2 pl-4 text-muted-foreground">
+                    {formatCost(m.estimated_cost)}
                   </td>
                 </tr>
               ))}
@@ -556,6 +570,10 @@ export default function AnalyticsPage() {
                     {
                       label: t.analytics.output,
                       value: formatTokens(data.totals.total_output),
+                    },
+                    {
+                      label: t.models.estimatedCost,
+                      value: formatCost(data.totals.total_estimated_cost),
                     },
                     {
                       label: t.analytics.totalSessions,

@@ -677,12 +677,23 @@ def _build_gateway_agent_history(
             clean_msg = {k: v for k, v in msg.items() if k not in {"timestamp", "observed"}}
             agent_history.append(clean_msg)
         elif content:
+            # Skip gateway-injected auto-continue / background-process notes
+            # that were persisted as user messages during interrupted turns.
+            # Replaying them tells the LLM to re-process old work instead of
+            # addressing the user's new message — which is the root cause of
+            # infinite re-transcription / re-analysis loops.
+            if role == "user" and _is_auto_continue_noise(content):
+                continue
             # Simple text message - just need role and content.
             if msg.get("mirror"):
                 mirror_src = msg.get("mirror_source", "another session")
                 content = f"[Delivered from {mirror_src}] {content}"
             entry = _build_replay_entry(role, content, msg)
             agent_history.append(entry)
+
+    # Strip interrupted tool-call tails so the LLM doesn't re-execute
+    # tools that were killed mid-flight.
+    agent_history = _strip_interrupted_tool_tails(agent_history)
 
     observed_context = "\n".join(observed_group_context).strip() or None
     return agent_history, observed_context
@@ -748,6 +759,84 @@ _AUTO_APPEND_MEDIA_TOOL_NAMES = {
     "text_to_speech_tool",
     "image_generate",
 }
+
+# ---- helpers: detect interrupted tool tails & auto-continue noise ----------
+
+def _is_interrupted_tool_result(content: Any) -> bool:
+    """Return True if a tool result indicates the tool was interrupted."""
+    if not isinstance(content, str):
+        return False
+    if "[Command interrupted]" in content:
+        return True
+    if '"exit_code": 130' in content or '"exit_code": -1' in content:
+        if "interrupt" in content.lower() or "Command interrupted" in content:
+            return True
+    return False
+
+
+def _strip_interrupted_tool_tails(
+    agent_history: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Strip trailing tool-call sequences whose results were all interrupted.
+
+    When the gateway interrupts a turn mid-tool-execution, the session DB stores
+    the tool_calls + tool results (which contain "[Command interrupted]" /
+    exit_code 130).  Replaying these to the LLM on the next turn causes it to
+    re-execute the same tools — this function detects those tail sequences and
+    removes them before they reach the model.
+    """
+    if not agent_history:
+        return agent_history
+
+    n = len(agent_history)
+    tool_tail_end = n
+    while tool_tail_end > 0 and agent_history[tool_tail_end - 1].get("role") == "tool":
+        tool_tail_end -= 1
+
+    if tool_tail_end == n:
+        return agent_history
+
+    tail_tool_results = agent_history[tool_tail_end:]
+    if not all(
+        _is_interrupted_tool_result(m.get("content", ""))
+        for m in tail_tool_results
+    ):
+        return agent_history
+
+    assistant_idx = tool_tail_end - 1
+    if assistant_idx < 0:
+        return agent_history
+
+    if (
+        agent_history[assistant_idx].get("role") != "assistant"
+        or "tool_calls" not in agent_history[assistant_idx]
+    ):
+        return agent_history
+
+    logger.debug(
+        "Stripping %d interrupted tool result(s) + triggering assistant from "
+        "replay history (indices %d–%d)",
+        len(tail_tool_results), assistant_idx, n - 1,
+    )
+    return agent_history[:assistant_idx]
+
+
+_AUTO_CONTINUE_NOTE_PREFIX = "[System note: Your previous turn"
+_BG_PROCESS_NOTE_PREFIX = "[IMPORTANT: Background process"
+_AUTO_CONTINUE_FALLBACK_PREFIX = "[System note: A new message"
+
+
+def _is_auto_continue_noise(content: Any) -> bool:
+    """Return True if this user-message content is a gateway-injected
+    auto-continue or background-process note that should NOT be replayed
+    as a real user turn."""
+    if not isinstance(content, str):
+        return False
+    return (
+        content.startswith(_AUTO_CONTINUE_NOTE_PREFIX)
+        or content.startswith(_BG_PROCESS_NOTE_PREFIX)
+        or content.startswith(_AUTO_CONTINUE_FALLBACK_PREFIX)
+    )
 
 # Tools in this set return their deliverable artifact as a JSON payload with a
 # local-file path field rather than a literal ``MEDIA:`` tag (e.g. image_generate
@@ -14627,20 +14716,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else "a gateway interruption"
                 )
                 message = (
-                    f"[System note: Your previous turn in this session was interrupted "
-                    f"by {_reason_phrase}. The conversation history below is intact. "
-                    f"If it contains unfinished tool result(s), process them first and "
-                    f"summarize what was accomplished, then address the user's new "
-                    f"message below.]\n\n"
+                    f"[System note: A new message has arrived. The previous turn "
+                    f"was interrupted by {_reason_phrase}. "
+                    f"Address the user's NEW message below FIRST. "
+                    f"Do NOT re-execute old tool calls — skip any unfinished "
+                    f"work from the conversation history and focus on what the "
+                    f"user is asking now.]\n\n"
                     + message
                 )
             elif _has_fresh_tool_tail:
                 message = (
-                    "[System note: Your previous turn was interrupted before you could "
-                    "process the last tool result(s). The conversation history contains "
-                    "tool outputs you haven't responded to yet. Please finish processing "
-                    "those results and summarize what was accomplished, then address the "
-                    "user's new message below.]\n\n"
+                    "[System note: A new message has arrived. The conversation "
+                    "history contains pending tool outputs from an interrupted turn. "
+                    "IGNORE those pending results. Address the user's NEW message "
+                    "below FIRST. Do NOT re-execute old tool calls from the history.]\n\n"
                     + message
                 )
 

@@ -309,6 +309,24 @@ Most users should treat `agent/prompt_builder.py` as implementation code, not a 
 - Optional system prompt config / API overrides — add deployment-specific instruction text without forking Hermes.
 - Ephemeral overlays such as `HERMES_EPHEMERAL_SYSTEM_PROMPT` or prefill messages — add turn-scoped guidance that should not become part of the cached prompt prefix.
 
+### Per-fragment overrides (`agent.prompt_overrides`)
+
+To reshape a specific Hermes-authored prompt fragment (for example, "Finishing the job" or "Tool-use enforcement"), use `agent.prompt_overrides` in `config.yaml`. Each named fragment has a stable key and supports `replace`, `append`, `prepend`, and `remove`:
+
+```yaml
+agent:
+  prompt_overrides:
+    task_completion: { mode: append, text: "..." }
+    google_operational: { mode: remove }
+    steer_channel: "..."   # bare string = replace
+```
+
+This is **pure data, resolved once at prompt-build time** — there is no callable hook and no conditional logic, by design. The assembled prompt stays a deterministic function of (agent, config), so it remains byte-stable across turns and the provider prefix cache stays warm. With no overrides configured, the prompt is byte-identical to the default. An override only takes effect when the fragment is actually emitted this session, and `append`/`prepend` to an absent fragment is a no-op.
+
+Fragment keys: `identity`, `hermes_help`, `task_completion`, `parallel_tool_call_guidance`, `tool_guidance`, `steer_channel`, `tool_use_enforcement`, `google_operational`, `execution_discipline`, `skills`, `model_identity`, `environment_probe`, `active_profile`, `platform_hints`. The canonical registry (with one-line descriptions) lives in `agent/prompt_overrides.py` (`FRAGMENT_KEYS`). The assembler places each fragment in its current cache tier; overrides do not change that placement. Coding posture blocks from `coding_system_prompt_parts()`, project context, and runtime environment facts are outside this named-fragment surface. The runtime environment block carries the working-directory marker used to prevent stale context reuse after a cwd change.
+
+Prefer the higher-level surfaces above for identity and project rules; reach for `prompt_overrides` when you specifically need to reshape one of Hermes's own guidance blocks in place.
+
 ### When to edit code instead
 
 Edit `agent/prompt_builder.py` only if you are intentionally maintaining a fork or contributing upstream behavior changes. That file assembles the prompt plumbing, cache boundaries, and injection order for every session. Direct edits there are global product changes, not per-user prompt customization.

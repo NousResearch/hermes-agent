@@ -546,35 +546,42 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool
     Returns ``(parts, soul_loaded)``."""
     wants_soul = agent.load_soul_identity or not agent.skip_context_files
     _soul_content = _pb.load_soul_md(ctx_len, home_override=_agent_home(agent)) if wants_soul else None
-    return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
+    return ([_fragment(agent, "identity", _soul_content)], True) if _soul_content else (
+        [_fragment(agent, "identity", DEFAULT_AGENT_IDENTITY)], False)
+
+
+def _fragment(agent: Any, key: str, text: Optional[str]) -> Optional[str]:
+    """Apply a configured override when the named fragment is emitted."""
+    from agent.prompt_overrides import apply_fragment_override
+    return apply_fragment_override(getattr(agent, "_prompt_overrides", None), key, text)
 
 
 def _guidance_parts(agent: Any) -> List[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
     parts: List[str] = []
     if agent.valid_tool_names:
-        parts += [
-            text for flag, text in (
-                ("_task_completion_guidance", TASK_COMPLETION_GUIDANCE),
-                ("_parallel_tool_call_guidance", PARALLEL_TOOL_CALL_GUIDANCE),
-            ) if getattr(agent, flag, True)
-        ]
-    parts.append(_tool_guidance_block(agent))  # None/empty entries are dropped by _join_tier
+        if getattr(agent, "_task_completion_guidance", True):
+            parts.append(_fragment(agent, "task_completion", TASK_COMPLETION_GUIDANCE))
+        if getattr(agent, "_parallel_tool_call_guidance", True):
+            parts.append(_fragment(agent, "parallel_tool_call_guidance", PARALLEL_TOOL_CALL_GUIDANCE))
+    guidance = _tool_guidance_block(agent)
+    if guidance:
+        parts.append(_fragment(agent, "tool_guidance", guidance))
     if not agent.valid_tool_names:
         return parts
     # Steering only lands inside tool results, so only reachable with tools.
-    parts.append(STEER_CHANNEL_NOTE)
+    parts.append(_fragment(agent, "steer_channel", STEER_CHANNEL_NOTE))
     # agent.tool_use_enforcement / agent.execution_guidance: "auto" (default)
     # matches the hardcoded model lists; true/false force; a list gives custom
     # model-name substrings.  Execution guidance is an independent gate so
     # DeepSeek/Kimi/Qwen-class models get it even with enforcement off.
     if _model_gate(agent._tool_use_enforcement, agent.model, TOOL_USE_ENFORCEMENT_MODELS):
-        parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+        parts.append(_fragment(agent, "tool_use_enforcement", TOOL_USE_ENFORCEMENT_GUIDANCE))
         if any(g in (agent.model or "").lower() for g in ("gemini", "gemma")):
-            parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+            parts.append(_fragment(agent, "google_operational", GOOGLE_MODEL_OPERATIONAL_GUIDANCE))
     if _model_gate(getattr(agent, "_execution_guidance", "auto"), agent.model, EXECUTION_GUIDANCE_MODELS):
         from agent.prompt_builder import execution_guidance_text
-        parts.append(execution_guidance_text())
+        parts.append(_fragment(agent, "execution_discipline", execution_guidance_text()))
     return parts
 
 
@@ -584,12 +591,12 @@ def _alibaba_identity_part(agent: Any) -> List[str]:
     if agent.provider != "alibaba":
         return []
     _model_short = agent.model.rsplit("/", 1)[-1]
-    return [
+    return [_fragment(agent, "model_identity",
         f"You are powered by the model named {_model_short}. "
         f"The exact model ID is {agent.model}. "
         f"When asked what model you are, always answer based on this information, "
         f"not on any model name returned by the API."
-    ]
+    )]
 
 
 def _workspace_pin_key() -> str:
@@ -696,12 +703,17 @@ def _post_workspace_parts(agent: Any) -> List[str]:
     if getattr(agent, "_environment_probe", True):
         try:
             from tools.env_probe import get_environment_probe_line
-            parts.append(get_environment_probe_line())
+            probe = get_environment_probe_line()
+            if probe:
+                parts.append(_fragment(agent, "environment_probe", probe))
         except Exception:
             pass  # Probe failure must never block prompt build.
     if getattr(agent, "_bot_mode_protocol", True):
         parts.extend(_bot_mode_parts(agent))
-    parts += [_active_profile_line(agent), platform_hint(agent)]
+    parts.append(_fragment(agent, "active_profile", _active_profile_line(agent)))
+    hint = platform_hint(agent)
+    if hint:
+        parts.append(_fragment(agent, "platform_hints", hint))
     return parts
 
 
@@ -748,6 +760,9 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # in the rendered index (pure string check — inherits the index's stability).
     if "skill_view" in (agent.valid_tool_names or set()) and "- hermes-agent:" in skills_prompt:
         stable_parts[_help_guidance_slot] = HERMES_AGENT_HELP_GUIDANCE
+    stable_parts[_help_guidance_slot] = _fragment(agent, "hermes_help", stable_parts[_help_guidance_slot])
+    if skills_prompt:
+        skills_prompt = _fragment(agent, "skills", skills_prompt)
     stable_parts.extend(_alibaba_identity_part(agent))
     # Pinned skills are per-agent constants (resolved once), so they live in the stable prefix.
     stable_parts.extend(_auto_load_parts(agent))
@@ -783,6 +798,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if environment_hints:
         # Embedder hints are prose too; reserve the delimiter for the renderer.
         environment_hints = environment_hints.replace(_pb.RUNTIME_ENVIRONMENT_HEADING, "> " + _pb.RUNTIME_ENVIRONMENT_HEADING)
+    if environment_hints:
         volatile_parts.append(f"{_pb.RUNTIME_ENVIRONMENT_HEADING}\n\n{environment_hints}\n\n{_pb.RUNTIME_ENVIRONMENT_END}")
     return {"stable": _join_tier(stable_parts), "context": _join_tier(context_parts), "volatile": _join_tier(volatile_parts)}
 

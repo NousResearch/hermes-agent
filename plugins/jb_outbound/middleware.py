@@ -34,7 +34,7 @@ def make_middleware() -> Callable[..., Any]:
         next_call: Callable[[Any], Any],
         **_: Any,
     ) -> Any:
-        from . import classify, config, http_client, mapping, store
+        from . import classify, config, http_client, job_context, mapping, store
 
         # Plugin passif hors box Jean-Billie (JB_DECISION_PUSH_URL non posé) : ne rien changer.
         if not config.enabled():
@@ -66,6 +66,15 @@ def make_middleware() -> Callable[..., Any]:
         # (le control-plane round-trip le payload) → corrélation décision ↔ envoi en attente.
         body = dict(draft)
         body["payload"] = {**draft.get("payload", {}), "jb_id": jb_id}
+
+        # Attribution : si l'interception a lieu pendant un job cron (skill → casquette), le draft
+        # porte le département. Champs ADDITIFS, omis hors contexte job (chat libre) — le daemon Go
+        # actuel ignore les champs inconnus (contrat répliqué côté Go en vague 2).
+        ctx = job_context.current() or {}
+        for key in ("department", "skill_id", "job_id"):
+            value = ctx.get(key)
+            if value:
+                body[key] = value
 
         try:
             http_client.post_json(config.draft_url(), body)

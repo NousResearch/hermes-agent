@@ -30,6 +30,11 @@ def result_url() -> str:
     return f"http://{_draft_addr()}/v1/result"
 
 
+def activity_url() -> str:
+    """URL où POSTer un évènement d'activité (début/fin de job — cf. activity.py)."""
+    return f"http://{_draft_addr()}/v1/activity"
+
+
 def _push_url() -> str:
     return os.getenv("JB_DECISION_PUSH_URL", _DEFAULT_PUSH_URL).strip() or _DEFAULT_PUSH_URL
 

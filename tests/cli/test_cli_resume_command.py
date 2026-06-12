@@ -287,3 +287,28 @@ class TestRestoreSessionCwdMarkup:
             assert "Working directory" in printed or "working" in printed.lower()
         finally:
             os.chdir(original_cwd)
+
+    def test_list_recent_sessions_does_not_filter_by_source(self):
+        """_list_recent_sessions should include sessions from all sources
+        (cli, tui, gateway, etc.), not just source='cli'.
+
+        Regression test for #44964: the /sessions command previously
+        filtered by source="cli", hiding TUI and gateway sessions.
+        """
+        cli_obj = _make_cli()
+        cli_obj._session_db.list_sessions_rich.return_value = [
+            {"id": "s1", "title": "CLI session", "source": "cli"},
+            {"id": "s2", "title": "TUI session", "source": "tui"},
+            {"id": "s3", "title": "WhatsApp session", "source": "whatsapp"},
+        ]
+
+        result = cli_obj._list_recent_sessions(limit=10)
+
+        # Verify the call was made WITHOUT a source filter
+        call_kwargs = cli_obj._session_db.list_sessions_rich.call_args[1]
+        assert "source" not in call_kwargs or call_kwargs.get("source") is None
+        # Should still exclude tool sessions
+        assert call_kwargs.get("exclude_sources") == ["tool"]
+        # All three sessions should be returned
+        assert len(result) == 3
+        assert {s["id"] for s in result} == {"s1", "s2", "s3"}

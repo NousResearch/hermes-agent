@@ -132,7 +132,7 @@ from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import flatten_message_content, sanitize_context
+from agent.memory_manager import sanitize_context
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.model_metadata import (
@@ -169,7 +169,7 @@ from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
     _split_responses_tool_id as _codex_split_responses_tool_id,
-    _summarize_user_message_for_log,  # noqa: F401  # re-exported for tests
+    _summarize_user_message_for_log,  # also used by _sync_external_memory_for_turn (memory boundary)
 )
 from agent.tool_guardrails import (
     ToolGuardrailDecision,
@@ -2991,9 +2991,10 @@ class AIAgent:
         if not (self._memory_manager and final_response and original_user_message):
             return
         # Multimodal turns carry content as a list of typed parts; providers
-        # expect plain strings (see flatten_message_content).
-        user_text = flatten_message_content(original_user_message)
-        response_text = flatten_message_content(final_response)
+        # expect plain strings, so flatten to text first (newline-joined for
+        # memory, vs the default space-join used for log/trajectory previews).
+        user_text = _summarize_user_message_for_log(original_user_message, sep="\n")
+        response_text = _summarize_user_message_for_log(final_response, sep="\n")
         if not (user_text and response_text):
             return
         try:

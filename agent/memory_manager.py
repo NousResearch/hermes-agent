@@ -67,45 +67,6 @@ def sanitize_context(text: str) -> str:
     return text
 
 
-def flatten_message_content(content: Any) -> str:
-    """Flatten message content to plain text for memory providers.
-
-    Multimodal turns carry content as a list of ``{type: "text"|"image_url",
-    ...}`` parts; providers expect a string and feed it to regexes
-    (``sanitize_context``) and text APIs, so a list crashes the sync
-    (``expected string or bytes-like object, got 'list'``). Text parts are
-    joined, images become a ``[N image(s)]`` marker so the turn isn't
-    recorded as if the attachment never existed.
-    """
-    if content is None:
-        return ""
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        text_bits: List[str] = []
-        image_count = 0
-        for part in content:
-            if isinstance(part, str):
-                if part:
-                    text_bits.append(part)
-                continue
-            if not isinstance(part, dict):
-                continue
-            ptype = str(part.get("type") or "").strip().lower()
-            if ptype in {"text", "input_text", "output_text"}:
-                text = part.get("text")
-                if isinstance(text, str) and text:
-                    text_bits.append(text)
-            elif ptype in {"image_url", "input_image"}:
-                image_count += 1
-        flattened = "\n".join(text_bits).strip()
-        if image_count:
-            note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
-            flattened = f"{note} {flattened}" if flattened else note
-        return flattened
-    return str(content)
-
-
 class StreamingContextScrubber:
     """Stateful scrubber for streaming text that may contain split memory-context spans.
 

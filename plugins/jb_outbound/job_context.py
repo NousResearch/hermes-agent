@@ -38,17 +38,20 @@ def current() -> Optional[Dict[str, Any]]:
 
 
 def job_started(job: Optional[Dict[str, Any]]) -> Optional[object]:
-    """Pose le contexte d'attribution au lancement d'un job cron. N'échoue jamais.
+    """Pose le contexte d'attribution et signale le début du job. N'échoue jamais.
 
-    Appelé par le scheduler. Renvoie le token de reset à repasser à ``job_finished``
-    (ou ``None`` si le plugin est passif — ``JB_DECISION_PUSH_URL`` absent).
+    Appelé par le scheduler au lancement d'un job cron. Renvoie le token de reset à repasser
+    à ``job_finished`` (ou ``None`` si le plugin est passif : ni boucle de proposition
+    ``JB_DECISION_PUSH_URL``, ni fil d'activité ``JB_ACTIVITY_EVENTS``).
     """
     try:
-        from . import config
+        from . import activity, config
 
-        if not config.enabled():
+        if not (config.enabled() or activity.enabled()):
             return None
-        token = _JOB_CTX.set(_build_ctx(job))
+        ctx = _build_ctx(job)
+        token = _JOB_CTX.set(ctx)
+        activity.emit("started", "ok", ctx)
         return token
     except Exception:
         logger.debug("jb_outbound: job_started en échec (ignoré)", exc_info=True)
@@ -56,18 +59,27 @@ def job_started(job: Optional[Dict[str, Any]]) -> Optional[object]:
 
 
 def job_finished(job: Optional[Dict[str, Any]], success: bool = True, token: Optional[object] = None) -> None:
-    """Nettoie le contexte à la fin du job. N'échoue jamais.
+    """Signale la fin du job et nettoie le contexte. N'échoue jamais.
 
     Le nettoyage est indispensable : les threads du pool cron sont RÉUTILISÉS — sans reset, un
     job suivant sans skill hériterait de l'attribution du précédent.
     """
     try:
-        if token is not None:
-            _JOB_CTX.reset(token)
-        else:
-            _JOB_CTX.set(None)
+        from . import activity
+
+        if activity.enabled():
+            ctx = _JOB_CTX.get() or _build_ctx(job)
+            activity.emit("finished", "ok" if success else "error", ctx)
     except Exception:
-        _JOB_CTX.set(None)
+        logger.debug("jb_outbound: job_finished en échec (ignoré)", exc_info=True)
+    finally:
+        try:
+            if token is not None:
+                _JOB_CTX.reset(token)
+            else:
+                _JOB_CTX.set(None)
+        except Exception:
+            _JOB_CTX.set(None)
 
 
 # ---------------------------------------------------------------------------

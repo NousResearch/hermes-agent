@@ -119,11 +119,11 @@ def test_whatsapp_lid_user_matches_phone_allowlist_via_modern_session_mapping(
     assert runner._is_user_authorized(source) is True
 
 
-def test_simplex_allowlist_accepts_display_name(monkeypatch):
-    """SIMPLEX_ALLOWED_USERS should match the contact's display name as well
-    as the numeric contactId. The SimpleX UI surfaces only display names, so
-    operators naturally put those in the env var — and the adapter sets
-    user_id=contactId for stability. Both forms must work. (#TBD)"""
+def test_simplex_allowlist_rejects_display_name_only(monkeypatch):
+    """SIMPLEX_ALLOWED_USERS must NOT match the contact's display name — only
+    the stable numeric contactId. A different contact can set their display
+    name to the same value, so matching user_name would bypass the allowlist
+    (security: display-name collision bypass, #44729)."""
     _clear_auth_env(monkeypatch)
     monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
     monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "hujikuji")
@@ -145,13 +145,83 @@ def test_simplex_allowlist_accepts_display_name(monkeypatch):
         GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
     )
 
-    # contactId in the allowlist would still work — but the operator chose
-    # the display name. Verify the gateway honors it.
+    # The operator put the display name in the allowlist, but user_id is the
+    # stable contactId which differs. Display names are attacker-controlled,
+    # so this must be rejected.
     source = SessionSource(
         platform=simplex,
         user_id="4",            # adapter sets this to the numeric contactId
         chat_id="hujikuji",
         user_name="hujikuji",   # adapter sets this to displayName
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is False
+
+
+def test_simplex_allowlist_rejects_colliding_display_name(monkeypatch):
+    """Security regression guard: a contact whose contactId is NOT in the
+    allowlist must stay unauthorized even when they adopt the display name of
+    an allowed contact (#44729)."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
+    # Operator allowed contactId "4" (who happens to use display name "hujikuji")
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "4")
+
+    from gateway.platform_registry import platform_registry, PlatformEntry
+    platform_registry.register(PlatformEntry(
+        name="simplex",
+        label="SimpleX Chat",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="SIMPLEX_ALLOWED_USERS",
+        allow_all_env="SIMPLEX_ALLOW_ALL_USERS",
+    ))
+
+    simplex = Platform("simplex")
+    runner, _adapter = _make_runner(
+        simplex,
+        GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
+    )
+
+    # Attacker: different contactId ("7") but same display name as the allowed user
+    source = SessionSource(
+        platform=simplex,
+        user_id="7",              # different contactId — NOT in allowlist
+        chat_id="attacker",
+        user_name="hujikuji",     # same display name as allowed user
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is False
+
+
+def test_simplex_allowlist_accepts_numeric_contact_id(monkeypatch):
+    """SIMPLEX_ALLOWED_USERS continues to match the stable numeric contactId
+    (user_id) — the one identity form a SimpleX contact cannot forge."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.delenv("SIMPLEX_ALLOWED_USERS", raising=False)
+    monkeypatch.setenv("SIMPLEX_ALLOWED_USERS", "4")
+
+    from gateway.platform_registry import platform_registry, PlatformEntry
+    platform_registry.register(PlatformEntry(
+        name="simplex",
+        label="SimpleX Chat",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        allowed_users_env="SIMPLEX_ALLOWED_USERS",
+        allow_all_env="SIMPLEX_ALLOW_ALL_USERS",
+    ))
+
+    simplex = Platform("simplex")
+    runner, _adapter = _make_runner(
+        simplex,
+        GatewayConfig(platforms={simplex: PlatformConfig(enabled=True)}),
+    )
+
+    source = SessionSource(
+        platform=simplex,
+        user_id="4",              # numeric contactId in the allowlist
+        chat_id="hujikuji",
+        user_name="whatever",     # display name is irrelevant to the verdict
         chat_type="dm",
     )
     assert runner._is_user_authorized(source) is True

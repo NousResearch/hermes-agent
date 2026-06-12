@@ -5153,6 +5153,12 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         return
     codesign = shutil.which("codesign")
     if not codesign:
+        for _p in ("/opt/homebrew/bin", "/usr/local/bin"):
+            _c = os.path.join(_p, "codesign")
+            if os.path.isfile(_c) and os.access(_c, os.X_OK):
+                codesign = _c
+                break
+    if not codesign:
         return
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)

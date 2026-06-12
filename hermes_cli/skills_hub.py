@@ -24,6 +24,7 @@ from rich.table import Table
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
 from agent.skill_utils import is_excluded_skill_path
+from tools.skill_versioning import do_skills_log, do_skills_revert
 
 _console = Console()
 
@@ -1653,8 +1654,15 @@ def skills_command(args) -> None:
             _console.print("Usage: hermes skills tap [list|add|remove]\n")
             return
         do_tap(tap_action, repo=repo)
+    elif action == "log":
+        do_skills_log(name=getattr(args, "name", ""))
+    elif action == "revert":
+        do_skills_revert(
+            name=getattr(args, "name", ""),
+            to_version=getattr(args, "to", None),
+        )
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap|log|revert]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 

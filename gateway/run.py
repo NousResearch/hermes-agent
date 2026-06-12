@@ -12527,32 +12527,24 @@ class GatewayRunner:
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
-            # Partition out images so they can be sent as a single batch
-            # (e.g. Signal's multi-attachment RPC). When [[as_document]] was
-            # set, image-extension files skip the photo path and route to
-            # send_document below — preserving original bytes.
-            image_paths: list = []
-            non_image_media: list = []
-            for media_path, is_voice in media_files:
-                ext = Path(media_path).suffix.lower()
-                if (ext in _IMAGE_EXTS
-                        and not is_voice
-                        and not force_document_attachments):
-                    image_paths.append(media_path)
-                else:
-                    non_image_media.append((media_path, is_voice))
+            # Deliver media in the order the author emitted it, so an
+            # interleaved "photo, voice, photo, voice" sequence arrives that
+            # way instead of "all photos as one album, then all voices".
+            # Consecutive images still coalesce into a single album (Telegram
+            # media group / Signal multi-attachment RPC); a voice/video/doc
+            # between two images flushes the pending album first, preserving
+            # the interleave. When [[as_document]] was set, image-extension
+            # files skip the photo path and route to send_document below —
+            # preserving original bytes.
+            pending_album: list = []
 
-            non_image_local: list = []
-            for file_path in local_files:
-                if (Path(file_path).suffix.lower() in _IMAGE_EXTS
-                        and not force_document_attachments):
-                    image_paths.append(file_path)
-                else:
-                    non_image_local.append(file_path)
-
-            if image_paths:
+            async def _flush_pending_album() -> None:
+                if not pending_album:
+                    return
+                batch = list(pending_album)
+                pending_album.clear()
                 try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
+                    images = [(f"file://{_quote(p)}", "") for p in batch]
                     await adapter.send_multiple_images(
                         chat_id=event.source.chat_id,
                         images=images,
@@ -12561,9 +12553,17 @@ class GatewayRunner:
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
 
-            for media_path, is_voice in non_image_media:
+            async def _deliver_ordered(media_path: str, is_voice: bool) -> None:
+                ext = Path(media_path).suffix.lower()
+                if (ext in _IMAGE_EXTS
+                        and not is_voice
+                        and not force_document_attachments):
+                    pending_album.append(media_path)
+                    return
+                # Non-image (or doc-forced image): flush any images queued
+                # before it so ordering is preserved, then send this item.
+                await _flush_pending_album()
                 try:
-                    ext = Path(media_path).suffix.lower()
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
@@ -12585,23 +12585,13 @@ class GatewayRunner:
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
 
-            for file_path in non_image_local:
-                try:
-                    ext = Path(file_path).suffix.lower()
-                    if ext in _VIDEO_EXTS:
-                        await adapter.send_video(
-                            chat_id=event.source.chat_id,
-                            video_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                    else:
-                        await adapter.send_document(
-                            chat_id=event.source.chat_id,
-                            file_path=file_path,
-                            metadata=_thread_meta,
-                        )
-                except Exception as e:
-                    logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
+            # MEDIA:-tagged files first (carry the is_voice flag), then bare
+            # local-path files (never voice). Each list walks in author order.
+            for media_path, is_voice in media_files:
+                await _deliver_ordered(media_path, is_voice)
+            for file_path in local_files:
+                await _deliver_ordered(file_path, False)
+            await _flush_pending_album()
 
         except Exception as e:
             logger.warning("Post-stream media extraction failed: %s", e)

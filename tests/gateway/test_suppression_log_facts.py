@@ -6,15 +6,11 @@ a unit test (it lives deep inside the agent-response flow with the stream
 consumer as a closure local), so the composed suffix is produced by a pure
 module-level helper that these tests exercise directly."""
 
-import hashlib
 from unittest.mock import MagicMock
 
 from gateway.run import _delivery_log_facts
 from gateway.stream_consumer import GatewayStreamConsumer
-
-
-def _digest(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:8]
+from gateway.stream_consumer import _short_digest as _digest
 
 
 class TestDeliveryLogFacts:
@@ -50,7 +46,6 @@ class TestDeliveryLogFacts:
         assert "acc_len=5" in suffix
         digest_final = _digest("a longer final response")
         digest_acc = _digest("short")
-        assert digest_final != digest_acc
         assert f"final_digest={digest_final}" in suffix
         assert f"acc_digest={digest_acc}" in suffix
 

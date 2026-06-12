@@ -71,54 +71,6 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
-
-def _delivery_log_facts(final_text: Any, stream_consumer: Any) -> str:
-    """Compose the ``key=value`` facts appended to the final-send
-    suppression log line.
-
-    Diagnostic only: lengths, short sha256 prefixes, and the consumer's
-    message id let an operator prove from logs whether the suppressed send
-    matched what streaming delivered (#27942, #29200) without logging
-    message text.  Consumer values describe its current bubble; on
-    overflow splits earlier chunks are separate messages, so reset values
-    alongside ``content_delivered=True`` mean split delivery, not lost
-    content.  Never raises: composition failures degrade to ``?`` fields
-    so log formatting can never affect the suppression decision itself.
-    """
-    import hashlib
-
-    def _digest(value: str) -> str:
-        return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:8]
-
-    try:
-        final = final_text if isinstance(final_text, str) else str(final_text or "")
-        parts = [f"final_len={len(final)}", f"final_digest={_digest(final)}"]
-    except Exception:
-        parts = ["final_len=? final_digest=?"]
-    summary = None
-    try:
-        getter = getattr(stream_consumer, "delivery_summary", None)
-        if callable(getter):
-            summary = getter()
-    except Exception:
-        summary = None
-    if isinstance(summary, dict):
-        parts.extend(
-            [
-                f"acc_len={summary.get('accumulated_len', '?')}",
-                f"acc_digest={summary.get('accumulated_digest', '?')}",
-                f"last_sent_len={summary.get('last_sent_len', '?')}",
-                f"sc_msg_id={summary.get('message_id') or '?'}",
-                f"last_edit_overflowed={summary.get('last_edit_overflowed', '?')}",
-            ]
-        )
-    else:
-        parts.append(
-            "acc_len=? acc_digest=? last_sent_len=? sc_msg_id=? last_edit_overflowed=?"
-        )
-    return " ".join(parts)
-
-
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
@@ -153,6 +105,40 @@ _GATEWAY_RAW_TEXT_PLATFORMS = frozenset(
 def _gateway_surface_passes_raw_text(platform: Any) -> bool:
     """True only for programmatic/local surfaces that must keep raw text."""
     return _gateway_platform_value(platform) in _GATEWAY_RAW_TEXT_PLATFORMS
+_NO_CONSUMER_DELIVERY_FACTS = (
+    "acc_len=? acc_digest=? last_sent_len=? sc_msg_id=? last_edit_overflowed=?"
+)
+
+
+def _delivery_log_facts(final_text: Any, stream_consumer: Any) -> str:
+    """Compose the ``key=value`` facts appended to the final-send
+    suppression log line (#27942, #29200): lengths, short digests, and the
+    consumer's message id, never message text.  Field semantics are
+    documented on ``GatewayStreamConsumer.delivery_summary``.  Never
+    raises: a missing consumer or a failing summary degrades to ``?``
+    fields so log composition cannot affect the suppression decision.
+    """
+    from gateway.stream_consumer import _short_digest
+
+    final = final_text if isinstance(final_text, str) else ""
+    parts = [f"final_len={len(final)}", f"final_digest={_short_digest(final)}"]
+    try:
+        summary = (
+            stream_consumer.delivery_summary()
+            if stream_consumer is not None
+            else None
+        )
+        consumer_parts = summary and [
+            f"acc_len={summary['accumulated_len']}",
+            f"acc_digest={summary['accumulated_digest']}",
+            f"last_sent_len={summary['last_sent_len']}",
+            f"sc_msg_id={summary['message_id'] or '?'}",
+            f"last_edit_overflowed={summary['last_edit_overflowed']}",
+        ]
+    except Exception:
+        consumer_parts = None
+    parts.extend(consumer_parts or [_NO_CONSUMER_DELIVERY_FACTS])
+    return " ".join(parts)
 
 
 _GATEWAY_PROVIDER_ERROR_RE = re.compile(

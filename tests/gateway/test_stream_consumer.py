@@ -6,7 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
+from gateway.stream_consumer import (
+    GatewayStreamConsumer,
+    StreamConsumerConfig,
+    _short_digest,
+)
 
 
 # ── _clean_for_display unit tests ────────────────────────────────────────
@@ -2376,23 +2380,19 @@ class TestDeliverySummary:
 
     def test_fresh_consumer_reports_empty_state(self):
         """Nothing streamed yet: ids absent, lengths zero, flag False."""
-        import hashlib
-
         consumer = GatewayStreamConsumer(MagicMock(), "chat_123")
         summary = consumer.delivery_summary()
         assert summary["message_id"] is None
         assert summary["accumulated_len"] == 0
         assert summary["last_sent_len"] == 0
         assert summary["last_edit_overflowed"] is False
-        assert summary["accumulated_digest"] == hashlib.sha256(b"").hexdigest()[:8]
+        assert summary["accumulated_digest"] == _short_digest("")
 
     @pytest.mark.asyncio
     async def test_successful_finalize_reports_delivery_facts(self):
         """Happy path: after a confirmed finalize, the summary proves the
         last ACKed payload equals the accumulated text, and never exposes
         message content."""
-        import hashlib
-
         adapter = MagicMock()
         adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
         adapter.send = AsyncMock(
@@ -2412,12 +2412,9 @@ class TestDeliverySummary:
         assert consumer.final_content_delivered is True
         summary = consumer.delivery_summary()
         assert summary["message_id"] == "msg_1"
-        assert summary["accumulated_len"] > 0
+        assert summary["accumulated_len"] == len("The complete response.\n")
         assert summary["last_sent_len"] == summary["accumulated_len"]
-        expected_digest = hashlib.sha256(
-            consumer._accumulated.encode("utf-8", "replace")
-        ).hexdigest()[:8]
-        assert summary["accumulated_digest"] == expected_digest
+        assert summary["accumulated_digest"] == _short_digest("The complete response.\n")
         assert summary["last_edit_overflowed"] is False
         assert "complete response" not in str(summary)
 

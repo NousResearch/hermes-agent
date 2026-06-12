@@ -418,7 +418,13 @@ def test_simulator_proof_android_captures_while_long_lived_run_is_foreground(mon
     assert result == [str(proof_dir / "android-screenshot.png")]
     assert foreground_calls == [
         (
-            ("npm", "run", "android"),
+            (
+                "npx",
+                "expo",
+                "run:android",
+                "--app-id",
+                "com.elixir.card.staging",
+            ),
             worktree,
             120,
             ("adb", "-s", "emulator-5554"),

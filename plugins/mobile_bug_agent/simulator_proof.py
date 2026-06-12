@@ -237,8 +237,8 @@ class SimulatorProofHarness:
             if package:
                 self._run_text((*adb, "shell", "am", "force-stop", package), worktree, timeout_seconds)
                 self._run_android_until_foreground(
-                    ("npm", "run", "android"),
-                    worktree,
+                    _android_run_command(package),
+                    _expo_project_dir(worktree),
                     timeout_seconds,
                     adb,
                     package,
@@ -248,7 +248,7 @@ class SimulatorProofHarness:
                     open_dev_client_before_foreground=bool(dev_client_scheme.strip()),
                 )
             else:
-                self._run_text(("npm", "run", "android"), worktree, timeout_seconds)
+                self._run_text(("npm", "run", "android"), _expo_project_dir(worktree), timeout_seconds)
                 capture_ready_app()
         finally:
             emulator_cleanup()
@@ -905,6 +905,14 @@ def _open_android_url(
     if package.strip():
         args.extend(("-p", shlex.quote(package.strip())))
     run_text(tuple(args), cwd, timeout)
+
+
+def _android_run_command(package: str) -> tuple[str, ...]:
+    clean_package = package.strip()
+    if not clean_package:
+        return ("npm", "run", "android")
+
+    return ("npx", "expo", "run:android", "--app-id", clean_package)
 
 
 def _resolve_android_launch_activity(adb: tuple[str, ...], cwd: Path, package: str) -> str:

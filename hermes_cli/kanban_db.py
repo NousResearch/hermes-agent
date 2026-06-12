@@ -5895,10 +5895,18 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT last_failure_error, result FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
+        return None
+    # Task already has a recorded result — work is done, skip all respawn
+    # guards. Same posture as the claim_task structural invariant: a task
+    # with result data should not be re-spawned regardless of recent
+    # failure history, active PRs, or rate-limit cooldowns. Re-spawning
+    # such a task risks duplicate PRs, double-charging provider quotas,
+    # or re-running work that the user already approved.
+    if row["result"] is not None:
         return None
 
     now = int(time.time())

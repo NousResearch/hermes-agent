@@ -24,7 +24,6 @@ Pure helpers that read the agent's state.  AIAgent keeps thin forwarders.
 from __future__ import annotations
 
 import json
-import os
 from typing import Any, Dict, List, Optional
 
 from agent.prompt_builder import (
@@ -37,10 +36,12 @@ from agent.prompt_builder import (
     PLATFORM_HINTS,
     SESSION_SEARCH_GUIDANCE,
     SKILLS_GUIDANCE,
+    STEER_CHANNEL_NOTE,
     TASK_COMPLETION_GUIDANCE,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
 )
+from agent.runtime_cwd import resolve_context_cwd
 
 
 def _ra():
@@ -131,6 +132,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if tool_guidance:
         stable_parts.append(" ".join(tool_guidance))
 
+    # Steering only lands inside tool results, so it's only reachable when the
+    # agent has tools. Static text → byte-stable prompt (no cache hit).
+    if agent.valid_tool_names:
+        stable_parts.append(STEER_CHANNEL_NOTE)
+
     # Computer-use (macOS) — goes in as its own block rather than being
     # merged into tool_guidance because the content is multi-paragraph.
     if "computer_use" in agent.valid_tool_names:
@@ -185,9 +191,23 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             )
             if toolset
         }
+        # Focus mode (opt-in) demotes non-coding skill categories to
+        # names-only in the index (never hidden — skill_view/skills_list
+        # reach everything, and every name stays visible for recall). The
+        # default coding posture leaves the index untouched.
+        _compact_cats = frozenset()
+        try:
+            from agent.coding_context import coding_compact_skill_categories
+
+            _compact_cats = coding_compact_skill_categories(
+                platform=agent.platform, cwd=resolve_context_cwd()
+            )
+        except Exception:
+            _compact_cats = frozenset()
         skills_prompt = _r.build_skills_system_prompt(
             available_tools=agent.valid_tool_names,
             available_toolsets=avail_toolsets,
+            compact_categories=_compact_cats or None,
         )
     else:
         skills_prompt = ""
@@ -214,6 +234,26 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _env_hints = _r.build_environment_hints()
     if _env_hints:
         stable_parts.append(_env_hints)
+
+    # Coding posture (base Hermes, any interactive coding surface in a code
+    # workspace — see agent/coding_context.py). The operating brief + the live
+    # git/workspace snapshot are built once here and cached for the session;
+    # the snapshot is never re-probed per turn (that would break the prompt
+    # cache), so the brief tells the model to re-check git before relying on it.
+    if agent.valid_tool_names:
+        try:
+            from agent.coding_context import coding_system_blocks
+
+            stable_parts.extend(
+                coding_system_blocks(
+                    platform=agent.platform,
+                    cwd=resolve_context_cwd(),
+                    model=agent.model,
+                )
+            )
+        except Exception:
+            # Coding-context probing must never block prompt build.
+            pass
 
     # Local Python toolchain probe — names python/pip/uv/PEP-668 state when
     # something is non-default so the model can pick the right install
@@ -288,13 +328,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         context_parts.append(system_message)
 
     if not agent.skip_context_files:
-        # Use TERMINAL_CWD for context file discovery when set (gateway
-        # mode).  The gateway process runs from the hermes-agent install
-        # dir, so os.getcwd() would pick up the repo's AGENTS.md and
-        # other dev files — inflating token usage by ~10k for no benefit.
-        _context_cwd = os.getenv("TERMINAL_CWD") or None
+        # Prefer the configured TERMINAL_CWD (gateway mode). When unset (local
+        # CLI), None lets build_context_files_prompt fall back to the launch
+        # dir — the user's real cwd there, but the install dir for the gateway
+        # daemon, which is why the gateway sets TERMINAL_CWD.
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=_context_cwd, skip_soul=_soul_loaded)
+            cwd=resolve_context_cwd(), skip_soul=_soul_loaded)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

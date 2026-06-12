@@ -780,8 +780,8 @@ class TestSyncTurn:
         assert item["metadata"]["turn_index"] == "3"
         assert item["metadata"]["message_count"] == "6"
 
-    def test_sync_turn_accumulates_full_session(self, provider_with_config):
-        """Each retain sends the ENTIRE session, not just the latest batch."""
+    def test_sync_turn_accumulates_full_session_without_append_support(self, provider_with_config):
+        """Legacy/overwrite APIs (no update_mode=append) resend the ENTIRE session each retain."""
         p = provider_with_config(retain_every_n_turns=2)
 
         p.sync_turn("turn1-user", "turn1-asst")
@@ -795,11 +795,58 @@ class TestSyncTurn:
         p._retain_queue.join()
 
         content = p._client.aretain_batch.call_args.kwargs["items"][0]["content"]
-        # Should contain ALL turns from the session
+        # Without append support the document is overwritten, so it must
+        # contain ALL turns from the session.
         assert "turn1-user" in content
         assert "turn2-user" in content
         assert "turn3-user" in content
         assert "turn4-user" in content
+
+    def test_sync_turn_appends_only_delta_when_append_supported(self, provider_with_config, monkeypatch):
+        """On append-capable APIs each retain ships only the new turns, not the whole session."""
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_version",
+            lambda *a, **kw: "0.5.6",
+        )
+        from plugins.memory.hindsight import _append_capability_cache, _append_capability_lock
+        # Clear before AND after: the capability cache is module-global and keyed
+        # per api_url, so a stale entry would leak into other tests.
+        with _append_capability_lock:
+            _append_capability_cache.clear()
+        try:
+            p = provider_with_config(retain_every_n_turns=2)
+
+            p.sync_turn("turn1-user", "turn1-asst")
+            p.sync_turn("turn2-user", "turn2-asst")
+            p._retain_queue.join()
+
+            first = p._client.aretain_batch.call_args.kwargs
+            first_item = first["items"][0]
+            assert first["document_id"] == "test-session"
+            assert first_item["update_mode"] == "append"
+            assert "turn1-user" in first_item["content"]
+            assert "turn2-user" in first_item["content"]
+
+            p._client.aretain_batch.reset_mock()
+
+            p.sync_turn("turn3-user", "turn3-asst")
+            p.sync_turn("turn4-user", "turn4-asst")
+            p._retain_queue.join()
+
+            second = p._client.aretain_batch.call_args.kwargs
+            second_item = second["items"][0]
+            assert second["document_id"] == "test-session"
+            assert second_item["update_mode"] == "append"
+            # Only the delta — the already-retained turns must NOT be resent.
+            assert "turn1-user" not in second_item["content"]
+            assert "turn2-user" not in second_item["content"]
+            assert "turn3-user" in second_item["content"]
+            assert "turn4-user" in second_item["content"]
+            # message_count reflects only the delta (2 turns -> 4 messages).
+            assert second_item["metadata"]["message_count"] == "4"
+        finally:
+            with _append_capability_lock:
+                _append_capability_cache.clear()
 
     def test_sync_turn_passes_document_id(self, provider):
         """sync_turn should pass document_id (session_id + per-startup ts)."""

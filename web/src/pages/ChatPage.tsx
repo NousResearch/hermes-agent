@@ -36,11 +36,14 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
+import { useTheme } from "@/themes";
+import { useProfileScope } from "@/contexts/useProfileScope";
 
 function buildWsUrl(
   authParam: [string, string],
   resume: string | null,
   channel: string,
+  profile: string,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   // ``authParam`` is ``["token", <session>]`` in loopback mode and
@@ -48,6 +51,10 @@ function buildWsUrl(
   // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
   const qs = new URLSearchParams({ [authParam[0]]: authParam[1], channel });
   if (resume) qs.set("resume", resume);
+  // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
+  // selected profile, so the conversation runs with that profile's model,
+  // skills, memory, and sessions (see web_server._resolve_chat_argv).
+  if (profile) qs.set("profile", profile);
   return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
 }
 
@@ -66,8 +73,9 @@ function generateChannelId(): string {
 // with cream foreground — we intentionally don't pick monokai or a loud
 // theme, because the TUI's skin engine already paints the content; the
 // terminal chrome just needs to sit quietly inside the dashboard.
-const TERMINAL_THEME = {
-  background: "#0d2626",
+// `background` is omitted here — it's supplied dynamically from the active
+// theme's `terminalBackground` field so users can control it via YAML themes.
+const TERMINAL_THEME_STATIC = {
   foreground: "#f0e6d2",
   cursor: "#f0e6d2",
   cursorAccent: "#0d2626",
@@ -157,6 +165,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       : false,
   );
 
+  const { theme } = useTheme();
+  const terminalBg = theme.terminalBackground ?? "#000000";
+  const terminalTheme = useMemo(
+    () => ({ ...TERMINAL_THEME_STATIC, background: terminalBg }),
+    [terminalBg],
+  );
+
   // The dashboard keeps ChatPage mounted persistently so the PTY survives tab
   // switches. That is great for ordinary /chat navigation, but it means query
   // param changes do NOT remount the component. Resume-in-chat from the
@@ -164,7 +179,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  // Profile-scoped chat: spawn the PTY under the globally selected
+  // management profile. Changing it remounts the terminal (key below /
+  // effect dep) so the user explicitly starts a fresh scoped session.
+  const { profile: scopedProfile } = useProfileScope();
+  const channel = useMemo(() => generateChannelId(), [resumeParam, scopedProfile]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -312,7 +331,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
-      theme: TERMINAL_THEME,
+      theme: terminalTheme,
     });
     termRef.current = term;
 
@@ -567,7 +586,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     void (async () => {
       const authParam = await buildWsAuthParam();
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel);
+      const url = buildWsUrl(authParam, resumeParam, channel, scopedProfile);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -594,19 +613,50 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (unmounting) {
         return;
       }
+      // Surface the real cause to the browser console on every close so a
+      // "chat won't connect" report can be diagnosed without server access.
+      // The server sends a machine-parseable reason on every rejection (see
+      // pty_ws in web_server.py); echo it verbatim alongside the close code.
+      const why = ev.reason ? ` reason=${ev.reason}` : "";
+      console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
       if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
+        setBanner(
+          ev.reason
+            ? `Auth failed (${ev.reason}). Reload to refresh the session.`
+            : "Auth failed. Reload the page to refresh the session token.",
+        );
         return;
       }
       if (ev.code === 4403) {
-        setBanner("Chat is only reachable from localhost.");
+        // Host/Origin mismatch (DNS-rebinding guard).
+        setBanner(
+          ev.reason
+            ? `Refused: ${ev.reason}.`
+            : "Refused: request host/origin doesn't match the dashboard.",
+        );
+        return;
+      }
+      if (ev.code === 4404) {
+        setBanner(
+          "Embedded chat is disabled on this server (start it with --tui).",
+        );
+        return;
+      }
+      if (ev.code === 4408) {
+        setBanner(
+          ev.reason
+            ? `Refused: ${ev.reason}.`
+            : "Refused: your client isn't permitted (server bound to localhost only).",
+        );
         return;
       }
       if (ev.code === 1011) {
         // Server already wrote an ANSI error frame.
         return;
       }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+      term.write(
+        `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
+      );
     };
 
     // Keystrokes → PTY.
@@ -674,7 +724,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, scopedProfile]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -720,6 +770,14 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (raf2) cancelAnimationFrame(raf2);
     };
   }, [isActive]);
+
+  // Keep the live xterm theme in sync when the active theme's terminal
+  // background changes (e.g. user switches to a custom YAML theme mid-session).
+  useEffect(() => {
+    const term = termRef.current;
+    if (!term) return;
+    term.options.theme = { ...TERMINAL_THEME_STATIC, background: terminalBg };
+  }, [terminalBg]);
 
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
@@ -828,7 +886,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             "p-2 sm:p-3",
           )}
           style={{
-            backgroundColor: TERMINAL_THEME.background,
+            backgroundColor: terminalBg,
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
@@ -852,7 +910,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
               "lg:bottom-4 lg:right-4",
             )}
-            style={{ color: TERMINAL_THEME.foreground }}
+            style={{ color: TERMINAL_THEME_STATIC.foreground }}
           >
             <span className="inline-flex items-center gap-1.5">
               <Copy className="h-3 w-3 shrink-0" />

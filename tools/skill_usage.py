@@ -55,6 +55,28 @@ STATE_STALE = "stale"
 STATE_ARCHIVED = "archived"
 _VALID_STATES = {STATE_ACTIVE, STATE_STALE, STATE_ARCHIVED}
 
+# Load-bearing bundled built-ins the curator must NEVER archive or consolidate,
+# regardless of ``curator.prune_builtins``, pin state, or LLM judgment. These
+# back advertised UX paths (e.g. ``plan`` powers the ``/plan`` slash-command
+# flow and is referenced in tips/docs/fresh-profile seeding); silently archiving
+# one turns its slash command into "Unknown command" with no signal to the user.
+# Protection is by skill ``name`` (frontmatter ``name:``), matching the keys used
+# throughout this module. Keep this list tiny and intentional — it is not a
+# substitute for ``curator.prune_builtins: false``, which exempts ALL built-ins.
+PROTECTED_BUILTIN_SKILLS: Set[str] = {
+    "plan",
+}
+
+
+def is_protected_builtin(skill_name: str) -> bool:
+    """Whether *skill_name* is a load-bearing built-in the curator never touches.
+
+    Protected built-ins are exempt from archival and consolidation on every
+    path: the automatic state-transition walk, the LLM consolidation pass (they
+    are dropped from the candidate list), and direct ``archive_skill`` calls.
+    """
+    return skill_name in PROTECTED_BUILTIN_SKILLS
+
 
 def _skills_dir() -> Path:
     return get_hermes_home() / "skills"
@@ -338,6 +360,10 @@ def list_agent_created_skill_names() -> List[str]:
         # Hub-installed skills are always off-limits.
         if name in hub:
             continue
+        # Protected built-ins are never curation candidates — exempt from the
+        # automatic transition walk AND the LLM consolidation pass.
+        if is_protected_builtin(name):
+            continue
         if name in bundled:
             # Built-ins are only candidates when pruning is enabled. They never
             # carry a curator-managed record, so the record gate is skipped.
@@ -407,8 +433,12 @@ def is_curation_eligible(skill_name: str) -> bool:
 
     Agent-created skills are always eligible. Bundled built-ins become eligible
     only when ``curator.prune_builtins`` is enabled. Hub-installed skills are
-    NEVER eligible — they have an external upstream owner.
+    NEVER eligible — they have an external upstream owner. Protected built-ins
+    (``PROTECTED_BUILTIN_SKILLS``) are NEVER eligible regardless of any flag —
+    they back load-bearing UX and must never be archived or consolidated.
     """
+    if is_protected_builtin(skill_name):
+        return False
     if is_hub_installed(skill_name):
         return False
     if is_bundled(skill_name):
@@ -648,6 +678,11 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
     update-time re-seeder leaves it archived instead of restoring it.
     """
     if not is_curation_eligible(skill_name):
+        if is_protected_builtin(skill_name):
+            return False, (
+                f"skill '{skill_name}' is a protected built-in; it backs "
+                "load-bearing UX and is never archived or consolidated"
+            )
         if is_hub_installed(skill_name):
             return False, f"skill '{skill_name}' is hub-installed; never archive"
         return False, (

@@ -2,6 +2,8 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
+import { $connection } from '@/store/session'
+
 import { clearProjectDirCache, readProjectDir } from './ipc'
 
 export interface TreeNode {
@@ -14,11 +16,14 @@ export interface TreeNode {
   children?: TreeNode[]
   /** True while a readDir for this folder is in flight. */
   loading?: boolean
+  /** Synthetic loading/error rows are not real filesystem entries. */
+  placeholder?: 'error' | 'loading'
   /** Last error code from readDir (e.g. EACCES). Cleared on next successful load. */
   error?: string
 }
 
 const PLACEHOLDER_ID = '__loading__'
+const ERROR_PLACEHOLDER_ID = '__error__'
 
 function makeNode(path: string, name: string, isDirectory: boolean): TreeNode {
   return { id: path, isDirectory, name }
@@ -43,20 +48,33 @@ function patchNode(nodes: TreeNode[] | undefined | null, id: string, patch: (n: 
 }
 
 function placeholderChild(parentId: string): TreeNode {
-  return { id: `${parentId}::${PLACEHOLDER_ID}`, isDirectory: false, name: 'Loading…' }
+  return { id: `${parentId}::${PLACEHOLDER_ID}`, isDirectory: false, name: 'Loading…', placeholder: 'loading' }
+}
+
+function errorChild(parentId: string, error: string | undefined): TreeNode {
+  return {
+    id: `${parentId}::${ERROR_PLACEHOLDER_ID}`,
+    isDirectory: false,
+    name: `Unable to read (${error || 'read-error'})`,
+    placeholder: 'error'
+  }
 }
 
 export interface UseProjectTreeResult {
+  /** Bumped by collapseAll so callers can remount the tree fully collapsed. */
+  collapseNonce: number
   data: TreeNode[]
   openState: Record<string, boolean>
   rootError: string | null
   rootLoading: boolean
+  collapseAll: () => void
   loadChildren: (id: string) => Promise<void>
   refreshRoot: () => Promise<void>
   setNodeOpen: (id: string, open: boolean) => void
 }
 
 interface ProjectTreeState {
+  collapseNonce: number
   cwd: string
   data: TreeNode[]
   loaded: boolean
@@ -67,6 +85,7 @@ interface ProjectTreeState {
 }
 
 const initialState: ProjectTreeState = {
+  collapseNonce: 0,
   cwd: '',
   data: [],
   loaded: false,
@@ -79,6 +98,7 @@ const initialState: ProjectTreeState = {
 const inflight = new Set<string>()
 const $projectTree = atom<ProjectTreeState>(initialState)
 let nextRootRequestId = 0
+let lastConnectionKey = ''
 
 function setProjectTree(updater: (current: ProjectTreeState) => ProjectTreeState) {
   $projectTree.set(updater($projectTree.get()))
@@ -112,6 +132,7 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
   }
 
   $projectTree.set({
+    collapseNonce: current.collapseNonce,
     cwd,
     data: [],
     loaded: false,
@@ -139,6 +160,7 @@ async function loadRoot(cwd: string, { force = false }: { force?: boolean } = {}
 }
 
 export function resetProjectTreeState() {
+  lastConnectionKey = ''
   clearProjectTree()
   clearProjectDirCache()
 }
@@ -152,6 +174,8 @@ export function resetProjectTreeState() {
  */
 export function useProjectTree(cwd: string): UseProjectTreeResult {
   const state = useStore($projectTree)
+  const connection = useStore($connection)
+  const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
 
   const refreshRoot = useCallback(() => loadRoot(cwd, { force: true }), [cwd])
 
@@ -173,6 +197,19 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     },
     [cwd]
   )
+
+  // Clears the recorded open state and bumps the nonce; the tree is keyed on
+  // the nonce so it remounts with everything collapsed (loaded children stay
+  // cached in `data`, just hidden).
+  const collapseAll = useCallback(() => {
+    setProjectTree(current => {
+      if (current.cwd !== cwd) {
+        return current
+      }
+
+      return { ...current, collapseNonce: current.collapseNonce + 1, openState: {} }
+    })
+  }, [cwd])
 
   const loadChildren = useCallback(
     async (id: string) => {
@@ -208,7 +245,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
             ...n,
             loading: false,
             error: error || undefined,
-            children: error ? [] : entries.map(e => makeNode(e.path, e.name, e.isDirectory))
+            children: error ? [errorChild(n.id, error)] : entries.map(e => makeNode(e.path, e.name, e.isDirectory))
           }))
         }
       })
@@ -217,11 +254,20 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
   )
 
   useEffect(() => {
+    const connectionChanged = lastConnectionKey !== '' && lastConnectionKey !== connectionKey
+    lastConnectionKey = connectionKey
+    if (connectionChanged) {
+      clearProjectDirCache()
+      void loadRoot(cwd, { force: true })
+      return
+    }
     void loadRoot(cwd)
-  }, [cwd])
+  }, [connectionKey, cwd])
 
   return useMemo(
     () => ({
+      collapseAll,
+      collapseNonce: state.cwd === cwd ? state.collapseNonce : 0,
       data: state.cwd === cwd ? state.data : [],
       loadChildren,
       openState: state.cwd === cwd ? state.openState : {},
@@ -231,10 +277,12 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       setNodeOpen
     }),
     [
+      collapseAll,
       cwd,
       loadChildren,
       refreshRoot,
       setNodeOpen,
+      state.collapseNonce,
       state.cwd,
       state.data,
       state.openState,

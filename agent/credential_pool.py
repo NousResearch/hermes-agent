@@ -656,8 +656,9 @@ class CredentialPool:
         if self.provider != "xai-oauth" or entry.source != "loopback_pkce":
             return entry
         try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
+            auth_file = auth_mod._xai_oauth_read_auth_file_path()
+            with _auth_store_lock(auth_file=auth_file):
+                auth_store = _load_auth_store(auth_file)
                 state = _load_provider_state(auth_store, "xai-oauth")
             if not isinstance(state, dict):
                 return entry
@@ -797,8 +798,12 @@ class CredentialPool:
         if entry.source not in {"device_code", "loopback_pkce"}:
             return
         try:
-            with _auth_store_lock():
-                auth_store = _load_auth_store()
+            auth_file = (
+                auth_mod._xai_oauth_write_auth_file_path()
+                if self.provider == "xai-oauth" else None
+            )
+            with _auth_store_lock(auth_file=auth_file):
+                auth_store = _load_auth_store(auth_file) if auth_file is not None else _load_auth_store()
                 if self.provider == "nous":
                     state = _load_provider_state(auth_store, "nous")
                     if state is None:
@@ -853,7 +858,7 @@ class CredentialPool:
                 else:
                     return
 
-                _save_auth_store(auth_store)
+                _save_auth_store(auth_store, auth_file=auth_file)
         except Exception as exc:
             logger.debug("Failed to sync %s pool entry back to auth store: %s", self.provider, exc)
 
@@ -1013,8 +1018,9 @@ class CredentialPool:
                         "xAI OAuth refresh token is terminally invalid; clearing local token state"
                     )
                     try:
-                        with _auth_store_lock():
-                            auth_store = _load_auth_store()
+                        auth_file = auth_mod._xai_oauth_write_auth_file_path()
+                        with _auth_store_lock(auth_file=auth_file):
+                            auth_store = _load_auth_store(auth_file)
                             state = _load_provider_state(auth_store, "xai-oauth") or {}
                             if isinstance(state, dict):
                                 tokens = state.get("tokens") or {}
@@ -1034,7 +1040,7 @@ class CredentialPool:
                                             "at": datetime.now(timezone.utc).isoformat(),
                                         }
                                         _save_provider_state(auth_store, "xai-oauth", state)
-                                        _save_auth_store(auth_store)
+                                        _save_auth_store(auth_store, auth_file=auth_file)
                     except Exception as clear_exc:
                         logger.debug(
                             "Failed to clear terminal xAI OAuth state: %s", clear_exc

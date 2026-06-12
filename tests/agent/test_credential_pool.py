@@ -6,6 +6,7 @@ import base64
 import json
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -2824,6 +2825,58 @@ def test_xai_oauth_terminal_refresh_clears_auth_json_and_removes_pool_entries(
     # (pool is now empty of loopback entries and current is None).
     assert pool.try_refresh_current() is None
     assert refresh_calls["count"] == 1
+
+
+def test_xai_oauth_terminal_refresh_clears_global_auth_from_profile(
+    tmp_path, monkeypatch
+):
+    """Profile workers must quarantine the shared root xAI singleton, not their local copy."""
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    global_root = tmp_path / ".hermes"
+    profile_home = global_root / "profiles" / "coder"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(profile_home))
+    monkeypatch.delenv("XAI_API_KEY", raising=False)
+    monkeypatch.delenv("XAI_OAUTH_ACCESS_TOKEN", raising=False)
+
+    global_auth = global_root / "auth.json"
+    global_auth.write_text(json.dumps(_xai_auth_store("root-access", "root-refresh"), indent=2))
+    profile_auth = profile_home / "auth.json"
+    profile_auth.write_text(json.dumps(_xai_auth_store("profile-access", "profile-refresh"), indent=2))
+
+    from agent.credential_pool import load_pool
+    import hermes_cli.auth as auth_mod
+    from hermes_cli.auth import AuthError
+
+    pool = load_pool("xai-oauth")
+    selected = pool.select()
+    assert selected is not None
+    assert selected.source == "loopback_pkce"
+    assert selected.refresh_token == "root-refresh"
+
+    def _terminal_refresh_failure(*_args, **_kwargs):
+        raise AuthError(
+            "Refresh session has been revoked",
+            provider="xai-oauth",
+            code="xai_refresh_failed",
+            relogin_required=True,
+        )
+
+    monkeypatch.setattr(auth_mod, "refresh_xai_oauth_pure", _terminal_refresh_failure)
+
+    assert pool.try_refresh_current() is None
+
+    global_payload = json.loads(global_auth.read_text())
+    global_tokens = global_payload["providers"]["xai-oauth"].get("tokens", {})
+    assert not global_tokens.get("access_token")
+    assert not global_tokens.get("refresh_token")
+    assert global_payload["providers"]["xai-oauth"]["last_auth_error"]["code"] == "xai_refresh_failed"
+    assert global_payload["credential_pool"]["xai-oauth"] == []
+
+    profile_payload = json.loads(profile_auth.read_text())
+    profile_tokens = profile_payload["providers"]["xai-oauth"]["tokens"]
+    assert profile_tokens["access_token"] == "profile-access"
+    assert profile_tokens["refresh_token"] == "profile-refresh"
 
 
 def test_xai_oauth_nonterminal_refresh_does_not_quarantine(tmp_path, monkeypatch):

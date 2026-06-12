@@ -941,11 +941,71 @@ def _load_global_auth_store() -> Dict[str, Any]:
         return {}
 
 
-def _auth_lock_path() -> Path:
-    return _auth_file_path().with_suffix(".lock")
+def _load_global_provider_state(provider_id: str) -> Optional[Dict[str, Any]]:
+    """Return one provider state from the global-root auth store, if present."""
+    global_store = _load_global_auth_store()
+    if not global_store:
+        return None
+    global_providers = global_store.get("providers")
+    if isinstance(global_providers, dict):
+        global_state = global_providers.get(provider_id)
+        if isinstance(global_state, dict):
+            return dict(global_state)
+    return None
+
+
+def _xai_oauth_state_has_runtime_tokens(state: Any) -> bool:
+    tokens = state.get("tokens") if isinstance(state, dict) else None
+    return bool(
+        isinstance(tokens, dict)
+        and str(tokens.get("access_token") or "").strip()
+        and str(tokens.get("refresh_token") or "").strip()
+    )
+
+
+def _xai_oauth_global_auth_file_path() -> Optional[Path]:
+    """Return the canonical shared xAI OAuth auth.json in profile mode."""
+    return _global_auth_file_path()
+
+
+def _xai_oauth_write_auth_file_path() -> Path:
+    """xAI OAuth is profile-shared; profile processes write the root auth.json."""
+    return _xai_oauth_global_auth_file_path() or _auth_file_path()
+
+
+def _xai_oauth_read_auth_file_path() -> Path:
+    """Prefer the shared root xAI OAuth store when it already has tokens."""
+    global_path = _xai_oauth_global_auth_file_path()
+    if global_path is not None and global_path.exists():
+        try:
+            global_store = _load_auth_store(global_path)
+            providers = global_store.get("providers")
+            state = providers.get("xai-oauth") if isinstance(providers, dict) else None
+            if _xai_oauth_state_has_runtime_tokens(state):
+                return global_path
+        except Exception:
+            pass
+    return _auth_file_path()
+
+
+def _auth_lock_path(auth_file: Optional[Path] = None) -> Path:
+    return (auth_file or _auth_file_path()).with_suffix(".lock")
 
 
 _auth_lock_holder = threading.local()
+_auth_lock_holders_by_path: Dict[str, threading.local] = {}
+_auth_lock_holders_guard = threading.Lock()
+
+
+def _auth_lock_holder_for_path(lock_path: Path) -> threading.local:
+    """Return a reentrancy holder scoped to one auth-store lock file."""
+    key = str(lock_path.resolve(strict=False))
+    with _auth_lock_holders_guard:
+        holder = _auth_lock_holders_by_path.get(key)
+        if holder is None:
+            holder = threading.local()
+            _auth_lock_holders_by_path[key] = holder
+        return holder
 
 
 @contextmanager
@@ -1021,7 +1081,10 @@ def _file_lock(
 
 
 @contextmanager
-def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
+def _auth_store_lock(
+    timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS,
+    auth_file: Optional[Path] = None,
+):
     """Cross-process advisory lock for auth.json reads+writes.  Reentrant.
 
     Lock ordering invariant: when this lock is held together with
@@ -1031,8 +1094,8 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     against a concurrent import on the shared store.
     """
     with _file_lock(
-        _auth_lock_path(),
-        _auth_lock_holder,
+        _auth_lock_path(auth_file),
+        _auth_lock_holder_for_path(_auth_lock_path(auth_file)),
         timeout_seconds,
         "Timed out waiting for auth store lock",
     ):
@@ -1079,8 +1142,22 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
-    auth_file = _auth_file_path()
+def _save_auth_store(auth_store: Dict[str, Any], auth_file: Optional[Path] = None) -> Path:
+    auth_file = auth_file or _auth_file_path()
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_env = os.environ.get("HOME", "")
+        if real_home_env:
+            real_auth = (Path(real_home_env) / ".hermes" / "auth.json").resolve(strict=False)
+            try:
+                if auth_file.resolve(strict=False) == real_auth:
+                    raise RuntimeError(
+                        f"Refusing to touch real user auth store during test run: {auth_file}. "
+                        "Set HERMES_HOME/HOME to a tmp_path in your test fixture."
+                    )
+            except RuntimeError:
+                raise
+            except Exception:
+                pass
     auth_file.parent.mkdir(parents=True, exist_ok=True)
     # Tighten parent dir to 0o700 so siblings can't traverse to creds.
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
@@ -1138,7 +1215,17 @@ def _load_provider_state(auth_store: Dict[str, Any], provider_id: str) -> Option
     global scope. Once the user runs ``hermes auth login <provider>`` inside
     the profile, the profile state fully shadows the global state on the next
     read. See issue #18594 follow-up.
+
+    Exception: ``xai-oauth`` uses single-use refresh tokens and must be shared
+    across named profiles.  When the global-root xAI singleton has runtime
+    tokens, it is canonical even if a profile still has a stale legacy
+    ``providers.xai-oauth`` block.
     """
+    if provider_id == "xai-oauth":
+        global_state = _load_global_provider_state(provider_id)
+        if _xai_oauth_state_has_runtime_tokens(global_state):
+            return global_state
+
     providers = auth_store.get("providers")
     if isinstance(providers, dict):
         state = providers.get(provider_id)
@@ -1212,7 +1299,7 @@ def get_auth_provider_display_name(provider_id: str) -> str:
     return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
-def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
+def read_credential_pool(provider_id: Optional[str] = None) -> Any:
     """Return the persisted credential pool, or one provider slice.
 
     In profile mode, the profile's credential pool is authoritative. If a
@@ -1225,7 +1312,12 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     ``hermes auth add <provider>`` inside the profile, profile entries
     fully shadow global for that provider on the next read.
 
-    Writes always go to the profile (``write_credential_pool`` is unchanged).
+    Exception: ``xai-oauth`` is global-root canonical in profile mode because
+    its OAuth refresh tokens are single-use.  Named profiles borrow the root
+    xAI pool when present instead of shadowing it with stale legacy copies.
+
+    Writes always go to the profile (``write_credential_pool`` is unchanged),
+    except ``xai-oauth`` writes in profile mode go to the shared root store.
     See issue #18594 follow-up.
     """
     auth_store = _load_auth_store()
@@ -1244,6 +1336,12 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
         for gp_key, gp_entries in global_pool.items():
             if not isinstance(gp_entries, list) or not gp_entries:
                 continue
+            # xAI OAuth refresh tokens are single-use and shared across named
+            # profiles.  The global-root pool is canonical whenever it exists;
+            # stale profile-local xai-oauth pools must not shadow it.
+            if gp_key == "xai-oauth":
+                merged[gp_key] = list(gp_entries)
+                continue
             # Per-provider shadowing: profile wins whenever it has ANY entries.
             existing = merged.get(gp_key)
             if isinstance(existing, list) and existing:
@@ -1251,11 +1349,14 @@ def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
             merged[gp_key] = list(gp_entries)
         return merged
 
+    global_entries = global_pool.get(provider_id)
+    if provider_id == "xai-oauth" and isinstance(global_entries, list) and global_entries:
+        return list(global_entries)
+
     provider_entries = pool.get(provider_id)
     if isinstance(provider_entries, list) and provider_entries:
         return list(provider_entries)
     # Profile has no entries for this provider — fall back to global.
-    global_entries = global_pool.get(provider_id)
     return list(global_entries) if isinstance(global_entries, list) else []
 
 
@@ -1266,8 +1367,9 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
     credentials. Callers may pass raw dictionaries, so sanitize here even when
     ``PooledCredential.to_dict()`` already did the same work upstream.
     """
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    auth_file = _xai_oauth_write_auth_file_path() if provider_id == "xai-oauth" else _auth_file_path()
+    with _auth_store_lock(auth_file=auth_file):
+        auth_store = _load_auth_store(auth_file)
         pool = auth_store.get("credential_pool")
         if not isinstance(pool, dict):
             pool = {}
@@ -1277,7 +1379,7 @@ def write_credential_pool(provider_id: str, entries: List[Dict[str, Any]]) -> Pa
             if isinstance(entry, dict) else entry
             for entry in entries
         ]
-        return _save_auth_store(auth_store)
+        return _save_auth_store(auth_store, auth_file=auth_file)
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
@@ -3825,11 +3927,12 @@ def _pool_codex_access_token() -> str:
 # =============================================================================
 
 def _read_xai_oauth_tokens(*, _lock: bool = True) -> Dict[str, Any]:
+    auth_file = _xai_oauth_read_auth_file_path()
     if _lock:
-        with _auth_store_lock():
-            auth_store = _load_auth_store()
+        with _auth_store_lock(auth_file=auth_file):
+            auth_store = _load_auth_store(auth_file)
     else:
-        auth_store = _load_auth_store()
+        auth_store = _load_auth_store(auth_file)
     state = _load_provider_state(auth_store, "xai-oauth")
     if not state:
         raise AuthError(
@@ -3879,8 +3982,9 @@ def _save_xai_oauth_tokens(
 ) -> None:
     if last_refresh is None:
         last_refresh = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    with _auth_store_lock():
-        auth_store = _load_auth_store()
+    auth_file = _xai_oauth_write_auth_file_path()
+    with _auth_store_lock(auth_file=auth_file):
+        auth_store = _load_auth_store(auth_file)
         state = _load_provider_state(auth_store, "xai-oauth") or {}
         state["tokens"] = tokens
         state["last_refresh"] = last_refresh
@@ -3890,7 +3994,7 @@ def _save_xai_oauth_tokens(
         if redirect_uri:
             state["redirect_uri"] = redirect_uri
         _save_provider_state(auth_store, "xai-oauth", state)
-        _save_auth_store(auth_store)
+        _save_auth_store(auth_store, auth_file=auth_file)
 
 
 def _xai_access_token_is_expiring(access_token: str, skew_seconds: int = 0) -> bool:
@@ -4204,7 +4308,11 @@ def resolve_xai_oauth_runtime_credentials(
     if (not should_refresh) and refresh_if_expiring:
         should_refresh = _xai_access_token_is_expiring(access_token, refresh_skew_seconds)
     if should_refresh:
-        with _auth_store_lock(timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0)):
+        xai_auth_file = _xai_oauth_write_auth_file_path()
+        with _auth_store_lock(
+            timeout_seconds=max(float(AUTH_LOCK_TIMEOUT_SECONDS), refresh_timeout_seconds + 5.0),
+            auth_file=xai_auth_file,
+        ):
             data = _read_xai_oauth_tokens(_lock=False)
             tokens = dict(data["tokens"])
             access_token = str(tokens.get("access_token", "") or "").strip()
@@ -4231,7 +4339,8 @@ def resolve_xai_oauth_runtime_credentials(
                         # Clear dead tokens from auth.json so subsequent sessions fail fast
                         # without a network retry. Mirrors credential_pool.py quarantine.
                         try:
-                            _q_store = _load_auth_store()
+                            _q_auth_file = _xai_oauth_write_auth_file_path()
+                            _q_store = _load_auth_store(_q_auth_file)
                             _q_state = _load_provider_state(_q_store, "xai-oauth") or {}
                             _q_tokens = dict(_q_state.get("tokens") or {})
                             _q_tokens.pop("access_token", None)
@@ -4246,7 +4355,7 @@ def resolve_xai_oauth_runtime_credentials(
                                 "at": datetime.now(timezone.utc).isoformat(),
                             }
                             _store_provider_state(_q_store, "xai-oauth", _q_state, set_active=False)
-                            _save_auth_store(_q_store)
+                            _save_auth_store(_q_store, auth_file=_q_auth_file)
                         except Exception as _save_exc:
                             logger.debug(
                                 "xAI OAuth: failed to persist quarantined state: %s", _save_exc,

@@ -319,6 +319,98 @@ def test_load_provider_state_profile_wins_over_global(profile_env):
     assert state["access_token"] == "profile-token"
 
 
+def test_xai_oauth_provider_state_prefers_global_over_stale_profile(profile_env):
+    """xAI OAuth is shared across profiles; stale profile state must not shadow root."""
+    from hermes_cli.auth import _load_auth_store, _load_provider_state
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={
+        "xai-oauth": {"tokens": {"access_token": "global-access", "refresh_token": "global-refresh"}},
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "xai-oauth": {"tokens": {"access_token": "profile-access", "refresh_token": "profile-refresh"}},
+    }))
+
+    auth_store = _load_auth_store()
+    state = _load_provider_state(auth_store, "xai-oauth")
+    assert state is not None
+    assert state["tokens"]["access_token"] == "global-access"
+
+
+def test_xai_oauth_pool_prefers_global_over_profile_entries(profile_env):
+    """A profile-local xai-oauth pool is legacy shadow state; root is canonical."""
+    from hermes_cli.auth import read_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(pool={
+        "xai-oauth": [{
+            "id": "global-xai",
+            "label": "root",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "loopback_pkce",
+            "access_token": "global-access",
+            "refresh_token": "global-refresh",
+        }],
+    }))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(pool={
+        "xai-oauth": [{
+            "id": "profile-xai",
+            "label": "stale-profile",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "loopback_pkce",
+            "access_token": "profile-access",
+            "refresh_token": "profile-refresh",
+        }],
+    }))
+
+    entries = read_credential_pool("xai-oauth")
+    assert [entry["id"] for entry in entries] == ["global-xai"]
+
+    merged = read_credential_pool(None)
+    assert [entry["id"] for entry in merged["xai-oauth"]] == ["global-xai"]
+
+
+def test_xai_oauth_writes_target_global_store_from_profile(profile_env):
+    """Profile refreshes must rotate the shared root xAI singleton/pool, not fork."""
+    from hermes_cli.auth import _save_xai_oauth_tokens, write_credential_pool
+
+    _write(profile_env["global"] / "auth.json", _make_auth_store(providers={}))
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={
+        "xai-oauth": {"tokens": {"access_token": "old-profile", "refresh_token": "old-profile-rt"}},
+    }, pool={
+        "xai-oauth": [{
+            "id": "profile-xai",
+            "label": "stale-profile",
+            "auth_type": "oauth",
+            "priority": 0,
+            "source": "loopback_pkce",
+            "access_token": "old-profile",
+            "refresh_token": "old-profile-rt",
+        }],
+    }))
+
+    _save_xai_oauth_tokens(
+        {"access_token": "new-global", "refresh_token": "new-global-rt"},
+        last_refresh="2026-06-12T00:00:00Z",
+    )
+    write_credential_pool("xai-oauth", [{
+        "id": "global-xai",
+        "label": "root",
+        "auth_type": "oauth",
+        "priority": 0,
+        "source": "loopback_pkce",
+        "access_token": "new-global",
+        "refresh_token": "new-global-rt",
+    }])
+
+    global_data = json.loads((profile_env["global"] / "auth.json").read_text())
+    profile_data = json.loads((profile_env["profile"] / "auth.json").read_text())
+    assert global_data["providers"]["xai-oauth"]["tokens"]["access_token"] == "new-global"
+    assert global_data["credential_pool"]["xai-oauth"][0]["id"] == "global-xai"
+    assert profile_data["providers"]["xai-oauth"]["tokens"]["access_token"] == "old-profile"
+    assert profile_data["credential_pool"]["xai-oauth"][0]["id"] == "profile-xai"
+
+
 def test_load_provider_state_returns_none_when_neither_has_it(profile_env):
     from hermes_cli.auth import _load_auth_store, _load_provider_state
 

@@ -1,5 +1,7 @@
 """Tests for hermes_cli configuration management."""
 
+import builtins
+import io
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -7,6 +9,8 @@ from unittest.mock import patch
 import pytest
 import yaml
 
+import hermes_constants
+import hermes_cli.config as config_module
 from hermes_cli.config import (
     DEFAULT_CONFIG,
     check_config_version,
@@ -606,6 +610,80 @@ class TestSaveEnvValueSecure:
             parsed = dotenv_values(str(tmp_path / ".env"))
             assert parsed["ANTHROPIC_TOKEN"] == token
             assert load_env()["ANTHROPIC_TOKEN"] == token
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission behavior")
+class TestSecureFileContainerHandling:
+    @pytest.mark.parametrize("env_name", ["HERMES_CONTAINER", "HERMES_SKIP_CHMOD"])
+    def test_config_opt_out_preserves_existing_mode(
+        self, tmp_path, monkeypatch, env_name
+    ):
+        """Config-local opt-outs must not depend on global container detection."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model: test\n", encoding="utf-8")
+        os.chmod(config_path, 0o640)
+
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        monkeypatch.setenv(env_name, "1")
+        monkeypatch.setattr(config_module, "is_managed", lambda: False)
+        monkeypatch.setattr(hermes_constants, "is_container", lambda: False)
+
+        config_module._secure_file(config_path)
+
+        assert config_path.stat().st_mode & 0o777 == 0o640
+
+    def test_shared_kubernetes_signal_preserves_existing_mode(
+        self, tmp_path, monkeypatch
+    ):
+        """Config permissions must inherit Kubernetes detection from the shared probe."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model: test\n", encoding="utf-8")
+        os.chmod(config_path, 0o640)
+
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        monkeypatch.setenv("KUBERNETES_SERVICE_HOST", "10.43.0.1")
+        monkeypatch.setattr(hermes_constants, "_container_detected", None)
+        monkeypatch.setattr(config_module, "is_managed", lambda: False)
+
+        real_exists = os.path.exists
+        marker_paths = {"/.dockerenv", "/run/.containerenv"}
+        monkeypatch.setattr(
+            os.path,
+            "exists",
+            lambda path: False if path in marker_paths else real_exists(path),
+        )
+
+        real_open = builtins.open
+
+        def fake_open(path, *args, **kwargs):
+            if path == "/proc/1/cgroup":
+                return io.StringIO("0::/\n")
+            if path == "/proc/self/mountinfo":
+                return io.StringIO("22 21 0:20 / /sys rw - sysfs sysfs rw\n")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "open", fake_open)
+
+        config_module._secure_file(config_path)
+
+        assert config_path.stat().st_mode & 0o777 == 0o640
+
+    def test_regular_host_still_hardens_permissions(self, tmp_path, monkeypatch):
+        """Delegation must not weaken the owner-only default on regular hosts."""
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text("model: test\n", encoding="utf-8")
+        os.chmod(config_path, 0o640)
+
+        monkeypatch.delenv("HERMES_CONTAINER", raising=False)
+        monkeypatch.delenv("HERMES_SKIP_CHMOD", raising=False)
+        monkeypatch.setattr(config_module, "is_managed", lambda: False)
+        monkeypatch.setattr(config_module, "_running_in_container", lambda: False)
+
+        config_module._secure_file(config_path)
+
+        assert config_path.stat().st_mode & 0o777 == 0o600
 
 
 class TestRemoveEnvValue:
@@ -1926,5 +2004,4 @@ class TestCodexAppServerAutoConfig:
 
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text())
             assert raw["compression"]["codex_app_server_auto"] == "hermes"
-
 

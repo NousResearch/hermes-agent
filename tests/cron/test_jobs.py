@@ -54,6 +54,20 @@ class TestParseDuration:
         assert parse_duration("  30m  ") == 30
         assert parse_duration("2 h") == 120
 
+    def test_seconds(self):
+        assert parse_duration("30s") == 0.5
+        assert parse_duration("10sec") == pytest.approx(10 / 60)
+        assert parse_duration("45secs") == 0.75
+        assert parse_duration("1second") == pytest.approx(1 / 60)
+        assert parse_duration("90seconds") == 1.5
+        assert parse_duration("0.5s") == pytest.approx(0.5 / 60)
+        assert parse_duration("  15s  ") == 0.25
+
+    def test_decimal_values(self):
+        assert parse_duration("1.5m") == 1.5
+        assert parse_duration("0.5h") == 30
+        assert parse_duration("0.25d") == 360
+
     def test_invalid_raises(self):
         with pytest.raises(ValueError):
             parse_duration("abc")

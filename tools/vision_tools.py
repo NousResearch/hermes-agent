@@ -121,11 +121,36 @@ def _detect_image_mime_type(image_path: Path) -> Optional[str]:
         return "image/bmp"
     if len(header) >= 12 and header[:4] == b"RIFF" and header[8:12] == b"WEBP":
         return "image/webp"
+    from utils import looks_like_heic
+    if looks_like_heic(header):
+        return "image/heic"
     if image_path.suffix.lower() == ".svg":
         head = image_path.read_text(encoding="utf-8", errors="ignore")[:4096].lower()
         if "<svg" in head:
             return "image/svg+xml"
     return None
+
+
+def _maybe_transcode_heic(image_path: Path, mime: str) -> "tuple[Path, str]":
+    """Transcode a HEIC/HEIF image to a JPEG temp file for vision APIs.
+
+    Anthropic and OpenAI reject ``image/heic`` payloads, so when detection
+    reports HEIC we convert to JPEG (via utils.transcode_heic_to_jpeg —
+    pillow-heif or macOS sips) and return the new path + mime. The original
+    file is never modified. When no decoder is available, returns the
+    inputs unchanged so the provider error surfaces as before.
+    """
+    if mime not in ("image/heic", "image/heif"):
+        return image_path, mime
+    from utils import transcode_heic_to_jpeg
+
+    jpeg = transcode_heic_to_jpeg(image_path.read_bytes())
+    if jpeg is None:
+        return image_path, mime
+    temp_dir = get_hermes_dir("cache/vision", "temp_vision_images")
+    out_path = temp_dir / f"heic_transcoded_{uuid.uuid4()}.jpg"
+    out_path.write_bytes(jpeg)
+    return out_path, "image/jpeg"
 
 
 def _is_retryable_download_error(error: Exception) -> bool:
@@ -743,6 +768,9 @@ async def _vision_analyze_native(
                 "Only real image files are supported for vision analysis.",
                 success=False,
             )
+        temp_image_path, detected_mime_type = _maybe_transcode_heic(
+            temp_image_path, detected_mime_type,
+        )
 
         image_data_url = _image_to_base64_data_url(
             temp_image_path, mime_type=detected_mime_type,
@@ -898,6 +926,9 @@ async def vision_analyze_tool(
         detected_mime_type = _detect_image_mime_type(temp_image_path)
         if not detected_mime_type:
             raise ValueError("Only real image files are supported for vision analysis.")
+        temp_image_path, detected_mime_type = _maybe_transcode_heic(
+            temp_image_path, detected_mime_type,
+        )
         
         # Convert image to base64 — send at full resolution first.
         # If the provider rejects it as too large, we auto-resize and retry.

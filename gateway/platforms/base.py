@@ -20,7 +20,7 @@ import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
 
-from utils import normalize_proxy_url
+from utils import looks_like_heic, normalize_proxy_url, transcode_heic_to_jpeg
 
 logger = logging.getLogger(__name__)
 
@@ -581,6 +581,8 @@ def _looks_like_image(data: bytes) -> bool:
         return True
     if data[:4] == b"RIFF" and len(data) >= 12 and data[8:12] == b"WEBP":
         return True
+    if looks_like_heic(data):
+        return True
     return False
 
 
@@ -605,6 +607,14 @@ def cache_image_from_bytes(data: bytes, ext: str = ".jpg") -> str:
             f"Refusing to cache non-image data as {ext} "
             f"(starts with: {snippet!r})"
         )
+    if looks_like_heic(data):
+        # Vision APIs (Anthropic, OpenAI) reject image/heic, so transcode
+        # to JPEG at the cache boundary. Falls back to caching the original
+        # bytes when no HEIC decoder is available (see utils).
+        jpeg = transcode_heic_to_jpeg(data)
+        if jpeg is not None:
+            data = jpeg
+            ext = ".jpg"
     cache_dir = get_image_cache_dir()
     filename = f"img_{uuid.uuid4().hex[:12]}{ext}"
     filepath = cache_dir / filename

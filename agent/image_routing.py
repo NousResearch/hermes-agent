@@ -440,6 +440,17 @@ def _file_to_data_url(path: Path) -> Optional[str]:
         logger.warning("image_routing: failed to read %s — %s", path, exc)
         return None
     mime = _guess_mime(path, raw=raw)
+    if mime in ("image/heic", "image/heif"):
+        # Anthropic/OpenAI reject image/heic payloads outright. Transcode
+        # to JPEG when a decoder is available (pillow-heif or macOS sips);
+        # otherwise send the original bytes and let the provider error
+        # surface — same behaviour as before this fast-path existed.
+        from utils import transcode_heic_to_jpeg
+
+        jpeg = transcode_heic_to_jpeg(raw)
+        if jpeg is not None:
+            raw = jpeg
+            mime = "image/jpeg"
     b64 = base64.b64encode(raw).decode("ascii")
     return f"data:{mime};base64,{b64}"
 

@@ -412,3 +412,95 @@ def base_url_host_matches(base_url: str, domain: str) -> bool:
     if not domain:
         return False
     return hostname == domain or hostname.endswith("." + domain)
+
+
+# ---------------------------------------------------------------------------
+# HEIC/HEIF → JPEG transcoding
+#
+# Most vision APIs (Anthropic, OpenAI) reject image/heic payloads, and
+# Pillow cannot decode HEIC without the optional pillow-heif plugin, yet
+# HEIC is the default camera format on iPhones — any iMessage/Photon (or
+# email/AirDrop) photo arrives as HEIC. We transcode at the choke points
+# (image cache write, data-URL build) so every platform adapter and the
+# vision path get JPEG for free.
+
+HEIC_FTYP_BRANDS = frozenset({
+    b"heic", b"heix", b"hevc", b"hevx", b"mif1", b"msf1", b"heim", b"heis",
+})
+
+
+def looks_like_heic(data: bytes) -> bool:
+    """Return True when *data* starts with an ISO-BMFF ftyp box carrying a
+    HEIC/HEIF brand (the magic shared by iPhone photos)."""
+    return (
+        len(data) >= 12
+        and data[4:8] == b"ftyp"
+        and data[8:12] in HEIC_FTYP_BRANDS
+    )
+
+
+def transcode_heic_to_jpeg(data: bytes) -> "bytes | None":
+    """Convert HEIC/HEIF bytes to JPEG bytes, or None when no decoder exists.
+
+    Tries, in order:
+      1. ``pillow-heif`` + Pillow (cross-platform, optional dependency)
+      2. macOS ``sips`` (ships with the OS, zero install)
+
+    Returns None when neither backend is available or conversion fails;
+    callers should fall back to their pre-existing behaviour (e.g. caching
+    the original bytes) so this never makes things worse.
+    """
+    if not looks_like_heic(data):
+        return None
+
+    # 1. pillow-heif (optional dep) — works on Linux/macOS/Windows.
+    try:
+        import io
+
+        import pillow_heif  # type: ignore[import-not-found]
+        from PIL import Image
+
+        pillow_heif.register_heif_opener()
+        img = Image.open(io.BytesIO(data))
+        buf = io.BytesIO()
+        img.convert("RGB").save(buf, format="JPEG", quality=90)
+        return buf.getvalue()
+    except ImportError:
+        pass
+    except Exception as exc:  # pragma: no cover - corrupt file etc.
+        logger.warning("pillow-heif HEIC transcode failed: %s", exc)
+
+    # 2. sips — built into macOS, no Python deps.
+    import shutil
+    import subprocess
+
+    if shutil.which("sips"):
+        src = dst = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                suffix=".heic", delete=False
+            ) as f:
+                f.write(data)
+                src = f.name
+            dst = src + ".jpg"
+            subprocess.run(
+                ["sips", "-s", "format", "jpeg", "-s", "formatOptions", "90",
+                 src, "--out", dst],
+                check=True, capture_output=True, timeout=30,
+            )
+            return Path(dst).read_bytes()
+        except Exception as exc:
+            logger.warning("sips HEIC transcode failed: %s", exc)
+        finally:
+            for p in (src, dst):
+                if p:
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+    logger.info(
+        "HEIC image received but no transcoder available "
+        "(install pillow-heif for cross-platform support)"
+    )
+    return None

@@ -1261,12 +1261,25 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                     data = resp.json()
                     for m in data.get("models", []):
                         if _model_id_matches(m.get("key", ""), model) or _model_id_matches(m.get("id", ""), model):
-                            # Prefer loaded instance context (actual runtime value)
+                            # Prefer loaded instance context (actual runtime value).
+                            # When the model is loaded at or below MINIMUM_CONTEXT_LENGTH
+                            # (the default JIT load), fall back to max_context_length so
+                            # auto-discovery reports the model's real capability instead of
+                            # the placeholder 64K.
+                            loaded_ctx = None
                             for inst in m.get("loaded_instances", []):
                                 cfg = inst.get("config", {})
                                 ctx = cfg.get("context_length")
                                 if ctx and isinstance(ctx, (int, float)):
-                                    return int(ctx)
+                                    loaded_ctx = int(ctx)
+                                    break
+                            if loaded_ctx is not None and loaded_ctx > MINIMUM_CONTEXT_LENGTH:
+                                return loaded_ctx
+                            # Fall back to the model's advertised max when the loaded
+                            # instance is at/below the Hermes minimum (i.e. the default).
+                            max_ctx = m.get("max_context_length")
+                            if max_ctx and isinstance(max_ctx, (int, float)):
+                                return int(max_ctx)
                             break
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}

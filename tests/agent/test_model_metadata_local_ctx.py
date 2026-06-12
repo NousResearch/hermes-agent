@@ -424,6 +424,44 @@ class TestQueryLocalContextLengthLmStudio:
             "max_context_length (1048576) must not win over loaded_instances."
         )
 
+    def test_lmstudio_fallback_max_context_length_when_loaded_at_minimum(self):
+        """When loaded context equals the minimum (64K), fall back to max_context_length.
+
+        If LM Studio loaded the model with the default 64K (e.g. JIT load without
+        explicit context), auto-discovery should still report the model's real
+        capability from max_context_length rather than the placeholder 64K.
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        native_resp = self._make_resp(200, {
+            "models": [
+                {
+                    "key": "qwen/qwen3.6-35b-a3b",
+                    "id": "qwen/qwen3.6-35b-a3b",
+                    "max_context_length": 262_144,
+                    "loaded_instances": [
+                        {"config": {"context_length": 64_000}},
+                    ],
+                },
+            ]
+        })
+        client_mock = self._make_client(
+            native_resp,
+            self._make_resp(404, {}),
+            self._make_resp(404, {}),
+        )
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value="lm-studio"), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length(
+                "qwen3.6-35b-a3b", "http://192.168.1.22:1234/v1"
+            )
+
+        assert result == 262_144, (
+            f"Expected max_context_length (262144) but got {result}. "
+            "When loaded context is at the minimum, max_context_length should be used."
+        )
+
 
 class TestDetectLocalServerTypeAuth:
     def test_passes_bearer_token_to_probe_requests(self):

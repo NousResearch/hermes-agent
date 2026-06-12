@@ -436,6 +436,27 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
+    passthrough_settings = {
+        "llm_max_concurrent": "HINDSIGHT_API_LLM_MAX_CONCURRENT",
+        "llm_max_retries": "HINDSIGHT_API_LLM_MAX_RETRIES",
+        "llm_timeout": "HINDSIGHT_API_LLM_TIMEOUT",
+        "retain_llm_max_concurrent": "HINDSIGHT_API_RETAIN_LLM_MAX_CONCURRENT",
+        "retain_llm_max_retries": "HINDSIGHT_API_RETAIN_LLM_MAX_RETRIES",
+        "retain_llm_timeout": "HINDSIGHT_API_RETAIN_LLM_TIMEOUT",
+        "worker_max_slots": "HINDSIGHT_API_WORKER_MAX_SLOTS",
+        "worker_consolidation_max_slots": "HINDSIGHT_API_WORKER_CONSOLIDATION_MAX_SLOTS",
+        "worker_retain_max_slots": "HINDSIGHT_API_WORKER_RETAIN_MAX_SLOTS",
+        "retain_max_concurrent": "HINDSIGHT_API_RETAIN_MAX_CONCURRENT",
+        "ollama_native_num_ctx": "HINDSIGHT_API_OLLAMA_NUM_CTX",
+        "ollama_native_num_batch": "HINDSIGHT_API_OLLAMA_NUM_BATCH",
+    }
+    for config_key, env_key in passthrough_settings.items():
+        value = config.get(config_key)
+        if value is None or value == "":
+            value = os.environ.get(env_key)
+        if value is not None and value != "":
+            env_values[env_key] = str(value)
     return env_values
 
 

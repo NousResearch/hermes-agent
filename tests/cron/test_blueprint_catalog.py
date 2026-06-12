@@ -9,7 +9,6 @@ cron job store.
 import importlib
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 

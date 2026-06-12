@@ -2690,7 +2690,12 @@ class TestNewEndpoints:
         assert data["hub_installs"] == [{"identifier": "someuser/some-skill", "pid": 4321}]
 
         # Hub install was scoped to the new profile.
-        assert spawned == [(["-p", "builder", "skills", "install", "someuser/some-skill"], "skills-install")]
+        assert spawned == [
+            (
+                ["-p", "builder", "skills", "install", "someuser/some-skill", "--yes"],
+                "skills-install",
+            )
+        ]
 
         # Verify the writes landed in the NEW profile's config, not the root.
         prof_dir = get_hermes_home() / "profiles" / "builder"

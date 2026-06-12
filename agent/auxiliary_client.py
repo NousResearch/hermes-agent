@@ -4925,6 +4925,40 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
 
 
 
+def _apply_aux_max_tokens_floor(
+    provider: str,
+    model: str,
+    max_tokens: Optional[int],
+    base_url: Optional[str] = None,
+) -> Optional[int]:
+    """Raise too-small caps for reasoning-heavy aux models.
+
+    Some OpenAI-compatible reasoning endpoints count hidden reasoning against
+    ``max_tokens``.  On Ollama Cloud, ``deepseek-v4-flash`` can consume a
+    tiny cap (for example 16 tokens from smart approval) entirely as reasoning
+    and return HTTP 200 with empty visible content.  Keep caller caps intact
+    for normal providers, but give this known route enough budget to emit the
+    expected short answer.
+    """
+    if max_tokens is None:
+        return None
+    try:
+        requested = int(max_tokens)
+    except (TypeError, ValueError):
+        return max_tokens
+    if requested >= 64:
+        return requested
+
+    provider_l = (provider or "").lower()
+    model_l = (model or "").lower()
+    base_l = (base_url or "").lower()
+    is_ollama_cloud = provider_l == "ollama-cloud" or "ollama.com" in base_l
+    is_deepseek_v4_flash = "deepseek-v4-flash" in model_l or "deepseek/v4-flash" in model_l
+    if is_ollama_cloud and is_deepseek_v4_flash:
+        return 64
+    return requested
+
+
 def _build_call_kwargs(
     provider: str,
     model: str,
@@ -4937,6 +4971,7 @@ def _build_call_kwargs(
     base_url: Optional[str] = None,
 ) -> dict:
     """Build kwargs for .chat.completions.create() with model/provider adjustments."""
+    max_tokens = _apply_aux_max_tokens_floor(provider, model, max_tokens, base_url)
     kwargs: Dict[str, Any] = {
         "model": model,
         "messages": messages,

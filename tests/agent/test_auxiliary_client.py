@@ -29,6 +29,7 @@ from agent.auxiliary_client import (
     _resolve_auto,
     _resolve_xai_oauth_for_aux,
     _CodexCompletionsAdapter,
+    _apply_aux_max_tokens_floor,
 )
 
 
@@ -76,6 +77,37 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class TestAuxiliaryReasoningMaxTokensFloor:
+    def test_ollama_cloud_deepseek_v4_flash_gets_minimum_visible_budget(self):
+        assert _apply_aux_max_tokens_floor(
+            "ollama-cloud",
+            "deepseek-v4-flash",
+            16,
+            "https://ollama.com/v1",
+        ) == 64
+
+    def test_ollama_cloud_deepseek_v4_flash_respects_larger_budget(self):
+        assert _apply_aux_max_tokens_floor(
+            "ollama-cloud",
+            "deepseek-v4-flash",
+            128,
+            "https://ollama.com/v1",
+        ) == 128
+
+    def test_other_providers_keep_tiny_budget(self):
+        assert _apply_aux_max_tokens_floor("openrouter", "some-model", 16, None) == 16
+
+    def test_build_call_kwargs_omits_deepseek_floor_for_openai_compatible(self):
+        kwargs = _build_call_kwargs(
+            "ollama-cloud",
+            "deepseek-v4-flash",
+            [{"role": "user", "content": "OK only"}],
+            max_tokens=16,
+            base_url="https://ollama.com/v1",
+        )
+        assert "max_tokens" not in kwargs
 
 
 class TestAuxiliaryMaxTokensParam:

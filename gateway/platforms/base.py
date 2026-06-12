@@ -1629,9 +1629,11 @@ def queued_event_count(event: MessageEvent | None) -> int:
     """Return how many FIFO queue items are represented by a pending event."""
     if event is None:
         return 0
-    items = _pending_queue_items(event)
-    if items:
-        return len(items)
+    tail = getattr(event, "_hermes_queue_items", None)
+    if tail:
+        if not isinstance(tail, list):
+            tail = list(tail)
+        return 1 + len(tail)
     raw = getattr(event, "_hermes_queue_count", 1)
     try:
         count = int(raw)

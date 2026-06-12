@@ -3080,8 +3080,42 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         queued_events = getattr(self, "_queued_events", None) or {}
         depth = len(queued_events.get(session_key, []))
         if adapter is not None and session_key in getattr(adapter, "_pending_messages", {}):
-            depth += 1
+            depth += queued_event_count(adapter._pending_messages.get(session_key))
         return depth
+
+    @staticmethod
+    def _should_merge_busy_media_queue_event(existing: MessageEvent, event: MessageEvent) -> bool:
+        """Return True for album-like media fragments in the busy queue.
+
+        Telegram adapters normally coalesce a real album/photo burst into one
+        MessageEvent before the runner sees it.  Some platforms/tests can still
+        hand us adjacent media fragments.  Keep those together only when they
+        look like the same burst: both carry media, they arrived close together,
+        and they do not both have their own caption/task text.  Separate
+        screenshot tasks sent while the agent is busy usually have a caption on
+        each message; those must stay FIFO turns.
+        """
+        existing_has_media = (
+            getattr(existing, "message_type", None) == MessageType.PHOTO
+            or bool(getattr(existing, "media_urls", None))
+        )
+        event_has_media = event.message_type == MessageType.PHOTO or bool(getattr(event, "media_urls", None))
+        if not existing_has_media or not event_has_media:
+            return False
+
+        existing_text = (getattr(existing, "text", None) or "").strip()
+        event_text = (getattr(event, "text", None) or "").strip()
+        if existing_text and event_text:
+            return False
+
+        existing_ts = getattr(existing, "timestamp", None)
+        event_ts = getattr(event, "timestamp", None)
+        try:
+            if existing_ts is not None and event_ts is not None:
+                return abs((event_ts - existing_ts).total_seconds()) <= 2.0
+        except Exception:
+            return False
+        return False
 
     @staticmethod
     def _is_goal_continuation_event(event_or_text: Any) -> bool:
@@ -3621,18 +3655,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # the single pending slot when consecutive text messages arrived
         # in ``busy_input_mode: queue``. Route through the FIFO
         # infrastructure shared with ``/queue`` so each follow-up gets
-        # its own turn in arrival order. Photo bursts still merge into
-        # the head slot via ``merge_pending_message_event`` (album
-        # semantics); everything else appends to the overflow tail.
+        # its own turn in arrival order. Telegram already coalesces photo
+        # bursts/albums into one MessageEvent before this point; once a
+        # busy-session queue item exists, later media events are distinct
+        # turns and must not be melted into the existing pending payload.
         pending_slot = getattr(adapter, "_pending_messages", None)
         existing = pending_slot.get(session_key) if isinstance(pending_slot, dict) else None
-        if existing is not None and (
-            getattr(existing, "message_type", None) == MessageType.PHOTO
-            or event.message_type == MessageType.PHOTO
-            or bool(getattr(existing, "media_urls", None))
-            or bool(getattr(event, "media_urls", None))
-        ):
-            # Preserve photo-burst / media-merge semantics for the head slot.
+        if existing is not None and self._should_merge_busy_media_queue_event(existing, event):
             merge_pending_message_event(
                 adapter._pending_messages,
                 session_key,
@@ -3640,7 +3669,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 merge_text=event.message_type == MessageType.TEXT,
             )
             return
-
         if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
             logger.warning(
                 "Dropping busy-mode follow-up for session %s — pending queue at cap (%d).",
@@ -3764,13 +3792,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # successful steer — the text already landed inside the run and
         # must NOT also be replayed as a next-turn user message.
         if not steered:
-            merge_pending_message_event(
-                adapter._pending_messages,
-                session_key,
-                event,
-                merge_text=event.message_type == MessageType.TEXT,
-                fifo_text=effective_mode == "queue",
-            )
+            if effective_mode == "queue":
+                self._queue_or_replace_pending_event(session_key, event)
+            else:
+                merge_pending_message_event(
+                    adapter._pending_messages,
+                    session_key,
+                    event,
+                    merge_text=event.message_type == MessageType.TEXT,
+                )
 
         is_queue_mode = effective_mode == "queue"
         is_steer_mode = effective_mode == "steer"
@@ -3793,7 +3823,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return True  # input still processed, just no ack sent
 
         queued_pending_event = adapter._pending_messages.get(session_key) if is_queue_mode else None
-        queued_count = queued_event_count(queued_pending_event) if queued_pending_event else 1
+        queued_count = self._queue_depth(session_key, adapter=adapter) if is_queue_mode else 1
         last_acked_queue_count = int(getattr(queued_pending_event, "_hermes_last_ack_queue_count", 0) or 0)
         queue_count_increased = is_queue_mode and queued_count > last_acked_queue_count
 

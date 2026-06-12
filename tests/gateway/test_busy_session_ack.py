@@ -57,6 +57,16 @@ def _make_event(text="hello", chat_id="123", platform_val="telegram"):
     return evt
 
 
+def _make_photo_event(text="screenshot", chat_id="123", platform_val="telegram", message_id="photo1"):
+    """Build a minimal photo MessageEvent with one cached image path."""
+    evt = _make_event(text=text, chat_id=chat_id, platform_val=platform_val)
+    evt.message_type = MessageType.PHOTO
+    evt.message_id = message_id
+    evt.media_urls = [f"/tmp/{message_id}.jpg"]
+    evt.media_types = ["image/jpeg"]
+    return evt
+
+
 def _make_runner():
     """Build a minimal GatewayRunner-like object for testing."""
     from gateway.run import GatewayRunner, _AGENT_PENDING_SENTINEL
@@ -268,8 +278,8 @@ class TestBusySessionAck:
         assert "Queue item 1/1" in content
 
     @pytest.mark.asyncio
-    async def test_queue_ack_number_increments_for_merged_followups(self):
-        """Queue ack updates the visible queued batch number even inside cooldown."""
+    async def test_queue_ack_number_increments_for_queued_followups(self):
+        """Queue ack updates the visible queued depth even inside cooldown."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "queue"
         adapter = _make_adapter()
@@ -291,15 +301,53 @@ class TestBusySessionAck:
         await runner._handle_active_session_busy_message(second, sk)
 
         pending = adapter._pending_messages[sk]
-        assert queued_event_count(pending) == 2
-        assert queued_event_position(pending) == (1, 2)
+        assert pending is first
+        assert queued_event_count(pending) == 1
+        assert runner._queue_depth(sk, adapter=adapter) == 2
+        assert [event.text for event in runner._queued_events[sk]] == ["part two"]
+
         first_pending = pop_next_pending_message_event(adapter._pending_messages, sk)
         assert first_pending is first
+        promoted = runner._promote_queued_event(sk, adapter, first_pending)
+        assert promoted is first
         assert sk in adapter._pending_messages
-        assert queued_event_position(adapter._pending_messages[sk]) == (2, 2)
+        assert adapter._pending_messages[sk] is second
         second_pending = pop_next_pending_message_event(adapter._pending_messages, sk)
         assert second_pending is second
         assert sk not in adapter._pending_messages
+        assert adapter._send_with_retry.await_count == 2
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queue item 2/2" in content
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_keeps_photo_followups_as_fifo_tasks(self):
+        """Separate busy photo/caption follow-ups must not merge into one queued turn."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        first = _make_photo_event(
+            text="Nieuwe taak, verwerk via Vault-first Agent Workflow Lite:",
+            message_id="photo-task-1",
+        )
+        second = _make_photo_event(
+            text="Nieuwe taak, verwerk via Vault-first Agent Workflow Lite:",
+            message_id="photo-task-2",
+        )
+        second.source = first.source
+        sk = build_session_key(first.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[first.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(first, sk)
+        await runner._handle_active_session_busy_message(second, sk)
+
+        assert adapter._pending_messages[sk] is first
+        assert adapter._pending_messages[sk].media_urls == ["/tmp/photo-task-1.jpg"]
+        assert runner._queued_events[sk] == [second]
+        assert runner._queue_depth(sk, adapter=adapter) == 2
         assert adapter._send_with_retry.await_count == 2
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
         assert "Queue item 2/2" in content
@@ -351,13 +399,12 @@ class TestBusySessionAck:
         agent.steer = MagicMock(return_value=False)  # rejected
         runner._running_agents[sk] = agent
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         agent.steer.assert_called_once()
         agent.interrupt.assert_not_called()
-        # Fell back to queue semantics: event was merged into pending messages
-        mock_merge.assert_called_once()
+        # Fell back to FIFO queue semantics instead of interrupting.
+        assert adapter._pending_messages[sk] is event
 
         # Ack uses queue-mode wording (not steer, not interrupt)
         call_kwargs = adapter._send_with_retry.call_args
@@ -379,11 +426,10 @@ class TestBusySessionAck:
         # Agent is still being set up — sentinel in place
         runner._running_agents[sk] = sentinel
 
-        with patch("gateway.run.merge_pending_message_event") as mock_merge:
-            await runner._handle_active_session_busy_message(event, sk)
+        await runner._handle_active_session_busy_message(event, sk)
 
         # Event was queued instead of steered
-        mock_merge.assert_called_once()
+        assert adapter._pending_messages[sk] is event
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")

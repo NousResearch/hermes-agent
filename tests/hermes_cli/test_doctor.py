@@ -46,6 +46,10 @@ class TestProviderEnvDetection:
         content = "KIMI_CN_API_KEY=sk-test\n"
         assert _has_provider_env_config(content)
 
+    def test_detects_xai_api_key(self):
+        content = "XAI_API_KEY=xai-test\n"
+        assert _has_provider_env_config(content)
+
     def test_returns_false_when_no_provider_settings(self):
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)

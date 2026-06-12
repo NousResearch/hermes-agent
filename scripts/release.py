@@ -1524,6 +1524,7 @@ AUTHOR_MAP = {
     "adalsteinnhelgason@users.noreply.github.com": "AIalliAI",
     "aialli@users.noreply.github.com": "AIalliAI",
     "jvsantos.cunha@gmail.com": "plcunha",  # PR #44460 (bound CDP reconnect loop), cherry-picked
+    "support@captureclient.net": "eazye19",  # PR #43298 (mock detached hermes update in platform-gate tests), cherry-picked
 }
 
 

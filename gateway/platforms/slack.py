@@ -949,6 +949,59 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 self._app.action(_action_id)(self._handle_slash_confirm_action)
 
+            # Register plugin-provided Block Kit action handlers.
+            #
+            # Plugins call ``ctx.register_slack_action_handler(action_id, cb)``
+            # at register() time; the manager queues them and the adapter
+            # wires them into AsyncApp here so slack_bolt's matcher knows
+            # about them before Socket Mode starts dispatching events.
+            #
+            # Each callback is wrapped so a misbehaving plugin can't take
+            # down the gateway: any exception inside the plugin handler is
+            # caught and logged, and slack_bolt still sees a clean ack.
+            try:
+                from hermes_cli.plugins import get_plugin_manager
+                _plugin_handlers = get_plugin_manager().get_slack_action_handlers()
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(
+                    "[Slack] Could not load plugin action handlers: %s", e,
+                )
+                _plugin_handlers = []
+
+            # Closure factory — keeps the wrapper's signature limited to
+            # ``(ack, body, action)``. slack_bolt inspects listener
+            # signatures via ``inspect.signature`` and passes ``None`` for
+            # any parameter name it doesn't recognise, so capturing loop
+            # vars as default args (``_cb=_cb`` etc.) silently clobbers
+            # them at dispatch time.
+            def _make_wrapper(cb, plugin_name):
+                async def _wrapped(ack, body, action):
+                    try:
+                        await cb(ack, body, action)
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.error(
+                            "[Slack] Plugin '%s' action handler raised: %s",
+                            plugin_name, exc, exc_info=True,
+                        )
+                        # Best-effort ack so Slack doesn't retry the click.
+                        try:
+                            await ack()
+                        except Exception:
+                            pass
+                return _wrapped
+
+            for _action_id, _cb, _plugin_name in _plugin_handlers:
+                self._app.action(_action_id)(_make_wrapper(_cb, _plugin_name))
+                logger.debug(
+                    "[Slack] Registered plugin action handler %s (from %s)",
+                    _action_id, _plugin_name,
+                )
+            if _plugin_handlers:
+                logger.info(
+                    "[Slack] Wired %d plugin action handler(s)",
+                    len(_plugin_handlers),
+                )
+
             # Bring up the handler and watchdog atomically. ``_running`` only
             # flips to True after the handler is alive so the watchdog loop
             # observes the live task immediately; on any failure here we tear

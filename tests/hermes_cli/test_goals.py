@@ -737,3 +737,77 @@ class TestStatusLineSubgoalCount:
         mgr.add_subgoal("b")
         line = mgr.status_line()
         assert "2 subgoals" in line
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Goal migration on session_id rotation (compression)
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestGoalMigrationOnCompression:
+    """Verify that an active /goal survives session_id rotation.
+
+    When context compression creates a child session (rotating session_id),
+    the active goal must be copied to the new session so the goal loop
+    continues without interruption.
+    """
+
+    def test_active_goal_migrates_to_new_session(self, hermes_home):
+        """load_goal(new_sid) returns the goal after save_goal migration."""
+        from hermes_cli.goals import GoalManager, load_goal, save_goal
+
+        old_sid = "compress-old-001"
+        new_sid = "compress-child-002"
+
+        # Set an active goal on the old session
+        mgr = GoalManager(session_id=old_sid)
+        mgr.set("Build and ship the widget")
+
+        # Simulate the migration that happens in gateway/run.py
+        old_goal = load_goal(old_sid)
+        assert old_goal is not None
+        assert old_goal.status == "active"
+        save_goal(new_sid, old_goal)
+
+        # Verify the goal is accessible from the new session
+        new_goal = load_goal(new_sid)
+        assert new_goal is not None
+        assert new_goal.status == "active"
+        assert "widget" in new_goal.goal
+
+    def test_cleared_goal_is_not_migrated(self, hermes_home):
+        """Only active goals are migrated — cleared goals stay behind."""
+        from hermes_cli.goals import GoalManager, load_goal, save_goal
+
+        old_sid = "compress-old-003"
+        new_sid = "compress-child-004"
+
+        mgr = GoalManager(session_id=old_sid)
+        mgr.set("Do the thing")
+        mgr.clear()  # mark as cleared
+
+        # Migration only copies active goals
+        old_goal = load_goal(old_sid)
+        assert old_goal.status == "cleared"
+        if old_goal and old_goal.status == "active":
+            save_goal(new_sid, old_goal)
+
+        new_goal = load_goal(new_sid)
+        assert new_goal is None  # should NOT be migrated
+
+    def test_no_goal_on_old_session_is_safe(self, hermes_home):
+        """Migration is a no-op when old session has no goal."""
+        from hermes_cli.goals import load_goal, save_goal
+
+        old_sid = "compress-old-005"
+        new_sid = "compress-child-006"
+
+        old_goal = load_goal(old_sid)
+        assert old_goal is None
+        # The migration guard: only save if goal exists and is active
+        if old_goal and old_goal.status == "active":
+            save_goal(new_sid, old_goal)
+
+        # No crash, no stale data
+        new_goal = load_goal(new_sid)
+        assert new_goal is None

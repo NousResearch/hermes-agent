@@ -8333,12 +8333,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # and searchable via session_search.
                                     _hyg_new_sid = _hyg_agent.session_id
                                     if _hyg_new_sid != session_entry.session_id:
+                                        _hyg_old_sid = session_entry.session_id
                                         session_entry.session_id = _hyg_new_sid
                                         self.session_store._save()
                                         self._sync_telegram_topic_binding(
                                             source, session_entry,
                                             reason="hygiene-compression",
                                         )
+                                        # Migrate active /goal to the new session
+                                        # (same fix as agent-result path).
+                                        try:
+                                            from hermes_cli.goals import load_goal, save_goal
+                                            _old_goal = load_goal(_hyg_old_sid)
+                                            if _old_goal and _old_goal.status == "active":
+                                                save_goal(_hyg_new_sid, _old_goal)
+                                        except Exception:
+                                            pass
 
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
@@ -8636,11 +8646,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # If the agent's session_id changed during compression, update
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
+                _old_sid_for_goal = session_entry.session_id
                 session_entry.session_id = agent_result["session_id"]
                 self.session_store._save()
                 self._sync_telegram_topic_binding(
                     source, session_entry, reason="agent-result-compression",
                 )
+                # Migrate active /goal to the new session so the goal loop
+                # continues after compression.  Without this, state_meta
+                # goal:<old_sid> is orphaned and is_active() returns False.
+                try:
+                    from hermes_cli.goals import load_goal, save_goal
+                    _old_goal = load_goal(_old_sid_for_goal)
+                    if _old_goal and _old_goal.status == "active":
+                        save_goal(session_entry.session_id, _old_goal)
+                except Exception:
+                    pass
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:

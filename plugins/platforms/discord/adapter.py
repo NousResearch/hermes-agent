@@ -1181,6 +1181,37 @@ from plugins.platforms.discord.adapter_reactions import DiscordReactionsMixin
 from plugins.platforms.discord.adapter_vault_code import DiscordVaultCodeMixin, build_vault_code_view
 
 
+def _discord_app_command_scope_kwargs() -> dict[str, Any]:
+    """Return explicit slash-command install/context defaults for discord.py.
+
+    Discord application defaults can be user-install only. If Hermes lets
+    discord.py inherit those defaults, global slash commands can register with
+    ``integration_types=[1]`` and disappear from guild slash menus even while
+    the bot handles normal server messages. Pin both install scopes and all
+    supported contexts at bot construction so newly synced commands are visible
+    in guilds, DMs, and user/private contexts.
+    """
+    if not DISCORD_AVAILABLE or discord is None:
+        return {}
+    app_commands = getattr(discord, "app_commands", None)
+    installation_type = getattr(app_commands, "AppInstallationType", None)
+    command_context = getattr(app_commands, "AppCommandContext", None)
+    if installation_type is None or command_context is None:
+        return {}
+    try:
+        return {
+            "allowed_installs": installation_type(guild=True, user=True),
+            "allowed_contexts": command_context(
+                guild=True,
+                dm_channel=True,
+                private_channel=True,
+            ),
+        }
+    except Exception:
+        logger.debug("Discord app-command scope defaults are unavailable", exc_info=True)
+        return {}
+
+
 class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMediaMixin, DiscordThreadTitlesMixin, DiscordVoiceInfoMixin,
                      DiscordSlashAuthMixin, DiscordReactionsMixin, DiscordVaultCodeMixin, BasePlatformAdapter):
     """Discord bot adapter: guild/DM messages, threads, slash commands, button approvals, reactions."""
@@ -1449,6 +1480,7 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
                 allowed_mentions=_build_allowed_mentions(getattr(self.config, "extra", None)),
+                **_discord_app_command_scope_kwargs(),
                 **proxy_kwargs_for_bot(proxy_url),
             )
             # Fresh connection, fresh dispatch-side silence window: the previous client's last
@@ -3034,6 +3066,8 @@ class DiscordAdapter(DiscordLiveGatesMixin, DiscordAuthorizationMixin, DiscordMe
         return {
             "name": canonical["name"], "description": canonical["description"],
             "options": canonical["options"],
+            "contexts": canonical["contexts"],
+            "integration_types": canonical["integration_types"],
         }
 
     async def _safe_sync_slash_commands(self) -> dict[str, int]:

@@ -821,6 +821,64 @@ class PluginContext:
             name,
         )
 
+    # -- slack action handler registration ----------------------------------
+
+    def register_slack_action_handler(
+        self,
+        action_id: Any,
+        callback: Callable,
+    ) -> None:
+        """Register a Slack Block Kit action handler from a plugin.
+
+        Hermes' Slack adapter wires registered handlers into its
+        ``slack_bolt.AsyncApp`` at connect time. The callback is invoked
+        when a user clicks a button (or interacts with another Block Kit
+        action element) whose ``action_id`` matches.
+
+        Callback signature follows the slack_bolt convention::
+
+            async def handler(ack, body, action) -> None:
+                await ack()  # required, within 3 seconds
+                ...
+
+        Args:
+            action_id: Whatever ``slack_bolt.App.action()`` accepts —
+                a literal ``action_id`` string, a compiled ``re.Pattern``
+                for matching multiple ids, or a constraint dict
+                (e.g. ``{"action_id": "...", "block_id": "..."}``).
+            callback: Async callable receiving ``(ack, body, action)``.
+
+        Raises:
+            ValueError: if ``callback`` is not callable, or ``action_id``
+                is empty/None.
+
+        Example::
+
+            async def _on_approve(ack, body, action):
+                await ack()
+                # apply some workflow keyed on action["value"]
+
+            ctx.register_slack_action_handler("inbox_sweep_approve", _on_approve)
+        """
+        if not callable(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Slack "
+                f"action handler with a non-callable callback."
+            )
+        if action_id is None or (isinstance(action_id, str) and not action_id.strip()):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Slack "
+                f"action handler with an empty action_id."
+            )
+        self._manager._slack_action_handlers.append(
+            (action_id, callback, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered Slack action handler: %s",
+            self.manifest.name,
+            action_id,
+        )
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------
@@ -1045,6 +1103,13 @@ class PluginManager:
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
+        # Slack Block Kit action handlers registered by plugins. Each entry
+        # is (matcher, callback, plugin_name); the Slack adapter wires them
+        # into its slack_bolt App at connect() time. ``matcher`` is whatever
+        # ``app.action()`` accepts (a literal action_id string, a compiled
+        # ``re.Pattern``, or a constraint dict); ``callback`` is an async
+        # function with the slack_bolt signature ``(ack, body, action)``.
+        self._slack_action_handlers: List[tuple] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -1068,6 +1133,7 @@ class PluginManager:
             self._plugin_commands.clear()
             self._plugin_skills.clear()
             self._aux_tasks.clear()
+            self._slack_action_handlers.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -1651,6 +1717,22 @@ class PluginManager:
                     exc,
                 )
         return results
+
+    # -----------------------------------------------------------------------
+    # Slack action handler accessor
+    # -----------------------------------------------------------------------
+
+    def get_slack_action_handlers(self) -> List[tuple]:
+        """Return the list of plugin-registered Slack action handlers.
+
+        Each entry is a ``(action_id, callback, plugin_name)`` tuple.
+        Consumed by the Slack adapter at connect time to wire callbacks
+        into its ``slack_bolt.AsyncApp``.
+
+        Plugins register handlers via
+        :meth:`PluginContext.register_slack_action_handler`.
+        """
+        return list(self._slack_action_handlers)
 
     # -----------------------------------------------------------------------
     # Introspection

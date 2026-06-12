@@ -632,6 +632,12 @@ class EnvVarUpdate(BaseModel):
     key: str
     value: str
     profile: Optional[str] = None
+    # Optional bearer key for the connectivity probe of a custom/local endpoint
+    # (``key == "OPENAI_BASE_URL"``). Self-hosted endpoints that gate
+    # ``/v1/models`` behind auth otherwise look "reachable but empty"; sending
+    # the key lets the probe enumerate the served models. Ignored for the
+    # regular PUT /api/env path (which only reads key/value).
+    api_key: str = ""
 
 
 class EnvVarDelete(BaseModel):
@@ -719,6 +725,12 @@ class ModelAssignment(BaseModel):
     # reads model.base_url from config (it ignores OPENAI_BASE_URL), so this is
     # the path that actually wires a local endpoint into resolution.
     base_url: str = ""
+    # Optional API key for a custom/local endpoint. Persisted to
+    # ``model.api_key`` (where the runtime resolver reads it) so a self-hosted
+    # endpoint that requires auth works from the GUI — mirrors the key the
+    # ``hermes model`` custom flow collects. Honored only on the main slot for
+    # custom/local providers.
+    api_key: str = ""
     confirm_expensive_model: bool = False
     profile: Optional[str] = None
 
@@ -791,7 +803,7 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
 
 
 def _apply_main_model_assignment(
-    model_cfg: "Any", provider: str, model: str, base_url: str = ""
+    model_cfg: "Any", provider: str, model: str, base_url: str = "", api_key: str = ""
 ) -> dict:
     """Apply a main-slot model assignment to a ``model`` config dict in place.
 
@@ -831,6 +843,14 @@ def _apply_main_model_assignment(
         # it so the new provider's default endpoint is used. Same-provider
         # re-assignment keeps the user's configured base_url intact.
         model_cfg["base_url"] = ""
+    # The endpoint key follows the same lifecycle as base_url: an explicit key
+    # is always persisted; an existing key is dropped only when switching to a
+    # different provider (it belonged to the old endpoint), and preserved on a
+    # same-provider re-pick so re-selecting a model doesn't wipe the key.
+    if api_key.strip():
+        model_cfg["api_key"] = api_key.strip()
+    elif model_cfg.get("api_key") and new_provider != prev_provider:
+        model_cfg["api_key"] = ""
     model_cfg.pop("context_length", None)
     return model_cfg
 
@@ -3196,6 +3216,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
     model = (body.model or "").strip()
     task = (body.task or "").strip().lower()
     base_url = (body.base_url or "").strip()
+    api_key = (body.api_key or "").strip()
 
     if scope not in {"main", "auxiliary"}:
         raise HTTPException(status_code=400, detail="scope must be 'main' or 'auxiliary'")
@@ -3232,7 +3253,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
         def _apply_assignment():
             with _profile_scope(body.profile or profile):
                 return _apply_model_assignment_sync(
-                    scope, provider, model, task, base_url
+                    scope, provider, model, task, base_url, api_key
                 )
 
         return await asyncio.to_thread(_apply_assignment)
@@ -3244,7 +3265,7 @@ async def set_model_assignment(body: ModelAssignment, profile: Optional[str] = N
 
 
 def _apply_model_assignment_sync(
-    scope: str, provider: str, model: str, task: str, base_url: str
+    scope: str, provider: str, model: str, task: str, base_url: str, api_key: str = ""
 ):
     """Synchronous body of POST /api/model/set.
 
@@ -3259,7 +3280,7 @@ def _apply_model_assignment_sync(
             raise HTTPException(status_code=400, detail="provider and model required for main")
         provider, model = _normalize_main_model_assignment(provider, model)
         model_cfg = _apply_main_model_assignment(
-            cfg.get("model", {}), provider, model, base_url
+            cfg.get("model", {}), provider, model, base_url, api_key
         )
         cfg["model"] = model_cfg
 
@@ -3293,6 +3314,27 @@ def _apply_model_assignment_sync(
                 _log.debug("apply_nous_managed_defaults skipped", exc_info=True)
 
         save_config(cfg)
+
+        # Register a named ``custom_providers`` entry for a custom/local
+        # endpoint, mirroring the ``hermes model`` custom flow
+        # (_save_custom_provider). Without this the endpoint only lives in
+        # ``model.*`` and the picker has no proper ready row for it — the
+        # GUI then surfaces a "needs setup" dead-end on the bare ``custom``
+        # provider. Dedups by base_url, so re-saving is idempotent.
+        if provider.strip().lower() in {"custom", "local"} and base_url:
+            try:
+                from hermes_cli.main import _auto_provider_name, _save_custom_provider
+
+                _save_custom_provider(
+                    base_url,
+                    api_key,
+                    model,
+                    name=_auto_provider_name(base_url),
+                )
+            except Exception:
+                # Never block the assignment on the bookkeeping write —
+                # model.* is already persisted and routable.
+                _log.debug("custom_providers registration skipped", exc_info=True)
 
         # Surface auxiliary slots still pinned to a *different* provider than
         # the new main one. Switching the main model does NOT touch aux pins
@@ -3548,9 +3590,14 @@ async def validate_provider_credential(body: EnvVarUpdate, request: Request):
     # auto-pick a default without asking the user to type a model name.
     if key == "OPENAI_BASE_URL":
         url = value.rstrip("/") + "/models"
+        # Send the optional API key so endpoints that require auth on
+        # ``/v1/models`` (many hosted OpenAI-compatible servers) still enumerate
+        # their models instead of returning an empty list behind a 401.
+        api_key = (body.api_key or "").strip()
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else None
         try:
             with httpx.Client(timeout=httpx.Timeout(8.0)) as client:
-                resp = client.get(url)
+                resp = client.get(url, headers=headers)
             return {"ok": True, "reachable": True, "message": "", "models": _parse_model_ids(resp)}
         except Exception:
             return {"ok": False, "reachable": False, "message": f"Could not reach {url}."}

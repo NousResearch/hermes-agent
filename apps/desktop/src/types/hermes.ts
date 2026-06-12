@@ -638,6 +638,10 @@ export interface AuxiliaryModelsResponse {
 }
 
 export interface ModelAssignmentRequest {
+  /** Optional API key for a custom/local endpoint. Persisted to model.api_key
+   *  (where the runtime reads it) for self-hosted endpoints that require auth.
+   *  Only honored for custom/local providers on the main slot. */
+  api_key?: string
   /** OpenAI-compatible endpoint URL. Only honored for custom/local providers
    *  on the main slot — wires a self-hosted endpoint into runtime resolution. */
   base_url?: string

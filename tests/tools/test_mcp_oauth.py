@@ -21,6 +21,8 @@ from tools.mcp_oauth import (
     _is_interactive,
     _wait_for_callback,
     _make_callback_handler,
+    _make_redirect_handler,
+    _make_wait_for_callback,
     _redirect_handler,
     _paste_callback_reader,
 )
@@ -301,6 +303,19 @@ class TestRedirectHandlerSshHint:
         err = capsys.readouterr().err
         assert "ssh -N -L" not in err
 
+    def test_factory_uses_closed_over_port(self, monkeypatch, capsys):
+        import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_oauth_port", 49999)
+        monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
+
+        self._run(_make_redirect_handler(49203)("https://example.com/auth"))
+
+        err = capsys.readouterr().err
+        assert "49203" in err
+        assert "49999" not in err
+
 
 # ---------------------------------------------------------------------------
 # Path traversal protection
@@ -474,6 +489,33 @@ class TestWaitForCallbackNoBlocking:
             with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
                 with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
                     asyncio.run(_wait_for_callback())
+
+    def test_factory_binds_closed_over_port(self, monkeypatch):
+        import tools.mcp_oauth as mod
+        bound: dict[str, int] = {}
+
+        class _FakeServer:
+            def __init__(self, addr, _handler_cls):
+                bound["port"] = addr[1]
+
+            def handle_request(self):
+                return None
+
+            def server_close(self):
+                return None
+
+        mod._oauth_port = 49998
+        monkeypatch.setattr(mod, "HTTPServer", _FakeServer)
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+
+        async def instant_sleep(_seconds):
+            pass
+
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
+                asyncio.run(_make_wait_for_callback(49204)())
+
+        assert bound["port"] == 49204
 
 
 class TestBuildOAuthAuthNonInteractive:

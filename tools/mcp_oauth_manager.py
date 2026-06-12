@@ -412,9 +412,9 @@ class MCPOAuthManager:
             _build_client_metadata,
             _configure_callback_port,
             _is_interactive,
+            _make_redirect_handler,
+            _make_wait_for_callback,
             _maybe_preregister_client,
-            _redirect_handler,
-            _wait_for_callback,
         )
 
         if not _OAUTH_AVAILABLE:
@@ -432,6 +432,7 @@ class MCPOAuthManager:
             )
 
         _configure_callback_port(cfg)
+        callback_port = cfg["_resolved_port"]
         client_metadata = _build_client_metadata(cfg)
         _maybe_preregister_client(storage, cfg, client_metadata)
 
@@ -440,8 +441,8 @@ class MCPOAuthManager:
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,
-            redirect_handler=_redirect_handler,
-            callback_handler=_wait_for_callback,
+            redirect_handler=_make_redirect_handler(callback_port),
+            callback_handler=_make_wait_for_callback(callback_port),
             timeout=float(cfg.get("timeout", 300)),
         )
 

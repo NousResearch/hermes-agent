@@ -139,3 +139,45 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     assert isinstance(provider, _HERMES_PROVIDER_CLS)
     assert provider._hermes_server_name == "srv"
 
+
+def test_manager_builds_provider_with_per_server_oauth_handlers(tmp_path, monkeypatch):
+    """Manager must pass per-provider redirect/callback closures, not globals."""
+    import tools.mcp_oauth as oauth_mod
+    import tools.mcp_oauth_manager as manager_mod
+    from tools.mcp_oauth_manager import reset_manager_for_tests
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    captured_kwargs: dict[str, object] = {}
+    seen_ports: dict[str, int] = {}
+    redirect_handler = object()
+    callback_handler = object()
+
+    class _FakeProvider:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    def fake_make_redirect_handler(port):
+        seen_ports["redirect"] = port
+        return redirect_handler
+
+    def fake_make_wait_for_callback(port):
+        seen_ports["callback"] = port
+        return callback_handler
+
+    monkeypatch.setattr(manager_mod, "_HERMES_PROVIDER_CLS", _FakeProvider)
+    monkeypatch.setattr(oauth_mod, "_make_redirect_handler", fake_make_redirect_handler)
+    monkeypatch.setattr(oauth_mod, "_make_wait_for_callback", fake_make_wait_for_callback)
+
+    mgr = manager_mod.MCPOAuthManager()
+    provider = mgr.get_or_build_provider(
+        "srv",
+        "https://example.com/mcp",
+        {"redirect_port": 43123},
+    )
+
+    assert isinstance(provider, _FakeProvider)
+    assert seen_ports == {"redirect": 43123, "callback": 43123}
+    assert captured_kwargs["redirect_handler"] is redirect_handler
+    assert captured_kwargs["callback_handler"] is callback_handler

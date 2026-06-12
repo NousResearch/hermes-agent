@@ -1694,6 +1694,15 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Dual memory framework:
+        # - personal_workspace is user-facing PARA markdown (W)
+        # - procedural_skills is agent-facing Skill Markdown (S)
+        # Empty paths use profile-scoped defaults under HERMES_HOME.
+        "dual_memory": {
+            "enabled": False,
+            "personal_workspace_dir": "",
+            "procedural_skills_dir": "",
+        },
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

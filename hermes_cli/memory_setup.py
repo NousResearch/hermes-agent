@@ -468,5 +468,13 @@ def memory_command(args) -> None:
             cmd_setup(args)
     elif sub == "status":
         cmd_status(args)
+    elif sub == "workspace":
+        from hermes_cli.dual_memory import cmd_workspace
+
+        cmd_workspace(args)
+    elif sub == "procedural":
+        from hermes_cli.dual_memory import cmd_procedural
+
+        cmd_procedural(args)
     else:
         cmd_status(args)

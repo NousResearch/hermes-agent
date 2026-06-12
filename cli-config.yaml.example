@@ -499,6 +499,20 @@ memory:
   memory_char_limit: 2200   # ~800 tokens
   user_char_limit: 1375     # ~500 tokens
 
+  # Dual memory framework (off by default):
+  #   W = user-facing PARA markdown workspace
+  #   S = agent-facing procedural Skill Markdown
+  #
+  # Use `hermes memory workspace init` to create:
+  #   ~/.hermes/personal_workspace/{Projects,Areas,Resources,Archives}/_manifest.md
+  #
+  # Use `hermes memory procedural distill ...` to write distilled workflows to:
+  #   ~/.hermes/skills/procedural-memory/<skill>/SKILL.md
+  dual_memory:
+    enabled: false
+    personal_workspace_dir: ""  # empty = ~/.hermes/personal_workspace
+    procedural_skills_dir: ""   # empty = ~/.hermes/skills/procedural-memory
+
   # Periodic memory nudge: remind the agent to consider saving memories
   # every N user turns. Set to 0 to disable. Only active when memory is enabled.
   nudge_interval: 10        # Nudge every 10 user turns (0 = disabled)

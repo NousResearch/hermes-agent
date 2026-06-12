@@ -10747,6 +10747,14 @@ def cmd_memory(args):
             f"\n  Memory reset complete. New sessions will start with a blank slate."
         )
         print(f"  Files were in: {display_hermes_home()}/memories/\n")
+    elif sub == "workspace":
+        from hermes_cli.dual_memory import cmd_workspace
+
+        cmd_workspace(args)
+    elif sub == "procedural":
+        from hermes_cli.dual_memory import cmd_procedural
+
+        cmd_procedural(args)
     else:
         from hermes_cli.memory_setup import memory_command
 

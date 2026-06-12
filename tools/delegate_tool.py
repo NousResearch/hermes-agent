@@ -725,6 +725,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    session_ref: Optional[Dict[str, Any]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -772,6 +773,11 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        # The child's own session id — filled into the shared ref once the
+        # child agent exists (the callback is built first), so every relayed
+        # event lets UIs open/inspect the subagent's session directly.
+        if session_ref and session_ref.get("session_id"):
+            kw["child_session_id"] = str(session_ref["session_id"])
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -1021,6 +1027,7 @@ def _build_child_agent(
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
     # TUI can reconstruct the spawn tree and route per-branch controls.
+    child_session_ref: Dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index,
         goal,
@@ -1031,6 +1038,7 @@ def _build_child_agent(
         depth=tui_depth,
         model=effective_model_for_cb,
         toolsets=child_toolsets,
+        session_ref=child_session_ref,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -1154,7 +1162,7 @@ def _build_child_agent(
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
-        platform=parent_agent.platform,
+        platform="subagent",
         skip_context_files=True,
         skip_memory=True,
         clarify_callback=None,
@@ -1170,6 +1178,9 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    # Now the child exists, its session id can ride on every relayed event
+    # (including the spawn_requested below — first emit happens after this).
+    child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the
@@ -1181,6 +1192,13 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    # Stable sidebar marker: delegate subagent sessions must stay out of
+    # session pickers even when a parent delete orphans them (parent_session_id
+    # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
+    # ``list_sessions_rich`` child-exclusion clause.
+    parent_sid = getattr(parent_agent, "session_id", None)
+    if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
+        child._session_init_model_config["_delegate_from"] = parent_sid
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.

@@ -27,6 +27,30 @@ export function isSecondaryWindow(): boolean {
   return result
 }
 
+let watchWindowCache: boolean | null = null
+
+// A "watch" window spectates a session that is being driven elsewhere (a
+// running subagent). It resumes lazily — the gateway registers history + a
+// transport for the live mirror without building an agent, so opening it is
+// cheap even while the backend is busy running the delegation.
+export function isWatchWindow(): boolean {
+  if (watchWindowCache !== null) {
+    return watchWindowCache
+  }
+
+  let result = false
+
+  try {
+    result = new URLSearchParams(window.location.search).get('watch') === '1'
+  } catch {
+    result = false
+  }
+
+  watchWindowCache = result
+
+  return result
+}
+
 // True when running inside the Electron desktop shell (the preload bridge is
 // present). The "open in new window" affordance is desktop-only.
 export function canOpenSessionWindow(): boolean {
@@ -35,13 +59,14 @@ export function canOpenSessionWindow(): boolean {
 
 // Open (or focus) a standalone OS window for a single chat session. No-ops
 // gracefully outside Electron so callers can wire it unconditionally.
-export async function openSessionInNewWindow(sessionId: string): Promise<void> {
+// `watch: true` opens a spectator window (lazy resume, live-mirror stream).
+export async function openSessionInNewWindow(sessionId: string, opts?: { watch?: boolean }): Promise<void> {
   if (!sessionId || !canOpenSessionWindow()) {
     return
   }
 
   try {
-    const result = await window.hermesDesktop.openSessionWindow(sessionId)
+    const result = await window.hermesDesktop.openSessionWindow(sessionId, opts)
 
     if (!result?.ok) {
       notifyError(new Error(result?.error || 'unknown error'), 'Could not open chat in a new window')

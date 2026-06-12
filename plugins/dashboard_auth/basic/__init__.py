@@ -65,7 +65,7 @@ import logging
 import os
 import secrets
 import time
-from typing import Any, Optional
+from typing import Optional
 
 from hermes_cli.dashboard_auth import (
     DashboardAuthProvider,

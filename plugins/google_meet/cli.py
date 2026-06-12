@@ -88,7 +88,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     try:
         from plugins.google_meet.node.cli import register_cli as _register_node_cli
         _register_node_cli(node_p)
-    except Exception as e:  # pragma: no cover — defensive
+    except Exception:  # pragma: no cover — defensive
         # If the node module fails to import for any reason (optional dep
         # missing at import time etc.), leave the subparser present but
         # flag it. The argparse dispatch will surface a clear error.

@@ -8451,55 +8451,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             print("  🟡 Cancelled. No credits added.")
 
     def _show_tps(self):
-        """`/tps` — show tokens-per-second of the last API response."""
+        """`/tps` — show tokens-per-second of the last API response.
+
+        In gateway/desktop mode, /tps is intercepted by slash.exec before
+        reaching this method, which reads directly from the session agent.
+        This handler serves CLI (terminal) users where the local agent
+        processes API calls directly.
+        """
         agent = getattr(self, "agent", None)
         last_dur = getattr(agent, "last_api_duration", 0.0) or 0.0
         last_out = getattr(agent, "last_output_tokens", 0) or 0
-
-        # In gateway slash-worker mode, the local agent has no session data.
-        # Try the gateway RPC which reads from the real session agent.
-        if last_dur <= 0 or last_out <= 0:
-            sid = os.environ.get("HERMES_SLASH_SESSION_ID", "").strip()
-            port = os.environ.get("HERMES_SLASH_GATEWAY_PORT", "").strip()
-            if sid and port:
-                try:
-                    import urllib.request
-                    payload = json.dumps({"jsonrpc": "2.0", "method": "session.tps", "params": {"session_id": sid}, "id": 1}).encode()
-                    req = urllib.request.Request(f"http://127.0.0.1:{port}/api", data=payload, headers={"Content-Type": "application/json"})
-                    with urllib.request.urlopen(req, timeout=5) as resp:
-                        result = json.loads(resp.read().decode())
-                    tps_data = (result.get("result") if "result" in result else None) or {}
-                    tps_val = tps_data.get("tps")
-                    if tps_val is not None:
-                        print()
-                        print("  ⚡ Tokens per second")
-                        print(f"  {'─' * 41}")
-                        print(f"  Last response:      {tps_data.get('tokens', 0):,} tokens in {tps_data.get('duration_s', 0):.1f}s")
-                        print(f"  Output speed:       {tps_val:,.0f} tok/s")
-                        return
-                    else:
-                        # RPC succeeded but no tps (no API call yet in session)
-                        print()
-                        print("  ⚡ Tokens per second")
-                        print(f"  {'─' * 41}")
-                        print(f"  No API response recorded yet in this session.")
-                        print(f"  Send a message first, then run /tps.")
-                        return
-                except Exception as e:
-                    print()
-                    print("  ⚡ Tokens per second")
-                    print(f"  {'─' * 41}")
-                    print(f"  Gateway RPC failed: {e}")
-                    return
-            else:
-                # Missing env vars — show what we're missing
-                print()
-                print("  ⚡ Tokens per second")
-                print(f"  {'─' * 41}")
-                print(f"  Slash worker missing gateway connection:")
-                print(f"    HERMES_SLASH_SESSION_ID = {repr(sid) if sid else 'NOT SET'}")
-                print(f"    HERMES_SLASH_GATEWAY_PORT = {repr(port) if port else 'NOT SET'}")
-                return
 
         print()
         print("  ⚡ Tokens per second")

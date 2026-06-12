@@ -1472,6 +1472,82 @@ class TestRunJobSessionPersistence:
         assert fake_db.close.call_count == 2
 
 
+class TestRunJobTargetModel:
+    """Verify that cron jobs pass target_model to resolve_runtime_provider."""
+
+    def test_target_model_forwarded_to_runtime_resolver(self, tmp_path):
+        """When a job pins model, resolve_runtime_provider must receive
+        target_model so api_mode is computed from the job's model, not
+        the unrelated config default (regression: #45245)."""
+        job = {
+            "id": "test-tm",
+            "name": "test",
+            "prompt": "hello",
+            "model": "deepseek-v4-flash",
+            "provider": "opencode-go",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://opencode.ai/zen/go/v1",
+                     "provider": "opencode-go",
+                     "api_mode": "chat_completions",
+                 },
+             ) as mock_resolve, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+
+        mock_resolve.assert_called_once()
+        call_kwargs = mock_resolve.call_args.kwargs
+        assert call_kwargs.get("target_model") == "deepseek-v4-flash"
+        assert call_kwargs.get("requested") == "opencode-go"
+
+    def test_empty_model_omits_target_model(self, tmp_path):
+        """When a job has no model field, target_model should not be passed
+        so the resolver falls back to config default as designed."""
+        job = {
+            "id": "test-no-tm",
+            "name": "test",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "test-key",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ) as mock_resolve, \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            run_job(job)
+
+        mock_resolve.assert_called_once()
+        call_kwargs = mock_resolve.call_args.kwargs
+        assert "target_model" not in call_kwargs
+
+
 class TestRunJobConfigLogging:
     """Verify that config.yaml parse failures are logged, not silently swallowed."""
 

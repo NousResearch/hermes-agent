@@ -1655,6 +1655,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             runtime_kwargs = {
                 "requested": job.get("provider"),
             }
+            if model:
+                runtime_kwargs["target_model"] = model
             if job.get("base_url"):
                 runtime_kwargs["explicit_base_url"] = job.get("base_url")
             runtime = resolve_runtime_provider(**runtime_kwargs)
@@ -1669,6 +1671,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     continue
                 try:
                     fb_kwargs = {"requested": entry.get("provider")}
+                    if model:
+                        fb_kwargs["target_model"] = model
                     if entry.get("base_url"):
                         fb_kwargs["explicit_base_url"] = entry["base_url"]
                     if entry.get("api_key"):

@@ -1344,6 +1344,12 @@ class TestChutesProvider:
         profile = providers.get_provider_profile("chutes")
         assert profile is not None
         assert profile.default_aux_model
+        # Anchor the aux model to the curated catalog so it can't silently
+        # drift to a non-existent id, and so it stays above Hermes' 64K
+        # MINIMUM_CONTEXT_LENGTH (the 40K Qwen3-32B would be rejected).
+        assert profile.default_aux_model in profile.fallback_models
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert profile.default_aux_model in _PROVIDER_MODELS["chutes"]
 
     def test_chutes_pricing_from_catalog(self, monkeypatch):
         """_fetch_chutes_pricing reads OpenAI-style per-model ``pricing``

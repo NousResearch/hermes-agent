@@ -556,6 +556,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "zai-org/GLM-5.1-TEE",
         "moonshotai/Kimi-K2.6-TEE",
         "MiniMaxAI/MiniMax-M2.5-TEE",
+        "google/gemma-4-31B-turbo-TEE",
     ],
 }
 

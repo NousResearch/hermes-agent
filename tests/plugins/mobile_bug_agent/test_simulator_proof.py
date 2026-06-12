@@ -346,9 +346,19 @@ def test_simulator_proof_android_captures_while_long_lived_run_is_foreground(mon
         bytes_calls.append((args, cwd, timeout))
         return _png_bytes()
 
-    def run_android_until_foreground(args, cwd, timeout, adb, package, log_dir, while_foreground):
+    def run_android_until_foreground(
+        args,
+        cwd,
+        timeout,
+        adb,
+        package,
+        log_dir,
+        open_dev_client,
+        capture_foreground,
+    ):
         foreground_calls.append((args, cwd, timeout, adb, package, log_dir))
-        while_foreground()
+        open_dev_client()
+        capture_foreground()
 
     harness = SimulatorProofHarness(
         run_text=run_text,
@@ -423,6 +433,49 @@ def test_simulator_proof_android_captures_while_long_lived_run_is_foreground(mon
     assert bytes_calls == [
         (("adb", "-s", "emulator-5554", "exec-out", "screencap", "-p"), worktree, 120)
     ]
+
+
+def test_android_foreground_runner_waits_for_bundle_before_capture(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setenv("MONICA_PACKAGER_HOSTNAME", "localhost")
+
+    class FakeProcess:
+        def poll(self):
+            return None
+
+        def terminate(self):
+            events.append("terminate")
+
+        def wait(self, timeout):
+            return 0
+
+        def kill(self):
+            events.append("kill")
+
+    def fake_popen(*_args, **_kwargs):
+        events.append("metro-start")
+        return FakeProcess()
+
+    monkeypatch.setattr(simulator_proof.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(simulator_proof, "_android_package_is_foreground", lambda *_args: True)
+    monkeypatch.setattr(
+        simulator_proof,
+        "_wait_for_metro_bundle_request",
+        lambda *_args, **_kwargs: events.append("bundle-requested"),
+    )
+
+    simulator_proof._run_android_until_foreground(
+        ("npm", "run", "android"),
+        tmp_path,
+        30,
+        ("adb",),
+        "com.elixir.card",
+        tmp_path,
+        lambda: events.append("open-dev-client"),
+        lambda: events.append("capture"),
+    )
+
+    assert events[:4] == ["metro-start", "open-dev-client", "bundle-requested", "capture"]
 
 
 def test_simulator_proof_refuses_non_mobile_worktree(tmp_path):

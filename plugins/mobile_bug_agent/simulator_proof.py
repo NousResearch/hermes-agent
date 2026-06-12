@@ -15,7 +15,7 @@ from typing import Callable, Sequence
 RunText = Callable[[tuple[str, ...], Path, int], str]
 RunBytes = Callable[[tuple[str, ...], Path, int], bytes]
 RunAndroidUntilForeground = Callable[
-    [tuple[str, ...], Path, int, tuple[str, ...], str, Path | None, Callable[[], None]],
+    [tuple[str, ...], Path, int, tuple[str, ...], str, Path | None, Callable[[], None], Callable[[], None]],
     None,
 ]
 RunIosUntilReady = Callable[
@@ -200,7 +200,7 @@ class SimulatorProofHarness:
             self._run_text((*adb, "version"), worktree, timeout_seconds)
             self._run_text((*adb, "reverse", "tcp:8081", "tcp:8081"), worktree, timeout_seconds)
 
-            def capture_ready_app() -> None:
+            def open_dev_client() -> None:
                 if dev_client_scheme.strip():
                     _open_android_url(
                         self._run_text,
@@ -211,6 +211,8 @@ class SimulatorProofHarness:
                         android_package.strip(),
                     )
                     time.sleep(_android_settle_seconds())
+
+            def capture_ready_app() -> None:
                 if deep_link.strip():
                     _open_android_url(
                         self._run_text,
@@ -235,6 +237,7 @@ class SimulatorProofHarness:
                     adb,
                     package,
                     proof_dir,
+                    open_dev_client,
                     capture_ready_app,
                 )
             else:
@@ -668,7 +671,8 @@ def _run_android_until_foreground(
     adb: tuple[str, ...],
     package: str,
     log_dir: Path | None,
-    while_foreground: Callable[[], None],
+    open_dev_client: Callable[[], None],
+    capture_foreground: Callable[[], None],
 ) -> None:
     stdout_path, stderr_path = _start_log_files("android-metro-", log_dir)
     try:
@@ -696,18 +700,31 @@ def _run_android_until_foreground(
                         time.sleep(min(_android_settle_seconds(), max(deadline - time.monotonic(), 0)))
                         if not _android_package_is_foreground(adb, cwd, package):
                             continue
-                        while_foreground()
+                        open_dev_client()
                         _wait_for_metro_bundle_request(
                             stdout_path,
                             stderr_path,
                             "android",
                             deadline,
                         )
+                        time.sleep(min(_android_settle_seconds(), max(deadline - time.monotonic(), 0)))
                         if not _android_package_is_foreground(adb, cwd, package):
                             raise RuntimeError(
                                 "\n".join(
                                     [
                                         f"Android package left foreground before proof capture: {package}",
+                                        f"command: {' '.join(args)}",
+                                        f"stdout: {_tail_text(stdout_path)}",
+                                        f"stderr: {_tail_text(stderr_path)}",
+                                    ]
+                                )
+                            )
+                        capture_foreground()
+                        if not _android_package_is_foreground(adb, cwd, package):
+                            raise RuntimeError(
+                                "\n".join(
+                                    [
+                                        f"Android package left foreground during proof capture: {package}",
                                         f"command: {' '.join(args)}",
                                         f"stdout: {_tail_text(stdout_path)}",
                                         f"stderr: {_tail_text(stderr_path)}",

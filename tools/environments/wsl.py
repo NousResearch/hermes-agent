@@ -15,7 +15,6 @@ WSL.  Use Linux paths for all tools.  Windows files are accessible via the
 import logging
 import os
 import shutil
-import signal
 import subprocess
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
@@ -110,7 +109,8 @@ class WslEnvironment(BaseEnvironment):
                  distro: str = ""):
         _ensure_wsl_available()
         self._wsl = _find_wsl()
-        # distro priority: explicit parameter > env dict > process environment
+        # distro priority (first non-empty wins):
+        #   explicit distro param → env dict → process environment
         _env = env or {}
         self._distro = distro or _env.get("TERMINAL_WSL_DISTRO") or os.getenv("TERMINAL_WSL_DISTRO", "")
         if not cwd:
@@ -178,20 +178,15 @@ class WslEnvironment(BaseEnvironment):
             logger.debug("Cleanup rm failed (distro may have stopped)", exc_info=True)
 
     def _kill_process(self, proc):
-        # First try SIGTERM via the wsl.exe process itself.  wsl.exe
-        # forwards the signal to the init process inside WSL, which
-        # propagates to the entire bash session tree.
+        # wsl.exe is the root of its process tree inside WSL — killing it
+        # with terminate() (Ctrl+C) then kill() (force) is sufficient to
+        # clean up the entire bash session.  os.killpg is a Windows footgun
+        # and unnecessary here; the WSL init process handles orphan cleanup.
         try:
             proc.terminate()
         except Exception:
             pass
-        # On non-Windows or if wsl.exe is still alive, kill the entire
-        # process tree.  os.killpg ensures no orphaned grandchildren
-        # are left behind, matching LocalEnvironment's behavior.
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            pass

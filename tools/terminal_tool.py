@@ -36,7 +36,6 @@ import json
 import logging
 import os
 import platform
-import re
 import time
 import threading
 import atexit
@@ -1214,7 +1213,6 @@ def _get_env_config() -> Dict[str, Any]:
         # WSL is not a container.  Try to convert Windows-style CWDs
         # (C:\Users\..., D:\project) to WSL mount points so desktop
         # users keep their working directory when switching backends.
-        import re
         _WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[/\\]?(.*)$")
         _m = _WIN_DRIVE_RE.match(cwd)
         if _m:
@@ -1233,8 +1231,7 @@ def _get_env_config() -> Dict[str, Any]:
     elif env_type in {"local", "ssh"} and cwd and cwd.startswith("/mnt/"):
         # Convert WSL /mnt/drive/... paths back to Windows when switching
         # from WSL to a Windows-hosted backend (local or SSH).
-        import re
-        _MNT_RE = re.compile(r"^/mnt/([a-z])(/.*)?$")
+                _MNT_RE = re.compile(r"^/mnt/([a-z])(/.*)?$")
         _m = _MNT_RE.match(cwd)
         if _m:
             drive = _m.group(1).upper() + ":"
@@ -2536,7 +2533,6 @@ def terminal_tool(
             output = strip_ansi(output)
 
             # Redact secrets from command output (catches env/printenv leaking keys)
-            from agent.redact import redact_sensitive_text
             output = redact_sensitive_text(output.strip()) if output else ""
 
             # Interpret non-zero exit codes that aren't real errors
@@ -2728,7 +2724,6 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
-from tools.registry import registry
 
 TERMINAL_SCHEMA = {
     "name": "terminal",

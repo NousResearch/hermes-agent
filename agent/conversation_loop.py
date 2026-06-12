@@ -940,6 +940,18 @@ def run_conversation(
                             request_messages=list(request_messages)
                             if isinstance(request_messages, list)
                             else [],
+                            # Full-fidelity per-call tools array — same raw
+                            # passthrough posture as request_messages above
+                            # (api_kwargs is the object sent to the provider;
+                            # secrets are not expected). Lets observability
+                            # plugins attribute per-schema token cost exactly
+                            # instead of estimating: agent.tools is assembled
+                            # post-registry and providers mutate schemas before
+                            # send, so the sanitized payload + tool_count alone
+                            # can't reconstruct what was actually sent.
+                            request_tools=list(api_kwargs.get("tools") or [])
+                            if isinstance(api_kwargs, dict)
+                            else [],
                             message_count=len(api_messages),
                             tool_count=len(agent.tools or []),
                             approx_input_tokens=approx_tokens,

@@ -62,6 +62,7 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
+from conflict.policies.api_retry_policy import APIRetryPolicy, calculate_backoff, ErrorCategory
 
 logger = logging.getLogger(__name__)
 
@@ -1146,109 +1147,66 @@ def run_conversation(
                     if agent.thinking_callback:
                         agent.thinking_callback("")
                     
-                    # Invalid response — could be rate limiting, provider timeout,
-                    # upstream server error, or malformed response.
-                    retry_count += 1
-                    
+                    # Invalid response — delegate to APIRetryPolicy for classification and directive.
+                    policy = APIRetryPolicy(max_retries=max_retries)
+                    status_code = getattr(getattr(response, "error", None), "code", None)
+                    if status_code is not None:
+                        try:
+                            status_code = int(status_code)
+                        except (TypeError, ValueError):
+                            status_code = None
+                    error_message = ", ".join(error_details) or "InvalidAPIResponse"
+                    classified = policy.classify_error(
+                        error=Exception(error_message),
+                        status_code=status_code,
+                        error_body=error_message,
+                        retry_count=retry_count,
+                    )
+                    directive = policy.get_retry_directive(classified, _retry)
+
                     # Eager fallback: empty/malformed responses are a common
-                    # rate-limit symptom.  Switch to fallback immediately
+                    # rate-limit symptom. Switch to fallback immediately
                     # rather than retrying with extended backoff.
-                    if agent._fallback_index < len(agent._fallback_chain):
-                        agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
-                    if agent._try_activate_fallback():
-                        retry_count = 0
-                        compression_attempts = 0
-                        _retry.primary_recovery_attempted = False
-                        continue
-
-                    # Check for error field in response (some providers include this)
-                    error_msg = "Unknown"
-                    provider_name = "Unknown"
-                    if response and hasattr(response, 'error') and response.error:
-                        error_msg = str(response.error)
-                        # Try to extract provider from error metadata
-                        if hasattr(response.error, 'metadata') and response.error.metadata:
-                            provider_name = response.error.metadata.get('provider_name', 'Unknown')
-                    elif response and hasattr(response, 'message') and response.message:
-                        error_msg = str(response.message)
-                    
-                    # Try to get provider from model field (OpenRouter often returns actual model used)
-                    if provider_name == "Unknown" and response and hasattr(response, 'model') and response.model:
-                        provider_name = f"model={response.model}"
-                    
-                    # Check for x-openrouter-provider or similar metadata
-                    if provider_name == "Unknown" and response:
-                        # Log all response attributes for debugging
-                        resp_attrs = {k: str(v)[:100] for k, v in vars(response).items() if not k.startswith('_')}
-                        if agent.verbose_logging:
-                            logging.debug(f"Response attributes for invalid response: {resp_attrs}")
-                    
-                    # Extract error code from response for contextual diagnostics
-                    _resp_error_code = None
-                    if response and hasattr(response, 'error') and response.error:
-                        _code_raw = getattr(response.error, 'code', None)
-                        if _code_raw is None and isinstance(response.error, dict):
-                            _code_raw = response.error.get('code')
-                        if _code_raw is not None:
-                            try:
-                                _resp_error_code = int(_code_raw)
-                            except (TypeError, ValueError):
-                                pass
-
-                    # Build a human-readable failure hint from the error code
-                    # and response time, instead of always assuming rate limiting.
-                    if _resp_error_code == 524:
-                        _failure_hint = f"upstream provider timed out (Cloudflare 524, {api_duration:.0f}s)"
-                    elif _resp_error_code == 504:
-                        _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
-                    elif _resp_error_code == 429:
-                        _failure_hint = f"rate limited by upstream provider (429)"
-                    elif _resp_error_code in {500, 502}:
-                        _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
-                    elif _resp_error_code in {503, 529}:
-                        _failure_hint = f"upstream provider overloaded ({_resp_error_code})"
-                    elif _resp_error_code is not None:
-                        _failure_hint = f"upstream error (code {_resp_error_code}, {api_duration:.0f}s)"
-                    elif api_duration < 10:
-                        _failure_hint = f"fast response ({api_duration:.1f}s) — likely rate limited"
-                    elif api_duration > 60:
-                        _failure_hint = f"slow response ({api_duration:.0f}s) — likely upstream timeout"
-                    else:
-                        _failure_hint = f"response time {api_duration:.1f}s"
-
-                    agent._buffer_vprint(f"⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}")
-                    agent._buffer_vprint(f"   🏢 Provider: {provider_name}")
-                    cleaned_provider_error = agent._clean_error_message(error_msg)
-                    agent._buffer_vprint(f"   📝 Provider message: {cleaned_provider_error}")
-                    agent._buffer_vprint(f"   ⏱️  {_failure_hint}")
-                    
-                    if retry_count >= max_retries:
-                        # Try fallback before giving up
-                        if agent._has_pending_fallback():
-                            agent._buffer_status(f"⚠️ Max retries ({max_retries}) for invalid responses — trying fallback...")
+                    if directive.name not in ("RETRY_WITH_COMPRESSION", "FALLBACK_MODEL"):
+                        if agent._fallback_index < len(agent._fallback_chain):
+                            agent._buffer_status("⚠️ Empty/malformed response — switching to fallback...")
                         if agent._try_activate_fallback():
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
                             continue
-                        # Terminal — flush buffered retry trace so user sees what happened.
-                        agent._flush_status_buffer()
-                        agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
-                        logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
-                        agent._persist_session(messages, conversation_history)
-                        return {
-                            "messages": messages,
-                            "completed": False,
-                            "api_calls": api_call_count,
-                            "error": f"Invalid API response after {max_retries} retries: {_failure_hint}",
-                            "failed": True  # Mark as failure for filtering
-                        }
-                    
-                    # Backoff before retry — jittered exponential: 5s base, 120s cap
-                    wait_time = jittered_backoff(retry_count, base_delay=5.0, max_delay=120.0)
-                    agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({_failure_hint})...")
-                    logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {', '.join(error_details)} | Provider: {provider_name}")
-                    
+
+                    # Dispatch on RetryDirective
+                    if directive.name in ("RETRY_WITH_COMPRESSION", "FALLBACK_MODEL"):
+                        if agent._fallback_index < len(agent._fallback_chain):
+                            agent._buffer_status(f"⚠️ {classified.reason} — switching to fallback...")
+                        if agent._try_activate_fallback():
+                            retry_count = 0
+                            compression_attempts = 0
+                            _retry.primary_recovery_attempted = False
+                            continue
+                    elif directive.name == "ABORT":
+                        if retry_count >= max_retries:
+                            agent._flush_status_buffer()
+                            agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
+                            logger.error(f"{agent.log_prefix}Invalid API response after {max_retries} retries.")
+                            agent._persist_session(messages, conversation_history)
+                            return {
+                                "messages": messages,
+                                "completed": False,
+                                "api_calls": api_call_count,
+                                "error": f"Invalid API response after {max_retries} retries: {classified.reason}",
+                                "failed": True
+                            }
+
+                    # Count this attempt BEFORE sleeping so max_retries fires on the correct iteration
+                    retry_count += 1
+
+                    # Backoff before retry — use policy's backoff calculation
+                    wait_time = calculate_backoff(retry_count, base=5.0, max_delay=120.0)
+                    agent._buffer_vprint(f"⏳ Retrying in {wait_time:.1f}s ({classified.reason})...")
+                    logger.warning(f"Invalid API response (retry {retry_count}/{max_retries}): {classified.reason} | Provider: {getattr(agent, 'provider', 'Unknown')}")
+
                     # Sleep in small increments to stay responsive to interrupts
                     sleep_end = time.time() + wait_time
                     _backoff_touch_counter = 0
@@ -1258,21 +1216,16 @@ def run_conversation(
                             agent._persist_session(messages, conversation_history)
                             agent.clear_interrupt()
                             return {
-                                "final_response": f"Operation interrupted during retry ({_failure_hint}, attempt {retry_count}/{max_retries}).",
+                                "final_response": f"Operation interrupted during retry ({classified.reason}, attempt {retry_count}/{max_retries}).",
                                 "messages": messages,
                                 "api_calls": api_call_count,
                                 "completed": False,
                                 "interrupted": True,
                             }
                         time.sleep(0.2)
-                        # Touch activity every ~30s so the gateway's inactivity
-                        # monitor knows we're alive during backoff waits.
                         _backoff_touch_counter += 1
-                        if _backoff_touch_counter % 150 == 0:  # 150 × 0.2s = 30s
-                            agent._touch_activity(
-                                f"retry backoff ({retry_count}/{max_retries}), "
-                                f"{int(sleep_end - time.time())}s remaining"
-                            )
+                        if _backoff_touch_counter % 150 == 0:
+                            agent._touch_activity(f"retry backoff ({retry_count}/{max_retries}), {int(sleep_end - time.time())}s remaining")
                     continue  # Retry the API call
 
                 # Check finish_reason before proceeding
@@ -3360,14 +3313,10 @@ def run_conversation(
             # Notify progress callback of model's thinking (used by subagent
             # delegation to relay the child's reasoning to the parent display).
             if (assistant_message.content and agent.tool_progress_callback):
-                _think_text = assistant_message.content.strip()
-                # Strip reasoning XML tags that shouldn't leak to parent display
-                _think_text = re.sub(
-                    r'</?(?:REASONING_SCRATCHPAD|think|reasoning)>', '', _think_text
-                ).strip()
-                # For subagents: relay first line to parent display (existing behaviour).
-                # For all agents with a structured callback: emit reasoning.available event.
-                first_line = _think_text.split('\n')[0][:80] if _think_text else ""
+                from utils.text_processor import strip_think_blocks, extract_first_line
+
+                _think_text = strip_think_blocks(assistant_message.content)
+                first_line = extract_first_line(_think_text, max_length=80)
                 if first_line and getattr(agent, '_delegate_depth', 0) > 0:
                     try:
                         agent.tool_progress_callback("_thinking", first_line)

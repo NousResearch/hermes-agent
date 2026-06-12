@@ -1003,7 +1003,7 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             },
             "schedule": {
                 "type": "string",
-                "description": "REQUIRED for action=create. For create/update: '30s', '30m', 'every 2h', '0 9 * * *', or ISO timestamp. Examples: '30s' (every 30 seconds), '30m' (every 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am), '2026-06-01T09:00:00' (one-shot). You MUST include this field when action=create. IMPORTANT: For relative times like 'in 10 seconds' or 'after 5 minutes', use duration format like '10s' or '5m' — do NOT construct ISO timestamps yourself because you don't know the current time."
+                "description": "REQUIRED for action=create. Supported formats: duration ('30s', '30m', 'every 2h'), cron ('0 9 * * *'), or ISO timestamp ('2026-06-01T09:00:00'). Examples: '30s' (in 30 seconds), '30m' (in 30 minutes), 'every 2h' (every 2 hours), '0 9 * * *' (daily at 9am). You MUST include this field when action=create. IMPORTANT: The system prompt only tells you the current date, not the current time — do NOT attempt to construct ISO timestamps for relative times like 'in 10 seconds'. Use the duration format ('10s', '5m', '2h') instead."
             },
             "name": {
                 "type": "string",

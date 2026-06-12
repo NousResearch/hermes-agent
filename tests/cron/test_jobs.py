@@ -106,6 +106,32 @@ class TestParseSchedule:
         assert result["kind"] == "interval"
         assert result["minutes"] == 30
 
+    def test_every_seconds_interval(self):
+        result = parse_schedule("every 30s")
+        assert result["kind"] == "interval"
+        assert result["minutes"] == pytest.approx(0.5)
+        assert result["display"] == "every 30s"
+
+    def test_seconds_one_shot(self):
+        result = parse_schedule("30s")
+        assert result["kind"] == "once"
+        assert "run_at" in result
+        run_at_str = result["run_at"]
+        assert isinstance(run_at_str, str)
+        run_at = datetime.fromisoformat(run_at_str)
+        now = datetime.now().astimezone()
+        assert run_at > now
+        assert run_at < now + timedelta(minutes=1)
+        assert "once in 30s" in result["display"]
+
+    def test_decimal_duration(self):
+        result = parse_schedule("1.5m")
+        assert result["kind"] == "once"
+        run_at = datetime.fromisoformat(result["run_at"])
+        now = datetime.now().astimezone()
+        assert run_at > now
+        assert run_at < now + timedelta(minutes=2)
+
     def test_cron_expression(self):
         pytest.importorskip("croniter")
         result = parse_schedule("0 9 * * *")

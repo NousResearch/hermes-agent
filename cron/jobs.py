@@ -467,7 +467,7 @@ def parse_duration(s: str) -> float:
         "2h" → 120
         "1d" → 1440
         "30s" → 0.5
-        "10sec" → 0.1667
+        "10sec" → 10/60
     """
     s = s.strip().lower()
     match = re.match(
@@ -496,7 +496,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
     Returns dict with:
         - kind: "once" | "interval" | "cron"
         - For "once": "run_at" (ISO timestamp)
-        - For "interval": "minutes" (int)
+        - For "interval": "minutes" (float)
         - For "cron": "expr" (cron expression)
     
     Examples:
@@ -518,7 +518,7 @@ def parse_schedule(schedule: str) -> Dict[str, Any]:
         return {
             "kind": "interval",
             "minutes": minutes,
-            "display": f"every {minutes}m"
+            "display": f"every {duration_str}"
         }
     
     # Check for cron expression (5 or 6 space-separated fields)

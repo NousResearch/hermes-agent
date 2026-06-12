@@ -249,6 +249,7 @@ class TestBuildWebUISkipsWhenFresh:
             "web",
             "--include-workspace-root=false",
             "--silent",
+            "--prefer-offline",
         ]
         assert kwargs["cwd"] == tmp_path
 
@@ -269,7 +270,14 @@ class TestBuildWebUISkipsWhenFresh:
 
         assert result is True
         args, kwargs = mock_run.call_args
-        assert args[0] == ["/usr/bin/npm", "ci", "--workspace", "web", "--silent"]
+        assert args[0] == [
+            "/usr/bin/npm",
+            "ci",
+            "--workspace",
+            "web",
+            "--silent",
+            "--prefer-offline",
+        ]
         assert kwargs["cwd"] == tmp_path
 
 

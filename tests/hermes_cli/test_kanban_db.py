@@ -335,6 +335,44 @@ def test_recompute_ready_promotes_blocked_with_done_parents(kanban_home):
         assert task.last_failure_error is None
 
 
+def test_initial_status_blocked_is_sticky_across_recompute(kanban_home):
+    """A task created with initial_status='blocked' must survive
+    recompute_ready — the flag's documented purpose is parking a card for
+    human ops (R3 gate), so the dispatcher must not auto-promote it.
+
+    Regression: create_task set status='blocked' but emitted no 'blocked'
+    event, so _has_sticky_block returned False and recompute_ready promoted
+    the (parentless) card to ready on the next dispatcher tick, spawning a
+    worker for a card that explicitly asked not to be dispatched.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="parked", initial_status="blocked")
+        assert kb.get_task(conn, t).status == "blocked"
+        promoted = kb.recompute_ready(conn)
+        assert promoted == 0
+        assert kb.get_task(conn, t).status == "blocked"
+        # The sticky-block event must look like an operator block.
+        row = conn.execute(
+            "SELECT kind FROM task_events WHERE task_id = ? "
+            "AND kind IN ('blocked', 'unblocked') ORDER BY id DESC LIMIT 1",
+            (t,),
+        ).fetchone()
+        assert row is not None and row["kind"] == "blocked"
+
+
+def test_initial_status_blocked_unblock_releases(kanban_home):
+    """unblock_task is the legitimate exit from a created-blocked card —
+    after an explicit unblock, recompute/normal flow may promote it."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="parked", initial_status="blocked")
+        assert kb.unblock_task(conn, t)
+        status = kb.get_task(conn, t).status
+        assert status in ("ready", "todo")
+        # And it stays promotable: recompute must not re-block it.
+        kb.recompute_ready(conn)
+        assert kb.get_task(conn, t).status in ("ready", "todo")
+
+
 def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
     with kb.connect() as conn:
         a = kb.create_task(conn, title="a")

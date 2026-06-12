@@ -2280,6 +2280,21 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if task_status == "blocked":
+                    # Parking a card in blocked at creation time is an
+                    # explicit operator decision (the documented purpose of
+                    # --initial-status blocked is the human-ops / R3 gate).
+                    # Emit the same "blocked" event that block_task emits so
+                    # _has_sticky_block treats it as sticky — otherwise
+                    # recompute_ready auto-promotes a parentless blocked
+                    # card to ready on the next dispatcher tick and a worker
+                    # gets spawned, defeating the flag entirely.
+                    _append_event(
+                        conn,
+                        task_id,
+                        "blocked",
+                        {"reason": "created with initial_status=blocked"},
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

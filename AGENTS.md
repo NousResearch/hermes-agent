@@ -4,6 +4,18 @@ Instructions for AI coding assistants and developers working on the hermes-agent
 
 **Never give up on the right solution.**
 
+## Git / PR Workflow
+
+- Treat `NousResearch/hermes-agent` as upstream/read-only for Tomonori work. In this local checkout, `origin` points to `NousResearch/hermes-agent`; do not push to `origin` or any upstream remote.
+- Normal work must happen on a scoped topic branch pushed to Tomonori's fork, not on `main` and not on the upstream repository.
+- Do not push directly to `main`.
+- Create small, scoped PRs. Do not mix unrelated changes.
+- Confirm CI / GitHub checks before merge when checks are configured.
+- Merge through PR review only. Delete the work branch after merge only after explicit approval.
+- Prefer rollback with `git revert <commit_sha>`.
+- Do not run `git reset --hard` or force-push without Tomonori's explicit approval for that exact operation.
+- Do not read, edit, stage, commit, or summarize secrets or local runtime state: `.env`, `auth.json`, token files, credential files, key files, logs, sessions, or similar private files.
+
 ## Development Environment
 
 ```bash

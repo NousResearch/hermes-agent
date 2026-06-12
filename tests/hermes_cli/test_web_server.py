@@ -7104,6 +7104,26 @@ class TestPtyWebSocket:
 
         assert env["COLORTERM"] == "24bit"
 
+    def test_resolve_chat_argv_sets_tui_python_environment(self, monkeypatch):
+        """Dashboard chat gives the Node TUI the same Python env as CLI launches."""
+        import hermes_cli.main as main_mod
+
+        monkeypatch.delenv("HERMES_PYTHON_SRC_ROOT", raising=False)
+        monkeypatch.delenv("HERMES_PYTHON", raising=False)
+        monkeypatch.delenv("HERMES_CWD", raising=False)
+        monkeypatch.setattr(
+            main_mod,
+            "_make_tui_argv",
+            lambda project_root, tui_dev=False: (["node", "dist/entry.js"], "/tmp/ui-tui"),
+        )
+
+        _argv, _cwd, env = self.ws_module._resolve_chat_argv()
+
+        assert env is not None
+        assert env["HERMES_PYTHON_SRC_ROOT"] == str(main_mod.PROJECT_ROOT)
+        assert env["HERMES_PYTHON"] == sys.executable
+        assert env["HERMES_CWD"] == os.getcwd()
+
     def test_resolve_chat_argv_applies_terminal_backend_config(
         self, monkeypatch, _isolate_hermes_home
     ):

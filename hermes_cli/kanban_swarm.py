@@ -23,6 +23,26 @@ from typing import Any, Iterable, Optional
 
 from hermes_cli import kanban_db as kb
 
+# Re-export structured key helpers for callers that want namespaced keys.
+# The blackboard itself stays string-keyed — these are naming convention
+# helpers, not a schema change.
+from hermes_cli.kv_helpers import (  # noqa: F401  — public re-export
+    worker_key,
+    worker_result_key,
+    worker_status_key,
+    worker_handoff_key,
+    team_key,
+    coordinator_key,
+    parse_worker_key,
+    parse_namespaced_key,
+    worker_prefix,
+    worker_fields,
+    get_worker_field,
+    TOPOLOGY_KEY,
+    GOAL_KEY,
+    AUTHORS_KEY,
+)
+
 BLACKBOARD_PREFIX = "[swarm:blackboard] "
 
 
@@ -130,7 +150,7 @@ def create_swarm(
     # If idempotency returned an existing non-archived root, do not duplicate the
     # swarm graph. Recover the topology from the root's latest blackboard, if it
     # was created by this helper previously.
-    existing = latest_blackboard(conn, root).get("topology")
+    existing = latest_blackboard(conn, root).get(TOPOLOGY_KEY)
     if isinstance(existing, dict):
         worker_ids = [str(x) for x in existing.get("worker_ids", []) if x]
         verifier_id = existing.get("verifier_id")
@@ -217,7 +237,7 @@ def create_swarm(
         conn,
         root,
         author=created_by,
-        key="topology",
+        key=TOPOLOGY_KEY,
         value=created.as_dict() | {"goal": goal},
     )
     return created

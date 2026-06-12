@@ -2178,6 +2178,10 @@ class SessionStore:
                             "has_active_processes_fn raised during prune for %s: %s",
                             entry.session_key, exc,
                         )
+                        # Fail safe: if we can't tell whether a background
+                        # process is attached, keep the entry rather than
+                        # risk orphaning live work.
+                        continue
                 if entry.updated_at < cutoff:
                     removed_keys.append(key)
             for key in removed_keys:

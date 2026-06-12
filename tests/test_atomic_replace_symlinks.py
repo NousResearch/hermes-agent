@@ -27,6 +27,8 @@ if str(_REPO_ROOT) not in sys.path:
 
 from utils import atomic_json_write, atomic_replace, atomic_yaml_write
 
+from unittest import mock
+
 
 # ─── Direct helper ────────────────────────────────────────────────────────────
 
@@ -158,3 +160,90 @@ def test_atomic_replace_broken_symlink_creates_target(tmp_path: Path) -> None:
     assert link.is_symlink(), "symlink must be preserved"
     assert missing.exists(), "real target should now exist"
     assert missing.read_text(encoding="utf-8") == "created-through-link\n"
+
+
+# ─── Windows PermissionError retry (#43268) ──────────────────────────────
+
+
+def test_atomic_replace_retries_on_windows_permission_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """os.replace raising PermissionError (WinError 5 on Windows, from
+    concurrent hermes processes briefly holding the target open) should
+    be retried with jittered backoff. The mock simulates the Windows-only
+    branch by forcing os.name == 'nt' and stubbing the inner os.replace
+    to fail twice before succeeding on the third attempt.
+    """
+    target = tmp_path / "auth.json"
+    target.write_text("old", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new")
+
+    real_replace = os.replace
+    calls = {"n": 0}
+
+    def flaky_replace(src: str, dst: str) -> None:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            # PermissionError maps to WinError 5 on Windows; raising it on
+            # any platform exercises the same retry branch.
+            raise PermissionError(5, "Access is denied", dst)
+        real_replace(src, dst)
+
+    monkeypatch.setattr("utils.os.name", "nt", raising=False)
+    monkeypatch.setattr("utils.os.replace", flaky_replace)
+    # Make time.sleep a no-op so the test doesn't actually wait.
+    monkeypatch.setattr("utils.time.sleep", lambda _s: None)
+
+    returned = atomic_replace(tmp, target)
+    assert Path(returned) == target
+    assert target.read_text(encoding="utf-8") == "new"
+    assert calls["n"] == 3, f"expected 3 attempts, got {calls['n']}"
+
+
+def test_atomic_replace_reraises_after_six_windows_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If the file is still held open after the full retry budget, the
+    PermissionError must propagate so the caller can fall back / surface
+    a real error rather than silently leaving stale data.
+    """
+    target = tmp_path / "auth.json"
+    target.write_text("old", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new")
+
+    def always_denied(src: str, dst: str) -> None:
+        raise PermissionError(5, "Access is denied", dst)
+
+    monkeypatch.setattr("utils.os.name", "nt", raising=False)
+    monkeypatch.setattr("utils.os.replace", always_denied)
+    monkeypatch.setattr("utils.time.sleep", lambda _s: None)
+
+    with pytest.raises(PermissionError):
+        atomic_replace(tmp, target)
+    # Target untouched — temp file replaced the original, retry never succeeded.
+    assert target.read_text(encoding="utf-8") == "old"
+
+
+def test_atomic_replace_no_retry_on_posix(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """On POSIX the retry branch must not engage — a PermissionError is
+    surfaced immediately so existing callers' behavior is unchanged.
+    """
+    target = tmp_path / "auth.json"
+    target.write_text("old", encoding="utf-8")
+    tmp = _write_tmp(tmp_path, "new")
+
+    calls = {"n": 0}
+
+    def denied_once(src: str, dst: str) -> None:
+        calls["n"] += 1
+        raise PermissionError(13, "Permission denied", dst)
+
+    monkeypatch.setattr("utils.os.name", "posix", raising=False)
+    monkeypatch.setattr("utils.os.replace", denied_once)
+    monkeypatch.setattr("utils.time.sleep", lambda _s: None)
+
+    with pytest.raises(PermissionError):
+        atomic_replace(tmp, target)
+    assert calls["n"] == 1, f"POSIX must not retry, got {calls['n']} attempts"

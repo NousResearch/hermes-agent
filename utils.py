@@ -5,6 +5,7 @@ import logging
 import os
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -78,8 +79,28 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """
     target_str = str(target)
     real_path = os.path.realpath(target_str) if os.path.islink(target_str) else target_str
-    os.replace(str(tmp_path), real_path)
-    return real_path
+    # Windows: concurrent hermes processes (gateway, dashboard, cron, TUI
+    # workers) briefly hold targets like auth.json open, making os.replace
+    # fail with PermissionError (WinError 5). Back off with jittered
+    # exponential delay and retry before surfacing the error. On POSIX the
+    # exception is re-raised immediately so behavior stays unchanged.
+    # See: https://github.com/NousResearch/hermes-agent/issues/43268
+    last_err: OSError | None = None
+    for attempt in range(1, 7):
+        try:
+            os.replace(str(tmp_path), real_path)
+            return real_path
+        except (PermissionError, OSError) as exc:
+            last_err = exc
+            if os.name != "nt" or attempt == 6:
+                raise
+            # Lazy import to avoid a top-level utils -> agent -> utils cycle.
+            from agent.retry_utils import jittered_backoff
+            time.sleep(jittered_backoff(
+                attempt, base_delay=0.02, max_delay=0.5, jitter_ratio=0.5,
+            ))
+    # Unreachable: loop either returns or raises.
+    raise last_err  # pragma: no cover
 
 
 def atomic_json_write(

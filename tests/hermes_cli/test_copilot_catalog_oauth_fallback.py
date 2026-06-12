@@ -90,49 +90,56 @@ class TestCopilotCatalogApiKeyResolution:
             assert _resolve_copilot_catalog_api_key() == "tid_from_first"
             mock_exchange.assert_called_once_with("gho_first_real_token")
 
-    def test_skips_pool_entry_that_fails_to_exchange(self):
-        """If the first entry won't exchange, try the next — an unsupported pool[0]
-        must not wedge a later valid entry (Copilot review #16868 finding)."""
-        attempts: list[str] = []
+    def test_exchange_failure_returns_raw_token_as_fallback(self):
+        """When exchange fails, get_copilot_api_token returns the raw token
+        as fallback — useful for Business/Enterprise accounts whose tokens
+        work directly without exchange."""
 
-        def fake_exchange(raw_token: str):
-            attempts.append(raw_token)
+        def fake_get_token(raw_token: str):
             if raw_token == "gho_unsupported_account":
-                raise ValueError("Copilot token exchange failed: HTTP 401")
-            return ("tid_from_second", 1234567890.0)
+                return "gho_unsupported_account"  # raw fallback
+            return "tid_from_second"
 
-        with patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={"api_key": ""},
-        ), patch(
-            "hermes_cli.auth.read_credential_pool",
-            return_value=[
-                {"access_token": "gho_unsupported_account"},
-                {"access_token": "gho_valid_token"},
-            ],
-        ), patch(
-            "hermes_cli.copilot_auth.exchange_copilot_token",
-            side_effect=fake_exchange,
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": ""},
+            ),
+            patch(
+                "hermes_cli.auth.read_credential_pool",
+                return_value=[
+                    {"access_token": "gho_unsupported_account"},
+                    {"access_token": "gho_valid_token"},
+                ],
+            ),
+            patch(
+                "hermes_cli.copilot_auth.get_copilot_api_token",
+                side_effect=fake_get_token,
+            ),
         ):
-            assert _resolve_copilot_catalog_api_key() == "tid_from_second"
-            assert attempts == ["gho_unsupported_account", "gho_valid_token"]
+            assert _resolve_copilot_catalog_api_key() == "gho_unsupported_account"
 
-    def test_all_pool_entries_fail_exchange_returns_empty(self):
-        """All exchanges fail → return "" so the caller falls back to curated."""
-        with patch(
-            "hermes_cli.auth.resolve_api_key_provider_credentials",
-            return_value={"api_key": ""},
-        ), patch(
-            "hermes_cli.auth.read_credential_pool",
-            return_value=[
-                {"access_token": "gho_expired_a"},
-                {"access_token": "gho_expired_b"},
-            ],
-        ), patch(
-            "hermes_cli.copilot_auth.exchange_copilot_token",
-            side_effect=ValueError("Copilot token exchange failed"),
+    def test_exchange_failure_falls_back_to_raw_token(self):
+        """When exchange fails, get_copilot_api_token returns the raw token —
+        the first valid pool entry's raw token is returned (not empty)."""
+        with (
+            patch(
+                "hermes_cli.auth.resolve_api_key_provider_credentials",
+                return_value={"api_key": ""},
+            ),
+            patch(
+                "hermes_cli.auth.read_credential_pool",
+                return_value=[
+                    {"access_token": "gho_expired_a"},
+                    {"access_token": "gho_expired_b"},
+                ],
+            ),
+            patch(
+                "hermes_cli.copilot_auth.get_copilot_api_token",
+                return_value="gho_fallback_token",
+            ),
         ):
-            assert _resolve_copilot_catalog_api_key() == ""
+            assert _resolve_copilot_catalog_api_key() == "gho_fallback_token"
 
     def test_returns_empty_string_when_no_credentials_anywhere(self):
         """No env, no pool → empty string (caller falls back to curated list)."""

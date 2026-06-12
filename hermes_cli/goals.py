@@ -35,7 +35,7 @@ import re
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,36 @@ JUDGE_USER_PROMPT_WITH_SUBGOALS_TEMPLATE = (
     "is NOT done — return CONTINUE.\n\n"
     "Is the goal AND every additional criterion satisfied?"
 )
+
+
+@dataclass(frozen=True)
+class GoalDecision:
+    """Structured result from ``GoalManager.evaluate_after_turn``.
+
+    CLI, gateway, and TUI call sites historically treated goal decisions as
+    dicts.  Keep that mapping-shaped API while giving the goal loop a named
+    internal contract so future status/message changes do not require callers
+    to reverse-engineer ad-hoc dict literals.
+    """
+
+    status: Optional[str]
+    should_continue: bool
+    continuation_prompt: Optional[str]
+    verdict: str
+    reason: str
+    message: str
+
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self.to_dict().get(key, default)
+
+    def __getitem__(self, key: str) -> Any:
+        return self.to_dict()[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.to_dict())
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -622,8 +652,8 @@ class GoalManager:
         last_response: str,
         *,
         user_initiated: bool = True,
-    ) -> Dict[str, Any]:
-        """Run the judge and update state. Return a decision dict.
+    ) -> GoalDecision:
+        """Run the judge and update state. Return a structured decision.
 
         ``user_initiated`` distinguishes a real user prompt (True) from a
         continuation prompt we fed ourselves (False). Both increment
@@ -639,14 +669,14 @@ class GoalManager:
         """
         state = self._state
         if state is None or state.status != "active":
-            return {
-                "status": state.status if state else None,
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "inactive",
-                "reason": "no active goal",
-                "message": "",
-            }
+            return GoalDecision(
+                status=state.status if state else None,
+                should_continue=False,
+                continuation_prompt=None,
+                verdict="inactive",
+                reason="no active goal",
+                message="",
+            )
 
         # Count the turn that just finished.
         state.turns_used += 1
@@ -669,14 +699,14 @@ class GoalManager:
         if verdict == "done":
             state.status = "done"
             save_goal(self.session_id, state)
-            return {
-                "status": "done",
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "done",
-                "reason": reason,
-                "message": f"✓ Goal achieved: {reason}",
-            }
+            return GoalDecision(
+                status="done",
+                should_continue=False,
+                continuation_prompt=None,
+                verdict="done",
+                reason=reason,
+                message=f"✓ Goal achieved: {reason}",
+            )
 
         # Auto-pause when the judge model can't produce the expected JSON
         # verdict N turns in a row. Points the user at the goal_judge config
@@ -690,13 +720,13 @@ class GoalManager:
                 f"judge model returned unparseable output {state.consecutive_parse_failures} turns in a row"
             )
             save_goal(self.session_id, state)
-            return {
-                "status": "paused",
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "continue",
-                "reason": reason,
-                "message": (
+            return GoalDecision(
+                status="paused",
+                should_continue=False,
+                continuation_prompt=None,
+                verdict="continue",
+                reason=reason,
+                message=(
                     f"⏸ Goal paused — the judge model ({state.consecutive_parse_failures} turns) "
                     "isn't returning the required JSON verdict. Route the judge to a stricter "
                     "model in ~/.hermes/config.yaml:\n"
@@ -706,35 +736,35 @@ class GoalManager:
                     "      model: google/gemini-3-flash-preview\n"
                     "Then /goal resume to continue."
                 ),
-            }
+            )
 
         if state.turns_used >= state.max_turns:
             state.status = "paused"
             state.paused_reason = f"turn budget exhausted ({state.turns_used}/{state.max_turns})"
             save_goal(self.session_id, state)
-            return {
-                "status": "paused",
-                "should_continue": False,
-                "continuation_prompt": None,
-                "verdict": "continue",
-                "reason": reason,
-                "message": (
+            return GoalDecision(
+                status="paused",
+                should_continue=False,
+                continuation_prompt=None,
+                verdict="continue",
+                reason=reason,
+                message=(
                     f"⏸ Goal paused — {state.turns_used}/{state.max_turns} turns used. "
                     "Use /goal resume to keep going, or /goal clear to stop."
                 ),
-            }
+            )
 
         save_goal(self.session_id, state)
-        return {
-            "status": "active",
-            "should_continue": True,
-            "continuation_prompt": self.next_continuation_prompt(),
-            "verdict": "continue",
-            "reason": reason,
-            "message": (
+        return GoalDecision(
+            status="active",
+            should_continue=True,
+            continuation_prompt=self.next_continuation_prompt(),
+            verdict="continue",
+            reason=reason,
+            message=(
                 f"↻ Continuing toward goal ({state.turns_used}/{state.max_turns}): {reason}"
             ),
-        }
+        )
 
     def next_continuation_prompt(self) -> Optional[str]:
         if not self._state or self._state.status != "active":
@@ -895,6 +925,7 @@ def run_kanban_goal_loop(
 
 
 __all__ = [
+    "GoalDecision",
     "GoalState",
     "GoalManager",
     "CONTINUATION_PROMPT_TEMPLATE",

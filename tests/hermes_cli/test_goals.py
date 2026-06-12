@@ -181,6 +181,32 @@ class TestJudgeGoal:
 # ──────────────────────────────────────────────────────────────────────
 
 
+class TestGoalDecision:
+    def test_goal_decision_behaves_like_mapping_for_callers(self):
+        from hermes_cli.goals import GoalDecision
+
+        decision = GoalDecision(
+            status="active",
+            should_continue=True,
+            continuation_prompt="next step",
+            verdict="continue",
+            reason="more work",
+            message="↻ Continuing toward goal",
+        )
+
+        assert decision["status"] == "active"
+        assert decision.get("continuation_prompt") == "next step"
+        assert decision.get("missing", "fallback") == "fallback"
+        assert decision.to_dict() == {
+            "status": "active",
+            "should_continue": True,
+            "continuation_prompt": "next step",
+            "verdict": "continue",
+            "reason": "more work",
+            "message": "↻ Continuing toward goal",
+        }
+
+
 class TestGoalManager:
     def test_no_goal_initial(self, hermes_home):
         from hermes_cli.goals import GoalManager

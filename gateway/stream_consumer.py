@@ -16,6 +16,7 @@ Credit: jobless0x (#774, #1312), OutThisLife (#798), clicksingh (#697).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import logging
 import queue
@@ -280,6 +281,29 @@ class GatewayStreamConsumer:
                 await result
         except Exception:
             pass
+    def delivery_summary(self) -> dict[str, Any]:
+        """Read-only delivery facts for diagnostic logging.
+
+        Consumed by the gateway's final-send suppression log line so an
+        operator can prove from logs whether the suppressed send matched
+        what streaming delivered (#27942, #29200).  Lengths and the digest
+        describe the consumer's CURRENT bubble: overflow handling resets
+        ``_accumulated``/``_last_sent_text`` as chunks seal or a
+        continuation is adopted, so small or zero values alongside
+        ``final_content_delivered=True`` signify split delivery across
+        multiple messages, not lost content (``last_edit_overflowed`` is
+        the interpretation key).  Restricted to attribute reads, ``len()``,
+        and a sha256 prefix so it cannot raise or mutate consumer state.
+        """
+        return {
+            "message_id": self._message_id,
+            "accumulated_len": len(self._accumulated),
+            "accumulated_digest": hashlib.sha256(
+                self._accumulated.encode("utf-8", "replace")
+            ).hexdigest()[:8],
+            "last_sent_len": len(self._last_sent_text),
+            "last_edit_overflowed": self._last_edit_overflowed,
+        }
 
     async def _edit_message(
         self,

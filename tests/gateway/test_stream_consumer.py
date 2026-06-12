@@ -2363,3 +2363,89 @@ class TestStripOrphanCloseTags:
             assert tag not in consumer._accumulated
         assert "trailing prose" in consumer._accumulated
         assert "more" in consumer._accumulated
+
+# ── delivery_summary diagnostics ─────────────────────────────────────────
+
+
+class TestDeliverySummary:
+    """delivery_summary() exposes read-only delivery facts consumed by the
+    gateway's final-send suppression log line (#27942, #29200).
+
+    Kept self-contained at the end of the file to minimize rebase overlap
+    with concurrently open stream-consumer PRs."""
+
+    def test_fresh_consumer_reports_empty_state(self):
+        """Nothing streamed yet: ids absent, lengths zero, flag False."""
+        import hashlib
+
+        consumer = GatewayStreamConsumer(MagicMock(), "chat_123")
+        summary = consumer.delivery_summary()
+        assert summary["message_id"] is None
+        assert summary["accumulated_len"] == 0
+        assert summary["last_sent_len"] == 0
+        assert summary["last_edit_overflowed"] is False
+        assert summary["accumulated_digest"] == hashlib.sha256(b"").hexdigest()[:8]
+
+    @pytest.mark.asyncio
+    async def test_successful_finalize_reports_delivery_facts(self):
+        """Happy path: after a confirmed finalize, the summary proves the
+        last ACKed payload equals the accumulated text, and never exposes
+        message content."""
+        import hashlib
+
+        adapter = MagicMock()
+        adapter.edit_message = AsyncMock(return_value=SimpleNamespace(success=True))
+        adapter.send = AsyncMock(
+            return_value=SimpleNamespace(success=True, message_id="msg_1"),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(edit_interval=0.01, buffer_threshold=5)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+
+        consumer.on_delta("The complete response.\n")
+        task = asyncio.create_task(consumer.run())
+        await asyncio.sleep(0.05)
+        consumer.finish()
+        await task
+
+        assert consumer.final_content_delivered is True
+        summary = consumer.delivery_summary()
+        assert summary["message_id"] == "msg_1"
+        assert summary["accumulated_len"] > 0
+        assert summary["last_sent_len"] == summary["accumulated_len"]
+        expected_digest = hashlib.sha256(
+            consumer._accumulated.encode("utf-8", "replace")
+        ).hexdigest()[:8]
+        assert summary["accumulated_digest"] == expected_digest
+        assert summary["last_edit_overflowed"] is False
+        assert "complete response" not in str(summary)
+
+    @pytest.mark.asyncio
+    async def test_overflow_adoption_reports_split_delivery_signature(self):
+        """Per-bubble semantics: continuation adoption resets the last-sent
+        tracking and flips the overflow flag.  Reset lengths alongside
+        delivered flags signify split delivery, not lost content."""
+        adapter = MagicMock()
+        adapter.edit_message = AsyncMock(
+            return_value=SimpleNamespace(
+                success=True,
+                message_id="msg_3",
+                continuation_message_ids=("msg_2", "msg_3"),
+            ),
+        )
+        adapter.MAX_MESSAGE_LENGTH = 4096
+
+        config = StreamConsumerConfig(fresh_final_after_seconds=0.0)
+        consumer = GatewayStreamConsumer(adapter, "chat_123", config)
+        consumer._message_id = "msg_1"
+        consumer._accumulated = "long text " * 50
+
+        delivered = await consumer._send_or_edit(consumer._accumulated, finalize=True)
+
+        assert delivered is True
+        summary = consumer.delivery_summary()
+        assert summary["last_edit_overflowed"] is True
+        assert summary["message_id"] == "msg_3"
+        assert summary["last_sent_len"] == 0
+        assert summary["accumulated_len"] == len(consumer._accumulated)

@@ -259,6 +259,31 @@ class TestEnsure:
         )
         ld.ensure("test.renamed", prompt=False)  # no exception
 
+    def test_import_smoke_test_accepts_already_loaded_module(self, monkeypatch):
+        # Tool tests routinely inject spec-less stub modules straight into
+        # sys.modules (types.ModuleType("fal_client")); find_spec reads
+        # module.__spec__ on those and raises. A module that's already
+        # loaded is importable by definition — never flag it broken.
+        import importlib.metadata
+        import importlib.util
+        import sys
+        import types
+
+        self._successful_install(monkeypatch, "test.stubbed", "zzzfake>=1")
+        monkeypatch.setattr(
+            importlib.metadata, "packages_distributions",
+            lambda: {"zzzfake_mod": ["zzzfake"]},
+        )
+        monkeypatch.setitem(
+            sys.modules, "zzzfake_mod", types.ModuleType("zzzfake_mod")
+        )
+
+        def specless(name):
+            raise ValueError(f"{name}.__spec__ is None")
+
+        monkeypatch.setattr(importlib.util, "find_spec", specless)
+        ld.ensure("test.stubbed", prompt=False)  # no exception
+
     def test_import_smoke_test_skips_dists_without_metadata(self, monkeypatch):
         # A dist that declares no importable top-level modules (or path-like
         # junk only) can't be verified — skip it rather than guess and

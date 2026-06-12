@@ -1,0 +1,14 @@
+{
+  "name": "hermes-agent-e2e",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "npm exec @microsoft/tui-test -t",
+    "replay": "npm exec @microsoft/tui-test show-trace"
+  },
+  "devDependencies": {
+    "@microsoft/tui-test": "^0.0.4",
+    "tui-replay": "^0.4.3"
+  }
+}

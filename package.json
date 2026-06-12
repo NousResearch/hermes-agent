@@ -7,7 +7,8 @@
     "apps/*",
     "ui-tui",
     "ui-tui/packages/*",
-    "web"
+    "web",
+    "e2e"
   ],
   "scripts": {
     "postinstall": "echo '✅ Browser tools ready. Run: python run_agent.py --help'",

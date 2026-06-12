@@ -1,0 +1,37 @@
+name: E2E CLI Tests
+
+on:
+  push:
+    branches:
+      - "**"
+
+permissions:
+  contents: read
+
+jobs:
+  e2e-tui-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: CI=true npm run --prefix e2e test
+        env:
+          # Ensure tests don't accidentally call real APIs
+          OPENROUTER_API_KEY: ""
+          OPENAI_API_KEY: ""
+          NOUS_API_KEY: ""
+
+      - name: Upload TUI test traces
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: tui-test-traces
+          path: e2e/tui-traces/
+          retention-days: 7

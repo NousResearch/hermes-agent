@@ -19,6 +19,8 @@ __pycache__/
 .notebooklm-playwright/
 .pip-cache/
 .uv-cache/
+.tui-test/
+tui-traces/
 compose.hermes.local.yml
 export*
 __pycache__/model_tools.cpython-310.pyc

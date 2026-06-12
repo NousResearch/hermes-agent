@@ -326,6 +326,50 @@ DEPTH_PRODUCER_SELFTEST_SCHEMA = {
     },
 }
 
+COMPANION_DEPTH_PRODUCER_SELFTEST_SCHEMA = {
+    "name": "questframe_companion_depth_producer_selftest",
+    "description": "Run the FH6VR companion depth producer handoff self-test (0.18 gate).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "approve": {
+                "type": "boolean",
+                "description": "When true, pass --approve to export shared depth outside the FH6 install folder.",
+            },
+            "metadata_path": {
+                "type": "string",
+                "description": "Optional path for companion producer metadata JSON output.",
+            },
+            "output_dir": {
+                "type": "string",
+                "description": "Optional export directory outside the FH6 install folder.",
+            },
+            "frames": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 120,
+                "description": "Number of cadence frames to export when approved.",
+            },
+            "interval_ms": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000,
+                "description": "Target interval between exported frames in milliseconds.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 SUPPORT_REPORT_SCHEMA = {
     "name": "questframe_support_report",
     "description": "Create redacted QuestFrame/FH6VR JSON and HTML support reports.",
@@ -771,6 +815,7 @@ def status() -> dict[str, Any]:
             "questframe_depth_surface_selftest",
             "questframe_depth_reader_selftest",
             "questframe_depth_producer_selftest",
+            "questframe_companion_depth_producer_selftest",
             "questframe_support_report",
             "questframe_unity_scan",
         ],
@@ -950,6 +995,33 @@ def handle_depth_producer_selftest(args: dict[str, Any] | None = None, **_: Any)
     )
 
 
+def handle_companion_depth_producer_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    if bool(args.get("approve")):
+        extra.append("--approve")
+    metadata_path = str(args.get("metadata_path") or "").strip()
+    if metadata_path:
+        extra.extend(["--metadata", metadata_path])
+    output_dir = str(args.get("output_dir") or "").strip()
+    if output_dir:
+        extra.extend(["--output-dir", output_dir])
+    frames = int(args.get("frames") or 0)
+    if frames > 0:
+        extra.extend(["--frames", str(frames)])
+    interval_ms = int(args.get("interval_ms") or 0)
+    if interval_ms > 0:
+        extra.extend(["--interval-ms", str(interval_ms)])
+    return _json(
+        run_launcher(
+            "fh6-companion-depth-producer-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 def support_report(
     *,
     launcher_exe: str | None = None,
@@ -1034,6 +1106,7 @@ HELP = """questframe commands:
   /questframe depth-surface-selftest
   /questframe depth-reader-selftest [--fixture]
   /questframe depth-producer-selftest [--fixture] [--metadata PATH]
+  /questframe companion-depth-producer-selftest [--approve] [--metadata PATH] [--output-dir PATH]
   /questframe support-report
   /questframe unity-scan [project_path]
 """
@@ -1075,6 +1148,21 @@ def handle_slash(raw_args: str) -> str:
             if index + 1 < len(argv):
                 args["metadata_path"] = argv[index + 1]
         return handle_depth_producer_selftest(args)
+    if command in {
+        "companion-depth-producer-selftest",
+        "companion-depth-producer",
+        "companion-producer",
+    }:
+        args = {"approve": "--approve" in argv}
+        if "--metadata" in argv:
+            index = argv.index("--metadata")
+            if index + 1 < len(argv):
+                args["metadata_path"] = argv[index + 1]
+        if "--output-dir" in argv:
+            index = argv.index("--output-dir")
+            if index + 1 < len(argv):
+                args["output_dir"] = argv[index + 1]
+        return handle_companion_depth_producer_selftest(args)
     if command in {"support-report", "report"}:
         return handle_support_report({})
     if command == "unity-scan":

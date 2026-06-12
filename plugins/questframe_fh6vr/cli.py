@@ -94,6 +94,18 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     depth_producer.add_argument("--metadata", default="")
     depth_producer.add_argument("--timeout-seconds", type=int, default=None)
 
+    companion_producer = subs.add_parser(
+        "companion-depth-producer-selftest",
+        help="Run FH6VR companion depth producer handoff self-test (0.18 gate)",
+    )
+    companion_producer.add_argument("--launcher-exe", default="")
+    companion_producer.add_argument("--approve", action="store_true")
+    companion_producer.add_argument("--metadata", default="")
+    companion_producer.add_argument("--output-dir", default="")
+    companion_producer.add_argument("--frames", type=int, default=None)
+    companion_producer.add_argument("--interval-ms", type=int, default=None)
+    companion_producer.add_argument("--timeout-seconds", type=int, default=None)
+
     support_report = subs.add_parser(
         "support-report", help="Create redacted JSON and HTML support reports"
     )
@@ -121,6 +133,7 @@ def questframe_command(args: argparse.Namespace) -> int:
             "graphics-session,frame-loop,"
             "dibr-swapchain,capture-preflight,live-capture-selftest,"
             "depth-surface-selftest,depth-reader-selftest,depth-producer-selftest,"
+            "companion-depth-producer-selftest,"
             "support-report,unity-scan}"
         )
         return 2
@@ -251,6 +264,30 @@ def questframe_command(args: argparse.Namespace) -> int:
         return _print(
             core.run_launcher(
                 "fh6-depth-producer-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "companion-depth-producer-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "approve", False)):
+            extra.append("--approve")
+        metadata_path = str(getattr(args, "metadata", "") or "").strip()
+        if metadata_path:
+            extra.extend(["--metadata", metadata_path])
+        output_dir = str(getattr(args, "output_dir", "") or "").strip()
+        if output_dir:
+            extra.extend(["--output-dir", output_dir])
+        frames = getattr(args, "frames", None)
+        if frames:
+            extra.extend(["--frames", str(frames)])
+        interval_ms = getattr(args, "interval_ms", None)
+        if interval_ms:
+            extra.extend(["--interval-ms", str(interval_ms)])
+        return _print(
+            core.run_launcher(
+                "fh6-companion-depth-producer-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),

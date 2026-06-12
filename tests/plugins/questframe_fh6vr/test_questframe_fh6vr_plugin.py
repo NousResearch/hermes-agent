@@ -1,4 +1,4 @@
-"""Behavior tests for the QuestFrame FH6VR Hermes plugin."""
+﻿"""Behavior tests for the QuestFrame FH6VR Hermes plugin."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ def test_status_without_launcher_configured(plugin_env):
     assert "questframe_depth_surface_selftest" in payload["available_tools"]
     assert "questframe_depth_reader_selftest" in payload["available_tools"]
     assert "questframe_depth_producer_selftest" in payload["available_tools"]
+    assert "questframe_companion_depth_producer_selftest" in payload["available_tools"]
 
 
 def test_save_setup_values_writes_config(plugin_env, monkeypatch):
@@ -224,6 +225,37 @@ def test_handle_depth_producer_selftest_runs_fixture_gate(tmp_path):
     assert str(metadata) in calls[0]
 
 
+def test_handle_companion_depth_producer_selftest_runs_approve_gate(tmp_path):
+    launcher = tmp_path / "FH6VR.Launcher.exe"
+    launcher.write_text("stub", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout='{"Status":"Pass"}', stderr="")
+
+    with patch("plugins.questframe_fh6vr.core.subprocess.run", side_effect=fake_run):
+        payload = json.loads(
+            core.handle_companion_depth_producer_selftest(
+                {
+                    "launcher_exe": str(launcher),
+                    "approve": True,
+                    "output_dir": str(tmp_path / "companion"),
+                    "frames": 3,
+                    "interval_ms": 14,
+                }
+            )
+        )
+
+    assert payload["ok"] is True
+    assert "fh6-companion-depth-producer-selftest" in calls[0][1]
+    assert "--json" in calls[0]
+    assert "--approve" in calls[0]
+    assert "--output-dir" in calls[0]
+    assert "--frames" in calls[0]
+    assert "--interval-ms" in calls[0]
+
+
 def test_handle_slash_depth_reader_selftest_passes_fixture_flag():
     with patch(
         "plugins.questframe_fh6vr.core.handle_depth_reader_selftest",
@@ -246,6 +278,21 @@ def test_handle_slash_depth_producer_selftest_passes_fixture_and_metadata():
     assert '"ok": true' in payload
 
 
+def test_handle_slash_companion_depth_producer_selftest_passes_approve_flag():
+    with patch(
+        "plugins.questframe_fh6vr.core.handle_companion_depth_producer_selftest",
+        return_value='{"ok": true}',
+    ) as handler:
+        payload = core.handle_slash(
+            "companion-depth-producer-selftest --approve --output-dir C:\\companion"
+        )
+
+    handler.assert_called_once_with(
+        {"approve": True, "output_dir": "C:\\companion"}
+    )
+    assert '"ok": true' in payload
+
+
 def test_register_exposes_all_documented_tools():
     from plugins.questframe_fh6vr import _TOOLS
 
@@ -265,6 +312,7 @@ def test_register_exposes_all_documented_tools():
         "questframe_depth_surface_selftest",
         "questframe_depth_reader_selftest",
         "questframe_depth_producer_selftest",
+        "questframe_companion_depth_producer_selftest",
         "questframe_support_report",
         "questframe_unity_scan",
     }

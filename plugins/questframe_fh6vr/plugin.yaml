@@ -21,6 +21,7 @@ provides_tools:
   - questframe_depth_surface_selftest
   - questframe_depth_reader_selftest
   - questframe_depth_producer_selftest
+  - questframe_companion_depth_producer_selftest
   - questframe_support_report
   - questframe_unity_scan
 provides_cli:

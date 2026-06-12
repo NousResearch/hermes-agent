@@ -12,54 +12,109 @@ export interface ClarifyRequest {
 // Pending clarify requests keyed by the runtime session id that raised them.
 // Storing per-session (instead of one shared slot) lets a *background* session
 // park its clarify request while the user is looking at a different chat, then
-// resolve it once they switch over — without a second concurrent clarify
-// clobbering the first. A request with no session id lands under the empty key.
+// resolve it once they switch over — without another session clobbering it. We
+// store a FIFO queue per session because the Python gateway itself allows more
+// than one clarify to be pending in the same session (tools/clarify_gateway.py
+// keeps a list per session and resolves oldest-first). A request with no
+// session id lands under the empty key.
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
-export const $clarifyRequests = atom<Record<string, ClarifyRequest>>({})
+type ClarifyQueues = Record<string, ClarifyRequest[]>
 
-// The clarify request for the currently-viewed session. The inline ClarifyTool
-// only ever mounts inside the active session's transcript, so it reads this
-// focus-scoped view rather than reaching into the whole map.
+function queueFor(requests: ClarifyQueues, sessionId: string | null | undefined): ClarifyRequest[] {
+  return requests[keyFor(sessionId)] ?? []
+}
+
+export const $clarifyRequests = atom<ClarifyQueues>({})
+
+// The ACTIVE clarify request for the currently-viewed session (oldest pending).
+// Both the modal overlay and the inline ClarifyTool only ever care about the
+// head of the active session's queue.
 export const $clarifyRequest = computed(
   [$clarifyRequests, $activeSessionId],
-  (requests, activeId) => requests[keyFor(activeId)] ?? null
+  (requests, activeId) => queueFor(requests, activeId)[0] ?? null
 )
 
+export function hasClarifyRequest(sessionId?: string | null): boolean {
+  const requests = $clarifyRequests.get()
+
+  if (sessionId !== undefined) {
+    return queueFor(requests, sessionId).length > 0
+  }
+
+  return Object.values(requests).some(queue => queue.length > 0)
+}
+
 export function setClarifyRequest(request: ClarifyRequest): void {
-  $clarifyRequests.set({ ...$clarifyRequests.get(), [keyFor(request.sessionId)]: request })
+  const all = $clarifyRequests.get()
+  const key = keyFor(request.sessionId)
+  const queue = [...queueFor(all, request.sessionId)]
+  const existingIndex = queue.findIndex(value => value.requestId === request.requestId)
+
+  if (existingIndex >= 0) {
+    queue[existingIndex] = request
+  } else {
+    queue.push(request)
+  }
+
+  $clarifyRequests.set({ ...all, [key]: queue })
 }
 
 export function clearClarifyRequest(requestId?: string, sessionId?: string | null): void {
   const requests = $clarifyRequests.get()
 
   // Targeted clear when the caller knows the session (the common path from the
-  // inline ClarifyTool answering its own request).
+  // overlay / inline ClarifyTool answering its own request). With no request id
+  // we drop the whole session queue (turn ended, timeout, interrupt).
   if (sessionId !== undefined) {
     const key = keyFor(sessionId)
-    const current = requests[key]
+    const current = queueFor(requests, sessionId)
 
-    if (!current || (requestId && current.requestId !== requestId)) {
+    if (!current.length) {
+      return
+    }
+
+    const nextQueue = requestId ? current.filter(value => value.requestId !== requestId) : []
+
+    if (requestId && nextQueue.length === current.length) {
       return
     }
 
     const next = { ...requests }
-    delete next[key]
+
+    if (nextQueue.length > 0) {
+      next[key] = nextQueue
+    } else {
+      delete next[key]
+    }
+
     $clarifyRequests.set(next)
 
     return
   }
 
-  // Fallback with no session hint: drop every entry matching the request id
-  // (or clear all when none is given).
-  const next: Record<string, ClarifyRequest> = {}
+  if (!requestId) {
+    if (Object.keys(requests).length > 0) {
+      $clarifyRequests.set({})
+    }
+
+    return
+  }
+
+  // Fallback with no session hint: drop matching request ids across every
+  // parked session queue.
+  const next: ClarifyQueues = {}
   let changed = false
 
-  for (const [key, value] of Object.entries(requests)) {
-    if (requestId && value.requestId !== requestId) {
-      next[key] = value
-    } else {
+  for (const [key, queue] of Object.entries(requests)) {
+    const filtered = queue.filter(value => value.requestId !== requestId)
+
+    if (filtered.length !== queue.length) {
       changed = true
+    }
+
+    if (filtered.length > 0) {
+      next[key] = filtered
     }
   }
 

@@ -33,8 +33,15 @@ describe('clarify store', () => {
     setClarifyRequest(clarify('session-a', 'req-a'))
     setClarifyRequest(clarify('session-b', 'req-b'))
 
-    expect($clarifyRequests.get()['session-a']?.requestId).toBe('req-a')
-    expect($clarifyRequests.get()['session-b']?.requestId).toBe('req-b')
+    expect($clarifyRequests.get()['session-a']?.[0]?.requestId).toBe('req-a')
+    expect($clarifyRequests.get()['session-b']?.[0]?.requestId).toBe('req-b')
+  })
+
+  it('queues multiple clarify requests for the same session oldest-first', () => {
+    setClarifyRequest(clarify('session-a', 'req-a1'))
+    setClarifyRequest(clarify('session-a', 'req-a2'))
+
+    expect($clarifyRequests.get()['session-a']?.map(request => request.requestId)).toEqual(['req-a1', 'req-a2'])
   })
 
   it('exposes only the active session via the focus-scoped view', () => {
@@ -58,7 +65,18 @@ describe('clarify store', () => {
     clearClarifyRequest('req-a', 'session-a')
 
     expect($clarifyRequests.get()['session-a']).toBeUndefined()
-    expect($clarifyRequests.get()['session-b']?.requestId).toBe('req-b')
+    expect($clarifyRequests.get()['session-b']?.[0]?.requestId).toBe('req-b')
+  })
+
+  it('clears only the matching request inside a same-session queue', () => {
+    setClarifyRequest(clarify('session-a', 'req-a1'))
+    setClarifyRequest(clarify('session-a', 'req-a2'))
+    $activeSessionId.set('session-a')
+
+    clearClarifyRequest('req-a1', 'session-a')
+
+    expect($clarifyRequests.get()['session-a']?.map(request => request.requestId)).toEqual(['req-a2'])
+    expect($clarifyRequest.get()?.requestId).toBe('req-a2')
   })
 
   it('ignores a stale clear whose request id no longer matches', () => {
@@ -66,7 +84,7 @@ describe('clarify store', () => {
 
     clearClarifyRequest('req-a1', 'session-a')
 
-    expect($clarifyRequests.get()['session-a']?.requestId).toBe('req-a2')
+    expect($clarifyRequests.get()['session-a']?.[0]?.requestId).toBe('req-a2')
   })
 
   it('clears by request id across sessions when no session hint is given', () => {
@@ -76,6 +94,17 @@ describe('clarify store', () => {
     clearClarifyRequest('shared')
 
     expect($clarifyRequests.get()['session-a']).toBeUndefined()
-    expect($clarifyRequests.get()['session-b']?.requestId).toBe('other')
+    expect($clarifyRequests.get()['session-b']?.[0]?.requestId).toBe('other')
+  })
+
+  it('clears the whole session queue when a turn ends', () => {
+    setClarifyRequest(clarify('session-a', 'req-a1'))
+    setClarifyRequest(clarify('session-a', 'req-a2'))
+    $activeSessionId.set('session-a')
+
+    clearClarifyRequest(undefined, 'session-a')
+
+    expect($clarifyRequests.get()['session-a']).toBeUndefined()
+    expect($clarifyRequest.get()).toBeNull()
   })
 })

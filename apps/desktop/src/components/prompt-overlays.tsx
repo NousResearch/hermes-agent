@@ -1,7 +1,7 @@
 'use client'
 
 import { useStore } from '@nanostores/react'
-import { type FormEvent, useCallback, useEffect, useState } from 'react'
+import { type FormEvent, type KeyboardEvent, useCallback, useEffect, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import {
@@ -13,26 +13,189 @@ import {
   DialogTitle
 } from '@/components/ui/dialog'
 import { Input } from '@/components/ui/input'
+import { KbdCombo } from '@/components/ui/kbd'
+import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { KeyRound, Loader2, Lock } from '@/lib/icons'
+import { HelpCircle, KeyRound, Loader2, Lock } from '@/lib/icons'
+import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 import { $secretRequest, $sudoRequest, clearSecretRequest, clearSudoRequest } from '@/store/prompts'
 
-// Renders the modal mid-turn prompts the gateway raises and waits on: sudo
-// password and skill secret capture. (Dangerous-command / execute_code approval
-// is rendered INLINE on the pending tool row instead — see
+// Renders the modal mid-turn prompts the gateway raises and waits on: clarify,
+// sudo password, and skill secret capture. (Dangerous-command / execute_code
+// approval is rendered INLINE on the pending tool row instead — see
 // components/assistant-ui/tool-approval.tsx — so it reads like an inline "Run"
 // affordance rather than a blocking modal.) Each Python-side caller blocks the
 // agent thread until the matching `*.respond` RPC lands; without a renderer the
-// agent stalls until its timeout and the tool is BLOCKED (the bug this fixes —
-// desktop handled clarify.request but not these). Any close path (Esc, backdrop
-// click) funnels through Radix's single `onOpenChange(false)` and maps to a
-// refusal, so silence is never mistaken for consent, matching the TUI. We
+// agent stalls until its timeout and the tool is BLOCKED. Any close path (Esc,
+// backdrop click) funnels through Radix's single `onOpenChange(false)` and maps
+// to a refusal, so silence is never mistaken for consent, matching the TUI. We
 // deliberately do NOT add onEscapeKeyDown / onInteractOutside handlers — they'd
 // fire a second `*.respond` alongside onOpenChange (double-send) or block the
 // backdrop-dismiss path.
+
+function ClarifyDialog() {
+  const { t } = useI18n()
+  const copy = t.assistant.clarify
+  const request = useStore($clarifyRequest)
+  const gateway = useStore($gateway)
+  const [typing, setTyping] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const choices = request?.choices ?? []
+  const choicesCount = request?.choices?.length ?? 0
+  const hasChoices = choices.length > 0
+
+  useEffect(() => {
+    setTyping(choicesCount === 0)
+    setDraft('')
+    setSubmitting(false)
+  }, [choicesCount, request?.requestId])
+
+  const send = useCallback(
+    async (answer: string) => {
+      if (!request) {
+        return
+      }
+
+      if (!gateway) {
+        notifyError(new Error(copy.gatewayDisconnected), copy.sendFailed)
+
+        return
+      }
+
+      setSubmitting(true)
+
+      try {
+        await gateway.request<{ ok?: boolean }>('clarify.respond', {
+          request_id: request.requestId,
+          answer
+        })
+        triggerHaptic(answer.trim() ? 'submit' : 'cancel')
+        clearClarifyRequest(request.requestId, request.sessionId)
+      } catch (error) {
+        notifyError(error, copy.sendFailed)
+        setSubmitting(false)
+      }
+    },
+    [copy.gatewayDisconnected, copy.sendFailed, gateway, request]
+  )
+
+  const onOpenChange = useCallback(
+    (open: boolean) => {
+      if (!open && !submitting && request) {
+        void send('')
+      }
+    },
+    [request, send, submitting]
+  )
+
+  const onSubmit = useCallback(
+    (event: FormEvent<HTMLFormElement>) => {
+      event.preventDefault()
+      const trimmed = draft.trim()
+
+      if (trimmed) {
+        void send(trimmed)
+      }
+    },
+    [draft, send]
+  )
+
+  const onDraftKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+        event.preventDefault()
+        const trimmed = draft.trim()
+
+        if (trimmed) {
+          void send(trimmed)
+        }
+      }
+    },
+    [draft, send]
+  )
+
+  if (!request) {
+    return null
+  }
+
+  return (
+    <Dialog onOpenChange={onOpenChange} open>
+      <DialogContent className="max-w-lg" showCloseButton={false}>
+        <DialogHeader>
+          <DialogTitle icon={HelpCircle}>{request.question || copy.loadingQuestion}</DialogTitle>
+          <DialogDescription>{hasChoices ? copy.other : copy.placeholder}</DialogDescription>
+        </DialogHeader>
+
+        {!typing && hasChoices ? (
+          <>
+            <div className="grid gap-2">
+              {choices.map((choice, index) => (
+                <Button
+                  className="h-auto justify-start whitespace-normal px-3 py-2 text-left"
+                  disabled={submitting}
+                  key={`${index}-${choice}`}
+                  onClick={() => void send(choice)}
+                  variant="outline"
+                >
+                  {choice}
+                </Button>
+              ))}
+              <Button disabled={submitting} onClick={() => setTyping(true)} type="button" variant="ghost">
+                {copy.other}
+              </Button>
+            </div>
+            <DialogFooter>
+              <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
+                {copy.skip}
+              </Button>
+            </DialogFooter>
+          </>
+        ) : (
+          <form className="grid gap-3" onSubmit={onSubmit}>
+            <Textarea
+              autoFocus
+              className="min-h-24 resize-y"
+              disabled={submitting}
+              onChange={event => setDraft(event.target.value)}
+              onKeyDown={onDraftKeyDown}
+              placeholder={copy.placeholder}
+              value={draft}
+            />
+            <div className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+              <KbdCombo combo="mod+enter" size="sm" />
+              {copy.shortcutSuffix}
+            </div>
+            <DialogFooter>
+              {hasChoices && (
+                <Button
+                  disabled={submitting}
+                  onClick={() => {
+                    setTyping(false)
+                    setDraft('')
+                  }}
+                  type="button"
+                  variant="ghost"
+                >
+                  {copy.back}
+                </Button>
+              )}
+              <Button disabled={submitting} onClick={() => void send('')} type="button" variant="ghost">
+                {copy.skip}
+              </Button>
+              <Button disabled={submitting || !draft.trim()} type="submit">
+                {submitting ? <Loader2 className="size-3.5 animate-spin" /> : copy.send}
+              </Button>
+            </DialogFooter>
+          </form>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
 
 function SudoDialog() {
   const { t } = useI18n()
@@ -227,6 +390,7 @@ function SecretDialog() {
 export function PromptOverlays() {
   return (
     <>
+      <ClarifyDialog />
       <SudoDialog />
       <SecretDialog />
     </>

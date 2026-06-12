@@ -23,6 +23,7 @@ interface KeyedPrompt {
 interface PromptStore<T extends KeyedPrompt> {
   $active: ReadableAtom<null | T>
   clear: (sessionId?: string | null, requestId?: string) => void
+  has: (sessionId?: string | null) => boolean
   reset: () => void
   set: (request: T) => void
 }
@@ -37,6 +38,15 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 
   return {
     $active: computed([$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? null),
+    has(sessionId) {
+      const all = $all.get()
+
+      if (sessionId !== undefined) {
+        return Boolean(all[keyFor(sessionId)])
+      }
+
+      return Object.keys(all).length > 0
+    },
     reset: () => $all.set({}),
     set: request => $all.set({ ...$all.get(), [keyFor(request.sessionId)]: request }),
     clear(sessionId, requestId) {
@@ -99,6 +109,10 @@ export const clearSudoRequest = sudo.clear
 export const $secretRequest = secret.$active
 export const setSecretRequest = secret.set
 export const clearSecretRequest = secret.clear
+
+export function hasBlockingPrompt(sessionId?: string | null): boolean {
+  return approval.has(sessionId) || sudo.has(sessionId) || secret.has(sessionId)
+}
 
 // Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
 // or every parked prompt when no session is given (global reset / tests).

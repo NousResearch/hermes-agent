@@ -19,12 +19,12 @@ import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { parseTodos } from '@/lib/todos'
-import { setClarifyRequest } from '@/store/clarify'
+import { clearClarifyRequest, hasClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
-import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
+import { clearAllPrompts, hasBlockingPrompt, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
 import {
   setCurrentBranch,
   setCurrentCwd,
@@ -860,6 +860,8 @@ export function useMessageStream({
         // session so a background turn finishing can't wipe the active chat's
         // prompt, and vice versa.
         clearAllPrompts(sessionId)
+        clearClarifyRequest(undefined, sessionId)
+        updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
 
         flushQueuedDeltas(sessionId)
 
@@ -888,11 +890,11 @@ export function useMessageStream({
         if (sessionId) {
           flushQueuedDeltas(sessionId)
           upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
-          // A pending clarify blocks the turn, so the first tool.complete after
-          // one is the clarify resolving — drop the "needs input" flag here so
-          // the sidebar indicator clears as soon as it's answered, not only at
-          // message.complete.
-          updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
+          // Recompute the sidebar badge from the live prompt stores. This keeps
+          // the indicator accurate when a clarify resolves, times out, or when
+          // another queued clarify/prompt is still pending for the same session.
+          const stillNeedsInput = hasClarifyRequest(sessionId) || hasBlockingPrompt(sessionId)
+          updateSessionState(sessionId, state => (state.needsInput === stillNeedsInput ? state : { ...state, needsInput: stillNeedsInput }))
 
           // terminal/process tool calls are the only things that spawn or reap
           // background processes — sync the composer status stack right after.
@@ -930,8 +932,9 @@ export function useMessageStream({
         // one. clarify.request is a one-shot event; if we dropped it for an
         // unfocused session, that session would block on `clarify.respond`
         // indefinitely and re-focusing it could never recover (the event is
-        // gone). Parking it per-session lets the user answer once they switch
-        // over; the inline ClarifyTool reads the active session's entry.
+        // gone). Parking it per-session as a FIFO queue matches the Python
+        // gateway's own clarify model and lets the user answer once they switch
+        // over; the desktop overlay reads the active session's oldest entry.
         const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
         const question = typeof payload?.question === 'string' ? payload.question : ''
 
@@ -1029,6 +1032,8 @@ export function useMessageStream({
         // the failed turn (same intent as the message.complete clear).
         if (sessionId) {
           clearAllPrompts(sessionId)
+          clearClarifyRequest(undefined, sessionId)
+          updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
         }
 
         if (looksLikeProviderSetup) {

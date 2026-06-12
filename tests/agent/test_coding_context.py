@@ -1,7 +1,9 @@
 """Tests for agent.coding_context — RuntimeMode seam, resolver, toolset, git probe."""
 
 import json
+import os
 import subprocess
+import shutil
 from pathlib import Path
 
 import pytest
@@ -13,12 +15,13 @@ def _git_init(path):
     env = {
         "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
         "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t",
+        "HOME": str(path),
     }
     for args in (
         ["init", "-q", "-b", "main"],
         ["commit", "-q", "--allow-empty", "-m", "init commit"],
     ):
-        subprocess.run(["git", "-C", str(path), *args], check=True, env={**env, "HOME": str(path)})
+        subprocess.run([shutil.which("git"), "-C", str(path), *args], check=True, env=env)
 
 
 # ── resolver ──────────────────────────────────────────────────────────────
@@ -157,6 +160,29 @@ class TestProjectFacts:
         (tmp_path / "AGENTS.md").write_text("# rules")
         block = cc.build_coding_workspace_block(tmp_path)
         assert "Context files: AGENTS.md" in block
+
+    def test_worktree_detected_without_primary_path(self, tmp_path):
+        # A linked worktree should be detected, but the output must NOT contain
+        # the absolute path to the primary tree — exposing that path causes the
+        # model to sometimes run commands in the wrong directory.
+        main_tree = tmp_path / "main"
+        main_tree.mkdir()
+        _git_init(main_tree)
+        worktree = tmp_path / "worktree"
+        subprocess.run(
+            ["git", "-C", str(main_tree), "worktree", "add", "-b", "wt-branch", str(worktree)],
+            check=True,
+            env={"PATH": os.environ.get("PATH", ""), "HOME": str(tmp_path),
+                 "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+                 "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"},
+        )
+        block = cc.build_coding_workspace_block(worktree)
+        assert "Worktree: linked" in block
+        # The primary tree path must NOT appear anywhere in the output.
+        assert str(main_tree.resolve()) not in block
+        assert str(main_tree) not in block
+        # The worktree root IS the reported root.
+        assert f"Root: {worktree.resolve()}" in block or "Root:" in block
 
     def test_marker_only_project_gets_snapshot_without_git(self, tmp_path):
         # A non-git project (manifest only) still gets a workspace snapshot —

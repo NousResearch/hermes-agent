@@ -898,14 +898,26 @@ gateway:
 
 **What if a draft frame fails?** Any failure (transient network error, server-side rejection, older python-telegram-bot install) flips that response back to the edit-based path for the rest of the stream. The next response gets a fresh attempt.
 
-## Rendering: Tables and Link Previews
+## Rendering: Rich Messages, Tables and Link Previews
 
-Telegram's MarkdownV2 has no native table syntax — pipe tables render as backslash-escaped noise if passed through raw. Hermes normalizes markdown tables automatically:
+**Rich Messages (Bot API 10.1).** When enabled, final replies are sent with Telegram's native [`sendRichMessage`](https://core.telegram.org/bots/api#sendrichmessage) using the agent's **raw markdown**, so tables, task lists, headings, nested blockquotes, collapsible `<details>`, footnotes/references, math/formulas, underline, sub/superscript, marked text, and anchors render natively — no client-side flattening. In DMs the live streaming preview also uses `sendRichMessageDraft`, so the animated draft matches the final rich message. This is **opt-in** (default off) while the new endpoint is validated; enable it per platform:
+
+```yaml
+gateway:
+  platforms:
+    telegram:
+      extra:
+        rich_messages: true
+```
+
+The rich path is skipped automatically when content exceeds the 32,768-byte rich text limit, and any rejection from Telegram (unsupported endpoint on an older `python-telegram-bot`, parser error, oversized blocks/columns) **transparently falls back** to the MarkdownV2 path — your message is never lost. Transient/network errors are *not* silently re-sent (no duplicate final message).
+
+**MarkdownV2 fallback.** When the rich path is disabled or unavailable, Hermes converts markdown to MarkdownV2. Since MarkdownV2 has no native table syntax, pipe tables are normalized:
 
 - **Small tables** are flattened into **row-group bullets** — each row becomes a readable bulleted list under the column headings. Good for 2–4 columns and short cells.
-- **Larger or wider tables** fall back to a **fenced code block** with aligned columns so nothing collapses. A one-line prompt hint is added so the agent knows to prefer prose follow-ups over more tables on Telegram.
+- **Larger or wider tables** fall back to a **fenced code block** with aligned columns so nothing collapses.
 
-There's nothing to configure — the adapter picks the right fallback per message. If you want the legacy "always code-block" behavior, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
+There's nothing to configure for the fallback — the adapter picks the right rendering per message. If you want the legacy "always code-block" behavior, disable table normalization by setting `telegram.pretty_tables: false` in `config.yaml` (default: `true`).
 
 **Link previews.** Telegram auto-generates link previews for URLs in bot messages. If you'd rather suppress those (long `/tools` output, agent reply that mentions ten links, etc.):
 

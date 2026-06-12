@@ -213,6 +213,8 @@ export interface Translations {
       colorModeDesc: string
       toolViewTitle: string
       toolViewDesc: string
+      translucencyTitle: string
+      translucencyDesc: string
       product: string
       productDesc: string
       technical: string
@@ -919,10 +921,10 @@ export interface Translations {
     attachments: (count: number) => string
     editingInComposer: string
     editingQueuedInComposer: string
-    editQueued: string
-    sendQueuedNext: string
-    sendQueuedNow: string
-    deleteQueued: string
+    queueEdit: string
+    queueSendNext: string
+    queueSend: string
+    queueDelete: string
     previewUnavailable: string
     previewLabel: (label: string) => string
     couldNotPreview: (label: string) => string
@@ -949,6 +951,17 @@ export interface Translations {
     snippets: Record<string, { label: string; description: string; text: string }>
     dropFiles: string
     dropSession: string
+  }
+
+  statusStack: {
+    agents: string
+    background: (count: number) => string
+    subagents: (count: number) => string
+    todos: (done: number, total: number) => string
+    running: string
+    stop: string
+    dismiss: string
+    exit: (code: number) => string
   }
 
   updates: {
@@ -1313,9 +1326,12 @@ export interface Translations {
       readAloud: string
       editMessage: string
       stop: string
-      editableCheckpoint: string
       restorePrevious: string
       restoreCheckpoint: string
+      restoreFromHere: string
+      restoreTitle: string
+      restoreBody: string
+      restoreConfirm: string
       restoreNext: string
       goForward: string
       sendEdited: string
@@ -1340,7 +1356,7 @@ export interface Translations {
       loadingQuestion: string
       other: string
       placeholder: string
-      shortcut: string
+      shortcutSuffix: string
       back: string
       skip: string
       send: string

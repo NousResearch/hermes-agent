@@ -29,6 +29,16 @@ const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
 const TRAIL_LIMIT = 8
 
+// Maximum time the controller will hold `busy: true` after a
+// `interruptTurn({ keepBusy: true })` waiting for the gateway's real settle
+// edge (message.complete, message.error). If the settle never arrives —
+// orphaned session, transport dropped, agent thread crash — the watchdog
+// fires, forces `idle()`, and surfaces a ttl notice so the user is not
+// trapped in a permanent busy state. Sits well below the gateway's own
+// 120s inflight watchdog (server-side; tui_gateway/server.py) so we
+// recover UI-side first.
+const KEEP_BUSY_WATCHDOG_MS = 10_000
+
 // Extracts the raw patch from a diff-only segment produced by
 // pushInlineDiffSegment. Used at message.complete to dedupe against final
 // assistant text that narrates the same patch. Returns null for anything
@@ -132,6 +142,15 @@ class TurnController {
   private streamTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
   private toolProgressTimer: Timer = null
+  // ── keepBusy settle watchdog ──────────────────────────────────────────
+  // Armed by `interruptTurn({ keepBusy: true })` after re-asserting busy.
+  // The natural settle path is `recordMessageComplete()` (and
+  // `recordError()` as a defensive sibling); a fresh `startMessage()` is the
+  // signal that a queued-message drain is in flight and the interrupted
+  // turn is no longer the one we're waiting on. `reset()`/`fullReset()`
+  // tear it down on session boundary. Fires after KEEP_BUSY_WATCHDOG_MS,
+  // forces `idle()`, and emits a ttl notice.
+  private settleWatchdog: Timer = null
 
   // ── Credits notice machinery (Strategy B) ───────────────────────────
   //
@@ -167,6 +186,13 @@ class TurnController {
 
   clearStatusTimer() {
     this.statusTimer = clear(this.statusTimer)
+  }
+
+  // Cancel the keepBusy settle watchdog. Idempotent — safe to call from
+  // recordMessageComplete, recordError, startMessage, reset, fullReset,
+  // and from interruptTurn itself when re-arming.
+  private clearSettleWatchdog() {
+    this.settleWatchdog = clear(this.settleWatchdog)
   }
 
   // ── Notice: arrival ──────────────────────────────────────────────────
@@ -334,6 +360,43 @@ class TurnController {
     if (opts.keepBusy) {
       // `idle()` already cleared busy; re-assert it so the drain waits for settle.
       patchUiState({ busy: true, status: 'interrupting…' })
+
+      // Arm a settle watchdog. If `message.complete` (or `message.error`,
+      // see recordError) never arrives — orphaned session, transport drop,
+      // agent thread crash — the watchdog force-clears busy and surfaces a
+      // ttl notice so the user is not stranded. The natural cancellation
+      // path is `recordMessageComplete()`; `startMessage()` cancels when a
+      // queued-message drain kicks off a new turn. `reset()`/`fullReset()`
+      // tear it down on session boundary.
+      this.clearSettleWatchdog()
+
+      this.settleWatchdog = setTimeout(() => {
+        this.settleWatchdog = null
+
+        // Defensive: only force-settle if we're still in the kept-busy
+        // hold. A natural settle that landed between timer fire and
+        // callback (microtask race) already cleared busy — skip.
+        if (!getUiState().busy) {
+          return
+        }
+
+        this.idle()
+        this.clearReasoning()
+        this.turnTools = []
+        this.persistedToolLabels.clear()
+        patchTurnState({ activity: [], outcome: '' })
+        this.showNotice({
+          key: 'tui.busy_watchdog',
+          kind: 'ttl',
+          level: 'warn',
+          text: '⚠ Live turn lost — UI settled automatically',
+          ttl_ms: 6_000
+        })
+        // Real turn end: surface any held notice, then settle status.
+        this.flushPendingNotice()
+        patchUiState({ status: 'ready' })
+        this.clearStatusTimer()
+      }, KEEP_BUSY_WATCHDOG_MS)
 
       return
     }
@@ -542,6 +605,10 @@ class TurnController {
   }
 
   recordError() {
+    // Defensive settle for the keepBusy hold — message.error from the
+    // gateway also means the interrupted turn is over, so the watchdog
+    // must not fire later and clobber a (possibly already-idle) UI.
+    this.clearSettleWatchdog()
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
@@ -555,6 +622,10 @@ class TurnController {
   }
 
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
+    // Natural settle for any in-flight keepBusy hold. Always cancel the
+    // watchdog before doing any other work so an `idle()` re-entry from a
+    // racing timer can't double-settle the UI.
+    this.clearSettleWatchdog()
     this.closeReasoningSegment()
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
@@ -839,6 +910,9 @@ class TurnController {
   reset() {
     this.clearReasoning()
     this.clearStatusTimer()
+    // Session boundary: drop any pending keepBusy watchdog so a session-A
+    // timer can't fire into session B (or after a fullReset teardown).
+    this.clearSettleWatchdog()
     this.idle()
     this.bufRef = ''
     this.interrupted = false
@@ -898,6 +972,10 @@ class TurnController {
   }
 
   startMessage() {
+    // A genuine new turn is starting. Cancel any keepBusy watchdog — the
+    // turn it's waiting on is no longer the turn we're working on. Safe
+    // to call even if no watchdog is armed (idempotent).
+    this.clearSettleWatchdog()
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []

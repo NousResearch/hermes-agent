@@ -13,7 +13,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from run_agent import AIAgent
+from agent.agent_init import (
+    _CODEX_GPT55_AUTORAISE_NOTICE_KEY,
+    _mark_notice_seen,
+    _normalize_notice_policy,
+    _should_emit_notice,
+)
 from agent.context_compressor import ContextCompressor
+from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 
 
 @pytest.fixture(autouse=True)
@@ -60,6 +67,30 @@ def _make_agent(
     agent.context_compressor = compressor
 
     return agent
+
+
+# ── Codex gpt-5.5 autoraise notice policy ───────────────────────────
+
+
+def test_codex_gpt55_autoraise_notice_policy_once_persists(tmp_path):
+    """The default once policy emits only before the notice is recorded."""
+    token = set_hermes_home_override(tmp_path)
+    try:
+        assert _should_emit_notice(_CODEX_GPT55_AUTORAISE_NOTICE_KEY, "once")
+        _mark_notice_seen(_CODEX_GPT55_AUTORAISE_NOTICE_KEY)
+        assert not _should_emit_notice(_CODEX_GPT55_AUTORAISE_NOTICE_KEY, "once")
+        assert _should_emit_notice(_CODEX_GPT55_AUTORAISE_NOTICE_KEY, "always")
+        assert not _should_emit_notice(_CODEX_GPT55_AUTORAISE_NOTICE_KEY, "never")
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_codex_gpt55_autoraise_notice_policy_accepts_bool_like_values():
+    assert _normalize_notice_policy(True) == "once"
+    assert _normalize_notice_policy(False) == "never"
+    assert _normalize_notice_policy("on") == "once"
+    assert _normalize_notice_policy("off") == "never"
+    assert _normalize_notice_policy("unexpected") == "once"
 
 
 # ── Core warning logic ──────────────────────────────────────────────

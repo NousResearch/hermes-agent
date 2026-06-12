@@ -19,6 +19,7 @@ preserved.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -57,6 +58,73 @@ from utils import base_url_host_matches
 # ``logger = logging.getLogger(__name__)``, which resolves to "run_agent"
 # from inside that module.)
 logger = logging.getLogger("run_agent")
+
+_CODEX_GPT55_AUTORAISE_NOTICE_KEY = "codex_gpt55_autoraise"
+
+
+def _normalize_notice_policy(value: Any) -> str:
+    """Normalize user-facing notice policy values.
+
+    Supported values are ``always``, ``once``, and ``never``.  Boolean-like
+    config values are accepted for ergonomics: true means ``once`` and false
+    means ``never``.
+    """
+    if isinstance(value, bool):
+        return "once" if value else "never"
+    text = str(value or "once").strip().lower()
+    if text in {"always", "once", "never"}:
+        return text
+    if text in {"true", "1", "yes", "on"}:
+        return "once"
+    if text in {"false", "0", "no", "off"}:
+        return "never"
+    return "once"
+
+
+def _notice_state_path():
+    return get_hermes_home() / "state" / "notices.json"
+
+
+def _load_notice_state() -> Dict[str, Any]:
+    try:
+        path = _notice_state_path()
+        if not path.exists():
+            return {}
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _notice_already_seen(key: str) -> bool:
+    notices = _load_notice_state().get("notices", {})
+    return isinstance(notices, dict) and key in notices
+
+
+def _mark_notice_seen(key: str) -> None:
+    try:
+        path = _notice_state_path()
+        state = _load_notice_state()
+        notices = state.get("notices", {})
+        if not isinstance(notices, dict):
+            notices = {}
+        notices[key] = datetime.utcnow().isoformat(timespec="seconds") + "Z"
+        state["notices"] = notices
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def _should_emit_notice(key: str, policy: str) -> bool:
+    policy = _normalize_notice_policy(policy)
+    if policy == "never":
+        return False
+    if policy == "always":
+        return True
+    return not _notice_already_seen(key)
 
 
 def _ra():
@@ -1273,12 +1341,15 @@ def init_agent(
     # Per-model/route compaction-threshold override. Codex gpt-5.5 raises to
     # 85% (the Codex backend caps the window at 272K, so the default 50% would
     # compact at ~136K — half the usable context). Gated by an opt-out config
-    # flag so the user can fall back to the global threshold; when the override
-    # fires we stash a one-time notification (replayed on the first turn) that
-    # tells the user what changed and how to revert.
+    # flag so the user can fall back to the global threshold.  When the override
+    # fires we may stash a notification (replayed on the first turn) according
+    # to compression.codex_gpt55_autoraise_notice: always, once, or never.
     _codex_gpt55_autoraise = str(
         _compression_cfg.get("codex_gpt55_autoraise", True)
     ).lower() in {"true", "1", "yes"}
+    _codex_gpt55_autoraise_notice_policy = _normalize_notice_policy(
+        _compression_cfg.get("codex_gpt55_autoraise_notice", "once")
+    )
     agent._compression_threshold_autoraised = None
     try:
         from agent.auxiliary_client import (
@@ -1676,29 +1747,36 @@ def init_agent(
             agent._ollama_num_ctx,
         )
 
+    # Check immediately so CLI users see warnings at startup. Gateway
+    # status_callback is not yet wired, so any warning is stored in
+    # _compression_warning and replayed in the first run_conversation().
+    agent._compression_warning = None
+    _autoraise_notice = None
+    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
+    if (
+        _autoraise
+        and compression_enabled
+        and _should_emit_notice(
+            _CODEX_GPT55_AUTORAISE_NOTICE_KEY,
+            _codex_gpt55_autoraise_notice_policy,
+        )
+    ):
+        _autoraise_notice = _build_codex_gpt55_autoraise_notice(_autoraise)
+        agent._compression_warning = _autoraise_notice
+        if _codex_gpt55_autoraise_notice_policy == "once":
+            _mark_notice_seen(_CODEX_GPT55_AUTORAISE_NOTICE_KEY)
+
     if not agent.quiet_mode:
         if compression_enabled:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (compress at {int(compression_threshold*100)}% = {agent.context_compressor.threshold_tokens:,})")
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
-        # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
-        # exact opt-back-out command. Printed inline at startup for CLI users;
+        # Notice when the Codex gpt-5.5 autoraise kicked in, with the exact
+        # opt-back-out command. Printed inline at startup for CLI users;
         # gateway users get the same text replayed via _compression_warning on
-        # turn 1 (set below, after the warning slot is initialized).
-        _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
-            print(_build_codex_gpt55_autoraise_notice(_autoraise))
-
-    # Check immediately so CLI users see the warning at startup.
-    # Gateway status_callback is not yet wired, so any warning is stored
-    # in _compression_warning and replayed in the first run_conversation().
-    agent._compression_warning = None
-    # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
-    # above only reaches the CLI, so stash the same text here to be replayed
-    # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
-    _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
-        agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
+        # turn 1.
+        if _autoraise_notice:
+            print(_autoraise_notice)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network
     # probe of the auxiliary provider chain + /models lookup) on every agent

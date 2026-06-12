@@ -17,6 +17,30 @@
   src: url('../../../node_modules/@nous-research/ui/dist/fonts/Collapse-Bold.woff2') format('woff2');
 }
 
+/* JetBrains Mono — bundled terminal font (Apache-2.0) so bold/italic share the
+   regular face's metrics instead of squeezing against a system fallback. */
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('./fonts/JetBrainsMono-Italic.woff2') format('woff2');
+}
+
 @theme inline {
   --color-background: var(--dt-background);
   --color-foreground: var(--dt-foreground);

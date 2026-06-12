@@ -428,6 +428,7 @@ Each platform has its own toolset:
 | Telegram | `hermes-telegram` | Full tools including terminal |
 | Discord | `hermes-discord` | Full tools including terminal |
 | WhatsApp | `hermes-whatsapp` | Full tools including terminal |
+| WhatsApp Cloud API | `hermes-whatsapp` | Full tools including terminal (shares toolset with the Baileys bridge) |
 | Slack | `hermes-slack` | Full tools including terminal |
 | Google Chat | `hermes-google_chat` | Full tools including terminal |
 | Signal | `hermes-signal` | Full tools including terminal |
@@ -557,6 +558,7 @@ Defaults to `false`. Only platforms whose adapter implements `delete_message` ho
 - [Slack Setup](slack.md)
 - [Google Chat Setup](google_chat.md)
 - [WhatsApp Setup](whatsapp.md)
+- [WhatsApp Business Cloud API Setup](whatsapp-cloud.md)
 - [Signal Setup](signal.md)
 - [SMS Setup (Twilio)](sms.md)
 - [Email Setup](email.md)

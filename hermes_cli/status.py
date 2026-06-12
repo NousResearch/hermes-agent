@@ -344,7 +344,7 @@ def show_status(args):
         print(color("◆ Nous Tool Gateway", Colors.CYAN, Colors.BOLD))
         message = format_nous_portal_entitlement_message(
             nous_account_info,
-            capability="managed web, image, TTS, browser, and Modal tools",
+            capability="managed web, image, TTS, STT, browser, and Modal tools",
         )
         if message:
             for line in message.splitlines():

@@ -204,8 +204,22 @@ class TestPlatformDefaults:
         """Signal, BlueBubbles, etc. default to 'off' tool progress."""
         from gateway.display_config import resolve_display_setting
 
-        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk"):
+        for plat in ("signal", "bluebubbles", "weixin", "wecom", "dingtalk", "whatsapp_cloud"):
             assert resolve_display_setting({}, plat, "tool_progress") == "off", plat
+
+    def test_whatsapp_cloud_locked_to_low_tier_until_edit_message_lands(self):
+        """Regression guard: ``whatsapp_cloud`` must stay TIER_LOW until the
+        adapter implements edit_message. Without an edit endpoint, raising
+        the tier to MEDIUM would spam separate WhatsApp messages for every
+        tool-progress update, which is the exact failure mode this entry
+        exists to avoid.
+
+        When/if Cloud's edit_message lands, update _PLATFORM_DEFAULTS to
+        TIER_MEDIUM and update this test to assert ``"new"`` accordingly.
+        """
+        from gateway.display_config import resolve_display_setting
+        assert resolve_display_setting({}, "whatsapp_cloud", "tool_progress") == "off"
+        assert resolve_display_setting({}, "whatsapp_cloud", "streaming") is False
 
     def test_minimal_tier_platforms(self):
         """Email, SMS, webhook default to 'off' tool progress."""

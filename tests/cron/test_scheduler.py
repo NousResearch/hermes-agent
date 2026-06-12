@@ -2736,3 +2736,26 @@ class TestCronDeliveryTargets:
         monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
 
         assert cron_delivery_targets() == []
+
+
+class TestHomeTargetEnvVarRegistry:
+    """Regression: ``_HOME_TARGET_ENV_VARS`` must include every gateway
+    platform that supports cron-driven outbound delivery. Missing an
+    entry means ``hermes cron create --deliver=<platform>`` silently
+    fails to route through the platform's home channel."""
+
+    def test_whatsapp_cloud_registered(self):
+        """``deliver=whatsapp_cloud`` routes through
+        WHATSAPP_CLOUD_HOME_CHANNEL — added alongside the existing
+        ``whatsapp`` Baileys entry."""
+        from cron.scheduler import _HOME_TARGET_ENV_VARS
+
+        assert "whatsapp_cloud" in _HOME_TARGET_ENV_VARS
+        assert _HOME_TARGET_ENV_VARS["whatsapp_cloud"] == "WHATSAPP_CLOUD_HOME_CHANNEL"
+
+    def test_baileys_whatsapp_still_registered(self):
+        """Sanity guard: the Cloud addition didn't disturb Baileys
+        whatsapp routing."""
+        from cron.scheduler import _HOME_TARGET_ENV_VARS
+
+        assert _HOME_TARGET_ENV_VARS.get("whatsapp") == "WHATSAPP_HOME_CHANNEL"

@@ -91,6 +91,13 @@ class TestFormatMessage:
         assert adapter.format_message("## Subtitle") == "*Subtitle*"
         assert adapter.format_message("### Deep") == "*Deep*"
 
+    def test_bold_header_does_not_double_wrap(self):
+        """"# **Title**" must become *Title*, not **Title** (WhatsApp would
+        render the doubled asterisks literally)."""
+        adapter = _make_adapter()
+        assert adapter.format_message("# **Title**") == "*Title*"
+        assert adapter.format_message("## __Strong__") == "*Strong*"
+
     def test_links_converted(self):
         adapter = _make_adapter()
         result = adapter.format_message("[click here](https://example.com)")

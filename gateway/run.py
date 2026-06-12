@@ -1243,6 +1243,7 @@ from gateway.session import (
     build_session_key,
     is_shared_multi_user_session,
 )
+from gateway.discord_channel_memory import DiscordChannelMemoryStore
 from gateway.delivery import DeliveryRouter
 from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
@@ -8486,6 +8487,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 vc_context = adapter.get_voice_channel_context(guild_id)
                 if vc_context:
                     context_prompt += f"\n\n{vc_context}"
+            try:
+                _channel_memory_prompt = DiscordChannelMemoryStore().build_injection_prompt(source)
+                if _channel_memory_prompt:
+                    context_prompt += f"\n\n{_channel_memory_prompt}"
+            except Exception:
+                logger.debug("Discord channel memory injection failed", exc_info=True)
 
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
@@ -8882,6 +8889,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+
+            if source.platform == Platform.DISCORD and not agent_failed_early:
+                try:
+                    DiscordChannelMemoryStore().update_after_turn(
+                        source,
+                        user_text=message_text,
+                        assistant_text=response,
+                        session_id=session_entry.session_id,
+                        message_id=str(event.message_id or source.message_id or ""),
+                    )
+                except Exception:
+                    logger.debug("Discord channel memory update failed", exc_info=True)
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))

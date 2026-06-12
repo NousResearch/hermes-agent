@@ -211,6 +211,7 @@ class TestAgentLoopTools:
         assert "todo" in _AGENT_LOOP_TOOLS
         assert "memory" in _AGENT_LOOP_TOOLS
         assert "session_search" in _AGENT_LOOP_TOOLS
+        assert "knowledge_answer" not in _AGENT_LOOP_TOOLS
         assert "delegate_task" in _AGENT_LOOP_TOOLS
 
     def test_no_regular_tools_in_set(self):
@@ -401,6 +402,7 @@ class TestBackwardCompat:
         # Should contain well-known tools
         assert "web_search" in names
         assert "terminal" in names
+        assert "knowledge_answer" in names
 
     def test_get_toolset_for_tool(self):
         result = get_toolset_for_tool("web_search")

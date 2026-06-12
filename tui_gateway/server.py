@@ -2146,6 +2146,11 @@ def _get_usage(agent) -> dict:
     last_out = getattr(agent, "last_output_tokens", 0) or 0
     if last_dur > 0 and last_out > 0:
         usage["output_speed"] = round(last_out / last_dur, 1)
+        # peak_speed includes reasoning tokens in the numerator
+        reasoning = usage.get("reasoning", 0) or 0
+        total_out = last_out + reasoning
+        if total_out > 0:
+            usage["peak_speed"] = round(total_out / last_dur, 1)
     comp = getattr(agent, "context_compressor", None)
     if comp:
         ctx_used = getattr(comp, "last_prompt_tokens", 0) or usage["total"] or 0

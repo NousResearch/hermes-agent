@@ -3914,6 +3914,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             snapshot["output_speed"] = last_out / last_dur
         else:
             snapshot["output_speed"] = None
+        # peak_speed includes reasoning tokens
+        reasoning = getattr(agent, "session_reasoning_tokens", 0) or 0
+        if last_dur > 0 and (last_out + reasoning) > 0:
+            snapshot["peak_speed"] = (last_out + reasoning) / last_dur
+        else:
+            snapshot["peak_speed"] = None
 
         compressor = getattr(agent, "context_compressor", None)
         if compressor:

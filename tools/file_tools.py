@@ -742,7 +742,7 @@ def clear_file_ops_cache(task_id: str = None):
             _file_ops_cache.clear()
 
 
-def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default") -> str:
+def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = "default", skip_dedup: bool = False) -> str:
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
@@ -803,7 +803,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        if cached_mtime is not None and not skip_dedup:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1530,7 +1530,7 @@ SEARCH_FILES_SCHEMA = {
 
 def _handle_read_file(args, **kw):
     tid = kw.get("task_id") or "default"
-    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
+    return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid, skip_dedup=args.get("_skip_dedup", False))
 
 
 def _handle_write_file(args, **kw):

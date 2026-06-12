@@ -24,6 +24,7 @@ from tools.file_tools import (
     _DEFAULT_MAX_READ_CHARS,
     _read_tracker,
     notify_other_tool_call,
+    _handle_read_file,
 )
 
 
@@ -363,6 +364,68 @@ class TestFileDedup(unittest.TestCase):
 # ---------------------------------------------------------------------------
 # Dedup stub-loop guard (issue #15759)
 # ---------------------------------------------------------------------------
+
+class TestDedupSkipForSandbox(unittest.TestCase):
+    """read_file(skip_dedup=True) must always return full content, even when
+    the dedup cache has a hit for the same (path, offset, limit) key.
+
+    This covers the execute_code sandbox API contract (issue #44843):
+    sandbox code expects a consistent dict structure with ``content`` on
+    every call.
+    """
+
+    def setUp(self):
+        _read_tracker.clear()
+        self._tmpdir = _make_safe_tempdir("hermes-dedup-skip-")
+        self._tmpfile = os.path.join(self._tmpdir, "skip_test.txt")
+        with open(self._tmpfile, "w") as f:
+            f.write("sandbox content\n")
+
+    def tearDown(self):
+        _read_tracker.clear()
+        try:
+            os.unlink(self._tmpfile)
+            os.rmdir(self._tmpdir)
+        except OSError:
+            pass
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_skip_dedup_returns_content(self, mock_ops):
+        """With skip_dedup=True, second read returns full content."""
+        mock_ops.return_value = _make_fake_ops(
+            content="sandbox content\n", file_size=16,
+        )
+        # First read — populates dedup cache
+        r1 = json.loads(read_file_tool(self._tmpfile, task_id="sandbox"))
+        self.assertNotIn("dedup", r1)
+
+        # Second read with skip_dedup=True — must return content, not stub
+        r2 = json.loads(
+            read_file_tool(self._tmpfile, task_id="sandbox", skip_dedup=True)
+        )
+        self.assertNotIn("dedup", r2, "skip_dedup should bypass dedup stub")
+        self.assertIn("content", r2, "skip_dedup must return content key")
+        self.assertIn("sandbox content", r2["content"])
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_skip_dedup_handler_arg(self, mock_ops):
+        """_handle_read_file passes _skip_dedup through to read_file_tool."""
+        mock_ops.return_value = _make_fake_ops(
+            content="handler content\n", file_size=16,
+        )
+        # First read — populates dedup
+        _handle_read_file({"path": self._tmpfile}, task_id="handler-test")
+
+        # Second read via handler with _skip_dedup
+        result = json.loads(
+            _handle_read_file(
+                {"path": self._tmpfile, "_skip_dedup": True},
+                task_id="handler-test",
+            )
+        )
+        self.assertIn("content", result, "_skip_dedup via handler must return content")
+        self.assertNotIn("dedup", result)
+
 
 class TestDedupStubLoopGuard(unittest.TestCase):
     """Repeated dedup stubs must escalate to a hard BLOCKED error so weak

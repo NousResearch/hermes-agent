@@ -541,6 +541,12 @@ def _rpc_server_loop(
                     for param in _TERMINAL_BLOCKED_PARAMS:
                         tool_args.pop(param, None)
 
+                # Skip read_file dedup for sandbox calls — the sandbox API
+                # contract requires a consistent response structure with
+                # ``content`` present on every call (issue #44843).
+                if tool_name == "read_file" and isinstance(tool_args, dict):
+                    tool_args["_skip_dedup"] = True
+
                 # Dispatch through the standard tool handler.
                 # Suppress stdout/stderr from internal tool handlers so
                 # their status prints don't leak into the CLI spinner.
@@ -815,6 +821,10 @@ def _rpc_poll_loop(
                     if tool_name == "terminal" and isinstance(tool_args, dict):
                         for param in _TERMINAL_BLOCKED_PARAMS:
                             tool_args.pop(param, None)
+
+                    # Skip read_file dedup for sandbox calls (issue #44843).
+                    if tool_name == "read_file" and isinstance(tool_args, dict):
+                        tool_args["_skip_dedup"] = True
 
                     # Dispatch through the standard tool handler
                     try:

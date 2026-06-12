@@ -670,6 +670,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/messaging/a2a',
             'user-guide/messaging/homeassistant',
             'user-guide/messaging/mattermost',
+            'user-guide/messaging/synology-chat',
             'user-guide/messaging/matrix',
             'user-guide/messaging/bluebubbles',
             'user-guide/messaging/buzz',

@@ -13092,25 +13092,58 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Per-platform display settings — resolve via display_config module
         # which checks display.platforms.<platform>.<key> first, then
         # display.<key> global, then built-in platform defaults.
-        from gateway.display_config import resolve_display_setting
+        from gateway.display_config import (
+            resolve_display_setting,
+            resolve_display_setting_for_user,
+        )
 
-        # Apply tool preview length config (0 = no limit)
+        # Apply tool preview length config (0 = no limit). User-level display
+        # overrides let operators opt themselves into deeper debug previews
+        # without making the whole platform noisy.
         try:
             from agent.display import set_tool_preview_max_len
-            _tpl = resolve_display_setting(user_config, platform_key, "tool_preview_length", 0)
+            _tpl = resolve_display_setting_for_user(
+                user_config,
+                platform_key,
+                "tool_preview_length",
+                user_id=getattr(source, "user_id", None),
+                user_id_alt=getattr(source, "user_id_alt", None),
+                fallback=0,
+            )
             set_tool_preview_max_len(int(_tpl) if _tpl else 0)
         except Exception:
             pass
 
-        # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
+        # Tool progress mode — resolved per-user/per-platform with env var fallback
+        _resolved_tp = resolve_display_setting_for_user(
+            user_config,
+            platform_key,
+            "tool_progress",
+            user_id=getattr(source, "user_id", None),
+            user_id_alt=getattr(source, "user_id_alt", None),
+        )
         _env_tp = os.getenv("HERMES_TOOL_PROGRESS_MODE")
         _display_cfg = display_config if isinstance(display_config, dict) else {}
         _platforms_cfg = _display_cfg.get("platforms") or {}
         _platform_cfg = _platforms_cfg.get(platform_key) or {}
+        _users_cfg = _display_cfg.get("users") or {}
+        _platform_users_cfg = _users_cfg.get(platform_key) or {}
+        _user_tp_configured = False
+        if isinstance(_platform_users_cfg, dict):
+            for _uid in (
+                getattr(source, "user_id", None),
+                getattr(source, "user_id_alt", None),
+            ):
+                if not _uid:
+                    continue
+                _user_cfg = _platform_users_cfg.get(str(_uid))
+                if isinstance(_user_cfg, dict) and "tool_progress" in _user_cfg:
+                    _user_tp_configured = True
+                    break
         _legacy_tp_overrides = _display_cfg.get("tool_progress_overrides") or {}
         _tool_progress_configured = (
             "tool_progress" in _display_cfg
+            or _user_tp_configured
             or (
                 isinstance(_platform_cfg, dict)
                 and "tool_progress" in _platform_cfg

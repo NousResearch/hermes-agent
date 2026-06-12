@@ -8,6 +8,129 @@
 class TestResolveDisplaySetting:
     """resolve_display_setting() resolves with correct priority."""
 
+    def test_user_override_wins_over_platform_and_global(self):
+        """display.users.<plat>.<user_id>.<key> takes top priority."""
+        from gateway.display_config import resolve_display_setting_for_user
+
+        config = {
+            "display": {
+                "tool_progress": "all",
+                "platforms": {
+                    "slack": {"tool_progress": "off"},
+                },
+                "users": {
+                    "slack": {
+                        "U09LYP9GT44": {"tool_progress": "verbose"},
+                    },
+                },
+            }
+        }
+        assert (
+            resolve_display_setting_for_user(
+                config,
+                "slack",
+                "tool_progress",
+                user_id="U09LYP9GT44",
+            )
+            == "verbose"
+        )
+
+    def test_user_override_falls_back_to_alt_id(self):
+        """Platforms with alternate stable IDs can configure either identity."""
+        from gateway.display_config import resolve_display_setting_for_user
+
+        config = {
+            "display": {
+                "users": {
+                    "signal": {
+                        "uuid-123": {"tool_progress": "new"},
+                    },
+                },
+            }
+        }
+        assert (
+            resolve_display_setting_for_user(
+                config,
+                "signal",
+                "tool_progress",
+                user_id="phone-redacted",
+                user_id_alt="uuid-123",
+            )
+            == "new"
+        )
+
+    def test_user_override_primary_id_wins_over_alt_id(self):
+        """Primary user IDs win when both primary and alternate IDs are configured."""
+        from gateway.display_config import resolve_display_setting_for_user
+
+        config = {
+            "display": {
+                "users": {
+                    "signal": {
+                        "phone-redacted": {"tool_progress": "off"},
+                        "uuid-123": {"tool_progress": "verbose"},
+                    },
+                },
+            }
+        }
+        assert (
+            resolve_display_setting_for_user(
+                config,
+                "signal",
+                "tool_progress",
+                user_id="phone-redacted",
+                user_id_alt="uuid-123",
+            )
+            == "off"
+        )
+
+    def test_user_override_normalises_yaml_values(self):
+        """Per-user bare YAML bools are normalised like platform settings."""
+        from gateway.display_config import resolve_display_setting_for_user
+
+        config = {
+            "display": {
+                "users": {
+                    "slack": {
+                        "U09LYP9GT44": {"tool_progress": True},
+                    },
+                },
+            }
+        }
+        assert (
+            resolve_display_setting_for_user(
+                config,
+                "slack",
+                "tool_progress",
+                user_id="U09LYP9GT44",
+            )
+            == "all"
+        )
+
+    def test_missing_user_override_falls_back_to_platform(self):
+        """Users without an override still get normal platform resolution."""
+        from gateway.display_config import resolve_display_setting_for_user
+
+        config = {
+            "display": {
+                "platforms": {"slack": {"tool_progress": "new"}},
+                "users": {
+                    "slack": {
+                        "U09LYP9GT44": {"tool_progress": "verbose"},
+                    },
+                },
+            }
+        }
+        assert (
+            resolve_display_setting_for_user(
+                config,
+                "slack",
+                "tool_progress",
+                user_id="U07HX9FQ10W",
+            )
+            == "new"
+        )
+
     def test_explicit_platform_override_wins(self):
         """display.platforms.<plat>.<key> takes top priority."""
         from gateway.display_config import resolve_display_setting

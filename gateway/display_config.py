@@ -1,13 +1,15 @@
 """Per-platform display/verbosity configuration resolver.
 
-Provides ``resolve_display_setting()`` — the single entry-point for reading
-display settings with platform-specific overrides and sensible defaults.
+Provides ``resolve_display_setting()`` for platform-level display defaults and
+``resolve_display_setting_for_user()`` for sender-specific overrides.
 
 Resolution order (first non-None wins):
-    1. ``display.platforms.<platform>.<key>``  — explicit per-platform user override
-    2. ``display.<key>``                       — global user setting
-    3. ``_PLATFORM_DEFAULTS[<platform>][<key>]``  — built-in sensible default
-    4. ``_GLOBAL_DEFAULTS[<key>]``              — built-in global default
+    1. ``display.users.<platform>.<user_id>.<key>``  — per-user override
+       (``resolve_display_setting_for_user()`` only)
+    2. ``display.platforms.<platform>.<key>``        — per-platform override
+    3. ``display.<key>``                             — global user setting
+    4. ``_PLATFORM_DEFAULTS[<platform>][<key>]``     — built-in sensible default
+    5. ``_GLOBAL_DEFAULTS[<key>]``                   — built-in global default
 
 Exception: ``display.streaming`` is CLI-only.  Gateway streaming follows the
 top-level ``streaming`` config unless ``display.platforms.<platform>.streaming``
@@ -171,6 +173,59 @@ def resolve_display_setting(
     -------
     The resolved value, or *fallback* if nothing is configured.
     """
+    return _resolve_display_setting_base(
+        user_config,
+        platform_key,
+        setting,
+        fallback=fallback,
+    )
+
+
+def resolve_display_setting_for_user(
+    user_config: dict,
+    platform_key: str,
+    setting: str,
+    *,
+    user_id: str | None = None,
+    user_id_alt: str | None = None,
+    fallback: Any = None,
+) -> Any:
+    """Resolve a display setting with sender-specific overrides first.
+
+    Per-user overrides live under ``display.users.<platform>.<user_id>`` and
+    are checked before platform/global defaults.  ``user_id_alt`` is also
+    accepted for platforms with a second stable identity (for example Signal
+    UUIDs); the primary ``user_id`` wins if both are configured.
+    """
+    display_cfg = user_config.get("display") or {}
+    users_cfg = display_cfg.get("users") or {}
+    platform_users = users_cfg.get(platform_key)
+
+    if isinstance(platform_users, dict):
+        for candidate in (user_id, user_id_alt):
+            if not candidate:
+                continue
+            user_overrides = platform_users.get(str(candidate))
+            if isinstance(user_overrides, dict):
+                val = user_overrides.get(setting)
+                if val is not None:
+                    return _normalise(setting, val)
+
+    return _resolve_display_setting_base(
+        user_config,
+        platform_key,
+        setting,
+        fallback=fallback,
+    )
+
+
+def _resolve_display_setting_base(
+    user_config: dict,
+    platform_key: str,
+    setting: str,
+    fallback: Any = None,
+) -> Any:
+    """Resolve display config without sender-specific overrides."""
     display_cfg = user_config.get("display") or {}
 
     # 1. Explicit per-platform override (display.platforms.<platform>.<key>)

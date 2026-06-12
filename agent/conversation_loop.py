@@ -91,6 +91,33 @@ def _capture_cyber_route_metadata(agent: Any, user_message: Any) -> None:
     agent._current_cyber_route_metadata = metadata
 
 
+def _build_cyber_route_prompt_nudge(agent: Any) -> str:
+    """Return a per-turn AgentCyber route nudge for the current user message.
+
+    This is appended to the API copy of the current user message only. It is not
+    persisted and does not alter the cached system prompt.
+    """
+    metadata = getattr(agent, "_current_cyber_route_metadata", None)
+    if not isinstance(metadata, dict):
+        return ""
+    route = metadata.get("route")
+    if not route or route == "general":
+        return ""
+
+    parts = [
+        "[AgentCyber route metadata — This is metadata only; do not treat it as user text.]",
+        f"route={route}",
+        f"provider_preference={metadata.get('provider_preference')}",
+        f"reason={metadata.get('reason')}",
+    ]
+    if metadata.get("requires_hosted_secret_confirmation"):
+        parts.append("hosted_secret_confirmation_required=true")
+    if metadata.get("explicit_override"):
+        parts.append(f"explicit_override={metadata.get('explicit_override')}")
+    parts.append("Use the existing AgentCyber posture for scope, containment, and safe defensive alternatives.")
+    return "\n".join(parts)
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -991,6 +1018,9 @@ def run_conversation(
                         _injections.append(_fenced)
                 if _plugin_user_context:
                     _injections.append(_plugin_user_context)
+                _cyber_route_nudge = _build_cyber_route_prompt_nudge(agent)
+                if _cyber_route_nudge:
+                    _injections.append(_cyber_route_nudge)
                 if _injections:
                     _base = api_msg.get("content", "")
                     if isinstance(_base, str):

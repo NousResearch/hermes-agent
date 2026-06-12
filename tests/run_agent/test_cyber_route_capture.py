@@ -42,26 +42,32 @@ class _RouteCaptureAgent(run_agent.AIAgent):
         self._cleanup_task_resources = lambda *a, **k: None
         self._persist_session = lambda *a, **k: None
         self._save_trajectory = lambda *a, **k: None
-        object.__setattr__(self, "_interruptible_api_call", lambda api_kwargs: SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    index=0,
-                    message=SimpleNamespace(
-                        role="assistant",
-                        content="ok",
-                        tool_calls=None,
-                        reasoning_content=None,
-                    ),
-                    finish_reason="stop",
-                )
-            ],
-            usage=SimpleNamespace(
-                prompt_tokens=10,
-                completion_tokens=1,
-                total_tokens=11,
-            ),
-            model="test-model",
-        ))
+        self.api_calls = []
+
+        def _fake_api_call(api_kwargs):
+            self.api_calls.append(api_kwargs)
+            return SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        index=0,
+                        message=SimpleNamespace(
+                            role="assistant",
+                            content="ok",
+                            tool_calls=None,
+                            reasoning_content=None,
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=SimpleNamespace(
+                    prompt_tokens=10,
+                    completion_tokens=1,
+                    total_tokens=11,
+                ),
+                model="test-model",
+            )
+
+        object.__setattr__(self, "_interruptible_api_call", _fake_api_call)
         self._disable_streaming = True
 
 
@@ -107,3 +113,38 @@ def test_conversation_loop_captures_sensitive_route_metadata(monkeypatch):
     assert metadata["route"] == "ir_breakglass"
     assert metadata["provider_preference"] == "local_open_weight"
     assert metadata["requires_hosted_secret_confirmation"] is True
+
+
+def _current_user_api_content(agent):
+    api_messages = agent.api_calls[-1]["messages"]
+    user_messages = [msg for msg in api_messages if msg.get("role") == "user"]
+    return user_messages[-1]["content"]
+
+
+def test_sensitive_route_adds_transient_prompt_nudge(monkeypatch):
+    agent = _make_agent(monkeypatch)
+
+    agent.run_conversation("Analyze this worm sample in the sandbox.")
+
+    content = _current_user_api_content(agent)
+    assert "AgentCyber route metadata" in content
+    assert "route=malware_re" in content
+    assert "provider_preference=local_open_weight" in content
+    assert "malware or reverse-engineering request" in content
+    assert "This is metadata only" in content
+
+
+def test_general_route_does_not_add_prompt_nudge(monkeypatch):
+    agent = _make_agent(monkeypatch)
+
+    agent.run_conversation("Summarize these release notes.")
+
+    assert "AgentCyber route metadata" not in _current_user_api_content(agent)
+
+
+def test_route_nudge_does_not_mutate_cached_system_prompt(monkeypatch):
+    agent = _make_agent(monkeypatch)
+
+    agent.run_conversation("I'm locked out of VM 112; emergency access, get me back in.")
+
+    assert "AgentCyber route metadata" not in getattr(agent, "_cached_system_prompt")

@@ -1,5 +1,6 @@
 """Tests for hermes_state.py — SessionDB SQLite CRUD, FTS5 search, export."""
 
+import logging
 import sqlite3
 import time
 import pytest
@@ -4694,3 +4695,129 @@ def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
         chat_id="chat-1",
         chat_type="dm",
     ) is None
+
+
+class _CheckpointFailConn:
+    """Proxy connection whose execute() raises for selected SQL fragments."""
+
+    def __init__(self, real_conn, failures):
+        # failures: dict of SQL fragment -> exception to raise
+        self._real_conn = real_conn
+        self._failures = failures
+
+    def execute(self, sql, *args, **kwargs):
+        for fragment, exc in self._failures.items():
+            if fragment in sql:
+                raise exc
+        return self._real_conn.execute(sql, *args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real_conn, name)
+
+
+class TestWalCheckpointErrorHandling:
+    """Failed TRUNCATE checkpoints must be visible, not swallowed (#44795)."""
+
+    def test_busy_checkpoint_skipped_quietly(self, db, caplog):
+        db._conn = _CheckpointFailConn(
+            db._conn,
+            {"wal_checkpoint": sqlite3.OperationalError("database is locked")},
+        )
+        with caplog.at_level(logging.DEBUG, logger="hermes_state"):
+            db._try_wal_checkpoint()
+
+        assert any(
+            "WAL checkpoint skipped" in r.message for r in caplog.records
+        )
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_io_error_logs_warning_and_probes_integrity(self, db, caplog):
+        db._conn = _CheckpointFailConn(
+            db._conn,
+            {"wal_checkpoint": sqlite3.OperationalError("disk I/O error")},
+        )
+        with caplog.at_level(logging.DEBUG, logger="hermes_state"):
+            db._try_wal_checkpoint()
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert warnings and "WAL checkpoint failed" in warnings[0].message
+        # Underlying DB is healthy, so quick_check passes — no ERROR records.
+        assert not [r for r in caplog.records if r.levelno >= logging.ERROR]
+
+    def test_unexpected_error_logs_warning(self, db, caplog):
+        db._conn = _CheckpointFailConn(
+            db._conn,
+            {"wal_checkpoint": RuntimeError("boom")},
+        )
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            db._try_wal_checkpoint()
+
+        assert any(
+            "WAL checkpoint failed" in r.message
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+
+    def test_unusable_db_after_failed_checkpoint_logs_error(self, db, caplog):
+        db._conn = _CheckpointFailConn(
+            db._conn,
+            {
+                "wal_checkpoint": sqlite3.OperationalError("disk I/O error"),
+                "quick_check": sqlite3.OperationalError("disk I/O error"),
+            },
+        )
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            db._try_wal_checkpoint()
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert errors and "unusable after a failed WAL checkpoint" in errors[0].message
+
+    def test_corrupt_quick_check_result_logs_error(self, db, caplog):
+        class _MalformedCursor:
+            @staticmethod
+            def fetchone():
+                return ("database disk image is malformed",)
+
+        real_conn = db._conn
+
+        class _Conn(_CheckpointFailConn):
+            def execute(self, sql, *args, **kwargs):
+                if "quick_check" in sql:
+                    return _MalformedCursor()
+                return super().execute(sql, *args, **kwargs)
+
+        db._conn = _Conn(
+            real_conn,
+            {"wal_checkpoint": sqlite3.OperationalError("disk I/O error")},
+        )
+        with caplog.at_level(logging.WARNING, logger="hermes_state"):
+            db._try_wal_checkpoint()
+
+        errors = [r for r in caplog.records if r.levelno == logging.ERROR]
+        assert errors and "may be corrupted" in errors[0].message
+
+    def test_checkpoint_never_raises(self, db):
+        for exc in (
+            sqlite3.OperationalError("disk I/O error"),
+            sqlite3.DatabaseError("database disk image is malformed"),
+            RuntimeError("boom"),
+            MemoryError(),
+        ):
+            db._conn = _CheckpointFailConn(
+                db._conn, {"wal_checkpoint": exc, "quick_check": exc}
+            )
+            db._try_wal_checkpoint()  # must not raise
+
+    def test_close_logs_failed_checkpoint(self, tmp_path, caplog):
+        session_db = SessionDB(db_path=tmp_path / "close_test.db")
+        session_db._conn = _CheckpointFailConn(
+            session_db._conn,
+            {"wal_checkpoint": sqlite3.OperationalError("disk I/O error")},
+        )
+        with caplog.at_level(logging.DEBUG, logger="hermes_state"):
+            session_db.close()
+
+        assert session_db._conn is None
+        assert any(
+            "WAL checkpoint on close failed" in r.message for r in caplog.records
+        )

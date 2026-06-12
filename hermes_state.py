@@ -810,7 +810,7 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
-    # Attempt a PASSIVE WAL checkpoint every N successful writes.
+    # Attempt a TRUNCATE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
@@ -1120,6 +1120,13 @@ class SessionDB:
         _try_wal_checkpoint is called off the hot path (every 50
         writes) and already runs under ``self._lock``, so the
         additional hold time is negligible.
+
+        TRUNCATE is destructive (it zeroes the WAL file), so failures
+        must not be silently discarded: benign lock contention is
+        logged at debug level, anything else is logged at warning
+        level and followed by a quick integrity probe so a damaged DB
+        surfaces here instead of as an opaque "disk I/O error" on the
+        next connection.
         """
         try:
             with self._lock:
@@ -1131,8 +1138,47 @@ class SessionDB:
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
-        except Exception:
-            pass  # Best effort — never fatal.
+        except sqlite3.OperationalError as exc:
+            err_msg = str(exc).lower()
+            if "locked" in err_msg or "busy" in err_msg:
+                # Another connection holds a lock — normal under
+                # concurrency; the next periodic checkpoint retries.
+                logger.debug("WAL checkpoint skipped (database busy): %s", exc)
+                return
+            logger.warning("WAL checkpoint failed on %s: %s", self.db_path, exc)
+            self._probe_integrity_after_checkpoint_failure()
+        except Exception as exc:
+            logger.warning("WAL checkpoint failed on %s: %s", self.db_path, exc)
+            self._probe_integrity_after_checkpoint_failure()
+
+    def _probe_integrity_after_checkpoint_failure(self) -> None:
+        """Check DB health after a failed TRUNCATE checkpoint.  Never raises.
+
+        A TRUNCATE checkpoint that fails mid-operation can leave the
+        WAL truncated while the main DB file lacks the checkpointed
+        frames; every later connection then fails with "disk I/O
+        error" and no hint of the cause.  Probing here pins the
+        corruption to the checkpoint that produced it.
+        """
+        try:
+            with self._lock:
+                conn = self._conn
+                if conn is None:
+                    return
+                row = conn.execute("PRAGMA quick_check(1)").fetchone()
+            status = str(row[0]) if row else ""
+            if status.lower() == "ok":
+                return
+            logger.error(
+                "Integrity check after failed WAL checkpoint reported %r "
+                "— %s may be corrupted",
+                status, self.db_path,
+            )
+        except Exception as exc:
+            logger.error(
+                "%s is unusable after a failed WAL checkpoint: %s",
+                self.db_path, exc,
+            )
 
     def close(self):
         """Close the database connection.
@@ -1144,8 +1190,11 @@ class SessionDB:
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "WAL checkpoint on close failed for %s: %s",
+                        self.db_path, exc,
+                    )
                 self._conn.close()
                 self._conn = None
 

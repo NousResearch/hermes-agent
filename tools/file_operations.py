@@ -965,7 +965,19 @@ class ShellFileOperations(FileOperations):
         stat_result = self._exec(stat_cmd)
         
         if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
+            # Disambiguate: is the file truly missing, or is the execution
+            # environment (Docker container, SSH host, etc.) not yet ready?
+            # A transport/startup failure should not be reported as "file not
+            # found" — that poisons the model's filesystem beliefs (#44750).
+            probe = self._exec("echo __HERMES_FILEOPS_OK__")
+            if probe.exit_code != 0 or "__HERMES_FILEOPS_OK__" not in probe.stdout:
+                return ReadResult(
+                    error=(
+                        f"Terminal environment unavailable while reading {path}; "
+                        "retry shortly."
+                    )
+                )
+            # Environment is healthy — the file genuinely doesn't exist.
             return self._suggest_similar_files(path)
         
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
@@ -1102,6 +1114,15 @@ class ShellFileOperations(FileOperations):
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
         if stat_result.exit_code != 0:
+            # Disambiguate environment failure from genuine missing file (#44750).
+            probe = self._exec("echo __HERMES_FILEOPS_OK__")
+            if probe.exit_code != 0 or "__HERMES_FILEOPS_OK__" not in probe.stdout:
+                return ReadResult(
+                    error=(
+                        f"Terminal environment unavailable while reading {path}; "
+                        "retry shortly."
+                    )
+                )
             return self._suggest_similar_files(path)
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
         try:

@@ -111,6 +111,19 @@ def _make_hermes_provider_class() -> Optional[type]:
             super().__init__(*args, **kwargs)
             self._hermes_server_name = server_name
 
+        @staticmethod
+        def _prefer_json_token_response(request):
+            """Ask OAuth token endpoints for JSON even if they default to forms.
+
+            Some providers, including GitHub's OAuth token endpoint, return
+            ``application/x-www-form-urlencoded`` unless the client explicitly
+            asks for JSON. The MCP SDK only parses JSON token responses, so
+            Hermes sets ``Accept: application/json`` on both authorization-code
+            and refresh-token exchanges.
+            """
+            request.headers.setdefault("Accept", "application/json")
+            return request
+
         async def _initialize(self) -> None:
             """Load stored tokens + client info AND seed token_expiry_time.
 
@@ -323,6 +336,24 @@ def _make_hermes_provider_class() -> Optional[type]:
                 # 401 branch so a subsequent cold-load skips discovery.
                 self._persist_oauth_metadata_if_changed()
                 return
+
+        async def _exchange_token_authorization_code(  # type: ignore[override]
+            self,
+            auth_code: str,
+            code_verifier: str,
+            *,
+            token_data: dict[str, Any] | None = None,
+        ):
+            request = await super()._exchange_token_authorization_code(
+                auth_code,
+                code_verifier,
+                token_data=token_data,
+            )
+            return self._prefer_json_token_response(request)
+
+        async def _refresh_token(self):  # type: ignore[override]
+            request = await super()._refresh_token()
+            return self._prefer_json_token_response(request)
 
     return HermesMCPOAuthProvider
 

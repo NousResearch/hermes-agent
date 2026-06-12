@@ -14,6 +14,7 @@ pytest.importorskip(
     "mcp.client.auth.oauth2",
     reason="MCP SDK 1.26.0+ required for OAuth support",
 )
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 
 def test_manager_is_singleton():
@@ -139,3 +140,65 @@ def test_manager_builds_hermes_provider_subclass(tmp_path, monkeypatch):
     assert isinstance(provider, _HERMES_PROVIDER_CLS)
     assert provider._hermes_server_name == "srv"
 
+
+@pytest.mark.asyncio
+async def test_provider_requests_json_on_auth_code_exchange(tmp_path, monkeypatch):
+    """Authorization-code token requests must ask providers for JSON."""
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider(
+        "srv",
+        "https://example.com/mcp",
+        {"client_id": "test-client"},
+    )
+
+    provider.context.client_info = OAuthClientInformationFull.model_validate({
+        "client_id": "test-client",
+        "redirect_uris": provider.context.client_metadata.redirect_uris,
+        "grant_types": provider.context.client_metadata.grant_types,
+        "response_types": provider.context.client_metadata.response_types,
+        "token_endpoint_auth_method": provider.context.client_metadata.token_endpoint_auth_method,
+    })
+
+    request = await provider._exchange_token_authorization_code("code", "verifier")
+
+    assert request.headers["Content-Type"] == "application/x-www-form-urlencoded"
+    assert request.headers["Accept"] == "application/json"
+
+
+@pytest.mark.asyncio
+async def test_provider_requests_json_on_refresh_token_exchange(tmp_path, monkeypatch):
+    """Refresh-token requests must ask providers for JSON."""
+    from tools.mcp_oauth_manager import MCPOAuthManager, reset_manager_for_tests
+
+    reset_manager_for_tests()
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    mgr = MCPOAuthManager()
+    provider = mgr.get_or_build_provider(
+        "srv",
+        "https://example.com/mcp",
+        {"client_id": "test-client"},
+    )
+
+    provider.context.client_info = OAuthClientInformationFull.model_validate({
+        "client_id": "test-client",
+        "redirect_uris": provider.context.client_metadata.redirect_uris,
+        "grant_types": provider.context.client_metadata.grant_types,
+        "response_types": provider.context.client_metadata.response_types,
+        "token_endpoint_auth_method": provider.context.client_metadata.token_endpoint_auth_method,
+    })
+    provider.context.current_tokens = OAuthToken.model_validate({
+        "access_token": "access-token",
+        "token_type": "Bearer",
+        "refresh_token": "refresh-token",
+    })
+
+    request = await provider._refresh_token()
+
+    assert request.headers["Content-Type"] == "application/x-www-form-urlencoded"
+    assert request.headers["Accept"] == "application/json"

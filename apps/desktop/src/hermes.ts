@@ -161,6 +161,8 @@ export async function listSessions(
 export interface SessionSourceFilter {
   source?: string
   excludeSources?: string[]
+  logicalSource?: string
+  excludeLogicalSources?: string[]
 }
 
 export async function listAllProfileSessions(
@@ -172,15 +174,21 @@ export async function listAllProfileSessions(
   filter: SessionSourceFilter = {}
 ): Promise<PaginatedSessions> {
   const sourceParam = filter.source ? `&source=${encodeURIComponent(filter.source)}` : ''
+  const logicalSourceParam = filter.logicalSource ? `&logical_source=${encodeURIComponent(filter.logicalSource)}` : ''
 
   const excludeParam = filter.excludeSources?.length
     ? `&exclude_sources=${encodeURIComponent(filter.excludeSources.join(','))}`
     : ''
 
+  const excludeLogicalParam = filter.excludeLogicalSources?.length
+    ? `&exclude_logical_sources=${encodeURIComponent(filter.excludeLogicalSources.join(','))}`
+    : ''
+
   const result = await window.hermesDesktop.api<PaginatedSessions>({
     path:
       `/api/profiles/sessions?limit=${limit}&offset=0&min_messages=${Math.max(0, minMessages)}` +
-      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}${sourceParam}${excludeParam}`,
+      `&archived=${archived}&order=${order}&profile=${encodeURIComponent(profile)}` +
+      `${sourceParam}${logicalSourceParam}${excludeParam}${excludeLogicalParam}`,
     timeoutMs: SESSION_LIST_REQUEST_TIMEOUT_MS
   })
 

@@ -1,3 +1,5 @@
+import type { SessionInfo } from '@/types/hermes'
+
 const SOURCE_LABELS: Record<string, string> = {
   api_server: 'API',
   bluebubbles: 'iMessage',
@@ -102,6 +104,12 @@ export function handoffOriginSource(
   }
 
   return id
+}
+
+export function logicalSessionSource(
+  session: Pick<SessionInfo, 'handoff_platform' | 'handoff_state' | 'source'>
+): string | null {
+  return handoffOriginSource(session.handoff_state, session.handoff_platform) ?? normalizeSessionSource(session.source)
 }
 
 export function sessionSourceLabel(source: null | string | undefined): string | null {

@@ -47,6 +47,22 @@ describe('Hermes REST session helpers', () => {
     )
   })
 
+  it('passes logical source filters for handoff-aware session slices', async () => {
+    await listAllProfileSessions(50, 1, 'exclude', 'recent', 'all', {
+      excludeLogicalSources: ['cron', 'cli'],
+      logicalSource: 'weixin'
+    })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path:
+          '/api/profiles/sessions?limit=50&offset=0&min_messages=1&archived=exclude&order=recent&profile=all' +
+          '&logical_source=weixin&exclude_logical_sources=cron%2Ccli',
+        timeoutMs: 60_000
+      })
+    )
+  })
+
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
     api.mockResolvedValue({ messages: [], session_id: 'session-1' })
 

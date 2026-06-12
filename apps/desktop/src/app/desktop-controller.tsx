@@ -11,15 +11,14 @@ import { Pane, PaneMain } from '@/components/pane-shell'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
-import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { formatRefValue } from '../components/assistant-ui/directive-text'
 import { getCronJobs, getSessionMessages, listAllProfileSessions, type SessionInfo, triggerCronJob } from '../hermes'
 import { preserveLocalAssistantErrors, toChatMessages } from '../lib/chat-messages'
 import {
   isMessagingSource,
   LOCAL_SESSION_SOURCE_IDS,
-  MESSAGING_SESSION_SOURCE_IDS,
-  normalizeSessionSource
+  logicalSessionSource,
+  MESSAGING_SESSION_SOURCE_IDS
 } from '../lib/session-source'
 import { setCronFocusJobId, setCronJobs } from '../store/cron'
 import {
@@ -80,6 +79,7 @@ import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store
 import { isSecondaryWindow } from '../store/windows'
 
 import { ChatView } from './chat'
+import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
 import { useComposerActions } from './chat/hooks/use-composer-actions'
 import {
   ChatPreviewRail,
@@ -277,18 +277,24 @@ export function DesktopController() {
       if (!payload || payload.kind !== 'blueprint' || !payload.name) {
         return
       }
+
       const slots = Object.entries(payload.params || {})
         .map(([k, v]) => {
           const sval = /\s/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v
+
           return `${k}=${sval}`
         })
         .join(' ')
+
       const command = `/blueprint ${payload.name}${slots ? ' ' + slots : ''}`
+
       requestComposerInsert(command, { mode: 'block', target: 'main' })
       requestComposerFocus('main')
     })
+
     // Tell the main process the renderer is ready to receive deep links.
     void window.hermesDesktop?.signalDeepLinkReady?.()
+
     return () => unsubscribe?.()
   }, [])
 
@@ -338,12 +344,13 @@ export function DesktopController() {
   const refreshMessagingSessions = useCallback(async () => {
     try {
       const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
-        excludeSources: MESSAGING_EXCLUDED_SOURCES
+        excludeLogicalSources: MESSAGING_EXCLUDED_SOURCES
       })
 
-      // Drop any non-messaging source the broad exclude didn't catch (custom
-      // sources) — those stay in local recents, not a platform section.
-      const rows = result.sessions.filter(s => isMessagingSource(s.source))
+      // Drop any non-messaging logical source the broad exclude didn't catch
+      // (custom/local sources) — those stay in local recents, not a platform
+      // section.
+      const rows = result.sessions.filter(s => isMessagingSource(logicalSessionSource(s)))
 
       setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
       // Hit the cap → at least one platform may have more on disk than loaded,
@@ -358,14 +365,14 @@ export function DesktopController() {
   // pager): fetch that source's next window and merge it back in place, leaving
   // every other platform's rows untouched. Resolves the platform's exact total.
   const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
-    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
+    const inPlatform = (s: SessionInfo) => logicalSessionSource(s) === platform
     const loaded = $messagingSessions.get().filter(inPlatform).length
 
     const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
-      source: platform
+      logicalSource: platform
     })
 
-    const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
+    const incoming = result.sessions.filter(s => logicalSessionSource(s) === platform)
 
     setMessagingSessions(prev => [
       ...prev.filter(s => !inPlatform(s)),
@@ -412,7 +419,7 @@ export function DesktopController() {
       const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
 
       const result = await listAllProfileSessions(limit, 1, 'exclude', 'recent', sessionProfile, {
-        excludeSources: SIDEBAR_EXCLUDED_SOURCES
+        excludeLogicalSources: SIDEBAR_EXCLUDED_SOURCES
       })
 
       if (refreshSessionsRequestRef.current === requestId) {
@@ -444,7 +451,7 @@ export function DesktopController() {
     const loaded = $sessions.get().filter(inKey).length
 
     const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
-      excludeSources: SIDEBAR_EXCLUDED_SOURCES
+      excludeLogicalSources: SIDEBAR_EXCLUDED_SOURCES
     })
 
     const keep = sessionsToKeep(key)

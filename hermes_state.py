@@ -35,6 +35,29 @@ DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 15
 
+# Completed handoffs keep their live source on a local surface (desktop/tui),
+# but sidebar/session-list consumers often need to treat them as belonging to
+# the original messaging platform instead.
+_LOCAL_LOGICAL_SESSION_SOURCES = ("cli", "codex", "desktop", "gateway", "local", "tui")
+
+
+def _logical_session_source_sql(alias: str = "s") -> str:
+    local_placeholders = ",".join("?" for _ in _LOCAL_LOGICAL_SESSION_SOURCES)
+
+    return (
+        "CASE "
+        f"WHEN {alias}.handoff_state = 'completed' "
+        f"AND lower(trim(coalesce({alias}.handoff_platform, ''))) NOT IN ({local_placeholders}) "
+        f"AND trim(coalesce({alias}.handoff_platform, '')) != '' "
+        f"THEN lower(trim({alias}.handoff_platform)) "
+        f"ELSE lower(trim(coalesce({alias}.source, ''))) "
+        "END"
+    )
+
+
+def _normalized_sources(sources: List[str]) -> List[str]:
+    return [s.strip().lower() for s in sources if s and s.strip()]
+
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
 # ---------------------------------------------------------------------------
@@ -1876,6 +1899,8 @@ class SessionDB:
         self,
         source: str = None,
         exclude_sources: List[str] = None,
+        logical_source: str = None,
+        exclude_logical_sources: List[str] = None,
         limit: int = 20,
         offset: int = 0,
         include_children: bool = False,
@@ -1947,6 +1972,14 @@ class SessionDB:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
             params.extend(exclude_sources)
+        if logical_source:
+            where_clauses.append(f"{_logical_session_source_sql()} = ?")
+            params.extend([*_LOCAL_LOGICAL_SESSION_SOURCES, logical_source.strip().lower()])
+        normalized_exclude_logical = _normalized_sources(exclude_logical_sources or [])
+        if normalized_exclude_logical:
+            placeholders = ",".join("?" for _ in normalized_exclude_logical)
+            where_clauses.append(f"{_logical_session_source_sql()} NOT IN ({placeholders})")
+            params.extend([*_LOCAL_LOGICAL_SESSION_SOURCES, *normalized_exclude_logical])
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)
@@ -3531,11 +3564,13 @@ class SessionDB:
     def session_count(
         self,
         source: str = None,
+        logical_source: str = None,
         min_message_count: int = 0,
         include_archived: bool = False,
         archived_only: bool = False,
         exclude_children: bool = False,
         exclude_sources: List[str] = None,
+        exclude_logical_sources: List[str] = None,
     ) -> int:
         """Count sessions, optionally filtered by source.
 
@@ -3572,6 +3607,14 @@ class SessionDB:
             placeholders = ",".join("?" for _ in exclude_sources)
             where_clauses.append(f"s.source NOT IN ({placeholders})")
             params.extend(exclude_sources)
+        if logical_source:
+            where_clauses.append(f"{_logical_session_source_sql()} = ?")
+            params.extend([*_LOCAL_LOGICAL_SESSION_SOURCES, logical_source.strip().lower()])
+        normalized_exclude_logical = _normalized_sources(exclude_logical_sources or [])
+        if normalized_exclude_logical:
+            placeholders = ",".join("?" for _ in normalized_exclude_logical)
+            where_clauses.append(f"{_logical_session_source_sql()} NOT IN ({placeholders})")
+            params.extend([*_LOCAL_LOGICAL_SESSION_SOURCES, *normalized_exclude_logical])
         if min_message_count > 0:
             where_clauses.append("s.message_count >= ?")
             params.append(min_message_count)

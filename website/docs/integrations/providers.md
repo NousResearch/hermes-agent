@@ -21,6 +21,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
+| **Chutes** | `CHUTES_API_KEY` in `~/.hermes/.env` (provider: `chutes`; aliases: `chutes-ai`, `chutesai`; decentralized, OpenAI-compatible, TEE confidential compute) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
@@ -218,6 +219,10 @@ These providers have built-in support with dedicated provider IDs. Set the API k
 hermes chat --provider novita --model moonshotai/kimi-k2.5
 # Requires: NOVITA_API_KEY in ~/.hermes/.env
 
+# Chutes (decentralized, TEE confidential compute)
+hermes chat --provider chutes --model deepseek-ai/DeepSeek-V3.2-TEE
+# Requires: CHUTES_API_KEY in ~/.hermes/.env
+
 # z.ai / ZhipuAI GLM
 hermes chat --provider zai --model glm-5
 # Requires: GLM_API_KEY in ~/.hermes/.env
@@ -267,7 +272,7 @@ model:
   default: "zai-org/GLM-5.1-FP8"
 ```
 
-Base URLs can be overridden with `NOVITA_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
+Base URLs can be overridden with `NOVITA_BASE_URL`, `CHUTES_BASE_URL`, `GLM_BASE_URL`, `KIMI_BASE_URL`, `MINIMAX_BASE_URL`, `MINIMAX_CN_BASE_URL`, `DASHSCOPE_BASE_URL`, `XIAOMI_BASE_URL`, `GMI_BASE_URL`, or `TOKENHUB_BASE_URL` environment variables.
 
 :::note Z.AI Endpoint Auto-Detection
 When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoints (global, China, coding variants) to find one that accepts your API key. You don't need to set `GLM_BASE_URL` manually — the working endpoint is detected and cached automatically.
@@ -316,6 +321,29 @@ model:
 ```
 
 Get your API key at [novita.ai/settings/key-management](https://novita.ai/settings/key-management). The base URL can be overridden with `NOVITA_BASE_URL`.
+
+### Chutes — Decentralized, TEE Confidential Compute
+
+[Chutes](https://chutes.ai) is a decentralized, OpenAI-compatible inference network. Every model runs inside a TEE (Intel TDX) confidential-compute enclave, so prompts and responses stay encrypted end to end — including GPU VRAM — and no provider sees them. The shared endpoint is `https://llm.chutes.ai/v1` and API keys are prefixed `cpk_`.
+
+```bash
+# Use any available model
+hermes chat --provider chutes --model deepseek-ai/DeepSeek-V3.2-TEE
+# Requires: CHUTES_API_KEY in ~/.hermes/.env
+
+# Short alias
+hermes chat --provider chutes-ai --model zai-org/GLM-5.1-TEE
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "chutes"
+  default: "deepseek-ai/DeepSeek-V3.2-TEE"
+  base_url: "https://llm.chutes.ai/v1"
+```
+
+Hermes fetches the live model catalog, per-model context length, and pricing from Chutes' `/v1/models` endpoint, so new models appear automatically. Get your API key at [chutes.ai/app/api](https://chutes.ai/app/api). The base URL can be overridden with `CHUTES_BASE_URL`.
 
 ### Ollama Cloud — Managed Ollama Models, OAuth + API Key
 

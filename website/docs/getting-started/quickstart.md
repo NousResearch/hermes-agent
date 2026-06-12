@@ -129,6 +129,7 @@ Good defaults:
 | **xAI** | Grok models via direct API | Set `XAI_API_KEY` |
 | **xAI Grok OAuth** | SuperGrok / Premium+ subscription, no API key needed | `hermes model` → xAI Grok OAuth |
 | **NovitaAI** | Multi-model API gateway | Set `NOVITA_API_KEY` |
+| **Chutes** | Decentralized, OpenAI-compatible, TEE confidential compute | Set `CHUTES_API_KEY` |
 | **StepFun** | Step Plan models | Set `STEPFUN_API_KEY` |
 | **Xiaomi MiMo** | Xiaomi-hosted models | Set `XIAOMI_API_KEY` |
 | **Tencent TokenHub** | Tencent-hosted models | Set `TOKENHUB_API_KEY` |

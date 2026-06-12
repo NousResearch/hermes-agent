@@ -284,6 +284,191 @@ def _make_hermes_provider_class() -> Optional[type]:
             ):
                 storage.save_oauth_metadata(meta)
 
+        async def _exchange_token_authorization_code(
+            self, auth_code: str, code_verifier: str, *, token_data: dict[str, Any] | None = None
+        ) -> Any:
+            """Build token exchange request for authorization_code flow.
+
+            **OPTION A FIX**: Adds ``Accept: application/json`` header to ensure
+            OAuth providers return JSON responses instead of form-encoded.
+            GitHub's token endpoint defaults to form-encoded unless this header
+            is present (RFC 6749 §5.1 allows both formats).
+
+            References:
+                - Issue #44592: OAuth token exchange fails when server returns
+                  application/x-www-form-urlencoded
+                - GitHub OAuth docs
+            """
+            import httpx
+            from urllib.parse import urljoin
+            from mcp.client.auth.oauth2 import OAuthFlowError
+
+            if self.context.client_metadata.redirect_uris is None:
+                raise OAuthFlowError("No redirect URIs provided for authorization code grant")
+            if not self.context.client_info:
+                raise OAuthFlowError("Missing client info")
+
+            token_url = self._get_token_endpoint()
+            token_data = token_data or {}
+            token_data.update(
+                {
+                    "grant_type": "authorization_code",
+                    "code": auth_code,
+                    "redirect_uri": str(self.context.client_metadata.redirect_uris[0]),
+                    "client_id": self.context.client_info.client_id,
+                    "code_verifier": code_verifier,
+                }
+            )
+
+            # Only include resource param if conditions are met
+            if self.context.should_include_resource_param(self.context.protocol_version):
+                token_data["resource"] = self.context.get_resource_url()
+
+            # Prepare authentication based on preferred method
+            # **OPTION A**: Add Accept header to request JSON response
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            }
+            token_data, headers = self.context.prepare_token_auth(token_data, headers)
+
+            return httpx.Request("POST", token_url, data=token_data, headers=headers)
+
+        async def _refresh_token(self) -> Any:
+            """Build token refresh request.
+
+            **OPTION A FIX**: Adds ``Accept: application/json`` header to ensure
+            OAuth providers return JSON responses instead of form-encoded.
+            """
+            import httpx
+            from urllib.parse import urljoin
+            from mcp.client.auth.oauth2 import OAuthTokenError
+
+            if not self.context.current_tokens or not self.context.current_tokens.refresh_token:
+                raise OAuthTokenError("No refresh token available")
+
+            if not self.context.client_info or not self.context.client_info.client_id:
+                raise OAuthTokenError("No client info available")
+
+            if self.context.oauth_metadata and self.context.oauth_metadata.token_endpoint:
+                token_url = str(self.context.oauth_metadata.token_endpoint)
+            else:
+                auth_base_url = self.context.get_authorization_base_url(self.context.server_url)
+                token_url = urljoin(auth_base_url, "/token")
+
+            refresh_data: dict[str, str] = {
+                "grant_type": "refresh_token",
+                "refresh_token": self.context.current_tokens.refresh_token,
+                "client_id": self.context.client_info.client_id,
+            }
+
+            # Only include resource param if conditions are met
+            if self.context.should_include_resource_param(self.context.protocol_version):
+                refresh_data["resource"] = self.context.get_resource_url()
+
+            # Prepare authentication based on preferred method
+            # **OPTION A**: Add Accept header to request JSON response
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            }
+            refresh_data, headers = self.context.prepare_token_auth(refresh_data, headers)
+
+            return httpx.Request("POST", token_url, data=refresh_data, headers=headers)
+
+        async def _handle_token_response(self, response: Any) -> None:
+            """Handle token exchange response with form-encoded fallback.
+
+            **OPTION B FIX**: Handles both JSON and form-encoded responses.
+            Some OAuth providers (notably GitHub) return form-encoded responses
+            by default. This method tries JSON first (with the Accept header
+            from Option A, this should usually work), but falls back to
+            parsing form-encoded if JSON parsing fails.
+
+            References:
+                - Issue #44592: OAuth token exchange fails when server returns
+                  application/x-www-form-urlencoded
+                - RFC 6749 §5.1: Access Token Response (allows both formats)
+            """
+            from urllib.parse import parse_qs
+            from mcp.client.auth.exceptions import OAuthTokenError
+            from mcp.shared.auth import OAuthToken
+
+            if response.status_code not in {200, 201}:
+                body = await response.aread()
+                body_text = body.decode("utf-8")
+                raise OAuthTokenError(f"Token exchange failed ({response.status_code}): {body_text}")
+
+            # Read response content
+            content = await response.aread()
+            content_type = response.headers.get("content-type", "")
+
+            # Try to parse as JSON first (preferred format)
+            token_response = None
+            parse_error = None
+
+            if "application/json" in content_type or not content_type:
+                try:
+                    token_response = OAuthToken.model_validate_json(content)
+                except Exception as exc:
+                    parse_error = exc
+                    logger.debug(
+                        "MCP OAuth '%s': JSON parse failed, will try form-encoded: %s",
+                        self._hermes_server_name, exc,
+                    )
+
+            # **OPTION B**: If JSON parsing failed or content-type is form-encoded,
+            # try parsing as form-encoded
+            if token_response is None:
+                try:
+                    text = content.decode("utf-8")
+                    # Check if it looks like form-encoded (contains '=' and not JSON)
+                    if "=" in text and not text.lstrip().startswith("{"):
+                        fields = parse_qs(text, keep_blank_values=True)
+                        if "access_token" in fields:
+                            # Convert form-encoded to dict for OAuthToken validation
+                            token_dict: dict[str, Any] = {
+                                "access_token": fields["access_token"][0],
+                                "token_type": fields.get("token_type", ["bearer"])[0],
+                            }
+                            if "expires_in" in fields:
+                                try:
+                                    token_dict["expires_in"] = int(fields["expires_in"][0])
+                                except (ValueError, TypeError):
+                                    pass
+                            if "refresh_token" in fields:
+                                token_dict["refresh_token"] = fields["refresh_token"][0]
+                            if "scope" in fields:
+                                token_dict["scope"] = fields["scope"][0]
+
+                            try:
+                                token_response = OAuthToken.model_validate(token_dict)
+                                logger.debug(
+                                    "MCP OAuth '%s': Successfully parsed form-encoded token response",
+                                    self._hermes_server_name,
+                                )
+                            except Exception as val_exc:
+                                logger.debug(
+                                    "MCP OAuth '%s': Form-encoded parse failed: %s",
+                                    self._hermes_server_name, val_exc,
+                                )
+                except Exception as exc:
+                    logger.debug(
+                        "MCP OAuth '%s': Form-encoded fallback failed: %s",
+                        self._hermes_server_name, exc,
+                    )
+
+            # If we still don't have a valid token response, raise the original error
+            if token_response is None:
+                if parse_error:
+                    raise OAuthTokenError(f"Invalid token response: {parse_error}")
+                raise OAuthTokenError("Invalid token response: unable to parse as JSON or form-encoded")
+
+            # Store tokens in context
+            self.context.current_tokens = token_response
+            self.context.update_token_expiry(token_response)
+            await self.context.storage.set_tokens(token_response)
+
         async def async_auth_flow(self, request):  # type: ignore[override]
             # Pre-flow hook: ask the manager to refresh from disk if needed.
             # Any failure here is non-fatal — we just log and proceed with

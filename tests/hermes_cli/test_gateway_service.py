@@ -817,6 +817,54 @@ class TestLaunchdServiceRecovery:
         assert gateway_cli._launchctl_domain_unsupported(113) is False
         assert gateway_cli._launchctl_domain_unsupported(0) is False
 
+    def test_refresh_launchd_plist_drains_existing_gateway_before_bootstrap(
+        self, tmp_path, monkeypatch
+    ):
+        plist_path = tmp_path / "ai.hermes.gateway.plist"
+        plist_path.write_text("old plist\n", encoding="utf-8")
+        label = gateway_cli.get_launchd_label()
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "launchd_plist_is_current", lambda: False)
+        monkeypatch.setattr(gateway_cli, "generate_launchd_plist", lambda: "new plist\n")
+        monkeypatch.setattr(
+            gateway_cli, "_refuse_temp_home_service_write", lambda *args: False
+        )
+
+        calls = []
+        markers = []
+        waits = []
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid", lambda cleanup_stale=False: 321
+        )
+        monkeypatch.setattr(
+            "gateway.status.write_planned_stop_marker",
+            lambda pid: markers.append(pid) or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_exit",
+            lambda **kwargs: waits.append(kwargs) or True,
+        )
+
+        assert gateway_cli.refresh_launchd_plist_if_needed() is True
+
+        assert plist_path.read_text(encoding="utf-8") == "new plist\n"
+        assert markers == [321]
+        assert waits == [{"timeout": 10.0, "force_after": 5.0}]
+        assert calls == [
+            ["launchctl", "bootout", target],
+            ["launchctl", "bootstrap", domain, str(plist_path)],
+        ]
+
     def test_launchd_start_reloads_on_kickstart_exit_code_125(self, tmp_path, monkeypatch):
         """Exit code 125 means the job is absent from the domain → bootstrap recovery."""
         plist_path = tmp_path / "ai.hermes.gateway.plist"

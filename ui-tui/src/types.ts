@@ -154,6 +154,7 @@ export interface SessionInfo {
   mcp_servers?: McpServerStatus[]
   model: string
   profile_name?: string
+  quota?: QuotaInfo
   reasoning_effort?: string
   release_date?: string
   service_tier?: string
@@ -164,6 +165,46 @@ export interface SessionInfo {
   update_command?: string
   usage?: Usage
   version?: string
+}
+
+// Quota info populated by Python tui_gateway at session startup.
+// Backed by the provider's billing/usage API (e.g. MiniMax Coding Plan
+// `GET /v1/api/openplatform/coding_plan/remains`). When the provider
+// doesn't expose a quota API, `supported: false` is returned and the
+// TUI simply renders nothing for this field.
+export type QuotaInfo =
+  | {
+      supported: false
+      provider?: string
+      error?: boolean
+      fetched_at_s?: number
+    }
+  | {
+      supported: true
+      provider: string
+      kind: 'coding_plan' | 'credit'
+      // coding_plan: list of (model_name, percent, status, window).
+      models?: QuotaModel[]
+      primary?: QuotaModel
+      // credit (OpenRouter): $ usage vs $ limit.
+      used?: number
+      limit?: number | null
+      is_free_tier?: boolean
+      // Unix seconds when the backend last fetched this snapshot.
+      // Used by the TUI to render a "· 5s ago" freshness suffix.
+      fetched_at_s?: number
+    }
+
+export interface QuotaModel {
+  name: string
+  interval_remaining_percent: number | null
+  weekly_remaining_percent: number | null
+  interval_status: number
+  weekly_status: number
+  interval_window_end_ms: number
+  interval_remaining_s: number
+  weekly_window_end_ms: number
+  weekly_remaining_s: number
 }
 
 export interface Usage {

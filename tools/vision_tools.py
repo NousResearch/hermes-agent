@@ -28,12 +28,16 @@ Usage:
     )
 """
 
+import asyncio
 import base64
 import json
 import logging
 import os
+import shutil
+import subprocess
 import uuid
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Awaitable, Dict, Optional
 from urllib.parse import urlparse
 import httpx
@@ -68,6 +72,57 @@ def _resolve_download_timeout() -> float:
     return 30.0
 
 _VISION_DOWNLOAD_TIMEOUT = _resolve_download_timeout()
+
+
+def _is_minimax_vision_provider() -> bool:
+    """Check if the configured auxiliary vision provider is MiniMax."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        cfg = load_config()
+        provider = cfg_get(cfg, "auxiliary", "vision", "provider", default="")
+        return provider in ("minimax-cn", "minimax")
+    except Exception:
+        return False
+
+
+async def _call_mmx_vision(image_path: str, prompt: str, timeout: float = 120.0) -> Any:
+    """
+    Call `mmx vision describe` directly for MiniMax VL model.
+    Returns a SimpleNamespace compatible with extract_content_or_reasoning().
+    """
+    cmd = [
+        "mmx", "vision", "describe",
+        "--image", image_path,
+        "--prompt", prompt,
+        "--output", "json",
+    ]
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        if result.returncode != 0:
+            logger.error("mmx vision describe failed: %s", result.stderr)
+            raise RuntimeError(f"mmx vision describe failed: {result.stderr.strip()}")
+
+        data = json.loads(result.stdout)
+        content = data.get("content", "") if isinstance(data, dict) else ""
+
+        # Return a fake OpenAI chat completions-style object
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            usage=SimpleNamespace(
+                prompt_tokens=0,
+                completion_tokens=0,
+                total_tokens=0,
+            ),
+        )
+    except json.JSONDecodeError as e:
+        logger.error("mmx vision describe returned non-JSON: %s", result.stdout[:500])
+        raise RuntimeError(f"mmx vision describe parse error: {e}")
+
 
 # Hard cap on downloaded image file size (50 MB). Prevents OOM from
 # attacker-hosted multi-gigabyte files or decompression bombs.
@@ -973,32 +1028,42 @@ async def vision_analyze_tool(
         }
         if model:
             call_kwargs["model"] = model
-        # Try full-size image first; on size-related rejection, downscale and retry.
-        try:
-            response = await async_call_llm(**call_kwargs)
-        except Exception as _api_err:
-            if (_is_image_size_error(_api_err)
-                    and len(image_data_url) > _RESIZE_TARGET_BYTES):
-                logger.info(
-                    "API rejected image (%.1f MB, likely too large); "
-                    "auto-resizing to ~%.0f MB and retrying...",
-                    len(image_data_url) / (1024 * 1024),
-                    _RESIZE_TARGET_BYTES / (1024 * 1024),
-                )
-                image_data_url = _resize_image_for_vision(
-                    temp_image_path, mime_type=detected_mime_type)
-                messages[0]["content"][1]["image_url"]["url"] = image_data_url
+        # MiniMax provider: call mmx CLI directly (no image-size issues, no provider routing).
+        if _is_minimax_vision_provider():
+            logger.info("Using mmx vision CLI for MiniMax provider")
+            response = await _call_mmx_vision(
+                str(temp_image_path), comprehensive_prompt, timeout=vision_timeout)
+        else:
+            # Try full-size image first; on size-related rejection, downscale and retry.
+            try:
                 response = await async_call_llm(**call_kwargs)
-            else:
-                raise
-        
+            except Exception as _api_err:
+                if (_is_image_size_error(_api_err)
+                        and len(image_data_url) > _RESIZE_TARGET_BYTES):
+                    logger.info(
+                        "API rejected image (%.1f MB, likely too large); "
+                        "auto-resizing to ~%.0f MB and retrying...",
+                        len(image_data_url) / (1024 * 1024),
+                        _RESIZE_TARGET_BYTES / (1024 * 1024),
+                    )
+                    image_data_url = _resize_image_for_vision(
+                        temp_image_path, mime_type=detected_mime_type)
+                    messages[0]["content"][1]["image_url"]["url"] = image_data_url
+                    response = await async_call_llm(**call_kwargs)
+                else:
+                    raise
+
         # Extract the analysis — fall back to reasoning if content is empty
         analysis = extract_content_or_reasoning(response)
 
         # Retry once on empty content (reasoning-only response)
         if not analysis:
             logger.warning("Vision LLM returned empty content, retrying once")
-            response = await async_call_llm(**call_kwargs)
+            if _is_minimax_vision_provider():
+                response = await _call_mmx_vision(
+                    str(temp_image_path), comprehensive_prompt, timeout=vision_timeout)
+            else:
+                response = await async_call_llm(**call_kwargs)
             analysis = extract_content_or_reasoning(response)
 
         analysis_length = len(analysis)

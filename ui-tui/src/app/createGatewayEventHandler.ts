@@ -418,7 +418,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'session.info': {
         const info = ev.payload
-
+        // The TUI's intro banner can render before the user has sent a first
+        // message — at that point ui.sid is still null and downstream
+        // features (e.g. quota polling) need a sid. Use the envelope's
+        // session_id whenever we see a session.info event so it's available
+        // as soon as the agent comes online, not only after first dispatch.
+        if (ev.session_id) {
+          patchUiState(state => (state.sid ? state : { ...state, sid: ev.session_id }))
+        }
         patchUiState(state => ({
           ...state,
           info,

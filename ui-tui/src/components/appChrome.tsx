@@ -15,7 +15,7 @@ import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree
 import { fmtK } from '../lib/text.js'
 import { useScrollbarSnapshot, useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
-import type { Msg, Usage } from '../types.js'
+import type { Msg, QuotaInfo, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -267,6 +267,47 @@ export function statusBarSegments(cols: number): StatusBarSegments {
   }
 }
 
+function QuotaHud({ quota, t }: { quota?: QuotaInfo; t: Theme }) {
+  if (!quota || !quota.supported) return null
+
+  if (quota.kind === 'coding_plan') {
+    const primary = quota.primary ?? (quota.models ?? [])[0]
+    if (!primary) return null
+    const pct = primary.interval_remaining_percent ?? 0
+    const color = pct >= 60 ? t.color.ok : pct >= 30 ? t.color.warn : t.color.error
+    return (
+      <Text color={t.color.muted} wrap="truncate-end">
+        {' │ '}
+        <Text color={color} bold>{pct}%</Text>
+        <Text color={t.color.muted}> quota</Text>
+      </Text>
+    )
+  }
+  if (quota.kind === 'credit') {
+    const used = quota.used ?? 0
+    const limit = quota.limit
+    if (limit == null) {
+      return (
+        <Text color={t.color.muted} wrap="truncate-end">
+          {' │ '}
+          <Text color={t.color.muted}>${used.toFixed(2)} spent</Text>
+        </Text>
+      )
+    }
+    const left = Math.max(0, limit - used)
+    const pct = limit > 0 ? (left / limit) * 100 : 0
+    const color = pct >= 60 ? t.color.ok : pct >= 30 ? t.color.warn : t.color.error
+    return (
+      <Text color={t.color.muted} wrap="truncate-end">
+        {' │ '}
+        <Text color={color} bold>${left.toFixed(2)}</Text>
+        <Text color={t.color.muted}> / ${limit.toFixed(2)}</Text>
+      </Text>
+    )
+  }
+  return null
+}
+
 function SpawnHud({ t }: { t: Theme }) {
   // Tight HUD that only appears when the session is actually fanning out.
   // Colour escalates to warn/error as depth or concurrency approaches the cap.
@@ -287,7 +328,7 @@ function SpawnHud({ t }: { t: Theme }) {
 
   // `max_concurrent_children` is a per-parent cap, not a global one.
   // `activeCount` sums every running agent across the tree and would
-  // over-warn for multi-orchestrator runs.  The widest level of the tree
+  // over-warn for multi-orchestrator runs.  The widest level of the tree,
   // is a closer proxy to "most concurrent spawns that could be hitting a
   // single parent's slot budget".
   const widestLevel = widthByDepth(tree).reduce((a, b) => Math.max(a, b), 0)
@@ -422,6 +463,7 @@ export function StatusRule({
   turnStartedAt,
   voiceLabel,
   onSessionCountClick,
+  quota,
   t
 }: StatusRuleProps) {
   const pct = usage.context_percent
@@ -635,6 +677,7 @@ export function StatusRule({
             renders last — any overflow truncates the HUD itself rather than the
             budgeted segments before it. It self-hides when no delegation runs. */}
         <SpawnHud t={t} />
+        <QuotaHud quota={quota} t={t} />
       </Box>
 
       {rightWidth > 0 ? (
@@ -751,7 +794,6 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 
 interface StatusRuleProps {
   bgCount: number
-  lastTurnEndedAt?: null | number
   liveSessionCount: number
   busy: boolean
   cols: number
@@ -759,8 +801,7 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
-  indicatorStyle?: IndicatorStyle
-  notice?: Notice | null
+  quota?: QuotaInfo
   sessionStartedAt?: null | number
   showCost: boolean
   status: string

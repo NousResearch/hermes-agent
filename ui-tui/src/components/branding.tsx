@@ -1,13 +1,21 @@
 import { Box, Text, useStdout } from '@hermes/ink'
+import { useStore } from '@nanostores/react'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
+import { useGateway } from '../app/gatewayContext.js'
+import { $uiSessionId } from '../app/uiStore.js'
 import type { Theme } from '../theme.js'
-import type { PanelSection, SessionInfo } from '../types.js'
+import type { PanelSection, QuotaInfo, QuotaModel, SessionInfo } from '../types.js'
 
 const LOADER_TICK_MS = 120
+// How often the SessionPanel re-fetches quota data. Backend caches the
+// result for 60s; this client-side timer just controls the visible
+// re-render cadence. 5s keeps the progress bar feeling "live" without
+// hammering the upstream billing API.
+const QUOTA_TICK_MS = 5000
 
 function InlineLoader({ label, t }: { label: string; t: Theme }) {
   const [tick, setTick] = useState(0)
@@ -119,6 +127,117 @@ export function Banner({ maxWidth, t }: { maxWidth?: number; t: Theme }) {
   )
 }
 
+// ── Quota line ──────────────────────────────────────────────────────
+// Compact one-liner summarising the current model's plan quota.
+// Renders nothing if quota is missing / unsupported / failed.
+//
+// Coding plan example:
+//   ▰▰▰▰▰▰▰▰▰▱ 94% · 5h窗口 2h58m · 本周99%
+// Credit (OpenRouter) example:
+//   $7.42 / $50.00 used · 14.8% left
+
+const STATUS_LABELS: Record<number, string> = {
+  1: '正常',
+  2: '告急',
+  3: '充足',
+  4: '耗尽',
+}
+
+function formatDuration(secs: number): string {
+  secs = Math.max(0, Math.floor(secs))
+  if (secs <= 0) return '已结束'
+  const d = Math.floor(secs / 86400)
+  const h = Math.floor((secs % 86400) / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  if (d > 0) return `${d}天${h}h`
+  if (h > 0) return `${h}h${m}m`
+  return `${m}m`
+}
+
+function progressBar(pct: number, width: number = 10): string {
+  // Unicode block bar; avoids needing colored segments (one color for the bar).
+  const clamped = Math.max(0, Math.min(100, pct))
+  const filled = Math.round((clamped / 100) * width)
+  return '▰'.repeat(filled) + '▱'.repeat(Math.max(0, width - filled))
+}
+
+function pctColor(pct: number | null, t: Theme): string {
+  if (pct == null) return t.color.muted
+  if (pct >= 60) return t.color.ok
+  if (pct >= 30) return t.color.warn
+  return t.color.error
+}
+
+function QuotaLine({ quota, t }: { quota?: QuotaInfo; t: Theme }) {
+  if (!quota || !quota.supported) return null
+  if (quota.kind === 'coding_plan') {
+    const primary = quota.primary ?? (quota.models ?? [])[0]
+    if (!primary) return null
+    const ivPct = primary.interval_remaining_percent ?? 0
+    const wkPct = primary.weekly_remaining_percent ?? 0
+    const ivLeft = formatDuration(primary.interval_remaining_s)
+    const wkLeft = formatDuration(primary.weekly_remaining_s)
+    const status = STATUS_LABELS[primary.interval_status] ?? ''
+    // The "since <timestamp>" suffix is the freshness indicator. Click on
+    // this prefix (Ctrl+C not required) triggers an immediate refresh — the
+    // SessionPanel wires that up via the click handler below.
+    return (
+      <Text wrap="truncate-end">
+        <Text color={t.color.muted}>{quota.provider} · </Text>
+        <Text color={pctColor(ivPct, t)} bold>{progressBar(ivPct, 10)}</Text>
+        <Text color={pctColor(ivPct, t)}> {ivPct}%</Text>
+        <Text color={t.color.muted}> · 5h </Text>
+        <Text color={t.color.text}>{ivLeft}</Text>
+        <Text color={t.color.muted}> · 本周 </Text>
+        <Text color={pctColor(wkPct, t)}>{wkPct}%</Text>
+        <Text color={t.color.muted}> ({wkLeft})</Text>
+        {status ? <Text color={t.color.muted}> · {status}</Text> : null}
+        <QuotaAge suffix={quota.fetched_at_s} t={t} />
+      </Text>
+    )
+  }
+  if (quota.kind === 'credit') {
+    const used = quota.used ?? 0
+    const limit = quota.limit
+    if (limit == null) {
+      return (
+        <Text wrap="truncate-end">
+          <Text color={t.color.muted}>{quota.provider} · </Text>
+          <Text color={t.color.text}>${used.toFixed(4)}</Text>
+          <Text color={t.color.muted}> used · no hard cap</Text>
+          <QuotaAge suffix={quota.fetched_at_s} t={t} />
+        </Text>
+      )
+    }
+    const left = Math.max(0, limit - used)
+    const leftPct = limit > 0 ? (left / limit) * 100 : 0
+    return (
+      <Text wrap="truncate-end">
+        <Text color={t.color.muted}>{quota.provider} · </Text>
+        <Text color={pctColor(leftPct, t)} bold>{progressBar(leftPct, 10)}</Text>
+        <Text color={pctColor(leftPct, t)}> ${left.toFixed(2)}</Text>
+        <Text color={t.color.muted}> / ${limit.toFixed(2)} left</Text>
+        {quota.is_free_tier ? <Text color={t.color.muted}> · free tier</Text> : null}
+        <QuotaAge suffix={quota.fetched_at_s} t={t} />
+      </Text>
+    )
+  }
+  return null
+}
+
+// Tiny " · 5s ago" suffix so users can tell how stale the data is.
+// Hidden when fetched_at_s is missing or 0.
+function QuotaAge({ suffix, t }: { suffix?: number; t: Theme }) {
+  if (!suffix || suffix <= 0) return null
+  const age = Math.max(0, Math.floor(Date.now() / 1000) - suffix)
+  let label: string
+  if (age < 5) label = 'just now'
+  else if (age < 60) label = `${age}s ago`
+  else if (age < 3600) label = `${Math.floor(age / 60)}m ago`
+  else label = `${Math.floor(age / 3600)}h ago`
+  return <Text color={t.color.muted}> · {label}</Text>
+}
+
 // ── Collapsible helpers ──────────────────────────────────────────────
 
 function CollapseToggle({
@@ -172,6 +291,51 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const [skillsOpen, setSkillsOpen] = useState(false)
   const [systemOpen, setSystemOpen] = useState(false)
   const [mcpOpen, setMcpOpen] = useState(false)
+
+  // ── Quota auto-refresh ──
+  // Poll quota.refresh every QUOTA_TICK_MS so the percentage bar ticks down
+  // smoothly (MiniMax's 5-hour window advances every second; without this the
+  // bar would only update on agent-init events). Backend has its own 60s
+  // refresher, but the frontend timer drives the visible re-render cadence.
+  //
+  // The sid is sourced from the nanostore (not the prop) because the prop is
+  // only passed when the intro message is rendered — it doesn't update as
+  // the session id becomes known later. The store subscription ensures the
+  // polling effect re-runs as soon as a sid becomes available.
+  const sessionId = useStore($uiSessionId)
+  const [liveQuota, setLiveQuota] = useState<QuotaInfo | undefined>(info.quota)
+  const { rpc } = useGateway()
+  const { stderr } = useStderr()
+  useEffect(() => {
+    stderr.write(`[quota] SessionPanel sessionId=${sessionId} info.quota.supported=${info.quota?.supported}\n`)
+  })
+  useEffect(() => {
+    // Pick up changes to info.quota (e.g. after model switch)
+    setLiveQuota(info.quota)
+  }, [info.quota])
+
+  useEffect(() => {
+    let cancelled = false
+    const refresh = async () => {
+      try {
+        const resp = await rpc<{ quota: QuotaInfo }>('quota.refresh', { session_id: sessionId ?? 'unknown' })
+        if (cancelled || !resp?.quota) return
+        setLiveQuota({ ...resp.quota })
+      } catch {
+        // Network blip; keep the previous data on screen.
+      }
+    }
+    if (!sessionId) {
+      const t = setTimeout(refresh, QUOTA_TICK_MS)
+      return () => clearTimeout(t)
+    }
+    const id = setInterval(refresh, QUOTA_TICK_MS)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, info.quota?.supported, rpc])
 
   const truncLine = (pfx: string, items: string[]) => {
     let line = ''
@@ -392,6 +556,13 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
         <Text />
 
+        {/* Quota lives in the main column (not the hero column) so it has the
+            full inner width — even in narrow layouts the hero column would
+            truncate it after ~15 chars. `liveQuota` is the locally-pinned
+            copy that ticks every 5s via the quota.refresh RPC; it falls
+            back to info.quota (set at session startup) on first render. */}
+        <QuotaLine quota={liveQuota} t={t} />
+
         <Text color={t.color.text}>
           {toolsTotal} tools{' · '}
           {skillsTotal} skills
@@ -468,5 +639,6 @@ interface SessionPanelProps {
   info: SessionInfo
   maxWidth?: number
   sid?: string | null
+  setIntroInfo?: (updater: (prev: SessionInfo | null | undefined) => SessionInfo | null | undefined) => void
   t: Theme
 }

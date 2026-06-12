@@ -626,12 +626,17 @@ def _start_idle_reaper() -> None:
     def _loop():
         while True:
             time.sleep(_REAPER_SCAN_S)
-            try:
-                _reap_idle_sessions()
-            except Exception:
-                pass
-
-    threading.Thread(target=_loop, daemon=True).start()
+            def _shutdown_sessions() -> None:
+                with _sessions_lock:
+                    sids = list(_sessions)
+                for sid in sids:
+                    _close_session_by_id(sid, end_reason="tui_shutdown")
+                # Belt-and-suspenders: ensure quota refresher background thread stops
+                # even if shutdown is hit while sessions are still open. Idempotent.
+                try:
+                    _stop_quota_refresher()
+                except Exception:
+                    pass
 
 
 atexit.register(_shutdown_sessions)
@@ -978,6 +983,16 @@ def _start_agent_build(sid: str, session: dict) -> None:
             if cfg_warn:
                 info["config_warning"] = cfg_warn
                 logger.warning(cfg_warn)
+            # quota 缓存由后台线程自动刷新（见 _start_quota_refresher）。
+            # 启动时确保后台线程已起；同时第一次刷新缓存供 info 用。
+            _start_quota_refresher()
+            try:
+                fresh = _quota_info_fresh(agent)
+                with _quota_cache_lock:
+                    _quota_cache[id(agent)] = fresh
+                info["quota"] = fresh
+            except Exception:
+                pass
             _emit("session.info", sid, info)
         except Exception as e:
             current["agent_error"] = str(e)
@@ -2293,6 +2308,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "update_command": "",
         "usage": _get_usage(agent),
         "profile_name": _current_profile_name(),
+        "quota": _quota_info(agent),
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -2339,6 +2355,253 @@ def _session_info(agent, session: dict | None = None) -> dict:
     if warn:
         info["credential_warning"] = warn
     return info
+
+
+def _quota_info(agent) -> dict:
+    """查询当前主模型的套餐额度，用于在 TUI 启动横幅里展示。
+
+    支持 minimax / minimax-cn（MiniMax Coding Plan 余量接口）和 openrouter。
+    失败时返回 {"supported": False}，前端就什么都不显示。
+
+    为了不阻塞 TUI 启动，会优先读取 `_quota_cache` 里的最新缓存；
+    缓存为空 / 过期时才实时查询（带 1.5s 超时硬切）。
+    后台有一个独立线程每 60 秒刷新一次缓存（见 `_start_quota_refresher`）。
+    """
+    agent_id = id(agent)
+    cached = _quota_cache.get(agent_id)
+    if cached is not None:
+        # 缓存命中，直接返回（避免每次渲染都打 MiniMax 接口）
+        return cached
+
+    # 缓存为空：实时查一次，写入缓存
+    result = _quota_info_fresh(agent)
+    _quota_cache[agent_id] = result
+    return result
+
+
+def _quota_info_fresh(agent) -> dict:
+    """实时查询 quota（不走缓存）。"""
+    try:
+        provider = (
+            getattr(agent, "provider", None)
+            or os.environ.get("HERMES_TUI_PROVIDER", "").strip()
+        )
+        model = getattr(agent, "model", "") or ""
+        if not provider:
+            m = model.lower()
+            if m.startswith("minimax") or m.startswith("m-") or "minimax" in m:
+                provider = "minimax-cn"
+            else:
+                return {"supported": False}
+
+        provider = provider.lower()
+        if provider in ("minimax-cn", "minimax_china", "minimax-china"):
+            return _quota_minimax("cn")
+        if provider in ("minimax", "minimax-intl", "minimax_io", "minimax-io"):
+            return _quota_minimax("intl")
+        if provider == "openrouter":
+            return _quota_openrouter()
+        return {"supported": False}
+    except Exception:
+        return {"supported": False}
+
+
+# ── Quota cache + auto-refresh ─────────────────────────────────────
+# 每个 agent 实例独立缓存；后台线程每 60 秒刷一遍。
+# TUI 启动期间，<QuotaLine> 会通过 RPC `quota.refresh` 主动拉新；
+# 即使前端没有任何刷新动作，后端线程也会保证数据最多滞后 60 秒。
+import threading as _threading
+
+_quota_cache: dict[int, dict] = {}
+_quota_cache_lock = _threading.Lock()
+_quota_refresh_thread = None  # _threading.Thread; lazily started
+_quota_refresh_stop = _threading.Event()
+
+# 刷新间隔（秒）。60s 足够 quota 数据时效性，同时对 MiniMax 接口几乎零负载。
+_QUOTA_REFRESH_INTERVAL_S = 60.0
+
+
+def _quota_refresh_loop():
+    """后台线程：每 60s 遍历所有 agent 刷新 quota 缓存。"""
+    while not _quota_refresh_stop.is_set():
+        _quota_refresh_stop.wait(_QUOTA_REFRESH_INTERVAL_S)
+        if _quota_refresh_stop.is_set():
+            break
+        try:
+            with _quota_cache_lock:
+                cached_ids = set(_quota_cache.keys())
+            from tui_gateway import server as _self  # type: ignore
+            for sid, session in list(_self._sessions.items()):
+                agent = session.get("agent") if isinstance(session, dict) else None
+                if agent is None:
+                    continue
+                aid = id(agent)
+                if aid not in cached_ids:
+                    continue
+                try:
+                    fresh = _quota_info_fresh(agent)
+                    with _quota_cache_lock:
+                        _quota_cache[aid] = fresh
+                except Exception:
+                    pass
+        except Exception:
+            # 后台线程静默吞掉所有错误，避免污染日志
+            pass
+
+
+def _start_quota_refresher():
+    """启动全局 quota 后台刷新线程（只启动一次）。"""
+    global _quota_refresh_thread
+    # 双重检查：既要避免重复启动，也要兼容 None 的初始状态
+    if _quota_refresh_thread is not None:
+        if _quota_refresh_thread.is_alive():
+            return
+    _quota_refresh_stop.clear()
+    _quota_refresh_thread = _threading.Thread(
+        target=_quota_refresh_loop,
+        name="hermes-quota-refresher",
+        daemon=True,
+    )
+    _quota_refresh_thread.start()
+
+
+def _stop_quota_refresher():
+    """停止后台刷新线程（TUI 退出时调用）。"""
+    _quota_refresh_stop.set()
+
+
+def _quota_minimax(which: str) -> dict:
+    """MiniMax Coding Plan 余量查询。
+
+    接口: GET /v1/api/openplatform/coding_plan/remains
+    返回字段: model_remains[].{model_name, current_interval_remaining_percent,
+        current_weekly_remaining_percent, current_interval_status,
+        current_weekly_status, start_time, end_time, weekly_start_time,
+        weekly_end_time}
+    """
+    import json as _json
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    env_path = os.path.expanduser("~/.hermes/.env")
+    if not os.path.exists(env_path):
+        return {"supported": False}
+    key_var = "MINIMAX_CN_API_KEY" if which == "cn" else "MINIMAX_API_KEY"
+    api_key = ""
+    for _line in open(env_path):
+        _line = _line.strip()
+        if not _line or _line.startswith("#"):
+            continue
+        if _line.startswith("export "):
+            _line = _line[7:].strip()
+        if _line.startswith(key_var + "="):
+            api_key = _line.split("=", 1)[1].strip().strip('"').strip("'")
+            break
+    if not api_key:
+        return {"supported": False}
+
+    base = "https://api.minimaxi.com" if which == "cn" else "https://api.minimax.io"
+    label = "MiniMax (国内)" if which == "cn" else "MiniMax (国际)"
+    req = _ur.Request(
+        f"{base}/v1/api/openplatform/coding_plan/remains",
+        method="GET",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with _ur.urlopen(req, timeout=1.5) as r:
+            data = _json.loads(r.read().decode())
+    except Exception:
+        return {"supported": False, "provider": label, "error": True}
+
+    if data.get("base_resp", {}).get("status_code", 0) != 0:
+        return {"supported": False, "provider": label, "error": True}
+
+    models = data.get("model_remains", [])
+    if not models:
+        return {"supported": True, "provider": label, "models": []}
+
+    now_ms = int(time.time() * 1000)
+    out_models = []
+    for m in models:
+        end = int(m.get("end_time", 0))
+        wk_end = int(m.get("weekly_end_time", 0))
+        iv_left_s = max(0, (end - now_ms) // 1000)
+        wk_left_s = max(0, (wk_end - now_ms) // 1000)
+        out_models.append({
+            "name": m.get("model_name", "?"),
+            "interval_remaining_percent": m.get("current_interval_remaining_percent"),
+            "weekly_remaining_percent": m.get("current_weekly_remaining_percent"),
+            "interval_status": m.get("current_interval_status", 0),
+            "weekly_status": m.get("current_weekly_status", 0),
+            "interval_window_end_ms": end,
+            "interval_remaining_s": iv_left_s,
+            "weekly_window_end_ms": wk_end,
+            "weekly_remaining_s": wk_left_s,
+        })
+
+    # 取 general（文本主模型）做摘要；如果没有就取第一个
+    primary = next((x for x in out_models if x["name"] == "general"), None)
+    if primary is None and out_models:
+        primary = out_models[0]
+
+    return {
+        "supported": True,
+        "provider": label,
+        "kind": "coding_plan",
+        "models": out_models,
+        "primary": primary,
+        "fetched_at_s": int(time.time()),
+    }
+
+
+def _quota_openrouter() -> dict:
+    """OpenRouter 账户余额查询。
+
+    接口: GET /api/v1/auth/key
+    """
+    import json as _json
+    import urllib.request as _ur
+    import urllib.error as _ue
+
+    env_path = os.path.expanduser("~/.hermes/.env")
+    if not os.path.exists(env_path):
+        return {"supported": False}
+    api_key = ""
+    for _line in open(env_path):
+        _line = _line.strip()
+        if not _line or _line.startswith("#"):
+            continue
+        if _line.startswith("export "):
+            _line = _line[7:].strip()
+        if _line.startswith("OPENROUTER_API_KEY="):
+            api_key = _line.split("=", 1)[1].strip().strip('"').strip("'")
+            break
+    if not api_key:
+        return {"supported": False}
+    req = _ur.Request(
+        "https://openrouter.ai/api/v1/auth/key",
+        method="GET",
+        headers={"Authorization": f"Bearer {api_key}"},
+    )
+    try:
+        with _ur.urlopen(req, timeout=1.5) as r:
+            data = _json.loads(r.read().decode())
+    except Exception:
+        return {"supported": False, "provider": "OpenRouter", "error": True}
+
+    usage = data.get("usage") or 0
+    limit = data.get("limit")
+    return {
+        "supported": True,
+        "provider": "OpenRouter",
+        "kind": "credit",
+        "used": usage,
+        "limit": limit,
+        "is_free_tier": bool(data.get("is_free_tier")),
+        "fetched_at_s": int(time.time()),
+    }
+
+
 
 
 def _tool_ctx(name: str, args: dict) -> str:
@@ -9817,3 +10080,26 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5002, "command timed out (30s)")
     except Exception as e:
         return _err(rid, 5003, str(e))
+
+
+# ── quota.refresh ───────────────────────────────────────────────────
+# 前端每 60 秒调一次，强制刷新 quota 缓存并返回最新数据。
+# 后端也会主动每 60 秒刷一次（见 _quota_refresh_loop），所以前端调一次
+# 只是"立刻拿新值"，不会让数据更准，只是更及时。
+
+@method("quota.refresh")
+def _(rid, params: dict) -> dict:
+    sid = params.get("session_id", "") or ""
+    session = _sessions.get(sid) if sid else None
+    if not isinstance(session, dict):
+        return _err(rid, 4004, f"unknown session: {sid!r}")
+    agent = session.get("agent")
+    if agent is None:
+        return _err(rid, 4004, "session has no agent")
+    try:
+        fresh = _quota_info_fresh(agent)
+    except Exception as e:
+        return _err(rid, 5001, f"quota fetch failed: {e}")
+    with _quota_cache_lock:
+        _quota_cache[id(agent)] = fresh
+    return _ok(rid, {"quota": fresh})

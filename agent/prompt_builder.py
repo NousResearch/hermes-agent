@@ -7,6 +7,7 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -1466,12 +1467,40 @@ def _truncate_content(content: str, filename: str, max_chars: int = CONTEXT_FILE
     return head + marker + tail
 
 
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
+
+def _soul_has_persona_content(content: str) -> bool:
+    """True when SOUL.md contains real persona text.
+
+    The SOUL.md template seeded by the install scripts and the docker
+    image is a markdown heading plus an HTML comment of editing
+    instructions.  Neither is persona content, so a pristine template
+    must not displace ``DEFAULT_AGENT_IDENTITY``.  Heading-only lines
+    are dropped along with comments because the template's sole
+    non-comment line is its title heading; a file consisting only of
+    headings carries no persona either — the same rule ``hermes
+    doctor`` applies for its "persona configured" check.
+    """
+    without_comments = _HTML_COMMENT_RE.sub("", content)
+    return any(
+        line.strip() and not line.strip().startswith("#")
+        for line in without_comments.splitlines()
+    )
+
+
 def load_soul_md() -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
 
     Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
     ``skip_soul=True`` so SOUL.md isn't injected twice.
+
+    A pristine seeded template (heading + HTML comment, no persona text)
+    is treated as absent so the default identity loads.  When real
+    persona text exists the ORIGINAL content is returned, comments
+    included — users may keep the template comment as documentation
+    alongside their persona.
     """
     try:
         from hermes_cli.config import ensure_hermes_home
@@ -1484,7 +1513,7 @@ def load_soul_md() -> Optional[str]:
         return None
     try:
         content = soul_path.read_text(encoding="utf-8").strip()
-        if not content:
+        if not content or not _soul_has_persona_content(content):
             return None
         content = _scan_context_content(content, "SOUL.md")
         content = _truncate_content(content, "SOUL.md")

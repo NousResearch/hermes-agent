@@ -18,6 +18,7 @@ from agent.prompt_builder import (
     build_skills_system_prompt,
     build_nous_subscription_prompt,
     build_context_files_prompt,
+    load_soul_md,
     CONTEXT_FILE_MAX_CHARS,
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
@@ -739,6 +740,67 @@ class TestBuildContextFilesPrompt:
         (tmp_path / ".cursorrules").write_text("Use ESLint.")
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "ESLint" in result
+
+
+# =========================================================================
+# load_soul_md — pristine template must not displace the default identity
+# =========================================================================
+
+
+# Mirrors the SOUL.md template seeded by scripts/install.sh,
+# scripts/install.ps1 and docker/SOUL.md: a heading plus an HTML comment,
+# no persona text.
+PRISTINE_SOUL_TEMPLATE = """# Hermes Agent Persona
+
+<!--
+This file defines the agent's personality and tone.
+The agent will embody whatever you write here.
+Edit this to customize how Hermes communicates with you.
+
+Examples:
+  - "You are a warm, playful assistant who uses kaomoji occasionally."
+  - "You are a concise technical expert. No fluff, just facts."
+  - "You speak like a friendly coworker who happens to know everything."
+
+This file is loaded when a session starts -- restart the session to apply edits.
+Delete the contents (or this file) to use the default personality.
+-->
+"""
+
+
+class TestLoadSoulMd:
+    def _write_soul(self, tmp_path, monkeypatch, text):
+        hermes_home = tmp_path / "hermes_home"
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        hermes_home.mkdir()
+        (hermes_home / "SOUL.md").write_text(text, encoding="utf-8")
+
+    def test_pristine_template_returns_none(self, tmp_path, monkeypatch):
+        """Heading + HTML comment only — no persona, default identity loads."""
+        self._write_soul(tmp_path, monkeypatch, PRISTINE_SOUL_TEMPLATE)
+        assert load_soul_md() is None
+
+    def test_template_plus_persona_returns_original_content(self, tmp_path, monkeypatch):
+        """Real persona text keeps the file's ORIGINAL content, comment included."""
+        content = PRISTINE_SOUL_TEMPLATE + "\nYou are a concise technical expert.\n"
+        self._write_soul(tmp_path, monkeypatch, content)
+        result = load_soul_md()
+        assert result is not None
+        assert "You are a concise technical expert." in result
+        assert "<!--" in result  # comment preserved as documentation
+
+    def test_whitespace_only_returns_none(self, tmp_path, monkeypatch):
+        self._write_soul(tmp_path, monkeypatch, "  \n\n\t\n")
+        assert load_soul_md() is None
+
+    def test_heading_only_returns_none(self, tmp_path, monkeypatch):
+        """Bare headings carry no persona (same rule as the doctor check)."""
+        self._write_soul(tmp_path, monkeypatch, "# Hermes Agent Persona\n")
+        assert load_soul_md() is None
+
+    def test_plain_persona_returned(self, tmp_path, monkeypatch):
+        self._write_soul(tmp_path, monkeypatch, "Be warm and playful.")
+        assert load_soul_md() == "Be warm and playful."
 
 
 # =========================================================================

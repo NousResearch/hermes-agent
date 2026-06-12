@@ -1834,7 +1834,7 @@ Examples:
   - "You are a concise technical expert. No fluff, just facts."
   - "You speak like a friendly coworker who happens to know everything."
 
-This file is loaded fresh each message -- no restart needed.
+This file is loaded when a session starts -- restart the session to apply edits.
 Delete the contents (or this file) to use the default personality.
 -->
 "@

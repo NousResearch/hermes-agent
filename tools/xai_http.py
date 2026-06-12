@@ -40,7 +40,21 @@ def has_xai_credentials() -> bool:
         xai_state = providers.get("xai-oauth") if isinstance(providers, dict) else None
         tokens = xai_state.get("tokens") if isinstance(xai_state, dict) else None
         access_token = tokens.get("access_token") if isinstance(tokens, dict) else None
-        return bool(str(access_token or "").strip())
+        if str(access_token or "").strip():
+            return True
+
+        # Newer `hermes auth add xai-oauth` flows may store credentials only
+        # in the credential pool. Keep this probe cheap: single auth.json read,
+        # no token refresh, no auth-store lock.
+        pool = store.get("credential_pool") if isinstance(store, dict) else None
+        xai_pool = pool.get("xai-oauth") if isinstance(pool, dict) else None
+        if isinstance(xai_pool, list):
+            return any(
+                str((entry or {}).get("access_token") or "").strip()
+                for entry in xai_pool
+                if isinstance(entry, dict)
+            )
+        return False
     except Exception:
         return False
 
@@ -116,6 +130,29 @@ def resolve_xai_http_credentials(*, force_refresh: bool = False) -> Dict[str, st
                 "api_key": access_token,
                 "base_url": base_url or "https://api.x.ai/v1",
             }
+    except Exception:
+        pass
+
+    try:
+        from hermes_constants import get_hermes_home
+
+        auth_path = get_hermes_home() / "auth.json"
+        if auth_path.exists():
+            store = json.loads(auth_path.read_text())
+            pool = store.get("credential_pool") if isinstance(store, dict) else None
+            xai_pool = pool.get("xai-oauth") if isinstance(pool, dict) else None
+            if isinstance(xai_pool, list):
+                for entry in xai_pool:
+                    if not isinstance(entry, dict):
+                        continue
+                    access_token = str(entry.get("access_token") or "").strip()
+                    if access_token:
+                        base_url = str(entry.get("base_url") or "https://api.x.ai/v1").strip().rstrip("/")
+                        return {
+                            "provider": "xai-oauth",
+                            "api_key": access_token,
+                            "base_url": base_url or "https://api.x.ai/v1",
+                        }
     except Exception:
         pass
 

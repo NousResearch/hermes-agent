@@ -121,8 +121,14 @@ Firecrawl = _FirecrawlProxy()
 
 def _get_direct_firecrawl_config() -> Optional[tuple]:
     """Return explicit direct Firecrawl kwargs + cache key, or None when unset."""
-    api_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
-    api_url = os.getenv("FIRECRAWL_API_URL", "").strip().rstrip("/")
+    try:
+        from hermes_cli.config import get_env_value
+
+        api_key = str(get_env_value("FIRECRAWL_API_KEY") or "").strip()
+        api_url = str(get_env_value("FIRECRAWL_API_URL") or "").strip().rstrip("/")
+    except Exception:
+        api_key = os.getenv("FIRECRAWL_API_KEY", "").strip()
+        api_url = os.getenv("FIRECRAWL_API_URL", "").strip().rstrip("/")
 
     if not api_key and not api_url:
         return None

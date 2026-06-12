@@ -100,6 +100,25 @@ class TestXAIProviderIsAvailable:
         from plugins.web.xai.provider import XAIWebSearchProvider
         assert XAIWebSearchProvider().is_available() is True
 
+    def test_available_via_credential_pool_auth_store(self, monkeypatch, tmp_path):
+        """Cheap probe should also detect xai-oauth credentials that live only
+        in the credential pool, as produced by `hermes auth add xai-oauth`."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        auth_path = tmp_path / "auth.json"
+        auth_path.write_text(json.dumps({
+            "version": 1,
+            "providers": {"xai-oauth": {"tokens": {}}},
+            "credential_pool": {
+                "xai-oauth": [
+                    {"access_token": "ya29.pool-access-token", "base_url": "https://api.x.ai/v1"},
+                ],
+            },
+        }))
+
+        from plugins.web.xai.provider import XAIWebSearchProvider
+        assert XAIWebSearchProvider().is_available() is True
+
     def test_unavailable_when_no_env_and_no_auth_store(self, monkeypatch, tmp_path):
         monkeypatch.delenv("XAI_API_KEY", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -732,6 +751,31 @@ class TestXAIProviderOAuthPath:
     boundary so the full ``tools.xai_http.resolve_xai_http_credentials``
     chain is exercised end-to-end.
     """
+
+    def test_resolver_uses_credential_pool_when_singleton_tokens_empty(self, monkeypatch, tmp_path):
+        """`hermes auth add xai-oauth` may place tokens only in the credential
+        pool. Direct xAI integrations should still resolve those credentials."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {"xai-oauth": {"tokens": {}}},
+            "credential_pool": {
+                "xai-oauth": [
+                    {
+                        "access_token": "ya29.pool-access-token",
+                        "base_url": "https://api.x.ai/v1",
+                    },
+                ],
+            },
+        }))
+
+        from tools.xai_http import resolve_xai_http_credentials
+
+        creds = resolve_xai_http_credentials()
+        assert creds["provider"] == "xai-oauth"
+        assert creds["api_key"] == "ya29.pool-access-token"
+        assert creds["base_url"] == "https://api.x.ai/v1"
 
     def test_search_uses_oauth_bearer_token_and_base_url(self, monkeypatch):
         from plugins.web.xai import provider as xai_provider

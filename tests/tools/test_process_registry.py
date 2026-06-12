@@ -128,6 +128,7 @@ class TestGetAndPoll:
         registry._running[s.id] = s
         result = registry.poll(s.id)
         assert result["status"] == "running"
+        assert result["lifecycle_state"] == "running"
         assert "some output" in result["output_preview"]
         assert result["command"] == "echo hello"
 
@@ -136,6 +137,7 @@ class TestGetAndPoll:
         registry._finished[s.id] = s
         result = registry.poll(s.id)
         assert result["status"] == "exited"
+        assert result["lifecycle_state"] == "completed"
         assert result["exit_code"] == 0
 
 
@@ -398,6 +400,21 @@ class TestListSessions:
         assert "status" in entry
         assert "pid" in entry
         assert "output_preview" in entry
+        assert entry["retry_count"] == 0
+        assert entry["attempt"]["attempt"] == 1
+        assert entry["attempt"]["lifecycle_state"] == "running"
+        assert entry["attempt_history"] == [entry["attempt"]]
+        assert entry["runner"] == {
+            "kind": "background_process",
+            "queue_name": "interactive",
+            "priority": 0,
+            "active": True,
+            "claimed_at": entry["started_at"],
+            "lease_expires_at": None,
+            "worker_id": entry["session_id"],
+            "last_started_at": entry["started_at"],
+            "last_finished_at": None,
+        }
 
 
 # =========================================================================

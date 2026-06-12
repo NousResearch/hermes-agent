@@ -17,11 +17,13 @@ from cron.jobs import (
     pause_job,
     resume_job,
     remove_job,
+    mark_job_started,
     mark_job_run,
     advance_next_run,
     get_due_jobs,
     save_job_output,
 )
+from agent.job_lifecycle import JobLifecycleState
 
 
 # =========================================================================
@@ -193,10 +195,34 @@ class TestJobCRUD:
         assert job["prompt"] == "Check server status"
         assert job["enabled"] is True
         assert job["schedule"]["kind"] == "once"
+        assert job["lifecycle_state"] == JobLifecycleState.queued.value
 
         fetched = get_job(job["id"])
         assert fetched is not None
         assert fetched["prompt"] == "Check server status"
+        assert fetched["lifecycle_state"] == JobLifecycleState.queued.value
+
+    def test_create_initializes_queue_metadata(self, tmp_cron_dir):
+        job = create_job(prompt="Check queue", schedule="every 1h")
+
+        assert job["queue"]["retry_count"] == 0
+        assert job["queue"]["retry_backoff_seconds"] == 0
+        assert job["queue"]["next_retry_at"] is None
+        assert job["queue"]["current_attempt"] is None
+        assert job["queue"]["last_attempt"] is None
+        assert job["queue"]["attempt_history"] == []
+        assert job["queue"]["last_queued_at"] == job["created_at"]
+        assert job["queue"]["runner"] == {
+            "kind": "cron",
+            "queue_name": "default",
+            "priority": 0,
+            "active": False,
+            "claimed_at": None,
+            "lease_expires_at": None,
+            "worker_id": None,
+            "last_started_at": None,
+            "last_finished_at": None,
+        }
 
     def test_list_jobs(self, tmp_cron_dir):
         create_job(prompt="Job 1", schedule="every 1h")
@@ -434,12 +460,114 @@ class TestResolveJobRef:
 
 
 class TestMarkJobRun:
+    def test_mark_job_started_creates_running_attempt_record(self, tmp_cron_dir):
+        job = create_job(prompt="Test", schedule="every 1h")
+
+        assert mark_job_started(job["id"]) is True
+
+        updated = get_job(job["id"])
+        attempt = updated["queue"]["current_attempt"]
+        assert updated["state"] == "running"
+        assert updated["lifecycle_state"] == JobLifecycleState.running.value
+        assert attempt["attempt"] == 1
+        assert attempt["lifecycle_state"] == JobLifecycleState.running.value
+        assert attempt["started_at"]
+        assert attempt["finished_at"] is None
+        assert attempt["retry_count"] == 0
+        assert updated["queue"]["attempt_history"] == []
+        assert updated["queue"]["retry_backoff_seconds"] == 0
+        assert updated["queue"]["next_retry_at"] is None
+        assert updated["queue"]["runner"]["active"] is True
+        assert updated["queue"]["runner"]["claimed_at"] == attempt["started_at"]
+        assert updated["queue"]["runner"]["lease_expires_at"] is not None
+        assert updated["queue"]["runner"]["last_started_at"] == attempt["started_at"]
+        assert updated["queue"]["runner"]["last_finished_at"] is None
+
     def test_increments_completed(self, tmp_cron_dir):
         job = create_job(prompt="Test", schedule="every 1h")
+        mark_job_started(job["id"])
         mark_job_run(job["id"], success=True)
         updated = get_job(job["id"])
         assert updated["repeat"]["completed"] == 1
         assert updated["last_status"] == "ok"
+        assert updated["lifecycle_state"] == JobLifecycleState.queued.value
+        attempt = updated["queue"]["last_attempt"]
+        assert updated["queue"]["current_attempt"] is None
+        assert updated["queue"]["retry_count"] == 0
+        assert updated["queue"]["retry_backoff_seconds"] == 0
+        assert updated["queue"]["next_retry_at"] is None
+        assert attempt["attempt"] == 1
+        assert attempt["lifecycle_state"] == JobLifecycleState.completed.value
+        assert attempt["finished_at"]
+        assert attempt["error"] is None
+        assert updated["queue"]["attempt_history"] == [attempt]
+        assert updated["queue"]["runner"]["active"] is False
+        assert updated["queue"]["runner"]["claimed_at"] is None
+        assert updated["queue"]["runner"]["last_finished_at"] == attempt["finished_at"]
+
+    def test_failure_increments_retry_count_and_records_error(self, tmp_cron_dir):
+        job = create_job(prompt="Retry me", schedule="every 1h")
+        mark_job_started(job["id"])
+
+        mark_job_run(job["id"], success=False, error="boom")
+
+        updated = get_job(job["id"])
+        attempt = updated["queue"]["last_attempt"]
+        assert updated["queue"]["retry_count"] == 1
+        assert updated["queue"]["retry_backoff_seconds"] == 60
+        assert updated["queue"]["next_retry_at"] is not None
+        assert updated["lifecycle_state"] == JobLifecycleState.retrying.value
+        assert attempt["attempt"] == 1
+        assert attempt["lifecycle_state"] == JobLifecycleState.failed.value
+        assert attempt["error"] == "boom"
+        assert updated["queue"]["attempt_history"] == [attempt]
+        assert updated["queue"]["runner"]["active"] is False
+        assert updated["queue"]["runner"]["last_finished_at"] == attempt["finished_at"]
+
+    def test_next_start_increments_attempt_number(self, tmp_cron_dir):
+        job = create_job(prompt="Retry me", schedule="every 1h")
+        mark_job_started(job["id"])
+        mark_job_run(job["id"], success=False, error="boom")
+
+        assert mark_job_started(job["id"]) is True
+
+        updated = get_job(job["id"])
+        attempt = updated["queue"]["current_attempt"]
+        assert attempt["attempt"] == 2
+        assert attempt["retry_count"] == 1
+        assert attempt["lifecycle_state"] == JobLifecycleState.running.value
+        assert updated["queue"]["next_retry_at"] is None
+        assert updated["queue"]["retry_backoff_seconds"] == 60
+        assert len(updated["queue"]["attempt_history"]) == 1
+        assert updated["queue"]["runner"]["active"] is True
+        assert updated["queue"]["runner"]["last_started_at"] == attempt["started_at"]
+
+    def test_attempt_history_accumulates_across_runs(self, tmp_cron_dir):
+        job = create_job(prompt="History", schedule="every 1h")
+
+        mark_job_started(job["id"])
+        mark_job_run(job["id"], success=False, error="first")
+        mark_job_started(job["id"])
+        mark_job_run(job["id"], success=True)
+
+        updated = get_job(job["id"])
+        history = updated["queue"]["attempt_history"]
+        assert [item["attempt"] for item in history] == [1, 2]
+        assert history[0]["error"] == "first"
+        assert history[1]["lifecycle_state"] == JobLifecycleState.completed.value
+
+    def test_retry_backoff_escalates_on_second_failure(self, tmp_cron_dir):
+        job = create_job(prompt="Retry me", schedule="every 1h")
+        mark_job_started(job["id"])
+        mark_job_run(job["id"], success=False, error="first")
+        mark_job_started(job["id"])
+        mark_job_run(job["id"], success=False, error="second")
+
+        updated = get_job(job["id"])
+        assert updated["queue"]["retry_count"] == 2
+        assert updated["queue"]["retry_backoff_seconds"] == 120
+        assert updated["queue"]["next_retry_at"] is not None
+        assert updated["queue"]["last_attempt"]["attempt"] == 2
 
     def test_repeat_limit_removes_job(self, tmp_cron_dir):
         job = create_job(prompt="Once", schedule="30m", repeat=1)
@@ -471,6 +599,7 @@ class TestMarkJobRun:
         updated = get_job(job["id"])
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
+        assert updated["lifecycle_state"] == JobLifecycleState.retrying.value
 
     def test_delivery_error_tracked_separately(self, tmp_cron_dir):
         """Agent succeeds but delivery fails — both tracked independently."""
@@ -703,6 +832,60 @@ class TestGetDueJobs:
         from cron.jobs import _ensure_aware, _hermes_now
         next_dt = _ensure_aware(datetime.fromisoformat(updated["next_run_at"]))
         assert next_dt > _hermes_now()
+
+    def test_active_runner_claim_blocks_due_job_until_lease_expires(self, tmp_cron_dir, monkeypatch):
+        start = datetime(2026, 6, 12, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: start)
+        job = create_job(prompt="Claimed", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (start - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        mark_job_started(job["id"])
+
+        later = start + timedelta(minutes=5)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: later)
+        due = get_due_jobs()
+
+        assert due == []
+        updated = get_job(job["id"])
+        assert updated["queue"]["runner"]["active"] is True
+        assert updated["queue"]["current_attempt"] is not None
+
+    def test_stale_runner_claim_is_reclaimed_and_schedules_retry(self, tmp_cron_dir, monkeypatch):
+        start = datetime(2026, 6, 12, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: start)
+        job = create_job(prompt="Claimed", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["next_run_at"] = (start - timedelta(minutes=5)).isoformat()
+        save_jobs(jobs)
+        mark_job_started(job["id"])
+
+        stale_now = start + timedelta(minutes=16)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: stale_now)
+        due = get_due_jobs()
+
+        assert due == []
+        updated = get_job(job["id"])
+        assert updated["queue"]["runner"]["active"] is False
+        assert updated["queue"]["current_attempt"] is None
+        assert updated["queue"]["retry_count"] == 1
+        assert updated["queue"]["retry_backoff_seconds"] == 60
+        assert updated["queue"]["next_retry_at"] == (stale_now + timedelta(seconds=60)).isoformat()
+        assert "stale" in (updated["last_error"] or "").lower()
+        assert updated["queue"]["last_attempt"]["lifecycle_state"] == JobLifecycleState.failed.value
+
+    def test_retry_backoff_due_job_runs_before_next_schedule(self, tmp_cron_dir, monkeypatch):
+        start = datetime(2026, 6, 12, 12, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: start)
+        job = create_job(prompt="Retry due", schedule="every 1h")
+        mark_job_started(job["id"])
+        mark_job_run(job["id"], success=False, error="boom")
+
+        retry_due = start + timedelta(seconds=61)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: retry_due)
+        due = get_due_jobs()
+
+        assert [item["id"] for item in due] == [job["id"]]
 
     def test_future_not_returned(self, tmp_cron_dir):
         create_job(prompt="Not yet", schedule="every 1h")

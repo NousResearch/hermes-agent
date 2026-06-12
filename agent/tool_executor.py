@@ -28,6 +28,7 @@ from agent.display import (
     get_tool_emoji as _get_tool_emoji,
     _detect_tool_failure,
 )
+from agent.failure_policy import FailureClass, RecoveryAction, decide_tool_recovery
 from agent.tool_guardrails import ToolGuardrailDecision
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
@@ -56,6 +57,20 @@ def _ra():
     """Lazy reference to ``run_agent`` so patches like ``run_agent._set_interrupt`` work."""
     import run_agent
     return run_agent
+
+
+def _tool_failure_recovery_decision(function_name: str, function_result: Any):
+    """Return a recovery decision when a tool result suggests corrective action."""
+
+    decision = decide_tool_recovery(function_name, function_result)
+    if (
+        decision.failure_class == FailureClass.unknown
+        and decision.primary_action == RecoveryAction.retry_same
+    ):
+        is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        if not is_error_result:
+            return None
+    return decision
 
 
 def _emit_terminal_post_tool_call(
@@ -1284,7 +1299,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
-        _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        _tool_recovery_decision = _tool_failure_recovery_decision(function_name, function_result)
+        _is_error_result = _tool_recovery_decision is not None
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the
@@ -1318,7 +1334,15 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 function_result[:200] if len(function_result) > 200 else function_result
             )
         if _is_error_result:
-            logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+            logger.warning(
+                "Tool %s returned error (%.2fs): %s | recovery_action=%s failure_class=%s secondary=%s",
+                function_name,
+                tool_duration,
+                result_preview,
+                _tool_recovery_decision.primary_action.value,
+                _tool_recovery_decision.failure_class.value,
+                [action.value for action in _tool_recovery_decision.secondary_actions],
+            )
         else:
             logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
 

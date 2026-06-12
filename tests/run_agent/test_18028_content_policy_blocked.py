@@ -15,6 +15,8 @@ was the problem.
 """
 from __future__ import annotations
 
+from agent.conversation_loop import _is_client_error_from_policy
+from agent.failure_policy import decide_api_recovery
 
 class TestContentPolicyBlockedClassification:
     """Verify classify_api_error returns the right shape so downstream
@@ -43,53 +45,22 @@ class TestContentPolicyBlockedClassification:
 
 
 class TestContentPolicyTriggersClientErrorAbort:
-    """Mirror the ``is_client_error`` predicate in
-    ``agent/conversation_loop.py`` and verify
-    ``FailoverReason.content_policy_blocked`` resolves to True so the loop
-    aborts (after attempting fallback) instead of falling into the
-    retry-backoff path.
-    """
-
-    def _mirror_is_client_error(
-        self,
-        *,
-        classified_retryable: bool,
-        classified_reason,
-        classified_should_compress: bool = False,
-        is_local_validation_error: bool = False,
-        is_context_length_error: bool = False,
-    ) -> bool:
-        """Exact shape of conversation_loop.py's is_client_error check.
-
-        Kept in lock-step with the source. If you change one, change both.
-        """
-        from agent.error_classifier import FailoverReason
-
-        return (
-            is_local_validation_error
-            or (
-                not classified_retryable
-                and not classified_should_compress
-                and classified_reason not in {
-                    FailoverReason.rate_limit,
-                    FailoverReason.overloaded,
-                    FailoverReason.context_overflow,
-                    FailoverReason.payload_too_large,
-                    FailoverReason.long_context_tier,
-                    FailoverReason.thinking_signature,
-                }
-            )
-        ) and not is_context_length_error
+    """Verify the live recovery-policy wiring takes the abort path."""
 
     def test_content_policy_blocked_triggers_abort(self):
         """Safety-filter block must reach is_client_error → fallback/abort."""
-        from agent.error_classifier import FailoverReason
+        from agent.error_classifier import ClassifiedError, FailoverReason
 
-        # What classify_api_error returns for a content-policy block:
-        #   reason=content_policy_blocked, retryable=False, should_compress=False
-        assert self._mirror_is_client_error(
-            classified_retryable=False,
-            classified_reason=FailoverReason.content_policy_blocked,
+        classified = ClassifiedError(
+            reason=FailoverReason.content_policy_blocked,
+            retryable=False,
+            should_compress=False,
+        )
+        recovery_decision = decide_api_recovery(classified)
+
+        assert _is_client_error_from_policy(
+            classified,
+            recovery_decision,
         ), (
             "FailoverReason.content_policy_blocked must trigger the "
             "is_client_error path so fallback fires immediately instead of "

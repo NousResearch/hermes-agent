@@ -19,6 +19,15 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Optional, Dict, List, Any, Union
 
+from agent.job_lifecycle import (
+    JobLifecycleState,
+    append_attempt_history,
+    cron_lifecycle_state,
+    default_queue_metadata,
+    make_attempt_record,
+    normalize_queue_metadata,
+)
+
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
@@ -149,6 +158,11 @@ def _normalize_job_record(job: Dict[str, Any]) -> Dict[str, Any]:
     if not state:
         state = "scheduled" if normalized.get("enabled", True) else "paused"
     normalized["state"] = state
+    normalized["queue"] = normalize_queue_metadata(
+        normalized.get("queue"),
+        queued_at=normalized.get("created_at") or normalized.get("last_run_at"),
+    )
+    normalized["lifecycle_state"] = cron_lifecycle_state(normalized).value
 
     return normalized
 
@@ -655,9 +669,11 @@ def create_job(
         },
         "enabled": True,
         "state": "scheduled",
+        "lifecycle_state": "queued",
         "paused_at": None,
         "paused_reason": None,
         "created_at": now,
+        "queue": default_queue_metadata(queued_at=now),
         "next_run_at": compute_next_run(parsed_schedule),
         "last_run_at": None,
         "last_status": None,
@@ -863,6 +879,48 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
+def mark_job_started(job_id: str) -> bool:
+    """Persist that a cron job has started running and open a new attempt record."""
+    with _jobs_file_lock:
+        jobs = load_jobs()
+        for job in jobs:
+            if job["id"] != job_id:
+                continue
+
+            normalized = _normalize_job_record(job)
+            queue = normalize_queue_metadata(
+                normalized.get("queue"),
+                queued_at=normalized.get("created_at") or normalized.get("last_run_at"),
+            )
+            last_attempt = queue.get("last_attempt") or {}
+            attempt_number = int(last_attempt.get("attempt", 0) or 0) + 1
+            retry_count = int(queue.get("retry_count", 0) or 0)
+            started_at = _hermes_now().isoformat()
+
+            queue["current_attempt"] = make_attempt_record(
+                attempt=attempt_number,
+                state=JobLifecycleState.running,
+                started_at=started_at,
+                retry_count=retry_count,
+            )
+            queue["next_retry_at"] = None
+            queue["last_queued_at"] = started_at
+            queue["runner"]["active"] = True
+            queue["runner"]["claimed_at"] = started_at
+            queue["runner"]["lease_expires_at"] = (_hermes_now() + timedelta(minutes=15)).isoformat()
+            queue["runner"]["worker_id"] = job_id
+            queue["runner"]["last_started_at"] = started_at
+            queue["runner"]["last_finished_at"] = None
+            job["queue"] = queue
+            job["state"] = "running"
+            job["lifecycle_state"] = JobLifecycleState.running.value
+            save_jobs(jobs)
+            return True
+
+        logger.warning("mark_job_started: job_id %s not found, skipping save", job_id)
+        return False
+
+
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                  delivery_error: Optional[str] = None):
     """
@@ -879,9 +937,51 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
         for i, job in enumerate(jobs):
             if job["id"] == job_id:
                 now = _hermes_now().isoformat()
+                queue = normalize_queue_metadata(
+                    job.get("queue"),
+                    queued_at=job.get("created_at") or job.get("last_run_at"),
+                )
+                current_attempt = queue.get("current_attempt")
+                if current_attempt is None:
+                    last_attempt = queue.get("last_attempt") or {}
+                    attempt_number = int(last_attempt.get("attempt", 0) or 0) + 1
+                    current_attempt = make_attempt_record(
+                        attempt=attempt_number,
+                        state=JobLifecycleState.running,
+                        started_at=job.get("last_run_at") or now,
+                        retry_count=int(queue.get("retry_count", 0) or 0),
+                    )
+                terminal_state = JobLifecycleState.completed if success else JobLifecycleState.failed
+                finished_attempt = make_attempt_record(
+                    attempt=current_attempt.get("attempt", 1),
+                    state=terminal_state,
+                    started_at=current_attempt.get("started_at") or now,
+                    finished_at=now,
+                    error=error if not success else None,
+                    retry_count=current_attempt.get("retry_count", queue.get("retry_count", 0)),
+                )
+                queue["current_attempt"] = None
+                queue["last_attempt"] = finished_attempt
+                queue["attempt_history"] = append_attempt_history(queue.get("attempt_history"), finished_attempt)
+                if success:
+                    queue["retry_count"] = 0
+                    queue["retry_backoff_seconds"] = 0
+                    queue["next_retry_at"] = None
+                else:
+                    queue["retry_count"] = int(queue.get("retry_count", 0) or 0) + 1
+                    queue["retry_backoff_seconds"] = 60 * queue["retry_count"]
+                    queue["next_retry_at"] = (_hermes_now() + timedelta(seconds=queue["retry_backoff_seconds"])).isoformat()
+                queue["last_queued_at"] = now if job.get("next_run_at") else queue.get("last_queued_at")
+                queue["runner"]["active"] = False
+                queue["runner"]["claimed_at"] = None
+                queue["runner"]["lease_expires_at"] = None
+                queue["runner"]["worker_id"] = job_id
+                queue["runner"]["last_finished_at"] = now
+                job["queue"] = queue
                 job["last_run_at"] = now
                 job["last_status"] = "ok" if success else "error"
                 job["last_error"] = error if not success else None
+                job["lifecycle_state"] = "completed" if success else "failed"
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
                 
@@ -911,6 +1011,7 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     kind = job.get("schedule", {}).get("kind")
                     if kind in {"cron", "interval"}:
                         job["state"] = "error"
+                        job["lifecycle_state"] = "failed"
                         if not job.get("last_error"):
                             job["last_error"] = (
                                 "Failed to compute next run for recurring "
@@ -927,8 +1028,11 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                     else:
                         job["enabled"] = False
                         job["state"] = "completed"
+                        job["lifecycle_state"] = "completed" if success else "failed"
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
+                    job["lifecycle_state"] = "queued" if success else "retrying"
+                    job["queue"]["last_queued_at"] = job["next_run_at"]
 
                 save_jobs(jobs)
                 return
@@ -987,6 +1091,69 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
 
     for job in jobs:
         if not job.get("enabled", True):
+            continue
+
+        normalized = _normalize_job_record(job)
+        queue = normalize_queue_metadata(
+            normalized.get("queue"),
+            queued_at=normalized.get("created_at") or normalized.get("last_run_at"),
+        )
+        runner = queue.get("runner", {})
+
+        # 1. Handle stale leases
+        if runner.get("active"):
+            expires_at = runner.get("lease_expires_at")
+            if expires_at:
+                expires_dt = _ensure_aware(datetime.fromisoformat(expires_at))
+                if expires_dt <= now:
+                    logger.warning(
+                        "Job '%s' runner lease expired at %s. Marking attempt failed and scheduling retry.",
+                        job.get("name", job["id"]), expires_at
+                    )
+                    # For stale lease recovery, we do an in-place failure
+                    current_attempt = queue.get("current_attempt")
+                    if current_attempt:
+                        failed_attempt = make_attempt_record(
+                            attempt=current_attempt.get("attempt", 1),
+                            state=JobLifecycleState.failed,
+                            started_at=current_attempt.get("started_at"),
+                            finished_at=now.isoformat(),
+                            error="Runner lease expired (stale claim)",
+                            retry_count=current_attempt.get("retry_count", queue.get("retry_count", 0)),
+                        )
+                        queue["current_attempt"] = None
+                        queue["last_attempt"] = failed_attempt
+                        queue["attempt_history"] = append_attempt_history(queue.get("attempt_history"), failed_attempt)
+
+                    queue["retry_count"] = int(queue.get("retry_count", 0) or 0) + 1
+                    queue["retry_backoff_seconds"] = 60 * queue["retry_count"]
+                    queue["next_retry_at"] = (now + timedelta(seconds=queue["retry_backoff_seconds"])).isoformat()
+                    queue["runner"]["active"] = False
+                    queue["runner"]["claimed_at"] = None
+                    queue["runner"]["lease_expires_at"] = None
+                    queue["runner"]["last_finished_at"] = now.isoformat()
+                    job["queue"] = queue
+                    job["last_error"] = "Runner lease expired (stale claim)"
+                    job["lifecycle_state"] = JobLifecycleState.retrying.value
+
+                    # Write this recovery to disk immediately so we don't spam
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            rj["queue"] = queue
+                            rj["last_error"] = job["last_error"]
+                            needs_save = True
+                            break
+
+        # 2. Block if actively claimed
+        if queue.get("runner", {}).get("active"):
+            continue
+
+        # 3. Check backoff/retry scheduled time
+        next_retry_at = queue.get("next_retry_at")
+        if next_retry_at:
+            retry_dt = _ensure_aware(datetime.fromisoformat(next_retry_at))
+            if retry_dt <= now:
+                due.append(job)
             continue
 
         next_run = job.get("next_run_at")

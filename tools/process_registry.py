@@ -46,6 +46,12 @@ from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
+from agent.job_lifecycle import (
+    JobLifecycleState,
+    default_runner_metadata,
+    lifecycle_snapshot_for_process,
+    make_attempt_record,
+)
 from hermes_cli.config import get_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -86,6 +92,35 @@ def format_uptime_short(seconds: int) -> str:
     return f"{hours}h {mins}m"
 
 
+def _iso_or_none(timestamp: Optional[float]) -> Optional[str]:
+    if timestamp is None:
+        return None
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(timestamp))
+
+
+def _attempt_metadata_for_session(session: "ProcessSession") -> dict[str, Any]:
+    lifecycle = lifecycle_snapshot_for_process(exited=session.exited, exit_code=session.exit_code)
+    return make_attempt_record(
+        attempt=1,
+        state=lifecycle.state,
+        started_at=_iso_or_none(session.started_at),
+        finished_at=_iso_or_none(session.finished_at),
+        error=None if lifecycle.state in {JobLifecycleState.running, JobLifecycleState.completed} else session.output_buffer[-500:] or None,
+        retry_count=0,
+    )
+
+
+def _runner_metadata_for_session(session: "ProcessSession") -> dict[str, Any]:
+    runner = default_runner_metadata(kind="background_process", queue_name="interactive", priority=0)
+    started_at = _iso_or_none(session.started_at)
+    runner["active"] = not session.exited
+    runner["claimed_at"] = started_at if not session.exited else None
+    runner["worker_id"] = session.id
+    runner["last_started_at"] = started_at
+    runner["last_finished_at"] = _iso_or_none(session.finished_at)
+    return runner
+
+
 @dataclass
 class ProcessSession:
     """A tracked background process with output buffering."""
@@ -98,6 +133,7 @@ class ProcessSession:
     env_ref: Any = None                         # Reference to the environment object
     cwd: Optional[str] = None                   # Working directory
     started_at: float = 0.0                     # time.time() of spawn
+    finished_at: Optional[float] = None         # time.time() when process finished
     exited: bool = False                        # Whether the process has finished
     exit_code: Optional[int] = None             # Exit code (None if still running)
     output_buffer: str = ""                     # Rolling output (last MAX_OUTPUT_CHARS)
@@ -425,6 +461,7 @@ class ProcessRegistry:
             if session.exited:
                 return session
             session.exited = True
+            session.finished_at = time.time()
             # Recovered sessions no longer have a waitable handle, so the real
             # exit code is unavailable once the original process object is gone.
             session.exit_code = None
@@ -870,6 +907,8 @@ class ProcessRegistry:
         with self._lock:
             was_running = self._running.pop(session.id, None) is not None
             self._finished[session.id] = session
+        if session.finished_at is None:
+            session.finished_at = time.time()
         self._write_checkpoint()
 
         # Only enqueue completion notification on the FIRST move.  Without
@@ -1005,11 +1044,12 @@ class ProcessRegistry:
 
         with session._lock:
             output_preview = strip_ansi(session.output_buffer[-1000:]) if session.output_buffer else ""
-
+        lifecycle = lifecycle_snapshot_for_process(exited=session.exited, exit_code=session.exit_code)
         result = {
             "session_id": session.id,
             "command": session.command,
             "status": "exited" if session.exited else "running",
+            "lifecycle_state": lifecycle.state.value,
             "pid": session.pid,
             "uptime_seconds": int(time.time() - session.started_at),
             "output_preview": output_preview,
@@ -1045,6 +1085,7 @@ class ProcessRegistry:
         result = {
             "session_id": session.id,
             "status": "exited" if session.exited else "running",
+            "lifecycle_state": lifecycle_snapshot_for_process(exited=session.exited, exit_code=session.exit_code).state.value,
             "output": "\n".join(selected),
             "total_lines": total_lines,
             "showing": f"{len(selected)} lines",
@@ -1101,6 +1142,7 @@ class ProcessRegistry:
                 self._completion_consumed.add(session_id)
                 result = {
                     "status": "exited",
+                    "lifecycle_state": lifecycle_snapshot_for_process(exited=True, exit_code=session.exit_code).state.value,
                     "exit_code": session.exit_code,
                     "output": strip_ansi(session.output_buffer[-2000:]),
                 }
@@ -1283,14 +1325,24 @@ class ProcessRegistry:
 
         result = []
         for s in all_sessions:
+            if s is None:
+                continue
+            lifecycle = lifecycle_snapshot_for_process(exited=s.exited, exit_code=s.exit_code)
+            attempt = _attempt_metadata_for_session(s)
             entry = {
                 "session_id": s.id,
                 "command": s.command[:200],
                 "cwd": s.cwd,
                 "pid": s.pid,
-                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(s.started_at)),
+                "started_at": _iso_or_none(s.started_at),
+                "finished_at": _iso_or_none(s.finished_at),
                 "uptime_seconds": int(time.time() - s.started_at),
                 "status": "exited" if s.exited else "running",
+                "lifecycle_state": lifecycle.state.value,
+                "retry_count": 0,
+                "attempt": attempt,
+                "attempt_history": [attempt],
+                "runner": _runner_metadata_for_session(s),
                 "output_preview": s.output_buffer[-200:] if s.output_buffer else "",
             }
             if s.exited:

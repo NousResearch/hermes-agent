@@ -1329,12 +1329,14 @@ class TestRunJobSessionPersistence:
         with patch("cron.scheduler._hermes_home", tmp_path), \
              patch("cron.scheduler.get_due_jobs", return_value=[job]), \
              patch("cron.scheduler.advance_next_run"), \
+             patch("cron.scheduler.mark_job_started") as mock_started, \
              patch("cron.scheduler.mark_job_run") as mock_mark, \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._resolve_origin", return_value=None), \
              patch("cron.scheduler.run_job", return_value=(True, "output", "", None)):
             tick(verbose=False)
 
+        mock_started.assert_called_once_with("empty-job")
         # Should be called with success=False because final_response is empty
         mock_mark.assert_called_once()
         call_args = mock_mark.call_args

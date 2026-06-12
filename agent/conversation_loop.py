@@ -30,6 +30,7 @@ from typing import Any, Dict, List, Optional
 from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.failure_policy import RecoveryAction, RecoveryDecision, decide_api_recovery
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
@@ -69,6 +70,48 @@ logger = logging.getLogger(__name__)
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
 # to treat it as cancellation metadata rather than assistant prose.
 INTERRUPT_WAITING_FOR_MODEL_PREFIX = "Operation interrupted: waiting for model response ("
+
+
+def _is_client_error_from_policy(
+    classified: Any,
+    recovery_decision: RecoveryDecision,
+    *,
+    is_local_validation_error: bool = False,
+    is_context_length_error: bool = False,
+) -> bool:
+    """Return True when the current failure should abort the generic retry path."""
+
+    if is_context_length_error:
+        return False
+    if is_local_validation_error:
+        return True
+    if classified.retryable:
+        return False
+    return recovery_decision.primary_action not in {
+        RecoveryAction.retry_same,
+        RecoveryAction.retry_smaller_scope,
+        RecoveryAction.compress_context,
+    }
+
+
+def _should_try_eager_fallback(
+    recovery_decision: RecoveryDecision,
+    *,
+    reason: FailoverReason,
+) -> bool:
+    """Whether to switch providers before burning more retries.
+
+    Keep this conservative while the policy layer is being threaded through the
+    runtime: today we only eager-fallback the same failure bucket as before
+    (rate-limit / quota exhaustion), but the decision object is now the source
+    of truth for why that switch is appropriate.
+    """
+
+    if reason == FailoverReason.rate_limit:
+        return recovery_decision.primary_action == RecoveryAction.fallback_provider
+    if reason == FailoverReason.billing:
+        return RecoveryAction.fallback_provider in recovery_decision.secondary_actions
+    return False
 
 
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
@@ -2004,11 +2047,14 @@ def run_conversation(
                     context_length=_ctx_len,
                     num_messages=len(api_messages) if api_messages else 0,
                 )
+                recovery_decision = decide_api_recovery(classified)
                 logger.debug(
-                    "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s",
+                    "Error classified: reason=%s status=%s retryable=%s compress=%s rotate=%s fallback=%s action=%s secondary=%s",
                     classified.reason.value, classified.status_code,
                     classified.retryable, classified.should_compress,
                     classified.should_rotate_credential, classified.should_fallback,
+                    recovery_decision.primary_action.value,
+                    [action.value for action in recovery_decision.secondary_actions],
                 )
                 agent._invoke_api_request_error_hook(
                     task_id=effective_task_id,
@@ -2552,7 +2598,11 @@ def run_conversation(
                     FailoverReason.rate_limit,
                     FailoverReason.billing,
                 }
-                if is_rate_limited and agent._fallback_index < len(agent._fallback_chain):
+                should_eager_fallback = _should_try_eager_fallback(
+                    recovery_decision,
+                    reason=classified.reason,
+                )
+                if should_eager_fallback and agent._fallback_index < len(agent._fallback_chain):
                     # Don't eagerly fallback if credential pool rotation may
                     # still recover.  See _pool_may_recover_from_rate_limit
                     # for the single-credential-pool and CloudCode-quota
@@ -2941,21 +2991,12 @@ def run_conversation(
                 # (real-world: ~$40 in 48h on a 24/7 gateway).  Aborting
                 # mirrors how 401/403 (also ``should_fallback=True``)
                 # already behave once their recovery paths have failed.
-                is_client_error = (
-                    is_local_validation_error
-                    or (
-                        not classified.retryable
-                        and not classified.should_compress
-                        and classified.reason not in {
-                            FailoverReason.rate_limit,
-                            FailoverReason.overloaded,
-                            FailoverReason.context_overflow,
-                            FailoverReason.payload_too_large,
-                            FailoverReason.long_context_tier,
-                            FailoverReason.thinking_signature,
-                        }
-                    )
-                ) and not is_context_length_error
+                is_client_error = _is_client_error_from_policy(
+                    classified,
+                    recovery_decision,
+                    is_local_validation_error=is_local_validation_error,
+                    is_context_length_error=is_context_length_error,
+                )
 
                 if is_client_error:
                     # Try fallback before aborting — a different provider may

@@ -5243,6 +5243,8 @@ class AIAgent:
             role=function_args.get("role"),
             background=(not _is_subagent),
             parent_agent=self,
+            background=function_args.get("background", False),
+            timeout_seconds=function_args.get("timeout_seconds"),
         )
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,

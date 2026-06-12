@@ -841,6 +841,30 @@ async def test_bridge_ulaw_passthrough_skips_transcoding(fake_runtime):
 
 
 @pytest.mark.asyncio
+async def test_deliver_waits_for_session_ready(fake_runtime):
+    """Text delivered right after a mid-call upgrade must wait for the model
+    session to connect — injecting earlier is a silent drop (the caller
+    heard nothing and the question vanished)."""
+    ws = FakeCarrierWs([])
+    session = FakeSession()
+    bridge = _bridge(fake_runtime, _record(), session)
+
+    delivered = asyncio.create_task(
+        bridge.deliver_agent_text("what did you have for breakfast?")
+    )
+    await asyncio.sleep(0.05)
+    assert not delivered.done()          # parked on ready, not dropped
+    assert session.injected_text == []
+
+    run = asyncio.create_task(bridge.run(ws))  # connects → ready
+    assert await asyncio.wait_for(delivered, 2) is True
+    assert session.injected_text == ["what did you have for breakfast?"]
+
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
+
+
+@pytest.mark.asyncio
 async def test_midcall_upgrade_to_realtime(fake_runtime):
     """upgrade_to_realtime attaches a stream to a live call and waits for
     the carrier to connect; carriers without mid-call streaming refuse."""

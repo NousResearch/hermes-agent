@@ -182,15 +182,20 @@ class RealtimeBridgeManager:
             )
             record.metadata.pop("realtime", None)
             return False
-        # The carrier now dials our /voice/stream/{token} endpoint.
+        # The carrier now dials our /voice/stream/{token} endpoint. Wait for
+        # the bridge to exist AND its model session to be connected —
+        # injecting before that is a silent drop.
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.active_bridges.get(record.call_id) is not None:
-                logger.info(
-                    "voice_call realtime: mid-call upgrade complete call=%s",
-                    record.call_id,
-                )
-                return True
+            bridge = self.active_bridges.get(record.call_id)
+            if bridge is not None:
+                ready = getattr(bridge, "ready", None)
+                if ready is None or ready.is_set():
+                    logger.info(
+                        "voice_call realtime: mid-call upgrade complete call=%s",
+                        record.call_id,
+                    )
+                    return True
             await asyncio.sleep(0.1)
         logger.warning(
             "voice_call realtime: carrier never opened the stream for %s — "
@@ -254,6 +259,9 @@ class RealtimeCallBridge:
         self._ws = None
         self._greeting_until = 0.0
         self._pacer: Optional[AudioPacer] = None
+        # Set once the model session is connected — anything injected before
+        # this would be silently dropped by the unconnected websocket.
+        self.ready: asyncio.Event = asyncio.Event()
         # Tool results that arrived while the model was mid-utterance (e.g.
         # speaking the "let me check" filler) — sending response.create then
         # would collide with the active response, so they flush on
@@ -286,6 +294,7 @@ class RealtimeCallBridge:
             if initial:
                 await self.session.inject_text(str(initial))
                 self._greeting_until = time.time() + 3.0
+        self.ready.set()
 
         pacer = AudioPacer(self._send_media_frame)
         self._pacer = pacer
@@ -582,6 +591,17 @@ class RealtimeCallBridge:
             )
             fut.set_result(text)
             return True
+        # Injecting into a not-yet-connected session is a silent drop —
+        # wait for the model websocket (mid-call upgrades race this).
+        if not self.ready.is_set():
+            try:
+                await asyncio.wait_for(self.ready.wait(), timeout=10.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "voice_call realtime: session never became ready for %s",
+                    self.record.call_id,
+                )
+                return False
         logger.info(
             "voice_call realtime: speaking agent message call=%s chars=%d",
             self.record.call_id, len(text),

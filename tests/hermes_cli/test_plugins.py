@@ -3,6 +3,7 @@
 import logging
 import sys
 import time
+import threading
 import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -821,6 +822,25 @@ class TestPluginHooks:
 
         assert results == ["before-result", "after-result"]
         assert any("raised: boom" in r.getMessage() for r in caplog.records)
+
+    def test_non_hot_hook_stays_on_caller_thread(self):
+        """Lifecycle hooks preserve caller-thread semantics outside hot paths."""
+        mgr = PluginManager()
+        seen_threads = []
+        caller_thread = threading.current_thread()
+
+        def capture(**kwargs):
+            seen_threads.append(threading.current_thread())
+
+        mgr._hooks["subagent_stop"] = [capture]
+
+        mgr.invoke_hook(
+            "subagent_stop",
+            parent_session_id="parent-1",
+            child_status="completed",
+        )
+
+        assert seen_threads == [caller_thread]
 
     def test_hook_return_values_collected(self, tmp_path, monkeypatch):
         """invoke_hook() collects non-None return values from callbacks."""

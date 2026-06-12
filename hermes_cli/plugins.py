@@ -224,6 +224,19 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_blocked",
 }
 
+_HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
+    "pre_tool_call",
+    "post_tool_call",
+    "transform_terminal_output",
+    "transform_tool_result",
+    "transform_llm_output",
+    "pre_llm_call",
+    "post_llm_call",
+    "pre_api_request",
+    "post_api_request",
+    "api_request_error",
+}
+
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 
 _NS_PARENT = "hermes_plugins"
@@ -1971,25 +1984,29 @@ class PluginManager:
         kwargs.setdefault("telemetry_schema_version", OBSERVER_SCHEMA_VERSION)
         callbacks = self._hooks.get(hook_name, [])
         results: List[Any] = []
+        use_timeout_executor = hook_name in _HOOK_TIMEOUT_BOUNDED_HOOKS
         for cb in callbacks:
             callback_name = getattr(cb, "__name__", repr(cb))
             callback_key = (hook_name, id(cb))
             now = time.monotonic()
-            with self._hook_timeout_lock:
-                suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
-                if suppressed_until is not None and suppressed_until > now:
-                    logger.warning(
-                        "Hook '%s' callback %s skipped after previous timeout; continuing fail-open",
-                        hook_name,
-                        callback_name,
-                    )
-                    continue
-                if suppressed_until is not None:
-                    self._hook_timeout_suppressed_until.pop(callback_key, None)
             try:
-                context = contextvars.copy_context()
-                future = _get_hook_executor().submit(context.run, cb, **kwargs)
-                ret = future.result(timeout=self._hook_timeout_seconds)
+                if use_timeout_executor:
+                    with self._hook_timeout_lock:
+                        suppressed_until = self._hook_timeout_suppressed_until.get(callback_key)
+                        if suppressed_until is not None and suppressed_until > now:
+                            logger.warning(
+                                "Hook '%s' callback %s skipped after previous timeout; continuing fail-open",
+                                hook_name,
+                                callback_name,
+                            )
+                            continue
+                        if suppressed_until is not None:
+                            self._hook_timeout_suppressed_until.pop(callback_key, None)
+                    context = contextvars.copy_context()
+                    future = _get_hook_executor().submit(context.run, cb, **kwargs)
+                    ret = future.result(timeout=self._hook_timeout_seconds)
+                else:
+                    ret = cb(**kwargs)
                 if ret is not None:
                     results.append(ret)
             except concurrent.futures.TimeoutError:

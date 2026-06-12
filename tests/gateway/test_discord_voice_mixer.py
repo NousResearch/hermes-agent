@@ -9,7 +9,7 @@ integration (install on join, play routing, ack) is tested with the standard
 
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

@@ -221,6 +221,7 @@ class VoiceCallRuntime:
                 _field("to") or None,
                 message=payload.get("message"),
                 mode=payload.get("mode"),
+                instructions=payload.get("instructions"),
             )
             return {"success": True, "call_id": record.call_id}
         if command == "speak":

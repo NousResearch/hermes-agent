@@ -36,6 +36,10 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
         "--mode", choices=("notify", "conversation"), default="conversation",
         help="notify: speak and hang up; conversation: stay open (default)",
     )
+    call_p.add_argument(
+        "--instructions",
+        help="per-call brief for the realtime voice (script/persona/questions)",
+    )
 
     speak_p = subs.add_parser("speak", help="Say something on a live call")
     speak_p.add_argument("--call-id", required=True)
@@ -192,7 +196,8 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 def _cmd_call(args: argparse.Namespace) -> int:
     result = _admin_request(
-        {"command": "call", "to": args.to, "message": args.message, "mode": args.mode}
+        {"command": "call", "to": args.to, "message": args.message,
+         "mode": args.mode, "instructions": getattr(args, "instructions", None)}
     )
     if result.get("success"):
         print(

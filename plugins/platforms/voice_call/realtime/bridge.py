@@ -150,6 +150,30 @@ class RealtimeBridgeManager:
         if provider is not None and hasattr(provider, "register_pending_stream"):
             provider.register_pending_stream(record, stream_url)
 
+    def _session_config_for(self, record: CallRecord):
+        """The realtime config for one call: the configured instructions
+        plus any per-call brief carried on the record (a call script the
+        agent attached at dial time)."""
+        from ..config import RealtimeConfig
+        from .base import DEFAULT_INSTRUCTIONS
+
+        base = self.runtime.config.realtime
+        extra = str(record.metadata.get("realtime_instructions") or "").strip()
+        if not extra:
+            return base
+        merged = (
+            (base.instructions or DEFAULT_INSTRUCTIONS)
+            + "\n\nThis call's specific brief — follow it exactly:\n"
+            + extra
+        )
+        return RealtimeConfig(
+            enabled=base.enabled,
+            provider=base.provider,
+            model=base.model,
+            voice=base.voice,
+            instructions=merged,
+        )
+
     async def upgrade_to_realtime(self, record: CallRecord, timeout: float = 10.0) -> bool:
         """Attach a media stream to an already-live call (notify-born calls
         have none) and wait for the carrier to open the WebSocket. Telnyx
@@ -224,7 +248,9 @@ class RealtimeBridgeManager:
         await ws.prepare(request)
 
         try:
-            session = create_realtime_session(self.runtime.config.realtime)
+            session = create_realtime_session(
+                self._session_config_for(record)
+            )
         except Exception as e:  # noqa: BLE001 — config/key errors
             logger.error("voice_call realtime: session create failed: %s", e)
             await ws.close()

@@ -840,6 +840,41 @@ async def test_bridge_ulaw_passthrough_skips_transcoding(fake_runtime):
     assert b64.b64decode(media[0]["media"]["payload"]) == bytes([0x55]) * 160
 
 
+def test_per_call_instructions_merge_into_session_config(fake_runtime):
+    """initiate_call(instructions=...) rides the record into the realtime
+    session so the model conducts the whole call (no per-question
+    round-trips); calls without a brief use the base config unchanged."""
+    manager = RealtimeBridgeManager(fake_runtime)
+    fake_runtime.config.realtime.instructions = "Base persona."
+
+    record = _record()
+    record.metadata["realtime_instructions"] = (
+        "Ask: 1) does she love him? 2) dream destination? Then say the "
+        "Punjabi closing line."
+    )
+    cfg = manager._session_config_for(record)
+    assert cfg.instructions.startswith("Base persona.")
+    assert "specific brief" in cfg.instructions
+    assert "dream destination" in cfg.instructions
+    assert cfg.provider == fake_runtime.config.realtime.provider
+
+    plain = _record()
+    assert manager._session_config_for(plain) is fake_runtime.config.realtime
+
+
+@pytest.mark.asyncio
+async def test_initiate_call_carries_instructions(vc_config, provider, store):
+    from plugins.platforms.voice_call.manager import CallManager
+
+    manager = CallManager(vc_config, provider, store)
+    provider.event_sink = manager.process_event
+    record = await manager.initiate_call(
+        "+15555550001", mode="conversation", instructions="The script."
+    )
+    assert record.metadata["realtime_instructions"] == "The script."
+    await manager.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_deliver_waits_for_session_ready(fake_runtime):
     """Text delivered right after a mid-call upgrade must wait for the model

@@ -627,6 +627,7 @@ class CallManager:
         message: Optional[str] = None,
         mode: Optional[str] = None,
         from_number: Optional[str] = None,
+        instructions: Optional[str] = None,
     ) -> CallRecord:
         to_number = normalize_e164(to_number or self.config.to_number or "")
         if not to_number:
@@ -656,6 +657,11 @@ class CallManager:
         record.session_key = self._session_key(record)
         if message:
             record.metadata["initial_message"] = message
+        if instructions:
+            # Per-call brief for the realtime voice (script, persona,
+            # questions) — merged into the session instructions by the
+            # bridge so the model conducts the whole call itself.
+            record.metadata["realtime_instructions"] = str(instructions)
         self._register(record)
         if self.prepare_call is not None:
             try:

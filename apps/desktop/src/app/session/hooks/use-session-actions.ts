@@ -18,7 +18,7 @@ import {
   $messages,
   $sessions,
   $yoloActive,
-  sessionPinId,
+  sessionAliasIds,
   setActiveSessionId,
   setAwaitingResponse,
   setBusy,
@@ -48,6 +48,18 @@ import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, Session
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
+
+function pinnedAliasesFor(session: SessionInfo | null | undefined, fallbackId: string): Set<string> {
+  const aliases = new Set<string>([fallbackId])
+
+  if (session) {
+    for (const id of sessionAliasIds(session)) {
+      aliases.add(id)
+    }
+  }
+
+  return aliases
+}
 
 interface SessionActionsOptions {
   activeSessionId: string | null
@@ -840,15 +852,16 @@ export function useSessionActions({
       const closingRuntimeId = wasSelected ? activeSessionId : null
       const previousMessages = $messages.get()
       const previousPinned = $pinnedSessionIds.get()
-      // Pins are keyed on the durable lineage-root id; the stored id may be the
-      // live tip after compression. Drop both so the pin can't linger.
-      const removedPinId = removed ? sessionPinId(removed) : storedSessionId
+      // Pins may be keyed on any lineage alias from older app versions or from
+      // projected compression rows. Drop all aliases so a pin can't resurrect an
+      // archived/deleted segment.
+      const removedPinAliases = pinnedAliasesFor(removed, storedSessionId)
 
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
       // Keep $sessionsTotal in sync so the sidebar's "Load N more" footer
       // doesn't keep claiming the removed row is still on the server.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== removedPinId))
+      $pinnedSessionIds.set(previousPinned.filter(id => !removedPinAliases.has(id)))
 
       // Tear down before awaiting so the route effect can't resume the
       // doomed session via the stale /<sid> URL.
@@ -921,9 +934,10 @@ export function useSessionActions({
       const archived = $sessions.get().find(session => sessionMatchesStoredId(session, storedSessionId))
       const wasSelected = selectedStoredSessionId === storedSessionId
       const previousPinned = $pinnedSessionIds.get()
-      // Pins are keyed on the durable lineage-root id; the stored id may be the
-      // live tip after compression. Drop both so the pin can't linger.
-      const archivedPinId = archived ? sessionPinId(archived) : storedSessionId
+      // Pins may be keyed on any lineage alias from older app versions or from
+      // projected compression rows. Drop all aliases so a pin can't resurrect an
+      // archived segment.
+      const archivedPinAliases = pinnedAliasesFor(archived, storedSessionId)
 
       // Soft-hide: drop from the sidebar immediately, keep the data.
       setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
@@ -931,7 +945,7 @@ export function useSessionActions({
       // on the next refresh, so they count as "removed" for the load-more
       // footer math.
       setSessionsTotal(prev => Math.max(0, prev - 1))
-      $pinnedSessionIds.set(previousPinned.filter(id => id !== storedSessionId && id !== archivedPinId))
+      $pinnedSessionIds.set(previousPinned.filter(id => !archivedPinAliases.has(id)))
 
       if (wasSelected) {
         startFreshSessionDraft(true)
@@ -944,7 +958,7 @@ export function useSessionActions({
         // that race after the mutation succeeds so right-click → Archive does
         // not appear to do nothing until the next full refresh.
         setSessions(prev => prev.filter(session => !sessionMatchesStoredId(session, storedSessionId)))
-        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => id !== storedSessionId && id !== archivedPinId))
+        $pinnedSessionIds.set($pinnedSessionIds.get().filter(id => !archivedPinAliases.has(id)))
         notify({ durationMs: 2_000, kind: 'success', message: copy.archived })
       } catch (err) {
         if (archived) {

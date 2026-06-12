@@ -11,6 +11,7 @@ import {
   applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
+  sessionAliasIds,
   sessionPinId,
   setCurrentCwd,
   setSessionAttention,
@@ -74,6 +75,18 @@ describe('sessionPinId', () => {
     // After auto-compression the entry surfaces under a fresh tip id but keeps
     // the original root — pinning on the root keeps the pin stable.
     expect(sessionPinId(session({ id: 'tip', _lineage_root_id: 'root' }))).toBe('root')
+  })
+})
+
+describe('sessionAliasIds', () => {
+  it('returns every lineage alias once', () => {
+    expect(
+      sessionAliasIds({ id: 'tip', _lineage_ids: ['root', 'mid', 'tip'], _lineage_root_id: 'root' })
+    ).toEqual(['tip', 'root', 'mid'])
+  })
+
+  it('falls back to the live id for uncompressed sessions', () => {
+    expect(sessionAliasIds(session({ id: 'solo' }))).toEqual(['solo'])
   })
 })
 

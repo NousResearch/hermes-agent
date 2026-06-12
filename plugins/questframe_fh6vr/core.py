@@ -254,6 +254,26 @@ LIVE_CAPTURE_SELFTEST_SCHEMA = {
     },
 }
 
+DEPTH_SURFACE_SELFTEST_SCHEMA = {
+    "name": "questframe_depth_surface_selftest",
+    "description": "Run the FH6VR approved D3D12 depth surface contract self-test (0.15 gate).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 SUPPORT_REPORT_SCHEMA = {
     "name": "questframe_support_report",
     "description": "Create redacted QuestFrame/FH6VR JSON and HTML support reports.",
@@ -696,6 +716,7 @@ def status() -> dict[str, Any]:
             "questframe_dibr_swapchain",
             "questframe_fh6_capture_preflight",
             "questframe_live_capture_selftest",
+            "questframe_depth_surface_selftest",
             "questframe_support_report",
             "questframe_unity_scan",
         ],
@@ -830,6 +851,18 @@ def handle_live_capture_selftest(args: dict[str, Any] | None = None, **_: Any) -
     )
 
 
+def handle_depth_surface_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    return _json(
+        run_launcher(
+            "fh6-depth-surface-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=["--json"],
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 def support_report(
     *,
     launcher_exe: str | None = None,
@@ -911,6 +944,7 @@ HELP = """questframe commands:
   /questframe dibr-swapchain
   /questframe capture-preflight
   /questframe live-capture-selftest
+  /questframe depth-surface-selftest
   /questframe support-report
   /questframe unity-scan [project_path]
 """
@@ -941,6 +975,8 @@ def handle_slash(raw_args: str) -> str:
         return handle_fh6_capture_preflight({})
     if command in {"live-capture-selftest", "live-capture", "live-capture-self-test"}:
         return handle_live_capture_selftest({})
+    if command in {"depth-surface-selftest", "depth-surface", "depth"}:
+        return handle_depth_surface_selftest({})
     if command in {"support-report", "report"}:
         return handle_support_report({})
     if command == "unity-scan":

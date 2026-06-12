@@ -77,6 +77,25 @@ def test_capture_preflight_handler_runs_new_launcher_gate(monkeypatch):
     assert seen["kwargs"]["timeout_seconds"] == 45
 
 
+def test_depth_surface_selftest_handler_runs_depth_gate(monkeypatch):
+    seen = {}
+
+    def fake_run_launcher(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return {"ok": True, "json": {"Status": "Pass", "Contract": {"GateStatus": "Ready"}}}
+
+    monkeypatch.setattr(core, "run_launcher", fake_run_launcher)
+
+    raw = core.handle_depth_surface_selftest({"timeout_seconds": 45})
+    result = json.loads(raw)
+
+    assert result["ok"] is True
+    assert seen["command"] == "fh6-depth-surface-selftest"
+    assert seen["kwargs"]["extra_args"] == ["--json"]
+    assert seen["kwargs"]["timeout_seconds"] == 45
+
+
 def test_rtx3060_selftest_handler_runs_profile_contract(monkeypatch):
     seen = {}
 
@@ -174,6 +193,8 @@ def test_plugin_registers_full_questframe_tool_surface():
         "questframe_frame_loop",
         "questframe_dibr_swapchain",
         "questframe_fh6_capture_preflight",
+        "questframe_live_capture_selftest",
+        "questframe_depth_surface_selftest",
         "questframe_support_report",
         "questframe_unity_scan",
     }.issubset(set(calls["tools"]))
@@ -228,6 +249,27 @@ def test_cli_rtx3060_selftest_dispatch(monkeypatch):
 
     assert exit_code == 0
     assert seen["command"] == "rtx3060-selftest"
+    assert seen["kwargs"]["extra_args"] == ["--json"]
+    assert seen["kwargs"]["timeout_seconds"] == 75
+
+
+def test_cli_depth_surface_selftest_dispatch(monkeypatch):
+    seen = {}
+
+    def fake_run_launcher(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "run_launcher", fake_run_launcher)
+    parser = questframe_cli.argparse.ArgumentParser()
+    questframe_cli.register_cli(parser)
+    args = parser.parse_args(["depth-surface-selftest", "--timeout-seconds", "75"])
+
+    exit_code = questframe_cli.questframe_command(args)
+
+    assert exit_code == 0
+    assert seen["command"] == "fh6-depth-surface-selftest"
     assert seen["kwargs"]["extra_args"] == ["--json"]
     assert seen["kwargs"]["timeout_seconds"] == 75
 

@@ -70,6 +70,13 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     live_capture.add_argument("--attempt-window-capture", action="store_true")
     live_capture.add_argument("--timeout-seconds", type=int, default=None)
 
+    depth_surface = subs.add_parser(
+        "depth-surface-selftest",
+        help="Run FH6VR approved D3D12 depth surface contract self-test (0.15 gate)",
+    )
+    depth_surface.add_argument("--launcher-exe", default="")
+    depth_surface.add_argument("--timeout-seconds", type=int, default=None)
+
     support_report = subs.add_parser(
         "support-report", help="Create redacted JSON and HTML support reports"
     )
@@ -95,7 +102,8 @@ def questframe_command(args: argparse.Namespace) -> int:
             "usage: hermes questframe "
             "{setup,status,preflight,profiles,rtx3060-selftest,session-readiness,"
             "graphics-session,frame-loop,"
-            "dibr-swapchain,capture-preflight,live-capture-selftest,support-report,unity-scan}"
+            "dibr-swapchain,capture-preflight,live-capture-selftest,"
+            "depth-surface-selftest,support-report,unity-scan}"
         )
         return 2
     if command == "setup":
@@ -191,6 +199,15 @@ def questframe_command(args: argparse.Namespace) -> int:
                 "fh6-live-capture-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "depth-surface-selftest":
+        return _print(
+            core.run_launcher(
+                "fh6-depth-surface-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=["--json"],
                 timeout_seconds=getattr(args, "timeout_seconds", None),
             )
         )

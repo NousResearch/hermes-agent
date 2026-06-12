@@ -26,6 +26,7 @@ def test_status_without_launcher_configured(plugin_env):
     assert payload["plugin"] == "questframe-fh6vr"
     assert payload["launcher_exists"] is False
     assert "questframe_support_report" in payload["available_tools"]
+    assert "questframe_depth_surface_selftest" in payload["available_tools"]
 
 
 def test_save_setup_values_writes_config(plugin_env, monkeypatch):
@@ -151,6 +152,25 @@ def test_handle_live_capture_selftest_passes_window_capture_flag(tmp_path):
     assert "--attempt-window-capture" in calls[0]
 
 
+def test_handle_depth_surface_selftest_runs_launcher_gate(tmp_path):
+    launcher = tmp_path / "FH6VR.Launcher.exe"
+    launcher.write_text("stub", encoding="utf-8")
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, stdout='{"Status":"Pass"}', stderr="")
+
+    with patch("plugins.questframe_fh6vr.core.subprocess.run", side_effect=fake_run):
+        payload = json.loads(
+            core.handle_depth_surface_selftest({"launcher_exe": str(launcher)})
+        )
+
+    assert payload["ok"] is True
+    assert "fh6-depth-surface-selftest" in calls[0][1]
+    assert "--json" in calls[0]
+
+
 def test_register_exposes_all_documented_tools():
     from plugins.questframe_fh6vr import _TOOLS
 
@@ -167,6 +187,7 @@ def test_register_exposes_all_documented_tools():
         "questframe_dibr_swapchain",
         "questframe_fh6_capture_preflight",
         "questframe_live_capture_selftest",
+        "questframe_depth_surface_selftest",
         "questframe_support_report",
         "questframe_unity_scan",
     }

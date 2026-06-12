@@ -5,9 +5,20 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+import pytest
+
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
+
+
+@pytest.fixture(autouse=True)
+def _clear_custom_models_cache():
+    """Clear module-level cache to prevent cross-test leakage."""
+    from hermes_cli.model_switch import _custom_models_cache
+    _custom_models_cache.clear()
+    yield
+    _custom_models_cache.clear()
 
 
 _MOCK_VALIDATION = {

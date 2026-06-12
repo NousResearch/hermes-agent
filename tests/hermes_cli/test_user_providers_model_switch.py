@@ -10,6 +10,15 @@ from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli import runtime_provider as rp
 
 
+@pytest.fixture(autouse=True)
+def _clear_custom_models_cache():
+    """Clear module-level cache to prevent cross-test leakage."""
+    from hermes_cli.model_switch import _custom_models_cache
+    _custom_models_cache.clear()
+    yield
+    _custom_models_cache.clear()
+
+
 # =============================================================================
 # Tests for list_authenticated_providers including full models list
 # =============================================================================

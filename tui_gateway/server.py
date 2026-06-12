@@ -3839,6 +3839,14 @@ def _(rid, params: dict) -> dict:
         set_hermes_home_override(str(profile_home)) if profile_home is not None else None
     )
     try:
+        # Follow the context-compression chain so we load messages from the
+        # latest descendant session (see #15000 / #44640).  web_server.py and
+        # cli_commands_mixin.py already do this; the TUI gateway was missing it.
+        resolved = db.resolve_resume_session_id(target)
+        if resolved and resolved != target:
+            target = resolved
+            found = db.get_session(target) or found
+
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
         display_history = db.get_messages_as_conversation(

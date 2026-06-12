@@ -627,20 +627,37 @@ export function usePromptActions({
       }
 
       if (!sessionId) {
-        try {
-          sessionId = await createBackendSessionForSend(visibleText)
-        } catch (err) {
-          dropOptimistic(null)
-          releaseBusy()
-          notifyError(err, copy.sessionUnavailable)
+        // Guard: if the user selected a stored session to resume, do NOT
+        // silently create a brand-new session.  Re-attempt the resume instead
+        // so the gateway can resolve the compression chain (#44640).
+        if (selectedStoredSessionIdRef.current) {
+          try {
+            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+              session_id: selectedStoredSessionIdRef.current
+            })
+            sessionId = resumed?.session_id ?? null
+          } catch (resumeErr) {
+            console.warn('[prompt-actions] resume retry failed for stored session', selectedStoredSessionIdRef.current, resumeErr)
+            // fall through to error below — do NOT silently create a new session
+          }
+        }
 
-          return false
+        if (!sessionId && !selectedStoredSessionIdRef.current) {
+          try {
+            sessionId = await createBackendSessionForSend(visibleText)
+          } catch (err) {
+            dropOptimistic(null)
+            releaseBusy()
+            notifyError(err, copy.sessionUnavailable)
+
+            return false
+          }
         }
 
         if (!sessionId) {
           dropOptimistic(null)
           releaseBusy()
-          notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
+          notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.resumeFailed ?? copy.createSessionFailed })
 
           return false
         }

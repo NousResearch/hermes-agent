@@ -24,14 +24,17 @@ fn run_manager(args: &[&str]) -> String {
 }
 
 fn create_runtime_dirs(hermes_home: &Path) -> Vec<PathBuf> {
-    let paths = vec![
-        hermes_home.join("hermes-agent"),
-        hermes_home.join("bin"),
-        hermes_home.join("node"),
-        hermes_home.join("git"),
-    ];
+    let paths = hermes_manager::paths::managed_runtime_roots(hermes_home);
     for path in &paths {
         fs::create_dir_all(path).expect("runtime dir should be created");
+    }
+    paths
+}
+
+fn create_runtime_files(hermes_home: &Path) -> Vec<PathBuf> {
+    let paths = hermes_manager::paths::managed_runtime_files(hermes_home);
+    for path in &paths {
+        fs::write(path, "managed").expect("runtime file should be created");
     }
     paths
 }
@@ -45,6 +48,8 @@ fn cli_smoke_manages_runtime_metadata_repair_and_lite_uninstall() {
     fs::write(&user_config, "model: test").expect("user config should be created");
 
     let runtime_dirs = create_runtime_dirs(&hermes_home);
+    let runtime_files = create_runtime_files(&hermes_home);
+    let runtime_path_count = runtime_dirs.len() + runtime_files.len();
     let hermes_home_text = hermes_home.display().to_string();
 
     let install_out = run_manager(&["--hermes-home", &hermes_home_text, "install-metadata"]);
@@ -70,7 +75,7 @@ fn cli_smoke_manages_runtime_metadata_repair_and_lite_uninstall() {
             .as_array()
             .expect("paths should be array")
             .len(),
-        4
+        runtime_path_count
     );
 
     let uninstall_out = run_manager(&[
@@ -85,9 +90,14 @@ fn cli_smoke_manages_runtime_metadata_repair_and_lite_uninstall() {
     for path in &runtime_dirs {
         assert!(!path.exists(), "{} should be removed", path.display());
     }
+    for path in &runtime_files {
+        assert!(!path.exists(), "{} should be removed", path.display());
+    }
     assert!(user_config.exists());
 
     let repaired_runtime_dirs = create_runtime_dirs(&hermes_home);
+    let repaired_runtime_files = create_runtime_files(&hermes_home);
+    let repaired_path_count = repaired_runtime_dirs.len() + repaired_runtime_files.len();
     let repair_out = run_manager(&["--hermes-home", &hermes_home_text, "--json", "repair-clean"]);
     let repair: serde_json::Value =
         serde_json::from_str(&repair_out).expect("repair output should be json");
@@ -97,9 +107,12 @@ fn cli_smoke_manages_runtime_metadata_repair_and_lite_uninstall() {
             .as_array()
             .expect("paths should be array")
             .len(),
-        4
+        repaired_path_count
     );
     for path in repaired_runtime_dirs {
+        assert!(!path.exists(), "{} should be removed", path.display());
+    }
+    for path in repaired_runtime_files {
         assert!(!path.exists(), "{} should be removed", path.display());
     }
     assert!(user_config.exists());

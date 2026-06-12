@@ -269,6 +269,8 @@ language-specific setup where needed.
 - `bootstrap-marker` now runs as a native Rust stage in the Tauri bootstrapper on Windows and Unix manifests.
 - `config-templates` and the Unix `config` stage now run as native Rust stages while preserving Python
   `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.
+- Bootstrap-installer Rust tests now include a local archive lifecycle smoke that exercises fresh archive extraction,
+  archive refresh, manager metadata recording, repair cleanup, and lite uninstall without network access.
 - CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
 
 **Still script-backed:**
@@ -337,7 +339,8 @@ language-specific setup where needed.
   broken managed Node/Python/uv/pip/Git/bootstrap-cache directories and staged updater binaries are recreated by the
   next bootstrap while user config and data stay intact.
 - `hermes-manager` now has a CLI smoke test that runs `install-metadata`, `uninstall-lite`, and `repair-clean` against
-  an isolated Hermes home, proving the command surface preserves user config while cleaning managed runtime state.
+  an isolated Hermes home, proving the command surface preserves user config while cleaning every current
+  Hermes-managed runtime directory and staged installer file.
 
 **Exit Criteria:**
 - Rust manager can perform platform cleanup with parity to Python/shell uninstall.
@@ -415,8 +418,8 @@ language-specific setup where needed.
    `bootstrap-tools/` archives.
 3. Expand `hermes-manager` ownership only when new bootstrap-owned runtime roots or files are introduced; current
    metadata covers the checkout, managed tool/runtime/cache directories, bootstrap cache, and staged updater binary.
-4. Add end-to-end smoke commands for fresh install, archive update, repair cleanup, and lite uninstall on Windows,
-   Linux, and macOS.
+4. Extend the current local lifecycle smoke into platform runners for Windows, Linux, and macOS so fresh install,
+   archive update, repair cleanup, and lite uninstall are verified against real packaged binaries.
 5. Reduce shell usage in desktop bootstrap until scripts are only fallback or direct-install entry points.
 6. After one release with native bootstrap enabled, evaluate larger Rust runtime candidates from Phase 7 using measured
    install-time dependency reduction, not rewrite preference.

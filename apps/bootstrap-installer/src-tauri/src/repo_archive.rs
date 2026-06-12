@@ -419,6 +419,86 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    #[test]
+    fn archive_lifecycle_smoke_covers_update_repair_and_lite_uninstall() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-repo-archive-lifecycle-{}",
+            std::process::id()
+        ));
+        let hermes_home = root.join("home");
+        let install_root = hermes_home.join("hermes-agent");
+        let archive = root.join("fresh.zip");
+        let update_archive = root.join("update.zip");
+        std::fs::create_dir_all(&root).unwrap();
+        write_test_zip(
+            &archive,
+            &[
+                ("hermes-agent-main/README.md", b"fresh"),
+                ("hermes-agent-main/scripts/install.sh", b"#!/bin/sh\n"),
+            ],
+        );
+        write_test_zip(
+            &update_archive,
+            &[
+                ("hermes-agent-main/README.md", b"updated"),
+                ("hermes-agent-main/scripts/install.sh", b"#!/bin/sh\necho update\n"),
+            ],
+        );
+
+        extract_repo_archive_to_install_root(&archive, &install_root).unwrap();
+        let spec = RepoArchiveSpec {
+            owner: "NousResearch".into(),
+            repo: "hermes-agent".into(),
+            commit: None,
+            branch: Some("main".into()),
+        };
+        write_archive_source_marker(&install_root, &spec, &archive, false).unwrap();
+        let source_marker_before = std::fs::read(install_root.join(SOURCE_MARKER_NAME)).unwrap();
+        for runtime_root in hermes_manager::paths::managed_runtime_roots(&hermes_home) {
+            std::fs::create_dir_all(&runtime_root).unwrap();
+        }
+        for runtime_file in hermes_manager::paths::managed_runtime_files(&hermes_home) {
+            std::fs::write(runtime_file, b"managed").unwrap();
+        }
+        std::fs::write(hermes_home.join("config.yaml"), b"model: test\n").unwrap();
+        hermes_manager::commands::install_metadata(&hermes_home).unwrap();
+
+        refresh_existing_checkout_from_archive(&update_archive, &install_root).unwrap();
+
+        assert_eq!(std::fs::read(install_root.join("README.md")).unwrap(), b"updated");
+        assert_eq!(
+            std::fs::read(install_root.join(SOURCE_MARKER_NAME)).unwrap(),
+            source_marker_before
+        );
+        assert!(hermes_home.join("config.yaml").exists());
+
+        let repaired = hermes_manager::commands::repair_clean(&hermes_home).unwrap();
+        assert!(repaired
+            .iter()
+            .any(|path| path.ends_with("hermes-agent")));
+        assert!(repaired
+            .iter()
+            .any(|path| path.ends_with("bootstrap-cache")));
+        assert!(!install_root.exists());
+        assert!(hermes_home.join("config.yaml").exists());
+
+        for runtime_root in hermes_manager::paths::managed_runtime_roots(&hermes_home) {
+            std::fs::create_dir_all(&runtime_root).unwrap();
+        }
+        for runtime_file in hermes_manager::paths::managed_runtime_files(&hermes_home) {
+            std::fs::write(runtime_file, b"managed").unwrap();
+        }
+        hermes_manager::commands::install_metadata(&hermes_home).unwrap();
+        let planned = hermes_manager::commands::uninstall_lite_plan(&hermes_home).unwrap();
+        let removed = hermes_manager::commands::uninstall_lite(&hermes_home).unwrap();
+
+        assert_eq!(removed, planned);
+        assert!(hermes_home.join("config.yaml").exists());
+        assert!(!install_root.exists());
+        assert!(!hermes_home.join("bootstrap-cache").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 fn remove_path_if_exists(path: &Path) -> Result<()> {

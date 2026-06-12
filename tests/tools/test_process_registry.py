@@ -103,10 +103,8 @@ def test_write_stdin_uses_bytes_for_posix_pty(monkeypatch, registry):
     assert written == [b"hello\n"]
 
 
-# =========================================================================
-# Get / Poll
-# =========================================================================
-
+# ==================================================================# Get / Poll
+# ==================================================================
 class TestGetAndPoll:
     def test_get_not_found(self, registry):
         assert registry.get("nonexistent") is None
@@ -253,10 +251,8 @@ def test_reader_loop_streams_incremental_chunks_from_read1(registry, monkeypatch
     assert moved == ["proc_reader_live"]
 
 
-# =========================================================================
-# Orphaned-pipe reconciliation (issue #17327)
-# =========================================================================
-
+# ==================================================================# Orphaned-pipe reconciliation (issue #17327)
+# ==================================================================
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only: uses setsid/fcntl")
 class TestOrphanedPipeReconciliation:
     """Regression tests for issue #17327.
@@ -406,10 +402,8 @@ class TestOrphanedPipeReconciliation:
         assert elapsed < 0.3, f"wait() should wake on completion; took {elapsed:.3f}s"
 
 
-# =========================================================================
-# Read log
-# =========================================================================
-
+# ==================================================================# Read log
+# ==================================================================
 class TestReadLog:
     def test_not_found(self, registry):
         result = registry.read_log("nonexistent")
@@ -438,10 +432,8 @@ class TestReadLog:
         assert "5 lines" in result["showing"]
 
 
-# =========================================================================
-# Stdin helpers
-# =========================================================================
-
+# ==================================================================# Stdin helpers
+# ==================================================================
 class TestStdinHelpers:
     def test_close_stdin_not_found(self, registry):
         result = registry.close_stdin("nonexistent")
@@ -503,10 +495,8 @@ class TestStdinHelpers:
             registry.kill_process(session.id)
 
 
-# =========================================================================
-# List sessions
-# =========================================================================
-
+# ==================================================================# List sessions
+# ==================================================================
 class TestListSessions:
     def test_empty(self, registry):
         assert registry.list_sessions() == []
@@ -567,10 +557,8 @@ class TestListSessions:
         assert "output_preview" in entry
 
 
-# =========================================================================
-# Active process queries
-# =========================================================================
-
+# ==================================================================# Active process queries
+# ==================================================================
 class TestActiveQueries:
     def test_has_active_processes(self, registry):
         s = _make_session(task_id="t1")
@@ -612,10 +600,8 @@ class TestActiveQueries:
         assert registry.has_active_processes("t1") is False
 
 
-# =========================================================================
-# Pruning
-# =========================================================================
-
+# ==================================================================# Pruning
+# ==================================================================
 class TestPruning:
     def test_prune_expired_finished(self, registry):
         old_session = _make_session(
@@ -652,10 +638,8 @@ class TestPruning:
         assert total <= MAX_PROCESSES
 
 
-# =========================================================================
-# Spawn env sanitization
-# =========================================================================
-
+# ==================================================================# Spawn env sanitization
+# ==================================================================
 class TestSpawnEnvSanitization:
     def test_spawn_local_strips_blocked_vars_from_background_env(self, registry):
         captured = {}
@@ -807,10 +791,8 @@ class TestSpawnEnvSanitization:
         assert env.commands[2][0] == "cat '/path with spaces/hermes_bg.exit' 2>/dev/null"
 
 
-# =========================================================================
-# Popen leak prevention
-# =========================================================================
-
+# ==================================================================# Popen leak prevention
+# ==================================================================
 class TestPopenLeakOnSetupFailure:
     """Regression for issue #2749: subprocess orphaned when post-Popen setup raises."""
 
@@ -911,10 +893,8 @@ class TestPopenLeakOnSetupFailure:
         assert session.pid == 7777
 
 
-# =========================================================================
-# Checkpoint
-# =========================================================================
-
+# ==================================================================# Checkpoint
+# ==================================================================
 class TestCheckpoint:
     def test_write_checkpoint(self, registry, tmp_path):
         with patch("tools.process_registry.CHECKPOINT_PATH", tmp_path / "procs.json"):
@@ -1088,10 +1068,8 @@ class TestCheckpoint:
                     proc.wait(timeout=5)
 
 
-# =========================================================================
-# Kill process
-# =========================================================================
-
+# ==================================================================# Kill process
+# ==================================================================
 class TestKillProcess:
     def test_kill_not_found(self, registry):
         result = registry.kill_process("nonexistent")
@@ -1161,10 +1139,8 @@ class TestKillProcess:
             registry._running.pop(s.id, None)
 
 
-# =========================================================================
-# Tool handler
-# =========================================================================
-
+# ==================================================================# Tool handler
+# ==================================================================
 class TestProcessToolHandler:
     def test_list_action(self):
         from tools.process_registry import _handle_process
@@ -1182,11 +1158,9 @@ class TestProcessToolHandler:
         assert "error" in result
 
 
-# =========================================================================
-# format_process_notification + drain_notifications (shared helpers)
-# =========================================================================
-
-from tools.process_registry import format_process_notification
+# ==================================================================# format_process_notification + drain_notifications (shared helpers)
+# ==================================================================
+from tools.process_registry import format_completion_output, format_process_notification
 
 
 def test_format_completion_event():
@@ -1231,6 +1205,26 @@ def test_format_external_sigterm_does_not_claim_agent_kill():
     assert "proc_external exited" in result
     assert "terminated by" not in result
     assert "exit code 143, SIGTERM" in result
+
+
+def test_format_completion_output_empty_for_user():
+    result = format_completion_output("", for_agent=False)
+    assert "No buffered stdout captured" in result
+    assert "files or logs" in result
+
+
+def test_format_completion_event_empty_output_gets_hint():
+    evt = {
+        "type": "completion",
+        "session_id": "proc_empty",
+        "command": "sleep 5",
+        "exit_code": 0,
+        "output": "",
+    }
+    result = format_process_notification(evt)
+    assert result is not None
+    assert "No buffered stdout captured" in result
+    assert 'process(action="log", session_id=...)' in result
 
 
 def test_format_watch_match_event():
@@ -1511,16 +1505,14 @@ class TestTerminateHostPidPosix:
         assert kill_calls == [(12345, signal.SIGTERM)]
 
 
-# =========================================================================
-# PID-reuse guard — a recycled PID/PGID must never be signalled.
+# ==================================================================# PID-reuse guard — a recycled PID/PGID must never be signalled.
 #
 # Regression: once a background-session process exits and is reaped, the kernel
 # can recycle its PID onto an unrelated process (observed in the wild landing on
 # a desktop browser's session leader, whose whole tree we then SIGTERMed —
 # Firefox dying at irregular intervals).  Identity is re-validated via the
 # kernel start time captured at spawn before any signal is sent.
-# =========================================================================
-
+# ==================================================================
 class TestPidReuseGuard:
     def test_terminate_refuses_when_start_time_mismatches(self, registry):
         """A live PID whose start time changed (recycled) is NOT killed."""

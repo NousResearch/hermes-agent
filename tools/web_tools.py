@@ -1530,7 +1530,7 @@ WEB_SEARCH_SCHEMA = {
 
 WEB_EXTRACT_SCHEMA = {
     "name": "web_extract",
-    "description": "Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs (arxiv papers, documents, etc.) — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
+    "description": "Extract content from web page URLs. Returns page content in markdown format. Also works with PDF URLs (arxiv papers, documents, etc.) — pass the PDF link directly and it converts to markdown text. Pages under 5000 chars return full markdown; larger pages are LLM-summarized and capped at ~5000 chars per page. Set use_llm_processing=false to skip summarization and return raw markdown instead (useful when every detail matters — docs, papers, specs). Pages over 2M chars are refused. If a URL fails or times out, use the browser tool to access it instead.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1539,6 +1539,11 @@ WEB_EXTRACT_SCHEMA = {
                 "items": {"type": "string"},
                 "description": "List of URLs to extract content from (max 5 URLs per call)",
                 "maxItems": 5
+            },
+            "use_llm_processing": {
+                "type": "boolean",
+                "description": "Whether to process content with LLM for summarization. Defaults to true (summary mode, ~5K chars). Set false for raw full-content extraction — the agent gets the complete page.",
+                "default": True
             }
         },
         "required": ["urls"]
@@ -1560,7 +1565,9 @@ registry.register(
     toolset="web",
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
-        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
+        args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [],
+        format="markdown",
+        use_llm_processing=args.get("use_llm_processing", True)),
     check_fn=web_tools_registered,
     requires_env=_web_requires_env(),
     is_async=True,

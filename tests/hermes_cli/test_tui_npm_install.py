@@ -465,6 +465,34 @@ def test_tui_launch_install_uses_workspace_scope(
     assert "--workspace" in install_cmd
     assert "ui-tui" in install_cmd
 
+def test_make_tui_argv_errors_cleanly_when_tui_dir_missing(
+    tmp_path: Path, main_mod, monkeypatch, capsys
+) -> None:
+    """CLI-only install (no ui-tui tree, no prebuilt bundle): a clean error +
+    exit(1), NOT a bare FileNotFoundError from npm/node on a nonexistent cwd.
+
+    Regression for the Homebrew/pip report: `hermes --tui` crashed with
+    `FileNotFoundError: .../site-packages/ui-tui` because the launcher fell
+    through to `npm install` with `cwd=<missing>/ui-tui`.
+    """
+    missing = tmp_path / "site-packages" / "ui-tui"  # never created
+    monkeypatch.delenv("HERMES_TUI_DIR", raising=False)
+    monkeypatch.setattr(main_mod, "_ensure_tui_node", lambda: None)
+    monkeypatch.setattr(main_mod, "_find_bundled_tui", lambda *_a, **_k: None)
+
+    def fail_run(*_args, **_kwargs):
+        raise AssertionError("must not spawn npm/node when the TUI dir is missing")
+
+    monkeypatch.setattr(main_mod.subprocess, "run", fail_run)
+    monkeypatch.setattr(main_mod.subprocess, "call", fail_run)
+
+    with pytest.raises(SystemExit) as exc:
+        main_mod._make_tui_argv(missing, tui_dev=False)
+
+    assert exc.value.code == 1
+    assert "TUI is not available" in capsys.readouterr().err
+
+
 def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:

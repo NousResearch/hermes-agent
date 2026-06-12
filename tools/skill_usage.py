@@ -346,6 +346,8 @@ def list_agent_created_skill_names() -> List[str]:
     prune_builtins = _prune_builtins_enabled()
     usage = load_usage()
 
+    resolved_base = base.resolve()
+
     names: List[str] = []
     # Top-level SKILL.md files (flat layout) AND nested category/skill/SKILL.md
     for skill_md in base.rglob("SKILL.md"):
@@ -360,6 +362,14 @@ def list_agent_created_skill_names() -> List[str]:
             skill_md.relative_to(base)
         except ValueError:
             continue
+        # Skip symlinked skills whose real content lives outside the skills
+        # directory. These are externally managed and should not be curated.
+        skill_dir = skill_md.parent
+        if skill_dir.is_symlink():
+            try:
+                skill_dir.resolve().relative_to(resolved_base)
+            except ValueError:
+                continue
         name = _read_skill_name(skill_md, fallback=skill_md.parent.name)
         # Hub-installed skills are always off-limits.
         if name in hub:

@@ -62,6 +62,7 @@ DEFAULT_ARCHIVE_AFTER_DAYS = 90
 # whenever the curator is enabled; only the opinionated, aux-model-cost
 # consolidation pass is opt-in.
 DEFAULT_CONSOLIDATE = False
+DEFAULT_MAX_ITERATIONS = 200
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +174,14 @@ def get_archive_after_days() -> int:
         return int(cfg.get("archive_after_days", DEFAULT_ARCHIVE_AFTER_DAYS))
     except (TypeError, ValueError):
         return DEFAULT_ARCHIVE_AFTER_DAYS
+
+
+def get_max_iterations() -> int:
+    cfg = _load_config()
+    try:
+        return int(cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS))
+    except (TypeError, ValueError):
+        return DEFAULT_MAX_ITERATIONS
 
 
 def get_prune_builtins() -> bool:
@@ -1881,12 +1890,7 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
             api_key=_api_key,
             base_url=_base_url,
             api_mode=_api_mode,
-            # Umbrella-building over a large skill collection is worth a
-            # high iteration ceiling — the pass typically takes 50-100
-            # API calls against hundreds of candidate skills. The
-            # single-session review path caps itself at a much smaller
-            # number because it's not doing a curation sweep.
-            max_iterations=9999,
+            max_iterations=get_max_iterations(),
             quiet_mode=True,
             platform="curator",
             skip_context_files=True,

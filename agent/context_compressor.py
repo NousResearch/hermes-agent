@@ -708,14 +708,35 @@ class ContextCompressor(ContextEngine):
         built from, recorded so mid-turn estimates know where the
         provider-counted prefix ends.
         """
-        self.last_prompt_tokens = usage.get("prompt_tokens", 0)
+        prompt_tokens = usage.get("prompt_tokens", 0) or 0
+        previous_prompt_tokens = self.last_prompt_tokens or 0
+        same_snapshot = (
+            messages_len is not None
+            and self.last_prompt_messages_len is not None
+            and messages_len == self.last_prompt_messages_len
+        )
+        preserve_preflight_display = (
+            prompt_tokens > 0
+            and previous_prompt_tokens > prompt_tokens
+            and same_snapshot
+            and not self.awaiting_real_usage_after_compression
+        )
+
+        # Preflight estimates include the whole request envelope before the API
+        # call. Some providers later report a lower exact prompt count for the
+        # same message prefix, which made live context meters bounce down/up
+        # between rough and exact snapshots during one turn. Keep the display
+        # base monotonic for that prefix, while still recording the real count
+        # below for fit/deferral heuristics. A post-compression real count is
+        # allowed to shrink because that is an actual context reset.
+        self.last_prompt_tokens = previous_prompt_tokens if preserve_preflight_display else prompt_tokens
         if messages_len is not None:
             self.last_prompt_messages_len = messages_len
-        self.last_completion_tokens = usage.get("completion_tokens", 0)
-        self.last_total_tokens = usage.get("total_tokens", self.last_prompt_tokens + self.last_completion_tokens)
-        if self.last_prompt_tokens > 0:
-            self.last_real_prompt_tokens = self.last_prompt_tokens
-            if self.last_prompt_tokens < self.threshold_tokens:
+        self.last_completion_tokens = usage.get("completion_tokens", 0) or 0
+        self.last_total_tokens = usage.get("total_tokens", prompt_tokens + self.last_completion_tokens) or 0
+        if prompt_tokens > 0:
+            self.last_real_prompt_tokens = prompt_tokens
+            if prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
             else:

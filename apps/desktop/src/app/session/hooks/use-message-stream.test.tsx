@@ -109,6 +109,49 @@ describe('useMessageStream token usage events', () => {
 
     expect($currentUsage.get()).toEqual({ calls: 1, input: 10, output: 5, total: 15 })
   })
+
+  it('does not let lower tool usage snapshots bounce the active context bar backwards', () => {
+    $currentUsage.set({
+      calls: 2,
+      context_max: 100_000,
+      context_percent: 67,
+      context_used: 67_000,
+      input: 50_000,
+      output: 1_000,
+      total: 51_000
+    })
+    render(<MessageStreamHarness />)
+
+    act(() =>
+      handleEvent({
+        payload: {
+          name: 'read_file',
+          tool_id: 'tool-1',
+          usage: {
+            calls: 3,
+            context_max: 100_000,
+            context_percent: 48,
+            context_used: 48_000,
+            input: 60_000,
+            output: 2_000,
+            total: 62_000
+          }
+        },
+        session_id: 'session-1',
+        type: 'tool.complete'
+      } as RpcEvent)
+    )
+
+    expect($currentUsage.get()).toMatchObject({
+      calls: 3,
+      context_max: 100_000,
+      context_percent: 67,
+      context_used: 67_000,
+      input: 60_000,
+      output: 2_000,
+      total: 62_000
+    })
+  })
 })
 
 describe('useMessageStream session.info events', () => {

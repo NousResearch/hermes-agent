@@ -88,6 +88,34 @@ class TestLiveContextTokens:
         compressor.update_from_response({"prompt_tokens": 456})
         assert compressor.last_prompt_messages_len == 7
 
+    def test_provider_usage_cannot_lower_same_preflight_snapshot(self, compressor):
+        compressor.last_prompt_tokens = 67_000
+        compressor.last_prompt_messages_len = len(BASE_MESSAGES)
+
+        compressor.update_from_response(
+            {"prompt_tokens": 48_000, "completion_tokens": 100, "total_tokens": 48_100},
+            messages_len=len(BASE_MESSAGES),
+        )
+
+        assert compressor.last_prompt_tokens == 67_000
+        assert compressor.last_real_prompt_tokens == 48_000
+        assert compressor.last_total_tokens == 48_100
+        assert compressor.live_context_tokens(list(BASE_MESSAGES)) == 67_000
+
+    def test_provider_usage_can_lower_after_compression(self, compressor):
+        compressor.last_prompt_tokens = 67_000
+        compressor.last_prompt_messages_len = len(BASE_MESSAGES)
+        compressor.awaiting_real_usage_after_compression = True
+
+        compressor.update_from_response(
+            {"prompt_tokens": 22_000, "completion_tokens": 100, "total_tokens": 22_100},
+            messages_len=len(BASE_MESSAGES),
+        )
+
+        assert compressor.last_prompt_tokens == 22_000
+        assert compressor.last_real_prompt_tokens == 22_000
+        assert compressor.awaiting_real_usage_after_compression is False
+
 
 class _FakeAgent:
     model = "test/model"

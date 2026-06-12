@@ -18,7 +18,7 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
-import { mergeTokenUsagePayload, type TokenUsagePayload } from '@/lib/token-usage'
+import { mergeTokenUsagePayload, mergeUsageSnapshot, type TokenUsagePayload } from '@/lib/token-usage'
 import { setClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
@@ -807,7 +807,7 @@ export function useMessageStream({
         }
 
         if (payload?.usage && (!explicitSid || isActiveEvent)) {
-          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
         }
 
         if (typeof payload?.credential_warning === 'string' && payload.credential_warning) {
@@ -918,8 +918,8 @@ export function useMessageStream({
           setSessionActivityStatus(null)
         }
 
-        if (payload?.usage) {
-          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+        if (payload?.usage && (!explicitSid || isActiveEvent)) {
+          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
         }
       } else if (event.type === 'tool.start' || event.type === 'tool.progress' || event.type === 'tool.generating') {
         if (!sessionId) {
@@ -931,7 +931,7 @@ export function useMessageStream({
 
         // Update context usage in real-time during tool execution.
         if (payload?.usage && (!explicitSid || isActiveEvent)) {
-          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
         }
 
         if (isActiveEvent) {
@@ -950,7 +950,7 @@ export function useMessageStream({
 
         // Update context usage in real-time after tool completion.
         if (payload?.usage && (!explicitSid || isActiveEvent)) {
-          setCurrentUsage(current => ({ ...current, ...payload.usage }))
+          setCurrentUsage(current => mergeUsageSnapshot(current, payload.usage))
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {

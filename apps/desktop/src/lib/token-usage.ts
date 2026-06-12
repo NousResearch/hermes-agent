@@ -88,11 +88,55 @@ export function usageFromTokenUsagePayload(payload: TokenUsagePayload | null | u
   return Object.keys(usage).length ? usage : null
 }
 
+export function mergeUsageSnapshot(
+  current: UsageStats,
+  incoming: Partial<UsageStats> | null | undefined,
+  options: { allowContextDecrease?: boolean } = {}
+): UsageStats {
+  if (!incoming || Object.keys(incoming).length === 0) {
+    return current
+  }
+
+  const next = { ...current, ...incoming }
+
+  if (options.allowContextDecrease) {
+    return next
+  }
+
+  const currentContextUsed = finiteNumber(current.context_used)
+  const incomingContextUsed = finiteNumber(incoming.context_used)
+  const currentContextPercent = finiteNumber(current.context_percent)
+  const incomingContextPercent = finiteNumber(incoming.context_percent)
+  const incomingCompressionCount = finiteNumber(incoming.compressions)
+  const currentCompressionCount = finiteNumber(current.compressions) ?? 0
+  const compressionAdvanced =
+    incomingCompressionCount !== undefined && incomingCompressionCount > currentCompressionCount
+  const contextWindowChanged =
+    incoming.context_max !== undefined &&
+    current.context_max !== undefined &&
+    incoming.context_max !== current.context_max
+  const contextWentBackwards =
+    (currentContextUsed !== undefined &&
+      incomingContextUsed !== undefined &&
+      incomingContextUsed < currentContextUsed) ||
+    (currentContextPercent !== undefined &&
+      incomingContextPercent !== undefined &&
+      incomingContextPercent < currentContextPercent)
+
+  if (contextWentBackwards && !compressionAdvanced && !contextWindowChanged) {
+    next.context_used = current.context_used
+    next.context_percent = current.context_percent
+    next.context_max = incoming.context_max ?? current.context_max
+  }
+
+  return next
+}
+
 export function mergeTokenUsagePayload(
   current: UsageStats,
   payload: TokenUsagePayload | null | undefined
 ): UsageStats {
   const usage = usageFromTokenUsagePayload(payload)
 
-  return usage ? { ...current, ...usage } : current
+  return mergeUsageSnapshot(current, usage)
 }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { mergeTokenUsagePayload, usageFromTokenUsagePayload } from './token-usage'
+import { mergeTokenUsagePayload, mergeUsageSnapshot, usageFromTokenUsagePayload } from './token-usage'
 
 describe('usageFromTokenUsagePayload', () => {
   it('maps gateway token.usage payload fields into statusbar usage stats', () => {
@@ -42,5 +42,95 @@ describe('usageFromTokenUsagePayload', () => {
     const current = { calls: 2, input: 10, output: 20, total: 30 }
 
     expect(mergeTokenUsagePayload(current, { input_tokens: Number.NaN })).toBe(current)
+  })
+
+  it('keeps live context usage from moving backwards on older snapshots', () => {
+    const current = {
+      calls: 2,
+      context_max: 100_000,
+      context_percent: 67,
+      context_used: 67_000,
+      input: 50_000,
+      output: 1_000,
+      total: 51_000
+    }
+
+    expect(
+      mergeUsageSnapshot(current, {
+        calls: 3,
+        context_max: 100_000,
+        context_percent: 48,
+        context_used: 48_000,
+        input: 60_000,
+        output: 2_000,
+        total: 62_000
+      })
+    ).toEqual({
+      calls: 3,
+      context_max: 100_000,
+      context_percent: 67,
+      context_used: 67_000,
+      input: 60_000,
+      output: 2_000,
+      total: 62_000
+    })
+  })
+
+  it('allows context usage to drop when compression advances', () => {
+    const current = {
+      calls: 2,
+      compressions: 0,
+      context_max: 100_000,
+      context_percent: 67,
+      context_used: 67_000,
+      input: 50_000,
+      output: 1_000,
+      total: 51_000
+    }
+
+    expect(
+      mergeUsageSnapshot(current, {
+        compressions: 1,
+        context_max: 100_000,
+        context_percent: 22,
+        context_used: 22_000
+      })
+    ).toMatchObject({
+      compressions: 1,
+      context_percent: 22,
+      context_used: 22_000
+    })
+  })
+
+  it('allows explicit replacements to lower context usage during session changes', () => {
+    const current = {
+      calls: 2,
+      context_max: 100_000,
+      context_percent: 67,
+      context_used: 67_000,
+      input: 50_000,
+      output: 1_000,
+      total: 51_000
+    }
+
+    expect(
+      mergeUsageSnapshot(
+        current,
+        {
+          calls: 0,
+          context_max: 100_000,
+          context_percent: 12,
+          context_used: 12_000,
+          input: 10_000,
+          output: 100,
+          total: 10_100
+        },
+        { allowContextDecrease: true }
+      )
+    ).toMatchObject({
+      context_percent: 12,
+      context_used: 12_000,
+      total: 10_100
+    })
   })
 })

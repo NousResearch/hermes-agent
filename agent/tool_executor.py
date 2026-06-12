@@ -266,6 +266,7 @@ def _context_usage_for_tool_events(agent, messages: list) -> dict:
             usage["context_used"] = ctx_used
             usage["context_max"] = ctx_max
             usage["context_percent"] = max(0, min(100, round(ctx_used / ctx_max * 100)))
+        usage["compressions"] = getattr(comp, "compression_count", 0) or 0
     return usage
 
 

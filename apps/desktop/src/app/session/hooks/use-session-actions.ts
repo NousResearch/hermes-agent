@@ -14,6 +14,7 @@ import {
   recoverInFlightTurnJournal
 } from '@/lib/inflight-turn-journal'
 import { sessionArchivePreserveIds } from '@/lib/session-eligibility'
+import { mergeUsageSnapshot } from '@/lib/token-usage'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { clearComposerAttachments, clearComposerDraft } from '@/store/composer'
 import { clearQueuedPrompts } from '@/store/composer-queue'
@@ -90,6 +91,18 @@ function viewerDeviceParams(): { viewer_device?: string } {
   const name = $localDeviceName.get()
 
   return name ? { viewer_device: name } : {}
+}
+
+function storedSessionUsagePreview(stored: SessionInfo): UsageStats {
+  const input = stored.input_tokens || 0
+  const output = stored.output_tokens || 0
+
+  return {
+    calls: 0,
+    input,
+    output,
+    total: input + output
+  }
 }
 
 interface SessionActionsOptions {
@@ -340,7 +353,7 @@ function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionRuntimeS
   }
 
   if (info.usage) {
-    setCurrentUsage(current => ({ ...current, ...info.usage }))
+    setCurrentUsage(current => mergeUsageSnapshot(current, info.usage))
   }
 
   return sessionState
@@ -695,7 +708,7 @@ export function useSessionActions({
           }
 
           if (usage) {
-            setCurrentUsage(current => ({ ...current, ...usage }))
+            setCurrentUsage(current => mergeUsageSnapshot(current, usage, { allowContextDecrease: true }))
           }
 
           return
@@ -728,12 +741,7 @@ export function useSessionActions({
       applyStoredSessionPreviewRuntimeInfo(stored)
 
       if (stored) {
-        setCurrentUsage(current => ({
-          ...current,
-          input: stored.input_tokens || 0,
-          output: stored.output_tokens || 0,
-          total: (stored.input_tokens || 0) + (stored.output_tokens || 0)
-        }))
+        setCurrentUsage(storedSessionUsagePreview(stored))
       }
 
       let resumedTurnStillRunning = false
@@ -1182,12 +1190,7 @@ export function useSessionActions({
           const stored = $sessions.get().find(session => session.id === storedSessionId)
 
           if (stored) {
-            setCurrentUsage(current => ({
-              ...current,
-              input: stored.input_tokens || 0,
-              output: stored.output_tokens || 0,
-              total: (stored.input_tokens || 0) + (stored.output_tokens || 0)
-            }))
+            setCurrentUsage(storedSessionUsagePreview(stored))
           }
 
           setMessages(previousMessages)

@@ -456,6 +456,9 @@ def load_cli_config() -> Dict[str, Any]:
             "busy_input_mode": "interrupt",
             "persistent_output": True,
             "persistent_output_max_lines": 200,
+            # Print a one-line summary of resolved modal prompts (approval /
+            # clarify) into scrollback so the decision survives the repaint.
+            "persist_prompts": True,
 
             "skin": "default",
         },
@@ -9361,6 +9364,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         for line in reqs["details"].split("\n"):
             _cprint(f"    {line}")
 
+    def _persist_prompt_summary(self, icon: str, label: str, detail: str, outcome: str) -> None:
+        """Print a one-line scrollback summary of a resolved modal prompt.
+
+        Modal panels (approval / clarify) live in the prompt_toolkit layout and
+        vanish on the next repaint, so the question and the decision leave no
+        trace in the terminal scrollback. When display.persist_prompts is on
+        (default), emit a dim single line after the prompt resolves so the
+        decision survives in chat history.
+        """
+        if not CLI_CONFIG.get("display", {}).get("persist_prompts", True):
+            return
+        detail = " ".join(detail.split())
+        if len(detail) > 120:
+            detail = detail[:119] + "…"
+        outcome = " ".join(outcome.split())
+        if len(outcome) > 120:
+            outcome = outcome[:119] + "…"
+        _cprint(f"\n{_DIM}{icon} {label}: {detail} → {outcome}{_RST}")
+
     def _clarify_callback(self, question, choices):
         """
         Platform callback for the clarify tool. Called from the agent thread.
@@ -9400,6 +9422,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             try:
                 result = response_queue.get(timeout=1)
                 self._clarify_deadline = 0
+                self._persist_prompt_summary("?", "Clarify", question, str(result))
                 return result
             except queue.Empty:
                 remaining = self._clarify_deadline - _time.monotonic()
@@ -9513,6 +9536,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     self._approval_state = None
                     self._approval_deadline = 0
                     self._paint_now()
+                    _outcome_labels = {
+                        "once": "allowed once",
+                        "session": "allowed for session",
+                        "always": "added to allowlist",
+                        "deny": "denied",
+                    }
+                    self._persist_prompt_summary(
+                        "⚠", "Approval", command,
+                        _outcome_labels.get(result, str(result)),
+                    )
                     return result
                 except queue.Empty:
                     remaining = self._approval_deadline - _time.monotonic()

@@ -34,6 +34,13 @@ def test_cli_call_mode_override():
     assert args.mode == "notify"
 
 
+def test_cli_speak_and_continue_accept_short_message_flag():
+    args = _parse(["speak", "--call-id", "vc-1", "-m", "hello"])
+    assert args.message == "hello"
+    args = _parse(["continue", "--call-id", "vc-1", "-m", "still there?"])
+    assert args.message == "still there?"
+
+
 def test_cli_tail_follow_flags():
     args = _parse(["tail", "-f", "--poll", "0.5", "--lines", "5"])
     assert args.follow is True and args.poll == 0.5 and args.lines == 5

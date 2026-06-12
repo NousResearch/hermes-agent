@@ -39,11 +39,11 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 
     speak_p = subs.add_parser("speak", help="Say something on a live call")
     speak_p.add_argument("--call-id", required=True)
-    speak_p.add_argument("--message", required=True)
+    speak_p.add_argument("-m", "--message", required=True)
 
     cont_p = subs.add_parser("continue", help="Say something and wait for the reply")
     cont_p.add_argument("--call-id", required=True)
-    cont_p.add_argument("--message", required=True)
+    cont_p.add_argument("-m", "--message", required=True)
 
     dtmf_p = subs.add_parser("dtmf", help="Send keypad digits")
     dtmf_p.add_argument("--call-id", required=True)

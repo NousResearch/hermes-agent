@@ -65,7 +65,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -97,6 +96,7 @@ import {
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { preparePooledRemoteBackend, preparePrimaryRemoteBackend } from './remote-readiness'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -131,6 +131,7 @@ import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, 
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -4410,6 +4411,14 @@ async function waitForHermes(baseUrl, token) {
   throw new Error(`Hermes backend did not become ready: ${lastError?.message || 'timeout'}`)
 }
 
+function remoteReadinessDeps() {
+  return {
+    fetchStatus: (baseUrl, token, options) => fetchJson(`${baseUrl}/api/status`, token, options),
+    mintTicket: mintGatewayWsTicket,
+    WebSocketImpl: globalThis.WebSocket
+  }
+}
+
 function getWindowButtonPosition() {
   if (!IS_MAC) {
     return null
@@ -6493,10 +6502,10 @@ async function spawnPoolBackend(profile, entry) {
   const remote = await resolveRemoteBackend(profile)
 
   if (remote) {
-    await waitForHermes(remote.baseUrl, remote.token)
+    const readyRemote = await preparePooledRemoteBackend(remote, remoteReadinessDeps())
 
     return {
-      ...remote,
+      ...readyRemote,
       profile,
       logs: hermesLog.slice(-80),
       ...getWindowState()
@@ -6697,7 +6706,7 @@ async function startHermes() {
 
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
-      await waitForHermes(remote.baseUrl, remote.token)
+      const readyRemote = await preparePrimaryRemoteBackend(remote, remoteReadinessDeps())
       updateBootProgress({
         phase: 'backend.ready',
         message: 'Remote Hermes backend is ready',
@@ -6707,12 +6716,12 @@ async function startHermes() {
       })
 
       return {
-        baseUrl: remote.baseUrl,
+        baseUrl: readyRemote.baseUrl,
         mode: 'remote',
-        source: remote.source,
-        authMode: remote.authMode || 'token',
-        token: remote.token,
-        wsUrl: remote.wsUrl,
+        source: readyRemote.source,
+        authMode: readyRemote.authMode || 'token',
+        token: readyRemote.token,
+        wsUrl: readyRemote.wsUrl,
         logs: hermesLog.slice(-80),
         ...getWindowState()
       }

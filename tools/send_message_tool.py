@@ -515,6 +515,17 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             # Preserve the leading '+' — signal-cli and sms/whatsapp adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
+    if platform_name == "signal":
+        ref = target_ref.strip()
+        # Accept "group.<id>" as a common alias for "group:<id>"
+        if ref.startswith("group."):
+            ref = "group:" + ref[len("group.") :]
+        # Explicit group target: "group:<base64GroupId>" or bare base64 group id
+        if ref.startswith("group:"):
+            return ref, None, True
+        # Base64-encoded Signal group IDs (~44 chars ending in '=' or '==')
+        if re.fullmatch(r"[A-Za-z0-9+/]{40,}={0,2}", ref):
+            return "group:" + ref, None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit

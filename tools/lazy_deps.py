@@ -670,6 +670,11 @@ def _broken_imports(specs: tuple[str, ...]) -> list[str]:
         if not modules:
             continue
         for module in modules:
+            # Already loaded means importable — and find_spec on a
+            # sys.modules entry reads module.__spec__, which raises on
+            # stub modules (tests inject spec-less fakes via sys.modules).
+            if module in sys.modules:
+                break
             try:
                 if importlib.util.find_spec(module) is not None:
                     break

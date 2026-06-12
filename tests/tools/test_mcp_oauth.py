@@ -423,6 +423,50 @@ class TestOAuthPortSharing:
         assert 1024 <= mod._oauth_port <= 65535
 
 
+class TestOAuthPortIsolation:
+    """Concurrent build_oauth_auth calls must get independent callback ports."""
+
+    def test_concurrent_providers_use_different_ports(self):
+        """Two providers built back-to-back capture their own ports."""
+        from tools import mcp_oauth as mod
+
+        captured_ports: list[int] = []
+
+        class _FakeProvider:
+            def __init__(self, **kwargs):
+                self.kwargs = kwargs
+
+        with patch.object(mod, "_OAUTH_AVAILABLE", True), \
+             patch.object(mod, "OAuthClientProvider", _FakeProvider), \
+             patch.object(mod, "_is_interactive", return_value=True), \
+             patch.object(mod, "_maybe_preregister_client"), \
+             patch.object(mod, "HermesTokenStorage") as mock_cls:
+            mock_cls.return_value = MagicMock(has_cached_tokens=lambda: True)
+
+            p1 = build_oauth_auth("server-a", "https://a.example.com/mcp")
+            port_a = mod._oauth_port
+
+            p2 = build_oauth_auth("server-b", "https://b.example.com/mcp")
+            port_b = mod._oauth_port
+
+        assert port_a != port_b, "back-to-back providers got the same global port"
+
+        # Each closure must capture its own port, not the final global.
+        # Invoke the redirect handler and inspect the port it uses.
+        redirect_ports: list[int | None] = []
+
+        async def _spy_redirect(url: str, *, port: int | None = None) -> None:
+            redirect_ports.append(port)
+
+        with patch.object(mod, "_redirect_handler", _spy_redirect):
+            asyncio.run(p1.kwargs["redirect_handler"]("https://a.example.com/auth"))
+            asyncio.run(p2.kwargs["redirect_handler"]("https://b.example.com/auth"))
+
+        assert redirect_ports[0] == port_a
+        assert redirect_ports[1] == port_b
+        assert redirect_ports[0] != redirect_ports[1]
+
+
 # ---------------------------------------------------------------------------
 # remove_oauth_tokens
 # ---------------------------------------------------------------------------

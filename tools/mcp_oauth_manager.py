@@ -541,9 +541,15 @@ class MCPOAuthManager:
                 "authorization."
             )
 
-        _configure_callback_port(cfg)
+        resolved_port = _configure_callback_port(cfg)
         client_metadata = _build_client_metadata(cfg)
         _maybe_preregister_client(storage, cfg, client_metadata)
+
+        async def scoped_redirect(url: str) -> None:
+            await _redirect_handler(url, port=resolved_port)
+
+        async def scoped_callback() -> tuple[str, str | None]:
+            return await _wait_for_callback(port=resolved_port)
 
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
@@ -551,8 +557,8 @@ class MCPOAuthManager:
             server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,
-            redirect_handler=_redirect_handler,
-            callback_handler=_wait_for_callback,
+            redirect_handler=scoped_redirect,
+            callback_handler=scoped_callback,
             timeout=float(cfg.get("timeout", 300)),
         )
 

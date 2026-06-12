@@ -240,6 +240,41 @@ def test_simulator_proof_ios_captures_while_expo_runner_is_alive(monkeypatch, tm
     ]
 
 
+def test_simulator_proof_ios_temporarily_overrides_existing_fingerprint_config(tmp_path):
+    proof_dir = tmp_path / "proof"
+    worktree = _worktree(tmp_path / "app")
+    app_dir = worktree / "apps" / "elixir-card"
+    app_dir.mkdir(parents=True)
+    (app_dir / "package.json").write_text('{"scripts":{"ios":"expo run:ios"}}', encoding="utf-8")
+    fingerprint_config = app_dir / "fingerprint.config.js"
+    original_config = "module.exports = { extraSources: [{ type: 'dir', filePath: 'native' }] };\n"
+    fingerprint_config.write_text(original_config, encoding="utf-8")
+
+    def run_text(args, cwd, timeout):
+        if args[:4] == ("xcrun", "simctl", "io", "SIM-123"):
+            Path(args[-1]).write_bytes(_png_bytes())
+        return "ok"
+
+    def run_ios_until_ready(_args, _cwd, _timeout, _target, _bundle_id, _dev_client_url, _log_dir, while_ready):
+        assert "ignorePaths: ['**/*']" in fingerprint_config.read_text(encoding="utf-8")
+        while_ready()
+
+    harness = SimulatorProofHarness(run_text=run_text, run_ios_until_ready=run_ios_until_ready)
+
+    result = harness.run(
+        worktree=worktree,
+        proof_dir=proof_dir,
+        platforms=("ios",),
+        dev_client_scheme="elixir-card",
+        ios_simulator_udid="SIM-123",
+        ios_bundle_id="com.elixir.card",
+        timeout_seconds=90,
+    )
+
+    assert result == [str(proof_dir / "ios-screenshot.png")]
+    assert fingerprint_config.read_text(encoding="utf-8") == original_config
+
+
 def test_simulator_proof_ios_links_sibling_node_modules(tmp_path):
     calls = []
     workspace = tmp_path / "workspace"

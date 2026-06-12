@@ -121,45 +121,48 @@ class SimulatorProofHarness:
         app_dir = _expo_project_dir(worktree)
         packager_host = _ios_packager_hostname()
         packager_url = _packager_url(packager_host, 8081)
-        self._prepare_ios_native_project(app_dir, timeout_seconds)
-        _ensure_ios_fingerprint_config(app_dir)
+        restore_fingerprint_config = _install_temporary_ios_fast_fingerprint_config(app_dir)
+        try:
+            self._prepare_ios_native_project(app_dir, timeout_seconds)
 
-        def capture_ready_app() -> None:
-            if deep_link.strip():
-                self._run_text(("xcrun", "simctl", "openurl", target, deep_link.strip()), worktree, timeout_seconds)
-                time.sleep(_ios_settle_seconds())
-            self._run_text(("xcrun", "simctl", "io", target, "screenshot", str(screenshot)), worktree, timeout_seconds)
+            def capture_ready_app() -> None:
+                if deep_link.strip():
+                    self._run_text(("xcrun", "simctl", "openurl", target, deep_link.strip()), worktree, timeout_seconds)
+                    time.sleep(_ios_settle_seconds())
+                self._run_text(("xcrun", "simctl", "io", target, "screenshot", str(screenshot)), worktree, timeout_seconds)
 
-        clean_bundle_id = bundle_id.strip()
-        if clean_bundle_id:
-            _uninstall_ios_bundle(target, app_dir, clean_bundle_id)
-            try:
-                self._run_text(
-                    ("npx", "expo", "run:ios", "--no-install", "--no-bundler"),
+            clean_bundle_id = bundle_id.strip()
+            if clean_bundle_id:
+                _uninstall_ios_bundle(target, app_dir, clean_bundle_id)
+                try:
+                    self._run_text(
+                        ("npx", "expo", "run:ios", "--no-install", "--no-bundler"),
+                        app_dir,
+                        timeout_seconds,
+                    )
+                except RuntimeError:
+                    # expo run:ios can fail after build+install on its cosmetic
+                    # Simulator.app activation step (osascript is unavailable in
+                    # headless contexts). The uninstall above guarantees an
+                    # installed app reflects this build, so only re-raise when
+                    # the install never happened.
+                    if not _ios_app_is_installed(target, app_dir, clean_bundle_id):
+                        raise
+                self._run_ios_until_ready(
+                    ("npx", "expo", "start", "--dev-client", "--host", _ios_expo_host(), "--port", "8081"),
                     app_dir,
                     timeout_seconds,
+                    target,
+                    clean_bundle_id,
+                    _expo_dev_client_url(dev_client_scheme, packager_url),
+                    proof_dir,
+                    capture_ready_app,
                 )
-            except RuntimeError:
-                # expo run:ios can fail after build+install on its cosmetic
-                # Simulator.app activation step (osascript is unavailable in
-                # headless contexts). The uninstall above guarantees an
-                # installed app reflects this build, so only re-raise when
-                # the install never happened.
-                if not _ios_app_is_installed(target, app_dir, clean_bundle_id):
-                    raise
-            self._run_ios_until_ready(
-                ("npx", "expo", "start", "--dev-client", "--host", _ios_expo_host(), "--port", "8081"),
-                app_dir,
-                timeout_seconds,
-                target,
-                clean_bundle_id,
-                _expo_dev_client_url(dev_client_scheme, packager_url),
-                proof_dir,
-                capture_ready_app,
-            )
-        else:
-            self._run_text(("npx", "expo", "run:ios", "--no-install"), app_dir, timeout_seconds)
-            capture_ready_app()
+            else:
+                self._run_text(("npx", "expo", "run:ios", "--no-install"), app_dir, timeout_seconds)
+                capture_ready_app()
+        finally:
+            restore_fingerprint_config()
         if not screenshot.is_file():
             raise RuntimeError(f"iOS simulator screenshot was not created: {screenshot}")
         _assert_screenshot_has_visual_content(screenshot)
@@ -1236,6 +1239,23 @@ def _ensure_ios_fingerprint_config(app_dir: Path) -> None:
     if (app_dir / "fingerprint.config.js").exists() or (app_dir / "fingerprint.config.cjs").exists():
         return
     (app_dir / "fingerprint.config.js").write_text(_FINGERPRINT_CONFIG_CONTENT, encoding="utf-8")
+
+
+def _install_temporary_ios_fast_fingerprint_config(app_dir: Path) -> Callable[[], None]:
+    if os.environ.get("MONICA_IOS_FAST_FINGERPRINT", "1").strip().lower() in {"0", "false", "no", "off"}:
+        return lambda: None
+
+    config_path = app_dir / "fingerprint.config.js"
+    original_content = config_path.read_bytes() if config_path.exists() else None
+    config_path.write_text(_FINGERPRINT_CONFIG_CONTENT, encoding="utf-8")
+
+    def restore() -> None:
+        if original_content is None:
+            config_path.unlink(missing_ok=True)
+            return
+        config_path.write_bytes(original_content)
+
+    return restore
 
 
 def _patch_ios_fmt_cxx_standard(ios_dir: Path) -> None:

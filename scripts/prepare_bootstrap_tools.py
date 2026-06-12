@@ -280,6 +280,8 @@ def validate_manifest(output_dir: Path) -> int:
         name = archive.get("name")
         if not isinstance(name, str) or not name:
             raise RuntimeError("bootstrap tools manifest archive is missing name")
+        if Path(name).name != name or name in {".", ".."}:
+            raise RuntimeError(f"manifest archive has unsafe archive name: {name}")
         if name in seen_names:
             raise RuntimeError(f"duplicate archive in bootstrap tools manifest: {name}")
         seen_names.add(name)

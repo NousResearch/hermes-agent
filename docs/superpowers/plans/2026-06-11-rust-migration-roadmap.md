@@ -433,6 +433,8 @@ language-specific setup where needed.
   mixed Windows/Linux/macOS bootstrap-tool bundles.
 - Duplicate archive names are rejected by the validate-only gate, keeping each bundled runtime archive's ownership,
   checksum, and update source unambiguous.
+- Manifest archive names must be plain file names with no path separators or parent traversal, matching the runtime
+  expectation that bootstrap tool resources live directly inside `bootstrap-tools/`.
 
 ## Phase 7: Larger Runtime Rust Candidates
 

@@ -581,7 +581,7 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
+    def fake_fetch_api_models(api_key, base_url, **_kw):
         calls.append((api_key, base_url))
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
@@ -642,7 +642,7 @@ def test_custom_providers_discover_models_false_keeps_explicit_subset(monkeypatc
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
+    def fake_fetch_api_models(api_key, base_url, **_kw):
         calls.append((api_key, base_url))
         return ["gateway-model-a", "gateway-model-b", "gateway-model-c"]
 
@@ -698,7 +698,7 @@ def test_custom_providers_discover_models_false_string_is_normalised(monkeypatch
 
     calls = []
 
-    def fake_fetch_api_models(api_key, base_url):
+    def fake_fetch_api_models(api_key, base_url, **_kw):
         calls.append((api_key, base_url))
         return ["live-a", "live-b"]
 

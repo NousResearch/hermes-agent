@@ -113,6 +113,7 @@ def adapter(monkeypatch):
         "DISCORD_IGNORED_CHANNELS",
         "DISCORD_HISTORY_BACKFILL",
         "DISCORD_HISTORY_BACKFILL_LIMIT",
+        "DISCORD_HISTORY_BACKFILL_REACTIONS",
         "DISCORD_ALLOW_BOTS",
     ):
         monkeypatch.delenv(_var, raising=False)
@@ -147,12 +148,14 @@ def make_history_message(
     msg_id: int,
     msg_type=None,
     attachments=None,
+    reactions=None,
 ):
     return SimpleNamespace(
         id=msg_id,
         author=author,
         content=content,
         attachments=list(attachments or []),
+        reactions=list(reactions or []),
         type=msg_type if msg_type is not None else discord_platform.discord.MessageType.default,
     )
 
@@ -882,5 +885,146 @@ async def test_discord_dm_does_not_backfill(adapter, monkeypatch):
     if adapter.handle_message.await_args is not None:
         event = adapter.handle_message.await_args.args[0]
         assert event.channel_context is None
+
+
+# ---------------------------------------------------------------------------
+# Reaction emoji tags in channel context
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_reaction(emoji_name, users):
+    """Build a fake Reaction-like object with an async users() iterator."""
+    async def _users_iter(**_kwargs):
+        for u in users:
+            yield u
+
+    return SimpleNamespace(
+        emoji=SimpleNamespace(name=emoji_name),
+        count=len(users),
+        users=lambda **kw: _users_iter(**kw),
+    )
+
+
+def _make_failing_reaction(emoji_name):
+    """Build a fake Reaction whose users() raises."""
+    async def _users_iter(**_kwargs):
+        raise RuntimeError("API error")
+        yield  # noqa: unreachable — makes this an async generator
+
+    return SimpleNamespace(
+        emoji=SimpleNamespace(name=emoji_name),
+        count=1,
+        users=lambda **kw: _users_iter(**kw),
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_includes_reactions_when_enabled(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL_REACTIONS", "true")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    alice = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    bob = SimpleNamespace(id=57, display_name="Bob", name="Bob", bot=False)
+
+    reactions = [
+        _make_fake_reaction("white_check_mark", [bob]),
+        _make_fake_reaction("thumbsup", [alice, bob]),
+    ]
+
+    channel = FakeHistoryChannel(
+        [make_history_message(author=alice, content="hello", msg_id=2, reactions=reactions)],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert "[EMOJI, " in result
+    assert "Bob: :white_check_mark:, :thumbsup:" in result
+    assert "Alice: :thumbsup:" in result
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_no_reactions_by_default(adapter, monkeypatch):
+    monkeypatch.delenv("DISCORD_HISTORY_BACKFILL_REACTIONS", raising=False)
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    alice = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    bob = SimpleNamespace(id=57, display_name="Bob", name="Bob", bot=False)
+
+    reactions = [_make_fake_reaction("thumbsup", [bob])]
+
+    channel = FakeHistoryChannel(
+        [make_history_message(author=alice, content="hello", msg_id=2, reactions=reactions)],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert "[EMOJI" not in result
+    assert result == "[Recent channel messages]\n[Alice] hello"
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_reaction_api_error_shows_error_tag(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL_REACTIONS", "true")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    alice = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    reactions = [_make_failing_reaction("thumbsup")]
+
+    channel = FakeHistoryChannel(
+        [make_history_message(author=alice, content="hello", msg_id=2, reactions=reactions)],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert "[EMOJI, ERROR]" in result
+    assert result == "[Recent channel messages]\n[Alice] hello [EMOJI, ERROR]"
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_no_emoji_tag_when_no_reactions(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_HISTORY_BACKFILL_REACTIONS", "true")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    alice = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+
+    channel = FakeHistoryChannel(
+        [make_history_message(author=alice, content="hello", msg_id=2)],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
+
+    assert "[EMOJI" not in result
+    assert result == "[Recent channel messages]\n[Alice] hello"
+
+
+def test_emoji_to_name_custom_emoji():
+    from gateway.platforms.discord import _emoji_to_name
+
+    custom = SimpleNamespace(name="pepethink")
+    assert _emoji_to_name(custom) == ":pepethink:"
+
+
+def test_emoji_to_name_unicode_fallback():
+    from gateway.platforms.discord import _emoji_to_name
+
+    result = _emoji_to_name("✅")
+    # With emoji lib: ":white_check_mark:" or similar; without: "✅"
+    assert isinstance(result, str)
+    assert len(result) > 0
+
+
+def test_emoji_to_name_empty_name_attr():
+    from gateway.platforms.discord import _emoji_to_name
+
+    obj = SimpleNamespace(name="")
+    result = _emoji_to_name(obj)
+    # Empty name falls through to str() — verifies it doesn't produce "::"
+    assert result != "::"
+    assert isinstance(result, str)
 
 

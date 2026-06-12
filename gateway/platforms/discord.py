@@ -67,6 +67,26 @@ from gateway.platforms.base import (
 )
 from tools.url_safety import is_safe_url
 
+try:
+    import emoji as _emoji_lib
+except ImportError:
+    _emoji_lib = None
+
+
+def _emoji_to_name(emoji_obj) -> str:
+    """Convert a discord.py emoji to :colon_name: format."""
+    if hasattr(emoji_obj, "name") and emoji_obj.name:
+        return f":{emoji_obj.name}:"
+    s = str(emoji_obj)
+    if _emoji_lib is not None:
+        try:
+            name = _emoji_lib.demojize(s)
+            if name != s:
+                return name
+        except Exception:
+            pass
+    return s
+
 
 def _clean_discord_id(entry: str) -> str:
     """Strip common prefixes from a Discord user ID or username entry.
@@ -3691,6 +3711,30 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    async def _format_reactions(self, msg: Any) -> str:
+        """Format message reactions as an [EMOJI, ...] tag string."""
+        reactions = getattr(msg, "reactions", None)
+        if not reactions:
+            return ""
+
+        user_emojis: Dict[str, List[str]] = {}
+        for reaction in reactions:
+            emoji_name = _emoji_to_name(reaction.emoji)
+            try:
+                async for user in reaction.users():
+                    name = getattr(user, "display_name", None) or getattr(user, "name", str(user))
+                    user_emojis.setdefault(name, []).append(emoji_name)
+            except Exception:
+                return " [EMOJI, ERROR]"
+
+        if not user_emojis:
+            return ""
+
+        parts = []
+        for name, emojis in user_emojis.items():
+            parts.append(f"{name}: {', '.join(emojis)}")
+        return " [EMOJI, " + "; ".join(parts) + "]"
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -3708,11 +3752,22 @@ class DiscordAdapter(BasePlatformAdapter):
             [Alice] some message
             [Bob [bot]] another message
 
+        When ``history_backfill_reactions`` is enabled, messages with
+        reactions include an ``[EMOJI, ...]`` tag::
+
+            [Alice] some message [EMOJI, Bob: :thumbsup:; Alice: :heart:]
+
         Returns an empty string if no context is available.
         """
         limit = self._discord_history_backfill_limit()
         if limit <= 0:
             return ""
+
+        # Determine whether to fetch per-user reaction data
+        fetch_reactions = self.config.extra.get("history_backfill_reactions", False)
+        if not fetch_reactions:
+            raw = os.getenv("DISCORD_HISTORY_BACKFILL_REACTIONS", "").lower().strip()
+            fetch_reactions = raw in {"true", "1", "yes", "on"}
 
         # Determine which bot messages to include in context
         allow_bots_raw = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
@@ -3774,7 +3829,10 @@ class DiscordAdapter(BasePlatformAdapter):
                 name = msg.author.display_name
                 if getattr(msg.author, "bot", False):
                     name = f"{name} [bot]"
-                collected.append(f"[{name}] {content}")
+                line = f"[{name}] {content}"
+                if fetch_reactions:
+                    line += await self._format_reactions(msg)
+                collected.append(line)
 
             if not collected:
                 return ""

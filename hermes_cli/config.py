@@ -4958,14 +4958,30 @@ def reload_env() -> int:
 
 
 def get_env_value(key: str) -> Optional[str]:
-    """Get a value from ~/.hermes/.env or environment."""
+    """Get a value from ~/.hermes/.env or environment.
+    
+    Supports 1Password references (op://) in .env files. If a value
+    starts with 'op://', it will be resolved using the 1Password CLI.
+    """
     # Check environment first
     if key in os.environ:
-        return os.environ[key]
+        value = os.environ[key]
+        # Resolve 1Password references in environment
+        if isinstance(value, str) and value.startswith("op://"):
+            from hermes_cli.onepassword_resolver import resolve_value
+            return resolve_value(value)
+        return value
     
     # Then check .env file
     env_vars = load_env()
-    return env_vars.get(key)
+    value = env_vars.get(key)
+    
+    # Resolve 1Password references in .env values
+    if value and isinstance(value, str) and value.startswith("op://"):
+        from hermes_cli.onepassword_resolver import resolve_value
+        return resolve_value(value)
+    
+    return value
 
 
 # =============================================================================

@@ -45,7 +45,7 @@ import re
 import shutil
 import tarfile
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
@@ -65,6 +65,53 @@ _EXCLUDE_TOP_LEVEL = {".curator_backups", ".hub"}
 # is portable (Windows-safe). An optional ``-NN`` suffix handles two
 # snapshots landing in the same wallclock second.
 _ID_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z(-\d{2})?$")
+
+
+def _rollback_archive_member_parts(member_name: str) -> Tuple[str, ...]:
+    """Return safe path parts for a rollback archive member."""
+    normalized_name = member_name.replace("\\", "/")
+    posix_path = PurePosixPath(normalized_name)
+    windows_path = PureWindowsPath(member_name)
+
+    if (
+        not normalized_name
+        or "\\" in member_name
+        or posix_path.is_absolute()
+        or windows_path.is_absolute()
+        or windows_path.drive
+    ):
+        raise tarfile.TarError(f"refusing to extract unsafe path: {member_name!r}")
+
+    parts = tuple(part for part in posix_path.parts if part not in ("", "."))
+    if not parts or any(part == ".." for part in parts):
+        raise tarfile.TarError(f"refusing to extract unsafe path: {member_name!r}")
+    if parts[0] in _EXCLUDE_TOP_LEVEL:
+        raise tarfile.TarError(
+            f"refusing to extract excluded snapshot entry: {member_name!r}"
+        )
+    return parts
+
+
+def _validate_rollback_archive_members(
+    members: List[tarfile.TarInfo],
+    destination: Path,
+) -> None:
+    """Validate snapshot members before extraction."""
+    destination_root = destination.resolve()
+    for member in members:
+        parts = _rollback_archive_member_parts(member.name)
+        target = destination.joinpath(*parts).resolve()
+        try:
+            target.relative_to(destination_root)
+        except ValueError as exc:
+            raise tarfile.TarError(
+                f"refusing to extract unsafe path: {member.name!r}"
+            ) from exc
+
+        if not (member.isdir() or member.isfile()):
+            raise tarfile.TarError(
+                f"refusing to extract unsupported snapshot entry: {member.name!r}"
+            )
 
 
 def _backups_dir() -> Path:
@@ -602,20 +649,13 @@ def rollback(backup_id: Optional[str] = None) -> Tuple[bool, str, Optional[Path]
     # Step 4: extract the snapshot into skills/
     try:
         with tarfile.open(archive, "r:gz") as tf:
-            # Python 3.12+ supports filter='data' for safer extraction.
-            # Fall back to the unfiltered call for older interpreters but
-            # still reject absolute paths and .. components defensively.
-            for member in tf.getmembers():
-                name = member.name
-                if name.startswith("/") or ".." in Path(name).parts:
-                    raise tarfile.TarError(
-                        f"refusing to extract unsafe path: {name!r}"
-                    )
+            members = tf.getmembers()
+            _validate_rollback_archive_members(members, skills)
             try:
-                tf.extractall(str(skills), filter="data")  # type: ignore[call-arg]
+                tf.extractall(str(skills), members=members, filter="data")  # type: ignore[call-arg]
             except TypeError:
                 # Python < 3.12 — no filter kwarg
-                tf.extractall(str(skills))
+                tf.extractall(str(skills), members=members)
     except (OSError, tarfile.TarError) as e:
         # Best-effort recover: move staged contents back
         for orig, dest in moved:

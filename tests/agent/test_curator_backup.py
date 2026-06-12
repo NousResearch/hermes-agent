@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import io
 import json
 import os
 import sys
@@ -257,6 +258,68 @@ def test_rollback_rejects_unsafe_tarball(backup_env, monkeypatch):
     ok, msg, _ = cb.rollback()
     assert not ok
     assert "unsafe" in msg.lower() or "refus" in msg.lower() or "extract" in msg.lower()
+
+
+def test_rollback_rejects_tar_symlink_members_on_legacy_extract_fallback(
+    backup_env,
+    monkeypatch,
+    tmp_path,
+):
+    """Python 3.11 fallback extraction must not accept tar links.
+
+    ``filter="data"`` handles this on newer interpreters. The fallback path
+    still needs its own member-type validation before unfiltered extraction.
+    """
+    cb = backup_env["cb"]
+    skills = backup_env["skills"]
+    _write_skill(skills, "alpha")
+    cb.snapshot_skills(reason="legit")
+
+    outside = tmp_path / "outside"
+    outside.mkdir()
+
+    rows = cb.list_backups()
+    snap_dir = Path(rows[0]["path"])
+    mal = snap_dir / "skills.tar.gz"
+    mal.unlink()
+    with tarfile.open(mal, "w:gz") as tf:
+        link = tarfile.TarInfo("link-out")
+        link.type = tarfile.SYMTYPE
+        link.linkname = str(outside)
+        tf.addfile(link)
+
+        data = b"escaped"
+        escaped = tarfile.TarInfo("link-out/escaped.txt")
+        escaped.size = len(data)
+        tf.addfile(escaped, io.BytesIO(data))
+
+    original_extractall = tarfile.TarFile.extractall
+
+    def legacy_extractall(
+        self,
+        path=".",
+        members=None,
+        *,
+        numeric_owner=False,
+        filter=None,
+    ):
+        if filter is not None:
+            raise TypeError("filter argument is not available")
+        return original_extractall(
+            self,
+            path=path,
+            members=members,
+            numeric_owner=numeric_owner,
+        )
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", legacy_extractall)
+
+    ok, msg, _ = cb.rollback()
+
+    assert not ok
+    assert "unsupported" in msg.lower() or "refus" in msg.lower()
+    assert not (outside / "escaped.txt").exists()
+    assert (skills / "alpha" / "SKILL.md").exists()
 
 
 # ---------------------------------------------------------------------------

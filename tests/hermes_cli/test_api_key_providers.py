@@ -1335,6 +1335,19 @@ class TestChutesProvider:
         from agent.model_metadata import _URL_TO_PROVIDER
         assert _URL_TO_PROVIDER.get("llm.chutes.ai") == "chutes"
 
+    def test_chutes_in_doctor_probe_table(self):
+        """`hermes doctor` auto-discovers api-key providers from the plugin
+        registry, so Chutes gets a `/v1/models` health-check probe without any
+        edit to doctor.py."""
+        from hermes_cli.doctor import _build_apikey_providers_list
+        rows = _build_apikey_providers_list()
+        chutes = [r for r in rows if r[0] == "Chutes"]
+        assert chutes, "Chutes missing from the doctor api-key provider probe table"
+        _label, key_vars, models_url, base_var, _hc = chutes[0]
+        assert key_vars == ("CHUTES_API_KEY",)
+        assert models_url == "https://llm.chutes.ai/v1/models"
+        assert base_var == "CHUTES_BASE_URL"
+
     def test_chutes_aux_model_registered(self):
         # The auxiliary model lives on the ProviderProfile
         # (plugins/model-providers/chutes/__init__.py); the auxiliary client

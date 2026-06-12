@@ -1,0 +1,6 @@
+name: lfdm-wiki-password
+version: "0.1.0"
+description: "LFDM local gateway shortcut: answer authorized wiki password requests directly from ~/.config/sassy-wiki/password before LLM dispatch."
+author: "LFDM"
+hooks:
+  - pre_gateway_dispatch

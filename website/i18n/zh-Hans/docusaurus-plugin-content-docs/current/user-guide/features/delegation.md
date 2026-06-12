@@ -224,10 +224,65 @@ delegate_task(
 
 **费用警告：** 在 `max_spawn_depth: 3` 和 `max_concurrent_children: 3` 的情况下，树可达到 3×3×3 = 27 个并发叶子智能体。每增加一层都会成倍增加开销——请谨慎提高 `max_spawn_depth`。
 
+## 后台委派（非阻塞）
+
+默认情况下，`delegate_task` 是**同步的**——它阻塞父智能体直到所有子智能体完成。设置 `background=True` 后，子智能体立即被调度，父智能体轮次无需等待即可继续：
+
+```python
+delegate_task(
+    goal="运行 10 分钟基准测试套件",
+    context="项目位于 /home/user/perf-suite。运行 ./run_bench.sh 并将结果写入 /tmp/bench-results.json。",
+    toolsets=["terminal", "file"],
+    background=True,
+    timeout_seconds=900  # 超过 15 分钟则终止子智能体
+)
+# 父智能体立即收到 {"status": "dispatched", "delegation_id": "abc-123"}
+# 并继续下一轮次。子智能体并发运行。
+```
+
+子智能体完成后，网关会自动将结果注入回父智能体的对话——无需轮询。
+
+### 工作原理
+
+后台委派使用守护进程执行器和 FIFO 推进队列：
+
+- **调度** — 子智能体被放入 FIFO 队列。如果有空闲槽（最多 `delegation.max_async_children`，默认 **3**），立即启动；否则等待槽位空出。
+- **完成** — 子智能体完成时，`status` 事件（`completed`、`cancelled` 或 `timed_out`）被注入回父对话。
+- **超时** — 设置 `timeout_seconds` 可自动取消运行时间过长的子智能体。监控器发送 `timed_out` 事件并释放槽位，让排队的工作可以继续。
+
+### 监控后台委派
+
+使用 `hermes delegation` CLI 查看和管理后台子智能体：
+
+```bash
+hermes delegation list            # 显示运行中和排队中的委派
+hermes delegation status <id>     # 检查特定委派
+hermes delegation cancel <id>     # 取消排队或运行中的委派
+hermes delegation result <id>     # 打印已完成委派的结果
+hermes delegation completed       # 列出所有最近完成的委派
+hermes delegation wait <id>       # 阻塞直到委派完成并打印结果
+```
+
+### 配置
+
+```yaml
+delegation:
+  max_async_children: 3    # 并发后台子智能体数量（默认：3）
+```
+
+### 后台 vs 同步——如何选择
+
+| | 同步（默认） | 后台（`background=True`） |
+|---|---|---|
+| **父智能体阻塞** | ✅ 等待结果 | ❌ 立即返回 |
+| **持久性** | ❌ 父轮次中断则取消 | ✅ 不受父轮次中断影响 |
+| **结果传递** | 内联返回 | 注入回对话 |
+| **适用场景** | 父智能体需要先获得结果才能继续 | 长时间任务、即发即忘的工作 |
+
 ## 生命周期与持久性
 
-:::warning delegate_task 是同步的——不具备持久性
-`delegate_task` 在**父智能体的当前轮次内**运行。它会阻塞父智能体，直到所有子智能体完成（或被取消）。它**不是**后台任务队列：
+:::warning delegate_task 默认是同步的——不具备持久性
+`delegate_task`（不带 `background=true`）在**父智能体的当前轮次内**运行。它会阻塞父智能体，直到所有子智能体完成（或被取消）。它**不是**后台任务队列：
 
 - 如果父智能体被中断（用户发送新消息、`/stop`、`/new`），所有活跃的子智能体都会被取消并返回 `status="interrupted"`。其进行中的工作将被丢弃。
 - 子智能体在父智能体轮次结束后**不会**继续运行。
@@ -235,6 +290,7 @@ delegate_task(
 
 对于必须在中断后存活或超出当前轮次的**持久长时间运行工作**，请使用：
 
+- `delegate_task(background=True)` — 后台子智能体；调度至 FIFO 队列并与父智能体并发运行。
 - `cronjob`（action=`create`）——调度独立的智能体运行；不受父智能体轮次中断影响。
 - `terminal(background=True, notify_on_complete=True)`——长时间运行的 shell 命令，在智能体执行其他操作时持续运行。
 :::

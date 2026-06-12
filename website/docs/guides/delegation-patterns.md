@@ -25,7 +25,27 @@ For the full feature reference, see [Subagent Delegation](/user-guide/features/d
 - Mechanical multi-step work with logic between steps → `execute_code`
 - Tasks needing user interaction → subagents can't use `clarify`
 - Quick file edits → do them directly
-- Durable long-running work that must outlive the current turn → `cronjob` or `terminal(background=True, notify_on_complete=True)`. `delegate_task` is **synchronous**: if the parent turn is interrupted, active children are cancelled and their work is discarded.
+- Durable long-running work that must outlive the current turn → `delegate_task(background=True)`, `cronjob`, or `terminal(background=True, notify_on_complete=True)`. Standard `delegate_task` is **synchronous**: if the parent turn is interrupted, active children are cancelled and their work is discarded.
+
+---
+
+## Pattern: Background (Non-blocking) Delegation
+
+For long-running tasks where the parent shouldn't block, use `background=True`. The parent gets a `delegation_id` immediately and the subagent runs concurrently:
+
+```python
+delegate_task(
+    goal="Run the full integration test suite and write a summary report",
+    context="Project at /home/user/myapp. Run: pytest tests/integration/ -v --tb=short. Write a summary to /tmp/test-report.md with: pass count, fail count, and list of failed tests.",
+    toolsets=["terminal", "file"],
+    background=True,
+    timeout_seconds=1800   # 30-minute hard cap
+)
+# Returns {"status": "dispatched", "delegation_id": "..."} immediately.
+# When the suite finishes, the result is injected back into this conversation.
+```
+
+Use `hermes delegation list` to monitor running background subagents, or `hermes delegation wait <id>` to block until one finishes.
 
 ---
 

@@ -224,10 +224,65 @@ delegate_task(
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
 
+## Background Delegation (Non-blocking)
+
+By default `delegate_task` is **synchronous** — it blocks the parent until every child finishes. When you set `background=true`, the subagent is dispatched immediately and the parent turn continues without waiting:
+
+```python
+delegate_task(
+    goal="Run a 10-minute benchmark suite",
+    context="Project at /home/user/perf-suite. Run ./run_bench.sh and write results to /tmp/bench-results.json.",
+    toolsets=["terminal", "file"],
+    background=True,
+    timeout_seconds=900  # kill the subagent if it exceeds 15 minutes
+)
+# Parent receives {"status": "dispatched", "delegation_id": "abc-123"} immediately
+# and continues its next turn. The subagent runs concurrently.
+```
+
+When the subagent finishes, the gateway delivers the result back to the parent's conversation automatically — no polling needed.
+
+### How It Works
+
+Background delegations use a daemon executor with a FIFO promotion queue:
+
+- **Dispatch** — the subagent is placed in a FIFO queue. If a slot is free (up to `delegation.max_async_children`, default **3**), it starts immediately; otherwise it waits until a slot opens.
+- **Completion** — when the subagent finishes, a `status` event (`completed`, `cancelled`, or `timed_out`) is injected back into the parent conversation.
+- **Timeout** — set `timeout_seconds` to automatically cancel a subagent that runs too long. The watcher sends a `timed_out` event and frees the slot so queued work can proceed.
+
+### Monitoring Background Delegations
+
+Use the `hermes delegation` CLI to inspect and manage background subagents:
+
+```bash
+hermes delegation list            # Show running + queued delegations
+hermes delegation status <id>     # Inspect a specific delegation
+hermes delegation cancel <id>     # Cancel a queued or running delegation
+hermes delegation result <id>     # Print the result of a completed delegation
+hermes delegation completed       # List all recently completed delegations
+hermes delegation wait <id>       # Block until a delegation finishes and print result
+```
+
+### Configuration
+
+```yaml
+delegation:
+  max_async_children: 3    # Concurrent background subagents (default: 3)
+```
+
+### Background vs Synchronous — When to Use Which
+
+| | Synchronous (default) | Background (`background=True`) |
+|---|---|---|
+| **Parent blocks** | ✅ Waits for result | ❌ Returns immediately |
+| **Durable** | ❌ Cancelled if parent turn interrupted | ✅ Survives parent turn interrupts |
+| **Result delivery** | Returned inline | Injected back into conversation |
+| **Best for** | Tasks where the parent needs the result before proceeding | Long-running tasks, fire-and-forget work |
+
 ## Lifetime and Durability
 
-:::warning delegate_task is synchronous — not durable
-`delegate_task` runs **inside the parent's current turn**. It blocks the parent until every child finishes (or is cancelled). It is **not** a background job queue:
+:::warning delegate_task is synchronous by default — not durable
+`delegate_task` (without `background=true`) runs **inside the parent's current turn**. It blocks the parent until every child finishes (or is cancelled). It is **not** a background job queue:
 
 - If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
 - Children do **not** continue running after the parent turn ends.
@@ -235,6 +290,7 @@ delegate_task(
 
 For **durable long-running work** that must survive interrupts or outlive the current turn, use:
 
+- `delegate_task(background=True)` — background subagent; dispatched to a FIFO queue and runs concurrently with the parent.
 - `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
 - `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.
 :::

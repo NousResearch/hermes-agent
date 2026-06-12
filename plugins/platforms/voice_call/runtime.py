@@ -180,6 +180,26 @@ class VoiceCallRuntime:
 
     async def _handle_admin_command(self, payload: dict) -> dict:
         """CLI → runtime command dispatch (served on the admin endpoint)."""
+        from .manager import CallNotFoundError
+
+        try:
+            return await self._dispatch_admin_command(payload)
+        except CallNotFoundError as e:
+            # Normal race: the call ended (caller or model hung up) before
+            # this command arrived. A clean error, not a stack trace.
+            call_id = str(e).strip("'\"")
+            logger.info(
+                "voice_call admin: %s on already-ended call %s",
+                payload.get("command"), call_id,
+            )
+            return {
+                "success": False,
+                "error": f"no active call {call_id!r} — it already ended",
+            }
+        except (ValueError, RuntimeError, asyncio.TimeoutError) as e:
+            return {"success": False, "error": str(e)}
+
+    async def _dispatch_admin_command(self, payload: dict) -> dict:
         command = str(payload.get("command", ""))
         if self.manager is None:
             return {"success": False, "error": "runtime not started"}

@@ -317,6 +317,32 @@ async def test_admin_requires_token(harness):
 
 
 @pytest.mark.asyncio
+async def test_admin_command_on_ended_call_is_clean_error(tmp_path, make_config):
+    """speak/end racing a hangup returns a clean JSON error, not a 500 with
+    a stack trace (the call legitimately ended a moment earlier)."""
+    from plugins.platforms.voice_call import runtime as runtime_mod
+
+    cfg = make_config()
+    cfg.serve.port = 0
+    runtime = await runtime_mod.ensure_runtime(cfg, store_dir=tmp_path)
+    try:
+        port = runtime.webhook_server.bound_port
+        token = runtime.webhook_server.admin_token
+        async with aiohttp.ClientSession() as client:
+            async with client.post(
+                f"http://127.0.0.1:{port}/voice/admin",
+                json={"command": "speak", "call_id": "vc-gone", "message": "hi"},
+                headers={"x-voice-call-admin-token": token},
+            ) as resp:
+                assert resp.status == 200          # not 500
+                data = await resp.json()
+        assert data["success"] is False
+        assert "vc-gone" in data["error"] and "already ended" in data["error"]
+    finally:
+        await runtime_mod.stop_runtime()
+
+
+@pytest.mark.asyncio
 async def test_stream_route_404_until_realtime_phase(harness):
     status, _ = await harness.get(harness.config.serve.stream_path + "/some-token")
     assert status == 404

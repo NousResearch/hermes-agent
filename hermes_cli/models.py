@@ -3547,6 +3547,11 @@ def validate_requested_model(
             requested,
             api_key=api_key,
         ) or requested
+    elif normalized == "ollama-cloud":
+        # models.dev may append :cloud/-cloud to Ollama Cloud IDs (e.g.
+        # ``deepseek-v4-flash:cloud``).  The live API uses bare IDs, so
+        # strip the suffix before the set-membership check below.
+        requested_for_lookup = _strip_ollama_cloud_suffix(requested)
 
     if not requested:
         return {

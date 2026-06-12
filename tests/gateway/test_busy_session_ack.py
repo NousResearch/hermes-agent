@@ -30,7 +30,9 @@ from gateway.platforms.base import (
     Platform,
     SessionSource,
     build_session_key,
+    pop_next_pending_message_event,
     queued_event_count,
+    queued_event_position,
 )
 
 
@@ -290,6 +292,14 @@ class TestBusySessionAck:
 
         pending = adapter._pending_messages[sk]
         assert queued_event_count(pending) == 2
+        assert queued_event_position(pending) == (1, 2)
+        first_pending = pop_next_pending_message_event(adapter._pending_messages, sk)
+        assert first_pending is first
+        assert sk in adapter._pending_messages
+        assert queued_event_position(adapter._pending_messages[sk]) == (2, 2)
+        second_pending = pop_next_pending_message_event(adapter._pending_messages, sk)
+        assert second_pending is second
+        assert sk not in adapter._pending_messages
         assert adapter._send_with_retry.await_count == 2
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
         assert "Queue item 2/2" in content

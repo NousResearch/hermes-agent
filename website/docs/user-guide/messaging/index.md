@@ -276,7 +276,7 @@ Send any message while the agent is working to interrupt it. Key behaviors:
 
 By default, messaging a busy agent interrupts it. Two other modes are available:
 
-- `queue` — follow-up messages wait and run as the next turn after the current task finishes. The busy acknowledgement shows a queue-item badge (`⏳ Queue item 1/1`, then `⏳ Queue item 2/2` for another rapid follow-up). When the current turn finishes, Hermes sends a lifecycle update (`✅ Current task complete. Queue: N item(s) → processing queued turn now.`) and then `✅ Queue empty.` when the queued turn drains.
+- `queue` — follow-up messages wait and run FIFO after the current task finishes. The busy acknowledgement shows the newest queued item (`⏳ Queue item 1/1`, then `⏳ Queue item 2/2` for another rapid follow-up). When the current turn finishes, Hermes sends lifecycle updates as each item starts (`✅ Current task complete. Queue item 1/2 → processing queued turn now.`, then `Queue item 2/2`) and then `✅ Queue empty.` when the queue drains.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
 
 ```yaml

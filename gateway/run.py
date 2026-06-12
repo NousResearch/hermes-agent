@@ -3769,6 +3769,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key,
                 event,
                 merge_text=event.message_type == MessageType.TEXT,
+                fifo_text=effective_mode == "queue",
             )
 
         is_queue_mode = effective_mode == "queue"

@@ -1601,16 +1601,37 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
-def queued_event_count(event: MessageEvent | None) -> int:
-    """Return how many user follow-ups are represented by a pending event.
+def _pending_queue_items(event: MessageEvent | None) -> list[MessageEvent]:
+    """Return FIFO queue items represented by a pending event head."""
+    if event is None:
+        return []
+    tail = getattr(event, "_hermes_queue_items", []) or []
+    if not isinstance(tail, list):
+        tail = list(tail)
+    return [event, *tail]
 
-    Hermes still drains one pending turn per session, but rapid text/photo
-    follow-ups can be merged into that turn. Keeping the merged count on the
-    event lets mobile acknowledgements show a useful queue number without
-    changing the long-standing single-pending-turn drain contract.
-    """
+
+def _refresh_pending_queue_metadata(head: MessageEvent) -> None:
+    """Normalize visible queue item positions on a pending FIFO head."""
+    items = _pending_queue_items(head)
+    total = max(1, len(items))
+    for index, item in enumerate(items, start=1):
+        setattr(item, "_hermes_queue_item_index", index)
+        setattr(item, "_hermes_queue_item_total", total)
+        setattr(item, "_hermes_queue_count", 1)
+        if item is not head and hasattr(item, "_hermes_queue_items"):
+            delattr(item, "_hermes_queue_items")
+    setattr(head, "_hermes_queue_items", items[1:])
+    setattr(head, "_hermes_queue_count", total)
+
+
+def queued_event_count(event: MessageEvent | None) -> int:
+    """Return how many FIFO queue items are represented by a pending event."""
     if event is None:
         return 0
+    items = _pending_queue_items(event)
+    if items:
+        return len(items)
     raw = getattr(event, "_hermes_queue_count", 1)
     try:
         count = int(raw)
@@ -1619,12 +1640,51 @@ def queued_event_count(event: MessageEvent | None) -> int:
     return max(1, count)
 
 
+def queued_event_position(event: MessageEvent | None) -> tuple[int, int]:
+    """Return the visible FIFO position for a queued event."""
+    if event is None:
+        return (0, 0)
+    try:
+        index = int(getattr(event, "_hermes_queue_item_index", 1) or 1)
+    except (TypeError, ValueError):
+        index = 1
+    try:
+        total = int(getattr(event, "_hermes_queue_item_total", queued_event_count(event)) or 1)
+    except (TypeError, ValueError):
+        total = queued_event_count(event)
+    index = max(1, index)
+    total = max(index, total, 1)
+    return (index, total)
+
+
+def pop_next_pending_message_event(
+    pending_messages: Dict[str, MessageEvent],
+    session_key: str,
+) -> MessageEvent | None:
+    """Pop the next FIFO item while preserving later queued items."""
+    head = pending_messages.pop(session_key, None)
+    if head is None:
+        return None
+    items = _pending_queue_items(head)
+    if not items:
+        return head
+    first, rest = items[0], items[1:]
+    if hasattr(first, "_hermes_queue_items"):
+        delattr(first, "_hermes_queue_items")
+    if rest:
+        next_head = rest[0]
+        setattr(next_head, "_hermes_queue_items", rest[1:])
+        pending_messages[session_key] = next_head
+    return first
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
     event: MessageEvent,
     *,
     merge_text: bool = False,
+    fifo_text: bool = False,
 ) -> None:
     """Store or merge a pending event for a session.
 
@@ -1644,6 +1704,11 @@ def merge_pending_message_event(
 
         def _record_merged_queue_count() -> None:
             setattr(existing, "_hermes_queue_count", existing_count + incoming_count)
+
+        def _append_fifo_queue_item() -> None:
+            items = _pending_queue_items(existing) + _pending_queue_items(event)
+            setattr(existing, "_hermes_queue_items", items[1:])
+            _refresh_pending_queue_metadata(existing)
 
         existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
         incoming_is_photo = event.message_type == MessageType.PHOTO
@@ -1679,6 +1744,17 @@ def merge_pending_message_event(
 
         if (
             merge_text
+            and fifo_text
+            and getattr(existing, "message_type", None) == MessageType.TEXT
+            and event.message_type == MessageType.TEXT
+            and not existing_has_media
+            and not incoming_has_media
+        ):
+            _append_fifo_queue_item()
+            return
+
+        if (
+            merge_text
             and getattr(existing, "message_type", None) == MessageType.TEXT
             and event.message_type == MessageType.TEXT
         ):
@@ -1689,6 +1765,7 @@ def merge_pending_message_event(
 
     if not hasattr(event, "_hermes_queue_count"):
         setattr(event, "_hermes_queue_count", 1)
+    _refresh_pending_queue_metadata(event)
     pending_messages[session_key] = event
 
 
@@ -4456,14 +4533,16 @@ class BasePlatformAdapter(ABC):
 
             # Check if there's a pending message that was queued during our processing
             if session_key in self._pending_messages:
-                pending_event = self._pending_messages.pop(session_key)
-                pending_count = queued_event_count(pending_event)
+                pending_event = pop_next_pending_message_event(self._pending_messages, session_key)
+                if pending_event is None:
+                    return
+                pending_idx, pending_total = queued_event_position(pending_event)
                 setattr(pending_event, "_hermes_queued_turn", True)
-                setattr(pending_event, "_hermes_queue_count_at_start", pending_count)
+                setattr(pending_event, "_hermes_queue_count_at_start", pending_total)
                 logger.debug("[%s] Processing queued follow-up message", self.name)
                 await self._send_queue_status_message(
                     pending_event,
-                    f"✅ Current task complete. Queue: {pending_count} item(s) → processing queued turn now.",
+                    f"✅ Current task complete. Queue item {pending_idx}/{pending_total} → processing queued turn now.",
                 )
                 # Keep the _active_sessions entry live across the turn chain
                 # and only CLEAR the interrupt Event — do NOT delete the entry.
@@ -4586,7 +4665,7 @@ class BasePlatformAdapter(ABC):
             # busy-handler path.  Without this block, we would delete the
             # active-session entry and the queued message would be silently
             # dropped (user never gets a reply).
-            late_pending = self._pending_messages.pop(session_key, None)
+            late_pending = pop_next_pending_message_event(self._pending_messages, session_key)
             if late_pending is not None:
                 current_task = asyncio.current_task()
                 existing_task = self._session_tasks.get(session_key)
@@ -4608,12 +4687,12 @@ class BasePlatformAdapter(ABC):
                         "[%s] Late-arrival pending message during cleanup — spawning drain task",
                         self.name,
                     )
-                    pending_count = queued_event_count(late_pending)
+                    pending_idx, pending_total = queued_event_position(late_pending)
                     setattr(late_pending, "_hermes_queued_turn", True)
-                    setattr(late_pending, "_hermes_queue_count_at_start", pending_count)
+                    setattr(late_pending, "_hermes_queue_count_at_start", pending_total)
                     await self._send_queue_status_message(
                         late_pending,
-                        f"✅ Current task complete. Queue: {pending_count} item(s) → processing queued turn now.",
+                        f"✅ Current task complete. Queue item {pending_idx}/{pending_total} → processing queued turn now.",
                     )
                     _active = self._active_sessions.get(session_key)
                     if _active is not None:

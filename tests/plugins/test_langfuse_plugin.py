@@ -4,6 +4,8 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -234,6 +236,65 @@ class _FakeLangfuse:
     def __init__(self, **kwargs):
         self.kwargs = kwargs
         _FakeLangfuse.instances.append(self)
+
+
+class _FakeRootSpan:
+    def __init__(self):
+        self.ended = 0
+        self.trace_io = {}
+        self.updated = {}
+
+    def set_trace_io(self, **kwargs):
+        self.trace_io.update(kwargs)
+
+    def update(self, **kwargs):
+        self.updated.update(kwargs)
+
+    def end(self):
+        self.ended += 1
+
+
+class _FakeRootCtx:
+    def __init__(self, span=None):
+        self.span = span or _FakeRootSpan()
+        self.entered = 0
+        self.exited = 0
+
+    def __enter__(self):
+        self.entered += 1
+        return self.span
+
+    def __exit__(self, exc_type, exc, tb):
+        self.exited += 1
+
+
+class _FakeObservation:
+    def __init__(self):
+        self.ended = 0
+        self.updated = []
+
+    def update(self, **kwargs):
+        self.updated.append(kwargs)
+
+    def end(self):
+        self.ended += 1
+
+
+class _FakeTraceClient:
+    def __init__(self, root_ctx=None):
+        self.root_ctx = root_ctx or _FakeRootCtx()
+        self.flush_count = 0
+        self.created_seeds = []
+
+    def create_trace_id(self, *, seed):
+        self.created_seeds.append(seed)
+        return f"generated::{seed}"
+
+    def start_as_current_observation(self, **_kwargs):
+        return self.root_ctx
+
+    def flush(self):
+        self.flush_count += 1
 
 
 class TestPlaceholderKeyDetection:
@@ -477,6 +538,135 @@ class TestPlaceholderKeyDetection:
         assert "placeholders" not in caplog.text.lower(), (
             f"Valid Langfuse keys tripped the placeholder guard: {caplog.text!r}"
         )
+
+    def test_get_langfuse_initializes_once_under_concurrency(self, monkeypatch):
+        self._clear_env(monkeypatch)
+        monkeypatch.setenv("HERMES_LANGFUSE_PUBLIC_KEY", "pk-lf-real-public-xyz")
+        monkeypatch.setenv("HERMES_LANGFUSE_SECRET_KEY", "sk-lf-real-secret-xyz")
+        plugin = self._fresh_plugin()
+
+        class _SlowLangfuse:
+            instances = []
+
+            def __init__(self, **kwargs):
+                time.sleep(0.02)
+                self.kwargs = kwargs
+                _SlowLangfuse.instances.append(self)
+
+        monkeypatch.setattr(plugin, "Langfuse", _SlowLangfuse, raising=False)
+
+        clients = []
+        start = threading.Barrier(8)
+
+        def worker():
+            start.wait()
+            clients.append(plugin._get_langfuse())
+
+        threads = [threading.Thread(target=worker) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(_SlowLangfuse.instances) == 1
+        assert clients == [_SlowLangfuse.instances[0]] * 8
+
+
+class TestTraceLifecycle:
+    def _fresh_plugin(self):
+        sys.modules.pop("plugins.observability.langfuse", None)
+        return importlib.import_module("plugins.observability.langfuse")
+
+    def test_fixed_trace_id_requires_evalops_context(self, monkeypatch, caplog):
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(mod, "propagate_attributes", None, raising=False)
+        monkeypatch.setenv("HERMES_LANGFUSE_TRACE_ID", "fixed-trace")
+        monkeypatch.delenv("HERMES_EVALOPS_RUN_ID", raising=False)
+        monkeypatch.delenv("HERMES_EVALOPS_CASE_ID", raising=False)
+        client = _FakeTraceClient()
+
+        with caplog.at_level(logging.WARNING, logger="plugins.observability.langfuse"):
+            state = mod._start_root_trace(
+                "task-key",
+                task_id="task-1",
+                session_id="session-1",
+                platform="cli",
+                provider="openai",
+                model="gpt-test",
+                api_mode="chat",
+                messages=[{"role": "user", "content": "hi"}],
+                client=client,
+            )
+
+        assert state.trace_id == "generated::session-1::task-1"
+        assert client.created_seeds == ["session-1::task-1"]
+        assert "ignoring HERMES_LANGFUSE_TRACE_ID outside EvalOps" in caplog.text
+
+    def test_fixed_trace_id_is_used_with_evalops_context(self, monkeypatch):
+        mod = self._fresh_plugin()
+        monkeypatch.setattr(mod, "propagate_attributes", None, raising=False)
+        monkeypatch.setenv("HERMES_LANGFUSE_TRACE_ID", "fixed-trace")
+        monkeypatch.setenv("HERMES_EVALOPS_CASE_ID", "case-1")
+        client = _FakeTraceClient()
+
+        state = mod._start_root_trace(
+            "task-key",
+            task_id="task-1",
+            session_id="session-1",
+            platform="cli",
+            provider="openai",
+            model="gpt-test",
+            api_mode="chat",
+            messages=[{"role": "user", "content": "hi"}],
+            client=client,
+        )
+
+        assert state.trace_id == "fixed-trace"
+        assert client.created_seeds == []
+
+    def test_finish_trace_closes_root_context_once_and_flushes(self, monkeypatch):
+        mod = self._fresh_plugin()
+        root_ctx = _FakeRootCtx()
+        client = _FakeTraceClient(root_ctx=root_ctx)
+        state = mod.TraceState(trace_id="trace-1", root_ctx=root_ctx, root_span=root_ctx.span)
+        state.generations["1"] = _FakeObservation()
+        task_key = mod._trace_key("task-1", "session-1")
+        monkeypatch.setitem(mod._TRACE_STATE, task_key, state)
+        monkeypatch.setattr(mod, "_get_langfuse", lambda: client)
+
+        mod._finish_trace(task_key, output={"content": "done"})
+        mod._close_root_context(state)
+
+        assert task_key not in mod._TRACE_STATE
+        assert state.generations["1"].ended == 1
+        assert root_ctx.span.ended == 1
+        assert root_ctx.exited == 1
+        assert client.flush_count == 1
+
+    def test_shutdown_active_traces_ends_pending_observations_and_flushes(self, monkeypatch):
+        mod = self._fresh_plugin()
+        root_ctx = _FakeRootCtx()
+        client = _FakeTraceClient(root_ctx=root_ctx)
+        generation = _FakeObservation()
+        tool = _FakeObservation()
+        pending = _FakeObservation()
+        state = mod.TraceState(trace_id="trace-1", root_ctx=root_ctx, root_span=root_ctx.span)
+        state.generations["1"] = generation
+        state.tools["tool-1"] = tool
+        state.pending_tools_by_name["read_file"] = [pending]
+        monkeypatch.setattr(mod, "_LANGFUSE_CLIENT", client)
+        monkeypatch.setitem(mod._TRACE_STATE, mod._trace_key("task-1", "session-1"), state)
+
+        mod._shutdown_active_traces()
+        mod._shutdown_active_traces()
+
+        assert mod._TRACE_STATE == {}
+        assert generation.ended == 1
+        assert tool.ended == 1
+        assert pending.ended == 1
+        assert root_ctx.span.ended == 1
+        assert root_ctx.exited == 1
+        assert client.flush_count == 2
 
 
 class TestRequestMessageCoercion:

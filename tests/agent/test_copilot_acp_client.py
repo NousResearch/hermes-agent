@@ -205,3 +205,61 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+# Tests for <tool_use> XML parsing (fix for issue #45139)
+
+from agent.copilot_acp_client import _extract_tool_calls_from_text, _TOOL_USE_XML_RE
+
+
+class ToolUseXMLParsingTests(unittest.TestCase):
+    """Tests for parsing Anthropic/Claude native <tool_use> XML tags."""
+
+    def test_self_closing_tool_use_tag_with_json_arguments(self):
+        text = '<tool_use name="terminal" arguments="{\"command\": \"ls\"}" id="call_123" />'
+        tool_calls, cleaned = _extract_tool_calls_from_text(text)
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0].function.name, "terminal")
+        self.assertEqual(tool_calls[0].function.arguments, '{"command": "ls"}')
+        self.assertEqual(tool_calls[0].id, "call_123")
+        self.assertEqual(cleaned, "")
+
+    def test_self_closing_tool_use_tag_with_simple_arguments(self):
+        text = '<tool_use name="terminal" arguments="ls -la" id="call_456" />'
+        tool_calls, cleaned = _extract_tool_calls_from_text(text)
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0].function.name, "terminal")
+        self.assertEqual(tool_calls[0].function.arguments, "ls -la")
+        self.assertEqual(tool_calls[0].id, "call_456")
+        self.assertEqual(cleaned, "")
+
+    def test_self_closing_tool_use_tag_with_input_attribute(self):
+        text = '<tool_use name="read_file" input="path=/tmp/test.txt" id="call_789" />'
+        tool_calls, cleaned = _extract_tool_calls_from_text(text)
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0].function.name, "read_file")
+        self.assertEqual(tool_calls[0].function.arguments, "path=/tmp/test.txt")
+        self.assertEqual(tool_calls[0].id, "call_789")
+        self.assertEqual(cleaned, "")
+
+    def test_opening_closing_tool_use_tag_with_json(self):
+        # The arguments field contains a JSON string, so inner quotes must be DOUBLE-escaped
+        # for the outer JSON to be valid: "{\"query\": \"test\"}" -> arguments="{\"query\": \"test\"}"
+        json_content = '{"id": "call_999", "type": "function", "function": {"name": "web_search", "arguments": "{\\\"query\\\": \\\"test\\\"}"}}'
+        text = f"<tool_use>{json_content}</tool_use>"
+        tool_calls, cleaned = _extract_tool_calls_from_text(text)
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0].function.name, "web_search")
+        self.assertEqual(tool_calls[0].function.arguments, '{"query": "test"}')
+        self.assertEqual(tool_calls[0].id, "call_999")
+        self.assertEqual(cleaned, "")
+
+    def test_mixed_tool_use_and_hermes_format(self):
+        text = 'Some text before. <tool_use name="terminal" arguments="ls" id="call_1" /> More text.'
+        tool_calls, cleaned = _extract_tool_calls_from_text(text)
+        self.assertEqual(len(tool_calls), 1)
+        self.assertEqual(tool_calls[0].function.name, "terminal")
+        self.assertIn("Some text before", cleaned)
+        self.assertIn("More text", cleaned)
+
+if __name__ == "__main__":
+    unittest.main()

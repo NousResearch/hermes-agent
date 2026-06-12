@@ -29,6 +29,10 @@ _DEFAULT_TIMEOUT_SECONDS = 900.0
 
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.DOTALL)
 _TOOL_CALL_JSON_RE = re.compile(r"\{\s*\"id\"\s*:\s*\"[^\"]+\"\s*,\s*\"type\"\s*:\s*\"function\"\s*,\s*\"function\"\s*:\s*\{.*?\}\s*\}", re.DOTALL)
+# Regex for Anthropic/Claude native <tool_use> XML tags (used by Copilot ACP long_context mode)
+# Matches both self-closing tags (<tool_use name="..." arguments="..." id="..." />)
+# and opening/closing tags with JSON content (<tool_use>{...}</tool_use>)
+_TOOL_USE_XML_RE = re.compile(r'<tool_use\s+name="([^"]+)"\s+(?:arguments|input)="([^"]*(?:"[^"]*"[^"]*)*)"\s+id="([^"]+)"\s*/?>|<tool_use>(.*?)</tool_use>', re.DOTALL)
 
 # Stderr fingerprint of the deprecated `gh copilot` CLI extension
 # (https://github.blog/changelog/2025-09-25-upcoming-deprecation-of-gh-copilot-cli-extension).
@@ -268,12 +272,43 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
             )
         )
 
+    def _try_add_tool_use_xml(name: str, arguments: str, call_id: str) -> None:
+        """Add a tool call parsed from <tool_use> XML tag."""
+        if not isinstance(name, str) or not name.strip():
+            return
+        if not isinstance(arguments, str):
+            arguments = "{}"
+        if not isinstance(call_id, str) or not call_id.strip():
+            call_id = f"acp_call_{len(extracted)+1}"
+        extracted.append(
+            SimpleNamespace(
+                id=call_id,
+                call_id=call_id,
+                response_item_id=None,
+                type="function",
+                function=SimpleNamespace(name=name.strip(), arguments=arguments),
+            )
+        )
+
+    # 1. Try Hermes XML blocks (
     for m in _TOOL_CALL_BLOCK_RE.finditer(text):
         raw = m.group(1)
         _try_add_tool_call(raw)
         consumed_spans.append((m.start(), m.end()))
 
-    # Only try bare-JSON fallback when no XML blocks were found.
+    # 2. Try Anthropic/Claude native <tool_use> XML tags (from Copilot ACP long_context)
+    for m in _TOOL_USE_XML_RE.finditer(text):
+        if m.group(1):  # Self-closing tag: <tool_use name="..." arguments="..." id="..." />
+            name = m.group(1)
+            arguments = m.group(2)
+            call_id = m.group(3)
+            _try_add_tool_use_xml(name, arguments, call_id)
+        elif m.group(4):  # Opening/closing tags: <tool_use>JSON</tool_use>
+            raw_json = m.group(4)
+            _try_add_tool_call(raw_json)
+        consumed_spans.append((m.start(), m.end()))
+
+    # 3. Only try bare-JSON fallback when no XML blocks were found.
     if not extracted:
         for m in _TOOL_CALL_JSON_RE.finditer(text):
             raw = m.group(0)
@@ -302,9 +337,6 @@ def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str
 
     cleaned = "\n".join(p.strip() for p in parts if p and p.strip()).strip()
     return extracted, cleaned
-
-
-
 def _ensure_path_within_cwd(path_text: str, cwd: str) -> Path:
     candidate = Path(path_text)
     if not candidate.is_absolute():

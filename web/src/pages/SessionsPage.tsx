@@ -733,18 +733,17 @@ export default function SessionsPage() {
   }, [loadSessions, page, refreshEmptyCount]);
 
   useEffect(() => {
+    // Initial status load (not polled - global sidebar does that)
+    api.getStatus().then(setStatus).catch(() => {});
+
     const loadOverview = () => {
-      api
-        .getStatus()
-        .then(setStatus)
-        .catch(() => {});
       api
         .getSessions(50)
         .then((r) => setOverviewSessions(r.sessions))
         .catch(() => {});
     };
     loadOverview();
-    const id = setInterval(loadOverview, 5000);
+    const id = setInterval(loadOverview, 15000);
     return () => clearInterval(id);
   }, []);
 

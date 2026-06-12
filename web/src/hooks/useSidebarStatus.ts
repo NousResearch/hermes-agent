@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
 
-const POLL_MS = 10_000;
+const POLL_MS = 30_000;
 
 /**
  * Light-weight status poll for the app shell (sidebar). The Status page uses

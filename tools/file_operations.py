@@ -2041,6 +2041,26 @@ class ShellFileOperations(FileOperations):
             result = self._exec(cmd_plain, timeout=60)
             all_files = [f for f in result.stdout.strip().split('\n') if f]
 
+        # rg glob engine silently fails on non-ASCII (e.g. CJK) patterns on
+        # Windows/MSYS -- returns exit 1 with no output even when matching
+        # files exist.  Fall back to `find -name` which handles CJK correctly.
+        if not all_files and any(ord(c) > 127 for c in glob_pattern):
+            find_cmd = (
+                f"find {self._escape_shell_arg(path)} -type f "
+                f"-name {self._escape_shell_arg(glob_pattern)} "
+                f"-printf '%T@ %p\\n' 2>/dev/null | sort -rn"
+            )
+            result = self._exec(find_cmd, timeout=60)
+            if result.stdout.strip():
+                for line in result.stdout.strip().split('\n'):
+                    if not line:
+                        continue
+                    parts = line.split(' ', 1)
+                    if len(parts) == 2 and parts[0].replace('.', '').isdigit():
+                        all_files.append(parts[1])
+                    else:
+                        all_files.append(line)
+
         page = all_files[offset:offset + limit]
 
         return SearchResult(

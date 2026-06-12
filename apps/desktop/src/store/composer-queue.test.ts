@@ -7,7 +7,9 @@ import {
   dequeueQueuedPrompt,
   enqueueQueuedPrompt,
   getQueuedPrompts,
+  promoteQueuedPrompt,
   removeQueuedPrompt,
+  shouldAutoDrainOnSettle,
   updateQueuedPrompt,
   updateQueuedPromptText
 } from './composer-queue'
@@ -62,6 +64,20 @@ describe('composer queue store', () => {
     expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['draft two'])
   })
 
+  it('promotes a queued entry to the front', () => {
+    const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'first' })
+    const second = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'second' })
+    const third = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'third' })
+
+    expect(first).not.toBeNull()
+    expect(second).not.toBeNull()
+    expect(third).not.toBeNull()
+
+    expect(promoteQueuedPrompt(SESSION_KEY, third!.id)).toBe(true)
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual(['third', 'first', 'second'])
+    expect(promoteQueuedPrompt(SESSION_KEY, third!.id)).toBe(false)
+  })
+
   it('updates queued text and attachment snapshot', () => {
     const first = enqueueQueuedPrompt(SESSION_KEY, { attachments: [attachment('f-1')], text: 'draft one' })
     const editedAttachments = [attachment('f-2'), attachment('f-3', 'image')]
@@ -98,5 +114,35 @@ describe('composer queue store', () => {
 
     const parsed = JSON.parse(String(raw)) as Record<string, { text: string }[]>
     expect(parsed[SESSION_KEY]?.[0]?.text).toBe('persist me')
+  })
+})
+
+describe('shouldAutoDrainOnSettle', () => {
+  const base = { isBusy: false, queueLength: 1, wasBusy: true }
+
+  it('drains the next queued prompt when a turn settles', () => {
+    expect(shouldAutoDrainOnSettle(base)).toBe(true)
+  })
+
+  it('drains after an interrupt — the settle edge is the same', () => {
+    // Interrupting to reach a queued message is the point of the queue; the
+    // gateway emits the same settle whether the turn finished or was stopped.
+    expect(shouldAutoDrainOnSettle(base)).toBe(true)
+  })
+
+  it('does not drain when the queue is empty', () => {
+    expect(shouldAutoDrainOnSettle({ ...base, queueLength: 0 })).toBe(false)
+  })
+
+  it('ignores steady busy state (no true → false transition)', () => {
+    expect(shouldAutoDrainOnSettle({ ...base, isBusy: true })).toBe(false)
+  })
+
+  it('ignores busy entry (false → true, not a settle)', () => {
+    expect(shouldAutoDrainOnSettle({ ...base, isBusy: true, wasBusy: false })).toBe(false)
+  })
+
+  it('ignores steady idle state (was not busy)', () => {
+    expect(shouldAutoDrainOnSettle({ ...base, wasBusy: false })).toBe(false)
   })
 })

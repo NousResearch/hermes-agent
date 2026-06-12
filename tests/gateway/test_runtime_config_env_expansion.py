@@ -33,6 +33,29 @@ def test_load_prefill_messages_expands_env_var_path(monkeypatch, gateway_home):
     assert gateway_run.GatewayRunner._load_prefill_messages() == prefill
 
 
+def test_load_prefill_messages_accepts_legacy_agent_key(monkeypatch, gateway_home):
+    prefill = [{"role": "system", "content": "legacy few-shot"}]
+    (gateway_home / "prefill.json").write_text(json.dumps(prefill), encoding="utf-8")
+    _write_config(gateway_home, "agent:\n  prefill_messages_file: prefill.json\n")
+
+    assert gateway_run.GatewayRunner._load_prefill_messages() == prefill
+
+
+def test_load_prefill_messages_prefers_top_level_over_legacy(monkeypatch, gateway_home):
+    top_level = [{"role": "system", "content": "top-level"}]
+    legacy = [{"role": "system", "content": "legacy"}]
+    (gateway_home / "top.json").write_text(json.dumps(top_level), encoding="utf-8")
+    (gateway_home / "legacy.json").write_text(json.dumps(legacy), encoding="utf-8")
+    _write_config(
+        gateway_home,
+        "prefill_messages_file: top.json\n"
+        "agent:\n"
+        "  prefill_messages_file: legacy.json\n",
+    )
+
+    assert gateway_run.GatewayRunner._load_prefill_messages() == top_level
+
+
 @pytest.mark.parametrize(
     ("config_body", "env_name", "env_value", "loader_name", "expected"),
     [

@@ -411,6 +411,98 @@ class TestWeixinChunkDelivery:
         assert first_try["text"] == retry["text"]
         assert first_try["client_id"] == retry["client_id"]
 
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_repeated_rate_limits_open_circuit_for_followup_sends(self, send_message_mock, sleep_mock):
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 3
+        adapter._send_chunk_retry_delay_seconds = 0
+        adapter._rate_limit_circuit_threshold = 2
+        adapter._rate_limit_circuit_window_seconds = 60
+        adapter._rate_limit_circuit_open_seconds = 60
+
+        send_message_mock.return_value = {
+            "ret": weixin.RATE_LIMIT_ERRCODE,
+            "errcode": weixin.RATE_LIMIT_ERRCODE,
+            "errmsg": "frequency limit",
+        }
+
+        first = asyncio.run(adapter.send("wxid_test123", "first"))
+        second = asyncio.run(adapter.send("wxid_test123", "second"))
+
+        assert first.success is False
+        assert "cooldown" in (first.error or "")
+        assert second.success is False
+        assert "cooldown" in (second.error or "")
+        # The first rate-limit response is retried once. The second response
+        # crosses the sliding-window threshold, opens the breaker, and both the
+        # rest of the current chunk and follow-up sends fail fast.
+        assert send_message_mock.await_count == 2
+        assert sleep_mock.await_count == 1
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_open_rate_limit_circuit_fails_fast_without_sendmessage(self, send_message_mock):
+        adapter = self._connected_adapter()
+        adapter._rate_limit_circuit_open_seconds = 60
+        adapter._open_rate_limit_circuit()
+
+        result = asyncio.run(adapter.send("wxid_test123", "blocked"))
+
+        assert result.success is False
+        assert "cooldown" in (result.error or "")
+        send_message_mock.assert_not_awaited()
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_successful_send_after_cooldown_resets_rate_limit_state(self, send_message_mock):
+        adapter = self._connected_adapter()
+        adapter._rate_limit_circuit_until = weixin.time.monotonic() - 1
+        adapter._rate_limit_events = [weixin.time.monotonic()]
+        send_message_mock.return_value = {"errcode": 0}
+
+        result = asyncio.run(adapter.send("wxid_test123", "after cooldown"))
+
+        assert result.success is True
+        assert adapter._rate_limit_events == []
+        assert adapter._rate_limit_circuit_until == 0.0
+        send_message_mock.assert_awaited_once()
+
+    def test_concurrent_rate_limited_sends_are_serialized_by_gate(self):
+        adapter = self._connected_adapter()
+        adapter._send_chunk_retries = 3
+        adapter._send_chunk_retry_delay_seconds = 0
+        adapter._rate_limit_circuit_threshold = 1
+        adapter._rate_limit_circuit_open_seconds = 60
+        active = 0
+        peak_active = 0
+
+        async def rate_limited_send(*args, **kwargs):
+            nonlocal active, peak_active
+            active += 1
+            peak_active = max(peak_active, active)
+            await asyncio.sleep(0)
+            active -= 1
+            return {
+                "ret": weixin.RATE_LIMIT_ERRCODE,
+                "errcode": weixin.RATE_LIMIT_ERRCODE,
+                "errmsg": "frequency limit",
+            }
+
+        async def run_burst():
+            with patch("gateway.platforms.weixin._send_message", side_effect=rate_limited_send) as send_message_mock:
+                results = await asyncio.gather(
+                    *(adapter.send("wxid_test123", f"message {idx}") for idx in range(20))
+                )
+                return results, send_message_mock
+
+        results, send_message_mock = asyncio.run(run_burst())
+
+        assert all(not result.success for result in results)
+        assert peak_active == 1
+        # Once the first send observes iLink's rate limit, the breaker opens;
+        # queued concurrent sends acquire the gate later and fail before making
+        # their own iLink calls.
+        assert send_message_mock.await_count == 1
+
 
 class TestWeixinOutboundMedia:
     def test_send_image_file_accepts_keyword_image_path(self):
@@ -968,3 +1060,148 @@ class TestWeixinTextDebounce:
 
         asyncio.run(_drive())
         assert dispatched == ["one\ntwo\nthree"]
+
+
+class _StubResponse:
+    def __init__(self, *, status=200, body="{}", delay=0.0):
+        self.status = status
+        self.ok = 200 <= status < 300
+        self._body = body
+        self._delay = delay
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_exc):
+        return False
+
+    async def text(self):
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return self._body
+
+
+class _StubSession:
+    """Records request kwargs and returns a configurable async-CM response.
+
+    Unlike aiohttp.ClientSession it installs no TimerContext, so it cannot
+    reproduce aiohttp's cross-loop crash directly; these tests instead pin the
+    observable contract of the asyncio.wait_for migration.
+    """
+
+    def __init__(self, response):
+        self._response = response
+        self.post_calls = []
+        self.get_calls = []
+
+    def post(self, url, **kwargs):
+        self.post_calls.append((url, kwargs))
+        return self._response
+
+    def get(self, url, **kwargs):
+        self.get_calls.append((url, kwargs))
+        return self._response
+
+
+class TestWeixinApiTimeout:
+    def test_api_post_does_not_pass_aiohttp_timeout_kwarg(self):
+        session = _StubSession(_StubResponse(body='{"ret": 0}'))
+        result = asyncio.run(
+            weixin._api_post(
+                session,
+                base_url="https://weixin.example.com",
+                endpoint="ep",
+                payload={"k": "v"},
+                token="tok",
+                timeout_ms=5000,
+            )
+        )
+        assert result == {"ret": 0}
+        # The fix enforces the timeout via asyncio.wait_for, so ClientTimeout is
+        # gone and `timeout` is no longer forwarded to session.post().
+        [(_url, kwargs)] = session.post_calls
+        assert "timeout" not in kwargs
+
+    def test_api_get_does_not_pass_aiohttp_timeout_kwarg(self):
+        session = _StubSession(_StubResponse(body='{"ret": 0}'))
+        result = asyncio.run(
+            weixin._api_get(
+                session,
+                base_url="https://weixin.example.com",
+                endpoint="ep",
+                timeout_ms=5000,
+            )
+        )
+        assert result == {"ret": 0}
+        [(_url, kwargs)] = session.get_calls
+        assert "timeout" not in kwargs
+
+    def test_api_post_raises_timeout_when_response_is_slow(self):
+        # 1 ms budget against a 1 s response: wait_for must cancel and raise.
+        session = _StubSession(_StubResponse(delay=1.0))
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(
+                weixin._api_post(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    payload={"k": "v"},
+                    token="tok",
+                    timeout_ms=1,
+                )
+            )
+
+    def test_api_get_raises_timeout_when_response_is_slow(self):
+        session = _StubSession(_StubResponse(delay=1.0))
+        with pytest.raises(asyncio.TimeoutError):
+            asyncio.run(
+                weixin._api_get(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    timeout_ms=1,
+                )
+            )
+
+    def test_api_post_raises_runtime_error_on_non_ok_status(self):
+        # The non-2xx branch now lives inside the wait_for-wrapped inner coro;
+        # confirm it still raises with the HTTP status and truncated body.
+        session = _StubSession(_StubResponse(status=500, body="boom"))
+        with pytest.raises(RuntimeError, match="iLink POST ep HTTP 500: boom"):
+            asyncio.run(
+                weixin._api_post(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    payload={"k": "v"},
+                    token="tok",
+                    timeout_ms=5000,
+                )
+            )
+
+    def test_api_get_raises_runtime_error_on_non_ok_status(self):
+        session = _StubSession(_StubResponse(status=500, body="boom"))
+        with pytest.raises(RuntimeError, match="iLink GET ep HTTP 500: boom"):
+            asyncio.run(
+                weixin._api_get(
+                    session,
+                    base_url="https://weixin.example.com",
+                    endpoint="ep",
+                    timeout_ms=5000,
+                )
+            )
+
+    def test_get_updates_returns_empty_sentinel_on_timeout(self):
+        # wait_for raises asyncio.TimeoutError, which _get_updates swallows into
+        # an empty long-poll batch rather than propagating.
+        session = _StubSession(_StubResponse(delay=1.0))
+        result = asyncio.run(
+            weixin._get_updates(
+                session,
+                base_url="https://weixin.example.com",
+                token="tok",
+                sync_buf="buf-123",
+                timeout_ms=1,
+            )
+        )
+        assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}

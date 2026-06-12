@@ -44,7 +44,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: website/package-lock.json
 
@@ -59,12 +59,22 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Always rebuild — the file isn't committed (gitignored), so a
-          # fresh checkout starts without it and we want the freshest crawl
-          # in every deploy. Failure is non-fatal: extract-skills.py will
-          # fall back to the legacy snapshot cache and the Skills Hub page
-          # still renders, just without the latest community catalog.
-          python3 scripts/build_skills_index.py || echo "Skills index build failed (non-fatal)"
+          # Rebuild the unified catalog. The file is gitignored, so a fresh
+          # checkout starts without it and we want the freshest crawl in
+          # every deploy.
+          #
+          # This MUST be fatal. build_skills_index.py runs a health check and
+          # exits non-zero WITHOUT writing the output file when a source
+          # collapses (e.g. a GitHub API rate limit zeroes the github /
+          # claude-marketplace / well-known taps all at once). Letting the
+          # deploy continue would either (a) ship a degenerate index missing
+          # whole hubs — the June 2026 regression where OpenAI/Anthropic/
+          # HuggingFace/NVIDIA tabs vanished — or (b) fall through to a
+          # local-only catalog. Failing here keeps the last good deployment
+          # live (GitHub Pages serves the previous build) instead of
+          # publishing a broken catalog. Re-run the workflow once the
+          # transient rate limit clears.
+          python3 scripts/build_skills_index.py
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py

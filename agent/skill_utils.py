@@ -169,6 +169,106 @@ def skill_matches_platform(frontmatter: Dict[str, Any]) -> bool:
     return False
 
 
+# ── Environment matching ──────────────────────────────────────────────────
+
+# Recognized environment tags and how each is detected. An environment tag is
+# a *relevance* gate, not a hard-compatibility gate (that is what ``platforms:``
+# is for). A skill tagged for an environment it isn't relevant to is hidden from
+# the skills index / offer surfaces so it does not add noise for users who will
+# never need it — but it can ALWAYS still be loaded explicitly (``skill_view``,
+# ``--skills``), because an explicit request is explicit consent.
+#
+# Detection is cached for the process lifetime via ``_ENV_DETECT_CACHE``.
+_KNOWN_ENVIRONMENTS = frozenset({"kanban", "docker", "s6"})
+
+_ENV_DETECT_CACHE: Dict[str, bool] = {}
+
+
+def _detect_environment(env: str) -> bool:
+    """Return True when the named runtime environment is currently active.
+
+    Cached per process. Unknown env names return True (fail-open: never hide a
+    skill because of a tag we don't understand).
+    """
+    if env in _ENV_DETECT_CACHE:
+        return _ENV_DETECT_CACHE[env]
+
+    result = True
+    if env == "kanban":
+        # Kanban is "active" either as a dispatcher-spawned worker (the
+        # dispatcher sets ``HERMES_KANBAN_TASK`` / ``HERMES_KANBAN_BOARD`` in the
+        # worker env) or as an orchestrator profile that has opted into the
+        # kanban toolset. Mirror the same signals the kanban tools themselves
+        # gate on (``tools/kanban_tools.py``) so the offer filter agrees with
+        # tool availability.
+        if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
+            result = True
+        else:
+            try:
+                from tools.kanban_tools import _profile_has_kanban_toolset
+
+                result = bool(_profile_has_kanban_toolset())
+            except Exception:
+                result = False
+    elif env == "docker":
+        try:
+            from hermes_constants import is_container
+
+            result = is_container()
+        except Exception:
+            result = False
+    elif env == "s6":
+        # The Hermes Docker image runs s6-overlay as PID 1 (/init). s6 plants
+        # its runtime scaffolding under /run/s6 and ships its admin tree under
+        # /package/admin/s6-overlay. Either marker means we're inside an
+        # s6-supervised container.
+        result = os.path.isdir("/run/s6") or os.path.isdir(
+            "/package/admin/s6-overlay"
+        )
+
+    _ENV_DETECT_CACHE[env] = result
+    return result
+
+
+def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
+    """Return True when the skill is relevant to the current runtime environment.
+
+    Skills may declare an ``environments`` list in their YAML frontmatter::
+
+        environments: [kanban]        # only relevant when kanban is active
+        environments: [s6]            # only relevant inside the s6 Docker image
+        environments: [docker]        # only relevant inside any container
+
+    If the field is absent or empty the skill is relevant in **all**
+    environments (backward-compatible default).
+
+    This is an OFFER-time filter: it controls whether a skill shows up in the
+    skills index / autocomplete / slash-command list. It is intentionally NOT
+    enforced by ``skill_view`` or ``--skills`` preloading — an explicit load is
+    explicit consent, and load-bearing force-loads (e.g. the kanban dispatcher
+    injecting ``--skills kanban-worker``) must always succeed regardless of how
+    the offer surfaces filter the skill.
+
+    A skill matches when ANY of its declared environments is currently active
+    (OR semantics, mirroring ``platforms``). Unknown env tags fail open.
+    """
+    environments = frontmatter.get("environments")
+    if not environments:
+        return True
+    if not isinstance(environments, list):
+        environments = [environments]
+    for env in environments:
+        normalized = str(env).lower().strip()
+        if not normalized:
+            continue
+        if normalized not in _KNOWN_ENVIRONMENTS:
+            # Tag we don't understand — don't hide the skill over it.
+            return True
+        if _detect_environment(normalized):
+            return True
+    return False
+
+
 # ── Disabled skills ───────────────────────────────────────────────────────
 
 

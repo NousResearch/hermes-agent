@@ -527,6 +527,14 @@ export function useMessageStream({
         const dedupeReference = normalize(finalText)
 
         const replaceTextPart = (parts: ChatMessagePart[]) => {
+          // When the provider sends an empty final text (e.g. NVIDIA NIM
+          // sends finish_reason:"stop" with no content), preserve the
+          // streamed text parts that were accumulated via message.delta.
+          // Otherwise the already-rendered response vanishes on completion.
+          if (!finalText) {
+            return parts
+          }
+
           const kept = parts.filter(part => {
             if (part.type === 'text') {
               return false
@@ -541,7 +549,7 @@ export function useMessageStream({
             return !(r && (dedupeReference.startsWith(r) || r.startsWith(dedupeReference)))
           })
 
-          return finalText ? [...kept, assistantTextPart(finalText)] : kept
+          return [...kept, assistantTextPart(finalText)]
         }
 
         const completeMessage = (message: ChatMessage): ChatMessage =>
@@ -596,8 +604,18 @@ export function useMessageStream({
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
+        // Hydrate from stored session when we never received streamed content
+        // (no assistant payload seen) OR when the stored session may have a
+        // richer version of the final text.  Skip hydration when we already
+        // have streamed text but the provider sent an empty completion — the
+        // streamed content is authoritative and hydrating would overwrite it
+        // with a stale snapshot that predates the streamed deltas.
+        const hasStreamedText = nextMessages.some(
+          m => m.role === 'assistant' && m.parts.some(p => p.type === 'text' && p.text.trim())
+        )
         shouldHydrate =
-          !completionError && !hasInlineError && !unresolvedUserTail && (!state.sawAssistantPayload || !finalText)
+          !completionError && !hasInlineError && !unresolvedUserTail &&
+          (!state.sawAssistantPayload || (!!finalText && !hasStreamedText))
 
         return {
           ...state,

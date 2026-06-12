@@ -29,6 +29,11 @@ import shutil
 import sys
 import json
 import re
+
+# Pre-compiled pattern matching @-context references (@file:, @diff, @folder:, etc.)
+# Used as a fast-path guard so ordinary "@" in email addresses doesn't trigger
+# the expensive preprocess_context_references pipeline (#44656).
+_CONTEXT_REF_RE = re.compile(r"(?<![\w/])@(?:diff|staged|file|folder|git|url):?")
 import concurrent.futures
 import base64
 import atexit
@@ -10025,7 +10030,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 )
 
         # Expand @ context references (e.g. @file:main.py, @diff, @folder:src/)
-        if isinstance(message, str) and "@" in message:
+        # Use the actual pattern to avoid triggering on ordinary "@" in email
+        # addresses or other text (#44656).
+        if isinstance(message, str) and _CONTEXT_REF_RE.search(message):
             try:
                 from agent.context_references import preprocess_context_references
                 from agent.model_metadata import get_model_context_length

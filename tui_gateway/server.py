@@ -1,4 +1,5 @@
 import atexit
+import re
 import concurrent.futures
 import contextlib
 import contextvars
@@ -34,6 +35,11 @@ from tui_gateway.transport import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Pre-compiled pattern matching @-context references (@file:, @diff, @folder:, etc.)
+# Used as a fast-path guard so ordinary "@" in email addresses doesn't trigger
+# the expensive preprocess_context_references pipeline (#44656).
+_CONTEXT_REF_RE = re.compile(r"(?<![\w/])@(?:diff|staged|file|folder|git|url):?")
 
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
@@ -5358,7 +5364,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             streamer = make_stream_renderer(cols)
             prompt = text
 
-            if isinstance(prompt, str) and "@" in prompt:
+            # Use the actual context-reference pattern instead of a bare "@" check
+            # so ordinary messages containing "@" (e.g. email addresses) don't
+            # trigger the expensive preprocess_context_references pipeline
+            # which can block on HTTP calls to resolve model context length (#44656).
+            if isinstance(prompt, str) and _CONTEXT_REF_RE.search(prompt):
                 from agent.context_references import preprocess_context_references
                 from agent.model_metadata import get_model_context_length
 

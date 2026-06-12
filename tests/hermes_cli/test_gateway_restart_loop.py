@@ -6,7 +6,6 @@ Covers:
 - _contains_gateway_lifecycle_command pattern matching
 """
 
-import os
 from argparse import Namespace
 
 import pytest

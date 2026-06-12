@@ -1560,7 +1560,12 @@ class AIAgent:
             if not self._session_db_created:
                 self._ensure_db_session()
             start_idx = len(conversation_history) if conversation_history else 0
-            flush_from = max(start_idx, self._last_flushed_db_idx)
+            # Guard against the flush cursor overshooting the message list.
+            # This can happen when repair_message_sequence compacts the list
+            # (merging consecutive users, dropping stray tools) after the
+            # cursor was set.  Fall back to start_idx so we don't skip
+            # persisting the assistant/tool chain (#44837).
+            flush_from = max(start_idx, min(self._last_flushed_db_idx, len(messages)))
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")

@@ -299,6 +299,17 @@ class VoiceCallRuntime:
         spoken = strip_for_speech(content)
         if not spoken:
             return False, "nothing speakable in message"
+        # A call that hasn't been answered can't receive TTS (Telnyx 90034).
+        # If it's a fresh outbound dial with no opening line yet (e.g. the
+        # agent just placed it and this reply is meant for it), queue the
+        # text to be spoken on answer; otherwise fail cleanly.
+        if record.answered_at is None:
+            if self.manager.queue_initial_message(record.call_id, spoken):
+                return True, record.call_id
+            return False, (
+                f"call {record.call_id} is still ringing and already has an "
+                "opening message — not spoken"
+            )
         # Realtime calls: the model owns the audio. Agent output goes to the
         # bridge (pending consults consume it as the tool result; anything
         # else is spoken by the realtime voice) — carrier TTS would talk

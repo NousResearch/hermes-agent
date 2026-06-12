@@ -182,6 +182,23 @@ class CallManager:
             if waiter is not None and not waiter.done():
                 waiter.set_result(text)
 
+    def queue_initial_message(self, call_id: str, text: str) -> bool:
+        """Queue ``text`` to be spoken when a still-ringing outbound call is
+        answered. Returns False when the call already has an opening message
+        (or isn't in a queueable state)."""
+        record = self.active.get(call_id)
+        if (
+            record is None
+            or record.is_terminal
+            or record.answered_at is not None
+            or record.direction != "outbound"
+            or record.metadata.get("initial_message")
+        ):
+            return False
+        record.metadata["initial_message"] = text
+        self._persist(record)
+        return True
+
     def _realtime_owns_audio(self, record: CallRecord) -> bool:
         """True when a realtime bridge handles this call's audio — carrier
         TTS/transcription would talk over the model."""

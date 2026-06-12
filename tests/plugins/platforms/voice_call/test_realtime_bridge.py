@@ -552,6 +552,49 @@ async def test_newer_consult_supersedes_pending_one(fake_runtime):
 
 
 @pytest.mark.asyncio
+async def test_speak_for_chat_on_ringing_call_queues_or_fails_cleanly(
+    tmp_path, make_config
+):
+    """Agent replies landing on a not-yet-answered call must never hit the
+    carrier speak API (Telnyx 422 'not answered yet'): queue as the opening
+    message when there is none, fail cleanly when there is."""
+    cfg = make_config()
+    cfg.serve.port = 0
+    cfg.provider_extra = {"mock": {"auto_answer": False}}  # stays ringing
+    runtime = await runtime_mod.ensure_runtime(cfg, store_dir=tmp_path)
+    try:
+        # No message → the late agent reply becomes the opening line.
+        record = await runtime.manager.initiate_call("+15555550001")
+        ok, call_id = await runtime.speak_for_chat(
+            "+15555550001", "Your build finished successfully."
+        )
+        assert ok and call_id == record.call_id
+        assert record.metadata["initial_message"] == (
+            "Your build finished successfully."
+        )
+        assert runtime.provider.spoken == []  # nothing spoken pre-answer
+
+        # When answered, the queued line is what gets spoken.
+        from plugins.platforms.voice_call.events import EventType, NormalizedEvent
+
+        await runtime.manager.process_event(NormalizedEvent(
+            type=EventType.CALL_ANSWERED, provider="mock",
+            provider_call_id=record.provider_call_id,
+        ))
+        assert runtime.provider.spoken[0][1] == "Your build finished successfully."
+
+        # A ringing call that ALREADY has an opening message → clean failure.
+        record2 = await runtime.manager.initiate_call(
+            "+15555550002", message="already queued"
+        )
+        ok, error = await runtime.speak_for_chat("+15555550002", "late reply")
+        assert not ok and "still ringing" in error
+        assert record2.metadata["initial_message"] == "already queued"
+    finally:
+        await runtime_mod.stop_runtime()
+
+
+@pytest.mark.asyncio
 async def test_speak_for_chat_routes_to_bridge_for_realtime_calls(
     tmp_path, make_config
 ):
@@ -563,6 +606,9 @@ async def test_speak_for_chat_routes_to_bridge_for_realtime_calls(
     runtime = await runtime_mod.ensure_runtime(cfg, store_dir=tmp_path)
     try:
         record = await runtime.manager.initiate_call("+15555550001")
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while not record.answered_at and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.01)
         delivered = []
 
         class FakeBridge:

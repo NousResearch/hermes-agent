@@ -588,6 +588,11 @@ class TelegramAdapter(BasePlatformAdapter):
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
+    # Android clients can become sluggish when the bot repeatedly edits a
+    # near-4096-char Markdown bubble during streaming. Seal edit-based
+    # streaming segments earlier and continue in a fresh message; this also
+    # leaves MarkdownV2 escape expansion headroom for the final formatted edit.
+    STREAMING_EDIT_SAFE_LIMIT = 3072
     supports_code_blocks = True  # Telegram MarkdownV2 renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
     # Bot API 10.1 Rich Messages cap the raw markdown/html text at 32,768
@@ -4603,7 +4608,7 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return self.truncate_message(
             content,
-            self.MAX_MESSAGE_LENGTH,
+            self.STREAMING_EDIT_SAFE_LIMIT,
             len_fn=utf16_len,
         )[0]
 

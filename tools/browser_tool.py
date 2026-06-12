@@ -2695,6 +2695,36 @@ def browser_snapshot(
         snapshot_text = data.get("snapshot", "")
         refs = data.get("refs", {})
 
+        # ── Private-network guard: block snapshots from eval-navigated private pages ──
+        # After any eval (browser_console) that may have changed location.href to a
+        # private/internal address, the snapshot would expose private page content.
+        # Re-check the current URL before returning the snapshot.
+        if (
+            not _is_local_backend()
+            and not _allow_private_urls()
+        ):
+            try:
+                _url_result = _run_browser_command(
+                    effective_task_id, "eval", ["window.location.href"],
+                    timeout=5, _engine_override="auto",
+                )
+                if _url_result.get("success"):
+                    _current_url = (
+                        _url_result.get("data", {}).get("result", "")
+                        .strip().strip('"').strip("'")
+                    )
+                    if _current_url and not _is_safe_url(_current_url):
+                        return json.dumps({
+                            "success": False,
+                            "error": (
+                                "Blocked: page URL targets a private or internal address "
+                                f"({_current_url}). This may have been caused by a "
+                                "JavaScript navigation via browser_console."
+                            ),
+                        }, ensure_ascii=False)
+            except Exception as _url_exc:
+                logger.debug("browser_snapshot: URL safety check failed (%s)", _url_exc)
+
         # Check if snapshot needs summarization
         if len(snapshot_text) > SNAPSHOT_SUMMARIZE_THRESHOLD and user_task:
             snapshot_text = _extract_relevant_content(snapshot_text, user_task)

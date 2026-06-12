@@ -467,7 +467,14 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except PermissionError:
+            # Windows: another process may hold a lock on the log file,
+            # causing rename/delete to fail with PermissionError.  Rather
+            # than crashing the process, skip rotation — the existing file
+            # remains open and logging continues uninterrupted.
+            return
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { clearAllPrompts, setApprovalRequest } from '@/store/prompts'
 import { $activeSessionId } from '@/store/session'
+import { clearDismissedToolRows } from '@/store/tool-dismiss'
 import { $toolDisclosureStates } from '@/store/tool-view'
 
 import { Thread } from './thread'
@@ -200,12 +201,14 @@ beforeEach(() => {
   clearAllPrompts()
   $activeSessionId.set('sess-1')
   $toolDisclosureStates.set({})
+  clearDismissedToolRows()
 })
 
 afterEach(() => {
   cleanup()
   clearAllPrompts()
   $activeSessionId.set(null)
+  clearDismissedToolRows()
 })
 
 describe('flat tool list approval surfacing', () => {
@@ -246,6 +249,30 @@ describe('flat tool list approval surfacing', () => {
     await waitFor(() => {
       expect(screen.queryByLabelText('Dismiss')).toBeNull()
     })
+  })
+
+  it('keeps a dismissed row hidden after a remount (virtualization)', async () => {
+    // The thread virtualizes, so a row's component unmounts/remounts as it
+    // scrolls. Dismissal must persist across that — component-local state would
+    // forget it and the row would pop back. Simulate the remount by unmounting
+    // and rendering the same message fresh.
+    const first = render(<GroupHarness message={completedOnlyMessage()} />)
+
+    fireEvent.click(await screen.findByLabelText('Dismiss'))
+
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Dismiss')).toBeNull()
+    })
+
+    first.unmount()
+
+    const { container } = render(<GroupHarness message={completedOnlyMessage()} />)
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-slot="tool-block"]').length).toBeGreaterThan(0)
+    })
+
+    expect(screen.queryByLabelText('Dismiss')).toBeNull()
   })
 
   it('lets failed tool rows be dismissed', async () => {

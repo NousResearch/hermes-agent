@@ -127,14 +127,21 @@ def _chat_content_to_responses_parts(content: Any, *, role: str = "user") -> Lis
     return converted
 
 
-def _summarize_user_message_for_log(content: Any) -> str:
-    """Return a short text summary of a user message for logging/trajectory.
+def _summarize_user_message_for_log(content: Any, *, sep: str = " ") -> str:
+    """Flatten message content to a plain-text summary.
 
     Multimodal messages arrive as a list of ``{type:"text"|"image_url", ...}``
-    parts from the API server.  Logging, spinner previews, and trajectory
-    files all want a plain string — this helper extracts the first chunk of
-    text and notes any attached images.  Returns an empty string for empty
-    lists and ``str(content)`` for unexpected scalar types.
+    parts from the API server.  Several consumers want a plain string:
+
+    - Logging, spinner previews, and trajectory files (the default ``sep=" "``).
+    - External memory providers, which feed the text to regexes
+      (``sanitize_context``) and text APIs — a raw list crashes the sync with
+      ``expected string or bytes-like object, got 'list'`` (use ``sep="\\n"``).
+
+    Text parts are joined with ``sep``; images become a ``[N image(s)]`` marker
+    so the turn isn't recorded as if the attachment never existed.  Returns an
+    empty string for empty lists and ``str(content)`` for unexpected scalar
+    types.
     """
     if content is None:
         return ""
@@ -157,7 +164,7 @@ def _summarize_user_message_for_log(content: Any) -> str:
                     text_bits.append(text)
             elif ptype in {"image_url", "input_image"}:
                 image_count += 1
-        summary = " ".join(text_bits).strip()
+        summary = sep.join(text_bits).strip()
         if image_count:
             note = f"[{image_count} image{'s' if image_count != 1 else ''}]"
             summary = f"{note} {summary}" if summary else note

@@ -2000,14 +2000,21 @@ fn configure_unix_path_stage_with_profile(
     hermes_manager::platform::write_shell_profile_update(profile_path, &plan)
         .map_err(|err| anyhow!("writing Unix shell profile update: {err}"))?;
     let after = std::fs::read_to_string(profile_path).ok();
+    let launcher_path = hermes_home.join("bin").join("hermes");
+    let launcher_target = install_root.join("venv").join("bin").join("hermes");
+    let launcher_changed =
+        hermes_manager::platform::write_unix_launcher(&launcher_path, &launcher_target)
+            .map_err(|err| anyhow!("writing Unix launcher: {err}"))?;
     std::env::set_var("PATH", &plan.next_path);
     Ok(serde_json::json!({
         "profilePath": profile_path.display().to_string(),
         "hermesBin": plan.hermes_bin,
+        "launcherPath": launcher_path.display().to_string(),
+        "launcherChanged": launcher_changed,
         "pathEntries": plan.path_entries,
         "pathChanged": plan.changed,
         "profileChanged": before != after,
-        "applied": plan.changed || before != after,
+        "applied": plan.changed || before != after || launcher_changed,
     }))
 }
 
@@ -4505,13 +4512,18 @@ mod tests {
         let home = root.join("home");
         let install_root = root.join("hermes-agent");
         let profile = home.join(".profile");
-        std::fs::create_dir_all(&install_root).unwrap();
+        let hermes_entry = install_root.join("venv").join("bin").join("hermes");
+        std::fs::create_dir_all(hermes_entry.parent().unwrap()).unwrap();
         std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(&hermes_entry, "#!/bin/sh\n").unwrap();
         std::fs::write(&profile, "alias ll='ls -la'\n").unwrap();
 
         let report =
             configure_unix_path_stage_with_profile(&home, &install_root, &profile, None).unwrap();
 
+        let launcher = home.join("bin").join("hermes");
+        let launcher_text = std::fs::read_to_string(&launcher).unwrap();
+        assert!(launcher_text.contains(&format!("exec \"{}\" \"$@\"", hermes_entry.display())));
         let text = std::fs::read_to_string(&profile).unwrap();
         assert!(text.contains("alias ll='ls -la'"));
         assert!(text.contains("Hermes Agent PATH"));
@@ -4524,6 +4536,8 @@ mod tests {
             report["hermesBin"],
             install_root.join("venv").join("bin").display().to_string()
         );
+        assert_eq!(report["launcherPath"], launcher.display().to_string());
+        assert_eq!(report["launcherChanged"], true);
 
         let _ = std::fs::remove_dir_all(&root);
     }

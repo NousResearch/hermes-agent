@@ -200,6 +200,8 @@ language-specific setup where needed.
   installed tools such as `uv` and `rg` remain available after bootstrap instead of only inside the installer process.
 - Unix PATH/profile setup now detects fish shells and writes Hermes-managed `fish_add_path` entries to
   `~/.config/fish/config.fish` instead of POSIX `export PATH=...` syntax.
+- Unix PATH setup now writes a managed `$HERMES_HOME/bin/hermes` launcher that clears `PYTHONPATH`/`PYTHONHOME` before
+  delegating to the venv entry point, matching the shell script's environment-sanitizing command shim behavior.
 - Windows `uv` now has a Rust native-first GitHub release ZIP path for x64, ARM64, and x86, installing `uv.exe` into
   `$HERMES_HOME/bin` and preserving the PowerShell astral installer as fallback for download, extraction, or version
   check failures.
@@ -320,6 +322,8 @@ language-specific setup where needed.
   symlink behavior remains script-backed until full parity exists.
 - The Rust manager writes fish-compatible managed profile blocks when the selected Unix profile is `config.fish`, while
   keeping POSIX export blocks for bash/zsh-compatible profile files.
+- The Rust manager can create an idempotent Unix `hermes` launcher in the managed tool bin directory, so the bootstrap
+  path stage no longer depends only on adding the venv's script directory to shell profiles.
 - Bootstrap installer now runs the Unix `complete` stage natively for the install-method stamp, preserving the existing
   `git` value so status, dashboard, and update recommendations remain compatible with archive-created checkouts.
 - `hermes-manager plan-shortcuts` reports Start Menu and Desktop `.lnk` targets for the packaged Windows desktop app,

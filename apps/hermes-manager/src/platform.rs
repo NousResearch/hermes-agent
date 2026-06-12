@@ -145,6 +145,48 @@ pub fn write_shell_profile_update(profile_path: &Path, plan: &PathUpdatePlan) ->
     fs::write(profile_path, next).map_err(|err| ManagerError::io(profile_path, err))
 }
 
+/// Write a managed Unix launcher that sanitizes Python environment variables.
+pub fn write_unix_launcher(launcher_path: &Path, target_path: &Path) -> Result<bool> {
+    if !target_path.is_file() {
+        return Ok(false);
+    }
+
+    let script = format!(
+        "#!/usr/bin/env bash\nunset PYTHONPATH\nunset PYTHONHOME\nexec \"{}\" \"$@\"\n",
+        target_path.display()
+    );
+    let existing = match fs::read_to_string(launcher_path) {
+        Ok(text) => Some(text),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(ManagerError::io(launcher_path, err)),
+    };
+    let content_changed = existing.as_deref() != Some(script.as_str());
+    if content_changed {
+        if let Some(parent) = launcher_path.parent() {
+            fs::create_dir_all(parent).map_err(|err| ManagerError::io(parent, err))?;
+        }
+        fs::write(launcher_path, script).map_err(|err| ManagerError::io(launcher_path, err))?;
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let metadata =
+            fs::metadata(launcher_path).map_err(|err| ManagerError::io(launcher_path, err))?;
+        let mut permissions = metadata.permissions();
+        let mode = permissions.mode();
+        if mode & 0o111 != 0o111 {
+            permissions.set_mode(mode | 0o755);
+            fs::set_permissions(launcher_path, permissions)
+                .map_err(|err| ManagerError::io(launcher_path, err))?;
+            return Ok(true);
+        }
+    }
+
+    Ok(content_changed)
+}
+
 /// Plan Start Menu and Desktop shortcuts for a packaged Hermes desktop executable.
 pub fn plan_windows_shortcuts(
     target_exe: &Path,
@@ -612,6 +654,55 @@ mod tests {
         let text = std::fs::read_to_string(&profile).unwrap();
         assert!(!text.contains("old"));
         assert!(text.contains("export PATH=\"/new/hermes/bin:$PATH\""));
+    }
+
+    #[test]
+    fn write_unix_launcher_creates_python_env_cleaning_shim() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let target = dir
+            .path()
+            .join("hermes-agent")
+            .join("venv")
+            .join("bin")
+            .join("hermes");
+        let launcher = dir.path().join("bin").join("hermes");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "#!/bin/sh\n").unwrap();
+
+        let changed = write_unix_launcher(&launcher, &target).unwrap();
+        let unchanged = write_unix_launcher(&launcher, &target).unwrap();
+
+        let text = std::fs::read_to_string(&launcher).unwrap();
+        assert!(changed);
+        assert!(!unchanged);
+        assert!(text.starts_with("#!/usr/bin/env bash\n"));
+        assert!(text.contains("unset PYTHONPATH\n"));
+        assert!(text.contains("unset PYTHONHOME\n"));
+        assert!(text.contains(&format!("exec \"{}\" \"$@\"\n", target.display())));
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&launcher).unwrap().permissions().mode();
+            assert_eq!(mode & 0o111, 0o111);
+        }
+    }
+
+    #[test]
+    fn write_unix_launcher_skips_missing_target() {
+        let dir = tempfile::tempdir().expect("tempdir should be created");
+        let target = dir
+            .path()
+            .join("hermes-agent")
+            .join("venv")
+            .join("bin")
+            .join("hermes");
+        let launcher = dir.path().join("bin").join("hermes");
+
+        let changed = write_unix_launcher(&launcher, &target).unwrap();
+
+        assert!(!changed);
+        assert!(!launcher.exists());
     }
 
     #[test]

@@ -1,0 +1,5 @@
+name: chutes-provider
+kind: model-provider
+version: 1.0.0
+description: Chutes — decentralized, OpenAI-compatible inference with TEE confidential compute
+author: Nous Research

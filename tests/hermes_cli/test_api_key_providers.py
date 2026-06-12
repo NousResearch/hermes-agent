@@ -1234,6 +1234,119 @@ class TestNovitaProvider:
 
 
 # =============================================================================
+# Chutes provider tests (added by feat/chutes-provider)
+# =============================================================================
+
+class TestChutesProvider:
+    """Tests for Chutes — a decentralized, OpenAI-compatible aggregator."""
+
+    def test_chutes_profile_loads(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("chutes")
+        assert profile is not None
+        assert profile.name == "chutes"
+        assert profile.display_name == "Chutes"
+        assert profile.base_url == "https://llm.chutes.ai/v1"
+        assert "CHUTES_API_KEY" in profile.env_vars
+
+    def test_chutes_aliases(self):
+        from providers import get_provider_profile
+        profile = get_provider_profile("chutes")
+        assert "chutes-ai" in profile.aliases
+        assert "chutesai" in profile.aliases
+
+    def test_chutes_alias_resolves(self):
+        assert resolve_provider("chutes-ai") == "chutes"
+        assert resolve_provider("chutesai") == "chutes"
+
+    def test_chutes_in_provider_registry(self):
+        """Auto-registration from ProviderProfile should expose Chutes."""
+        assert "chutes" in PROVIDER_REGISTRY
+        pconfig = PROVIDER_REGISTRY["chutes"]
+        assert pconfig.auth_type == "api_key"
+        assert pconfig.id == "chutes"
+        assert pconfig.inference_base_url == "https://llm.chutes.ai/v1"
+        assert pconfig.api_key_env_vars == ("CHUTES_API_KEY",)
+        assert pconfig.base_url_env_var == "CHUTES_BASE_URL"
+
+    def test_chutes_aliases_in_registry(self):
+        assert "chutes-ai" in PROVIDER_REGISTRY
+        assert "chutesai" in PROVIDER_REGISTRY
+
+    def test_resolve_chutes_with_key(self, monkeypatch):
+        monkeypatch.setenv("CHUTES_API_KEY", "cpk_test-secret-key")
+        creds = resolve_api_key_provider_credentials("chutes")
+        assert creds["provider"] == "chutes"
+        assert creds["api_key"] == "cpk_test-secret-key"
+        assert creds["base_url"] == "https://llm.chutes.ai/v1"
+
+    def test_resolve_chutes_custom_base_url(self, monkeypatch):
+        monkeypatch.setenv("CHUTES_API_KEY", "cpk_key")
+        monkeypatch.setenv("CHUTES_BASE_URL", "https://custom.chutes.example/v1")
+        creds = resolve_api_key_provider_credentials("chutes")
+        assert creds["base_url"] == "https://custom.chutes.example/v1"
+
+    def test_runtime_chutes(self, monkeypatch):
+        monkeypatch.setenv("CHUTES_API_KEY", "cpk_key")
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        result = resolve_runtime_provider(requested="chutes")
+        assert result["provider"] == "chutes"
+        assert result["api_mode"] == "chat_completions"
+        assert result["api_key"] == "cpk_key"
+        assert result["base_url"] == "https://llm.chutes.ai/v1"
+
+    def test_main_provider_models_has_chutes(self):
+        from hermes_cli.main import _PROVIDER_MODELS
+        assert "chutes" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["chutes"]) >= 1
+
+    def test_models_py_has_chutes(self):
+        from hermes_cli.models import _PROVIDER_MODELS
+        assert "chutes" in _PROVIDER_MODELS
+        assert len(_PROVIDER_MODELS["chutes"]) >= 1
+
+    def test_chutes_model_lists_match(self):
+        """Model lists in main.py and models.py should be identical."""
+        from hermes_cli.main import _PROVIDER_MODELS as main_models
+        from hermes_cli.models import _PROVIDER_MODELS as models_models
+        assert main_models["chutes"] == models_models["chutes"]
+
+    def test_chutes_models_use_org_name_format(self):
+        """Chutes models should use org/name format."""
+        from hermes_cli.models import _PROVIDER_MODELS
+        for model in _PROVIDER_MODELS["chutes"]:
+            assert "/" in model, f"Chutes model {model!r} missing org/ prefix"
+
+    def test_chutes_aliases_in_models_py(self):
+        from hermes_cli.models import _PROVIDER_ALIASES
+        assert _PROVIDER_ALIASES.get("chutes-ai") == "chutes"
+        assert _PROVIDER_ALIASES.get("chutesai") == "chutes"
+
+    def test_chutes_label(self):
+        from hermes_cli.models import _PROVIDER_LABELS
+        assert "chutes" in _PROVIDER_LABELS
+        assert _PROVIDER_LABELS["chutes"] == "Chutes"
+
+    def test_chutes_in_provider_prefixes(self):
+        from agent.model_metadata import _PROVIDER_PREFIXES
+        assert "chutes" in _PROVIDER_PREFIXES
+
+    def test_chutes_url_to_provider(self):
+        from agent.model_metadata import _URL_TO_PROVIDER
+        assert _URL_TO_PROVIDER.get("llm.chutes.ai") == "chutes"
+
+    def test_chutes_aux_model_registered(self):
+        # The auxiliary model lives on the ProviderProfile
+        # (plugins/model-providers/chutes/__init__.py); the auxiliary client
+        # reads it from there so compression / vision / session-search don't
+        # warn "No auxiliary LLM provider configured" for chutes sessions.
+        import providers
+        profile = providers.get_provider_profile("chutes")
+        assert profile is not None
+        assert profile.default_aux_model
+
+
+# =============================================================================
 # MiniMax OAuth provider tests (added by feat/minimax-oauth-provider)
 # =============================================================================
 

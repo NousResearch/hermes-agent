@@ -306,6 +306,15 @@ class TestRunBackgroundTask:
         for _p in (_ogg, _mp4, _png, _pdf):
             with open(_p, "wb") as _fh:
                 _fh.write(b"x")
+
+        def _assert_same_file_path(actual: str, expected: str) -> None:
+            try:
+                assert _os.path.samefile(actual, expected)
+            except (AttributeError, OSError):
+                assert _os.path.normcase(_os.path.abspath(actual)) == _os.path.normcase(
+                    _os.path.abspath(expected)
+                )
+
         # ogg flagged as voice, mp4 video, png image, pdf doc.
         media = [
             (_ogg, True),
@@ -338,13 +347,21 @@ class TestRunBackgroundTask:
             await runner._run_background_task("make stuff", source, "bg_test")
 
             mock_adapter.send_voice.assert_called_once()
-            assert mock_adapter.send_voice.call_args.kwargs["audio_path"] == _ogg
+            _assert_same_file_path(
+                mock_adapter.send_voice.call_args.kwargs["audio_path"], _ogg
+            )
             mock_adapter.send_video.assert_called_once()
-            assert mock_adapter.send_video.call_args.kwargs["video_path"] == _mp4
+            _assert_same_file_path(
+                mock_adapter.send_video.call_args.kwargs["video_path"], _mp4
+            )
             mock_adapter.send_image_file.assert_called_once()
-            assert mock_adapter.send_image_file.call_args.kwargs["image_path"] == _png
+            _assert_same_file_path(
+                mock_adapter.send_image_file.call_args.kwargs["image_path"], _png
+            )
             mock_adapter.send_document.assert_called_once()
-            assert mock_adapter.send_document.call_args.kwargs["file_path"] == _pdf
+            _assert_same_file_path(
+                mock_adapter.send_document.call_args.kwargs["file_path"], _pdf
+            )
         finally:
             import shutil as _shutil
             _shutil.rmtree(_tmpdir, ignore_errors=True)

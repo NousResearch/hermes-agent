@@ -111,6 +111,7 @@ pub fn managed_runtime_roots(hermes_home: &std::path::Path) -> Vec<PathBuf> {
         agent_root(hermes_home),
         hermes_home.join("bin"),
         hermes_home.join("node"),
+        hermes_home.join("python"),
         hermes_home.join("git"),
     ]
 }
@@ -150,6 +151,7 @@ mod tests {
                 PathBuf::from("/tmp/hermes/hermes-agent"),
                 PathBuf::from("/tmp/hermes/bin"),
                 PathBuf::from("/tmp/hermes/node"),
+                PathBuf::from("/tmp/hermes/python"),
                 PathBuf::from("/tmp/hermes/git"),
             ]
         );

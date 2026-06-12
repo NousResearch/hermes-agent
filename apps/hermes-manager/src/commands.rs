@@ -216,11 +216,13 @@ mod tests {
         let agent_root = paths::agent_root(&hermes_home);
         let bin_dir = hermes_home.join("bin");
         let node_dir = hermes_home.join("node");
+        let python_dir = hermes_home.join("python");
         let git_dir = hermes_home.join("git");
         let user_config = hermes_home.join("config.yaml");
         fs::create_dir_all(&agent_root).expect("agent root should be created");
         fs::create_dir_all(&bin_dir).expect("bin dir should be created");
         fs::create_dir_all(&node_dir).expect("node dir should be created");
+        fs::create_dir_all(&python_dir).expect("python dir should be created");
         fs::create_dir_all(&git_dir).expect("git dir should be created");
         fs::write(&user_config, "model: test").expect("user config should be created");
 
@@ -233,7 +235,10 @@ mod tests {
             .iter()
             .map(|entry| entry.path.clone())
             .collect::<Vec<_>>();
-        assert_eq!(paths, vec![agent_root, bin_dir, node_dir, git_dir]);
+        assert_eq!(
+            paths,
+            vec![agent_root, bin_dir, node_dir, python_dir, git_dir]
+        );
         assert!(!paths.contains(&user_config));
     }
 
@@ -344,11 +349,13 @@ mod tests {
         let agent_root = paths::agent_root(&hermes_home);
         let bin_dir = hermes_home.join("bin");
         let node_dir = hermes_home.join("node");
+        let python_dir = hermes_home.join("python");
         let git_dir = hermes_home.join("git");
         let user_config = hermes_home.join("config.yaml");
         fs::create_dir_all(&agent_root).expect("agent root should be created");
         fs::create_dir_all(&bin_dir).expect("bin dir should be created");
         fs::create_dir_all(&node_dir).expect("node dir should be created");
+        fs::create_dir_all(&python_dir).expect("python dir should be created");
         fs::create_dir_all(&git_dir).expect("git dir should be created");
         fs::write(&user_config, "model: test").expect("user config should be created");
 
@@ -359,6 +366,7 @@ mod tests {
                 agent_root.display().to_string(),
                 bin_dir.display().to_string(),
                 node_dir.display().to_string(),
+                python_dir.display().to_string(),
                 git_dir.display().to_string(),
             ]
         );
@@ -369,6 +377,7 @@ mod tests {
         assert!(!agent_root.exists());
         assert!(!bin_dir.exists());
         assert!(!node_dir.exists());
+        assert!(!python_dir.exists());
         assert!(!git_dir.exists());
         assert!(user_config.exists());
     }

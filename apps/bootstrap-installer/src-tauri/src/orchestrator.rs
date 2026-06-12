@@ -44,12 +44,16 @@ pub struct PythonVenvStagePlan {
     pub uv: PathBuf,
     pub cwd: PathBuf,
     pub venv: PathBuf,
+    pub python_install_dir: PathBuf,
+    pub python_bin_dir: PathBuf,
 }
 
 /// Native Python runtime stage execution plan.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PythonRuntimeStagePlan {
     pub uv: PathBuf,
+    pub python_install_dir: PathBuf,
+    pub python_bin_dir: PathBuf,
 }
 
 /// Native Python dependency sync stage execution plan.
@@ -931,6 +935,8 @@ where
 {
     Ok(PythonRuntimeStagePlan {
         uv: uv_tool_path(hermes_home, path_env, pathext)?,
+        python_install_dir: hermes_home.join("python"),
+        python_bin_dir: hermes_home.join("bin"),
     })
 }
 
@@ -941,6 +947,8 @@ pub fn install_python_runtime_stage(hermes_home: &Path) -> Result<serde_json::Va
     let plan = python_runtime_stage_plan(hermes_home, path_env, &pathext)?;
     let status = Command::new(&plan.uv)
         .args(["python", "install", "3.11"])
+        .env("UV_PYTHON_INSTALL_DIR", &plan.python_install_dir)
+        .env("UV_PYTHON_BIN_DIR", &plan.python_bin_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -953,6 +961,8 @@ pub fn install_python_runtime_stage(hermes_home: &Path) -> Result<serde_json::Va
     }
     let output = Command::new(&plan.uv)
         .args(["python", "find", "3.11"])
+        .env("UV_PYTHON_INSTALL_DIR", &plan.python_install_dir)
+        .env("UV_PYTHON_BIN_DIR", &plan.python_bin_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .output()
@@ -970,6 +980,8 @@ pub fn install_python_runtime_stage(hermes_home: &Path) -> Result<serde_json::Va
     Ok(serde_json::json!({
         "uv": plan.uv,
         "python": python,
+        "pythonInstallDir": plan.python_install_dir,
+        "pythonBinDir": plan.python_bin_dir,
     }))
 }
 
@@ -1644,6 +1656,8 @@ where
         uv,
         cwd: install_root.to_path_buf(),
         venv,
+        python_install_dir: hermes_home.join("python"),
+        python_bin_dir: hermes_home.join("bin"),
     })
 }
 
@@ -1662,6 +1676,8 @@ pub fn create_python_venv_stage(
     let status = Command::new(&plan.uv)
         .args(["venv", "venv", "--python", "3.11"])
         .current_dir(&plan.cwd)
+        .env("UV_PYTHON_INSTALL_DIR", &plan.python_install_dir)
+        .env("UV_PYTHON_BIN_DIR", &plan.python_bin_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -4228,6 +4244,25 @@ mod tests {
         let plan = python_runtime_stage_plan(&hermes_home, &path_tools, ".EXE").unwrap();
 
         assert_eq!(plan.uv, hermes_home.join("bin").join("uv.exe"));
+        assert_eq!(plan.python_install_dir, hermes_home.join("python"));
+        assert_eq!(plan.python_bin_dir, hermes_home.join("bin"));
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn python_venv_stage_plan_uses_managed_python_dirs() {
+        let root = std::env::temp_dir().join(format!("hermes-python-venv-plan-{}", std::process::id()));
+        let hermes_home = root.join("home");
+        let install_root = hermes_home.join("hermes-agent");
+        std::fs::create_dir_all(hermes_home.join("bin")).unwrap();
+        std::fs::create_dir_all(&install_root).unwrap();
+        std::fs::write(hermes_home.join("bin").join("uv.exe"), b"managed uv").unwrap();
+
+        let plan = python_venv_stage_plan(&install_root, &hermes_home, "", ".EXE").unwrap();
+
+        assert_eq!(plan.python_install_dir, hermes_home.join("python"));
+        assert_eq!(plan.python_bin_dir, hermes_home.join("bin"));
 
         let _ = std::fs::remove_dir_all(&root);
     }

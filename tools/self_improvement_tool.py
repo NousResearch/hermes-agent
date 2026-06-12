@@ -2489,6 +2489,18 @@ def _build_codex_issue_run_id_index(codex_payload: Any) -> dict[str, set[str]]:
     return issue_run_ids
 
 
+_OPERATOR_DECISION_SUPPORT_REFERENCE_FIELD_PATH = (
+    "operatorDecisionSupport|nextDecision|decision|selectedWork|blocker|tradeoff"
+)
+
+
+def _journal_reference_path(entry_id: str, focus_index: int) -> str:
+    return (
+        f"entries[{entry_id or 'unknown'}]."
+        f"{_JOURNAL_REPORTING_FOCUS_FIELD}[{focus_index}]"
+    )
+
+
 def _collect_journal_codex_operator_support(
     journal_payload: Any,
     codex_payload: Any = None,
@@ -2549,9 +2561,9 @@ def _collect_journal_codex_operator_support(
                     **evidence,
                     "journal_entry_id": entry_id or "unknown",
                     "journal_occurred_at": occurred_at or "unknown",
-                    "journal_focus_path": (
-                        f"entries[{entry_id or 'unknown'}]."
-                        f"{_JOURNAL_REPORTING_FOCUS_FIELD}[{focus_index}]"
+                    "journal_focus_path": _journal_reference_path(
+                        entry_id or "unknown",
+                        focus_index,
                     ),
                     "journal_focus_title": title or "unknown",
                 }
@@ -2593,6 +2605,66 @@ def _collect_journal_codex_operator_support(
         run_id: _dedupe_operator_evidence(evidence)
         for run_id, evidence in support_by_run_id.items()
     }
+
+
+def _codex_record_by_run_id(codex_payload: Any) -> dict[str, dict[str, Any]]:
+    records: dict[str, dict[str, Any]] = {}
+    for record in _iter_codex_records(codex_payload):
+        run_id = _codex_run_id(record)
+        if run_id:
+            records.setdefault(run_id, record)
+    return records
+
+
+def _operator_support_reference_diagnostics(
+    journal_payload: Any,
+    codex_payload: Any,
+    run_ids: Iterable[str],
+) -> list[dict[str, Any]]:
+    codex_records = _codex_record_by_run_id(codex_payload)
+    diagnostics: list[dict[str, Any]] = []
+    for run_id in sorted({str(value).strip() for value in run_ids if str(value).strip()}):
+        record = codex_records.get(run_id, {})
+        issue_ids = sorted(_collect_linear_issue_ids_from_issue_fields(record))
+        matched_paths: list[str] = []
+        for entry in _iter_records(journal_payload, "entries"):
+            entry_id = _journal_reporting_string(entry.get("id")) or "unknown"
+            for focus_index, focus_item in enumerate(
+                entry.get(_JOURNAL_REPORTING_FOCUS_FIELD) or []
+            ):
+                if not isinstance(focus_item, dict):
+                    continue
+                focus_text = json.dumps(focus_item, sort_keys=True, ensure_ascii=False)
+                focus_issue_ids = {
+                    _normalize_linear_issue_id(issue_id)
+                    for issue_id in _journal_reporting_issue_ids(
+                        focus_item.get("activeLinearIssueIds")
+                    )
+                }
+                focus_issue_ids.discard(None)
+                if run_id in focus_text or set(issue_ids).intersection(focus_issue_ids):
+                    matched_paths.append(_journal_reference_path(entry_id, focus_index))
+        matched_paths = list(dict.fromkeys(matched_paths))
+        if matched_paths:
+            required_path = f"{matched_paths[0]}.{_OPERATOR_DECISION_SUPPORT_REFERENCE_FIELD_PATH}"
+            reason = "journal_focus_lacks_operator_decision_support_field"
+        else:
+            required_path = (
+                "entries[*]."
+                f"{_JOURNAL_REPORTING_FOCUS_FIELD}[*]."
+                f"{_OPERATOR_DECISION_SUPPORT_REFERENCE_FIELD_PATH}"
+            )
+            reason = "journal_focus_reference_not_found_for_codex_run"
+        diagnostics.append(
+            {
+                "run_id": run_id,
+                "codex_issue_id": issue_ids[0] if issue_ids else None,
+                "required_journal_reference_path": required_path,
+                "matched_journal_reference_paths": matched_paths,
+                "reason": reason,
+            }
+        )
+    return diagnostics
 
 
 def _record_claimed_timestamp(record: dict[str, Any]) -> Optional[datetime]:
@@ -3849,6 +3921,28 @@ def _evaluate_operator_value_alignment_check(
         for item in assessments
         if item["verified_system_change"] and not item["operator_decision_support"]
     ][:5]
+    missing_decision_support_diagnostics = {
+        item["run_id"]: item
+        for item in _operator_support_reference_diagnostics(
+            journal_payload,
+            codex_payload,
+            [
+                str(item.get("id") or "").strip()
+                for item in missing_decision_support_examples
+                if item.get("source") == "codex_runs"
+                if str(item.get("id") or "").strip()
+            ],
+        )
+    }
+    for item in missing_decision_support_examples:
+        run_id = str(item.get("id") or "").strip()
+        diagnostic = missing_decision_support_diagnostics.get(run_id)
+        if diagnostic:
+            item["journal_reference_diagnostic"] = diagnostic
+    missing_decision_support_journal_diagnostics = [
+        missing_decision_support_diagnostics[run_id]
+        for run_id in sorted(missing_decision_support_diagnostics)
+    ]
     missing_decision_support_fields = sorted(
         {
             field
@@ -3946,6 +4040,9 @@ def _evaluate_operator_value_alignment_check(
             "aligned_examples": [item for item in assessments if item["aligned"]][:5],
             "operator_decision_support_examples": decision_support_examples,
             "missing_operator_decision_support_examples": missing_decision_support_examples,
+            "missing_operator_decision_support_journal_diagnostics": (
+                missing_decision_support_journal_diagnostics
+            ),
         },
     )
 

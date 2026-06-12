@@ -1882,6 +1882,90 @@ def test_operator_value_alignment_reports_missing_decision_support_fields(tmp_pa
     ]
 
 
+def test_operator_value_alignment_reports_missing_journal_reference_path(tmp_path):
+    now = datetime(2026, 6, 11, 12, 0, 0, tzinfo=timezone.utc)
+    recent = now.isoformat()
+    journal_path = tmp_path / "journal.json"
+    codex_path = tmp_path / "runs.json"
+    ctx_path = tmp_path / "session_bindings.json"
+    ontology_root = _seed_ontology_repo(tmp_path, generated_at=recent)
+
+    _write_json(
+        journal_path,
+        {
+            "entries": [
+                {
+                    "id": "follow-through-had-999",
+                    "occurredAt": recent,
+                    "selfImprovementFocus": [
+                        {
+                            "title": "Preserve HAD-999 merge evidence",
+                            "activeLinearIssueIds": ["HAD-999"],
+                            "outcomeNote": "PR #999 merged and focused tests passed.",
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    _write_json(
+        codex_path,
+        {
+            "runs": {
+                "codex_missing_operator_reference": {
+                    "run_id": "codex_missing_operator_reference",
+                    "status": "completed",
+                    "external_key": "linear:HAD-999",
+                    "completed_at": recent,
+                    "final_message": (
+                        "CHANGED_FILES\n"
+                        "- tools/self_improvement_tool.py\n"
+                        "VERIFICATION\n"
+                        "- pytest tests/tools/test_self_improvement_tool.py passed\n"
+                        "COMMIT\n"
+                        "- abcdef1234567890abcdef1234567890abcdef12\n"
+                    ),
+                    "exit_code": 0,
+                }
+            }
+        },
+    )
+    _write_json(ctx_path, {"sessions": {}})
+
+    benchmark = self_improvement_tool.evaluate_self_improvement_benchmark(
+        journal_path=journal_path,
+        codex_runs_path=codex_path,
+        ctx_bindings_path=ctx_path,
+        ontology_root=ontology_root,
+        history_path=tmp_path / "history.json",
+        now=now,
+        persist=False,
+    )
+
+    metrics = benchmark["checks"]["operator_value_alignment"]["metrics"]
+    diagnostics = metrics["missing_operator_decision_support_journal_diagnostics"]
+    assert diagnostics == [
+        {
+            "run_id": "codex_missing_operator_reference",
+            "codex_issue_id": "HAD-999",
+            "required_journal_reference_path": (
+                "entries[follow-through-had-999].selfImprovementFocus[0]."
+                "operatorDecisionSupport|nextDecision|decision|selectedWork|blocker|tradeoff"
+            ),
+            "matched_journal_reference_paths": [
+                "entries[follow-through-had-999].selfImprovementFocus[0]"
+            ],
+            "reason": "journal_focus_lacks_operator_decision_support_field",
+        }
+    ]
+    missing_example = next(
+        item
+        for item in metrics["missing_operator_decision_support_examples"]
+        if item["id"] == "codex_missing_operator_reference"
+    )
+    assert missing_example["journal_reference_diagnostic"] == diagnostics[0]
+
+
 def test_failed_codex_runs_with_completed_at_do_not_count_as_deliveries(tmp_path):
     now = datetime(2026, 5, 1, 12, 0, 0, tzinfo=timezone.utc)
     recent = now.isoformat()

@@ -3119,9 +3119,14 @@ class SessionDB:
         it before compression. See #15000.
 
         This helper walks ``parent_session_id`` forward from ``session_id`` and
-        returns the first descendant in the chain that has at least one message
-        row. If the original session already has messages, or no descendant
-        has any, the original ``session_id`` is returned unchanged.
+        returns the descendant in the chain that has the **most recent** messages.
+        Unlike the original logic, it does NOT short-circuit when the starting
+        session already has messages — a descendant that was created by
+        compression may hold the continuation content and should be preferred
+        by the WebUI and gateway for ``--resume`` and session loading.
+
+        If no descendant (including the starting session) has any messages,
+        the original ``session_id`` is returned unchanged.
 
         The chain is always walked via the child whose ``started_at`` is
         latest; that matches the single-chain shape that compression creates.
@@ -3149,22 +3154,23 @@ class SessionDB:
             session_id = tip
 
         with self._lock:
-            # If this session already has messages, nothing to redirect.
-            try:
-                row = self._conn.execute(
-                    "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
-                    (session_id,),
-                ).fetchone()
-            except Exception:
-                return session_id
-            if row is not None:
-                return session_id
-
-            # Walk descendants: at each step, pick the most-recently-started
-                # child session; stop once we find one with messages.
             current = session_id
             seen = {current}
+            best = None  # tracks the last (deepest) node with messages
+
             for _ in range(32):
+                # Check if the current node has messages.
+                try:
+                    row = self._conn.execute(
+                        "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
+                        (current,),
+                    ).fetchone()
+                except Exception:
+                    return session_id
+                if row is not None:
+                    best = current
+
+                # Walk to the most-recently-started child.
                 try:
                     child_row = self._conn.execute(
                         "SELECT id FROM sessions "
@@ -3175,22 +3181,14 @@ class SessionDB:
                 except Exception:
                     return session_id
                 if child_row is None:
-                    return session_id
+                    break
                 child_id = child_row["id"] if hasattr(child_row, "keys") else child_row[0]
                 if not child_id or child_id in seen:
-                    return session_id
+                    break
                 seen.add(child_id)
-                try:
-                    msg_row = self._conn.execute(
-                        "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
-                        (child_id,),
-                    ).fetchone()
-                except Exception:
-                    return session_id
-                if msg_row is not None:
-                    return child_id
                 current = child_id
-        return session_id
+
+            return best if best is not None else session_id
 
     def get_messages_as_conversation(
         self,

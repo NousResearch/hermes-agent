@@ -25,6 +25,10 @@ class IterationBudget:
     Users control the per-subagent limit via ``delegation.max_iterations``
     in config.yaml.
 
+    A non-positive max_total means "unbounded".  This is an explicit operator
+    escape hatch for long-running/durable sessions: usage is still counted for
+    observability, but ``consume()`` never denies an iteration.
+
     ``execute_code`` (programmatic tool calling) iterations are refunded via
     :meth:`refund` so they don't eat into the budget.
     """
@@ -34,10 +38,18 @@ class IterationBudget:
         self._used = 0
         self._lock = threading.Lock()
 
+    @property
+    def is_unbounded(self) -> bool:
+        """True when this budget has no hard iteration ceiling."""
+        try:
+            return int(self.max_total) <= 0
+        except (TypeError, ValueError):
+            return False
+
     def consume(self) -> bool:
         """Try to consume one iteration.  Returns True if allowed."""
         with self._lock:
-            if self._used >= self.max_total:
+            if not self.is_unbounded and self._used >= self.max_total:
                 return False
             self._used += 1
             return True
@@ -54,9 +66,19 @@ class IterationBudget:
             return self._used
 
     @property
-    def remaining(self) -> int:
+    def remaining(self):
         with self._lock:
+            if self.is_unbounded:
+                return float("inf")
             return max(0, self.max_total - self._used)
 
 
-__all__ = ["IterationBudget"]
+def is_unbounded_iteration_limit(max_iterations: int) -> bool:
+    """Return True when a configured max-iteration value disables the cap."""
+    try:
+        return int(max_iterations) <= 0
+    except (TypeError, ValueError):
+        return False
+
+
+__all__ = ["IterationBudget", "is_unbounded_iteration_limit"]

@@ -163,6 +163,16 @@ class TestDelegateTask(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("parent agent", result["error"])
 
+    def test_child_timeout_zero_disables_hard_wall_clock_timeout(self):
+        """Non-positive child_timeout_seconds means no delegate_task wall-clock cap."""
+        from tools import delegate_tool
+
+        with patch(
+            "tools.delegate_tool._load_config",
+            return_value={"child_timeout_seconds": 0},
+        ):
+            self.assertIsNone(delegate_tool._get_child_timeout())
+
     def test_depth_limit(self):
         parent = _make_mock_parent(depth=2)
         result = json.loads(delegate_task(goal="test", parent_agent=parent))

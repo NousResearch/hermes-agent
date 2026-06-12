@@ -155,3 +155,26 @@ class TestRobustness:
         result = env_probe.get_environment_probe_line()
         # Whatever the result is, it must be a string
         assert isinstance(result, str)
+
+    def test_run_decodes_non_utf8_subprocess_output_lossily(self, monkeypatch):
+        """Windows shims can emit localized cp1250 stderr while text=True is utf-8.
+
+        The probe must request replacement decoding so subprocess reader threads
+        don't crash the whole prompt build with UnicodeDecodeError.
+        """
+        seen = {}
+
+        def fake_run(cmd, **kwargs):
+            seen.update(kwargs)
+            return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "błąd"})()
+
+        monkeypatch.setattr(env_probe.subprocess, "run", fake_run)
+
+        rc, out, err = env_probe._run(["python3", "-c", "print('x')"])
+
+        assert rc == 1
+        assert out == ""
+        assert err == "błąd"
+        assert seen["text"] is True
+        assert seen["encoding"] == "utf-8"
+        assert seen["errors"] == "replace"

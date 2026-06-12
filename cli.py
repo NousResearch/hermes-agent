@@ -3370,9 +3370,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Max turns priority: CLI arg > config file > env var > default
         if max_turns is not None:  # CLI arg was explicitly set
             self.max_turns = max_turns
-        elif CLI_CONFIG["agent"].get("max_turns"):
+        elif CLI_CONFIG["agent"].get("max_turns") is not None:
             self.max_turns = CLI_CONFIG["agent"]["max_turns"]
-        elif CLI_CONFIG.get("max_turns"):  # Backwards compat: root-level max_turns
+        elif CLI_CONFIG.get("max_turns") is not None:  # Backwards compat: root-level max_turns
             self.max_turns = CLI_CONFIG["max_turns"]
         elif os.getenv("HERMES_MAX_ITERATIONS"):
             try:

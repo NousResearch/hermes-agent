@@ -63,6 +63,8 @@ def _run(cmd: list[str], timeout: float = 3.0) -> tuple[int, str, str]:
             cmd,
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=timeout,
             check=False,
             stdin=subprocess.DEVNULL,

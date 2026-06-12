@@ -55,7 +55,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
 
 
 class TestMaxTurnsResolution:
-    """max_turns must always resolve to a positive integer, never None."""
+    """max_turns must resolve deterministically, including explicit unbounded 0."""
 
     def test_default_max_turns_is_integer(self):
         cli = _make_cli()
@@ -65,6 +65,14 @@ class TestMaxTurnsResolution:
     def test_explicit_max_turns_honored(self):
         cli = _make_cli(max_turns=25)
         assert cli.max_turns == 25
+
+    def test_config_zero_max_turns_is_honored_as_unbounded(self):
+        cli = _make_cli(config_overrides={"agent": {"max_turns": 0}})
+        assert cli.max_turns == 0
+
+    def test_legacy_root_zero_max_turns_is_honored_as_unbounded(self):
+        cli = _make_cli(config_overrides={"agent": {}, "max_turns": 0})
+        assert cli.max_turns == 0
 
     def test_none_max_turns_gets_default(self):
         cli = _make_cli(max_turns=None)

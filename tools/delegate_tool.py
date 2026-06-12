@@ -404,38 +404,57 @@ def _get_child_timeout() -> Optional[float]:
     before being cut off, or ``None`` when no wall-clock cap applies.
 
     Default: ``None`` (no timeout). Subagents doing legitimate heavy work
-    (deep code review, large research fan-outs, slow reasoning models) were
-    routinely killed mid-task by the old blanket cap even though they were
-    making steady progress. Failures should come from what the child is
-    actually doing — API errors, tool errors, iteration budget — not from a
-    generic delegation-level stopwatch. Stuck-child protection is handled
-    separately by the heartbeat staleness monitor, which stops refreshing
-    parent activity so the gateway inactivity timeout can fire.
+    (deep code review, large research fan-outs, slow reasoning models) should
+    not be killed by a blanket delegation stopwatch. Stuck-child protection is
+    handled separately by the heartbeat staleness monitor.
 
     Set ``delegation.child_timeout_seconds`` to a positive number to opt back
-    in to a hard cap (floor 30 s); ``0`` or a negative value means disabled.
+    in to a hard cap (floor 30 s). Non-positive values and common sentinels
+    (``false``, ``off``, ``none``, ``unbounded``, ``infinite``) disable the
+    hard wall-clock timeout.
     """
+
+    def _parse_timeout(raw: Any) -> Optional[float]:
+        if isinstance(raw, str):
+            lowered = raw.strip().lower()
+            if lowered in {
+                "",
+                "0",
+                "false",
+                "no",
+                "off",
+                "none",
+                "null",
+                "unbounded",
+                "infinite",
+                "inf",
+            }:
+                return None
+        try:
+            seconds = float(raw)
+        except (TypeError, ValueError):
+            raise
+        if seconds <= 0:
+            return None
+        return max(30.0, seconds)
+
     cfg = _load_config()
     val = cfg.get("child_timeout_seconds")
     if val is not None:
         try:
-            parsed = float(val)
+            return _parse_timeout(val)
         except (TypeError, ValueError):
             logger.warning(
                 "delegation.child_timeout_seconds=%r is not a valid number; "
                 "using default (no timeout)",
                 val,
             )
-        else:
-            return None if parsed <= 0 else max(30.0, parsed)
     env_val = os.getenv("DELEGATION_CHILD_TIMEOUT_SECONDS")
-    if env_val:
+    if env_val is not None:
         try:
-            parsed = float(env_val)
+            return _parse_timeout(env_val)
         except (TypeError, ValueError):
             pass
-        else:
-            return None if parsed <= 0 else max(30.0, parsed)
     return DEFAULT_CHILD_TIMEOUT
 
 
@@ -1449,6 +1468,11 @@ def _run_single_child(
     # gateway inactivity timeout doesn't fire while the subagent is working.
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
+    # Read the wall-clock timeout before starting the heartbeat so the
+    # heartbeat policy can distinguish bounded children from explicit
+    # unbounded/infinite children (child_timeout_seconds <= 0).
+    child_timeout = _get_child_timeout()
+    _child_timeout_unbounded = child_timeout is None
     _heartbeat_stop = threading.Event()
     # Stale detection: track the child's (tool, iteration) pair across
     # heartbeat cycles. If neither advances, count the cycle as stale.
@@ -1458,11 +1482,15 @@ def _run_single_child(
     _stale_count = [0]
 
     def _heartbeat_loop():
-        while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+        while not _heartbeat_stop.is_set():
             if parent_agent is None:
+                if _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+                    break
                 continue
             touch = getattr(parent_agent, "_touch_activity", None)
             if not touch:
+                if _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+                    break
                 continue
             # Pull detail from the child's own activity tracker
             desc = f"delegate_task: subagent {task_index} working"
@@ -1498,14 +1526,29 @@ def _run_single_child(
                     else _HEARTBEAT_STALE_CYCLES_IDLE
                 )
                 if _stale_count[0] >= stale_limit:
-                    logger.warning(
-                        "Subagent %d appears stale (no progress for %d "
-                        "heartbeat cycles, tool=%s) — stopping heartbeat",
-                        task_index,
-                        _stale_count[0],
-                        child_tool or "<none>",
-                    )
-                    break  # stop touching parent, let gateway timeout fire
+                    if _child_timeout_unbounded:
+                        # In explicit infinite mode, keep the parent alive even
+                        # if the child has not advanced for a long stretch.  A
+                        # human can still interrupt from the TUI; we just don't
+                        # let gateway inactivity be the hidden killer.
+                        if _stale_count[0] == stale_limit or _stale_count[0] % stale_limit == 0:
+                            logger.warning(
+                                "Subagent %d appears stale (no progress for %d "
+                                "heartbeat cycles, tool=%s) — continuing "
+                                "heartbeat because child_timeout_seconds is disabled",
+                                task_index,
+                                _stale_count[0],
+                                child_tool or "<none>",
+                            )
+                    else:
+                        logger.warning(
+                            "Subagent %d appears stale (no progress for %d "
+                            "heartbeat cycles, tool=%s) — stopping heartbeat",
+                            task_index,
+                            _stale_count[0],
+                            child_tool or "<none>",
+                        )
+                        break  # stop touching parent, let gateway timeout fire
 
                 if child_tool:
                     desc = (
@@ -1525,6 +1568,8 @@ def _run_single_child(
                 touch(desc)
             except Exception:
                 pass
+            if _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
+                break
 
     _heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True)
 

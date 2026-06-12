@@ -81,6 +81,16 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     return disabled
 
 
+def _resolve_agent_max_iterations(cfg: dict, default: int = 90) -> int:
+    """Resolve agent max iterations while preserving explicit unbounded 0."""
+    agent_cfg = (cfg or {}).get("agent") or {}
+    if isinstance(agent_cfg, dict) and agent_cfg.get("max_turns") is not None:
+        return agent_cfg["max_turns"]
+    if (cfg or {}).get("max_turns") is not None:
+        return (cfg or {})["max_turns"]
+    return default
+
+
 def _resolve_cron_enabled_toolsets(job: dict, cfg: dict) -> list[str] | None:
     """Resolve the toolset list for a cron job.
 
@@ -1636,7 +1646,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     prefill_messages = None
 
         # Max iterations
-        max_iterations = _cfg.get("agent", {}).get("max_turns") or _cfg.get("max_turns") or 90
+        max_iterations = _resolve_agent_max_iterations(_cfg)
 
         # Provider routing
         pr = _cfg.get("provider_routing", {})

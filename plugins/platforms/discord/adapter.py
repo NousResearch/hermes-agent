@@ -30,6 +30,11 @@ _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
+# Typing-indicator loop: give up after this many CONSECUTIVE failed typing POSTs
+# (e.g. a channel that is persistently 429-rate-limited) so a single stuck loop
+# can't spin forever re-POSTing every ~1s and leave a permanent "is typing…"
+# bubble after the response was already sent. A healthy POST resets the counter.
+_DISCORD_TYPING_MAX_CONSECUTIVE_FAILURES = 5
 
 try:
     import discord
@@ -613,6 +618,9 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent typing indicator loops per channel (DMs don't reliably
         # show the standard typing gateway event for bots)
         self._typing_tasks: Dict[str, asyncio.Task] = {}
+        # Per-channel stop signals so stop_typing can interrupt a typing loop
+        # that is parked in a 429 back-off sleep (cancel alone races the sleep).
+        self._typing_stop_events: Dict[str, asyncio.Event] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
         # Dedup cache: prevents duplicate bot responses when Discord
@@ -2982,7 +2990,14 @@ class DiscordAdapter(BasePlatformAdapter):
         Rate-limit handling: if a 429 is encountered, the loop logs a
         warning, sleeps for the ``retry_after`` duration (or a sensible
         default), and continues — it does NOT die on a single rate-limit
-        hit.  Only CancelledError (from stop_typing) stops the loop.
+        hit.  ``stop_typing`` sets a per-channel stop event that the loop
+        checks before every POST and during the back-off sleep, so a cancel
+        that lands while the loop is parked in a 429 back-off still stops it
+        promptly (a plain ``task.cancel()`` can race that sleep).  A channel
+        that stays rate-limited for ``_DISCORD_TYPING_MAX_CONSECUTIVE_FAILURES``
+        consecutive POSTs gives up rather than spinning forever — otherwise a
+        single wedged loop leaves a permanent "is typing…" bubble after the
+        response was already sent.
         """
         if not self._client:
             return
@@ -2990,43 +3005,70 @@ class DiscordAdapter(BasePlatformAdapter):
         if chat_id in self._typing_tasks:
             return
 
-        async def _typing_loop() -> None:
+        stop_event = asyncio.Event()
+
+        async def _interruptible_sleep(delay: float) -> None:
+            """Sleep up to ``delay`` but wake immediately if stop is requested."""
             try:
-                while True:
+                await asyncio.wait_for(stop_event.wait(), timeout=delay)
+            except asyncio.TimeoutError:
+                pass
+
+        async def _typing_loop() -> None:
+            consecutive_failures = 0
+            try:
+                while not stop_event.is_set():
                     try:
                         route = discord.http.Route(
                             "POST", "/channels/{channel_id}/typing",
                             channel_id=chat_id,
                         )
                         await self._client.http.request(route)
+                        consecutive_failures = 0
                     except asyncio.CancelledError:
                         return
                     except Exception as e:
-                        # Don't die on 429 — backoff and continue
+                        # Don't die on a single 429 — backoff and continue,
+                        # but give up after too many consecutive failures so a
+                        # persistently rate-limited channel can't spin forever.
+                        consecutive_failures += 1
                         retry_after = self._extract_discord_retry_after(e)
-                        if retry_after is not None:
-                            logger.warning(
-                                "Typing indicator rate-limited for %s; retrying in %.1fs",
-                                chat_id, retry_after,
-                            )
-                        else:
+                        if retry_after is None:
                             logger.debug(
                                 "Discord typing indicator failed for %s: %s",
                                 chat_id, e,
                             )
                             return
-                        await asyncio.sleep(retry_after)
+                        if consecutive_failures >= _DISCORD_TYPING_MAX_CONSECUTIVE_FAILURES:
+                            logger.warning(
+                                "Typing indicator giving up for %s after %d "
+                                "consecutive rate-limited POSTs",
+                                chat_id, consecutive_failures,
+                            )
+                            return
+                        logger.warning(
+                            "Typing indicator rate-limited for %s; retrying in %.1fs",
+                            chat_id, retry_after,
+                        )
+                        await _interruptible_sleep(retry_after)
                         continue
-                    await asyncio.sleep(12)
+                    await _interruptible_sleep(12)
             except asyncio.CancelledError:
                 pass
             finally:
                 self._typing_tasks.pop(chat_id, None)
+                self._typing_stop_events.pop(chat_id, None)
 
+        self._typing_stop_events[chat_id] = stop_event
         self._typing_tasks[chat_id] = asyncio.create_task(_typing_loop())
 
     async def stop_typing(self, chat_id: str) -> None:
         """Stop the persistent typing indicator for a channel."""
+        # Signal the loop to stop FIRST so a cancel landing during a 429
+        # back-off sleep is honored promptly (cancel alone races the sleep).
+        stop_event = self._typing_stop_events.get(chat_id)
+        if stop_event is not None:
+            stop_event.set()
         task = self._typing_tasks.pop(chat_id, None)
         if task:
             task.cancel()
@@ -3034,6 +3076,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 await task
             except (asyncio.CancelledError, Exception):
                 pass
+        self._typing_stop_events.pop(chat_id, None)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         """Get information about a Discord channel."""

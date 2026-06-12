@@ -539,3 +539,56 @@ class TestDispatchersTriggerPluginDiscovery:
         finally:
             restore()
 
+    def test_web_extract_schema_exposes_use_llm_processing(self):
+        """WEB_EXTRACT_SCHEMA must include use_llm_processing (boolean, default True)."""
+        from tools.web_tools import WEB_EXTRACT_SCHEMA
+
+        params = WEB_EXTRACT_SCHEMA["parameters"]["properties"]
+        assert "use_llm_processing" in params, (
+            "WEB_EXTRACT_SCHEMA must expose use_llm_processing "
+            "so agents can opt out of LLM summarization"
+        )
+        assert params["use_llm_processing"]["type"] == "boolean"
+        assert params["use_llm_processing"]["default"] is True, (
+            "Default must be True — backward compatible, non-breaking"
+        )
+
+    def test_web_extract_handler_forwards_use_llm_processing(self, monkeypatch):
+        """Handler lambda must pass use_llm_processing through to web_extract_tool."""
+        import asyncio
+        from tools.registry import registry
+        from tools import web_tools
+
+        tool_def = registry.get_entry("web_extract")
+        assert tool_def is not None, "web_extract must be registered"
+        handler = tool_def.handler
+
+        calls = []
+
+        async def fake_extract(urls, format=None, use_llm_processing=True,
+                               model=None, min_length=5000):
+            calls.append({
+                "format": format,
+                "use_llm_processing": use_llm_processing,
+            })
+            return '{"results": []}'
+
+        monkeypatch.setattr(web_tools, "web_extract_tool", fake_extract)
+
+        # Explicit false
+        asyncio.run(handler({
+            "urls": ["https://example.com"],
+            "use_llm_processing": False,
+        }))
+        assert calls[0]["format"] == "markdown"
+        assert calls[0]["use_llm_processing"] is False, (
+            "Handler must forward use_llm_processing=False"
+        )
+
+        # Default (absent param) → True
+        calls.clear()
+        asyncio.run(handler({"urls": ["https://example.com"]}))
+        assert calls[0]["use_llm_processing"] is True, (
+            "Default must be True when param is absent"
+        )
+

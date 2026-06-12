@@ -8,6 +8,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $uiState } from '../app/uiStore.js'
 import { INLINE_MODE, SHOW_FPS, TERMUX_TUI_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
+import { prevRenderedMsg } from '../domain/blockLayout.js'
 import {
   COMPOSER_PROMPT_GAP_WIDTH,
   composerPromptWidth,
@@ -125,6 +126,11 @@ const TranscriptPane = memo(function TranscriptPane({
                   detailsMode={ui.detailsMode}
                   detailsModeCommandOverride={ui.detailsModeCommandOverride}
                   msg={row.msg}
+                  prev={prevRenderedMsg(
+                    i => transcript.virtualRows[i]?.msg,
+                    row.index,
+                    { commandOverride: ui.detailsModeCommandOverride, detailsMode: ui.detailsMode, sections: ui.sections }
+                  )}
                   sections={ui.sections}
                   t={ui.theme}
                 />
@@ -141,6 +147,7 @@ const TranscriptPane = memo(function TranscriptPane({
             compact={ui.compact}
             detailsMode={ui.detailsMode}
             detailsModeCommandOverride={ui.detailsModeCommandOverride}
+            prevMsg={transcript.historyItems[transcript.historyItems.length - 1]}
             progress={progress}
             sections={ui.sections}
           />
@@ -359,10 +366,12 @@ const StatusRulePane = memo(function StatusRulePane({
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
         indicatorStyle={ui.indicatorStyle}
+        lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
         model={ui.info?.model ?? ''}
         modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
         modelReasoningEffort={ui.info?.reasoning_effort}
+        notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
         showCost={ui.showCost}

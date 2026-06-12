@@ -25,7 +25,6 @@ import json
 import logging
 import os
 import re
-import tempfile
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -33,6 +32,7 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Set
 
 from hermes_constants import get_hermes_home
 from tools import skill_usage
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -97,20 +97,7 @@ def load_state() -> Dict[str, Any]:
 def save_state(data: Dict[str, Any]) -> None:
     path = _state_file()
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".curator_state_", suffix=".tmp")
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2, sort_keys=True, ensure_ascii=False)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp, path)
-        except BaseException:
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-            raise
+        atomic_json_write(path, data, indent=2, sort_keys=True)
     except Exception as e:
         logger.debug("Failed to save curator state: %s", e, exc_info=True)
 
@@ -375,6 +362,11 @@ CURATOR_REVIEW_PROMPT = (
     "into ~/.hermes/skills/.archive/) is the maximum destructive action. "
     "Archives are recoverable; deletion is not.\n"
     "3. DO NOT touch skills shown as pinned=yes. Skip them entirely.\n"
+    "3b. DO NOT archive, delete, consolidate, move, or otherwise modify any "
+    "skill named in the protected built-ins list (currently: plan). These "
+    "back load-bearing UX (slash-command entry points referenced in docs and "
+    "tips) and are filtered out of the candidate list below — never resurrect "
+    "one as an archive or absorb target.\n"
     "4. DO NOT use usage counters as a reason to skip consolidation. The "
     "counters are new and often mostly zero. Judge overlap on CONTENT, "
     "not on use_count. 'use=0' is not evidence a skill is valuable; it's "

@@ -12,7 +12,7 @@ import { useLocation } from 'react-router-dom'
 
 import { Thread } from '@/components/assistant-ui/thread'
 import { Backdrop } from '@/components/Backdrop'
-import { NotificationStack } from '@/components/notifications'
+import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { getGlobalModelOptions, type HermesGateway } from '@/hermes'
@@ -22,6 +22,7 @@ import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-s
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { $pinnedSessionIds } from '@/store/layout'
+import { $gatewaySwapTarget } from '@/store/profile'
 import {
   $activeSessionId,
   $awaitingResponse,
@@ -36,19 +37,21 @@ import {
   $introSeed,
   $messages,
   $selectedStoredSessionId,
-  $sessions
+  $sessions,
+  sessionPinId
 } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { routeSessionId } from '../routes'
-import { titlebarHeaderBaseClass, titlebarHeaderShadowClass } from '../shell/titlebar'
+import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
+import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
-import { requestComposerInsert } from './composer/focus'
-import { droppedFileInlineRef } from './composer/inline-refs'
+import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
+import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
 import type { ChatBarState } from './composer/types'
-import type { DroppedFile } from './hooks/use-composer-actions'
+import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser, threadLoadingState } from './thread-loading'
@@ -69,6 +72,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onPickFolders: () => void
   onPickImages: () => void
   onRemoveAttachment: (id: string) => void
+  onSteer: (text: string) => Promise<boolean> | boolean
   onSubmit: (
     text: string,
     options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
@@ -76,6 +80,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
+  onRestoreToMessage?: (messageId: string) => Promise<void>
   onTranscribeAudio?: (audio: Blob) => Promise<string>
 }
 
@@ -96,13 +101,31 @@ function ChatHeader({
 }: ChatHeaderProps) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
-  const activeStoredSession = sessions.find(session => session.id === selectedSessionId) || null
+
+  const activeStoredSession =
+    sessions.find(session => session.id === selectedSessionId || session._lineage_root_id === selectedSessionId) || null
+
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
-  const selectedIsPinned = selectedSessionId ? pinnedSessionIds.includes(selectedSessionId) : false
+
+  // Pins live on the durable lineage-root id, but selectedSessionId is the live
+  // (tip) id — resolve through the loaded row so the menu reflects the pin
+  // state after auto-compression rotates the id.
+  const selectedIsPinned = activeStoredSession
+    ? pinnedSessionIds.includes(sessionPinId(activeStoredSession))
+    : selectedSessionId
+      ? pinnedSessionIds.includes(selectedSessionId)
+      : false
+
+  // A brand-new session has no session to pin/delete/rename, so the header is
+  // just a dead "New session" label + chevron. Drop it (and its border)
+  // entirely until there's a real session to act on.
+  if (!selectedSessionId && !activeSessionId && !isRoutedSessionView) {
+    return null
+  }
 
   return (
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
-      <div className="min-w-0 flex-1">
+      <div className={titlebarHeaderTitleClass}>
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
@@ -113,11 +136,11 @@ function ChatHeader({
           title={title}
         >
           <Button
-            className="pointer-events-auto h-6 min-w-0 gap-1 rounded-md border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
+            className="pointer-events-auto flex h-6 w-full min-w-0 max-w-full gap-1 overflow-hidden border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
             type="button"
             variant="ghost"
           >
-            <h2 className="max-w-[52vw] truncate text-[0.75rem] font-medium leading-none">{title}</h2>
+            <h2 className="min-w-0 flex-1 truncate text-[0.75rem] font-medium leading-none">{title}</h2>
             <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="chevron-down" size="0.8125rem" />
           </Button>
         </SessionActionsMenu>
@@ -143,10 +166,12 @@ export function ChatView({
   onPickFolders,
   onPickImages,
   onRemoveAttachment,
+  onSteer,
   onSubmit,
   onThreadMessagesChange,
   onEdit,
   onReload,
+  onRestoreToMessage,
   onTranscribeAudio
 }: ChatViewProps) {
   const location = useLocation()
@@ -159,6 +184,7 @@ export function ChatView({
   const currentProvider = useStore($currentProvider)
   const freshDraftReady = useStore($freshDraftReady)
   const gatewayState = useStore($gatewayState)
+  const gatewaySwapTarget = useStore($gatewaySwapTarget)
   const gatewayOpen = gatewayState === 'open'
   const introPersonality = useStore($introPersonality)
   const introSeed = useStore($introSeed)
@@ -272,22 +298,34 @@ export function ChatView({
   })
 
   // Drop files anywhere in the conversation area, not just on the composer
-  // input — appending the same inline `@file:` ref chips the composer drop
-  // produces (vs. attachment cards) so both surfaces behave identically.
+  // input. In-app drags (project tree / gutter) carry workspace-relative paths
+  // the gateway resolves directly, so they stay inline `@file:` refs. OS/Finder
+  // drops carry absolute local paths that don't exist on a remote gateway (and
+  // images need byte upload for vision), so route them through the attachment
+  // pipeline — otherwise the local path leaks into the prompt verbatim.
   const onDropFiles = useCallback(
     (candidates: DroppedFile[]) => {
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, currentCwd))
-        .filter((ref): ref is string => Boolean(ref))
+      const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+      const refs = droppedFileInlineRefs(inAppRefs, currentCwd)
 
       if (refs.length) {
         requestComposerInsert(refs.join(' '), { mode: 'inline', target: 'main' })
       }
+
+      if (osDrops.length) {
+        void onAttachDroppedItems(osDrops)
+      }
     },
-    [currentCwd]
+    [currentCwd, onAttachDroppedItems]
   )
 
-  const { dragActive, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles })
+  // Dropping a sidebar session inserts an @session link the agent can resolve
+  // via session_search (carries the source profile, so cross-profile works).
+  const onDropSession = useCallback((session: SessionDragPayload) => {
+    requestComposerInsertRefs([sessionInlineRef(session)], { target: 'main' })
+  }, [])
+
+  const { dragKind, dropHandlers } = useFileDropZone({ enabled: showChatBar, onDropFiles, onDropSession })
 
   return (
     <div
@@ -305,7 +343,7 @@ export function ChatView({
         selectedSessionId={selectedSessionId}
       />
 
-      <NotificationStack />
+      <PromptOverlays />
 
       <div
         className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
@@ -320,6 +358,7 @@ export function ChatView({
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={onCancel}
+            onRestoreToMessage={onRestoreToMessage}
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />
@@ -342,6 +381,7 @@ export function ChatView({
                 onPickFolders={onPickFolders}
                 onPickImages={onPickImages}
                 onRemoveAttachment={onRemoveAttachment}
+                onSteer={onSteer}
                 onSubmit={onSubmit}
                 onTranscribeAudio={onTranscribeAudio}
                 queueSessionKey={selectedSessionId || activeSessionId}
@@ -351,7 +391,8 @@ export function ChatView({
             </Suspense>
           )}
         </AssistantRuntimeProvider>
-        <ChatDropOverlay active={dragActive} />
+        <ChatDropOverlay kind={dragKind} />
+        <ChatSwapOverlay profile={gatewaySwapTarget} />
       </div>
     </div>
   )

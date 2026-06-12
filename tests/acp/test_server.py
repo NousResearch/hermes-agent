@@ -1101,6 +1101,82 @@ class TestPrompt:
         assert any(update.session_update == "agent_message_chunk" for update in updates)
 
     @pytest.mark.asyncio
+    async def test_prompt_suppresses_cancel_interrupt_sentinel(self, agent):
+        """ACP cancel status text should not be emitted as assistant output."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        sentinel = "Operation interrupted: waiting for model response (3.3s elapsed)."
+
+        def mock_run(*args, **kwargs):
+            state.cancel_event.set()
+            return {
+                "final_response": sentinel,
+                "messages": list(state.history),
+                "interrupted": True,
+                "completed": False,
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        with patch("agent.title_generator.maybe_auto_title") as mock_title:
+            prompt = [TextContentBlock(type="text", text="please do a long task")]
+            resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        agent_texts = [
+            update.content.text
+            for update in updates
+            if update.session_update == "agent_message_chunk"
+        ]
+        assert resp.stop_reason == "cancelled"
+        assert sentinel not in agent_texts
+        assert not any(text.startswith("Operation interrupted:") for text in agent_texts)
+        mock_title.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_prompt_keeps_real_final_response_on_cancelled_turn(self, agent):
+        """A cancel flag must not suppress actual assistant/model text."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+        final_text = "The actual model answer arrived before cancellation settled."
+
+        def mock_run(*args, **kwargs):
+            state.cancel_event.set()
+            return {
+                "final_response": final_text,
+                "messages": [],
+                "interrupted": True,
+            }
+
+        state.agent.run_conversation = mock_run
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="finish if you can")]
+        resp = await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        updates = [
+            call.kwargs.get("update") or call.args[1]
+            for call in mock_conn.session_update.call_args_list
+        ]
+        agent_texts = [
+            update.content.text
+            for update in updates
+            if update.session_update == "agent_message_chunk"
+        ]
+        assert resp.stop_reason == "cancelled"
+        assert final_text in agent_texts
+
+    @pytest.mark.asyncio
     async def test_prompt_propagates_hermes_session_id_env(self, agent, monkeypatch):
         """ACP must propagate the originating session id to the agent loop
         via ``HERMES_SESSION_ID`` so tools that want to stamp side-effects

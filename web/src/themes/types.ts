@@ -119,6 +119,25 @@ export interface ThemeComponentStyles {
   page?: Record<string, string>;
 }
 
+/** Data-series accent colors for chart + table visualisations (Analytics,
+ *  Models, etc.). Themes provide hex strings; the provider emits them as
+ *  `--series-input-token` / `--series-output-token` CSS vars consumed
+ *  inline by pages that render input-vs-output token flows. Themes can
+ *  omit either field to inherit the default token defined in
+ *  `index.css` (Hermes-teal `#ffe6cb` for input, `#34d399` for output).
+ *
+ *  Inverted-lens themes (e.g. Nous Blue) must pre-invert these hex
+ *  values so they read as their intended visual color after the FG
+ *  difference layer flips them (`out = 255 − channel`). E.g. to make
+ *  output paint as Nous-blue `#0053FD` on screen, set
+ *  `outputTokenAccent: "#FFAC02"` — the difference math reverses it. */
+export interface ThemeSeriesColors {
+  /** Input-tokens series accent (Analytics chart bars + table values). */
+  inputTokenAccent?: string;
+  /** Output-tokens series accent. */
+  outputTokenAccent?: string;
+}
+
 /** Optional hex overrides keyed by shadcn-compat token name (without the
  *  `--color-` prefix). Any key set here wins over the DS cascade. */
 export interface ThemeColorOverrides {
@@ -162,6 +181,15 @@ export interface DashboardTheme {
   /** Per-component CSS-var overrides. See `ThemeComponentStyles`. */
   componentStyles?: ThemeComponentStyles;
   colorOverrides?: ThemeColorOverrides;
+  /** Data-series accent colors for Analytics/Models token charts.
+   *  See `ThemeSeriesColors` for inversion-aware values. */
+  seriesColors?: ThemeSeriesColors;
+  /** Explicit 3-color swatch override for the theme picker. Use when the
+   *  palette's raw hex values don't reflect what users see on screen —
+   *  e.g. inverted "lens" themes whose foreground-difference layer flips
+   *  the authored colors to their visual complements. Order matches the
+   *  default swatch cells: [background, midground, warmGlow]. */
+  swatchColors?: [string, string, string];
   /** Background color for the embedded terminal pane (xterm.js).
    *  Hex string. Defaults to `"#000000"` when absent. */
   terminalBackground?: string;

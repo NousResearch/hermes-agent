@@ -23,6 +23,7 @@ import {
   Hash,
   X,
   Play,
+  Eraser,
   Download,
   Pencil,
   Check,
@@ -41,6 +42,7 @@ import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { Button } from "@nous-research/ui/ui/components/button";
+import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
 import { Segmented } from "@nous-research/ui/ui/components/segmented";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -273,22 +275,14 @@ function SessionRow({
   snippet,
   searchQuery,
   isExpanded,
+  isSelected,
   onToggle,
+  onSelectClick,
   onDelete,
   onRename,
   onExport,
   resumeInChatEnabled,
-}: {
-  session: SessionInfo;
-  snippet?: string;
-  searchQuery?: string;
-  isExpanded: boolean;
-  onToggle: () => void;
-  onDelete: () => void;
-  onRename: (id: string, title: string) => Promise<void>;
-  onExport: (id: string) => void;
-  resumeInChatEnabled: boolean;
-}) {
+}: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -400,18 +394,44 @@ function SessionRow({
     </>
   );
 
+  // Selected rows get a stronger left-edge accent + tinted background so the
+  // selection state is unambiguous even when scrolling past the bulk-action
+  // bar at the top. Beat the is_active styling — explicit user selection
+  // takes priority over "this session is live".
+  const containerClasses = isSelected
+    ? "border-primary/40 bg-primary/[0.06]"
+    : session.is_active
+      ? "border-success/30 bg-success/[0.03]"
+      : "border-border";
+
+  // Clicking the checkbox must NOT toggle row expansion; selection and
+  // expansion are independent gestures. We bind ``onClick`` directly on
+  // the Checkbox (which Radix forwards to its underlying ``<button
+  // role=checkbox>``) so the event carries the real ``shiftKey`` state
+  // for range-select AND so keyboard activation (Space on the focused
+  // checkbox) toggles selection via the same code path — the browser
+  // synthesises a click on <button> for Space, so one handler covers
+  // mouse + keyboard cleanly.
+  const handleSelectClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    onSelectClick(e);
+  };
+
   return (
     <div
-      className={`max-w-full min-w-0 overflow-hidden border transition-colors ${
-        session.is_active
-          ? "border-success/30 bg-success/[0.03]"
-          : "border-border"
-      }`}
+      className={`max-w-full min-w-0 overflow-hidden border transition-colors ${containerClasses}`}
     >
       <div
         className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
         onClick={onToggle}
       >
+        <span className="flex shrink-0 items-center pt-0.5">
+          <Checkbox
+            checked={isSelected}
+            onClick={handleSelectClick}
+            aria-label={t.sessions.selectSession}
+          />
+        </span>
         <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>
           <SourceIcon className="h-4 w-4" />
         </div>
@@ -606,6 +626,30 @@ export default function SessionsPage() {
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
   const [view, setView] = useState<SessionsView>("overview");
+  // Count of empty (no-message, ended, non-archived) sessions across the
+  // entire DB, populated by /api/sessions/empty/count. Used to:
+  //   • hide the "Delete empty" button when there's nothing to clean up
+  //   • show "(N)" alongside the label
+  //   • surface the count in the confirm dialog body
+  // Refreshed on mount, after single-session deletes, and after the bulk
+  // delete itself — none of those code paths can update the global empty
+  // count from local state alone (per-page list != global DB count).
+  const [emptyCount, setEmptyCount] = useState(0);
+  const [deleteEmptyOpen, setDeleteEmptyOpen] = useState(false);
+  const [deletingEmpty, setDeletingEmpty] = useState(false);
+  // Bulk-select-then-delete state. ``selectedIds`` is a Set so per-row
+  // checkbox toggles and ``has()`` lookups are O(1); we wrap mutations
+  // in a fresh Set so React notices the change (mutating in place
+  // wouldn't trigger a re-render).
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  // Index of the last row whose checkbox was clicked WITHOUT shift,
+  // resolved against the currently visible (post-search) ``filtered``
+  // list. Used as the anchor for shift-click range select — matches the
+  // Gmail / Notion / file-explorer convention. ``null`` means "no
+  // anchor yet", in which case shift-click degrades to a plain toggle.
+  const lastClickedIndexRef = useRef<number | null>(null);
+  const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
+  const [deletingSelected, setDeletingSelected] = useState(false);
   const [stats, setStats] = useState<SessionStoreStats | null>(null);
   const [pruneOpen, setPruneOpen] = useState(false);
   const [pruneDays, setPruneDays] = useState("90");
@@ -615,6 +659,18 @@ export default function SessionsPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
+
+  const refreshEmptyCount = useCallback(() => {
+    api
+      .getEmptySessionsCount()
+      .then((r) => setEmptyCount(r.count))
+      .catch(() => {});
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    lastClickedIndexRef.current = null;
+  }, []);
 
   useLayoutEffect(() => {
     if (loading) {
@@ -673,7 +729,8 @@ export default function SessionsPage() {
 
   useEffect(() => {
     loadSessions(page);
-  }, [loadSessions, page]);
+    refreshEmptyCount();
+  }, [loadSessions, page, refreshEmptyCount]);
 
   useEffect(() => {
     const loadOverview = () => {
@@ -695,6 +752,36 @@ export default function SessionsPage() {
     const el = logScrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [actionStatus?.lines]);
+
+  // Wrapped setters that ALSO clear the bulk selection. The user's
+  // mental model is "I'm selecting what I can see" — carrying a
+  // selection across a page change, search input, or view switch
+  // would arm invisible rows for deletion, which is the exact footgun
+  // the confirm dialog can't catch. Doing this at the call sites
+  // instead of in a ``useEffect`` keeps us out of the
+  // react-hooks/set-state-in-effect lint trap and the cascading
+  // re-render it warns about.
+  const goToPage = useCallback(
+    (p: number) => {
+      setPage(p);
+      clearSelection();
+    },
+    [clearSelection],
+  );
+  const updateSearch = useCallback(
+    (value: string) => {
+      setSearch(value);
+      clearSelection();
+    },
+    [clearSelection],
+  );
+  const switchView = useCallback(
+    (next: SessionsView) => {
+      setView(next);
+      clearSelection();
+    },
+    [clearSelection],
+  );
 
   // Debounced FTS search
   useEffect(() => {
@@ -728,6 +815,18 @@ export default function SessionsPage() {
           setSessions((prev) => prev.filter((s) => s.id !== id));
           setTotal((prev) => prev - 1);
           if (expandedId === id) setExpandedId(null);
+          // Drop the deleted ID from any active bulk-select set — it
+          // can't bulk-delete a row that's already gone.
+          setSelectedIds((prev) => {
+            if (!prev.has(id)) return prev;
+            const next = new Set(prev);
+            next.delete(id);
+            return next;
+          });
+          // A single-session delete might have been an empty one — re-fetch
+          // the global empty count so the button hides itself / its badge
+          // ticks down without waiting for the next page navigation.
+          refreshEmptyCount();
           showToast(t.sessions.sessionDeleted, "success");
           loadStats();
         } catch {
@@ -737,6 +836,7 @@ export default function SessionsPage() {
       },
       [
         expandedId,
+        refreshEmptyCount,
         showToast,
         loadStats,
         t.sessions.sessionDeleted,
@@ -744,6 +844,140 @@ export default function SessionsPage() {
       ],
     ),
   });
+
+  /** Toggle one row's selection. When ``event.shiftKey`` is true AND we
+   *  have a previous anchor, every row between the anchor and the
+   *  current index (inclusive) is set to the current row's NEW state —
+   *  matches Gmail/Notion/file-explorer semantics. ``visibleList`` must
+   *  be the currently rendered list (post-search), since indices are
+   *  resolved against what the user is actually looking at.
+   */
+  const handleSelectClick = useCallback(
+    (event: React.MouseEvent, index: number, visibleList: SessionInfo[]) => {
+      const id = visibleList[index]?.id;
+      if (!id) return;
+      setSelectedIds((prev) => {
+        const next = new Set(prev);
+        const wasSelected = next.has(id);
+        const willSelect = !wasSelected;
+
+        const anchor = lastClickedIndexRef.current;
+        // Shift-click extends the selection from the anchor to here.
+        // Skip if there's no anchor or the anchor is outside the
+        // visible list — in those cases fall through to a plain toggle
+        // (the click also resets the anchor below).
+        if (event.shiftKey && anchor !== null && anchor < visibleList.length) {
+          const [lo, hi] =
+            anchor <= index ? [anchor, index] : [index, anchor];
+          for (let i = lo; i <= hi; i++) {
+            const rowId = visibleList[i]?.id;
+            if (!rowId) continue;
+            if (willSelect) next.add(rowId);
+            else next.delete(rowId);
+          }
+        } else if (willSelect) {
+          next.add(id);
+        } else {
+          next.delete(id);
+        }
+        return next;
+      });
+      // Always update the anchor to the most recent click — even when
+      // it was a shift-click that extended a range, the user's next
+      // shift-click should anchor from here, not from two steps back.
+      lastClickedIndexRef.current = index;
+    },
+    [],
+  );
+
+  const selectAllOnPage = useCallback((visibleList: SessionInfo[]) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const s of visibleList) next.add(s.id);
+      return next;
+    });
+  }, []);
+
+  const handleDeleteSelected = useCallback(async () => {
+    const ids = Array.from(selectedIds);
+    if (ids.length === 0) {
+      setDeleteSelectedOpen(false);
+      return;
+    }
+    setDeletingSelected(true);
+    try {
+      const resp = await api.bulkDeleteSessions(ids);
+      showToast(
+        t.sessions.selectedSessionsDeleted.replace(
+          "{count}",
+          String(resp.deleted),
+        ),
+        "success",
+      );
+      setDeleteSelectedOpen(false);
+      // Drop deleted rows out of the visible list immediately rather
+      // than waiting for the reload. The reload still runs so total /
+      // pagination stays correct, and so any rows the reload pulls in
+      // from later pages render in place.
+      const deletedSet = new Set(ids);
+      setSessions((prev) => prev.filter((s) => !deletedSet.has(s.id)));
+      setTotal((prev) => Math.max(0, prev - resp.deleted));
+      if (expandedId && deletedSet.has(expandedId)) setExpandedId(null);
+      clearSelection();
+      loadSessions(page);
+      refreshEmptyCount();
+    } catch {
+      showToast(t.sessions.failedToDeleteSelected, "error");
+    } finally {
+      setDeletingSelected(false);
+    }
+  }, [
+    clearSelection,
+    expandedId,
+    loadSessions,
+    page,
+    refreshEmptyCount,
+    selectedIds,
+    showToast,
+    t.sessions.failedToDeleteSelected,
+    t.sessions.selectedSessionsDeleted,
+  ]);
+
+  const handleDeleteEmpty = useCallback(async () => {
+    setDeletingEmpty(true);
+    try {
+      const resp = await api.deleteEmptySessions();
+      // Show count in the toast so users get confirmation of the actual
+      // number removed (which may differ slightly from `emptyCount` if a
+      // session entered/left the "empty" set between the count fetch and
+      // the delete — e.g. an active session just ended without sending
+      // any messages).
+      showToast(
+        t.sessions.emptySessionsDeleted.replace(
+          "{count}",
+          String(resp.deleted),
+        ),
+        "success",
+      );
+      setDeleteEmptyOpen(false);
+      // Reload the current page so any newly-vanished empty sessions
+      // drop out of the visible list, and re-fetch the empty count so
+      // the button hides itself.
+      loadSessions(page);
+      refreshEmptyCount();
+    } catch {
+      showToast(t.sessions.failedToDeleteEmpty, "error");
+    } finally {
+      setDeletingEmpty(false);
+    }
+  }, [
+    loadSessions,
+    page,
+    refreshEmptyCount,
+    showToast,
+    t.sessions.emptySessionsDeleted,
+    t.sessions.failedToDeleteEmpty,
+  ]);
 
   const handleRename = useCallback(
     async (id: string, title: string) => {
@@ -896,6 +1130,33 @@ export default function SessionsPage() {
             : t.sessions.confirmDeleteMessage
         }
         loading={sessionDelete.isDeleting}
+      />
+
+      <DeleteConfirmDialog
+        open={deleteEmptyOpen}
+        onCancel={() => setDeleteEmptyOpen(false)}
+        onConfirm={handleDeleteEmpty}
+        title={t.sessions.deleteEmptyConfirmTitle}
+        description={t.sessions.deleteEmptyConfirmMessage.replace(
+          "{count}",
+          String(emptyCount),
+        )}
+        loading={deletingEmpty}
+      />
+
+      <DeleteConfirmDialog
+        open={deleteSelectedOpen}
+        onCancel={() => setDeleteSelectedOpen(false)}
+        onConfirm={handleDeleteSelected}
+        title={t.sessions.deleteSelectedConfirmTitle.replace(
+          "{count}",
+          String(selectedIds.size),
+        )}
+        description={t.sessions.deleteSelectedConfirmMessage.replace(
+          "{count}",
+          String(selectedIds.size),
+        )}
+        loading={deletingSelected}
       />
 
       <Dialog
@@ -1084,7 +1345,7 @@ export default function SessionsPage() {
                 className="w-fit shrink-0"
                 size="md"
                 value={view}
-                onChange={setView}
+                onChange={switchView}
                 options={[
                   { value: "overview", label: t.sessions.overview },
                   { value: "list", label: t.sessions.history },
@@ -1102,7 +1363,7 @@ export default function SessionsPage() {
                 <Input
                   placeholder={t.sessions.searchPlaceholder}
                   value={search}
-                  onChange={(e) => setSearch(e.target.value)}
+                  onChange={(e) => updateSearch(e.target.value)}
                   className="h-8 py-0 pr-7 pl-8 text-xs leading-none"
                 />
                 {search && (
@@ -1110,13 +1371,30 @@ export default function SessionsPage() {
                     ghost
                     size="xs"
                     className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    onClick={() => setSearch("")}
+                    onClick={() => updateSearch("")}
                     aria-label={t.common.clear}
                   >
                     <X />
                   </Button>
                 )}
               </div>
+            )}
+
+            {showList && emptyCount > 0 && !isSearching && (
+              <Button
+                outlined
+                destructive
+                size="sm"
+                className="shrink-0"
+                onClick={() => setDeleteEmptyOpen(true)}
+                aria-label={t.sessions.deleteEmpty}
+                title={t.sessions.deleteEmpty}
+              >
+                <Eraser className="h-3.5 w-3.5" />
+                <span className="font-mondwest normal-case text-xs">
+                  {t.sessions.deleteEmpty} ({emptyCount})
+                </span>
+              </Button>
             )}
           </div>
 
@@ -1126,11 +1404,76 @@ export default function SessionsPage() {
               className="shrink-0 sm:ml-auto"
               page={page}
               total={total}
-              onPageChange={setPage}
+              onPageChange={goToPage}
             />
           )}
         </div>
       ) : null}
+
+      {showList && selectedIds.size > 0 && (
+        <div
+          className="flex flex-wrap items-center gap-2 border border-primary/30 bg-primary/[0.06] px-3 py-2"
+          role="region"
+          aria-label={t.sessions.selectedCount.replace(
+            "{count}",
+            String(selectedIds.size),
+          )}
+        >
+          <span className="font-mondwest normal-case text-xs text-primary tabular-nums">
+            {t.sessions.selectedCount.replace(
+              "{count}",
+              String(selectedIds.size),
+            )}
+          </span>
+          {filtered.some((s) => !selectedIds.has(s.id)) && (
+            <Button
+              ghost
+              size="sm"
+              onClick={() => selectAllOnPage(filtered)}
+              aria-label={t.sessions.selectAllOnPage}
+              title={t.sessions.selectAllOnPage}
+            >
+              <span className="font-mondwest normal-case text-xs">
+                {t.sessions.selectAllOnPage}
+              </span>
+            </Button>
+          )}
+          <Button
+            ghost
+            size="sm"
+            onClick={clearSelection}
+            aria-label={t.sessions.clearSelection}
+            title={t.sessions.clearSelection}
+          >
+            <span className="font-mondwest normal-case text-xs">
+              {t.sessions.clearSelection}
+            </span>
+          </Button>
+          <Button
+            outlined
+            destructive
+            size="sm"
+            className="ml-auto"
+            onClick={() => setDeleteSelectedOpen(true)}
+            aria-label={t.sessions.deleteSelected.replace(
+              "{count}",
+              String(selectedIds.size),
+            )}
+            title={t.sessions.deleteSelected.replace(
+              "{count}",
+              String(selectedIds.size),
+            )}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            <span className="font-mondwest normal-case text-xs">
+              {t.sessions.deleteSelected.replace(
+                "{count}",
+                String(selectedIds.size),
+              )}
+            </span>
+          </Button>
+        </div>
+      )}
 
       {showList ? (
         filtered.length === 0 ? (
@@ -1148,15 +1491,19 @@ export default function SessionsPage() {
         ) : (
           <>
             <div className="flex min-w-0 flex-col gap-1.5">
-              {filtered.map((s) => (
+              {filtered.map((s, index) => (
                 <SessionRow
                   key={s.id}
                   session={s}
                   snippet={snippetMap.get(s.id)}
                   searchQuery={search || undefined}
                   isExpanded={expandedId === s.id}
+                  isSelected={selectedIds.has(s.id)}
                   onToggle={() =>
                     setExpandedId((prev) => (prev === s.id ? null : s.id))
+                  }
+                  onSelectClick={(event) =>
+                    handleSelectClick(event, index, filtered)
                   }
                   onDelete={() => sessionDelete.requestDelete(s.id)}
                   onRename={handleRename}
@@ -1170,7 +1517,7 @@ export default function SessionsPage() {
               <SessionsPagination
                 page={page}
                 total={total}
-                onPageChange={setPage}
+                onPageChange={goToPage}
               />
             )}
           </>
@@ -1236,6 +1583,20 @@ export default function SessionsPage() {
       <PluginSlot name="sessions:bottom" />
     </div>
   );
+}
+
+interface SessionRowProps {
+  isExpanded: boolean;
+  isSelected: boolean;
+  onDelete: () => void;
+  onExport: (id: string) => void;
+  onRename: (id: string, title: string) => Promise<void>;
+  onSelectClick: (event: React.MouseEvent) => void;
+  onToggle: () => void;
+  resumeInChatEnabled: boolean;
+  searchQuery?: string;
+  session: SessionInfo;
+  snippet?: string;
 }
 
 interface SessionsPaginationProps {

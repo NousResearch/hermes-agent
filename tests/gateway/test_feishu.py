@@ -648,6 +648,7 @@ class TestAdapterBehavior(unittest.TestCase):
                 "p2p_chat_entered",
                 "message_recalled",
                 "customized:drive.notice.comment_add_v1",
+                "customized:vc.bot.meeting_invited_v1",
                 "build",
             ],
         )

@@ -37,11 +37,13 @@ import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
+import { useProfileScope } from "@/contexts/useProfileScope";
 
 function buildWsUrl(
   authParam: [string, string],
   resume: string | null,
   channel: string,
+  profile: string,
 ): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   // ``authParam`` is ``["token", <session>]`` in loopback mode and
@@ -49,6 +51,10 @@ function buildWsUrl(
   // ``_ws_auth_ok`` picks whichever shape matches the current gate state.
   const qs = new URLSearchParams({ [authParam[0]]: authParam[1], channel });
   if (resume) qs.set("resume", resume);
+  // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
+  // selected profile, so the conversation runs with that profile's model,
+  // skills, memory, and sessions (see web_server._resolve_chat_argv).
+  if (profile) qs.set("profile", profile);
   return `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/pty?${qs.toString()}`;
 }
 
@@ -173,7 +179,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
-  const channel = useMemo(() => generateChannelId(), [resumeParam]);
+  // Profile-scoped chat: spawn the PTY under the globally selected
+  // management profile. Changing it remounts the terminal (key below /
+  // effect dep) so the user explicitly starts a fresh scoped session.
+  const { profile: scopedProfile } = useProfileScope();
+  const channel = useMemo(() => generateChannelId(), [resumeParam, scopedProfile]);
 
   useEffect(() => {
     if (!resumeParam) return;
@@ -576,7 +586,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     void (async () => {
       const authParam = await buildWsAuthParam();
       if (unmounting) return;
-      const url = buildWsUrl(authParam, resumeParam, channel);
+      const url = buildWsUrl(authParam, resumeParam, channel, scopedProfile);
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -603,19 +613,50 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (unmounting) {
         return;
       }
+      // Surface the real cause to the browser console on every close so a
+      // "chat won't connect" report can be diagnosed without server access.
+      // The server sends a machine-parseable reason on every rejection (see
+      // pty_ws in web_server.py); echo it verbatim alongside the close code.
+      const why = ev.reason ? ` reason=${ev.reason}` : "";
+      console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
       if (ev.code === 4401) {
-        setBanner("Auth failed. Reload the page to refresh the session token.");
+        setBanner(
+          ev.reason
+            ? `Auth failed (${ev.reason}). Reload to refresh the session.`
+            : "Auth failed. Reload the page to refresh the session token.",
+        );
         return;
       }
       if (ev.code === 4403) {
-        setBanner("Chat is only reachable from localhost.");
+        // Host/Origin mismatch (DNS-rebinding guard).
+        setBanner(
+          ev.reason
+            ? `Refused: ${ev.reason}.`
+            : "Refused: request host/origin doesn't match the dashboard.",
+        );
+        return;
+      }
+      if (ev.code === 4404) {
+        setBanner(
+          "Embedded chat is disabled on this server (start it with --tui).",
+        );
+        return;
+      }
+      if (ev.code === 4408) {
+        setBanner(
+          ev.reason
+            ? `Refused: ${ev.reason}.`
+            : "Refused: your client isn't permitted (server bound to localhost only).",
+        );
         return;
       }
       if (ev.code === 1011) {
         // Server already wrote an ANSI error frame.
         return;
       }
-      term.write("\r\n\x1b[90m[session ended]\x1b[0m\r\n");
+      term.write(
+        `\r\n\x1b[90m[session ended (code ${ev.code})]\x1b[0m\r\n`,
+      );
     };
 
     // Keystrokes → PTY.
@@ -683,7 +724,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam]);
+  }, [channel, resumeParam, scopedProfile]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.

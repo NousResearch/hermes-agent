@@ -522,7 +522,69 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         tg_name = _sanitize_telegram_name(name)
         if tg_name:
             result.append((tg_name, description))
-    return result
+    return _dedupe_command_names(result)
+
+
+def _dedupe_command_names(
+    commands: list[tuple[str, str]],
+) -> list[tuple[str, str]]:
+    """Drop duplicate command names while preserving first-seen order."""
+    seen: set[str] = set()
+    deduped: list[tuple[str, str]] = []
+    for name, description in commands:
+        if name in seen:
+            continue
+        seen.add(name)
+        deduped.append((name, description))
+    return deduped
+
+
+def _telegram_config() -> dict[str, Any]:
+    """Return the optional ``gateway.telegram`` config block."""
+    try:
+        from hermes_cli.config import read_raw_config
+
+        cfg = read_raw_config() or {}
+    except Exception:
+        return {}
+    gateway_cfg = cfg.get("gateway")
+    if not isinstance(gateway_cfg, dict):
+        return {}
+    telegram_cfg = gateway_cfg.get("telegram")
+    return telegram_cfg if isinstance(telegram_cfg, dict) else {}
+
+
+def telegram_max_commands_per_scope(default: int = 30) -> int:
+    """Return the configured Telegram BotCommand cap, clamped to API bounds."""
+    value = _telegram_config().get("max_commands_per_scope", default)
+    try:
+        max_commands = int(value)
+    except (TypeError, ValueError):
+        max_commands = default
+    return max(1, min(100, max_commands))
+
+
+def _configured_telegram_menu_priority() -> tuple[str, ...]:
+    """Return user-configured command names to pin before defaults."""
+    value = _telegram_config().get("menu_priority", ())
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, (list, tuple)):
+        raw_items = list(value)
+    else:
+        raw_items = []
+
+    priority: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_items:
+        if not isinstance(raw, str):
+            continue
+        name = _sanitize_telegram_name(raw.lstrip("/"))
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        priority.append(name)
+    return tuple(priority)
 
 
 _TELEGRAM_MENU_PRIORITY = (
@@ -565,10 +627,15 @@ need to survive the visible menu cap ahead of lower-priority built-ins.
 def _prioritize_telegram_menu_commands(
     commands: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    priority = {
-        _sanitize_telegram_name(name): index
-        for index, name in enumerate(_TELEGRAM_MENU_PRIORITY)
-    }
+    priority_names = (
+        _configured_telegram_menu_priority()
+        + tuple(
+            name
+            for name in (_sanitize_telegram_name(n) for n in _TELEGRAM_MENU_PRIORITY)
+            if name
+        )
+    )
+    priority = {name: index for index, name in enumerate(dict.fromkeys(priority_names))}
     return [
         command
         for _index, command in sorted(

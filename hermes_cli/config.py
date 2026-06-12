@@ -2278,6 +2278,19 @@ DEFAULT_CONFIG = {
         # multi-tool agent turn. Bridged to HERMES_MEDIA_TRUST_RECENT_SECONDS.
         # Only consulted when ``strict`` is true.
         "trust_recent_files_seconds": 600,
+        # Telegram BotCommand menu controls. Telegram supports up to 100
+        # commands per scope, but Hermes keeps the historical 30-command
+        # default to avoid overwhelming small installs. Raise this when
+        # install-specific commands or many skills should be visible in
+        # Telegram slash autocomplete.
+        "telegram": {
+            "max_commands_per_scope": 30,
+            # Command names to pin before the built-in menu priority list.
+            # Names may be written with or without the leading slash, and
+            # hyphenated commands are normalized to Telegram underscores.
+            # Example: ["foo", "bar-baz"]
+            "menu_priority": [],
+        },
     },
 
     # Real-time token streaming to messaging platforms (Telegram, Discord,

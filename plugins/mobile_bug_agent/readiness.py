@@ -270,7 +270,37 @@ def check_monica_readiness(
                 "proof.commands is empty; Monica will block at proof after verification",
             )
             proof_platforms = {platform.lower() for platform in config.proof.platform_order}
+            uses_builtin_simulator_proof = _uses_builtin_simulator_proof(config.proof.commands)
             if "ios" in proof_platforms:
+                if uses_builtin_simulator_proof:
+                    require(
+                        "proof_ios_dev_client_scheme",
+                        _proof_setting_configured(
+                            config.proof.dev_client_scheme,
+                            config.proof.commands,
+                            cli_flag="--dev-client-scheme",
+                            env_var="MONICA_DEV_CLIENT_SCHEME",
+                        ),
+                        (
+                            "iOS simulator proof uses Monica's built-in Expo dev-client harness; "
+                            "set proof.dev_client_scheme or pass --dev-client-scheme/"
+                            "MONICA_DEV_CLIENT_SCHEME in proof.commands"
+                        ),
+                    )
+                    require(
+                        "proof_ios_bundle_id",
+                        _proof_setting_configured(
+                            config.proof.ios_bundle_id,
+                            config.proof.commands,
+                            cli_flag="--ios-bundle-id",
+                            env_var="MONICA_IOS_BUNDLE_ID",
+                        ),
+                        (
+                            "iOS simulator proof uses Monica's built-in Expo dev-client harness; "
+                            "set proof.ios_bundle_id or pass --ios-bundle-id/"
+                            "MONICA_IOS_BUNDLE_ID in proof.commands"
+                        ),
+                    )
                 ios_tools_present = resolve("xcrun") is not None and resolve("xcodebuild") is not None
                 ios_ready = ios_tools_present and (
                     not verify_commands
@@ -397,6 +427,23 @@ def _command_succeeds(command: tuple[str, ...]) -> bool:
     except (OSError, subprocess.TimeoutExpired):
         return False
     return proc.returncode == 0
+
+
+def _uses_builtin_simulator_proof(commands: tuple[str, ...]) -> bool:
+    return any("plugins.mobile_bug_agent.simulator_proof" in command for command in commands)
+
+
+def _proof_setting_configured(
+    config_value: str | None,
+    commands: tuple[str, ...],
+    *,
+    cli_flag: str,
+    env_var: str,
+) -> bool:
+    if str(config_value or "").strip():
+        return True
+    assignment_re = re.compile(rf"(?:^|[\s;])(?:export\s+)?{re.escape(env_var)}\s*=")
+    return any(cli_flag in command or assignment_re.search(command) for command in commands)
 
 
 def _scope_set(value: object) -> set[str]:

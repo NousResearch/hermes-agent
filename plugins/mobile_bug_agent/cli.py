@@ -1397,7 +1397,10 @@ def _setup_plan_steps(report: Any) -> list[dict[str, str]]:
             command="gh auth status",
             why="Approved-PR mode needs GitHub CLI auth for pushing branches and opening draft PRs.",
         )
-    if warning_codes & {"proof_commands_empty"}:
+    if warning_codes & {"proof_commands_empty"} or failure_codes & {
+        "proof_ios_dev_client_scheme",
+        "proof_ios_bundle_id",
+    }:
         _append_setup_step(
             steps,
             step_id="configure_simulator_proof",
@@ -1405,7 +1408,8 @@ def _setup_plan_steps(report: Any) -> list[dict[str, str]]:
             command=(
                 "Set mobile_bug_agent.proof.commands to "
                 "`uv run --project \"$MONICA_HERMES_AGENT_ROOT\" python -m "
-                "plugins.mobile_bug_agent.simulator_proof --timeout-seconds 600`"
+                "plugins.mobile_bug_agent.simulator_proof --timeout-seconds 600`, "
+                "and set proof.dev_client_scheme plus proof.ios_bundle_id for iOS dev-client proof."
             ),
             why="Stage D/E/F cannot complete until proof commands write screenshots or recordings to MONICA_PROOF_DIR.",
         )

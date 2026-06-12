@@ -1809,6 +1809,8 @@ def test_setup_plan_json_lists_proof_warning_steps_when_rollout_is_ready(capsys)
                 required_for_done=True,
                 commands=("uv run --project \"$MONICA_HERMES_AGENT_ROOT\" python -m plugins.mobile_bug_agent.simulator_proof",),
                 platform_order=("ios", "android"),
+                dev_client_scheme="elixir-card",
+                ios_bundle_id="com.elixir.card",
             ),
         ),
         target_rollout_mode="approved_pr",

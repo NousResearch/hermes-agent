@@ -152,6 +152,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "control_plane": {
+        "description": "Hermes durable local control-plane status/blocker tools (opt-in).",
+        "tools": ["control_plane_status", "control_plane_blocker"],
+        "includes": []
+    },
+
     "terminal": {
         "description": "Terminal/command execution and process management tools",
         "tools": ["terminal", "process"],

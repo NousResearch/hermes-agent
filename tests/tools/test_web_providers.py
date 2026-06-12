@@ -234,10 +234,10 @@ class TestDefaultConfig:
         assert "backend" in web
         assert "search_backend" in web
         assert "extract_backend" in web
-        # All empty string by default (no override)
+        # Search keeps no override; extract defaults to local browser when available.
         assert web["backend"] == ""
         assert web["search_backend"] == ""
-        assert web["extract_backend"] == ""
+        assert web["extract_backend"] == "local-browser"
 
 
 # ---------------------------------------------------------------------------
@@ -538,4 +538,3 @@ class TestDispatchersTriggerPluginDiscovery:
             assert web_search_registry.get_provider("brave-free") is not None
         finally:
             restore()
-

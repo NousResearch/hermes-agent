@@ -661,7 +661,6 @@ async def test_fetch_channel_context_stops_at_self_message_and_reverses_to_chron
 
     assert result == (
         "[Recent channel messages]\n"
-        "[Gemini [bot]] latest bot note\n"
         "[Alice] latest human note"
     )
 
@@ -757,7 +756,7 @@ async def test_fetch_channel_context_cache_uses_latest_window_when_after_set(ada
 
     result = await adapter._fetch_channel_context(channel, before=trigger)
 
-    assert "[Codex [bot]] final analysis" in result
+    assert "[Codex [bot]] final analysis" not in result
     assert "[Alice] latest follow-up" in result
     assert "old tool trace 1" not in result
     assert "old tool trace 2" not in result

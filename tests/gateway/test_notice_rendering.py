@@ -171,4 +171,3 @@ class TestDeliverNoticeLine:
         runner.adapters = {}
         # Must not raise when the platform has no registered adapter.
         await runner._deliver_platform_notice(source, "• anything")
-

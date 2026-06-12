@@ -735,6 +735,11 @@ def _handle_create(args: dict, **kw) -> str:
             "assignee is required — name the profile that should execute this "
             "task (the dispatcher will only spawn tasks with an assignee)"
         )
+    if str(assignee).strip() == "ftd-control-plane":
+        return tool_error(
+            "ftd-control-plane is a reserved nonspawnable FTD control lane. "
+            "kanban_create child tasks must be assigned to a real worker profile."
+        )
     body = args.get("body")
     parents = args.get("parents") or []
     tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
@@ -1178,7 +1183,9 @@ KANBAN_CREATE_SCHEMA = {
                     "Profile name that should execute this task "
                     "(e.g. 'researcher-a', 'reviewer', 'writer'). "
                     "Required — tasks without an assignee are never "
-                    "dispatched."
+                    "dispatched. Do not use 'ftd-control-plane'; it is "
+                    "reserved for nonspawnable FTD root/sprint control "
+                    "cards created by FTD internals."
                 ),
             },
             "body": {

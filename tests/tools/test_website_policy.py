@@ -397,6 +397,7 @@ class TestWebToolPolicy:
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
         # Force the firecrawl plugin to be the active extract provider.
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "firecrawl")
 
         result = json.loads(await web_tools.web_extract_tool(["https://blocked.test"], use_llm_processing=False))
 
@@ -442,6 +443,7 @@ class TestWebToolPolicy:
         monkeypatch.setattr(firecrawl_provider, "_get_firecrawl_client", lambda: FakeFirecrawlClient())
         monkeypatch.setattr("tools.interrupt.is_interrupted", lambda: False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fake-key")
+        monkeypatch.setattr(web_tools, "_get_extract_backend", lambda: "firecrawl")
 
         result = json.loads(await web_tools.web_extract_tool(["https://allowed.test"], use_llm_processing=False))
 

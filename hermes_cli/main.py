@@ -2217,6 +2217,11 @@ def cmd_chat(args):
     if getattr(args, "source", None):
         os.environ["HERMES_SESSION_SOURCE"] = args.source
 
+    # Programmatic callers can pass ``-q -`` to keep long/private prompts out of
+    # process listings. Read stdin before invoking the interactive CLI layer.
+    if getattr(args, "query", None) == "-" and not sys.stdin.isatty():
+        args.query = sys.stdin.read()
+
     _pin_kanban_board_env()
 
     if use_tui:
@@ -10526,7 +10531,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
     {
         "acp", "auth", "backup", "bundles", "checkpoints", "claw", "completion",
         "computer-use",
-        "config", "cron", "curator", "dashboard", "debug", "doctor",
+        "config", "control", "cron", "curator", "dashboard", "debug", "doctor",
         "dump", "fallback", "gateway", "hooks", "import", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate",
         "model", "pairing", "plugins", "portal", "postinstall", "profile", "proxy",
@@ -11167,6 +11172,12 @@ def main():
     # gateway + proxy commands  (parsers built in hermes_cli/subcommands/gateway.py)
     # =========================================================================
     build_gateway_parser(subparsers, cmd_gateway=cmd_gateway, cmd_proxy=cmd_proxy)
+
+    # =========================================================================
+    # control command
+    # =========================================================================
+    from hermes_cli.control import register_subparser as _control_register
+    _control_register(subparsers)
 
     # =========================================================================
     # lsp command

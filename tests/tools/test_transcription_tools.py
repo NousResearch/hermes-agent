@@ -147,7 +147,7 @@ class TestExplicitProviderRespected:
 
     def test_explicit_local_no_fallback_to_openai(self, monkeypatch):
         """GH-1774: provider=local must not silently fall back to openai
-        even when an OpenAI API key is set."""
+        even when an OpenAI API key is set. Local may lazy-install at first use."""
         monkeypatch.setenv("OPENAI_API_KEY", "***")
         monkeypatch.delenv("GROQ_API_KEY", raising=False)
         with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
@@ -155,7 +155,7 @@ class TestExplicitProviderRespected:
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             result = _get_provider({"provider": "local"})
-            assert result == "none", f"Expected 'none' but got {result!r}"
+            assert result == "local", f"Expected 'local' but got {result!r}"
 
     def test_explicit_local_no_fallback_to_groq(self, monkeypatch):
         monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
@@ -164,7 +164,7 @@ class TestExplicitProviderRespected:
              patch("tools.transcription_tools._HAS_OPENAI", True):
             from tools.transcription_tools import _get_provider
             result = _get_provider({"provider": "local"})
-            assert result == "none"
+            assert result == "local"
 
     def test_explicit_local_uses_local_command_fallback(self, monkeypatch):
         """Local-to-local_command fallback is fine — both are local."""
@@ -176,6 +176,23 @@ class TestExplicitProviderRespected:
             from tools.transcription_tools import _get_provider
             result = _get_provider({"provider": "local"})
             assert result == "local_command"
+
+    def test_faster_whisper_lazy_ensure_updates_availability(self):
+        """Local STT should lazy-install faster-whisper before failing closed."""
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.lazy_deps.ensure") as mock_ensure, \
+             patch("tools.transcription_tools._safe_find_spec", return_value=True):
+            from tools.transcription_tools import _ensure_faster_whisper_available
+            assert _ensure_faster_whisper_available() is True
+
+        mock_ensure.assert_called_once_with("stt.faster_whisper", prompt=False)
+
+    def test_faster_whisper_lazy_ensure_failure_returns_false(self):
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.lazy_deps.ensure", side_effect=RuntimeError("offline")), \
+             patch("tools.transcription_tools._safe_find_spec", return_value=False):
+            from tools.transcription_tools import _ensure_faster_whisper_available
+            assert _ensure_faster_whisper_available() is False
 
     def test_explicit_groq_no_fallback_to_openai(self, monkeypatch):
         monkeypatch.delenv("GROQ_API_KEY", raising=False)

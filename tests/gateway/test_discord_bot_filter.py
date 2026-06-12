@@ -1,12 +1,16 @@
-"""Tests for Discord bot message filtering (DISCORD_ALLOW_BOTS)."""
+"""Discord ignores bot-authored messages before model dispatch."""
 
 import os
+import tempfile
 import unittest
-from unittest.mock import MagicMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from gateway.config import PlatformConfig
+from gateway.platforms.discord import DiscordAdapter, _has_raw_user_mention
 
 
 def _make_author(*, bot: bool = False, is_self: bool = False):
-    """Create a mock Discord author."""
     author = MagicMock()
     author.bot = bot
     author.id = 99999 if is_self else 12345
@@ -16,12 +20,13 @@ def _make_author(*, bot: bool = False, is_self: bool = False):
 
 
 def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
-    """Create a mock Discord message."""
     msg = MagicMock()
     msg.author = author or _make_author()
     msg.content = content
+    msg.clean_content = content
     msg.attachments = []
     msg.mentions = mentions or []
+    msg.id = 123
     if is_dm:
         import discord
         msg.channel = MagicMock(spec=discord.DMChannel)
@@ -32,85 +37,70 @@ def _make_message(*, author=None, content="hello", mentions=None, is_dm=False):
         msg.channel.name = "test-channel"
         msg.channel.guild = MagicMock()
         msg.channel.guild.name = "TestServer"
-        # Make isinstance checks fail for DMChannel and Thread
         type(msg.channel).__name__ = "TextChannel"
     return msg
 
 
-class TestDiscordBotFilter(unittest.TestCase):
-    """Test the DISCORD_ALLOW_BOTS filtering logic."""
+class TestDiscordBotFilter(unittest.IsolatedAsyncioTestCase):
+    def _adapter(self, **env):
+        tmp = tempfile.TemporaryDirectory()
+        baseline_env = {
+            "HERMES_HOME": tmp.name,
+            "DISCORD_ALLOW_BOTS": "all",
+            "DISCORD_ALLOWED_BOT_USERS": "12345",
+            "HERMES_ENABLE_LEGACY_DISCORD_BOT_TO_BOT": "1",
+            "DISCORD_ALLOWED_USERS": "12345",
+        }
+        baseline_env.update(env)
+        patcher = patch.dict(os.environ, baseline_env, clear=False)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(tmp.cleanup)
+        adapter = DiscordAdapter(PlatformConfig(enabled=True, token="fake-token"))
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=99999))
+        return adapter
 
-    def _run_filter(self, message, allow_bots="none", client_user=None):
-        """Simulate the on_message filter logic and return whether message was accepted."""
-        # Replicate the exact filter logic from discord.py on_message
-        if message.author == client_user:
-            return False  # own messages always ignored
+    def test_raw_mention_helper_ignores_reply_metadata_mentions(self):
+        self.assertTrue(_has_raw_user_mention("hello <@99999>", 99999))
+        self.assertTrue(_has_raw_user_mention("hello <@!99999>", 99999))
+        self.assertFalse(_has_raw_user_mention("hello", 99999))
+        self.assertFalse(_has_raw_user_mention("hello <@12345>", 99999))
 
-        if getattr(message.author, "bot", False):
-            allow = allow_bots.lower().strip()
-            if allow == "none":
-                return False
-            elif allow == "mentions":
-                if not client_user or client_user not in message.mentions:
-                    return False
-            # "all" falls through
-        
-        return True  # message accepted
+    def test_adapter_no_longer_exposes_bot_admission_helpers(self):
+        adapter = self._adapter()
+        self.assertFalse(hasattr(adapter, "_should_accept_bot_message"))
+        self.assertFalse(hasattr(adapter, "_should_react_malformed_bot_message"))
+        self.assertFalse(hasattr(adapter, "_handle_bot_approval_decision"))
 
-    def test_own_messages_always_ignored(self):
-        """Bot's own messages are always ignored regardless of allow_bots."""
-        bot_user = _make_author(is_self=True)
-        msg = _make_message(author=bot_user)
-        self.assertFalse(self._run_filter(msg, "all", bot_user))
+    async def test_bot_authored_messages_are_ignored_before_handle_message(self):
+        adapter = self._adapter()
+        adapter._ready_event.set()
+        adapter._handle_message = AsyncMock()
+        adapter._add_reaction = AsyncMock()
 
-    def test_human_messages_always_accepted(self):
-        """Human messages are always accepted regardless of allow_bots."""
-        human = _make_author(bot=False)
-        msg = _make_message(author=human)
-        self.assertTrue(self._run_filter(msg, "none"))
-        self.assertTrue(self._run_filter(msg, "mentions"))
-        self.assertTrue(self._run_filter(msg, "all"))
+        message = _make_message(
+            author=_make_author(bot=True),
+            content="<@99999>\nBOT_MSG v1\nreply_expected: false\nkind: status\n---\nbody",
+            mentions=[adapter._client.user],
+        )
 
-    def test_allow_bots_none_rejects_bots(self):
-        """With allow_bots=none, all other bot messages are rejected."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertFalse(self._run_filter(msg, "none"))
+        async def simulated_runtime_gate(msg):
+            if getattr(msg.author, "bot", False):
+                return
+            await adapter._handle_message(msg)
 
-    def test_allow_bots_all_accepts_bots(self):
-        """With allow_bots=all, all bot messages are accepted."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "all"))
+        await simulated_runtime_gate(message)
 
-    def test_allow_bots_mentions_rejects_without_mention(self):
-        """With allow_bots=mentions, bot messages without @mention are rejected."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[])
-        self.assertFalse(self._run_filter(msg, "mentions", our_user))
+        adapter._handle_message.assert_not_called()
+        adapter._add_reaction.assert_not_called()
 
-    def test_allow_bots_mentions_accepts_with_mention(self):
-        """With allow_bots=mentions, bot messages with @mention are accepted."""
-        our_user = _make_author(is_self=True)
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot, mentions=[our_user])
-        self.assertTrue(self._run_filter(msg, "mentions", our_user))
+    async def test_human_messages_still_reach_handle_message(self):
+        adapter = self._adapter(DISCORD_ALLOW_BOTS="all")
+        adapter._ready_event.set()
+        adapter._handle_message = AsyncMock()
 
-    def test_default_is_none(self):
-        """Default behavior (no env var) should be 'none'."""
-        default = os.getenv("DISCORD_ALLOW_BOTS", "none")
-        self.assertEqual(default, "none")
+        message = _make_message(author=_make_author(bot=False), content="hello <@99999>", mentions=[adapter._client.user])
 
-    def test_case_insensitive(self):
-        """Allow_bots value should be case-insensitive."""
-        bot = _make_author(bot=True)
-        msg = _make_message(author=bot)
-        self.assertTrue(self._run_filter(msg, "ALL"))
-        self.assertTrue(self._run_filter(msg, "All"))
-        self.assertFalse(self._run_filter(msg, "NONE"))
-        self.assertFalse(self._run_filter(msg, "None"))
+        await adapter._handle_message(message)
 
-
-if __name__ == "__main__":
-    unittest.main()
+        adapter._handle_message.assert_awaited_once_with(message)

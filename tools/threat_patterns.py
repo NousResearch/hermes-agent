@@ -92,7 +92,10 @@ _PATTERNS: List[Tuple[str, str, str]] = [
 
     # ── Known C2 / red-team framework names (near-zero false positive
     #    outside security research; warn-only by default) ─────────────
-    (r'\b(?:praxis|cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b', "known_c2_framework", "context"),
+    # "Mythic" is common in persona / creative writing, so require nearby
+    # C2-specific deployment vocabulary instead of matching the bare word.
+    (r'\b(?:praxis|cobalt\s*strike|sliver|havoc|metasploit|brainworm)\b', "known_c2_framework", "context"),
+    (r'\bmythic\s+(?:c2|server|agent|implant|payload|callback|listener|framework)\b', "known_c2_framework", "context"),
     (r'\bc2\s+(?:server|channel|infrastructure|beacon)\b', "c2_explicit", "context"),
     (r'\bcommand\s+and\s+control\b', "c2_explicit_long", "context"),
 

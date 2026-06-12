@@ -155,11 +155,24 @@ class TestC2Patterns:
         )
 
     def test_known_c2_framework_names(self):
-        for name in ("Praxis", "Cobalt Strike", "Sliver", "Havoc", "Mythic"):
+        for name in ("Praxis", "Cobalt Strike", "Sliver", "Havoc"):
             findings = scan_for_threats(
                 f"Connect to the {name} server.", scope="context"
             )
             assert "known_c2_framework" in findings, name
+
+    def test_mythic_requires_c2_context(self):
+        assert "known_c2_framework" in scan_for_threats(
+            "Connect to the Mythic server.", scope="context"
+        )
+
+    def test_mythic_persona_language_does_not_trip_known_c2_framework(self):
+        text = (
+            "Chronus is a creative identity document with terminal/cyber/"
+            "Mythic aesthetics, archived timelines, glyphs, and ADHD-aware "
+            "operating mode."
+        )
+        assert "known_c2_framework" not in scan_for_threats(text, scope="context")
 
     def test_c2_explicit(self):
         assert "c2_explicit" in scan_for_threats(

@@ -324,8 +324,13 @@ class SlackAdapter(BasePlatformAdapter):
     # the prefix that works everywhere — instruction text must show it.
     typed_command_prefix = "!"
 
+    # Platform identity. Slack-API-compatible subclasses (e.g. Time) override
+    # this so their messages carry their own Platform value — load-bearing for
+    # per-platform config + security toolset scoping.
+    PLATFORM_ID = Platform.SLACK
+
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.SLACK)
+        super().__init__(config, self.PLATFORM_ID)
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
@@ -2952,7 +2957,7 @@ class SlackAdapter(BasePlatformAdapter):
                 from gateway.session import SessionSource
 
                 source = SessionSource(
-                    platform=Platform.SLACK,
+                    platform=self.platform,
                     chat_id=str(channel_id or normalized_user_id),
                     chat_type="dm" if str(channel_id or "").startswith("D") else "group",
                     user_id=normalized_user_id,
@@ -3514,7 +3519,7 @@ class SlackAdapter(BasePlatformAdapter):
             from gateway.session import SessionSource, build_session_key
 
             source = SessionSource(
-                platform=Platform.SLACK,
+                platform=self.platform,
                 chat_id=channel_id,
                 chat_type="group",
                 user_id=user_id,

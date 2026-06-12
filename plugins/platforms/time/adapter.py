@@ -17,6 +17,7 @@ import os
 import logging
 from typing import Optional
 
+from gateway.config import Platform
 from gateway.platforms.slack import SlackAdapter
 
 logger = logging.getLogger(__name__)
@@ -24,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 class TimeAdapter(SlackAdapter):
     """Slack-compatible adapter for T-Bank's Time messenger."""
+
+    PLATFORM_ID = Platform("time")
 
     def _app_token_env(self) -> str:
         return "TIME_APP_TOKEN"

@@ -102,6 +102,20 @@ def build_delegation_parser(subparsers, *, cmd_delegation: Callable) -> None:
         "--clear", action="store_true", help="Clear all stored results"
     )
 
+    # delegation wait
+    delegation_wait = delegation_subparsers.add_parser(
+        "wait", help="Block until a delegation finishes, then print its result"
+    )
+    delegation_wait.add_argument("delegation_id", help="Delegation ID to wait for")
+    delegation_wait.add_argument(
+        "--timeout", type=float, default=None,
+        metavar="SECONDS",
+        help="Max seconds to wait (default: no limit)",
+    )
+    delegation_wait.add_argument(
+        "--json", action="store_true", help="Output machine-readable JSON"
+    )
+
 
 # ---------------------------------------------------------------------------
 # Command implementation (called by cmd_delegation in main.py)
@@ -125,6 +139,7 @@ def delegation_command(args) -> int:
         get_running_details,
         list_completed,
     )
+    from tools.async_delegation import wait as _wait_delegation
 
     # ------------------------------------------------------------------
     # list
@@ -272,21 +287,7 @@ def delegation_command(args) -> int:
             print("  (Results are only stored for completed delegations; running/queued tasks have no result yet.)")
             return 1
 
-        status_label = _color_state(result.get("status", ""))
-        ts = _fmt_ts(result.get("completion_time", 0))
-        dur = f"  ({result['duration_seconds']:.1f}s)" if result.get("duration_seconds") is not None else ""
-        print(color("Async Delegation Result", Colors.BOLD))
-        print(f"  ID:       {result.get('delegation_id', '')}")
-        print(f"  Status:   {status_label}")
-        print(f"  Finished: {ts}{dur}")
-        print(f"  Goal:     {result.get('goal') or '(none)'}")
-        print()
-        print(color("  Result:", Colors.BOLD))
-        inner = result.get("result", "")
-        if isinstance(inner, dict):
-            print("  " + json.dumps(inner, indent=2).replace("\n", "\n  "))
-        else:
-            print(f"  {inner}")
+        _print_result_human(result)
 
         if getattr(args, "clear", False):
             clear_result(args.delegation_id)
@@ -325,4 +326,72 @@ def delegation_command(args) -> int:
             print(f"  {d['delegation_id']}  [{ts}] {status_label}{dur}  {goal}")
         return 0
 
+    # ------------------------------------------------------------------
+    # wait
+    # ------------------------------------------------------------------
+    if args.delegation_command == "wait":
+        did = args.delegation_id
+        timeout = getattr(args, "timeout", None)
+
+        # Fast check: already completed before we even start waiting
+        quick = get_result(did)
+        if quick is not None:
+            if args.json:
+                print(json.dumps(quick))
+            else:
+                _print_result_human(quick)
+            return 0
+
+        # Check it actually exists (running or queued)
+        detail = get_detail(did)
+        if detail is None:
+            if args.json:
+                print(json.dumps({"error": "not found", "delegation_id": did}))
+            else:
+                print(color(f"delegation '{did}' not found", Colors.RED))
+            return 1
+
+        if not args.json:
+            state = detail.get("state", "unknown")
+            goal = detail.get("goal", "(no goal)")
+            timeout_hint = f" (timeout: {timeout}s)" if timeout else ""
+            print(color(f"Waiting for {did}{timeout_hint}…", Colors.DIM))
+            print(f"  State: {_color_state(state)}  Goal: {goal}")
+
+        result = _wait_delegation(did, timeout=timeout)
+
+        if result is None:
+            if args.json:
+                print(json.dumps({"error": "timeout", "delegation_id": did}))
+            else:
+                print(color(f"\n⏱ Timed out waiting for '{did}'", Colors.RED))
+                print("  The delegation is still running. Use `hermes delegation status` to check.")
+            return 1
+
+        if args.json:
+            print(json.dumps(result))
+        else:
+            print()
+            _print_result_human(result)
+        return 0
+
     return 0
+
+
+def _print_result_human(result: dict) -> None:
+    """Pretty-print a completed delegation result to stdout."""
+    status_label = _color_state(result.get("status", ""))
+    ts = _fmt_ts(result.get("completion_time", 0))
+    dur = f"  ({result['duration_seconds']:.1f}s)" if result.get("duration_seconds") is not None else ""
+    print(color("✓ Delegation completed", Colors.BOLD))
+    print(f"  ID:       {result.get('delegation_id', '')}")
+    print(f"  Status:   {status_label}")
+    print(f"  Finished: {ts}{dur}")
+    print(f"  Goal:     {result.get('goal') or '(none)'}")
+    print()
+    print(color("  Result:", Colors.BOLD))
+    inner = result.get("result", "")
+    if isinstance(inner, dict):
+        print("  " + json.dumps(inner, indent=2).replace("\n", "\n  "))
+    else:
+        print(f"  {inner}")

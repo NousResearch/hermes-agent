@@ -1,0 +1,14 @@
+{
+  "name": "clawley-cockpit",
+  "label": "Clawley Cockpit",
+  "description": "Read-only operator overview for QuantOS, gateway, cron, kanban, and maintainer signals.",
+  "icon": "Gauge",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/clawley",
+    "position": "after:kanban"
+  },
+  "slots": [],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

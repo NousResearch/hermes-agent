@@ -1134,7 +1134,7 @@ def test_launch_ios_bundle_delivers_dev_client_url_via_openurl(monkeypatch, tmp_
 
     assert simulator_proof._launch_ios_bundle("SIM-123", tmp_path, "com.elixir.card", dev_client_url)
 
-    assert len(calls) == 3
+    assert len(calls) == 2
     assert calls[0] == (
         "xcrun",
         "simctl",
@@ -1147,11 +1147,7 @@ def test_launch_ios_bundle_delivers_dev_client_url_via_openurl(monkeypatch, tmp_
         "-bool",
         "true",
     )
-    launch_args = calls[1]
-    assert launch_args[:3] == ("xcrun", "simctl", "launch")
-    assert launch_args[-2:] == ("SIM-123", "com.elixir.card")
-    assert "--initialUrl" not in launch_args
-    assert calls[2] == ("xcrun", "simctl", "openurl", "SIM-123", dev_client_url)
+    assert calls[1] == ("xcrun", "simctl", "openurl", "SIM-123", dev_client_url)
 
 
 def test_launch_ios_bundle_skips_openurl_without_dev_client_url(monkeypatch, tmp_path):

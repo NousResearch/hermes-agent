@@ -582,6 +582,11 @@ def _launch_ios_bundle(
     dev_client_url: str = "",
     log_dir: Path | None = None,
 ) -> bool:
+    _mark_dev_menu_onboarded(target, cwd, bundle_id)
+    clean_url = dev_client_url.strip()
+    if clean_url:
+        return _open_ios_url(target, cwd, clean_url)
+
     stdout_path, stderr_path = _start_log_files("ios-app-launch-", log_dir)
     args = [
         "xcrun",
@@ -598,7 +603,6 @@ def _launch_ios_bundle(
             stdout_path.unlink(missing_ok=True)
             stderr_path.unlink(missing_ok=True)
 
-    _mark_dev_menu_onboarded(target, cwd, bundle_id)
     try:
         proc = subprocess.run(
             args,
@@ -612,10 +616,6 @@ def _launch_ios_bundle(
         _cleanup_logs()
         return False
     if proc.returncode != 0:
-        _cleanup_logs()
-        return False
-    clean_url = dev_client_url.strip()
-    if clean_url and not _open_ios_url(target, cwd, clean_url):
         _cleanup_logs()
         return False
     _cleanup_logs()

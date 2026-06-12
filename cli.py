@@ -8461,15 +8461,18 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         agent = getattr(self, "agent", None)
         last_dur = getattr(agent, "last_api_duration", 0.0) or 0.0
         last_out = getattr(agent, "last_output_tokens", 0) or 0
+        reasoning = getattr(agent, "session_reasoning_tokens", 0) or 0
 
         print()
         print("  ⚡ Tokens per second")
         print(f"  {'─' * 41}")
         if last_dur > 0 and last_out > 0:
-            tps = last_out / last_dur
+            tps_avg = last_out / last_dur
+            total_tok = last_out + reasoning
+            tps_peak = total_tok / last_dur if total_tok > 0 else tps_avg
             print(f"  Output tokens:       {last_out:,} in {last_dur:.1f}s")
-            print(f"  Output speed:        {tps:,.0f} tok/s")
-            reasoning = getattr(agent, "session_reasoning_tokens", 0) or 0
+            print(f"  Average speed:       {tps_avg:,.0f} tok/s")
+            print(f"  Peak speed (est):    {tps_peak:,.0f} tok/s")
             if reasoning:
                 print(f"  Reasoning tokens:    {reasoning:,}")
         else:

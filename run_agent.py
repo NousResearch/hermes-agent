@@ -2827,6 +2827,8 @@ class AIAgent:
         """
         if getattr(self, "notice_callback", None) is None and getattr(self, "notice_clear_callback", None) is None:
             return
+        if not self._credits_notices_enabled():
+            return
         state = getattr(self, "_credits_state", None)
         if state is None:
             return
@@ -2849,6 +2851,29 @@ class AIAgent:
                 self._emit_notice(notice)
         except Exception:
             logger.warning("credits notice evaluation/emit failed", exc_info=True)
+
+    def _credits_notices_enabled(self) -> bool:
+        """Whether credits notices are enabled (config display.credits_notices).
+
+        Read once per agent and cached — the policy runs after every API
+        response, and the setting governs UI noise, not correctness, so a
+        config flip applying on the next session is fine.  Fail-open True
+        (preserve current behaviour) on any config error.
+        """
+        cached = getattr(self, "_credits_notices_enabled_cache", None)
+        if cached is not None:
+            return cached
+        enabled = True
+        try:
+            from hermes_cli.config import load_config as _load_config
+            _cfg = _load_config() or {}
+            _display = _cfg.get("display") if isinstance(_cfg, dict) else None
+            if isinstance(_display, dict) and "credits_notices" in _display:
+                enabled = bool(_display.get("credits_notices"))
+        except Exception:
+            enabled = True
+        self._credits_notices_enabled_cache = enabled
+        return enabled
 
     def get_credits_state(self):
         """Return the last captured CreditsState, or None."""

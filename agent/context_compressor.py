@@ -1630,11 +1630,9 @@ This compaction should PRIORITISE preserving all information related to the focu
     def _derive_auto_focus_topic(
         cls,
         messages: List[Dict[str, Any]],
-        tail_start: int,
     ) -> Optional[str]:
         """Infer a compact focus hint from the most recent real user turns."""
         candidates: list[str] = []
-        del tail_start  # Reserved for callers that already know the protected-tail boundary.
         for idx in range(len(messages) - 1, -1, -1):
             msg = messages[idx]
             if msg.get("role") != "user":
@@ -2108,7 +2106,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
 
         # Phase 3: Generate structured summary
-        summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages, compress_end)
+        summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
         summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
 
         # If summary generation failed, behavior splits on

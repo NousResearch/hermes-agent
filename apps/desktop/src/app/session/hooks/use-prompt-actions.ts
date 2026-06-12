@@ -120,11 +120,27 @@ function isSessionNotFoundError(error: unknown): boolean {
 // The gateway refuses prompt.submit while a turn is running (4009 "session
 // busy"). Edit/restore (revert) can fire mid-turn, so they interrupt first then
 // retry the submit until the cooperative interrupt has wound the turn down.
-const REWIND_INTERRUPT_TIMEOUT_MS = 6_000
-const REWIND_RETRY_INTERVAL_MS = 150
+// Backoff: 100/200/400/800/1600ms (≤3.1s worst case without jitter) replaces
+// the old fixed 150ms/6s busy-wait so a non-cooperative agent can't lock the
+// composer for six straight seconds. The jitter spreads retries so a burst
+// of rewinds from many sessions doesn't dogpile the gateway at the same tick.
+const REWIND_BACKOFF_BASE_MS = 100
+const REWIND_BACKOFF_CAP_MS = 1_600
+const REWIND_BACKOFF_MAX_TOTAL_MS = 4_000
 
 function isSessionBusyError(error: unknown): boolean {
   return /session busy/i.test(error instanceof Error ? error.message : String(error))
+}
+
+// DOMException('AbortError') is what the AbortSignal contract throws on
+// cancel; rewind callers branch on `err.name === 'AbortError'` to recognize
+// a user-driven cancel vs. a real gateway failure (which they should still
+// toast). Centralized so we don't drift in shape between call sites.
+function makeAbortError(): Error {
+  const err = new Error('Rewind cancelled')
+  err.name = 'AbortError'
+
+  return err
 }
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
@@ -1252,6 +1268,15 @@ export function usePromptActions({
   )
 
   const cancelRun = useCallback(async () => {
+    // Abort any in-flight rewind's busy-wait first, so a long-running
+    // session.interrupt that hasn't yet wound the turn down doesn't trap
+    // the user behind a 4s backoff. The rewind callback observes the same
+    // controller and resolves with an AbortError, which restoreToMessage
+    // / editMessage treat as a clean cancel (no toast, abandoned timeline
+    // preserved).
+    cancellableRef.current?.abort()
+    cancellableRef.current = null
+
     const sessionId = activeSessionId || activeSessionIdRef.current
     const releaseBusy = () => {
       setMutableRef(busyRef, false)
@@ -1453,10 +1478,23 @@ export function usePromptActions({
   // are rethrown so the confirmation dialog can surface them inline.
   // Submit a rewind (truncate-before-ordinal + resubmit). Because edit/restore
   // can fire while a turn is streaming, interrupt the live turn first, then
-  // retry the submit until the gateway stops reporting "session busy" — the
-  // interrupt is cooperative, so the running turn takes a beat to wind down.
+  // retry the submit with exponential backoff + jitter until the gateway
+  // stops reporting "session busy". The interrupt is cooperative, so the
+  // running turn takes a beat to wind down — `signal` lets the caller (or
+  // cancelRun) abort the wait if the user changes their mind, so the composer
+  // doesn't sit locked behind a 4s backoff.
   const submitRewindPrompt = useCallback(
-    async (sessionId: string, text: string, truncateOrdinal: number | undefined, wasRunning: boolean) => {
+    async (
+      sessionId: string,
+      text: string,
+      truncateOrdinal: number | undefined,
+      wasRunning: boolean,
+      signal?: AbortSignal
+    ) => {
+      if (signal?.aborted) {
+        throw makeAbortError()
+      }
+
       if (wasRunning) {
         try {
           await requestGateway('session.interrupt', { session_id: sessionId })
@@ -1465,9 +1503,14 @@ export function usePromptActions({
         }
       }
 
-      const deadline = Date.now() + REWIND_INTERRUPT_TIMEOUT_MS
+      const deadline = Date.now() + REWIND_BACKOFF_MAX_TOTAL_MS
+      let attempt = 0
 
       for (;;) {
+        if (signal?.aborted) {
+          throw makeAbortError()
+        }
+
         try {
           await requestGateway('prompt.submit', {
             session_id: sessionId,
@@ -1477,18 +1520,39 @@ export function usePromptActions({
 
           return
         } catch (err) {
-          if (isSessionBusyError(err) && Date.now() < deadline) {
-            await sleep(REWIND_RETRY_INTERVAL_MS)
-
-            continue
+          if (!isSessionBusyError(err)) {
+            throw err
           }
 
-          throw err
+          if (Date.now() >= deadline) {
+            throw err
+          }
+
+          if (signal?.aborted) {
+            throw makeAbortError()
+          }
+
+          // 100, 200, 400, 800, 1600 (capped). +uniform jitter [0, base) so a
+          // burst of rewinds from many sessions doesn't dogpile the gateway
+          // on the same tick.
+          const exp = Math.min(REWIND_BACKOFF_BASE_MS * 2 ** attempt, REWIND_BACKOFF_CAP_MS)
+          const jitter = Math.random() * REWIND_BACKOFF_BASE_MS
+          attempt += 1
+
+          await delay(exp + jitter)
         }
       }
     },
     [requestGateway]
   )
+
+  // Lets cancelRun (and any other future caller) abort an in-flight rewind so
+  // a long-running interrupt doesn't trap the user behind the busy-wait. The
+  // rewind callback owns the lifecycle: it sets a fresh controller on entry
+  // and clears it on settle/failure/abort, so only one rewind is cancellable
+  // at a time and a stale controller from a previous attempt can't be
+  // triggered after the submit has already landed.
+  const cancellableRef = useRef<AbortController | null>(null)
 
   const restoreToMessage = useCallback(
     async (messageId: string) => {
@@ -1515,11 +1579,15 @@ export function usePromptActions({
       const wasRunning = $busy.get()
       const truncateBeforeUserOrdinal = visibleUserOrdinal(messages, sourceIndex)
 
-      // The turns we're discarding may have spawned todos and background
-      // processes; they belong to the abandoned timeline, so wipe their status
-      // rows (and kill the live processes) before the fresh run repopulates.
-      clearSessionTodos(sessionId)
-      resetSessionBackground(sessionId)
+      // The abandoned timeline's todos/background processes are now killed
+      // *after* the new submit has been accepted by the gateway, not before.
+      // Killing them pre-submit (the old order) meant a failed rewind wiped
+      // out processes that were still the user's only live work; restore
+      // them on failure and only clear on success.
+      const abandonTimeline = () => {
+        clearSessionTodos(sessionId)
+        resetSessionBackground(sessionId)
+      }
 
       clearNotifications()
       setMutableRef(busyRef, true)
@@ -1535,14 +1603,41 @@ export function usePromptActions({
         messages: state.messages.slice(0, sourceIndex + 1)
       }))
 
+      // One cancellable rewind at a time. cancelRun aborts the controller to
+      // break the busy-wait immediately, regardless of where the backoff
+      // currently sleeps.
+      const controller = new AbortController()
+      cancellableRef.current = controller
+
       try {
-        await submitRewindPrompt(sessionId, text, truncateBeforeUserOrdinal, wasRunning)
+        await submitRewindPrompt(
+          sessionId,
+          text,
+          truncateBeforeUserOrdinal,
+          wasRunning,
+          controller.signal
+        )
+        // Submit landed — only now is it safe to discard the abandoned
+        // timeline. A failed rewind leaves the previous run's processes
+        // untouched so the user keeps their work.
+        abandonTimeline()
       } catch (err) {
+        if (err instanceof Error && err.name === 'AbortError') {
+          // User-driven cancel: the live turn was already interrupted by
+          // cancelRun, the composer is idle, and the abandoned timeline
+          // stays intact (we never reached a successful submit). No toast.
+          return
+        }
+
         setMutableRef(busyRef, false)
         setBusy(false)
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
         throw err
+      } finally {
+        if (cancellableRef.current === controller) {
+          cancellableRef.current = null
+        }
       }
     },
     [activeSessionId, activeSessionIdRef, busyRef, submitRewindPrompt, updateSessionState]
@@ -1577,11 +1672,13 @@ export function usePromptActions({
       const isFailedTurn = nextMessage?.role === 'assistant' && Boolean(nextMessage.error)
       const editedMessage: ChatMessage = { ...source, parts: [textPart(text)] }
 
-      // Editing rewinds the conversation to this prompt — same as restore — so
-      // drop the abandoned timeline's todos/background rows (and kill the live
-      // processes) before the re-run repopulates them.
-      clearSessionTodos(sessionId)
-      resetSessionBackground(sessionId)
+      // Same reorder as restoreToMessage: kill the abandoned timeline's
+      // todos/background only after the new submit is accepted, so a failed
+      // rewind leaves the previous run's processes intact.
+      const abandonTimeline = () => {
+        clearSessionTodos(sessionId)
+        resetSessionBackground(sessionId)
+      }
 
       clearNotifications()
       setMutableRef(busyRef, true)
@@ -1600,18 +1697,45 @@ export function usePromptActions({
       const isStaleTargetError = (err: unknown) =>
         /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
 
+      // One cancellable rewind at a time. cancelRun aborts the controller
+      // to break the busy-wait immediately.
+      const controller = new AbortController()
+      cancellableRef.current = controller
+
       try {
-        await submitRewindPrompt(sessionId, text, isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex), wasRunning)
+        await submitRewindPrompt(
+          sessionId,
+          text,
+          isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex),
+          wasRunning,
+          controller.signal
+        )
+        // Submit landed — safe to discard the abandoned timeline.
+        abandonTimeline()
       } catch (err) {
+        // User cancel: live turn was already interrupted by cancelRun and
+        // busy state is already reset there. Don't re-notify, don't kill
+        // the abandoned timeline (we never landed a new submit).
+        if (err instanceof Error && err.name === 'AbortError') {
+          return
+        }
+
         let surfaced = err
 
         if (!isFailedTurn && isStaleTargetError(err)) {
           try {
             // Already interrupted on the first attempt — submit as a plain resend.
+            // The retry runs without cancellableRef.signal so a cancel that lands
+            // here still cleans up via the controller's own lifecycle.
             await submitRewindPrompt(sessionId, text, undefined, false)
+
+            abandonTimeline()
 
             return
           } catch (retryErr) {
+            if (retryErr instanceof Error && retryErr.name === 'AbortError') {
+              return
+            }
             surfaced = retryErr
           }
         }
@@ -1621,6 +1745,10 @@ export function usePromptActions({
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false }))
         notifyError(surfaced, copy.editFailed)
+      } finally {
+        if (cancellableRef.current === controller) {
+          cancellableRef.current = null
+        }
       }
     },
     [activeSessionId, activeSessionIdRef, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState]

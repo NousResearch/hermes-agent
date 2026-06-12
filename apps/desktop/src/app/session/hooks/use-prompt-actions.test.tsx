@@ -517,6 +517,99 @@ describe('usePromptActions restoreToMessage', () => {
 
     expect(requestGateway).not.toHaveBeenCalled()
   })
+
+  it('throws the original gateway error after the backoff cap (no retry past 4s)', async () => {
+    // The old fixed 150ms / 6s loop could lock the composer for six full
+    // seconds against a non-cooperative agent. The new exponential backoff
+    // (100/200/400/800/1600, capped at 1.6s per step, ≤3.1s total) plus a
+    // 4s hard deadline keeps the worst case bounded; this test proves the
+    // cap is actually honored even when the gateway reports busy forever.
+    $busy.set(true)
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('session busy')
+      }
+      return {} as never
+    })
+
+    vi.useFakeTimers()
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway as never}
+      />
+    )
+
+    const promise = handle!.restoreToMessage('u1')
+
+    // Attach a catch *before* flushing timers, so the AbortController-induced
+    // rejection doesn't crash the test runner.
+    let caught: unknown = null
+    promise.catch(err => {
+      caught = err
+    })
+
+    // Advance past the entire 4s backoff window plus a margin so the deadline
+    // check fires and the loop exits with the last "session busy" error.
+    await vi.advanceTimersByTimeAsync(5_000)
+    await promise.catch(() => undefined)
+    vi.useRealTimers()
+
+    // Hard cap: 1 initial + at most 4 retries inside the 4s window.
+    const submitCalls = requestGateway.mock.calls.filter(([m]) => m === 'prompt.submit')
+    expect(submitCalls.length).toBeLessThanOrEqual(5)
+    expect(caught).toBeInstanceOf(Error)
+    expect((caught as Error).message).toMatch(/session busy/)
+  })
+
+  it('cancels an in-flight rewind via cancelRun (AbortError) without toasting', async () => {
+    // Reproduces the "trava tudo" path: gateway stays busy past the
+    // interrupt, the client used to spin for 6s. The new flow aborts the
+    // backoff the moment the user hits Cancel; the rewind returns silently
+    // (no throw, no toast) and the abandoned timeline is preserved.
+    $busy.set(true)
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        throw new Error('session busy')
+      }
+      return {} as never
+    })
+
+    vi.useFakeTimers()
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway as never}
+      />
+    )
+
+    const restorePromise = handle!.restoreToMessage('u1')
+
+    // Let the first prompt.submit attempt fire and the backoff sleep start.
+    await vi.advanceTimersByTimeAsync(50)
+    // User hits Cancel. The AbortController fires; submitRewindPrompt's
+    // next iteration of the loop checks signal.aborted and throws an
+    // AbortError, which restoreToMessage swallows (no toast, no throw).
+    await handle!.cancelRun()
+    // Flush whatever backoff sleep was in flight so the loop wakes up.
+    await vi.advanceTimersByTimeAsync(5_000)
+    await restorePromise
+    vi.useRealTimers()
+
+    // session.interrupt is still issued (cancelRun is the source of truth
+    // for stopping the live turn), and exactly one prompt.submit attempt
+    // lands before the cancel — never a second.
+    const methods = requestGateway.mock.calls.map(([m]) => m)
+    expect(methods).toContain('session.interrupt')
+    const submits = methods.filter(m => m === 'prompt.submit')
+    expect(submits).toHaveLength(1)
+  })
 })
 
 describe('usePromptActions file attachment sync', () => {

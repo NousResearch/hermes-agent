@@ -3648,6 +3648,128 @@ def _start_inflight_turn(session: dict, text: Any) -> None:
     }
 
 
+def _inflight_watchdog_timeout_seconds() -> float:
+    """Seconds of inflight silence (no stream delta, no completion) before the
+    watchdog force-clears ``session['running']`` so the desktop client can
+    recover. Configurable via ``session.inflight_watchdog_seconds`` (default
+    120s); 0 disables the watchdog. Mirrors the 8s minimum the TUI uses for
+    ``INTERRUPT_COOLDOWN_MS`` plus a generous buffer for slow models.
+    """
+    try:
+        cfg = _load_cfg().get("session") or {}
+        timeout = float(cfg.get("inflight_watchdog_seconds", 120) or 0)
+    except Exception:
+        timeout = 120.0
+
+    return max(0.0, timeout)
+
+
+def _start_inflight_watchdog(session: dict | None, sid: str) -> None:
+    """Schedule a watchdog that force-clears ``session['running']`` if the
+    inflight turn goes silent for too long. Recovers the desktop client from
+    a stuck-busy state when the agent thread crashes, the transport drops
+    mid-stream, or the model never emits a completion. The watchdog
+    self-reschedules while the turn is making progress (``updated_at`` keeps
+    moving); once it detects a stall it clears the running flag, drops the
+    inflight_turn snapshot, and emits ``session.idle`` + an ``error`` so the
+    client can settle the UI without a relaunch.
+    """
+    if session is None:
+        return
+    timeout = _inflight_watchdog_timeout_seconds()
+    if timeout <= 0:
+        return
+
+    # Wake up at most every 15s so we don't burn CPU on a stalled session;
+    # on a healthy turn the timer is rescheduled each tick.
+    interval = min(15.0, max(1.0, timeout / 4.0))
+
+    # Replace any in-flight watchdog for this session (e.g. a turn restart
+    # racing a slow cleanup) — the previous timer is cancelled below.
+    _stop_inflight_watchdog(session)
+
+    timer_ref: list = []
+
+    def _tick() -> None:
+        stalled_for = 0.0
+        cleared = False
+        with session["history_lock"]:
+            turn = session.get("inflight_turn")
+            if not isinstance(turn, dict):
+                # Already settled — nothing to watch, drop the timer ref.
+                session.pop("_inflight_watchdog", None)
+                return
+            started_at = float(turn.get("started_at") or 0)
+            updated_at = float(turn.get("updated_at") or started_at or 0)
+            stalled_for = max(0.0, time.time() - updated_at)
+            if stalled_for < timeout:
+                # Still alive — reschedule the next tick.
+                if timer_ref:
+                    next_timer = threading.Timer(interval, _tick)
+                    next_timer.daemon = True
+                    session["_inflight_watchdog"] = next_timer
+                    timer_ref[0] = next_timer
+                    next_timer.start()
+                return
+            # Stalled. Force-clear the running flag and inflight snapshot so
+            # the client stops waiting. The transcript is preserved (we only
+            # touch the bookkeeping fields) so the user can see where it died.
+            session["running"] = False
+            _clear_inflight_turn(session)
+            session.pop("_inflight_watchdog", None)
+            cleared = True
+
+        if not cleared:
+            return
+
+        # Emit outside the lock so a slow subscriber can't deadlock the
+        # history_lock for the next caller. The desktop client matches on
+        # `reason: "watchdog"` to log the recovery distinctly from a normal
+        # interrupt settle.
+        try:
+            _emit(
+                "session.idle",
+                sid,
+                {"reason": "watchdog", "stall_seconds": round(stalled_for, 1)},
+            )
+        except Exception:
+            pass
+        try:
+            _emit(
+                "error",
+                sid,
+                {
+                    "message": (
+                        f"Session stalled (no progress for {int(stalled_for)}s). "
+                        "The turn was force-cleared so the desktop can recover. "
+                        "Transcript up to the last stream delta is preserved."
+                    )
+                },
+            )
+        except Exception:
+            pass
+        print(
+            f"[tui_gateway] inflight watchdog: cleared running for sid={sid} "
+            f"after {stalled_for:.1f}s of silence",
+            file=sys.stderr,
+        )
+
+    timer = threading.Timer(interval, _tick)
+    timer.daemon = True
+    session["_inflight_watchdog"] = timer
+    timer_ref.append(timer)
+    timer.start()
+
+
+def _stop_inflight_watchdog(session: dict) -> None:
+    timer = session.pop("_inflight_watchdog", None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+
+
 def _append_inflight_delta(session: dict, delta: Any) -> None:
     text = "" if delta is None else str(delta)
     if not text:
@@ -3663,6 +3785,10 @@ def _append_inflight_delta(session: dict, delta: Any) -> None:
 
 def _clear_inflight_turn(session: dict) -> None:
     session["inflight_turn"] = None
+    # Normal-turn completion path: cancel the watchdog so it doesn't try to
+    # force-clear a flag that's already False. Idempotent — if the watchdog
+    # already fired and self-removed, this is a no-op.
+    _stop_inflight_watchdog(session)
 
 
 def _inflight_snapshot(session: dict) -> dict | None:
@@ -5311,6 +5437,11 @@ def _(rid, params: dict) -> dict:
         session["running"] = True
         session["last_active"] = time.time()
         _start_inflight_turn(session, text)
+        # Watchdog recovers the desktop client when the agent thread dies
+        # mid-stream: if no progress for ``inflight_watchdog_seconds``, the
+        # ``running`` flag gets force-cleared and a synthetic ``session.idle``
+        # + ``error`` event is emitted so the UI can settle without a relaunch.
+        _start_inflight_watchdog(session, sid)
 
     # Persist the DB row lazily, now that the user has actually sent a message.
     _ensure_session_db_row(session)
@@ -5537,6 +5668,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session["attached_images"] = []
         if not isinstance(session.get("inflight_turn"), dict):
             _start_inflight_turn(session, text)
+            # Watchdog recovers the desktop client when the agent thread dies
+            # mid-stream. Idempotent w.r.t. the start_inflight_turn branch
+            # above — if the turn was already started elsewhere the watchdog
+            # has been rescheduled by the previous run's tick.
+            _start_inflight_watchdog(session, sid)
     agent = session["agent"]
     _emit("message.start", sid)
 

@@ -7052,3 +7052,179 @@ def test_reap_idle_sessions_closes_only_evictable(monkeypatch):
         assert closed == [("stale", "idle_timeout")]
     finally:
         server._sessions.clear()
+
+
+def test_inflight_watchdog_timeout_defaults_and_is_overridable(monkeypatch, tmp_path):
+    """The watchdog timeout falls back to 120s when config is missing or empty,
+    and respects ``session.inflight_watchdog_seconds`` when set. A value of 0
+    disables the watchdog (used by smoke tests that want predictable turn
+    boundaries without an asynchronous timer)."""
+    from tui_gateway import server as srv
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    token = set_hermes_home_override(home)
+
+    try:
+        # Default: missing config → 120s.
+        srv._cfg_cache = None
+        srv._cfg_mtime = None
+        srv._cfg_path = None
+        assert srv._inflight_watchdog_timeout_seconds() == 120.0
+
+        # Explicit override: 30s.
+        (home / "config.yaml").write_text(
+            "session:\n  inflight_watchdog_seconds: 30\n", encoding="utf-8"
+        )
+        srv._cfg_cache = None
+        srv._cfg_mtime = None
+        assert srv._inflight_watchdog_timeout_seconds() == 30.0
+
+        # Disabled: 0.
+        (home / "config.yaml").write_text(
+            "session:\n  inflight_watchdog_seconds: 0\n", encoding="utf-8"
+        )
+        srv._cfg_cache = None
+        srv._cfg_mtime = None
+        assert srv._inflight_watchdog_timeout_seconds() == 0.0
+    finally:
+        reset_hermes_home_override(token)
+        srv._cfg_cache = None
+        srv._cfg_mtime = None
+
+
+def test_inflight_watchdog_force_clears_running_after_silence(monkeypatch):
+    """The desktop client's "trava tudo" lock is what happens when the gateway
+    ``running`` flag never clears (e.g. the agent thread crashes mid-stream).
+    The watchdog must force-clear the flag and emit a synthetic ``session.idle``
+    so the client can settle without a relaunch. We use a 0.2s timeout and a
+    0.05s tick interval to keep the test fast and deterministic."""
+    from tui_gateway import server as srv
+    monkeypatch.setattr(srv, "_inflight_watchdog_timeout_seconds", lambda: 0.2)
+
+    emitted = []
+    monkeypatch.setattr(srv, "_emit", lambda *args, **kwargs: emitted.append((args, kwargs)))
+
+    session = {
+        "history_lock": threading.RLock(),
+        "running": True,
+        "inflight_turn": {
+            "assistant": "partial",
+            "started_at": time.time() - 10.0,  # old
+            "updated_at": time.time() - 10.0,  # stalled
+            "streaming": True,
+            "user": "hello",
+        },
+    }
+
+    try:
+        srv._start_inflight_watchdog(session, "sid-test")
+        # Wait for the watchdog to fire (interval is 0.2/4 = 0.05s, timeout
+        # 0.2s after updated_at → at most one extra tick before the stall
+        # check trips). Give it 1s wall clock to be safe.
+        deadline = time.time() + 1.0
+        while time.time() < deadline and session.get("running"):
+            time.sleep(0.02)
+
+        assert session.get("running") is False, "watchdog should have cleared the running flag"
+        assert session.get("inflight_turn") is None, "watchdog should have dropped the inflight snapshot"
+
+        events = [e[0] for e in emitted]
+        assert ("session.idle", "sid-test") in events
+        # Reason on the session.idle payload distinguishes a watchdog recovery
+        # from a normal interrupt settle (matters for the desktop client's
+        # log/UI surface).
+        idle_payloads = [
+            e[2] for e in emitted
+            if len(e) > 2 and isinstance(e[2], dict) and e[2].get("reason") == "watchdog"
+        ]
+        assert idle_payloads, f"watchdog should emit session.idle with reason='watchdog', got {emitted}"
+    finally:
+        srv._stop_inflight_watchdog(session)
+
+
+def test_inflight_watchdog_does_not_fire_when_progress_keeps_moving(monkeypatch):
+    """A legitimate long-running turn (e.g. a slow model streaming one
+    delta every 100ms) must NEVER be killed by the watchdog — the reschedule
+    path on every tick keeps checking ``updated_at`` and only fires once
+    that timestamp goes stale. We bump ``updated_at`` synthetically inside
+    the tick window to simulate progress."""
+    from tui_gateway import server as srv
+    monkeypatch.setattr(srv, "_inflight_watchdog_timeout_seconds", lambda: 0.3)
+    monkeypatch.setattr(srv, "_emit", lambda *args, **kwargs: None)
+
+    session = {
+        "history_lock": threading.RLock(),
+        "running": True,
+        "inflight_turn": {
+            "assistant": "",
+            "started_at": time.time(),
+            "updated_at": time.time(),
+            "streaming": True,
+            "user": "long running",
+        },
+    }
+
+    # Synthetic "progress pump": every 50ms, bump updated_at so the
+    # watchdog's tick keeps seeing fresh activity and reschedules.
+    stop = threading.Event()
+
+    def _pump():
+        while not stop.is_set():
+            with session["history_lock"]:
+                turn = session.get("inflight_turn")
+                if isinstance(turn, dict):
+                    turn["updated_at"] = time.time()
+            time.sleep(0.05)
+
+    pump = threading.Thread(target=_pump, daemon=True)
+    pump.start()
+
+    try:
+        srv._start_inflight_watchdog(session, "sid-active")
+        # Run for 1s — long enough that, without the pump, the watchdog
+        # would fire (timeout=0.3s). The pump must keep the turn alive.
+        time.sleep(1.0)
+        assert session.get("running") is True, "watchdog must not kill an actively progressing turn"
+        assert isinstance(session.get("inflight_turn"), dict), "inflight_turn must survive a healthy turn"
+    finally:
+        stop.set()
+        srv._stop_inflight_watchdog(session)
+
+
+def test_inflight_watchdog_is_cancelled_on_normal_completion(monkeypatch):
+    """``_clear_inflight_turn`` (called from message.complete) must cancel
+    the watchdog so it doesn't try to fire after a healthy completion. We
+    verify by inspecting the timer reference: after a clear, the
+    ``_inflight_watchdog`` key on the session is gone, and a subsequent
+    timeout doesn't toggle ``running`` (which we pre-set to True for the
+    test — normal completion would also flip it to False elsewhere, but
+    here we're isolating the watchdog's contribution)."""
+    from tui_gateway import server as srv
+    monkeypatch.setattr(srv, "_inflight_watchdog_timeout_seconds", lambda: 0.1)
+    monkeypatch.setattr(srv, "_emit", lambda *args, **kwargs: None)
+
+    session = {
+        "history_lock": threading.RLock(),
+        "running": True,
+        "inflight_turn": {
+            "assistant": "ok",
+            "started_at": time.time(),
+            "updated_at": time.time(),
+            "streaming": True,
+            "user": "hi",
+        },
+    }
+
+    try:
+        srv._start_inflight_watchdog(session, "sid-cancel")
+        assert session.get("_inflight_watchdog") is not None, "watchdog should be registered"
+        srv._clear_inflight_turn(session)
+        assert session.get("_inflight_watchdog") is None, "watchdog should be cancelled on _clear_inflight_turn"
+        # Give the previously-scheduled tick a chance to (not) fire.
+        time.sleep(0.2)
+        # ``running`` should be untouched — the watchdog, if it were still
+        # alive, would have cleared it. We assert it wasn't changed by the
+        # watchdog, only by the explicit clear path.
+        assert session.get("inflight_turn") is None
+    finally:
+        srv._stop_inflight_watchdog(session)

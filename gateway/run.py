@@ -5625,6 +5625,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _pr.completion_queue.put_nowait(_evt)
                     except Exception:
                         pass
+
+                # ── Idle-inbox drain ────────────────────────────────────────────────
+                # Shadow clone events are routed to _shadow_clone_inbox (non-blocking)
+                # and normally drained by the post-turn hook in _handle_message_with_agent.
+                # If the session goes idle (no more user messages after the clones finish),
+                # the post-turn hook never runs and inbox items pile up invisibly.
+                # Proactive drain: each watcher tick, inject results for any inbox session
+                # that is NOT currently running an agent turn.
+                _idle_sessions = [
+                    _sk for _sk, _q in list(self._shadow_clone_inbox.items())
+                    if _q and _sk not in self._running_agents
+                ]
+                for _idle_sk in _idle_sessions:
+                    try:
+                        await self._drain_shadow_clone_inbox(_idle_sk)
+                    except Exception as _idle_exc:
+                        logger.debug(
+                            "Watcher idle-inbox drain error for %s: %s",
+                            _idle_sk, _idle_exc,
+                        )
                 # ──────────────────────────────────────────────────────────────────
             except asyncio.CancelledError:
                 raise

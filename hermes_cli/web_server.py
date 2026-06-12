@@ -15360,6 +15360,9 @@ def _resolve_chat_argv(
         apply_terminal_config_to_env(env=env)
     except Exception:
         _log.debug("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
+    env.setdefault("HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT))
+    env.setdefault("HERMES_PYTHON", sys.executable)
+    env.setdefault("HERMES_CWD", os.getcwd())
     env.setdefault("NODE_ENV", "production")
     # Browser-embedded chat should prefer stable wheel-based scrollback over
     # native terminal mouse tracking. When mouse tracking is enabled, wheel

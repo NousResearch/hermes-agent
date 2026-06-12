@@ -125,7 +125,19 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     openxr_presentation.add_argument("--approve", action="store_true")
     openxr_presentation.add_argument("--attempt-window-capture", action="store_true")
     openxr_presentation.add_argument("--require-pairing", action="store_true")
+    openxr_presentation.add_argument("--frames", type=int, default=None)
     openxr_presentation.add_argument("--timeout-seconds", type=int, default=None)
+
+    live_color_loop = subs.add_parser(
+        "live-color-loop-selftest",
+        help="Run FH6 live color + companion depth loop self-test (0.19.1 gate)",
+    )
+    live_color_loop.add_argument("--launcher-exe", default="")
+    live_color_loop.add_argument("--approve", action="store_true")
+    live_color_loop.add_argument("--attempt-window-capture", action="store_true")
+    live_color_loop.add_argument("--frames", type=int, default=None)
+    live_color_loop.add_argument("--target-hz", type=int, default=None)
+    live_color_loop.add_argument("--timeout-seconds", type=int, default=None)
 
     support_report = subs.add_parser(
         "support-report", help="Create redacted JSON and HTML support reports"
@@ -155,7 +167,7 @@ def questframe_command(args: argparse.Namespace) -> int:
             "dibr-swapchain,capture-preflight,live-capture-selftest,"
             "depth-surface-selftest,depth-reader-selftest,depth-producer-selftest,"
             "companion-depth-producer-selftest,color-depth-pairing-selftest,"
-            "openxr-presentation-selftest,"
+            "openxr-presentation-selftest,live-color-loop-selftest,"
             "support-report,unity-scan}"
         )
         return 2
@@ -343,9 +355,32 @@ def questframe_command(args: argparse.Namespace) -> int:
             extra.append("--attempt-window-capture")
         if bool(getattr(args, "require_pairing", False)):
             extra.append("--require-pairing")
+        frames = getattr(args, "frames", None)
+        if frames:
+            extra.extend(["--frames", str(frames)])
         return _print(
             core.run_launcher(
                 "openxr-presentation-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "live-color-loop-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "approve", False)):
+            extra.append("--approve")
+        if bool(getattr(args, "attempt_window_capture", False)):
+            extra.append("--attempt-window-capture")
+        frames = getattr(args, "frames", None)
+        if frames:
+            extra.extend(["--frames", str(frames)])
+        target_hz = getattr(args, "target_hz", None)
+        if target_hz:
+            extra.extend(["--target-hz", str(target_hz)])
+        return _print(
+            core.run_launcher(
+                "live-color-loop-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),

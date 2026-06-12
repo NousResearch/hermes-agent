@@ -73,7 +73,7 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     assert data["platform"] == "telegram"
     assert data["chat_id"] == "42"
     assert data["chat_type"] == "dm"
-    assert data["message_id"] == "m1"
+    assert data["reply_to_message_id"] == "m1"
     assert "thread_id" not in data  # no thread → omitted
 
 
@@ -141,7 +141,29 @@ async def test_restart_command_preserves_thread_id(tmp_path, monkeypatch):
     data = json.loads((tmp_path / ".restart_notify.json").read_text())
     assert data["chat_type"] == "dm"
     assert data["thread_id"] == "777"
-    assert data["message_id"] == "m2"
+    assert data["reply_to_message_id"] == "m2"
+
+
+@pytest.mark.asyncio
+async def test_restart_command_preserves_telegram_dm_topic_reply_anchor(tmp_path, monkeypatch):
+    """The triggering Telegram message id survives restart for topic-aware comeback pings."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    runner, _adapter = make_restart_runner()
+    runner.request_restart = MagicMock(return_value=True)
+
+    source = make_restart_source(chat_id="99", thread_id="topic_7")
+    event = MessageEvent(
+        text="/restart",
+        message_type=MessageType.TEXT,
+        source=source,
+        message_id="777",
+    )
+
+    await runner._handle_restart_command(event)
+
+    data = json.loads((tmp_path / ".restart_notify.json").read_text())
+    assert data["reply_to_message_id"] == "777"
 
 
 @pytest.mark.asyncio
@@ -424,6 +446,38 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
         "telegram_dm_topic_reply_fallback": True,
         "direct_messages_topic_id": "777",
         "telegram_reply_to_message_id": "m2",
+    }
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_for_telegram_dm_topic_uses_reply_anchor_metadata(
+    tmp_path, monkeypatch
+):
+    """DM topic comeback pings include the persisted reply anchor instead of thread-only sends."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "99",
+        "chat_type": "dm",
+        "thread_id": "123",
+        "reply_to_message_id": "777",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="restart"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "99", "123")
+    call_args = adapter.send.call_args
+    assert call_args[1]["metadata"] == {
+        "thread_id": "123",
+        "telegram_dm_topic_reply_fallback": True,
+        "direct_messages_topic_id": "123",
+        "telegram_reply_to_message_id": "777",
     }
     assert not notify_path.exists()
 

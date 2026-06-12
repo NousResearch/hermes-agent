@@ -788,8 +788,9 @@ class GatewaySlashCommandsMixin:
             }
             if event.source.thread_id:
                 notify_data["thread_id"] = event.source.thread_id
-            if event.message_id:
-                notify_data["message_id"] = event.message_id
+            reply_anchor = self._reply_anchor_for_event(event) or event.message_id
+            if reply_anchor:
+                notify_data["reply_to_message_id"] = str(reply_anchor)
             if event.source is not None:
                 try:
                     self._restart_command_source = dataclasses.replace(

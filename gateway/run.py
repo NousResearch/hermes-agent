@@ -11419,7 +11419,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             chat_id = data.get("chat_id")
             chat_type = data.get("chat_type")
             thread_id = data.get("thread_id")
-            message_id = data.get("message_id")
+            reply_to_message_id = data.get("reply_to_message_id")
 
             if not platform_str or not chat_id:
                 return None
@@ -11446,7 +11446,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id,
                 thread_id,
                 chat_type=chat_type,
-                reply_to_message_id=message_id,
+                reply_to_message_id=reply_to_message_id,
                 adapter=adapter,
             )
             result = await adapter.send(

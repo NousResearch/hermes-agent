@@ -276,7 +276,7 @@ Send any message while the agent is working to interrupt it. Key behaviors:
 
 By default, messaging a busy agent interrupts it. Two other modes are available:
 
-- `queue` — follow-up messages wait and run as the next turn after the current task finishes.
+- `queue` — follow-up messages wait and run as the next turn after the current task finishes. The busy acknowledgement shows the merged queue count (`⏳ Queue #1/1`, then `⏳ Queue #2/2` for another rapid follow-up). When the current turn finishes, Hermes sends a lifecycle update (`✅ Current task complete. Queue: N → processing queued turn now.`) and then `✅ Queue empty.` when the queued turn drains.
 - `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
 
 ```yaml
@@ -499,6 +499,8 @@ gateway:
 ```
 
 Disable it on noisy or low-priority platforms while leaving it on for your primary chat. The notification is sent once per restart, regardless of how many sessions were in flight.
+
+Telegram DM topic lanes need a reply anchor to keep synthetic post-restart messages in the same visible topic. Hermes stores the `/restart` requester's `chat_id`, `thread_id`, `chat_type`, and triggering message id in `.restart_notify.json`; after the process comes back, it sends the confirmation with thread metadata plus the preserved Telegram reply anchor. If delivery still fails, the gateway logs the chat/thread/reply-anchor tuple instead of claiming success.
 
 ### Session resume across gateway restarts
 

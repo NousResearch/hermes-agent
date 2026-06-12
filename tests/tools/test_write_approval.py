@@ -216,6 +216,70 @@ def test_handle_reject(hermes_home):
     assert wa.pending_count("skills") == 0
 
 
+def test_memory_pending_list_is_labeled_and_has_abcde(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    wa.stage_write("memory", {"action": "add", "target": "memory", "content": "remember carefully"},
+                   summary="remember carefully", origin="foreground")
+    out = handle_pending_subcommand(wa.MEMORY, ["pending"])
+    assert out is not None
+    assert "MEMORY WRITE APPROVAL" in out
+    assert "Review one at a time" in out
+    assert "/memory a <id>" in out
+    assert "/memory d" in out
+
+
+def test_memory_review_shows_one_record_and_abcde_menu(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = wa.stage_write("memory", {"action": "add", "target": "user", "content": "specific fact"},
+                         summary="specific fact", origin="foreground")
+    out = handle_pending_subcommand(wa.MEMORY, ["review"])
+    assert out is not None
+    assert "MEMORY WRITE APPROVAL" in out
+    assert f"Pending ID: {rec['id']}" in out
+    assert "Action: add to USER" in out
+    assert "A) Approve" in out
+    assert "E) Review one-by-one" in out
+
+
+def test_memory_edit_updates_pending_content(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools import write_approval as wa
+    rec = wa.stage_write("memory", {"action": "add", "target": "memory", "content": "old fact"},
+                         summary="old fact", origin="foreground")
+    out = handle_pending_subcommand(wa.MEMORY, ["edit", rec["id"], "new", "fact"])
+    assert out is not None
+    assert "Updated pending memory write" in out
+    updated = wa.get_pending(wa.MEMORY, rec["id"])
+    assert updated is not None
+    assert updated["payload"]["content"] == "new fact"
+    assert "new fact" in updated["summary"]
+
+
+def test_memory_abcde_aliases(hermes_home):
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    rec = wa.stage_write("memory", {"action": "add", "target": "memory", "content": "alias fact"},
+                         summary="alias fact", origin="foreground")
+    e_out = handle_pending_subcommand(wa.MEMORY, ["e"])
+    c_out = handle_pending_subcommand(wa.MEMORY, ["c"])
+    a_out = handle_pending_subcommand(wa.MEMORY, ["a", rec["id"]], memory_store=store)
+    assert e_out is not None and "MEMORY WRITE APPROVAL" in e_out
+    assert c_out is not None and "pending writes" in c_out
+    assert a_out is not None and "Approved 1" in a_out
+    rec2 = wa.stage_write("memory", {"action": "add", "target": "memory", "content": "reject me"},
+                          summary="reject me", origin="foreground")
+    b_out = handle_pending_subcommand(wa.MEMORY, ["b", rec2["id"]])
+    assert b_out is not None and "Rejected" in b_out
+    wa.stage_write("memory", {"action": "add", "target": "memory", "content": "reject all"},
+                   summary="reject all", origin="foreground")
+    d_out = handle_pending_subcommand(wa.MEMORY, ["d"])
+    assert d_out is not None and "Rejected 1" in d_out
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa
@@ -283,58 +347,24 @@ def approval_callback_cleanup():
     set_approval_callback(None)
 
 
-def test_memory_inline_approve_writes(hermes_home, approval_callback_cleanup):
+def test_memory_gate_on_stages_even_with_approval_callback(hermes_home, approval_callback_cleanup):
+    # Memory writes use the pending-review flow, not the generic timed approval
+    # box. A registered CLI approval callback must not be invoked.
     from tools.memory_tool import memory_tool, MemoryStore
     from tools.terminal_tool import set_approval_callback
     from tools import write_approval as wa
     _set_approval("memory", True)
 
     calls = []
-    def approve_cb(command, description, **kw):
-        calls.append((command, description))
-        return "once"
-    set_approval_callback(approve_cb)
+    set_approval_callback(lambda command, description, **kw: calls.append((command, description)) or "once")
 
     store = MemoryStore(); store.load_from_disk()
     r = json.loads(memory_tool("add", "memory", "approved fact", store=store))
     assert r["success"] is True
-    assert r.get("staged") is None  # real write, not staged
-    assert store.memory_entries == ["approved fact"]
-    assert wa.pending_count("memory") == 0
-    # The registered callback must actually be invoked (not the input() path).
-    assert len(calls) == 1
-    assert "approved fact" in calls[0][0]
-
-
-def test_memory_inline_deny_blocks(hermes_home, approval_callback_cleanup):
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools.terminal_tool import set_approval_callback
-    from tools import write_approval as wa
-    _set_approval("memory", True)
-    set_approval_callback(lambda command, description, **kw: "deny")
-
-    store = MemoryStore(); store.load_from_disk()
-    r = json.loads(memory_tool("add", "memory", "denied fact", store=store))
-    assert r["success"] is False
-    assert "denied" in r["error"].lower()
-    assert store.memory_entries == []
-    assert wa.pending_count("memory") == 0  # denied, not staged
-
-
-def test_memory_inline_callback_error_stages(hermes_home, approval_callback_cleanup):
-    # If the prompt machinery fails, fall back to staging — never drop silently.
-    from tools.memory_tool import memory_tool, MemoryStore
-    from tools.terminal_tool import set_approval_callback
-    from tools import write_approval as wa
-    _set_approval("memory", True)
-    def broken_cb(command, description, **kw):
-        raise RuntimeError("boom")
-    set_approval_callback(broken_cb)
-
-    store = MemoryStore(); store.load_from_disk()
-    r = json.loads(memory_tool("add", "memory", "fallback fact", store=store))
     assert r.get("staged") is True
+    assert store.memory_entries == []
     assert wa.pending_count("memory") == 1
+    assert calls == []
 
 
 def test_gateway_context_stages_not_prompts(hermes_home, monkeypatch):

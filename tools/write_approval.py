@@ -189,6 +189,31 @@ def discard_pending(subsystem: str, pending_id: str) -> bool:
     return False
 
 
+def update_pending(subsystem: str, pending_id: str, payload: Dict[str, Any],
+                   *, summary: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """Update a pending record in place and return the updated record.
+
+    Used by the memory review flow so a user can correct staged memory text
+    before approving it. Returns None when the record does not exist or cannot
+    be read/written.
+    """
+    path = _pending_dir(subsystem) / f"{pending_id}.json"
+    if not path.exists():
+        return None
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+        record["payload"] = payload
+        if summary is not None:
+            record["summary"] = (summary or "").strip()
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, path)
+        return record
+    except Exception as e:  # pragma: no cover
+        logger.error("Failed to update pending %s/%s: %s", subsystem, pending_id, e)
+        return None
+
+
 def pending_count(subsystem: str) -> int:
     """Cheap count of pending records (for notification badges)."""
     d = _pending_dir(subsystem)
@@ -276,9 +301,13 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
 
     background = is_background()
 
-    # Skills always stage — a SKILL.md is too large to review inline, and a
-    # background skill write happens in a daemon thread with no user present.
-    if subsystem == SKILLS or background:
+    # Memory and skills both stage while their write gate is on. Earlier builds
+    # used the generic timed dangerous-command approval box for foreground CLI
+    # memory writes, but that made permanent memory writes too easy to approve
+    # accidentally. Staging gives memory writes a clearly labelled review flow
+    # (/memory pending, /memory review, /memory approve|reject|edit) and keeps
+    # the generic timed approval UI for command execution only.
+    if subsystem in {MEMORY, SKILLS} or background:
         where = "/skills pending" if subsystem == SKILLS else "/memory pending"
         return GateDecision(
             stage=True,
@@ -288,6 +317,8 @@ def evaluate_gate(subsystem: str, *, inline_summary: str = "",
             ),
         )
 
+    # This branch is intentionally unreachable for the built-in subsystems, but
+    # kept as a defensive fallback if a future subsystem reuses evaluate_gate().
     # Memory + foreground: if an interactive approval channel exists (a CLI
     # approval callback registered on this thread), prompt inline — entries
     # are small enough to show in full. Otherwise (gateway, script, batch,

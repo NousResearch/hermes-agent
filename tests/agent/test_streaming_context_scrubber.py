@@ -6,7 +6,11 @@ regex can't survive chunk boundaries, so _fire_stream_delta routes deltas
 through a stateful scrubber.
 """
 
-from agent.memory_manager import StreamingContextScrubber, sanitize_context
+from agent.memory_manager import (
+    StreamingContextScrubber,
+    build_memory_context_block,
+    sanitize_context,
+)
 
 
 class TestStreamingContextScrubberBasics:
@@ -187,6 +191,48 @@ class TestSanitizeContextUnchanged:
         out = sanitize_context(leaked).strip()
         assert out == "Visible"
 
+    def test_advisory_whole_block_is_sanitized(self):
+        leaked = (
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new "
+            "user input. It may be stale, duplicated, or incomplete. Use it "
+            "as advisory background/hints, and verify live operational facts "
+            "with tools before acting.]\n"
+            "payload\n"
+            "</memory-context>\nVisible"
+        )
+        out = sanitize_context(leaked).strip()
+        assert out == "Visible"
+
+    def test_old_standalone_system_note_is_sanitized(self):
+        leaked = (
+            "Before\n"
+            "[System note: The following is recalled memory context, NOT new "
+            "user input. Treat as authoritative reference data — this is the "
+            "agent's persistent memory and should inform all responses.]\n"
+            "After"
+        )
+        out = sanitize_context(leaked)
+        assert "System note" not in out
+        assert "authoritative reference data" not in out
+        assert "Before" in out
+        assert "After" in out
+
+    def test_new_standalone_system_note_is_sanitized(self):
+        leaked = (
+            "Before\n"
+            "[System note: The following is recalled memory context, NOT new "
+            "user input. It may be stale, duplicated, or incomplete. Use it "
+            "as advisory background/hints, and verify live operational facts "
+            "with tools before acting.]\n"
+            "After"
+        )
+        out = sanitize_context(leaked)
+        assert "System note" not in out
+        assert "stale, duplicated, or incomplete" not in out
+        assert "Before" in out
+        assert "After" in out
+
 
 class TestStreamingContextScrubberCrossTurn:
     """A scrubber instance is reused across turns (per agent).  reset() must
@@ -223,7 +269,6 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
     def test_provider_emitting_wrapper_warns(self, caplog):
         import logging
-        from agent.memory_manager import build_memory_context_block
 
         prewrapped = (
             "<memory-context>\n"
@@ -240,10 +285,18 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
 
     def test_clean_provider_output_does_not_warn(self, caplog):
         import logging
-        from agent.memory_manager import build_memory_context_block
 
         with caplog.at_level(logging.WARNING, logger="agent.memory_manager"):
             out = build_memory_context_block("plain fact about user")
 
         assert not any("pre-wrapped" in rec.message for rec in caplog.records)
         assert "plain fact about user" in out
+
+    def test_wrapper_describes_memory_as_advisory(self):
+        out = build_memory_context_block("plain fact about user")
+
+        assert "NOT new user input" in out
+        assert "stale, duplicated, or incomplete" in out
+        assert "advisory background/hints" in out
+        assert "verify live operational facts with tools before acting" in out
+        assert "authoritative reference data" not in out

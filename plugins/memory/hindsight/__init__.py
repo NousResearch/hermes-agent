@@ -1318,8 +1318,9 @@ class HindsightMemoryProvider(MemoryProvider):
         logger.debug("Prefetch: returning %d chars of context", len(result))
         header = self._recall_prompt_preamble or (
             "# Hindsight Memory (persistent cross-session context)\n"
-            "Use this to answer questions about the user and prior sessions. "
-            "Do not call tools to look up information that is already present here."
+            "Use this as advisory background about the user and prior sessions. "
+            "It may be stale, duplicated, or incomplete; verify live "
+            "operational facts with tools before acting."
         )
         return f"{header}\n\n{result}"
 

@@ -607,6 +607,10 @@ class TestPrefetch:
         provider._prefetch_result = "- some memory"
         result = provider.prefetch("test")
         assert "Hindsight Memory" in result
+        assert "advisory background" in result
+        assert "stale, duplicated, or incomplete" in result
+        assert "verify live operational facts with tools before acting" in result
+        assert "Do not call tools to look up information" not in result
         assert "- some memory" in result
 
     def test_prefetch_custom_preamble(self, provider_with_config):

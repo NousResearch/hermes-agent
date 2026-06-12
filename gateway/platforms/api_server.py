@@ -1974,14 +1974,62 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            # AVOCADO FORK: forward subagent (delegate_task child) lifecycle
+            # and inner tool events into the SSE stream so chat frontends can
+            # render a nested per-subagent transcript.  delegate_tool relays
+            # these to the parent agent's ``tool_progress_callback`` as
+            # ``subagent.start`` / ``subagent.tool`` / ``subagent.thinking`` /
+            # ``subagent.complete`` with identity kwargs (subagent_id,
+            # parent_id, depth, goal, tool_count).  Everything else
+            # (``tool.started``/``tool.completed``/``_thinking``/legacy
+            # ``subagent_progress`` summaries) is dropped here because the
+            # structured ``tool_start_callback``/``tool_complete_callback``
+            # above already own parent-level tool events — forwarding them
+            # twice was the duplication the previous "not wired" note warned
+            # about.  Called from child worker threads; queue.Queue is
+            # thread-safe.
+            def _on_subagent_progress(event_type, tool_name=None, preview=None, args=None, **kwargs):
+                if not isinstance(event_type, str) or not event_type.startswith("subagent."):
+                    return
+                subagent_id = kwargs.get("subagent_id")
+                if not subagent_id:
+                    return  # can't correlate without an id
+                status_map = {
+                    "subagent.start": "running",
+                    "subagent.tool": "step",
+                    "subagent.thinking": "thinking",
+                    "subagent.complete": "completed",
+                }
+                status = status_map.get(event_type)
+                if status is None:
+                    return  # subagent.progress batches etc. — redundant
+                label = (preview or "").strip()
+                if len(label) > 200:
+                    label = label[:200] + "..."
+                payload = {
+                    "tool": tool_name or "subagent",
+                    "label": label,
+                    "status": status,
+                    "subagentId": subagent_id,
+                }
+                if status == "step" and tool_name:
+                    from agent.display import get_tool_emoji
+                    payload["emoji"] = get_tool_emoji(tool_name)
+                for src, dst in (
+                    ("parent_id", "parentId"),
+                    ("depth", "depth"),
+                    ("goal", "goal"),
+                    ("tool_count", "toolCount"),
+                    ("task_index", "taskIndex"),
+                    ("task_count", "taskCount"),
+                    ("duration_seconds", "durationSeconds"),
+                ):
+                    if kwargs.get(src) is not None:
+                        payload[dst] = kwargs[src]
+                _stream_q.put(("__tool_progress__", payload))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
-            #
-            # ``tool_progress_callback`` is intentionally not wired here:
-            # it would duplicate every emit because ``run_agent`` fires it
-            # side-by-side with ``tool_start_callback``/``tool_complete_callback``.
-            # The structured callbacks are strictly richer (they carry the
-            # tool_call id), so they own the chat-completions SSE channel.
             agent_ref = [None]
             agent_task = asyncio.ensure_future(self._run_agent(
                 user_message=user_message,
@@ -1989,6 +2037,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
+                tool_progress_callback=_on_subagent_progress,
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,

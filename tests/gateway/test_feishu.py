@@ -159,6 +159,30 @@ class TestFeishuMessageNormalization(unittest.TestCase):
             "Build Failed\nService: payments-api\nBranch: main\nView Logs\nRetry\nActions: View Logs, Retry",
         )
 
+    def test_normalize_video_chat_preserves_meeting_number(self):
+        from plugins.platforms.feishu.adapter import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="video_chat",
+            raw_content=json.dumps(
+                {
+                    "topic": "Alice's video meeting",
+                    "meet_number": "123456789",
+                    "start_time": "1700000000000",
+                    "end_time": None,
+                }
+            ),
+        )
+
+        self.assertEqual(normalized.relation_kind, "video_chat")
+        self.assertEqual(
+            normalized.text_content,
+            "Alice's video meeting\nStart time: 2023-11-14 22:13 UTC\nMeeting Number: 123456789",
+        )
+        self.assertEqual(normalized.metadata["topic"], "Alice's video meeting")
+        self.assertEqual(normalized.metadata["start_time"], "2023-11-14 22:13 UTC")
+        self.assertEqual(normalized.metadata["meet_number"], "123456789")
+
 
 class TestFeishuAdapterMessaging(unittest.TestCase):
     @patch.dict(os.environ, {
@@ -1291,6 +1315,35 @@ class TestAdapterBehavior(unittest.TestCase):
         text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "Approval Request\nRequester: Alice\nApprove\nActions: Approve")
+        self.assertEqual(msg_type.value, "text")
+        self.assertEqual(media_urls, [])
+        self.assertEqual(media_types, [])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_extract_video_chat_message_as_text_summary(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(
+            message_type="video_chat",
+            content=json.dumps(
+                {
+                    "topic": "Alice's video meeting",
+                    "meet_number": "123456789",
+                    "start_time": "1700000000000",
+                    "end_time": None,
+                }
+            ),
+            message_id="om_video_chat",
+        )
+
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
+
+        self.assertEqual(
+            text,
+            "Alice's video meeting\nStart time: 2023-11-14 22:13 UTC\nMeeting Number: 123456789",
+        )
         self.assertEqual(msg_type.value, "text")
         self.assertEqual(media_urls, [])
         self.assertEqual(media_types, [])

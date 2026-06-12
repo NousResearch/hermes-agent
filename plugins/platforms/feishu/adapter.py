@@ -62,7 +62,7 @@ import time
 import uuid
 from collections import OrderedDict
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Literal, Optional, Sequence
@@ -871,6 +871,8 @@ def normalize_feishu_message(
         return _normalize_share_chat_message(payload)
     if normalized_type in {"interactive", "card"}:
         return _normalize_interactive_message(normalized_type, payload)
+    if normalized_type == "video_chat":
+        return _normalize_video_chat_message(payload)
 
     return FeishuNormalizedMessage(raw_type=normalized_type, text_content="")
 
@@ -958,6 +960,39 @@ def _normalize_interactive_message(message_type: str, payload: Dict[str, Any]) -
         relation_kind="interactive",
         metadata={"title": title, "actions": actions},
     )
+
+
+def _normalize_video_chat_message(payload: Dict[str, Any]) -> FeishuNormalizedMessage:
+    topic = _first_non_empty_text(payload.get("topic"))
+    start_time = _format_feishu_millis_datetime(payload.get("start_time"))
+    meeting_number = _first_non_empty_text(payload.get("meet_number"))
+
+    lines: List[str] = []
+    if topic:
+        lines.append(topic)
+    if start_time:
+        lines.append(f"Start time: {start_time}")
+    if meeting_number:
+        lines.append(f"Meeting Number: {meeting_number}")
+
+    return FeishuNormalizedMessage(
+        raw_type="video_chat",
+        text_content="\n".join(lines).strip(),
+        relation_kind="video_chat",
+        metadata={"topic": topic, "start_time": start_time, "meet_number": meeting_number},
+    )
+
+
+def _format_feishu_millis_datetime(value: Any) -> str:
+    raw = _first_non_empty_text(value)
+    if not raw:
+        return ""
+    try:
+        millis = float(raw)
+        seconds = millis / 1000
+        return datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    except (OSError, OverflowError, ValueError):
+        return raw
 
 
 # ---------------------------------------------------------------------------

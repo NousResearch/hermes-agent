@@ -41,6 +41,7 @@ class MeetingInviteMeeting:
 @dataclass(frozen=True)
 class MeetingInvitedPayload:
     event_id: str = ""
+    call_id: str = ""
     meeting: Optional[MeetingInviteMeeting] = None
     inviter: Optional[MeetingInviteUser] = None
     invite_time_s: int = 0
@@ -129,6 +130,7 @@ def parse_meeting_invited_event(data: Any) -> Optional[MeetingInvitedPayload]:
 
     return MeetingInvitedPayload(
         event_id=str(_as_dict(root.get("header")).get("event_id") or ""),
+        call_id=str(event.get("call_id") or "").strip(),
         meeting=meeting,
         inviter=inviter,
         invite_time_s=_int_field(event.get("invite_time")),
@@ -140,20 +142,31 @@ def build_meeting_invite_prompt(payload: MeetingInvitedPayload) -> str:
     inviter_name = (payload.inviter.user_name if payload.inviter else "") or "unknown"
     host_name = (meeting.host_user.user_name if meeting and meeting.host_user else "") or "unknown"
     display = (meeting.topic or meeting.meeting_no or meeting.id) if meeting else "unknown meeting"
-    return "\n".join(
+    lines = [
+        f"You have been invited to join a meeting: {display or 'unknown meeting'}",
+        "",
+        f"Meeting Number: {(meeting.meeting_no if meeting else '') or 'unknown'}",
+        f"Topic: {(meeting.topic if meeting else '') or 'unknown'}",
+    ]
+    if payload.call_id:
+        lines.append(f"Call ID: {payload.call_id}")
+    lines.extend(
         [
-            f"You have been invited to join a meeting: {display or 'unknown meeting'}",
-            "",
-            f"Meeting Number: {(meeting.meeting_no if meeting else '') or 'unknown'}",
-            f"Topic: {(meeting.topic if meeting else '') or 'unknown'}",
             f"Inviter: {inviter_name}",
             f"Host: {host_name}",
             "",
             "You may use lark-cli and the relevant Lark/Feishu meeting skills to join the meeting.",
+        ]
+    )
+    if payload.call_id:
+        lines.append("If the join tool supports a call_id parameter, pass the Call ID when joining.")
+    lines.extend(
+        [
             "Join the meeting directly. Do not ask the user for confirmation before joining.",
             "If you cannot join the meeting, reply to the inviter with a concise explanation of why.",
         ]
     )
+    return "\n".join(lines)
 
 
 def _dedup_key(payload: MeetingInvitedPayload) -> str:

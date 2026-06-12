@@ -246,3 +246,151 @@ class TestBrowserSnapshotPrivateNetworkGuard:
 def browser_browser_snapshot(**kwargs):
     from tools.browser_tool import browser_snapshot
     return browser_snapshot(**kwargs)
+
+
+def browser_browser_vision(**kwargs):
+    from tools.browser_tool import browser_vision
+    return browser_vision(**kwargs)
+
+
+def _make_screenshot_result(path="/tmp/test_screenshot.png"):
+    """Return a mock successful screenshot result."""
+    return {"success": True, "data": {"path": path}}
+
+
+# ---------------------------------------------------------------------------
+# browser_vision: private-network guard after eval navigation
+# ---------------------------------------------------------------------------
+
+
+class TestBrowserVisionPrivateNetworkGuard:
+    """browser_vision must block screenshots from private pages navigated via eval."""
+
+    PRIVATE_URL = "http://127.0.0.1:8080/secret"
+    PUBLIC_URL = "https://example.com/page"
+
+    @pytest.fixture(autouse=True)
+    def _setup(self, monkeypatch):
+        """Common patches for vision SSRF tests."""
+        monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+
+    def test_blocks_private_url_after_eval_navigation(self, monkeypatch):
+        """Vision must block when current page URL is private."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "eval":
+                return _make_eval_result(self.PRIVATE_URL)
+            return {"success": False, "error": "should not reach screenshot"}
+
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result = json.loads(browser_browser_vision(question="what do you see", task_id="test"))
+        assert result["success"] is False
+        assert "private or internal address" in result["error"]
+        assert self.PRIVATE_URL in result["error"]
+
+    def test_allows_public_url_after_eval_navigation(self, monkeypatch):
+        """Vision must proceed when current page URL is public."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: True)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "eval":
+                return _make_eval_result(self.PUBLIC_URL)
+            elif command == "screenshot":
+                return _make_screenshot_result()
+            return {"success": False, "error": "unknown"}
+
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+        # Screenshot file won't exist — that's fine, function returns error
+        # but the important thing is the guard didn't block it.
+
+        result_raw = browser_browser_vision(question="what do you see", task_id="test")
+        result = json.loads(result_raw)
+        # Guard passed; function continues to screenshot path.
+        # Since screenshot file doesn't exist, it returns a file-not-found error,
+        # NOT the "private or internal address" error.
+        assert "private or internal address" not in result.get("error", "")
+
+    def test_skips_check_in_local_backend_mode(self, monkeypatch):
+        """Local backend mode skips SSRF check entirely."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: True)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "screenshot":
+                return _make_screenshot_result()
+            return {"success": False, "error": "should not be called"}
+
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result_raw = browser_browser_vision(question="what", task_id="test")
+        result = json.loads(result_raw)
+        assert "private or internal address" not in result.get("error", "")
+
+    def test_skips_check_when_private_urls_allowed(self, monkeypatch):
+        """When allow_private_urls is enabled, SSRF check is skipped."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: True)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "screenshot":
+                return _make_screenshot_result()
+            return {"success": False, "error": "should not be called"}
+
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result_raw = browser_browser_vision(question="what", task_id="test")
+        result = json.loads(result_raw)
+        assert "private or internal address" not in result.get("error", "")
+
+    def test_handles_eval_failure_gracefully(self, monkeypatch):
+        """If URL eval fails, vision should still proceed (fail-open)."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "eval":
+                return {"success": False, "error": "eval failed"}
+            elif command == "screenshot":
+                return _make_screenshot_result()
+            return {"success": False, "error": "unknown"}
+
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result_raw = browser_browser_vision(question="what", task_id="test")
+        result = json.loads(result_raw)
+        assert "private or internal address" not in result.get("error", "")
+
+    def test_handles_eval_exception(self, monkeypatch):
+        """If URL eval raises an exception, vision should still proceed."""
+        monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+        monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+
+        def mock_run_browser_command(task_id, command, args=None, **kwargs):
+            if command == "eval":
+                raise RuntimeError("CDP connection lost")
+            elif command == "screenshot":
+                return _make_screenshot_result()
+            return {"success": False, "error": "unknown"}
+
+        monkeypatch.setattr(
+            browser_tool, "_run_browser_command", mock_run_browser_command
+        )
+
+        result_raw = browser_browser_vision(question="what", task_id="test")
+        result = json.loads(result_raw)
+        assert "private or internal address" not in result.get("error", "")

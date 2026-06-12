@@ -338,6 +338,10 @@ class SlackAdapter(BasePlatformAdapter):
         # Dedup cache: prevents duplicate bot responses when Socket Mode
         # reconnects redeliver events.
         self._dedup = MessageDeduplicator()
+        # Live references to in-flight per-channel no_agent handler subprocess
+        # tasks (slack.channel_handlers).  Held so fire-and-forget tasks aren't
+        # garbage-collected before they finish.
+        self._channel_handler_tasks: set = set()
         # Track pending approval message_ts → resolved flag to prevent
         # double-clicks on approval buttons.
         self._approval_resolved: Dict[str, bool] = {}
@@ -2349,6 +2353,39 @@ class SlackAdapter(BasePlatformAdapter):
             channel_type = "im"
         is_dm = channel_type in {"im", "mpim"}  # Both 1:1 and group DMs
 
+        # ── Per-channel no_agent script handlers (channel_handlers) ─────────
+        # If this channel is mapped to a handler script, dispatch the raw
+        # Slack event to it as a fire-and-forget subprocess.  This is the
+        # Slack analogue of the webhook ``deliver_only`` contract: real-time
+        # deterministic channel automation (e.g. spam triage) without spawning
+        # an agent session and without a sidecar Socket Mode app.
+        #
+        # Important: the handler runs IN ADDITION to normal processing.  We do
+        # NOT return here — execution falls through to the existing mention /
+        # allowed-channel gates, so @mentions in a mapped channel still reach
+        # the agent.  Handler-only channels are achieved with the existing
+        # ``strict_mention`` behaviour; agent-path behaviour is unchanged.
+        #
+        # The bot/self, ``bot_message``, ``message_changed``/``message_deleted``
+        # skips above have already returned for non-plain-user events.  Guard
+        # the remaining thread-broadcast-of-our-own-send case explicitly: a
+        # ``thread_broadcast`` subtype authored by us must not feed the handler.
+        handler_cfg = self._slack_channel_handler_for(channel_id)
+        if handler_cfg is not None:
+            _msg_user = event.get("user", "")
+            _is_self = bool(
+                _msg_user and self._bot_user_id and _msg_user == self._bot_user_id
+            )
+            _is_broadcast = event.get("subtype") == "thread_broadcast"
+            if not _is_self and not (_is_broadcast and _is_self):
+                try:
+                    self._dispatch_channel_handler(channel_id, handler_cfg, event)
+                except Exception:  # pragma: no cover - defensive
+                    logger.exception(
+                        "[Slack] channel_handler dispatch failed channel=%s",
+                        channel_id,
+                    )
+
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
         #   new thread/session (the bot always replies in a thread).
@@ -3667,6 +3704,229 @@ class SlackAdapter(BasePlatformAdapter):
             "yes",
             "on",
         }
+
+    def _slack_channel_handler_for(self, channel_id: str) -> Optional[dict]:
+        """Return the channel_handlers config for ``channel_id``, or None.
+
+        Config shape (under the ``slack`` platform's ``extra`` block)::
+
+            channel_handlers:
+              C4R0C7FPZ:
+                script: ab_contact_spam_cleanup.py
+                timeout: 120
+
+        Each entry maps a Slack channel ID to a no_agent handler script that
+        runs on every plain user message in that channel (see
+        ``_handle_slack_message``).  ``script`` is resolved the same way cron
+        no_agent scripts are — relative to ``HERMES_HOME/scripts/`` or an
+        absolute path inside that directory.  ``timeout`` is in seconds and
+        defaults to 60.  Returns a normalised ``{"script", "timeout"}`` dict.
+        """
+        if not channel_id:
+            return None
+        raw = self.config.extra.get("channel_handlers")
+        if not isinstance(raw, dict):
+            return None
+        entry = raw.get(channel_id)
+        if entry is None:
+            return None
+        # Accept either a bare string (script name) or a dict.
+        if isinstance(entry, str):
+            script = entry.strip()
+            timeout = 60
+        elif isinstance(entry, dict):
+            script = str(entry.get("script", "")).strip()
+            try:
+                timeout = int(float(entry.get("timeout", 60)))
+            except (TypeError, ValueError):
+                timeout = 60
+        else:
+            return None
+        if not script:
+            logger.warning(
+                "[Slack] channel_handlers entry for %s has no script — ignoring",
+                channel_id,
+            )
+            return None
+        if timeout <= 0:
+            timeout = 60
+        return {"script": script, "timeout": timeout}
+
+    def _resolve_handler_script_path(self, script: str) -> _Path:
+        """Resolve a channel_handler script path, mirroring cron's contract.
+
+        Relative names resolve under ``HERMES_HOME/scripts/``; absolute and
+        ``~``-prefixed paths are allowed but MUST stay inside that directory.
+        Raises ``ValueError`` on path-traversal / out-of-tree paths so the
+        caller can log and bail without executing anything.
+        """
+        from hermes_constants import get_hermes_home
+
+        scripts_dir = get_hermes_home() / "scripts"
+        scripts_dir_resolved = scripts_dir.resolve()
+
+        raw = _Path(script).expanduser()
+        if raw.is_absolute():
+            path = raw.resolve()
+        else:
+            path = (scripts_dir / raw).resolve()
+
+        try:
+            path.relative_to(scripts_dir_resolved)
+        except ValueError:
+            raise ValueError(
+                f"channel_handler script resolves outside the scripts "
+                f"directory ({scripts_dir_resolved}): {script!r}"
+            )
+        return path
+
+    def _dispatch_channel_handler(
+        self, channel_id: str, handler_cfg: dict, event: dict
+    ) -> None:
+        """Fire-and-forget the channel handler subprocess.
+
+        Schedules ``_run_channel_handler`` as a background task so handler
+        execution never blocks or delays the Slack adapter's event loop.
+        Exceptions inside the task are logged, never raised — a misbehaving
+        handler must not crash the gateway.
+        """
+        task = asyncio.create_task(
+            self._run_channel_handler(channel_id, handler_cfg, event)
+        )
+        # Keep a reference so the task isn't garbage-collected mid-flight, and
+        # surface any unexpected error via the done-callback.
+        self._channel_handler_tasks.add(task)
+        task.add_done_callback(self._channel_handler_tasks.discard)
+        task.add_done_callback(self._on_channel_handler_done)
+
+    def _on_channel_handler_done(self, task: "asyncio.Task") -> None:
+        """Log unexpected exceptions from a channel-handler task."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("[Slack] channel_handler task crashed: %r", exc)
+
+    async def _run_channel_handler(
+        self, channel_id: str, handler_cfg: dict, event: dict
+    ) -> None:
+        """Run a channel handler script with the Slack event JSON on stdin.
+
+        Mirrors the cron no_agent / webhook deliver_only subprocess contract:
+        the raw event JSON is piped on stdin, stdout/stderr are captured to
+        the gateway log at DEBUG, an INFO one-liner records channel/script/
+        exit-code/duration, and a timeout is enforced.  All failures are
+        swallowed (logged) so the adapter is never impacted.
+        """
+        script = handler_cfg["script"]
+        timeout = handler_cfg["timeout"]
+        try:
+            path = self._resolve_handler_script_path(script)
+        except ValueError as exc:
+            logger.error("[Slack] channel_handler %s", exc)
+            return
+        if not path.exists() or not path.is_file():
+            logger.error(
+                "[Slack] channel_handler script not found: %s (channel=%s)",
+                path,
+                channel_id,
+            )
+            return
+
+        # Pick an interpreter by extension — bash for .sh/.bash, the current
+        # Python for everything else — exactly as cron's _run_job_script does.
+        suffix = path.suffix.lower()
+        if suffix in {".sh", ".bash"}:
+            import shutil
+
+            _bash = shutil.which("bash") or (
+                "/bin/bash" if os.path.isfile("/bin/bash") else None
+            )
+            if _bash is None:
+                logger.error(
+                    "[Slack] channel_handler cannot run %s: bash not found",
+                    path.name,
+                )
+                return
+            argv = [_bash, str(path)]
+        else:
+            argv = [sys.executable, str(path)]
+
+        try:
+            payload = json.dumps(event).encode("utf-8")
+        except (TypeError, ValueError):
+            payload = b"{}"
+
+        start = time.monotonic()
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *argv,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=str(path.parent),
+            )
+        except Exception:
+            logger.exception(
+                "[Slack] channel_handler failed to spawn %s (channel=%s)",
+                path.name,
+                channel_id,
+            )
+            return
+
+        try:
+            stdout_b, stderr_b = await asyncio.wait_for(
+                proc.communicate(input=payload), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+            # Reap the killed process so it doesn't linger as a zombie.
+            try:
+                await proc.communicate()
+            except Exception:
+                pass
+            logger.warning(
+                "[Slack] channel_handler timed out after %ss channel=%s script=%s",
+                timeout,
+                channel_id,
+                path.name,
+            )
+            return
+        except Exception:
+            logger.exception(
+                "[Slack] channel_handler errored channel=%s script=%s",
+                channel_id,
+                path.name,
+            )
+            return
+
+        duration = time.monotonic() - start
+        stdout = (stdout_b or b"").decode("utf-8", "replace").strip()
+        stderr = (stderr_b or b"").decode("utf-8", "replace").strip()
+
+        # Redact secrets before logging captured output.
+        try:
+            from agent.redact import redact_sensitive_text
+
+            stdout = redact_sensitive_text(stdout)
+            stderr = redact_sensitive_text(stderr)
+        except Exception:
+            pass
+
+        logger.info(
+            "[Slack] channel_handler channel=%s script=%s exit=%s duration=%.2fs",
+            channel_id,
+            path.name,
+            proc.returncode,
+            duration,
+        )
+        if stdout:
+            logger.debug("[Slack] channel_handler stdout (%s): %s", path.name, stdout)
+        if stderr:
+            logger.debug("[Slack] channel_handler stderr (%s): %s", path.name, stderr)
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""

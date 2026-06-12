@@ -421,6 +421,52 @@ Behavior:
 
 See also: [admin/user slash command split](../../reference/slash-commands.md#permissions-and-adminuser-split).
 
+### Per-channel script handlers (`channel_handlers`)
+
+Run a deterministic **no_agent** script on every plain user message in a
+specific channel — the Slack analogue of the webhook adapter's `deliver_only`
+mode. This gives you real-time, zero-LLM-cost channel automation (e.g. spam
+triage, intake routing, logging) **without** standing up a separate Socket
+Mode sidecar app or polling on a cron.
+
+```yaml
+slack:
+  channel_handlers:
+    C4R0C7FPZ:                       # channel ID → handler
+      script: contact_spam_cleanup.py  # under ~/.hermes/scripts/ (or an absolute path inside it)
+      timeout: 120                     # seconds; default 60
+```
+
+A bare string is also accepted as shorthand for `{script: <name>}` with the
+default timeout:
+
+```yaml
+slack:
+  channel_handlers:
+    C4R0C7FPZ: contact_spam_cleanup.py
+```
+
+How it works:
+
+- On each incoming message in a mapped channel, the **raw Slack event JSON** is
+  piped to the script on **stdin**, and the script runs as a subprocess. The
+  script is resolved exactly like cron no_agent scripts — a bare name resolves
+  under `~/.hermes/scripts/`; absolute / `~`-prefixed paths are allowed but must
+  stay inside that directory (path traversal is blocked).
+- `.sh`/`.bash` scripts run under `bash`; everything else runs under the active
+  Python interpreter.
+- The handler is **fire-and-forget**: it runs on a background task with a
+  bounded timeout, and a handler crash, non-zero exit, or timeout **never**
+  delays or breaks normal message handling. stdout/stderr are captured to the
+  gateway log at DEBUG, with an INFO one-liner recording channel, script, exit
+  code, and duration.
+- The handler runs **in addition to** normal processing. Bot/self messages,
+  `bot_message`, `message_changed`/`message_deleted`, and thread broadcasts of
+  the bot's own sends are skipped. After dispatch, execution falls through to
+  the usual gating, so `@mentions` in a mapped channel still reach the agent.
+  For a handler-only channel (no agent path), combine this with
+  [`strict_mention`](#mention--trigger-behavior).
+
 ### Unauthorized User Handling
 
 ```yaml

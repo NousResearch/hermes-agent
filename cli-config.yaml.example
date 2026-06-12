@@ -729,6 +729,18 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#
+# Slack-specific settings (config.yaml top-level, not under platforms:):
+#
+# slack:
+#   # Per-channel no_agent script handlers — run a script on every plain user
+#   # message in a channel (the Slack analogue of webhook deliver_only). The
+#   # raw Slack event JSON is piped to the script on stdin; failures/timeouts
+#   # never affect normal message handling. @mentions still reach the agent.
+#   channel_handlers:
+#     C0123456789:                   # channel ID
+#       script: contact_spam_cleanup.py  # under ~/.hermes/scripts/ (or absolute path inside it)
+#       timeout: 120                 # seconds (default 60)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

@@ -654,6 +654,9 @@ class MessagingPlatformUpdate(BaseModel):
     enabled: Optional[bool] = None
     env: Dict[str, str] = {}
     clear_env: List[str] = []
+    # Explicit body profile beats the query param injected by the global
+    # dashboard profile switcher (same precedence as other scoped writes).
+    profile: Optional[str] = None
 
 
 class TelegramOnboardingStart(BaseModel):
@@ -4209,7 +4212,10 @@ def _gateway_platform_config(platform_id: str):
 
 
 def _messaging_platform_payload(
-    entry: dict[str, Any], env_on_disk: dict[str, str], runtime: dict | None
+    entry: dict[str, Any],
+    env_on_disk: dict[str, str],
+    runtime: dict | None,
+    scoped: bool = False,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     gateway_running = get_running_pid() is not None
@@ -4222,7 +4228,11 @@ def _messaging_platform_payload(
     env_vars = []
 
     for key in entry["env_vars"]:
-        value = env_on_disk.get(key) or os.getenv(key, "")
+        # When profile-scoped, judge only the profile's own .env — the
+        # dashboard process's os.environ carries the ROOT install's .env
+        # (loaded at startup) and would falsely report the root credentials
+        # as the profile's.
+        value = env_on_disk.get(key) or ("" if scoped else os.getenv(key, ""))
         env_vars.append(
             {
                 "key": key,
@@ -4233,26 +4243,46 @@ def _messaging_platform_payload(
             }
         )
 
-    try:
-        gateway_config, platform, platform_config = _gateway_platform_config(
-            platform_id
-        )
-        enabled = bool(platform_config and platform_config.enabled)
-        configured = bool(
-            platform_config
-            and gateway_config._is_platform_connected(platform, platform_config)
-        )
-        home_channel = (
-            platform_config.home_channel.to_dict()
-            if platform_config and platform_config.home_channel
-            else None
-        )
-    except Exception:
-        enabled = False
-        configured = all(
-            env_on_disk.get(key) or os.getenv(key, "") for key in entry["required_env"]
-        )
-        home_channel = None
+    if scoped:
+        # Profile-scoped view: derive enablement/configuration from the
+        # profile's config.yaml + .env only. load_gateway_config()'s
+        # env-override layer reads os.environ and would leak the root
+        # install's tokens into the profile's reported state.
+        try:
+            cfg = load_config()
+            platforms_cfg = cfg.get("platforms") or {}
+            plat_cfg = platforms_cfg.get(platform_id)
+            if not isinstance(plat_cfg, dict):
+                plat_cfg = {}
+            enabled = bool(plat_cfg.get("enabled"))
+            hc = plat_cfg.get("home_channel")
+            home_channel = hc if isinstance(hc, dict) else None
+        except Exception:
+            enabled = False
+            home_channel = None
+        configured = all(env_on_disk.get(key) for key in entry["required_env"])
+    else:
+        try:
+            gateway_config, platform, platform_config = _gateway_platform_config(
+                platform_id
+            )
+            enabled = bool(platform_config and platform_config.enabled)
+            configured = bool(
+                platform_config
+                and gateway_config._is_platform_connected(platform, platform_config)
+            )
+            home_channel = (
+                platform_config.home_channel.to_dict()
+                if platform_config and platform_config.home_channel
+                else None
+            )
+        except Exception:
+            enabled = False
+            configured = all(
+                env_on_disk.get(key) or os.getenv(key, "")
+                for key in entry["required_env"]
+            )
+            home_channel = None
 
     state = (
         runtime_platform.get("state") if isinstance(runtime_platform, dict) else None
@@ -4675,19 +4705,28 @@ async def cancel_telegram_onboarding(pairing_id: str):
 
 
 @app.get("/api/messaging/platforms")
-async def get_messaging_platforms():
-    env_on_disk = load_env()
-    runtime = read_runtime_status()
-    return {
-        "platforms": [
-            _messaging_platform_payload(entry, env_on_disk, runtime)
-            for entry in _messaging_platform_catalog()
-        ]
-    }
+async def get_messaging_platforms(profile: Optional[str] = None):
+    # Profile-scoped so the dashboard's global profile switcher shows the
+    # TARGET profile's channel credentials/state, not the root install's.
+    # Inside _profile_scope, load_env()/read_runtime_status()/get_running_pid()
+    # all resolve against the requested profile's HERMES_HOME.
+    with _profile_scope(profile) as scoped_dir:
+        env_on_disk = load_env()
+        runtime = read_runtime_status()
+        return {
+            "platforms": [
+                _messaging_platform_payload(
+                    entry, env_on_disk, runtime, scoped=scoped_dir is not None
+                )
+                for entry in _messaging_platform_catalog()
+            ]
+        }
 
 
 @app.put("/api/messaging/platforms/{platform_id}")
-async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpdate):
+async def update_messaging_platform(
+    platform_id: str, body: MessagingPlatformUpdate, profile: Optional[str] = None
+):
     entry = _catalog_lookup(platform_id)
     if not entry:
         raise HTTPException(
@@ -4696,26 +4735,27 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 
     allowed_env = set(entry["env_vars"])
     try:
-        for key in body.clear_env:
-            if key not in allowed_env:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{key} is not configurable for {entry['name']}",
-                )
-            remove_env_value(key)
+        with _profile_scope(body.profile or profile):
+            for key in body.clear_env:
+                if key not in allowed_env:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{key} is not configurable for {entry['name']}",
+                    )
+                remove_env_value(key)
 
-        for key, value in body.env.items():
-            if key not in allowed_env:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"{key} is not configurable for {entry['name']}",
-                )
-            trimmed = value.strip()
-            if trimmed:
-                save_env_value(key, trimmed)
+            for key, value in body.env.items():
+                if key not in allowed_env:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"{key} is not configurable for {entry['name']}",
+                    )
+                trimmed = value.strip()
+                if trimmed:
+                    save_env_value(key, trimmed)
 
-        if body.enabled is not None:
-            _write_platform_enabled(platform_id, body.enabled)
+            if body.enabled is not None:
+                _write_platform_enabled(platform_id, body.enabled)
 
         return {"ok": True, "platform": platform_id}
     except HTTPException:
@@ -4726,15 +4766,18 @@ async def update_messaging_platform(platform_id: str, body: MessagingPlatformUpd
 
 
 @app.post("/api/messaging/platforms/{platform_id}/test")
-async def test_messaging_platform(platform_id: str):
+async def test_messaging_platform(platform_id: str, profile: Optional[str] = None):
     entry = _catalog_lookup(platform_id)
     if not entry:
         raise HTTPException(
             status_code=404, detail=f"Unknown messaging platform: {platform_id}"
         )
 
-    env_on_disk = load_env()
-    payload = _messaging_platform_payload(entry, env_on_disk, read_runtime_status())
+    with _profile_scope(profile) as scoped_dir:
+        env_on_disk = load_env()
+        payload = _messaging_platform_payload(
+            entry, env_on_disk, read_runtime_status(), scoped=scoped_dir is not None
+        )
     if not payload["enabled"]:
         message = f"{entry['name']} is disabled. Enable it, then restart the gateway."
         return {"ok": False, "state": payload["state"], "message": message}

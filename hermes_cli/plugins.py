@@ -1532,39 +1532,35 @@ class PluginManager:
                 logger.warning("Plugin '%s' has no register() function", manifest.name)
             else:
                 ctx = PluginContext(manifest, self)
+                # Snapshot registry state BEFORE register() so each registry's
+                # attribution counts only what THIS plugin actually added.
+                # The previous approach diffed names against all already-loaded
+                # plugins, which mis-credited a plugin that registered a hook /
+                # middleware / tool name an earlier plugin had already used:
+                # the shared name was attributed to the first plugin only, so
+                # later plugins under-reported in `hermes plugins list`.
+                _tools_before = set(self._plugin_tool_names)
+                _hook_counts_before = {
+                    h: len(cbs) for h, cbs in self._hooks.items()
+                }
+                _mw_counts_before = {
+                    kind: len(cbs) for kind, cbs in self._middleware.items()
+                }
                 register_fn(ctx)
                 loaded.tools_registered = [
                     t for t in self._plugin_tool_names
-                    if t not in {
-                        n
-                        for name, p in self._plugins.items()
-                        for n in p.tools_registered
-                    }
+                    if t not in _tools_before
                 ]
-                loaded.hooks_registered = list(
-                    {
-                        h
-                        for h, cbs in self._hooks.items()
-                        if cbs  # non-empty
-                    }
-                    - {
-                        h
-                        for name, p in self._plugins.items()
-                        for h in p.hooks_registered
-                    }
-                )
-                loaded.middleware_registered = list(
-                    {
-                        kind
-                        for kind, cbs in self._middleware.items()
-                        if cbs
-                    }
-                    - {
-                        kind
-                        for name, p in self._plugins.items()
-                        for kind in p.middleware_registered
-                    }
-                )
+                loaded.hooks_registered = [
+                    h
+                    for h, cbs in self._hooks.items()
+                    if len(cbs) > _hook_counts_before.get(h, 0)
+                ]
+                loaded.middleware_registered = [
+                    kind
+                    for kind, cbs in self._middleware.items()
+                    if len(cbs) > _mw_counts_before.get(kind, 0)
+                ]
                 loaded.commands_registered = [
                     c for c in self._plugin_commands
                     if self._plugin_commands[c].get("plugin") == manifest.name

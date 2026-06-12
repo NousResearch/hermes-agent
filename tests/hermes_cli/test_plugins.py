@@ -1203,6 +1203,36 @@ class TestPluginManagerList:
             assert "tools" in p
             assert "hooks" in p
 
+    def test_shared_hook_name_credited_to_every_plugin(self, tmp_path, monkeypatch):
+        """Two plugins registering the SAME hook name are each credited.
+
+        Regression: hook/middleware/tool attribution diffed names against all
+        already-loaded plugins, so when a later plugin registered a hook name
+        an earlier plugin had already used, the shared name was attributed to
+        the first plugin only and the later plugin reported 0 hooks in
+        `hermes plugins list`. Attribution now counts what each plugin's own
+        register() added (per-registration delta), so both get credit.
+        """
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        _make_plugin_dir(
+            plugins_dir, "first_hooker",
+            register_body='ctx.register_hook("post_tool_call", lambda **kw: None)',
+        )
+        _make_plugin_dir(
+            plugins_dir, "second_hooker",
+            register_body='ctx.register_hook("post_tool_call", lambda **kw: None)',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        by_name = {p["name"]: p for p in mgr.list_plugins()}
+        assert by_name["first_hooker"]["hooks"] == 1
+        assert by_name["second_hooker"]["hooks"] == 1, (
+            "second plugin sharing a hook name was not credited with its hook"
+        )
+
 
 
 class TestPreLlmCallTargetRouting:

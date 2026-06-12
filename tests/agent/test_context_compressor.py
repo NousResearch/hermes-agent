@@ -1506,7 +1506,8 @@ class TestSummaryFailureTrackingForGatewayWarning:
         fallback = next(m["content"] for m in result if "Summary generation was unavailable" in m.get("content", ""))
         assert len(fallback) <= 8300
         assert "deterministic fallback" in fallback
-        assert "important detail" in fallback
+        assert "1 compacted message(s)" in fallback
+        assert "ASSISTANT: head assistant" in fallback
 
     def test_compress_clears_fallback_flag_on_subsequent_success(self):
         mock_response = MagicMock()

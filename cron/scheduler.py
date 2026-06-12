@@ -819,6 +819,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
+        # Always resolve the adapter from the live adapters dict at delivery time
+        # (not at job-creation time) to avoid holding a stale reference after a
+        # platform reconnect.  Discord in particular replaces self._client on
+        # every reconnect; a cached adapter from before the reconnect will have a
+        # closed aiohttp session and raise RuntimeError: Session is closed (#44541).
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
         if runtime_adapter is not None and loop is not None and getattr(loop, "is_running", lambda: False)():
@@ -829,8 +834,27 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 adapter_ok = True
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
+
+                    # Wrap in a coroutine that re-resolves the live adapter at
+                    # execution time so a reconnect between now and when the
+                    # event-loop actually runs the send cannot produce a
+                    # "Session is closed" error from a stale client (#44541).
+                    _adapters_ref = adapters  # captured by closure below
+                    _platform_ref = platform
+
+                    async def _send_via_live_adapter(
+                        _chat_id=chat_id,
+                        _text=text_to_send,
+                        _meta=send_metadata,
+                    ):
+                        live = (_adapters_ref or {}).get(_platform_ref)
+                        if live is None:
+                            from gateway.platforms.base import SendResult
+                            return SendResult(success=False, error="adapter no longer live at send time")
+                        return await live.send(_chat_id, _text, metadata=_meta)
+
                     future = safe_schedule_threadsafe(
-                        runtime_adapter.send(chat_id, text_to_send, metadata=send_metadata),
+                        _send_via_live_adapter(),
                         loop,
                     )
                     if future is None:

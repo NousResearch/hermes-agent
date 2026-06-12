@@ -2736,3 +2736,138 @@ class TestCronDeliveryTargets:
         monkeypatch.setattr(gateway_config, "load_gateway_config", _boom)
 
         assert cron_delivery_targets() == []
+
+
+class TestDiscordCronStaleSession:
+    """Regression tests for #44541 — cron delivery must not hold a stale Discord
+    client reference after the adapter reconnects.
+
+    When Discord reconnects the gateway replaces ``self._client`` with a fresh
+    ``commands.Bot`` instance; the old instance's aiohttp session is closed.
+    Any cron send coroutine that was bound to the pre-reconnect adapter would
+    have raised ``RuntimeError: Session is closed``.
+
+    The fix applies two guards:
+    1. ``_deliver_result`` wraps the send in a closure that re-resolves the live
+       adapter from the ``adapters`` dict at coroutine-execution time (#44541).
+    2. ``DiscordAdapter.send()`` returns a ``SendResult(success=False)`` when
+       ``self._client.is_closed()`` instead of propagating the aiohttp error.
+    """
+
+    def test_deliver_result_resolves_live_adapter_at_execution_time(self):
+        """The send coroutine must look up the adapter from the live dict when it
+        runs, not capture the adapter object at scheduling time.
+
+        Simulate a reconnect: the initial adapter is replaced in the dict between
+        the scheduling call and the loop executing the coroutine.  The new adapter
+        must be the one that actually receives the send() call.
+        """
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        old_adapter = AsyncMock()
+        old_adapter.send = AsyncMock(return_value=SendResult(success=True))
+        new_adapter = AsyncMock()
+        new_adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+        # adapters dict starts with old_adapter; we'll swap it before "execution"
+        live_adapters = {Platform.DISCORD: old_adapter}
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        executed_coro = []
+
+        def fake_schedule_threadsafe(coro, _loop):
+            # Simulate reconnect: swap to new_adapter before the coro runs
+            live_adapters[Platform.DISCORD] = new_adapter
+            executed_coro.append(coro)
+            import asyncio
+            result = asyncio.get_event_loop().run_until_complete(coro)
+            f = Future()
+            f.set_result(result)
+            return f
+
+        job = {
+            "id": "discord-stale-test",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "111222333"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule_threadsafe), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock()):
+            result = _deliver_result(
+                job,
+                "Hello from cron",
+                adapters=live_adapters,
+                loop=loop,
+            )
+
+        # Delivery should succeed (no error string returned)
+        assert result is None, f"Expected successful delivery, got: {result!r}"
+        # The NEW (live) adapter must have been used, not the stale pre-reconnect one
+        new_adapter.send.assert_awaited_once()
+        old_adapter.send.assert_not_awaited()
+
+    def test_deliver_result_falls_back_when_adapter_removed_during_reconnect(self):
+        """If the adapter is removed from the dict (during the reconnect window
+        before the new adapter is installed), the cron delivery path must fall
+        back to the standalone HTTP path rather than crashing.
+        """
+        from gateway.config import Platform
+        from gateway.platforms.base import SendResult
+        from concurrent.futures import Future
+
+        initial_adapter = AsyncMock()
+        initial_adapter.send = AsyncMock(return_value=SendResult(success=True))
+
+        # Adapter dict that will be emptied before coroutine execution
+        live_adapters = {Platform.DISCORD: initial_adapter}
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.DISCORD: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        standalone_send = AsyncMock(return_value={"success": True})
+
+        def fake_schedule_threadsafe(coro, _loop):
+            # Simulate reconnect window: adapter temporarily absent
+            live_adapters.pop(Platform.DISCORD, None)
+            import asyncio
+            result = asyncio.get_event_loop().run_until_complete(coro)
+            f = Future()
+            f.set_result(result)
+            return f
+
+        job = {
+            "id": "discord-absent-test",
+            "deliver": "origin",
+            "origin": {"platform": "discord", "chat_id": "444555666"},
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("agent.async_utils.safe_schedule_threadsafe", side_effect=fake_schedule_threadsafe), \
+             patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            result = _deliver_result(
+                job,
+                "Hello from cron (fallback)",
+                adapters=live_adapters,
+                loop=loop,
+            )
+
+        # When live adapter not found the send returns success=False and
+        # _deliver_result falls back to standalone — no hard crash
+        assert result is None, f"Standalone fallback should succeed, got: {result!r}"

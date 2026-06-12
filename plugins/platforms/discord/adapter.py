@@ -1428,6 +1428,14 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # Guard against a stale client whose aiohttp session was closed during a
+        # reconnect cycle.  discord.py creates a brand-new Bot (and therefore a
+        # new aiohttp.ClientSession) on every reconnect; if cron delivery holds a
+        # reference to the pre-reconnect adapter and calls send() after the old
+        # session is closed it raises RuntimeError: Session is closed (#44541).
+        if getattr(self._client, "is_closed", lambda: False)():
+            return SendResult(success=False, error="Discord client session is closed (reconnecting)")
+
         try:
             # Determine target channel: thread_id in metadata takes precedence.
             thread_id = None

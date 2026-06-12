@@ -75,7 +75,11 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
-from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
+from plugins.platforms.discord.adapter import (  # noqa: E402
+    DiscordAdapter,
+    _discord_app_command_scope_kwargs,
+)
+import plugins.platforms.discord.adapter as discord_adapter_module  # noqa: E402
 
 
 class FakeTree:
@@ -97,7 +101,12 @@ class FakeTree:
 
 
 @pytest.fixture
-def adapter():
+def adapter(monkeypatch):
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_SMART_THREAD_TITLES", raising=False)
     config = PlatformConfig(enabled=True, token="***")
     adapter = DiscordAdapter(config)
     adapter._client = SimpleNamespace(
@@ -112,6 +121,59 @@ def adapter():
     # construct a full auth context (allowlist / channel scope).
     adapter._check_slash_authorization = AsyncMock(return_value=True)
     return adapter
+
+
+def test_discord_bot_scope_kwargs_enable_guild_and_user_installs(monkeypatch):
+    calls = {}
+
+    class FakeInstallationType:
+        def __init__(self, **kwargs):
+            calls["installs"] = kwargs
+
+    class FakeCommandContext:
+        def __init__(self, **kwargs):
+            calls["contexts"] = kwargs
+
+    monkeypatch.setattr(discord_adapter_module, "DISCORD_AVAILABLE", True)
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "discord",
+        SimpleNamespace(
+            app_commands=SimpleNamespace(
+                AppInstallationType=FakeInstallationType,
+                AppCommandContext=FakeCommandContext,
+            )
+        ),
+    )
+
+    kwargs = _discord_app_command_scope_kwargs()
+
+    assert set(kwargs) == {"allowed_installs", "allowed_contexts"}
+    assert calls["installs"] == {"guild": True, "user": True}
+    assert calls["contexts"] == {
+        "guild": True,
+        "dm_channel": True,
+        "private_channel": True,
+    }
+
+
+def test_patchable_payload_includes_install_and_context_metadata(adapter):
+    payload = {
+        "type": 1,
+        "name": "status",
+        "description": "Show Hermes session status",
+        "options": [],
+        "contexts": [2, 0, 1],
+        "integration_types": [1, 0],
+    }
+
+    assert adapter._patchable_app_command_payload(payload) == {
+        "name": "status",
+        "description": "Show Hermes session status",
+        "options": [],
+        "contexts": [0, 1, 2],
+        "integration_types": [0, 1],
+    }
 
 
 # ------------------------------------------------------------------

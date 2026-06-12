@@ -334,21 +334,66 @@ sys.path.insert(0, str(PROJECT_ROOT))
 # Falls back to ~/.hermes/active_profile for sticky default.
 # ---------------------------------------------------------------------------
 def _apply_profile_override() -> None:
-    """Pre-parse --profile/-p and set HERMES_HOME before module imports."""
+    """Pre-parse --profile/-p and set HERMES_HOME before imports."""
     argv = sys.argv[1:]
     profile_name = None
     consume = 0
+    profile_index = None
 
-    # 1. Check for explicit -p / --profile flag
-    for i, arg in enumerate(argv):
+    def _inside_mcp_add_args(index: int) -> bool:
+        """True once argv reaches `hermes mcp add ... --args <command argv>`.
+
+        ``mcp add --args`` is command-argv passthrough. Flags after that point
+        belong to the child MCP command (for example Docker MCP Toolkit's
+        ``--profile``), not to Hermes' own profile selector.
+        """
+        try:
+            mcp_index = argv.index("mcp", 0, index)
+            argv.index("add", mcp_index + 1, index)
+        except ValueError:
+            return False
+        return True
+
+    # 1. Check for explicit -p / --profile flag. Historically this worked even
+    # after the subcommand (`hermes chat -p coder`), so keep scanning broadly.
+    # The exception is command-argv passthrough regions such as `mcp add --args`.
+    value_flags = {
+        "-z", "--oneshot",
+        "-m", "--model",
+        "--provider",
+        "-t", "--toolsets",
+        "-r", "--resume",
+        "-s", "--skills",
+    }
+    optional_value_flags = {"-c", "--continue"}
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--":
+            break
+        if arg == "--args" and _inside_mcp_add_args(i):
+            break
         if arg in {"--profile", "-p"} and i + 1 < len(argv):
             profile_name = argv[i + 1]
             consume = 2
+            profile_index = i
             break
-        elif arg.startswith("--profile="):
+        if arg.startswith("--profile="):
             profile_name = arg.split("=", 1)[1]
             consume = 1
+            profile_index = i
             break
+        if "=" not in arg and arg in value_flags and i + 1 < len(argv):
+            i += 2
+        elif (
+            "=" not in arg
+            and arg in optional_value_flags
+            and i + 1 < len(argv)
+            and not argv[i + 1].startswith("-")
+        ):
+            i += 2
+        else:
+            i += 1
 
     # 1b. Reject values that can't be valid profile names (e.g. pytest's
     # "-p no:xdist" would be misread as profile "no:xdist" otherwise).
@@ -360,6 +405,7 @@ def _apply_profile_override() -> None:
         if not _re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
             profile_name = None
             consume = 0
+            profile_index = None
 
     # 1.5 If HERMES_HOME is already set and no explicit flag was given, trust it
     # only when it already points to a specific profile directory.  The
@@ -407,16 +453,9 @@ def _apply_profile_override() -> None:
             return
         os.environ["HERMES_HOME"] = hermes_home
         # Strip the flag from argv so argparse doesn't choke
-        if consume > 0:
-            for i, arg in enumerate(argv):
-                if arg in {"--profile", "-p"}:
-                    start = i + 1  # +1 because argv is sys.argv[1:]
-                    sys.argv = sys.argv[:start] + sys.argv[start + consume :]
-                    break
-                elif arg.startswith("--profile="):
-                    start = i + 1
-                    sys.argv = sys.argv[:start] + sys.argv[start + 1 :]
-                    break
+        if consume > 0 and profile_index is not None:
+            start = profile_index + 1  # +1 because argv is sys.argv[1:]
+            sys.argv = sys.argv[:start] + sys.argv[start + consume :]
 
 
 _apply_profile_override()
@@ -1523,6 +1562,8 @@ def _ensure_tui_node() -> None:
             env={**os.environ, "HERMES_HOME": hermes_home},
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             check=False,
         )
     except (OSError, subprocess.SubprocessError):
@@ -1623,7 +1664,11 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         npm_cwd = _workspace_root(tui_dir)
         # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
         # See #38772.
-        npm_workspace_args: tuple[str, ...] = ("--workspace", "ui-tui")
+        # When ui-tui/ has its own package-lock.json (e.g. curl install),
+        # _workspace_root() returns tui_dir itself.  Passing --workspace in
+        # that case fails because npm cannot find a workspace named "ui-tui"
+        # inside ui-tui/.  See #42973.
+        npm_workspace_args: tuple[str, ...] = () if npm_cwd == tui_dir else ("--workspace", "ui-tui")
         if termux_startup:
             npm_cwd, npm_workspace_args = _termux_workspace_install_context(
                 tui_dir,
@@ -1643,6 +1688,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             env={**os.environ, "CI": "1"},
         )
         if result.returncode != 0:
@@ -1667,6 +1714,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             cwd=str(ink_dir),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -1695,6 +1744,8 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             cwd=str(tui_dir),
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
         )
         if result.returncode != 0:
             combined = f"{result.stdout or ''}{result.stderr or ''}".strip()
@@ -2368,6 +2419,8 @@ def cmd_whatsapp(args):
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.PIPE,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
             )
         except KeyboardInterrupt:
             print("\n  ✗ Install cancelled")
@@ -4556,13 +4609,18 @@ def _run_npm_install_deterministic(
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
     """
+    # unicode-animations' postinstall animates to /dev/tty (bypasses
+    # --silent/capture_output). It no-ops when CI is set — same as the TUI
+    # install path and nix/lib.nix npm ci hooks.
+    run_env = {**os.environ, **(env or {}), "CI": "1"}
+
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
         ci_cmd = [npm, "ci", *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
-            env=env,
+            env=run_env,
             capture_output=capture_output,
             text=True,
             encoding="utf-8",
@@ -4577,7 +4635,7 @@ def _run_npm_install_deterministic(
     return subprocess.run(
         install_cmd,
         cwd=cwd,
-        env=env,
+        env=run_env,
         capture_output=capture_output,
         text=True,
         encoding="utf-8",
@@ -4642,7 +4700,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     # graph (including apps/desktop with its Electron + node-pty deps) is never
     # resolved here.  Without --workspace the root package.json's apps/* glob
     # would pull in desktop on every web build. See #38772.
-    npm_workspace_args: tuple[str, ...] = ("--workspace", "web")
+    # When web/ has its own package-lock.json, _workspace_root() returns
+    # web_dir itself and --workspace would fail.  See #42973.
+    npm_workspace_args: tuple[str, ...] = () if npm_cwd == web_dir else ("--workspace", "web")
     if _is_termux_startup_environment():
         npm_cwd, npm_workspace_args = _termux_workspace_install_context(web_dir)
     r1 = _run_npm_install_deterministic(
@@ -10214,6 +10274,21 @@ def _report_dashboard_status() -> int:
     return len(pids)
 
 
+def _dashboard_listening(host: str, port: int) -> bool:
+    """True when something is accepting TCP connections at host:port.
+
+    Any listener counts — even a 401 response proves a dashboard is up.
+    Used by the unified profile-launch routing to decide attach-vs-start.
+    """
+    import socket
+
+    try:
+        with socket.create_connection((host or "127.0.0.1", port), timeout=1.5):
+            return True
+    except OSError:
+        return False
+
+
 def cmd_dashboard(args):
     """Start the web UI server, or (with --stop/--status) manage running ones."""
     # --status: report running dashboards and exit, no deps needed.
@@ -10233,6 +10308,67 @@ def cmd_dashboard(args):
         # we killed at least one, 1 if they were all unkillable.
         remaining = _find_stale_dashboard_pids()
         sys.exit(1 if remaining else 0)
+
+    # ── Unified profile launch routing ────────────────────────────────
+    # The dashboard is a MACHINE management surface: it can read/write any
+    # profile via the per-request ?profile= scoping. Running one dashboard
+    # per profile just fragments that (port collisions, N processes, and a
+    # "which dashboard am I on?" guessing game). So when a NAMED profile
+    # launches the dashboard (`worker dashboard` → HERMES_HOME points into
+    # profiles/), default to the machine dashboard:
+    #   - already running → open the browser at ?profile=<name> and exit
+    #   - not running     → re-exec as the machine dashboard (pinned to the
+    #     default profile so _apply_profile_override can't re-route through
+    #     the sticky active_profile file) with the launching profile
+    #     preselected in the UI's switcher.
+    # `--isolated` opts out and preserves the old per-profile behavior.
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        _launch_profile = get_active_profile_name()
+    except Exception:
+        _launch_profile = "default"
+
+    if (
+        _launch_profile not in ("default", "custom")
+        and not getattr(args, "isolated", False)
+        and not getattr(args, "open_profile", "")
+        # Desktop pool backends are intentionally per-profile.
+        and os.environ.get("HERMES_DESKTOP") != "1"
+    ):
+        url = f"http://{args.host or '127.0.0.1'}:{args.port}/?profile={_launch_profile}"
+        if _dashboard_listening(args.host, args.port):
+            print(f"Machine dashboard already running on port {args.port}.")
+            print(f"  Managing profile '{_launch_profile}': {url}")
+            if not args.no_open:
+                try:
+                    import webbrowser
+                    webbrowser.open(url)
+                except Exception:
+                    pass
+            sys.exit(0)
+
+        print(
+            f"Routing to the machine dashboard (profile '{_launch_profile}' "
+            f"preselected). Use --isolated for a dedicated per-profile server."
+        )
+        reexec_argv = [
+            sys.executable, "-m", "hermes_cli.main",
+            "-p", "default",
+            "dashboard",
+            "--port", str(args.port),
+            "--host", args.host,
+            "--open-profile", _launch_profile,
+        ]
+        if args.no_open:
+            reexec_argv.append("--no-open")
+        if getattr(args, "insecure", False):
+            reexec_argv.append("--insecure")
+        if getattr(args, "skip_build", False):
+            reexec_argv.append("--skip-build")
+        env = os.environ.copy()
+        # Drop the profile HERMES_HOME so the child binds the machine root.
+        env.pop("HERMES_HOME", None)
+        os.execvpe(sys.executable, reexec_argv, env)
 
     # Attach gui.log early so dashboard startup/build failures are captured in
     # the same logs directory as every other Hermes surface.
@@ -10297,6 +10433,26 @@ def cmd_dashboard(args):
         # the missing-provider state if it matters.
         print(f"⚠ Plugin discovery failed: {exc}", file=sys.stderr)
 
+    # Desktop chat uses the dashboard's in-process /api/ws gateway, which builds
+    # agents via tui_gateway.server._make_agent.  That path only snapshots the
+    # tool registry — it never starts MCP discovery (the stdio TUI does that in
+    # tui_gateway/entry.py, which the dashboard process doesn't run).  Without
+    # this, a profile's configured MCP servers never connect, so desktop
+    # sessions show no MCP tools.  Spawn discovery in the background here so a
+    # slow/dead server can't block dashboard startup.
+    try:
+        from hermes_cli.mcp_startup import start_background_mcp_discovery
+
+        start_background_mcp_discovery(
+            logger=logger,
+            thread_name="dashboard-mcp-discovery",
+        )
+    except Exception:
+        logger.debug(
+            "Background MCP tool discovery failed at dashboard startup",
+            exc_info=True,
+        )
+
     from hermes_cli.web_server import start_server
 
     # The in-browser Chat tab (the embedded TUI over PTY/WebSocket) is always
@@ -10307,6 +10463,7 @@ def cmd_dashboard(args):
         port=args.port,
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
+        initial_profile=getattr(args, "open_profile", "") or "",
     )
 
 

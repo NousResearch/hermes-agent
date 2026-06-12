@@ -16,6 +16,7 @@ from ..config import RealtimeConfig
 from .base import (
     AGENT_CONSULT_TOOL,
     DEFAULT_INSTRUCTIONS,
+    END_CALL_TOOL,
     WAITING_ETIQUETTE,
     RealtimeEvent,
     RealtimeVoiceSession,
@@ -71,7 +72,9 @@ class GeminiLiveSession(RealtimeVoiceSession):
                 "system_instruction": {
                     "parts": [{"text": self.instructions}]
                 },
-                "tools": [{"function_declarations": [AGENT_CONSULT_TOOL]}],
+                "tools": [
+                    {"function_declarations": [AGENT_CONSULT_TOOL, END_CALL_TOOL]}
+                ],
             }
         })
 

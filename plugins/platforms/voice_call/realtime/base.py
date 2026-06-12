@@ -31,6 +31,25 @@ AGENT_CONSULT_TOOL = {
     },
 }
 
+END_CALL_TOOL = {
+    "name": "end_call",
+    "description": (
+        "Hang up the phone call. Use when the caller says goodbye, asks you "
+        "to hang up, or the conversation is clearly finished. Say a brief "
+        "goodbye FIRST, then call this — the line closes a moment after."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Short reason (e.g. 'caller said goodbye').",
+            }
+        },
+        "required": [],
+    },
+}
+
 DEFAULT_INSTRUCTIONS = (
     "You are Hermes, a helpful assistant speaking on a live phone call. "
     "Reply briefly and naturally, in a conversational spoken style. Use the "
@@ -49,7 +68,10 @@ WAITING_ETIQUETTE = (
     "running, and never offer to get back to them later — the answer "
     "arrives in this call. Vary the phrasing; don't repeat the same filler "
     "twice in a row. When the result arrives, deliver it directly without "
-    "re-announcing that you were checking."
+    "re-announcing that you were checking. When the caller says goodbye, "
+    "asks you to hang up, or the conversation has clearly ended, say a "
+    "brief goodbye and then call the end_call tool — do not leave the line "
+    "open."
 )
 
 

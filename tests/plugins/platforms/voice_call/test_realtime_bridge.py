@@ -709,7 +709,7 @@ def test_openai_session_update_uses_ga_shape(monkeypatch):
     for beta_key in ("modalities", "voice", "input_audio_format",
                      "output_audio_format", "input_audio_transcription"):
         assert beta_key not in s, beta_key
-    assert s["tools"][0]["name"] == "agent_consult"
+    assert [t["name"] for t in s["tools"]] == ["agent_consult", "end_call"]
 
 
 def test_waiting_etiquette_appended_to_instructions(monkeypatch):
@@ -792,6 +792,42 @@ async def test_bridge_ulaw_passthrough_skips_transcoding(fake_runtime):
 
     media = [m for m in ws.sent if m.get("event") == "media"]
     assert b64.b64decode(media[0]["media"]["payload"]) == bytes([0x55]) * 160
+
+
+@pytest.mark.asyncio
+async def test_model_end_call_tool_hangs_up(fake_runtime, vc_config, provider, store):
+    """The realtime model can end the call: goodbye drains, then the carrier
+    hangup goes through manager.end_call (provider-agnostic)."""
+    from plugins.platforms.voice_call.events import CallState
+    from plugins.platforms.voice_call.manager import CallManager
+
+    manager = CallManager(vc_config, provider, store)
+    record = _record()
+    record.metadata["realtime"] = True
+    manager.active[record.call_id] = record
+    manager._by_provider_id[record.provider_call_id] = record.call_id
+    fake_runtime.manager = manager
+
+    ws = FakeCarrierWs([])
+    session = FakeSession()
+    bridge = _bridge(fake_runtime, record, session)
+    run = asyncio.create_task(bridge.run(ws))
+    await asyncio.sleep(0.02)
+    session.push(RealtimeEvent(
+        type="tool_call", tool_call_id="c-end", tool_name="end_call",
+        tool_args={"reason": "caller said goodbye"},
+    ))
+    deadline = asyncio.get_running_loop().time() + 3.0
+    while (manager.get_call(record.call_id) is not None
+           and asyncio.get_running_loop().time() < deadline):
+        await asyncio.sleep(0.05)
+
+    assert manager.get_call(record.call_id) is None       # finalized
+    assert record.state == CallState.HANGUP_BOT
+    assert provider.hangups == [record.provider_call_id]  # carrier hangup issued
+    session.push(RealtimeEvent(type="closed"))
+    await asyncio.wait_for(run, 2)
+    await manager.shutdown()
 
 
 @pytest.mark.asyncio

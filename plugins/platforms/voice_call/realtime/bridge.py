@@ -403,6 +403,21 @@ class RealtimeCallBridge:
                 "voice_call realtime: filler inject failed", exc_info=True)
 
     async def _handle_tool_call(self, event) -> None:
+        if event.tool_name == "end_call":
+            await self._handle_end_call(event)
+            return
+        if event.tool_name != "agent_consult":
+            logger.warning(
+                "voice_call realtime: unknown tool %r requested", event.tool_name
+            )
+            try:
+                await self.session.send_tool_result(
+                    event.tool_call_id, f"Unknown tool {event.tool_name!r}."
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("voice_call realtime: tool error reply failed",
+                             exc_info=True)
+            return
         question = str(event.tool_args.get("question", "")).strip()
         started_at = time.time()
         timeout = max(15.0, float(
@@ -469,6 +484,31 @@ class RealtimeCallBridge:
             self.record.call_id, status, time.time() - started_at, len(answer),
         )
         await self._deliver_tool_result(event.tool_call_id, answer)
+
+    async def _handle_end_call(self, event) -> None:
+        """The model asked to hang up (caller said goodbye). Let any
+        in-flight goodbye finish playing, then end the call at the carrier —
+        works for every provider via manager.end_call → provider.hangup_call."""
+        reason = str(event.tool_args.get("reason", "") or "model requested hangup")
+        logger.info(
+            "voice_call realtime: model requested hangup call=%s reason=%s",
+            self.record.call_id, reason,
+        )
+        # Grace: drain the goodbye (active response + queued frames), max 8s.
+        deadline = time.time() + 8.0
+        while time.time() < deadline and (
+            self.session.response_active
+            or (self._pacer is not None and self._pacer.pending)
+        ):
+            await asyncio.sleep(0.1)
+        await asyncio.sleep(0.3)  # let the carrier flush the last frames
+        manager = self.runtime.manager
+        if manager is None or manager.get_call(self.record.call_id) is None:
+            return  # already ended (caller hung up first)
+        try:
+            await manager.end_call(self.record.call_id, reason="hangup-bot")
+        except Exception:  # noqa: BLE001
+            logger.exception("voice_call realtime: model-requested hangup failed")
 
     async def deliver_agent_text(self, text: str, final: bool = True) -> bool:
         """Agent output routed to a realtime call (via adapter.send()).

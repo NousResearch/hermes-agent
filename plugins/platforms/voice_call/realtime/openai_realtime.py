@@ -17,6 +17,7 @@ from ..config import RealtimeConfig
 from .base import (
     AGENT_CONSULT_TOOL,
     DEFAULT_INSTRUCTIONS,
+    END_CALL_TOOL,
     WAITING_ETIQUETTE,
     RealtimeEvent,
     RealtimeVoiceSession,
@@ -77,7 +78,10 @@ class OpenAIRealtimeSession(RealtimeVoiceSession):
                         "voice": self.voice,
                     },
                 },
-                "tools": [{"type": "function", **AGENT_CONSULT_TOOL}],
+                "tools": [
+                    {"type": "function", **AGENT_CONSULT_TOOL},
+                    {"type": "function", **END_CALL_TOOL},
+                ],
                 "tool_choice": "auto",
             },
         }

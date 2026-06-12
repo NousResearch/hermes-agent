@@ -876,6 +876,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         def get_session(self, target):
             return {"id": target}
 
+        def resolve_resume_session_id(self, sid):
+            return sid
+
         def reopen_session(self, target):
             captured["reopened"] = target
 
@@ -930,6 +933,9 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 "billing_provider": "openai-codex",
                 "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
             }
+
+        def resolve_resume_session_id(self, sid):
+            return sid
 
         def reopen_session(self, target):
             pass

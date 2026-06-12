@@ -86,7 +86,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from toolsets import get_toolset_names
 
@@ -100,6 +100,13 @@ _log = logging.getLogger(__name__)
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
 VALID_INITIAL_STATUSES = {"running", "blocked"}
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+VALID_REVIEW_VERDICTS = {
+    "PASS",
+    "REQUEST_CHANGES",
+    "PARTIAL",
+    "BLOCKED",
+    "NEEDS_HUMAN_APPROVAL",
+}
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 
@@ -3559,6 +3566,224 @@ class HallucinatedCardsError(ValueError):
         )
 
 
+_HIGH_RISK_NEXT_ACTION_TYPES = {
+    "deploy",
+    "restart",
+    "delete_data",
+    "credential_change",
+    "external_commitment",
+    "paid_provider",
+}
+
+
+def _clean_verdict_text(value: object, default: str) -> str:
+    text = str(value).strip() if value is not None else ""
+    return text or default
+
+
+def _review_verdict_requires_human_approval(payload: Mapping[str, Any]) -> Optional[str]:
+    human_approval = payload.get("human_approval")
+    if isinstance(human_approval, Mapping) and human_approval.get("required"):
+        return _clean_verdict_text(human_approval.get("reason"), "review verdict requires human approval")
+    risk_gate = payload.get("risk_gate")
+    if isinstance(risk_gate, Mapping) and risk_gate.get("requires_human_approval"):
+        return _clean_verdict_text(risk_gate.get("reason"), "review verdict requires human approval")
+    production = payload.get("production_actions")
+    if isinstance(production, Mapping):
+        for key in ("deploy", "restart", "delete_data", "credential_change"):
+            if production.get(key):
+                return f"high-risk production action requested: {key}"
+    next_action = payload.get("next_action")
+    if isinstance(next_action, Mapping):
+        action_type = str(next_action.get("type") or "").strip().lower()
+        if action_type in _HIGH_RISK_NEXT_ACTION_TYPES:
+            return f"high-risk next_action requested: {action_type}"
+        if next_action.get("requires_human_approval"):
+            return _clean_verdict_text(next_action.get("reason"), "next_action requires human approval")
+    return None
+
+
+def _review_followup_contract(payload: Mapping[str, Any]) -> Optional[Mapping[str, Any]]:
+    contract = payload.get("next_contract")
+    if isinstance(contract, Mapping):
+        return contract
+    next_action = payload.get("next_action")
+    if isinstance(next_action, Mapping):
+        nested = next_action.get("contract")
+        if isinstance(nested, Mapping):
+            return nested
+    return None
+
+
+def _create_review_followup_task(
+    conn: sqlite3.Connection,
+    *,
+    source: Task,
+    review_task_id: str,
+    verdict: str,
+    payload: Mapping[str, Any],
+    actor: str,
+) -> Optional[str]:
+    contract = _review_followup_contract(payload)
+    if contract is None:
+        return None
+    title = _clean_verdict_text(
+        contract.get("title"),
+        f"{verdict.lower().replace('_', ' ')} follow-up for {source.id}",
+    )
+    body = contract.get("body")
+    if body is None:
+        body = (
+            f"Follow-up generated from review verdict {verdict} on {source.id}.\n"
+            f"Review task: {review_task_id}\n"
+            f"Reason: {_clean_verdict_text(payload.get('reason') or payload.get('summary'), 'not specified')}"
+        )
+    assignee = _clean_verdict_text(contract.get("assignee"), source.assignee or actor)
+    workspace_kind = _clean_verdict_text(
+        contract.get("workspace_kind"),
+        source.workspace_kind if source.workspace_kind in VALID_WORKSPACE_KINDS else "scratch",
+    )
+    workspace_path = contract.get("workspace_path")
+    parents = contract.get("parents")
+    if not isinstance(parents, Iterable) or isinstance(parents, (str, bytes)):
+        parents = ()
+    skills = contract.get("skills")
+    if isinstance(skills, (str, bytes)) or not isinstance(skills, Iterable):
+        skills = None
+    return create_task(
+        conn,
+        title=title,
+        body=str(body),
+        assignee=assignee,
+        created_by=actor,
+        workspace_kind=workspace_kind,
+        workspace_path=str(workspace_path) if workspace_path else None,
+        priority=int(contract.get("priority") or source.priority),
+        parents=tuple(str(p) for p in parents if p),
+        skills=skills,
+        goal_mode=bool(contract.get("goal_mode", True)),
+        goal_max_turns=int(contract["goal_max_turns"]) if contract.get("goal_max_turns") is not None else None,
+    )
+
+
+def _record_review_verdict_event(conn: sqlite3.Connection, task_id: str, payload: dict[str, Any]) -> None:
+    with write_txn(conn):
+        _append_event(conn, task_id, "review_verdict_applied", payload)
+
+
+def apply_review_verdict(
+    conn: sqlite3.Connection,
+    review_task_id: str,
+    verdict_payload: Mapping[str, Any],
+    *,
+    actor: str = "kanban-review-engine",
+) -> dict[str, Any]:
+    """Apply a structured reviewer verdict as deterministic Kanban state."""
+    if not isinstance(verdict_payload, Mapping):
+        raise ValueError("verdict_payload must be a mapping")
+    verdict = str(verdict_payload.get("verdict") or "").strip().upper()
+    if verdict not in VALID_REVIEW_VERDICTS:
+        raise ValueError(f"verdict must be one of {sorted(VALID_REVIEW_VERDICTS)}")
+    if get_task(conn, review_task_id) is None:
+        raise ValueError(f"review task not found: {review_task_id}")
+    payload_review_task_id = _clean_verdict_text(verdict_payload.get("review_task_id"), "")
+    if payload_review_task_id and payload_review_task_id != review_task_id:
+        raise ValueError(
+            f"review_task_id mismatch: payload has {payload_review_task_id}, "
+            f"argument has {review_task_id}"
+        )
+    payload_source_task_id = _clean_verdict_text(verdict_payload.get("source_task_id"), "")
+    payload_task_id = _clean_verdict_text(verdict_payload.get("task_id"), "")
+    if payload_source_task_id and payload_task_id and payload_source_task_id != payload_task_id:
+        raise ValueError(
+            f"source_task_id/task_id mismatch: payload has source_task_id {payload_source_task_id}, "
+            f"task_id {payload_task_id}"
+        )
+    source_task_id = _clean_verdict_text(
+        payload_source_task_id or payload_task_id or verdict_payload.get("source"),
+        "",
+    )
+    source_task = get_task(conn, source_task_id) if source_task_id else None
+    if source_task_id and source_task is None:
+        raise ValueError(f"source task not found: {source_task_id}")
+    reason = _clean_verdict_text(
+        verdict_payload.get("reason") or verdict_payload.get("summary"),
+        verdict.lower().replace("_", " "),
+    )
+    event_payload: dict[str, Any] = {
+        "verdict": verdict,
+        "review_task_id": review_task_id,
+        "source_task_id": source_task_id or None,
+        "actor": actor,
+        "reason": reason,
+        "evidence": verdict_payload.get("evidence") or [],
+    }
+    approval_reason = _review_verdict_requires_human_approval(verdict_payload)
+    if verdict == "NEEDS_HUMAN_APPROVAL" or approval_reason:
+        block_reason = _clean_verdict_text(approval_reason or reason, "review verdict needs human approval")
+        blocked = block_task(conn, review_task_id, reason=f"needs_human_approval: {block_reason}")
+        event_payload.update({"action": "blocked_review", "blocked": blocked})
+        _record_review_verdict_event(conn, review_task_id, event_payload)
+        if source_task_id:
+            _record_review_verdict_event(conn, source_task_id, event_payload)
+        return event_payload
+    if verdict == "PASS":
+        review_done = complete_task(
+            conn,
+            review_task_id,
+            summary=f"review verdict PASS: {reason}",
+            metadata={"review_verdict": dict(verdict_payload)},
+        )
+        source_done = False
+        if source_task is not None and source_task.status != "done":
+            source_done = complete_task(
+                conn,
+                source_task.id,
+                summary=f"review PASS via {review_task_id}: {reason}",
+                metadata={"review_verdict": dict(verdict_payload)},
+            )
+        event_payload.update({"action": "completed_review_and_source", "review_done": review_done, "source_done": source_done})
+        _record_review_verdict_event(conn, review_task_id, event_payload)
+        if source_task_id:
+            _record_review_verdict_event(conn, source_task_id, event_payload)
+        recompute_ready(conn)
+        return event_payload
+    if verdict in {"REQUEST_CHANGES", "PARTIAL"}:
+        followup_id = _create_review_followup_task(
+            conn,
+            source=source_task,
+            review_task_id=review_task_id,
+            verdict=verdict,
+            payload=verdict_payload,
+            actor=actor,
+        ) if source_task is not None else None
+        source_blocked = False
+        if source_task is not None and source_task.status in {"running", "ready"}:
+            source_blocked = block_task(conn, source_task.id, reason=f"{verdict.lower()}: {reason}")
+        review_done = complete_task(
+            conn,
+            review_task_id,
+            summary=f"review verdict {verdict}: {reason}",
+            metadata={"review_verdict": dict(verdict_payload), "followup_task_id": followup_id},
+        )
+        event_payload.update({
+            "action": "created_followup_or_recorded_unresolved",
+            "followup_task_id": followup_id,
+            "source_blocked": source_blocked,
+            "review_done": review_done,
+        })
+        _record_review_verdict_event(conn, review_task_id, event_payload)
+        if source_task_id:
+            _record_review_verdict_event(conn, source_task_id, event_payload)
+        return event_payload
+    blocked = block_task(conn, review_task_id, reason=f"blocked: {reason}")
+    event_payload.update({"action": "blocked_review", "blocked": blocked})
+    _record_review_verdict_event(conn, review_task_id, event_payload)
+    if source_task_id:
+        _record_review_verdict_event(conn, source_task_id, event_payload)
+    return event_payload
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4859,6 +5084,14 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_REVIEW_REQUIRED_MARKER_RE = re.compile(
+    r"(?:^|\n)\s*review_required\s*:\s*(?P<path>\S+)\s*",
+    re.IGNORECASE,
+)
+
+_REVIEW_TASK_TITLE_RE = re.compile(r"^\s*review(?:er|ing)?\b", re.IGNORECASE)
+_REVIEW_TASK_ASSIGNEE_RE = re.compile(r"\breview(?:er|ing)?\b", re.IGNORECASE)
+
 
 @dataclass
 class DispatchResult:
@@ -4912,6 +5145,10 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
+    review_unblocked: list[dict[str, str]] = field(default_factory=list)
+    """Review child tasks moved to ``review`` from a parent/source
+    ``review_required`` handoff. Each dict includes ``task_id``,
+    ``source_task_id``, ``report_path``, and ``marker_source``."""
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -5965,6 +6202,238 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     return None
 
 
+def _safe_review_report_path(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    path = value.strip()
+    if not path or len(path) > 2048:
+        return None
+    if any(ch in path for ch in ("\x00", "\r", "\n")):
+        return None
+    if path.startswith("-"):
+        return None
+    return path
+
+
+def _review_required_from_mapping(data: Any) -> Optional[dict[str, str]]:
+    if not isinstance(data, dict):
+        return None
+    report_path = None
+    if data.get("status") == "review_required":
+        report_path = data.get("report_path") or data.get("path")
+    review = data.get("review")
+    if isinstance(review, dict):
+        required = review.get("required") is True or review.get("status") == "review_required"
+        if required:
+            report_path = report_path or review.get("report_path") or review.get("path")
+        marker = review.get("marker")
+        if isinstance(marker, str):
+            matched = _REVIEW_REQUIRED_MARKER_RE.search(marker)
+            if matched:
+                report_path = report_path or matched.group("path")
+    safe_path = _safe_review_report_path(report_path)
+    if safe_path:
+        return {"report_path": safe_path, "marker_source": "structured_report"}
+    return None
+
+
+def _review_required_from_text(text: Any, marker_source: str) -> Optional[dict[str, str]]:
+    if not isinstance(text, str) or not text.strip():
+        return None
+    matched = _REVIEW_REQUIRED_MARKER_RE.search(text)
+    if matched:
+        safe_path = _safe_review_report_path(matched.group("path"))
+        if safe_path:
+            return {"report_path": safe_path, "marker_source": marker_source}
+    stripped = text.strip()
+    if not stripped.startswith(("{", "[")):
+        return None
+    try:
+        parsed = json.loads(stripped)
+    except Exception:
+        return None
+    if isinstance(parsed, list):
+        for item in parsed:
+            found = _review_required_from_mapping(item)
+            if found:
+                found["marker_source"] = marker_source
+                return found
+        return None
+    found = _review_required_from_mapping(parsed)
+    if found:
+        found["marker_source"] = marker_source
+    return found
+
+
+def _extract_review_required_handoff(
+    conn: sqlite3.Connection, source_task_id: str,
+) -> Optional[dict[str, str]]:
+    task = conn.execute(
+        "SELECT result FROM tasks WHERE id = ?", (source_task_id,)
+    ).fetchone()
+    if task is not None:
+        found = _review_required_from_text(task["result"], "task_result")
+        if found:
+            return found
+
+    comments = conn.execute(
+        "SELECT body FROM task_comments WHERE task_id = ? ORDER BY id DESC",
+        (source_task_id,),
+    ).fetchall()
+    for comment in comments:
+        found = _review_required_from_text(comment["body"], "comment")
+        if found:
+            return found
+
+    runs = conn.execute(
+        """
+        SELECT summary, metadata
+          FROM task_runs
+         WHERE task_id = ?
+         ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+        """,
+        (source_task_id,),
+    ).fetchall()
+    for run in runs:
+        found = _review_required_from_text(run["summary"], "run_summary")
+        if found:
+            return found
+        if run["metadata"]:
+            try:
+                metadata = json.loads(run["metadata"])
+            except Exception:
+                metadata = None
+            found = _review_required_from_mapping(metadata)
+            if found:
+                found["marker_source"] = "run_metadata"
+                return found
+    return None
+
+
+def _is_review_handoff_task(row: sqlite3.Row) -> bool:
+    """Return True only for explicit reviewer children.
+
+    Review-required auto-unblock is only the source -> reviewer escape hatch.
+    Downstream fan-in/finalizer tasks often mention "review" in their titles
+    or bodies because they run after a PASS; incidental review text is not
+    reviewer identity. Treat a child as a reviewer only when its title leads
+    with a reviewer label or its assignee is a reviewer lane.
+    """
+    title = row["title"] or ""
+    assignee = row["assignee"] if "assignee" in row.keys() else ""
+    assignee = assignee or ""
+    return bool(
+        _REVIEW_TASK_TITLE_RE.search(title)
+        or _REVIEW_TASK_ASSIGNEE_RE.search(assignee)
+    )
+
+
+def _has_review_handoff_parent_gate_clear(
+    conn: sqlite3.Connection,
+    *,
+    task_id: str,
+    source_task_id: str,
+) -> bool:
+    """Only bypass the source parent; preserve all other parent gates."""
+    rows = conn.execute(
+        """
+        SELECT p.id, p.status
+          FROM tasks p
+          JOIN task_links l ON l.parent_id = p.id
+         WHERE l.child_id = ?
+           AND p.id != ?
+        """,
+        (task_id, source_task_id),
+    ).fetchall()
+    return all(row["status"] in ("done", "archived") for row in rows)
+
+
+def auto_unblock_review_required_tasks(
+    conn: sqlite3.Connection, *, dry_run: bool = False,
+) -> list[dict[str, str]]:
+    """Move blocked/todo review children to ``review`` when the source is ready.
+
+    This is a narrow deterministic escape hatch for review-required handoffs:
+    the source task remains blocked/running, but a linked reviewer task may be
+    dispatched once the source publishes ``review_required: <report_path>`` or
+    structured ``status=review_required`` evidence. No report instructions are
+    executed; the path/status are audit evidence only.
+    """
+    candidates = conn.execute(
+        """
+        SELECT c.id, c.title, c.body, c.assignee, l.parent_id AS source_task_id
+          FROM tasks c
+          JOIN task_links l ON l.child_id = c.id
+          JOIN tasks p ON p.id = l.parent_id
+         WHERE c.status IN ('todo', 'blocked')
+           AND c.claim_lock IS NULL
+           AND p.status IN ('running', 'blocked')
+         ORDER BY c.priority DESC, c.created_at ASC, c.id ASC
+        """
+    ).fetchall()
+    planned: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in candidates:
+        task_id = row["id"]
+        if task_id in seen or not _is_review_handoff_task(row):
+            continue
+        if not _has_review_handoff_parent_gate_clear(
+            conn,
+            task_id=task_id,
+            source_task_id=row["source_task_id"],
+        ):
+            continue
+        handoff = _extract_review_required_handoff(conn, row["source_task_id"])
+        if not handoff:
+            continue
+        item = {
+            "task_id": task_id,
+            "source_task_id": row["source_task_id"],
+            "report_path": handoff["report_path"],
+            "marker_source": handoff["marker_source"],
+        }
+        planned.append(item)
+        seen.add(task_id)
+
+    if dry_run or not planned:
+        return planned
+
+    now = int(time.time())
+    applied: list[dict[str, str]] = []
+    with write_txn(conn):
+        for item in planned:
+            stale = conn.execute(
+                "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('todo', 'blocked')",
+                (item["task_id"],),
+            ).fetchone()
+            if stale and stale["current_run_id"]:
+                conn.execute(
+                    """
+                    UPDATE task_runs
+                       SET status = 'reclaimed', outcome = 'reclaimed',
+                           summary = COALESCE(summary, 'invariant recovery on review handoff'),
+                           ended_at = ?, claim_lock = NULL, claim_expires = NULL,
+                           worker_pid = NULL
+                     WHERE id = ? AND ended_at IS NULL
+                    """,
+                    (now, int(stale["current_run_id"])),
+                )
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'review', claim_lock = NULL, claim_expires = NULL,
+                       current_run_id = NULL
+                 WHERE id = ? AND status IN ('todo', 'blocked') AND claim_lock IS NULL
+                """,
+                (item["task_id"],),
+            )
+            if cur.rowcount != 1:
+                continue
+            _append_event(conn, item["task_id"], "review_required_auto_unblocked", item)
+            applied.append(item)
+    return applied
+
+
 def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     """Return True iff there is at least one ready+assigned+unclaimed task
     whose assignee maps to a real Hermes profile.
@@ -6092,6 +6561,7 @@ def dispatch_once(
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    result.review_unblocked = auto_unblock_review_required_tasks(conn, dry_run=dry_run)
 
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
@@ -6336,10 +6806,11 @@ def dispatch_once(
                 result.auto_blocked.append(claimed.id)
 
     # ---- review column dispatch ----
-    # Review tasks are tasks that a worker moved to 'review' after
-    # creating a PR.  The dispatcher spawns a review agent (loading
-    # sdlc-review skill) that verifies the PR and either merges (→ done)
-    # or rejects (→ back to running for the worker to fix).
+    # Review tasks are tasks that a worker/review loop moved to 'review'.
+    # The dispatcher must not inject profile-unknown review skills here:
+    # forced missing skills abort the child process before task logic runs.
+    # Review behavior belongs in the assignee profile defaults or explicit
+    # per-task skills supplied by the task creator.
     #
     # Same concurrency model as ready dispatch: review spawns count
     # against max_spawn alongside ready tasks, so the total number of
@@ -6381,12 +6852,11 @@ def dispatch_once(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load sdlc-review skill for review agents.  The
-        # _default_spawn function already auto-loads kanban-worker, and
-        # appends task.skills via --skills.  Setting task.skills here
-        # means the review agent gets both kanban-worker (lifecycle)
-        # and sdlc-review (review logic: AC verification, merge, etc.).
-        claimed.skills = ["sdlc-review"]
+        # Preserve explicit per-task skills from the task record. Do not
+        # inject a review-specific default here unless it is a real skill
+        # configured on the task/profile: an unknown forced skill makes the
+        # spawned Hermes process fail during startup before it can block or
+        # complete the review task.
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
             import inspect
@@ -7675,6 +8145,175 @@ def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
         (task_id,),
     ).fetchone()
     return row["summary"] if row else None
+
+
+def _extract_named_line(text: Optional[str], names: Iterable[str]) -> Optional[str]:
+    if not text:
+        return None
+    wanted = {n.lower().replace(" ", "_").replace("-", "_") for n in names}
+    for raw_line in str(text).splitlines():
+        line = raw_line.strip().lstrip("-*").strip()
+        if not line or ":" not in line:
+            continue
+        key, value = line.split(":", 1)
+        normalized = key.strip().lower().replace(" ", "_").replace("-", "_")
+        if normalized in wanted and value.strip():
+            return value.strip()
+    return None
+
+
+def _extract_named_section(text: Optional[str], names: Iterable[str]) -> list[str]:
+    if not text:
+        return []
+    wanted = {n.lower().replace(" ", "_").replace("-", "_") for n in names}
+    items: list[str] = []
+    collecting = False
+    for raw_line in str(text).splitlines():
+        stripped = raw_line.strip()
+        normalized = stripped.strip("#").strip().rstrip(":").lower()
+        normalized = normalized.replace(" ", "_").replace("-", "_")
+        is_heading = stripped.startswith("#") or (
+            stripped.endswith(":") and not stripped.startswith(("-", "*"))
+        )
+        if normalized in wanted:
+            collecting = True
+            if ":" in stripped and not stripped.endswith(":"):
+                value = stripped.split(":", 1)[1].strip()
+                if value:
+                    items.append(value)
+            continue
+        if collecting and is_heading:
+            break
+        if not collecting or not stripped:
+            continue
+        item = stripped.lstrip("-*0123456789. ").strip()
+        if item:
+            items.append(item)
+    return items
+
+
+def _task_brief_for_mission_state(
+    task: Task,
+    *,
+    depth: int,
+    parents: list[str],
+    children: list[str],
+    latest_summary_value: Optional[str],
+) -> dict[str, Any]:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "status": task.status,
+        "assignee": task.assignee,
+        "depth": depth,
+        "parents": parents,
+        "children": children,
+        "latest_summary": latest_summary_value,
+        "last_failure_error": task.last_failure_error,
+    }
+
+
+def mission_state(conn: sqlite3.Connection, root_task_id: str) -> Optional[dict[str, Any]]:
+    """Return a deterministic summary for a root task's mission graph."""
+    root = get_task(conn, root_task_id)
+    if root is None:
+        return None
+    board_slug = get_current_board()
+
+    edge_rows = conn.execute(
+        "SELECT parent_id, child_id FROM task_links ORDER BY parent_id, child_id"
+    ).fetchall()
+    children_by_parent: dict[str, list[str]] = {}
+    parents_by_child: dict[str, list[str]] = {}
+    for row in edge_rows:
+        parent_id = row["parent_id"]
+        child_id = row["child_id"]
+        children_by_parent.setdefault(parent_id, []).append(child_id)
+        parents_by_child.setdefault(child_id, []).append(parent_id)
+
+    ordered_ids: list[str] = []
+    depths: dict[str, int] = {root_task_id: 0}
+    seen: set[str] = set()
+    queue: list[str] = [root_task_id]
+    cycle_guarded = False
+    while queue:
+        task_id = queue.pop(0)
+        if task_id in seen:
+            cycle_guarded = True
+            continue
+        seen.add(task_id)
+        ordered_ids.append(task_id)
+        for child_id in children_by_parent.get(task_id, []):
+            next_depth = depths[task_id] + 1
+            depths[child_id] = min(depths.get(child_id, next_depth), next_depth)
+            if child_id not in seen:
+                queue.append(child_id)
+
+    placeholders = ",".join("?" for _ in ordered_ids)
+    task_rows = conn.execute(
+        f"SELECT * FROM tasks WHERE id IN ({placeholders})", ordered_ids
+    ).fetchall()
+    tasks_by_id: dict[str, Task] = {}
+    for row in task_rows:
+        task = Task.from_row(row)
+        tasks_by_id[task.id] = task
+    ordered_ids = [task_id for task_id in ordered_ids if task_id in tasks_by_id]
+    summaries = latest_summaries(conn, ordered_ids)
+
+    by_status: dict[str, int] = {}
+    task_items: list[dict[str, Any]] = []
+    for task_id in ordered_ids:
+        task = tasks_by_id[task_id]
+        by_status[task.status] = by_status.get(task.status, 0) + 1
+        task_items.append(
+            _task_brief_for_mission_state(
+                task,
+                depth=depths.get(task_id, 0),
+                parents=sorted(
+                    p for p in parents_by_child.get(task_id, []) if p in tasks_by_id
+                ),
+                children=sorted(
+                    c for c in children_by_parent.get(task_id, []) if c in tasks_by_id
+                ),
+                latest_summary_value=summaries.get(task_id),
+            )
+        )
+
+    done_count = by_status.get("done", 0)
+    total = len(ordered_ids)
+    open_count = sum(
+        count for status, count in by_status.items()
+        if status not in {"done", "archived"}
+    )
+    comments_text = "\n".join(c.body for c in list_comments(conn, root_task_id))
+    scan_text = (root.body or "") + "\n" + comments_text
+
+    return {
+        "board": board_slug,
+        "board_path": str(kanban_db_path(board=board_slug)),
+        "mission_id": _extract_named_line(scan_text, ("mission_id", "mission id")) or root_task_id,
+        "root_task_id": root_task_id,
+        "north_star": _extract_named_line(scan_text, ("north_star", "north star", "objective")) or root.title,
+        "current_metric_floors": _extract_named_section(
+            scan_text,
+            ("current_metric_floors", "current metric floors", "metric_floors", "metric floors"),
+        ),
+        "risk_gates": _extract_named_section(scan_text, ("risk_gates", "risk gates")),
+        "stop_conditions": _extract_named_section(scan_text, ("stop_conditions", "stop conditions")),
+        "total_tasks": total,
+        "done_tasks": done_count,
+        "open_tasks": open_count,
+        "progress_percent": int((done_count / total) * 100) if total else 0,
+        "by_status": dict(sorted(by_status.items())),
+        "active_tasks": [t for t in task_items if t["status"] in {"running", "review"}],
+        "blocked_tasks": [t for t in task_items if t["status"] == "blocked"],
+        "next_tasks": [
+            t for t in task_items if t["status"] in {"ready", "todo", "scheduled"}
+        ],
+        "leaves": [t["id"] for t in task_items if not t["children"]],
+        "tasks": task_items,
+        "cycle_guarded": cycle_guarded,
+    }
 
 
 def latest_summaries(

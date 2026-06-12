@@ -1637,6 +1637,16 @@ async def get_status():
         # Module not importable yet (early startup) — leave as [].
         pass
 
+    status_warnings: dict[str, Any] = {"warnings": []}
+    try:
+        from hermes_cli.status_warnings import collect_status_warnings
+
+        status_warnings = collect_status_warnings(gateway_pid=gateway_pid)
+    except Exception:
+        # Status must remain a liveness endpoint. Diagnostics are best-effort
+        # and non-blocking so dashboard/portal health checks keep working.
+        status_warnings = {"warnings": []}
+
     return {
         "version": __version__,
         "release_date": __release_date__,
@@ -1655,6 +1665,8 @@ async def get_status():
         "active_sessions": active_sessions,
         "auth_required": auth_required,
         "auth_providers": auth_providers,
+        "warnings": status_warnings.get("warnings", []),
+        "diagnostics": status_warnings,
     }
 
 

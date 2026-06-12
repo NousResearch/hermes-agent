@@ -1,0 +1,84 @@
+{
+  "task_id": "t_8530f965",
+  "status": "review_required",
+  "summary": "Removed the hardcoded sdlc-review injection from review dispatch, preserved explicit task/profile skill ownership, and aligned reviewer verdict schema/sample/tests with apply_review_verdict semantics.",
+  "workspace": "/Users/chrischo/.hermes/hermes-agent",
+  "changed_files": [
+    "hermes_cli/kanban_db.py",
+    "tests/hermes_cli/test_kanban_db.py",
+    "tests/docs/test_kanban_report_schemas.py",
+    "docs/kanban/reports/README.md",
+    "docs/kanban/reports/schemas/reviewer-verdict.schema.json",
+    "docs/kanban/reports/samples/reviewer-verdict.example.json",
+    "docs/kanban-reports/t_8530f965/report.json"
+  ],
+  "pre_existing_dirty_files": [
+    "gateway/kanban_watchers.py",
+    "hermes_cli/commands.py",
+    "hermes_cli/doctor.py",
+    "hermes_cli/kanban.py",
+    "hermes_cli/kanban_db.py",
+    "hermes_cli/web_server.py",
+    "tests/hermes_cli/test_kanban_cli.py",
+    "tests/hermes_cli/test_kanban_db.py",
+    "website/docs/user-guide/features/kanban.md",
+    "docs/kanban-reports/",
+    "docs/kanban/reports/",
+    "hermes_cli/status_warnings.py",
+    "tests/docs/",
+    "tests/hermes_cli/test_status_warnings.py"
+  ],
+  "schema_changed": true,
+  "migration": {
+    "needed": false,
+    "backup_path": null,
+    "rollback_notes": "Revert the scoped diffs in hermes_cli/kanban_db.py, tests/hermes_cli/test_kanban_db.py, tests/docs/test_kanban_report_schemas.py, and docs/kanban/reports/*. No DB migration or gateway restart was performed."
+  },
+  "verification": [
+    {
+      "command": "uv run python -m pytest tests/hermes_cli/test_kanban_db.py tests/docs/test_kanban_report_schemas.py -q -k 'review_required or dispatch_review or apply_review_verdict or kanban_report_schemas' -o 'addopts='",
+      "exit_code": 0,
+      "summary": "27 passed, 210 deselected"
+    },
+    {
+      "command": "uv run python -m pytest tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli.py tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py tests/gateway/test_kanban_watchers_mixin.py tests/docs/test_kanban_report_schemas.py -q -o 'addopts='",
+      "exit_code": 0,
+      "summary": "294 passed in 5.59s"
+    },
+    {
+      "command": "uv run python -m py_compile hermes_cli/kanban_db.py tests/hermes_cli/test_kanban_db.py tests/docs/test_kanban_report_schemas.py",
+      "exit_code": 0,
+      "summary": "Compilation completed with no output other than the VIRTUAL_ENV warning"
+    },
+    {
+      "command": "search_files(pattern='sdlc-review')",
+      "exit_code": 0,
+      "summary": "Only remaining sdlc-review reference is a negative regression assertion in tests/hermes_cli/test_kanban_db.py"
+    }
+  ],
+  "decisions": [
+    "Review dispatch no longer mutates claimed.skills for status=review tasks; explicit task skills remain intact and profile defaults are left to the assignee profile.",
+    "Reviewer verdict schema now requires review_task_id and source_task_id. task_id is documented as a legacy alias for source_task_id only.",
+    "apply_review_verdict now rejects a payload review_task_id that disagrees with its review_task_id argument, removing ambiguity for automation."
+  ],
+  "production_actions": {
+    "deploy": false,
+    "restart": false,
+    "live_smoke": false,
+    "summary": "Local repo edits and tests only; no DB schema migration, gateway restart, deploy, or secret reads."
+  },
+  "residual_risks": [
+    "The workspace already contained broad dirty/untracked Kanban-loop changes from the parent mission; this task only scoped the review-dispatch and verdict-schema follow-up files listed in changed_files."
+  ],
+  "recommended_next_contracts": [],
+  "risk_gate": {
+    "requires_human_approval": false,
+    "reason": null
+  },
+  "review": {
+    "required": true,
+    "report_path": "docs/kanban-reports/t_8530f965/report.json",
+    "marker": "review_required: docs/kanban-reports/t_8530f965/report.json",
+    "summary": "Please review the review-dispatch skill fix and reviewer-verdict schema compatibility changes."
+  }
+}

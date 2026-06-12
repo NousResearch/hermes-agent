@@ -205,7 +205,13 @@ hermes kanban watch
 # 5. See the board (you)
 hermes kanban list
 hermes kanban stats
+
+# 6. Summarize a long-running root mission without changing the board
+hermes kanban mission-state t_<root>
+hermes kanban mission-state t_<root> --json
 ```
+
+`mission-state` is deterministic: it walks the root task plus linked descendants from `task_links` and reads existing task/run/comment rows. It does not call an LLM and does not alter dispatcher behavior. The compact output includes the mission id, north star, current metric floors, active tasks, blocked tasks, next tasks, risk gates, and stop conditions when those fields appear in the root task body or comments.
 
 When the dispatcher picks up `t_abcd` and spawns the `researcher` profile, the very first thing that worker's model does is call `kanban_show()` to read its task. It doesn't run `hermes kanban show t_abcd`.
 

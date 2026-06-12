@@ -1,0 +1,42 @@
+{
+  "schema_version": "kanban.reviewer_verdict.v1",
+  "report_type": "reviewer_verdict",
+  "review_task_id": "t_review123",
+  "source_task_id": "t_source456",
+  "task_id": "t_source456",
+  "reviewed_report_path": "docs/kanban/reports/samples/worker-handoff-report.example.json",
+  "reviewer": {
+    "profile": "reviewer",
+    "agent": "codex"
+  },
+  "verdict": "PASS",
+  "summary": "The source handoff satisfies the acceptance criteria and the focused schema tests pass.",
+  "safe_to_merge": true,
+  "safe_to_deploy": false,
+  "blocking_findings": [],
+  "non_blocking_findings": [
+    {
+      "severity": "info",
+      "message": "Deployment remains false because this verdict only reviewed local docs/schema changes."
+    }
+  ],
+  "evidence": [
+    {
+      "command": "uv run python -m pytest tests/docs/test_kanban_report_schemas.py -q -o 'addopts='",
+      "exit_code": 0,
+      "summary": "Kanban report schema tests passed"
+    }
+  ],
+  "commands": [
+    {
+      "command": "uv run python -m pytest tests/docs/test_kanban_report_schemas.py -q -o 'addopts='",
+      "exit_code": 0,
+      "summary": "Kanban report schema tests passed"
+    }
+  ],
+  "next_action": {
+    "type": "complete_source_and_promote_children",
+    "summary": "Complete the source task and promote any children whose parents have passed.",
+    "children_to_promote": []
+  }
+}

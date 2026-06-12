@@ -167,6 +167,58 @@ def test_run_slash_json_output(kanban_home):
     assert payload["status"] == "ready"
 
 
+def test_run_slash_mission_state_json(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(
+            conn,
+            title="root mission",
+            body="""
+mission_id: mission-beta
+objective: ship deterministic state
+metric_floors:
+- pass_rate >= 99%
+risk_gates:
+- no production deploy
+stop_conditions:
+- all checks pass
+""",
+            assignee="lead",
+        )
+        ready = kb.create_task(conn, title="ready child", assignee="liz", parents=[root])
+        blocked = kb.create_task(conn, title="blocked child", assignee="ellie", parents=[root])
+        kb.complete_task(conn, root)
+        kb.block_task(conn, blocked, reason="needs approval")
+
+    raw = kc.run_slash(f"mission-state {root} --json")
+    payload = json.loads(raw)
+    assert payload["board"] == "default"
+    assert payload["mission_id"] == "mission-beta"
+    assert payload["north_star"] == "ship deterministic state"
+    assert payload["current_metric_floors"] == ["pass_rate >= 99%"]
+    assert payload["risk_gates"] == ["no production deploy"]
+    assert payload["stop_conditions"] == ["all checks pass"]
+    assert payload["by_status"] == {"blocked": 1, "done": 1, "ready": 1}
+    assert [task["id"] for task in payload["blocked_tasks"]] == [blocked]
+    assert [task["id"] for task in payload["next_tasks"]] == [ready]
+
+
+def test_run_slash_mission_state_human_output(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="human mission")
+    out = kc.run_slash(f"mission-state {root}")
+    assert "Mission" in out
+    assert "[board=default]" in out
+    assert "Progress:" in out
+    assert "Active tasks:" in out
+    assert "Blocked tasks:" in out
+    assert "Next tasks:" in out
+
+
+def test_run_slash_mission_state_missing_root(kanban_home):
+    out = kc.run_slash("mission-state t_missing")
+    assert "no such task: t_missing" in out
+
+
 def test_run_slash_dispatch_dry_run_counts(kanban_home):
     kc.run_slash("create 'a' --assignee alice")
     kc.run_slash("create 'b' --assignee bob")
@@ -335,6 +387,7 @@ def test_kanban_in_autocomplete_table():
     subs = SUBCOMMANDS.get("/kanban") or []
     assert "create" in subs
     assert "dispatch" in subs
+    assert "mission-state" in subs
 
 
 def test_kanban_autocomplete_includes_live_subcommands():

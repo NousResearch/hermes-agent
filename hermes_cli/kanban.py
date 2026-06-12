@@ -435,6 +435,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="With --state-type: keep runs whose column equals this value",
     )
 
+    p_mission = sub.add_parser(
+        "mission-state",
+        help="Summarize a root task and descendant mission graph without LLMs",
+    )
+    p_mission.add_argument("root_task_id")
+    p_mission.add_argument("--json", action="store_true")
+
     # --- assign ---
     p_assign = sub.add_parser("assign", help="Assign or reassign a task")
     p_assign.add_argument("task_id")
@@ -927,6 +934,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "list":     _cmd_list,
             "ls":       _cmd_list,
             "show":     _cmd_show,
+            "mission-state": _cmd_mission_state,
             "assign":   _cmd_assign,
             "reclaim":  _cmd_reclaim,
             "reassign": _cmd_reassign,
@@ -2155,6 +2163,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             "stale": res.stale,
             "auto_blocked": res.auto_blocked,
             "promoted": res.promoted,
+            "review_unblocked": res.review_unblocked,
             "spawned": [
                 {"task_id": tid, "assignee": who, "workspace": ws}
                 for (tid, who, ws) in res.spawned
@@ -2182,6 +2191,12 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     if res.auto_blocked:
         print(f"  {', '.join(res.auto_blocked)}")
     print(f"Promoted:     {res.promoted}")
+    print(f"Review ready: {len(res.review_unblocked)}")
+    for item in res.review_unblocked:
+        print(
+            f"  - {item['task_id']} from {item['source_task_id']} "
+            f"@ {item['report_path']} ({item['marker_source']})"
+        )
     print(f"Spawned:      {len(res.spawned)}")
     for tid, who, ws in res.spawned:
         tag = " (dry)" if args.dry_run else ""
@@ -2302,15 +2317,15 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return
         did_work = (
             res.reclaimed or res.crashed or res.timed_out or res.promoted
-            or res.spawned or res.auto_blocked or res.stale
+            or res.spawned or res.auto_blocked or res.stale or res.review_unblocked
         )
         if did_work:
             print(
                 f"[{_fmt_ts(int(time.time()))}] "
                 f"reclaimed={res.reclaimed} crashed={len(res.crashed)} "
                 f"timed_out={len(res.timed_out)} stale={len(res.stale)} "
-                f"promoted={res.promoted} spawned={len(res.spawned)} "
-                f"auto_blocked={len(res.auto_blocked)}",
+                f"promoted={res.promoted} review_unblocked={len(res.review_unblocked)} "
+                f"spawned={len(res.spawned)} auto_blocked={len(res.auto_blocked)}",
                 flush=True,
             )
 
@@ -2394,6 +2409,62 @@ def _cmd_watch(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         print("\n(stopped)")
         return 0
+
+
+def _fmt_mission_task(task: dict[str, Any]) -> str:
+    assignee = f"@{task['assignee']}" if task.get("assignee") else "@-"
+    summary = task.get("latest_summary") or task.get("last_failure_error") or task["title"]
+    return f"  {task['id']} {task['status']:<9s} {assignee:<16s} {summary.splitlines()[0][:100]}"
+
+
+def _print_mission_section(title: str, tasks: list[dict[str, Any]]) -> None:
+    print(f"{title}:")
+    if not tasks:
+        print("  (none)")
+        return
+    for task in tasks:
+        print(_fmt_mission_task(task))
+
+
+def _cmd_mission_state(args: argparse.Namespace) -> int:
+    with kb.connect_closing() as conn:
+        state = kb.mission_state(conn, args.root_task_id)
+    if state is None:
+        print(f"no such task: {args.root_task_id}", file=sys.stderr)
+        return 1
+    if getattr(args, "json", False):
+        print(json.dumps(state, indent=2, ensure_ascii=False))
+        return 0
+
+    counts = ", ".join(
+        f"{status}={count}" for status, count in state["by_status"].items()
+    ) or "none"
+    print(
+        f"Mission {state['mission_id']} "
+        f"[board={state.get('board', kb.get_current_board())}]: {state['north_star']}"
+    )
+    print(
+        f"Progress: {state['done_tasks']}/{state['total_tasks']} done "
+        f"({state['progress_percent']}%) | open={state['open_tasks']} | {counts}"
+    )
+    if state["current_metric_floors"]:
+        print("Current metric floors:")
+        for item in state["current_metric_floors"]:
+            print(f"  - {item}")
+    _print_mission_section("Active tasks", state["active_tasks"])
+    _print_mission_section("Blocked tasks", state["blocked_tasks"])
+    _print_mission_section("Next tasks", state["next_tasks"])
+    if state["risk_gates"]:
+        print("Risk gates:")
+        for item in state["risk_gates"]:
+            print(f"  - {item}")
+    if state["stop_conditions"]:
+        print("Stop conditions:")
+        for item in state["stop_conditions"]:
+            print(f"  - {item}")
+    if state.get("cycle_guarded"):
+        print("Cycle guard: duplicate/cyclic links were suppressed.")
+    return 0
 
 
 def _cmd_stats(args: argparse.Namespace) -> int:
@@ -2736,6 +2807,7 @@ Common subcommands:
   `list` (alias `ls`)   List tasks on the current board
   `show <id>`           Task details + comments + events
   `stats`               Per-status / per-assignee counts
+  `mission-state <id>`   Deterministic root + descendant mission summary
   `create <title>…`     Create a task (auto-subscribes you to events)
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done

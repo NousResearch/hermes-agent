@@ -1,0 +1,75 @@
+{
+  "task_id": "t_3896c3cb",
+  "status": "review_required",
+  "summary": "Implemented deterministic Kanban dispatcher review-required auto-unblock: linked review children move to review when a running/blocked source publishes a valid review_required marker or structured report; dry-run reports the transition without mutation; CLI/gateway logs expose review_unblocked counts.",
+  "workspace": "/Users/chrischo/.hermes/hermes-agent",
+  "route_used": "OMX-assisted read-only analysis via `omx exec -s read-only`; Liz implemented and verified the patch directly after parent-side inspection.",
+  "changed_files": [
+    "gateway/kanban_watchers.py",
+    "hermes_cli/kanban.py",
+    "hermes_cli/kanban_db.py",
+    "tests/hermes_cli/test_kanban_db.py"
+  ],
+  "commands": [
+    {
+      "command": "HOME=/Users/chrischo CODEX_HOME=/Users/chrischo/.codex zsh -lic 'omx exec -C /Users/chrischo/.hermes/hermes-agent -s read-only --output-last-message /tmp/omx-kanban-review-required-plan.txt ...'",
+      "exit_code": 0,
+      "summary": "OMX available at /opt/homebrew/bin/omx; produced read-only implementation plan."
+    },
+    {
+      "command": "python -m pytest tests/hermes_cli/test_kanban_db.py -q -k 'review_required or dispatch_dry_run_does_not_claim or dispatch_promotes_ready_and_spawns' -o 'addopts='",
+      "exit_code": 1,
+      "summary": "System Python lacked pytest; switched to project uv environment."
+    },
+    {
+      "command": "uv run python -m pytest tests/hermes_cli/test_kanban_db.py -q -k 'review_required or dispatch_dry_run_does_not_claim or dispatch_promotes_ready_and_spawns' -o 'addopts='",
+      "exit_code": 1,
+      "summary": "Initial regression run found task_runs has no result column; fixed query to summary/metadata only."
+    },
+    {
+      "command": "uv run python -m pytest tests/hermes_cli/test_kanban_db.py -q -k 'review_required or dispatch_dry_run_does_not_claim or dispatch_promotes_ready_and_spawns' -o 'addopts='",
+      "exit_code": 0,
+      "summary": "8 passed, 221 deselected."
+    },
+    {
+      "command": "uv run python -m pytest tests/hermes_cli/test_kanban_db.py tests/hermes_cli/test_kanban_cli_dispatch_passthrough.py tests/gateway/test_kanban_watchers_mixin.py -q -o 'addopts='",
+      "exit_code": 0,
+      "summary": "236 passed in 6.26s."
+    }
+  ],
+  "pre_existing_dirty_files": [
+    "hermes_cli/doctor.py",
+    "hermes_cli/web_server.py",
+    "package-lock.json",
+    "hermes_cli/status_warnings.py",
+    "tests/hermes_cli/test_status_warnings.py"
+  ],
+  "additional_dirty_files_observed_after_start_not_modified_by_this_run": [
+    "hermes_cli/commands.py",
+    "tests/hermes_cli/test_kanban_cli.py",
+    "website/docs/user-guide/features/kanban.md",
+    "docs/kanban/reports/",
+    "tests/docs/"
+  ],
+  "schema_changed": false,
+  "migration": {
+    "needed": false,
+    "backup_path": null,
+    "rollback_notes": "Revert the changes in the four changed_files listed above; no database migration or data cleanup was performed."
+  },
+  "production_actions": {
+    "deploy": false,
+    "restart": false,
+    "live_smoke": false,
+    "summary": "No production action; local code and test execution only."
+  },
+  "residual_risks": [
+    "Repository had unrelated dirty work before and during this run; review should separate this patch from pre-existing mission-state/status-warning changes before merge.",
+    "Review-child detection is conservative and text-based: child title/body must contain review/reviewer/reviewing to avoid auto-promoting arbitrary blocked children.",
+    "Structured reports are parsed from task result, comments, and run summary/metadata only; report paths are treated as evidence pointers and are not opened/executed."
+  ],
+  "risk_gate": {
+    "requires_human_approval": false,
+    "reason": null
+  }
+}

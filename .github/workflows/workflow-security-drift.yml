@@ -1,0 +1,24 @@
+name: Workflow Security Drift
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/check_workflow_security.py'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/**'
+      - 'scripts/check_workflow_security.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-workflow-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - name: Check workflow security drift
+        run: python3 scripts/check_workflow_security.py

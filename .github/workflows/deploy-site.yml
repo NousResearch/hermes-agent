@@ -13,8 +13,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  pages: write
-  id-token: write
+  contents: read
 
 concurrency:
   group: pages
@@ -29,6 +28,7 @@ jobs:
     # doesn't auto-deploy via the deploy-docs path.
     if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    permissions: {}
     steps:
       - name: Trigger Vercel Deploy
         run: curl -X POST "${{ secrets.VERCEL_DEPLOY_HOOK }}"
@@ -36,6 +36,10 @@ jobs:
   deploy-docs:
     if: github.repository == 'NousResearch/hermes-agent'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}

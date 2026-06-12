@@ -1515,7 +1515,7 @@ BROWSER_TOOL_SCHEMAS = [
     },
     {
         "name": "browser_type",
-        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Requires browser_navigate and browser_snapshot to be called first.",
+        "description": "Type text into an input field identified by its ref ID. Clears the field first, then types the new text. Do not use this for secrets or passwords; use browser_secret_fill for values stored in 1Password. Requires browser_navigate and browser_snapshot to be called first.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -1529,6 +1529,41 @@ BROWSER_TOOL_SCHEMAS = [
                 }
             },
             "required": ["ref", "text"]
+        }
+    },
+    {
+        "name": "browser_secret_fill",
+        "description": "Fill a browser input with a value resolved locally from 1Password without putting the secret value in tool arguments or tool results. Use this instead of browser_type for usernames, passwords, one-time codes, personal IDs, or other sensitive form values. Requires a focused browser session with CDP available, plus the 1Password CLI (`op`) authenticated on the host. Provide either secret_ref (`op://vault/item/field`) or item + field.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ref": {
+                    "type": "string",
+                    "description": "The element reference from the snapshot (e.g., '@e3')"
+                },
+                "secret_ref": {
+                    "type": "string",
+                    "description": "Optional 1Password secret reference, e.g. op://Private/Login/password. Do not pass the secret value itself."
+                },
+                "item": {
+                    "type": "string",
+                    "description": "Optional 1Password item title or ID. Required with field when secret_ref is not provided."
+                },
+                "field": {
+                    "type": "string",
+                    "description": "Optional 1Password field label, ID, or purpose such as username or password. Required with item when secret_ref is not provided."
+                },
+                "vault": {
+                    "type": "string",
+                    "description": "Optional 1Password vault name or ID to disambiguate item lookup."
+                },
+                "clear": {
+                    "type": "boolean",
+                    "description": "Whether to clear the focused field before inserting the secret.",
+                    "default": True
+                }
+            },
+            "required": ["ref"]
         }
     },
     {
@@ -2640,6 +2675,314 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
             "error": result.get("error", f"Failed to type into {ref}")
         }
         return json.dumps(_copy_fallback_warning(response, result), ensure_ascii=False)
+
+
+def _find_onepassword_cli() -> str:
+    """Return a usable 1Password CLI path, or raise FileNotFoundError."""
+    env_path = os.environ.get("OP_CLI_PATH", "").strip()
+    candidates = [
+        env_path,
+        shutil.which("op") or "",
+        str(Path.home() / ".local" / "bin" / "op"),
+        "/opt/homebrew/bin/op",
+        "/usr/local/bin/op",
+    ]
+    for candidate in candidates:
+        if not candidate:
+            continue
+        expanded = str(Path(candidate).expanduser())
+        if Path(expanded).is_file() and os.access(expanded, os.X_OK):
+            return expanded
+    raise FileNotFoundError(
+        "1Password CLI (`op`) is not available on this host. Install it or set OP_CLI_PATH."
+    )
+
+
+def _run_onepassword(args: List[str]) -> str:
+    """Run ``op`` and return stdout without exposing stderr or values."""
+    try:
+        from hermes_cli.config import reload_env
+
+        reload_env()
+    except Exception as exc:
+        logger.debug("1Password env reload skipped: %s", exc)
+
+    op_path = _find_onepassword_cli()
+    try:
+        proc = subprocess.run(
+            [op_path, *args],
+            text=True,
+            capture_output=True,
+            timeout=20,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError("1Password CLI timed out while resolving the requested field.") from exc
+    except OSError as exc:
+        raise RuntimeError("1Password CLI could not be started.") from exc
+
+    if proc.returncode != 0:
+        raise RuntimeError(
+            "1Password CLI could not resolve the requested field. Check that `op` is authenticated "
+            "and the item or secret reference is accessible."
+        )
+
+    return proc.stdout.rstrip("\r\n")
+
+
+def _onepassword_field_matches(candidate: Dict[str, Any], requested: str) -> bool:
+    wanted = requested.strip().casefold()
+    if not wanted:
+        return False
+
+    aliases = {
+        "username": {"username", "user name", "login", "email", "purpose:username"},
+        "password": {"password", "pass", "purpose:password"},
+    }.get(wanted, {wanted})
+
+    values = {
+        str(candidate.get("id") or "").strip().casefold(),
+        str(candidate.get("label") or "").strip().casefold(),
+        str(candidate.get("purpose") or "").strip().casefold(),
+    }
+    values |= {f"purpose:{v}" for v in values if v}
+    return bool(values & aliases)
+
+
+def _extract_onepassword_field(item_payload: Dict[str, Any], field: str) -> str:
+    fields = item_payload.get("fields")
+    if not isinstance(fields, list):
+        fields = []
+
+    for candidate in fields:
+        if not isinstance(candidate, dict):
+            continue
+        if _onepassword_field_matches(candidate, field):
+            value = candidate.get("value")
+            if value is None:
+                break
+            return str(value)
+
+    raise ValueError("Requested 1Password field was not found on the item.")
+
+
+def _resolve_onepassword_secret(
+    *,
+    secret_ref: str = "",
+    item: str = "",
+    field: str = "",
+    vault: str = "",
+) -> str:
+    """Resolve a secret value from 1Password without printing it."""
+    secret_ref = (secret_ref or "").strip()
+    item = (item or "").strip()
+    field = (field or "").strip()
+    vault = (vault or "").strip()
+
+    if secret_ref and (item or field or vault):
+        raise ValueError("Use either secret_ref or item+field, not both.")
+
+    if secret_ref:
+        if not secret_ref.startswith("op://"):
+            raise ValueError("secret_ref must be a 1Password secret reference that starts with op://.")
+        value = _run_onepassword(["read", secret_ref])
+    else:
+        if not item or not field:
+            raise ValueError("Provide either secret_ref or both item and field.")
+        args = ["item", "get", item, "--format", "json", "--reveal"]
+        if vault:
+            args.extend(["--vault", vault])
+        raw = _run_onepassword(args)
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("1Password CLI returned an unreadable item payload.") from exc
+        value = _extract_onepassword_field(payload, field)
+
+    if value == "":
+        raise ValueError("Resolved 1Password field is empty.")
+    return value
+
+
+_SECRET_FIELD_CLEAR_SCRIPT = r"""
+(() => {
+  function deepActiveElement(root) {
+    let active = root.activeElement;
+    let guard = 0;
+    while (active && active.shadowRoot && active.shadowRoot.activeElement && guard++ < 20) {
+      active = active.shadowRoot.activeElement;
+    }
+    return active;
+  }
+
+  const el = deepActiveElement(document);
+  if (!el) return { ok: false, error: "No focused element" };
+
+  const tag = String(el.tagName || "").toLowerCase();
+  const editable = Boolean(el.isContentEditable);
+  try {
+    if ("value" in el) {
+      el.focus();
+      const proto = tag === "textarea" ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      const descriptor = Object.getOwnPropertyDescriptor(proto, "value");
+      if (descriptor && descriptor.set) {
+        descriptor.set.call(el, "");
+      } else {
+        el.value = "";
+      }
+      if (typeof el.setSelectionRange === "function") {
+        el.setSelectionRange(0, 0);
+      }
+      el.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+        data: null
+      }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+      return { ok: true, kind: tag || "value" };
+    }
+
+    if (editable) {
+      el.focus();
+      el.textContent = "";
+      el.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        inputType: "deleteContentBackward",
+        data: null
+      }));
+      return { ok: true, kind: "contenteditable" };
+    }
+  } catch (error) {
+    return { ok: false, error: String(error && error.message || error) };
+  }
+
+  return { ok: false, error: "Focused element is not editable" };
+})()
+"""
+
+
+def _clear_focused_browser_field(task_id: str) -> Dict[str, Any]:
+    raw = _browser_eval(_SECRET_FIELD_CLEAR_SCRIPT, task_id=task_id)
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return {"success": False, "error": "Could not parse focused-field clear result."}
+
+    if not payload.get("success"):
+        return {"success": False, "error": payload.get("error", "Focused-field clear failed.")}
+
+    result = payload.get("result")
+    if not isinstance(result, dict) or not result.get("ok"):
+        error = result.get("error") if isinstance(result, dict) else "Focused-field clear failed."
+        return {"success": False, "error": error}
+
+    return {"success": True}
+
+
+def _insert_text_via_cdp(task_id: str, text: str) -> Dict[str, Any]:
+    try:
+        from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
+    except Exception as exc:
+        logger.debug("browser_secret_fill: supervisor import failed: %s", exc)
+        return {"success": False, "error": "CDP supervisor is not available."}
+
+    _ensure_cdp_supervisor(task_id)
+    supervisor = SUPERVISOR_REGISTRY.get(task_id)
+    if supervisor is None:
+        return {
+            "success": False,
+            "error": (
+                "No CDP supervisor is attached for this browser session. "
+                "Connect a Chromium-family browser with /browser connect or configure browser.cdp_url."
+            ),
+        }
+
+    insert_text = getattr(supervisor, "insert_text", None)
+    if insert_text is None:
+        return {"success": False, "error": "CDP supervisor does not support text insertion."}
+
+    try:
+        result = insert_text(text)
+    except Exception as exc:
+        logger.debug("browser_secret_fill: CDP insert_text failed: %s", type(exc).__name__)
+        return {"success": False, "error": "CDP text insertion failed."}
+
+    if not isinstance(result, dict) or not result.get("ok"):
+        return {
+            "success": False,
+            "error": "CDP text insertion failed.",
+        }
+    return {"success": True}
+
+
+def browser_secret_fill(
+    ref: str,
+    secret_ref: str = "",
+    item: str = "",
+    field: str = "",
+    vault: str = "",
+    clear: bool = True,
+    task_id: Optional[str] = None,
+) -> str:
+    """
+    Fill a browser input from a 1Password secret reference or item field.
+
+    The secret value is resolved inside this tool process and is never accepted
+    as a tool argument or echoed in the tool result.
+    """
+    if _is_camofox_mode():
+        return json.dumps(
+            {
+                "success": False,
+                "error": "browser_secret_fill requires CDP and is not available with the Camofox backend.",
+            },
+            ensure_ascii=False,
+        )
+
+    if not ref:
+        return json.dumps({"success": False, "error": "'ref' is required."}, ensure_ascii=False)
+
+    try:
+        secret_value = _resolve_onepassword_secret(
+            secret_ref=secret_ref,
+            item=item,
+            field=field,
+            vault=vault,
+        )
+    except Exception as exc:
+        return json.dumps({"success": False, "error": str(exc)}, ensure_ascii=False)
+
+    effective_task_id = _last_session_key(task_id or "default")
+    if not ref.startswith("@"):
+        ref = f"@{ref}"
+
+    focus_result = _run_browser_command(effective_task_id, "click", [ref])
+    if not focus_result.get("success"):
+        response = {
+            "success": False,
+            "error": focus_result.get("error", f"Failed to focus {ref}"),
+        }
+        return json.dumps(_copy_fallback_warning(response, focus_result), ensure_ascii=False)
+
+    if clear:
+        clear_result = _clear_focused_browser_field(effective_task_id)
+        if not clear_result.get("success"):
+            return json.dumps(clear_result, ensure_ascii=False)
+
+    insert_result = _insert_text_via_cdp(effective_task_id, secret_value)
+    if not insert_result.get("success"):
+        return json.dumps(insert_result, ensure_ascii=False)
+
+    return json.dumps(
+        {
+            "success": True,
+            "filled": True,
+            "element": ref,
+            "source": "1password",
+            "cleared": bool(clear),
+        },
+        ensure_ascii=False,
+    )
 
 
 def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
@@ -3821,6 +4164,22 @@ registry.register(
     handler=lambda args, **kw: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="⌨️",
+)
+registry.register(
+    name="browser_secret_fill",
+    toolset="browser",
+    schema=_BROWSER_SCHEMA_MAP["browser_secret_fill"],
+    handler=lambda args, **kw: browser_secret_fill(
+        ref=args.get("ref", ""),
+        secret_ref=args.get("secret_ref", ""),
+        item=args.get("item", ""),
+        field=args.get("field", ""),
+        vault=args.get("vault", ""),
+        clear=args.get("clear", True),
+        task_id=kw.get("task_id"),
+    ),
+    check_fn=check_browser_requirements,
+    emoji="🔐",
 )
 registry.register(
     name="browser_scroll",

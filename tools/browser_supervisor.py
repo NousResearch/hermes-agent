@@ -566,6 +566,44 @@ class CDPSupervisor:
 
         return {"ok": True, "result": value, "result_type": result_type}
 
+    def insert_text(self, text: str, *, timeout: float = 10.0) -> Dict[str, Any]:
+        """Insert text into the currently focused page element via CDP.
+
+        This is used by secret-aware browser tools so sensitive values do not
+        have to travel through agent-browser command-line arguments.
+        """
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            return {"ok": False, "error": "supervisor loop is not running"}
+
+        with self._state_lock:
+            if not self._active:
+                return {"ok": False, "error": "supervisor is not active"}
+            session_id = self._page_session_id
+
+        if not session_id:
+            return {"ok": False, "error": "supervisor has no attached page session"}
+
+        async def _do_insert() -> Dict[str, Any]:
+            return await self._cdp(
+                "Input.insertText",
+                {"text": text},
+                session_id=session_id,
+                timeout=timeout,
+            )
+
+        from agent.async_utils import safe_schedule_threadsafe
+
+        try:
+            fut = safe_schedule_threadsafe(_do_insert(), loop)
+            if fut is None:
+                return {"ok": False, "error": "Browser supervisor loop unavailable"}
+            fut.result(timeout=timeout + 1)
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+        return {"ok": True}
+
     # ── Supervisor loop internals ────────────────────────────────────────────
 
     def _thread_main(self) -> None:

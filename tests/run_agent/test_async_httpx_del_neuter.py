@@ -88,6 +88,7 @@ class TestCleanupStaleAsyncClients:
         """Entries with a closed loop should be evicted."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -101,7 +102,7 @@ class TestCleanupStaleAsyncClients:
         mock_client._client = MagicMock()
         mock_client._client.is_closed = False
 
-        key = ("test_stale", True, "", "", "", (), False)
+        key = _client_cache_key("test_stale", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -118,6 +119,7 @@ class TestCleanupStaleAsyncClients:
         """Entries with an open loop should be preserved."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
@@ -125,7 +127,7 @@ class TestCleanupStaleAsyncClients:
         loop = asyncio.new_event_loop()  # NOT closed
 
         mock_client = MagicMock()
-        key = ("test_live", True, "", "", "", (), False)
+        key = _client_cache_key("test_live", async_mode=True)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", loop)
 
@@ -142,12 +144,13 @@ class TestCleanupStaleAsyncClients:
         """Sync entries (cached_loop=None) should be preserved."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             cleanup_stale_async_clients,
         )
 
         mock_client = MagicMock()
-        key = ("test_sync", False, "", "", "", (), False)
+        key = _client_cache_key("test_sync", async_mode=False)
         with _client_cache_lock:
             _client_cache[key] = (mock_client, "test-model", None)
 
@@ -176,11 +179,12 @@ class TestClientCacheBoundedGrowth:
         """When the loop changes, the old entry should be replaced, not duplicated."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             _get_cached_client,
         )
 
-        key = ("test_replace", True, "", "", "", (), False, "")
+        key = _client_cache_key("test_replace", async_mode=True)
 
         # Simulate a stale entry from a closed loop
         old_loop = asyncio.new_event_loop()
@@ -212,10 +216,11 @@ class TestClientCacheBoundedGrowth:
         """Multiple event loops for the same provider should NOT create multiple entries."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
         )
 
-        key = ("test_no_grow", True, "", "", "", (), False)
+        key = _client_cache_key("test_no_grow", async_mode=True)
 
         loops = []
         try:
@@ -252,6 +257,7 @@ class TestClientCacheBoundedGrowth:
         """Cache should not exceed _CLIENT_CACHE_MAX_SIZE."""
         from agent.auxiliary_client import (
             _client_cache,
+            _client_cache_key,
             _client_cache_lock,
             _CLIENT_CACHE_MAX_SIZE,
         )
@@ -267,7 +273,7 @@ class TestClientCacheBoundedGrowth:
                 mock_client = MagicMock()
                 mock_client._client = MagicMock()
                 mock_client._client.is_closed = False
-                key = (f"evict_test_{i}", False, "", "", "", (), False)
+                key = _client_cache_key(f"evict_test_{i}", async_mode=False)
                 with _client_cache_lock:
                     # Inline the eviction logic (same as _get_cached_client)
                     while len(_client_cache) >= _CLIENT_CACHE_MAX_SIZE:
@@ -279,9 +285,9 @@ class TestClientCacheBoundedGrowth:
                 assert len(_client_cache) <= _CLIENT_CACHE_MAX_SIZE, \
                     f"Cache size {len(_client_cache)} exceeds max {_CLIENT_CACHE_MAX_SIZE}"
                 # The earliest entries should have been evicted
-                assert ("evict_test_0", False, "", "", "", (), False) not in _client_cache
+                assert _client_cache_key("evict_test_0", async_mode=False) not in _client_cache
                 # The latest entries should be present
-                assert (f"evict_test_{_CLIENT_CACHE_MAX_SIZE + 4}", False, "", "", "", (), False) in _client_cache
+                assert _client_cache_key(f"evict_test_{_CLIENT_CACHE_MAX_SIZE + 4}", async_mode=False) in _client_cache
         finally:
             with _client_cache_lock:
                 _client_cache.clear()

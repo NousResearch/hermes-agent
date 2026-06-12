@@ -23,6 +23,41 @@ from typing import Any, Optional
 logger = logging.getLogger("gateway.run")
 
 
+def _acquire_singleton_lock(lock_path) -> "tuple[int | None, str]":
+    """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
+
+    Only one gateway process machine-wide may run the embedded kanban
+    dispatcher: concurrent dispatchers each sweep every board and corrupt the
+    shared kanban SQLite DBs (and double reclaim frequency). The
+    ``dispatch_in_gateway`` config flag is the primary control; this lock is the
+    backstop that survives config drift and same-profile restart races.
+
+    Returns ``(fd, "held")`` on success — the caller keeps the fd for the
+    process lifetime. ``(None, "contended")`` when another process holds it
+    (caller must NOT dispatch). ``(None, "unavailable")`` when locking cannot be
+    performed (non-POSIX, or a filesystem without flock) — caller falls back to
+    config-only control.
+    """
+    try:
+        import fcntl
+    except ImportError:
+        return None, "unavailable"
+    try:
+        Path(lock_path).parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o644)
+    except OSError:
+        return None, "unavailable"
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        os.close(fd)
+        return None, "contended"
+    except OSError:
+        os.close(fd)
+        return None, "unavailable"
+    return fd, "held"
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -605,6 +640,29 @@ class GatewayKanbanWatchersMixin:
         except Exception:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
+
+        # Single-dispatcher backstop. dispatch_in_gateway defaults to true, so a
+        # new profile gateway (or a same-profile restart race) can silently
+        # start a second dispatcher; concurrent dispatchers corrupt the shared
+        # kanban SQLite DBs. The lock lives at the machine-global kanban root
+        # (shared across profiles by design), so it serialises ALL gateways.
+        self._kanban_dispatcher_lock_fd = None
+        _lock_path = _kb.kanban_home() / "kanban" / ".dispatcher.lock"
+        _lock_fd, _lock_state = _acquire_singleton_lock(_lock_path)
+        if _lock_state == "contended":
+            logger.info(
+                "kanban dispatcher: another gateway already holds the dispatcher "
+                "lock (%s); this gateway will NOT dispatch.", _lock_path,
+            )
+            return
+        if _lock_state == "held":
+            self._kanban_dispatcher_lock_fd = _lock_fd  # hold for process lifetime
+            logger.info("kanban dispatcher: holding singleton dispatcher lock (%s)", _lock_path)
+        else:
+            logger.warning(
+                "kanban dispatcher: advisory lock unavailable at %s; proceeding "
+                "on config control alone.", _lock_path,
+            )
 
         try:
             interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)

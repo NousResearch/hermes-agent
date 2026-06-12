@@ -43,3 +43,26 @@ def test_watcher_loops_are_coroutines():
     # The two long-running watchers are async loops.
     assert inspect.iscoroutinefunction(GatewayKanbanWatchersMixin._kanban_notifier_watcher)
     assert inspect.iscoroutinefunction(GatewayKanbanWatchersMixin._kanban_dispatcher_watcher)
+
+
+def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
+    """Only one holder of the dispatcher lock at a time — the backstop that
+    stops concurrent dispatchers corrupting the shared kanban SQLite DBs."""
+    import os
+
+    from gateway.kanban_watchers import _acquire_singleton_lock
+
+    lock = tmp_path / "kanban" / ".dispatcher.lock"
+
+    fd1, st1 = _acquire_singleton_lock(lock)
+    assert st1 == "held" and fd1 is not None
+
+    # A second acquire while the first is held must be refused, not granted.
+    fd2, st2 = _acquire_singleton_lock(lock)
+    assert st2 == "contended" and fd2 is None
+
+    # Releasing the first lets a fresh acquire succeed (lock is reusable).
+    os.close(fd1)
+    fd3, st3 = _acquire_singleton_lock(lock)
+    assert st3 == "held" and fd3 is not None
+    os.close(fd3)

@@ -164,6 +164,27 @@ function assistantMultiReasoningMessage(texts: string[]): ThreadMessage {
   } as ThreadMessage
 }
 
+function assistantSeparatedReasoningMessage(): ThreadMessage {
+  return {
+    id: 'assistant-reasoning-separated-1',
+    role: 'assistant',
+    content: [
+      { type: 'reasoning', text: ' Complete first thought.', status: { type: 'complete' } },
+      { type: 'text', text: 'Interim answer.' },
+      { type: 'reasoning', text: ' Streaming second thought.', status: { type: 'running' } }
+    ],
+    status: { type: 'running' },
+    createdAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
 function assistantTodoMessage(
   todos: Array<{ content: string; id: string; status: 'cancelled' | 'completed' | 'in_progress' | 'pending' }>,
   running = true
@@ -184,36 +205,6 @@ function assistantTodoMessage(
       }
     ],
     status: running ? { type: 'running' } : { type: 'complete', reason: 'stop' },
-    createdAt,
-    metadata: {
-      unstable_state: null,
-      unstable_annotations: [],
-      unstable_data: [],
-      steps: [],
-      custom: {}
-    }
-  } as ThreadMessage
-}
-
-function assistantReasoningTodoMessage(
-  todos: Array<{ content: string; id: string; status: 'cancelled' | 'completed' | 'in_progress' | 'pending' }>
-): ThreadMessage {
-  return {
-    id: 'assistant-reasoning-todo-1',
-    role: 'assistant',
-    content: [
-      { type: 'reasoning', text: 'Let me make a quick todo list.' },
-      {
-        type: 'tool-call',
-        toolCallId: 'todo-1',
-        toolName: 'todo',
-        args: { todos },
-        argsText: JSON.stringify({ todos }),
-        result: { todos }
-      },
-      { type: 'text', text: 'Done — fake list created.' }
-    ],
-    status: { type: 'complete', reason: 'stop' },
     createdAt,
     metadata: {
       unstable_state: null,
@@ -685,7 +676,19 @@ describe('assistant-ui streaming renderer', () => {
     expect(reasoningParts[1]?.textContent).toBe('Second thought.')
   })
 
-  it('renders live todo rows during a running turn', () => {
+  it('does not reopen an earlier completed thinking group when a later group is running', () => {
+    const { container } = render(<RunningMessageHarness message={assistantSeparatedReasoningMessage()} />)
+
+    const disclosures = container.querySelectorAll('[data-slot="aui_thinking-disclosure"]')
+    expect(disclosures.length).toBe(2)
+
+    expect(disclosures[0].querySelector('button')?.getAttribute('aria-expanded')).toBe('false')
+    expect(disclosures[1].querySelector('button')?.getAttribute('aria-expanded')).toBe('true')
+    expect(container.textContent).not.toContain('Complete first thought.')
+    expect(container.textContent).toContain('Interim answer.')
+  })
+
+  it('does not render an inline todo panel — todos live in the composer status stack', () => {
     const { container } = render(
       <TodoHarness
         message={assistantTodoMessage([
@@ -695,52 +698,6 @@ describe('assistant-ui streaming renderer', () => {
       />
     )
 
-    const ui = within(container)
-
-    expect(container.querySelector('[data-slot="aui_todo-hoisted"]')).toBeTruthy()
-    expect(ui.getAllByText('Boil water').length).toBeGreaterThan(0)
-    expect(ui.getByText('Gather ingredients')).toBeTruthy()
-    expect(ui.queryByText(/pending/i)).toBeNull()
-    expect(ui.queryByRole('button', { name: /todo/i })).toBeNull()
-  })
-
-  it('renders archived todos after turn completion regardless of pending state', () => {
-    const first = render(
-      <TodoHarness message={assistantTodoMessage([{ content: 'Boil water', id: 'boil', status: 'pending' }], false)} />
-    )
-
-    const ui = within(first.container)
-
-    expect(ui.getAllByText('Boil water').length).toBeGreaterThan(0)
-
-    first.unmount()
-
-    const second = render(
-      <TodoHarness
-        message={assistantTodoMessage([{ content: 'Serve latte', id: 'serve', status: 'completed' }], false)}
-      />
-    )
-
-    const archivedUi = within(second.container)
-
-    expect(archivedUi.getAllByText('Serve latte').length).toBeGreaterThan(0)
-  })
-
-  it('hoists todo outside the thinking disclosure when reasoning is present', () => {
-    const { container } = render(
-      <TodoHarness
-        message={assistantReasoningTodoMessage([
-          { content: 'Buy oats', id: 'oats', status: 'completed' },
-          { content: "Reply to Sam's email", id: 'email', status: 'in_progress' }
-        ])}
-      />
-    )
-
-    const todoPanel = container.querySelector('[data-slot="aui_todo-hoisted"]')
-    const thinkingDisclosure = container.querySelector('[data-slot="aui_thinking-disclosure"]')
-
-    expect(todoPanel).toBeTruthy()
-    expect(thinkingDisclosure).toBeTruthy()
-    expect(Boolean(thinkingDisclosure?.contains(todoPanel as Node))).toBe(false)
+    expect(container.querySelector('[data-slot="aui_todo-hoisted"]')).toBeNull()
   })
 })

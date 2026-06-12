@@ -275,7 +275,6 @@ def load_hermes_dotenv(
 
     _expand_loaded_path_references(original_path, original_home)
     _apply_external_secret_sources(home_path)
-
     return loaded
 
 

@@ -7,6 +7,7 @@ Subcommands:
     setup              full first-time setup (device login + project + user + sidecar)
     status             show login + project + sidecar dep state
     install-sidecar    npm install inside plugins/platforms/photon/sidecar/
+    telemetry          show or toggle Spectrum SDK telemetry (on/off)
 
 The device-code login runs automatically as the first step of ``setup``;
 there is no standalone ``login`` verb (matching how every other Hermes
@@ -58,6 +59,15 @@ def register_cli(parser: argparse.ArgumentParser) -> None:
     subs.add_parser("status", help="Show login + project + sidecar dep state")
     subs.add_parser("install-sidecar", help="Run npm install inside the sidecar directory")
 
+    p_telemetry = subs.add_parser(
+        "telemetry",
+        help="Show or toggle Spectrum SDK telemetry (on/off)",
+    )
+    p_telemetry.add_argument(
+        "state", nargs="?", choices=("on", "off"),
+        help="Turn telemetry on or off (omit to show the current state)",
+    )
+
     parser.set_defaults(func=dispatch)
 
 
@@ -75,6 +85,8 @@ def dispatch(args: argparse.Namespace) -> int:
         return _cmd_status(args)
     if sub == "install-sidecar":
         return _cmd_install_sidecar(args)
+    if sub == "telemetry":
+        return _cmd_telemetry(args)
     print(f"unknown subcommand: {sub}", file=sys.stderr)
     return 2
 
@@ -183,6 +195,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         )
     )
     agent_number = None
+    registered_phone = None
+    registered_user_id = None
     if not phone:
         print("      Skipped user registration (no phone given). Re-run with --phone later.")
     else:
@@ -192,7 +206,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         email = args.email
         try:
             user, created = photon_auth.register_user_if_absent(
-                token, dashboard_id,
+                spectrum_id, secret,
                 phone_number=phone,
                 first_name=first_name,
                 last_name=args.last_name,
@@ -205,6 +219,8 @@ def _cmd_setup(args: argparse.Namespace) -> int:
             print(f"      user registration failed: {e}", file=sys.stderr)
             return 1
         print("  ✓ phone registered" if created else "  ✓ phone already registered")
+        registered_phone = phone
+        registered_user_id = user.get("id")
         # The number to text the agent is the user's assigned iMessage line
         # (the dashboard's "TEXTS ON" column). On shared-number plans there is
         # no dedicated entry in /lines, so this per-user field is the source of
@@ -236,6 +252,16 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         print(color("└──────────────────────────────────────────────────────────────", Colors.GREEN))
     else:
         print("      No iMessage line assigned yet — check the Photon dashboard.")
+    if registered_phone:
+        try:
+            photon_auth.store_user_numbers(
+                phone_number=registered_phone,
+                assigned_phone_number=agent_number,
+                user_id=str(registered_user_id) if registered_user_id else None,
+                dashboard_project_id=dashboard_id,
+            )
+        except Exception as e:
+            print(f"      (could not save Photon status metadata: {e})", file=sys.stderr)
 
     # 6. Sidecar deps (spectrum-ts).
     if args.skip_sidecar_install:
@@ -280,6 +306,7 @@ def _autoconfigure_access(phone: str) -> None:
 
 
 def _cmd_status(_args: argparse.Namespace) -> int:
+    _refresh_status_numbers()
     # Defer the credential rows to auth.print_credential_summary — its emit
     # callback is the only sink that sees credential-derived strings, so
     # cli.py keeps zero taint flow according to CodeQL.
@@ -288,11 +315,56 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     sidecar_installed = (_SIDECAR_DIR / "node_modules").exists()
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_installed else '✗ run `hermes photon install-sidecar`'}")
+    print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
     return 0
+
+
+def _refresh_status_numbers() -> None:
+    phone, assigned = photon_auth.load_user_numbers()
+    if phone and assigned:
+        return
+    spectrum_id, project_secret = photon_auth.load_project_credentials()
+    if not spectrum_id or not project_secret:
+        return
+    try:
+        photon_auth.refresh_user_numbers(spectrum_id, project_secret)
+    except Exception as e:
+        print(f"      (could not refresh Photon user numbers: {e})", file=sys.stderr)
 
 
 def _cmd_install_sidecar(_args: argparse.Namespace) -> int:
     return _install_sidecar()
+
+
+def _telemetry_enabled() -> bool:
+    """Read PHOTON_TELEMETRY from the env / ~/.hermes/.env.
+
+    Mirrors the sidecar's truthy set (index.mjs) so the state shown here
+    always matches what the sidecar will actually do.
+    """
+    try:
+        from hermes_cli.config import get_env_value
+        raw = get_env_value("PHOTON_TELEMETRY")
+    except ImportError:
+        raw = os.getenv("PHOTON_TELEMETRY")
+    return (raw or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _cmd_telemetry(args: argparse.Namespace) -> int:
+    state = getattr(args, "state", None)
+    if state is None:
+        print(f"Photon telemetry: {'on' if _telemetry_enabled() else 'off'}")
+        print("  Toggle with `hermes photon telemetry on` / `hermes photon telemetry off`.")
+        return 0
+    try:
+        from hermes_cli.config import save_env_value
+        save_env_value("PHOTON_TELEMETRY", "true" if state == "on" else "false")
+    except Exception as e:
+        print(f"could not save PHOTON_TELEMETRY: {e}", file=sys.stderr)
+        return 1
+    print(f"✓ Spectrum telemetry turned {state} (PHOTON_TELEMETRY in ~/.hermes/.env)")
+    print("  Restart the gateway for the sidecar to pick it up:  hermes gateway restart")
+    return 0
 
 
 def _install_sidecar() -> int:
@@ -304,12 +376,26 @@ def _install_sidecar() -> int:
             file=sys.stderr,
         )
         return 1
-    print(f"  $ cd {_SIDECAR_DIR} && {npm} install")
+    # spectrum-ts is pinned exactly in package.json/package-lock.json because
+    # the SDK ships breaking majors (v2 removed defineFusorPlatform; v3
+    # reworked space construction). Upgrades are deliberate: bump the pin,
+    # migrate sidecar/index.mjs, re-run the photon tests — never `@latest`
+    # (see README "Upgrading spectrum-ts"). `npm ci` installs the committed
+    # lockfile verbatim; fall back to `npm install` when the lockfile is
+    # missing or drifted (e.g. a dev checkout mid-upgrade).
+    print(f"  $ cd {_SIDECAR_DIR} && {npm} ci")
     proc = subprocess.run(  # noqa: S603
-        [npm, "install"],
+        [npm, "ci"],
         cwd=str(_SIDECAR_DIR),
         check=False,
     )
+    if proc.returncode != 0:
+        print(f"  npm ci failed — falling back to:  {npm} install")
+        proc = subprocess.run(  # noqa: S603
+            [npm, "install"],
+            cwd=str(_SIDECAR_DIR),
+            check=False,
+        )
     if proc.returncode != 0:
         print("npm install failed", file=sys.stderr)
     return proc.returncode

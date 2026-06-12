@@ -29,11 +29,85 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
+def _delegate_from_json(col: str = "model_config") -> str:
+    return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
+
+
+# A child session counts as a /branch (kept visible, never cascade-deleted) if
+# it carries the stable marker OR the legacy end_reason heuristic holds.
+_BRANCH_CHILD_SQL = (
+    "json_extract(COALESCE({a}.model_config, '{{}}'), '$._branched_from') IS NOT NULL"
+    " OR EXISTS (SELECT 1 FROM sessions p"
+    "            WHERE p.id = {a}.parent_session_id"
+    "            AND p.end_reason = 'branched'"
+    "            AND {a}.started_at >= p.ended_at)"
+)
+
+_COMPRESSION_CHILD_SQL = (
+    "EXISTS (SELECT 1 FROM sessions p"
+    "        WHERE p.id = {a}.parent_session_id"
+    "        AND p.end_reason = 'compression'"
+    "        AND {a}.started_at >= p.ended_at)"
+)
+
+# Rows that surface in pickers: roots + branch children (subagent runs and
+# compression continuations stay hidden).
+_LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
+
+
+def _ephemeral_child_sql(alias: str = "s") -> str:
+    """Subagent runs (cascade-delete targets), not branches or compression tips."""
+    branch = _BRANCH_CHILD_SQL.format(a=alias)
+    compression = _COMPRESSION_CHILD_SQL.format(a=alias)
+    return (
+        f"({alias}.parent_session_id IS NOT NULL"
+        f" AND NOT ({branch})"
+        f" AND NOT ({compression}))"
+    )
+
+
+def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
+    """Delegate-subagent ids to cascade-delete with *parent_ids*.
+
+    Only rows carrying the ``_delegate_from`` marker (set at creation, and
+    backfilled by the v16 migration) — generic untagged children keep the
+    orphan-don't-delete contract. Walks marker chains recursively so an
+    orchestrator subagent's own delegate children go too (FK safety).
+    """
+    df = _delegate_from_json()
+    found: set[str] = set()
+    frontier = [sid for sid in parent_ids if sid]
+    while frontier:
+        ph = ",".join("?" * len(frontier))
+        cursor = conn.execute(
+            f"SELECT id FROM sessions WHERE {df} IN ({ph}) "
+            f"OR (parent_session_id IN ({ph}) AND {df} IS NOT NULL)",
+            frontier + frontier,
+        )
+        frontier = [row["id"] for row in cursor.fetchall() if row["id"] not in found]
+        found.update(frontier)
+    return list(found)
+
+
+def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
+    ids = _collect_delegate_child_ids(conn, parent_ids)
+    if ids:
+        ph = ",".join("?" * len(ids))
+        conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", ids)
+        # FK safety: orphan any untagged stragglers pointing at a doomed row.
+        conn.execute(
+            f"UPDATE sessions SET parent_session_id = NULL "
+            f"WHERE parent_session_id IN ({ph})",
+            ids,
+        )
+        conn.execute(f"DELETE FROM sessions WHERE id IN ({ph})", ids)
+    return ids
+
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 15
+SCHEMA_VERSION = 16
 
 # ---------------------------------------------------------------------------
 # WAL-compatibility fallback
@@ -226,6 +300,212 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         exc,
     )
 
+# ---------------------------------------------------------------------------
+# Malformed-schema recovery
+# ---------------------------------------------------------------------------
+# A distinct, nastier failure class than a malformed FTS *inverted index*:
+# the ``sqlite_master`` schema table itself becomes inconsistent — most
+# commonly a DUPLICATE object definition, e.g. two ``CREATE VIRTUAL TABLE
+# messages_fts`` rows.  SQLite parses the entire schema while preparing the
+# FIRST statement on a connection, so on this class *every* statement raises
+# before it runs — including ``PRAGMA journal_mode`` (which is why this trips
+# in ``apply_wal_with_fallback`` during ``SessionDB.__init__``, long before
+# ``_init_schema`` is reached) and even ``PRAGMA integrity_check`` and a plain
+# ``DROP TABLE``.  The only operations that still work are
+# ``PRAGMA writable_schema=ON`` plus direct ``sqlite_master`` surgery.
+#
+# Symptom users hit (Desktop/Dashboard show "no sessions" while 200+ JSON
+# files sit on disk):
+#   sqlite3.DatabaseError: malformed database schema (messages_fts) -
+#   table messages_fts already exists
+#
+# The canonical ``sessions`` / ``messages`` data is intact in these cases —
+# only the derived schema is broken — so recovery preserves all transcripts
+# and merely rebuilds the FTS layer.
+_MALFORMED_SCHEMA_MARKERS = (
+    "malformed database schema",
+    "database disk image is malformed",
+)
+
+# Process-global guard so auto-repair is attempted at most once per DB path
+# per process (prevents repair loops and serialises concurrent web_server /
+# gateway opens against the same malformed file).
+_repair_attempted_paths: set[str] = set()
+_repair_attempt_lock = threading.Lock()
+
+
+def is_malformed_db_error(exc: BaseException) -> bool:
+    """True if *exc* is a SQLite 'malformed schema / disk image' error.
+
+    These are the corruption classes where the schema fails to parse, so
+    targeted ``sqlite_master`` surgery (not an ordinary FTS rebuild) is the
+    only recovery path.
+    """
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    return any(marker in str(exc).lower() for marker in _MALFORMED_SCHEMA_MARKERS)
+
+
+def _claim_repair_attempt(db_path: Path) -> bool:
+    """Claim the one-shot repair attempt for *db_path* in this process.
+
+    Returns True for the first caller, False afterwards. Keeps a malformed
+    DB from triggering an unbounded repair/reopen loop and stops concurrent
+    callers from racing surgery on the same file.
+    """
+    key = str(db_path)
+    with _repair_attempt_lock:
+        if key in _repair_attempted_paths:
+            return False
+        _repair_attempted_paths.add(key)
+        return True
+
+
+def _backup_db_file(db_path: Path) -> Optional[Path]:
+    """Copy a (possibly malformed) DB file to a timestamped backup beside it.
+
+    Raw file copy on purpose: the DB won't open cleanly, so we preserve the
+    bytes exactly for forensics / manual restore. WAL and SHM sidecars are
+    copied too when present. Returns the backup path, or None on failure.
+    """
+    import datetime
+    import shutil
+
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = db_path.with_name(f"{db_path.name}.malformed-backup-{stamp}")
+    try:
+        shutil.copy2(db_path, backup_path)
+        for suffix in ("-wal", "-shm"):
+            sidecar = db_path.with_name(db_path.name + suffix)
+            if sidecar.exists():
+                shutil.copy2(sidecar, backup_path.with_name(backup_path.name + suffix))
+        return backup_path
+    except Exception as exc:  # pragma: no cover - best effort
+        logger.warning("Could not back up malformed DB %s: %s", db_path, exc)
+        return None
+
+
+def _db_opens_cleanly(db_path: Path) -> Optional[str]:
+    """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
+
+    Runs the same first-statement (``PRAGMA journal_mode``) that trips the
+    malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
+    ``sessions`` read.
+    """
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute("PRAGMA journal_mode").fetchone()
+        rows = conn.execute("PRAGMA integrity_check").fetchall()
+        problems = [str(r[0]) for r in rows if r and str(r[0]).lower() != "ok"]
+        if problems:
+            return "; ".join(problems[:3])
+        conn.execute("SELECT COUNT(*) FROM sessions").fetchone()
+        return None
+    except sqlite3.DatabaseError as exc:
+        return str(exc)
+    finally:
+        conn.close()
+
+
+def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, Any]:
+    """Repair a state.db whose ``sqlite_master`` schema is malformed.
+
+    Handles the "duplicate object definition" / malformed-schema class where
+    even ``PRAGMA`` statements fail. Tries least-destructive recovery first
+    and escalates:
+
+      1. **De-duplicate** ``sqlite_master`` (keep the lowest rowid per
+         ``type``/``name``). Fixes the canonical "table X already exists"
+         case and PRESERVES the existing FTS index intact.
+      2. **Drop the FTS schema** (every ``messages_fts*`` object) + ``VACUUM``.
+         The next ``SessionDB()`` open rebuilds the FTS indexes from the
+         canonical ``messages`` table.
+
+    Canonical ``sessions`` / ``messages`` rows are never modified. A
+    timestamped raw backup is taken first unless ``backup=False``.
+
+    Returns a report dict: ``{repaired: bool, strategy: str|None,
+    backup_path: str|None, error: str|None}``.
+    """
+    report: Dict[str, Any] = {
+        "repaired": False,
+        "strategy": None,
+        "backup_path": None,
+        "error": None,
+    }
+
+    db_path = Path(db_path)
+    if not db_path.exists():
+        report["error"] = f"{db_path} does not exist"
+        return report
+
+    if backup:
+        bpath = _backup_db_file(db_path)
+        report["backup_path"] = str(bpath) if bpath else None
+
+    # ── Strategy 1: de-duplicate sqlite_master (keeps FTS index) ──
+    try:
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            conn.execute("PRAGMA writable_schema=ON")
+            dupes = conn.execute(
+                "SELECT type, name, COUNT(*) AS c, MIN(rowid) AS keep "
+                "FROM sqlite_master GROUP BY type, name HAVING c > 1"
+            ).fetchall()
+            for type_, name, _count, keep in dupes:
+                conn.execute(
+                    "DELETE FROM sqlite_master "
+                    "WHERE type IS ? AND name IS ? AND rowid <> ?",
+                    (type_, name, keep),
+                )
+            conn.execute("PRAGMA writable_schema=OFF")
+            conn.commit()
+        finally:
+            conn.close()
+        if _db_opens_cleanly(db_path) is None:
+            report["repaired"] = True
+            report["strategy"] = "dedup_schema"
+            logger.warning(
+                "state.db schema repaired by de-duplicating sqlite_master "
+                "(FTS index preserved): %s", db_path
+            )
+            return report
+    except sqlite3.DatabaseError as exc:
+        logger.warning("state.db dedup repair pass failed: %s", exc)
+
+    # ── Strategy 2: drop all FTS schema, VACUUM, rebuild on next open ──
+    try:
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+        try:
+            conn.execute("PRAGMA writable_schema=ON")
+            conn.execute("DELETE FROM sqlite_master WHERE name LIKE 'messages_fts%'")
+            conn.execute("PRAGMA writable_schema=OFF")
+            conn.commit()
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+        reason = _db_opens_cleanly(db_path)
+        if reason is None:
+            report["repaired"] = True
+            report["strategy"] = "drop_fts_rebuild"
+            logger.warning(
+                "state.db schema repaired by dropping FTS schema; indexes "
+                "will rebuild from messages on next open: %s", db_path
+            )
+            return report
+        report["error"] = reason
+    except sqlite3.DatabaseError as exc:
+        report["error"] = str(exc)
+
+    if not report["repaired"]:
+        logger.error(
+            "state.db schema repair could not recover %s automatically "
+            "(backup: %s); manual restore from backup may be required.",
+            db_path, report["backup_path"],
+        )
+    return report
+
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -405,6 +685,7 @@ class SessionDB:
         self._write_count = 0
         self._fts_enabled = False
         self._fts_unavailable_warned = False
+        self._conn = None
         try:
             if read_only:
                 # Read-only attach for cross-profile aggregation: SELECT-only,
@@ -426,23 +707,50 @@ class SessionDB:
                 return
 
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(
-                str(self.db_path),
-                check_same_thread=False,
-                # Short timeout — application-level retry with random jitter
-                # handles contention instead of sitting in SQLite's internal
-                # busy handler for up to 30s.
-                timeout=1.0,
-                # auto-starts transactions on DML, which conflicts with our
-                # explicit BEGIN IMMEDIATE.  None = we manage transactions
-                # ourselves.
-                isolation_level=None,
-            )
-            self._conn.row_factory = sqlite3.Row
-            apply_wal_with_fallback(self._conn, db_label="state.db")
-            self._conn.execute("PRAGMA foreign_keys=ON")
 
-            self._init_schema()
+            def _connect_and_init():
+                self._conn = sqlite3.connect(
+                    str(self.db_path),
+                    check_same_thread=False,
+                    # Short timeout — application-level retry with random
+                    # jitter handles contention instead of sitting in
+                    # SQLite's internal busy handler for up to 30s.
+                    timeout=1.0,
+                    # auto-starts transactions on DML, which conflicts with
+                    # our explicit BEGIN IMMEDIATE.  None = we manage
+                    # transactions ourselves.
+                    isolation_level=None,
+                )
+                self._conn.row_factory = sqlite3.Row
+                apply_wal_with_fallback(self._conn, db_label="state.db")
+                self._conn.execute("PRAGMA foreign_keys=ON")
+                self._init_schema()
+
+            try:
+                _connect_and_init()
+            except sqlite3.DatabaseError as exc:
+                # The malformed-schema class (e.g. a duplicate sqlite_master
+                # row for messages_fts) fails on the very first statement —
+                # before _init_schema can run — so it can't be caught at the
+                # FTS-rebuild layer. Recover by repairing sqlite_master in
+                # place (backup first; canonical sessions/messages preserved),
+                # then reopen once. This is what lets Desktop/Dashboard
+                # self-heal instead of silently showing "no sessions".
+                if not is_malformed_db_error(exc) or not _claim_repair_attempt(self.db_path):
+                    raise
+                logger.error(
+                    "state.db schema is malformed (%s) — attempting automatic "
+                    "repair (a backup copy is made first).", exc,
+                )
+                try:
+                    if self._conn is not None:
+                        self._conn.close()
+                except Exception:
+                    pass
+                report = repair_state_db_schema(self.db_path)
+                if not report.get("repaired"):
+                    raise
+                _connect_and_init()
         except Exception as exc:
             # Capture the cause so /resume and friends can surface WHY the
             # session DB is unavailable instead of a bare "Session database
@@ -897,6 +1205,32 @@ class SessionDB:
                 try:
                     cursor.execute(
                         "UPDATE messages SET active = 1 WHERE active IS NULL"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            if current_version < 16:
+                # v16: tag delegate subagent rows so pickers stay clean after
+                # parent deletes that used to orphan them (parent_session_id → NULL).
+                try:
+                    cursor.execute(
+                        "UPDATE sessions SET model_config = json_set("
+                        "COALESCE(model_config, '{}'), '$._delegate_from', parent_session_id) "
+                        f"WHERE parent_session_id IS NOT NULL "
+                        "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
+                        f"AND {_ephemeral_child_sql('sessions')}"
+                    )
+                    cursor.execute(
+                        "UPDATE sessions SET model_config = json_set("
+                        "COALESCE(model_config, '{}'), '$._delegate_from', '__orphaned__') "
+                        "WHERE parent_session_id IS NULL "
+                        "AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
+                        "AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL "
+                        "AND title IS NULL "
+                        "AND message_count <= 25 "
+                        "AND EXISTS (SELECT 1 FROM messages m "
+                        "            WHERE m.session_id = sessions.id AND m.role = 'tool') "
+                        "AND NOT EXISTS (SELECT 1 FROM sessions ch "
+                        "                WHERE ch.parent_session_id = sessions.id)"
                     )
                 except sqlite3.OperationalError:
                     pass
@@ -1481,15 +1815,51 @@ class SessionDB:
         """Archive or unarchive a session.
 
         Archived sessions are hidden from the default session list but keep all
-        their messages — this is a soft hide, not a delete. Returns True when a
-        row was updated.
+        their messages — this is a soft hide, not a delete. For compression
+        chains, archive the whole logical conversation. Desktop lists compression
+        roots projected forward to their latest continuation; updating only the
+        displayed tip lets the still-unarchived root resurrect it on refresh.
+        Returns True when at least one row was updated.
         """
         def _do(conn):
             cursor = conn.execute(
-                "UPDATE sessions SET archived = ? WHERE id = ?",
-                (1 if archived else 0, session_id),
+                """
+                WITH RECURSIVE
+                  ancestors(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT parent.id
+                    FROM ancestors a
+                    JOIN sessions child ON child.id = a.id
+                    JOIN sessions parent ON parent.id = child.parent_session_id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                  ),
+                  descendants(id) AS (
+                    SELECT ?
+                    UNION
+                    SELECT child.id
+                    FROM descendants d
+                    JOIN sessions parent ON parent.id = d.id
+                    JOIN sessions child ON child.parent_session_id = parent.id
+                    WHERE parent.end_reason = 'compression'
+                      AND child.started_at >= parent.ended_at
+                  ),
+                  lineage(id) AS (
+                    SELECT id FROM ancestors
+                    UNION
+                    SELECT id FROM descendants
+                  )
+                UPDATE sessions
+                SET archived = ?
+                WHERE id IN (SELECT id FROM lineage)
+                """,
+                (session_id, session_id, 1 if archived else 0),
             )
-            return cursor.rowcount
+            rowcount = cursor.rowcount
+            if rowcount is None or rowcount < 0:
+                rowcount = conn.execute("SELECT changes()").fetchone()[0]
+            return rowcount
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
@@ -1661,14 +2031,8 @@ class SessionDB:
             #   2. The legacy heuristic (parent ended with 'branched' before the
             #      child started), covering branch sessions created before the
             #      marker existed.
-            where_clauses.append(
-                "(s.parent_session_id IS NULL"
-                " OR json_extract(s.model_config, '$._branched_from') IS NOT NULL"
-                " OR EXISTS (SELECT 1 FROM sessions p"
-                "            WHERE p.id = s.parent_session_id"
-                "            AND p.end_reason = 'branched'"
-                "            AND s.started_at >= p.ended_at))"
-            )
+            where_clauses.append(_LISTABLE_CHILD_SQL)
+            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
 
         if source:
             where_clauses.append("s.source = ?")
@@ -3288,13 +3652,8 @@ class SessionDB:
             # Mirror list_sessions_rich's child-exclusion clause exactly so the
             # count lines up with the rows: roots (no parent) plus branch
             # children (parent ended with end_reason='branched').
-            where_clauses.append(
-                "(s.parent_session_id IS NULL"
-                " OR EXISTS (SELECT 1 FROM sessions p"
-                "            WHERE p.id = s.parent_session_id"
-                "            AND p.end_reason = 'branched'"
-                "            AND s.started_at >= p.ended_at))"
-            )
+            where_clauses.append(_LISTABLE_CHILD_SQL)
+            where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
         if source:
             where_clauses.append("s.source = ?")
             params.append(source)
@@ -3397,19 +3756,24 @@ class SessionDB:
     ) -> bool:
         """Delete a session and all its messages.
 
-        Child sessions are orphaned (parent_session_id set to NULL) rather
-        than cascade-deleted, so they remain accessible independently.
+        Delegate subagent children (``model_config._delegate_from``) are
+        cascade-deleted with the parent so they never resurface in session
+        pickers as orphaned rows. Branch / compression children are orphaned
+        (``parent_session_id → NULL``) so they remain accessible independently.
         When *sessions_dir* is provided, also removes on-disk transcript
-        files (``.json`` / ``.jsonl`` / ``request_dump_*``) for the deleted
+        files (``.json`` / ``.jsonl`` / ``request_dump_*``) for every deleted
         session. Returns True if the session was found and deleted.
         """
+        removed_delegate_ids: List[str] = []
+
         def _do(conn):
             cursor = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
             )
             if cursor.fetchone()[0] == 0:
                 return False
-            # Orphan child sessions so FK constraint is satisfied
+            removed_delegate_ids.extend(_delete_delegate_children(conn, [session_id]))
+            # Orphan remaining child sessions (branches, etc.) so FK is satisfied.
             conn.execute(
                 "UPDATE sessions SET parent_session_id = NULL "
                 "WHERE parent_session_id = ?",
@@ -3421,8 +3785,52 @@ class SessionDB:
 
         deleted = self._execute_write(_do)
         if deleted:
+            for delegate_id in removed_delegate_ids:
+                self._remove_session_files(sessions_dir, delegate_id)
             self._remove_session_files(sessions_dir, session_id)
-        return deleted
+        return bool(deleted)
+
+    def delete_session_if_empty(
+        self,
+        session_id: str,
+        sessions_dir: Optional[Path] = None,
+    ) -> bool:
+        """Delete *session_id* only when it never gained resumable content.
+
+        A session is considered empty when it has no messages and no
+        user-assigned title. Used by CLI exit / session-rotation paths so
+        immediately-started-and-quit sessions don't pile up in ``/resume``
+        and ``hermes sessions list`` output. (Pattern ported from
+        google-gemini/gemini-cli#27770.)
+
+        The emptiness check and delete run in one transaction, so a message
+        flushed concurrently by another writer can't be lost. Sessions with
+        children (delegate subagent runs) are preserved — a parent that
+        spawned work is not "empty" even if its own transcript never
+        flushed. Returns True if the session was deleted.
+        """
+        def _do(conn):
+            cursor = conn.execute(
+                """
+                DELETE FROM sessions
+                WHERE id = ?
+                  AND title IS NULL
+                  AND NOT EXISTS (
+                      SELECT 1 FROM messages WHERE messages.session_id = sessions.id
+                  )
+                  AND NOT EXISTS (
+                      SELECT 1 FROM sessions child
+                      WHERE child.parent_session_id = sessions.id
+                  )
+                """,
+                (session_id,),
+            )
+            return cursor.rowcount > 0
+
+        deleted = self._execute_write(_do)
+        if deleted:
+            self._remove_session_files(sessions_dir, session_id)
+        return bool(deleted)
 
     def delete_sessions(
         self,
@@ -3438,10 +3846,9 @@ class SessionDB:
         * Unknown IDs are silently skipped (no 404) — selection state
           in the UI can race against another tab's delete, and we'd
           rather succeed-on-the-rest than fail-the-whole-batch.
-        * Children of every deleted ID are orphaned
-          (``parent_session_id → NULL``), never cascade-deleted, so a
-          branch / subagent transcript survives an inadvertent parent
-          delete.
+        * Delegate subagent children (``model_config._delegate_from``) are
+          cascade-deleted with their parent; branch children are orphaned
+          (``parent_session_id → NULL``) so they stay accessible.
         * Messages and the session row both go in one
           ``_execute_write`` call so a partial failure can't leave the
           DB in a "messages gone but session row still there" state.
@@ -3464,6 +3871,7 @@ class SessionDB:
             return 0
 
         removed_ids: list[str] = []
+        removed_delegate_ids: list[str] = []
 
         def _do(conn):
             placeholders = ",".join("?" * len(unique_ids))
@@ -3478,7 +3886,8 @@ class SessionDB:
                 return 0
 
             existing_placeholders = ",".join("?" * len(existing))
-            # Orphan children whose parent is in the kill list so the
+            removed_delegate_ids.extend(_delete_delegate_children(conn, existing))
+            # Orphan remaining children whose parent is in the kill list so the
             # FK constraint stays satisfied. Pin children whose parent
             # is itself in the kill list rather than NULL-ing parents
             # of survivors — the IN list on ``parent_session_id`` does
@@ -3500,6 +3909,8 @@ class SessionDB:
             return len(existing)
 
         count = self._execute_write(_do)
+        for sid in removed_delegate_ids:
+            self._remove_session_files(sessions_dir, sid)
         for sid in removed_ids:
             self._remove_session_files(sessions_dir, sid)
         return count

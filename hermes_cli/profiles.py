@@ -835,6 +835,25 @@ def create_profile(
                     dst.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src, dst)
 
+    # Seed an empty .env so the profile has its own credentials file from
+    # day one. Without it, profile-scoped env writes (dashboard Channels /
+    # Keys pages, `hermes -p <name> auth add`) had no file until first
+    # write, and the profile silently inherited API keys from the shell
+    # environment — users reasonably read that as "the new profile reads
+    # the root .env". Skipped when --clone/--clone-all already copied one.
+    env_path = profile_dir / ".env"
+    if not env_path.exists():
+        try:
+            env_path.write_text(
+                "# Per-profile secrets for this Hermes profile.\n"
+                "# API keys and tokens set here override the shell environment.\n"
+                "# Behavioral settings belong in config.yaml, not here.\n",
+                encoding="utf-8",
+            )
+            os.chmod(str(env_path), 0o600)
+        except OSError:
+            pass  # best-effort — save_env_value creates the file on demand
+
     # Seed a default SOUL.md so the user has a file to customize immediately.
     # Skipped when the profile already has one (from --clone / --clone-all).
     soul_path = profile_dir / "SOUL.md"
@@ -1010,6 +1029,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print(f"✓ Removed {wrapper_path}")
 
     # 4. Remove profile directory
+    remove_error: Exception | None = None
     try:
         def _make_writable(func, path, exc):
             """onexc/onerror handler: add +w on PermissionError so rmtree can proceed.
@@ -1056,6 +1076,7 @@ def delete_profile(name: str, yes: bool = False) -> Path:
         print(f"✓ Removed {profile_dir}")
     except Exception as e:
         print(f"⚠ Could not remove {profile_dir}: {e}")
+        remove_error = e
 
     # 5. Clear active_profile if it pointed to this profile
     try:
@@ -1065,6 +1086,9 @@ def delete_profile(name: str, yes: bool = False) -> Path:
             print("✓ Active profile reset to default")
     except Exception:
         pass
+
+    if remove_error is not None:
+        raise RuntimeError(f"Could not remove profile directory {profile_dir}: {remove_error}") from remove_error
 
     print(f"\nProfile '{canon}' deleted.")
     return profile_dir

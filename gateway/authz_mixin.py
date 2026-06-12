@@ -142,6 +142,7 @@ class GatewayAuthorizationMixin:
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+            Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOWED_USERS",
             Platform.SLACK: "SLACK_ALLOWED_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
             Platform.EMAIL: "EMAIL_ALLOWED_USERS",
@@ -168,6 +169,7 @@ class GatewayAuthorizationMixin:
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+            Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOW_ALL_USERS",
             Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
             Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
             Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
@@ -205,6 +207,14 @@ class GatewayAuthorizationMixin:
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
         platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in {"true", "1", "yes"}:
+            return True
+
+        # Adapter-verified role auth: the Discord adapter already confirmed the
+        # user holds a role in DISCORD_ALLOWED_ROLES before dispatching the message.
+        # Compare with ``is True`` so the real bool field authorizes while a
+        # MagicMock source (test fixtures using ``object.__new__`` runners with
+        # mock sources) does not auto-truthy through this gate (see pitfall #13).
+        if getattr(source, "role_authorized", False) is True:
             return True
 
         if getattr(source, "is_bot", False):
@@ -393,6 +403,7 @@ class GatewayAuthorizationMixin:
                 Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
                 Platform.DISCORD:  "DISCORD_ALLOWED_USERS",
                 Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+                Platform.WHATSAPP_CLOUD: "WHATSAPP_CLOUD_ALLOWED_USERS",
                 Platform.SLACK:    "SLACK_ALLOWED_USERS",
                 Platform.SIGNAL:   "SIGNAL_ALLOWED_USERS",
                 Platform.EMAIL:    "EMAIL_ALLOWED_USERS",

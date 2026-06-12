@@ -223,7 +223,7 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
         action = tool_name.removeprefix("computer_use_")
         app = args.get("app") or args.get("bundle_id") or ""
         if action == "list_apps":
-            return None  # bare call, no useful label
+            return None
         if action == "launch_app":
             target = args.get("app") or args.get("bundle_id") or "?"
             return str(target)
@@ -247,8 +247,8 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
             dst = args.get("to_element") or args.get("to_coordinate") or "?"
             return f"{app or '?'} {src} → {dst}"
         if action == "type_text":
-            text = _oneline(args.get("text", ""))
-            preview = text[:20] + ("…" if len(text) > 20 else "")
+            body = _oneline(args.get("text", ""))
+            preview = body[:20] + ("…" if len(body) > 20 else "")
             return f"{app or '?'}: \"{preview}\""
         if action == "set_value":
             value = _oneline(str(args.get("value", "")))
@@ -913,6 +913,20 @@ def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]
     return False, ""
 
 
+def _used_free_parallel(result: str | None) -> bool:
+    """True when a web result came from Parallel's free Search MCP.
+
+    Only the keyless Parallel path tags its result with ``provider="parallel"``;
+    the paid REST path and every other provider omit it. Used to label the tool
+    line "Parallel search" / "Parallel fetch" exactly when the free MCP served
+    the call.
+    """
+    if not isinstance(result, str) or '"provider"' not in result:
+        return False
+    data = safe_json_loads(result)
+    return isinstance(data, dict) and str(data.get("provider", "")).lower() == "parallel"
+
+
 def get_cute_tool_message(
     tool_name: str, args: dict, duration: float, result: str | None = None,
 ) -> str:
@@ -950,15 +964,17 @@ def get_cute_tool_message(
         return f"{line}{failure_suffix}"
 
     if tool_name == "web_search":
-        return _wrap(f"┊ 🔍 search    {_trunc(args.get('query', ''), 42)}  {dur}")
+        verb = "Parallel search" if _used_free_parallel(result) else "search"
+        return _wrap(f"┊ 🔍 {verb:<9} {_trunc(args.get('query', ''), 42)}  {dur}")
     if tool_name == "web_extract":
+        verb = "Parallel fetch" if _used_free_parallel(result) else "fetch"
         urls = args.get("urls", [])
         if urls:
             url = urls[0] if isinstance(urls, list) else str(urls)
             domain = url.replace("https://", "").replace("http://", "").split("/")[0]
             extra = f" +{len(urls)-1}" if len(urls) > 1 else ""
-            return _wrap(f"┊ 📄 fetch     {_trunc(domain, 35)}{extra}  {dur}")
-        return _wrap(f"┊ 📄 fetch     pages  {dur}")
+            return _wrap(f"┊ 📄 {verb:<9} {_trunc(domain, 35)}{extra}  {dur}")
+        return _wrap(f"┊ 📄 {verb:<9} pages  {dur}")
     if tool_name == "terminal":
         return _wrap(f"┊ 💻 $         {_trunc(args.get('command', ''), 42)}  {dur}")
     if tool_name == "process":
@@ -1030,6 +1046,61 @@ def get_cute_tool_message(
             return _wrap(f"┊ 📋 plan      {len(todos_arg)} task(s)  {dur}")
     if tool_name == "session_search":
         return _wrap(f"┊ 🔍 recall    \"{_trunc(args.get('query', ''), 35)}\"  {dur}")
+    if tool_name.startswith("computer_use_"):
+        action = tool_name.removeprefix("computer_use_")
+        app = args.get("app") or args.get("bundle_id") or ""
+        if action == "list_apps":
+            return None
+        if action == "launch_app":
+            target = args.get("app") or args.get("bundle_id") or "?"
+            return str(target)
+        if action == "get_app_state":
+            mode = args.get("mode")
+            label = str(app or "<active window>")
+            return f"{label} ({mode})" if mode else label
+        if action == "click":
+            element = args.get("element")
+            coord = args.get("coordinate")
+            target = f"#{element}" if element is not None else (f"@{tuple(coord)}" if coord else "?")
+            return f"{app or '?'} {target}".strip()
+        if action == "scroll":
+            direction = args.get("direction", "?")
+            pages = args.get("pages")
+            amount = args.get("amount")
+            distance = f"{pages}pg" if pages is not None else (f"x{amount}" if amount is not None else "")
+            return " ".join(p for p in [app or "?", direction, distance] if p).strip()
+        if action == "drag":
+            src = args.get("from_element") or args.get("from_coordinate") or "?"
+            dst = args.get("to_element") or args.get("to_coordinate") or "?"
+            return f"{app or '?'} {src} → {dst}"
+        if action == "type_text":
+            body = _oneline(args.get("text", ""))
+            preview = body[:20] + ("…" if len(body) > 20 else "")
+            return f"{app or '?'}: \"{preview}\""
+        if action == "set_value":
+            value = _oneline(str(args.get("value", "")))
+            preview = value[:20] + ("…" if len(value) > 20 else "")
+            element = args.get("element")
+            target = f"#{element}" if element is not None else ""
+            return f"{app or '?'} {target} = \"{preview}\"".strip()
+        if action == "press_key":
+            key = args.get("key") or args.get("keys") or "?"
+            return f"{app or '?'} {key}".strip()
+        if action == "select_text":
+            selection = args.get("selection") or "all"
+            element = args.get("element")
+            target = f"#{element}" if element is not None else ""
+            return f"{app or '?'} {target} ({selection})".strip()
+        if action == "perform_secondary_action":
+            secondary = args.get("secondary_action") or "AXShowMenu"
+            element = args.get("element")
+            target = f"#{element}" if element is not None else ""
+            return f"{app or '?'} {target} {secondary}".strip()
+        if action == "daemon":
+            sub = args.get("action") or "status"
+            return sub
+        return app or None
+
     if tool_name == "memory":
         action = args.get("action", "?")
         target = args.get("target", "")

@@ -1255,6 +1255,57 @@ class CLICommandsMixin:
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
 
+    def _handle_suggestions_command(self, cmd: str):
+        """Handle /suggestions — review/accept/dismiss suggested automations.
+
+        Delegates to the shared handler so CLI and gateway never drift. CLI
+        origin is the local platform so an accepted job's "origin" delivery
+        resolves to a configured home channel.
+        """
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(tokens)
+        try:
+            from hermes_cli.suggestions_cmd import handle_suggestions_command
+            output = handle_suggestions_command(args)
+        except Exception as e:
+            output = f"Suggestions command failed: {e}"
+        self._console_print(output)
+
+    def _handle_blueprint_command(self, cmd: str):
+        """Handle /blueprint — set up an automation from a blueprint template.
+
+        Delegates to the shared handler. A bare ``/blueprint`` lists the
+        catalog; ``/blueprint <name>`` name-matches a blueprint and seeds the
+        agent to ask the user for each value conversationally (the result's
+        ``agent_seed``); ``/blueprint <name> slot=val …`` creates the job
+        directly. When a seed is returned it is stashed as a one-shot pending
+        message the interactive loop runs as the next agent turn.
+        """
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.blueprint_cmd import handle_blueprint_command
+            result = handle_blueprint_command(args)
+        except Exception as e:
+            self._console_print(f"Cron blueprint command failed: {e}")
+            return
+        self._console_print(result.text)
+        seed = getattr(result, "agent_seed", None)
+        if seed:
+            # One-shot: the interactive loop picks this up right after the
+            # slash command returns and runs it as a normal agent turn.
+            self._pending_agent_seed = seed
+
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.
 
@@ -1301,8 +1352,45 @@ class CLICommandsMixin:
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from cli import ChatConsole
+        # Intercept write-approval review subcommands first (pending/approve/
+        # reject/diff/mode); everything else goes to the skills hub.
+        parts = cmd.strip().split()
+        args = parts[1:] if len(parts) > 1 else []
+        if args and args[0].lower() in {"pending", "approve", "apply", "reject",
+                                        "deny", "drop", "diff", "approval", "mode"}:
+            from hermes_cli.write_approval_commands import handle_pending_subcommand
+            from tools import write_approval as wa
+            out = handle_pending_subcommand(
+                wa.SKILLS, args,
+                set_mode_fn=lambda enabled: self._save_write_approval("skills", enabled),
+            )
+            if out is not None:
+                print(out)
+                return
         from hermes_cli.skills_hub import handle_skills_slash
         handle_skills_slash(cmd, ChatConsole())
+
+    def _handle_memory_command(self, cmd: str):
+        """Handle /memory slash command — pending review + approval-gate toggle."""
+        from hermes_cli.write_approval_commands import handle_pending_subcommand
+        from tools import write_approval as wa
+        parts = cmd.strip().split()
+        args = parts[1:] if len(parts) > 1 else []
+        store = getattr(self.agent, "_memory_store", None) if getattr(self, "agent", None) else None
+        out = handle_pending_subcommand(
+            wa.MEMORY, args,
+            memory_store=store,
+            set_mode_fn=lambda enabled: self._save_write_approval("memory", enabled),
+        )
+        if out is None:
+            out = ("Unknown /memory subcommand. "
+                   "Use: pending, approve <id>, reject <id>, approval <on|off>.")
+        print(out)
+
+    def _save_write_approval(self, subsystem: str, enabled: bool):
+        """Persist <subsystem>.write_approval to config (for /memory|/skills approval)."""
+        from cli import save_config_value
+        save_config_value(f"{subsystem}.write_approval", bool(enabled))
 
     def _handle_background_command(self, cmd: str):
         """Handle /background <prompt> — run a prompt in a separate background session.

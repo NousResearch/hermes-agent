@@ -33,6 +33,9 @@ _HERMES_CORE_TOOLS = [
     "web_search", "web_extract",
     # Terminal + process management
     "terminal", "process",
+    # Read the desktop GUI's embedded terminal pane (gated on HERMES_DESKTOP
+    # via check_fn in tools/read_terminal_tool.py — hidden outside the GUI).
+    "read_terminal",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
     # Vision + image generation
@@ -145,7 +148,30 @@ TOOLSETS = {
             "mouse, keyboard, scroll, drag. Does NOT steal the user's cursor "
             "or keyboard focus. Works with any tool-capable model."
         ),
-        "tools": ["computer_use"],
+        "tools": [
+            "computer_use_list_apps",
+            "computer_use_launch_app",
+            "computer_use_get_app_state",
+            "computer_use_click",
+            "computer_use_perform_secondary_action",
+            "computer_use_scroll",
+            "computer_use_drag",
+            "computer_use_type_text",
+            "computer_use_set_value",
+            "computer_use_press_key",
+            "computer_use_select_text",
+            "computer_use_daemon",
+        ],
+        "includes": []
+    },
+
+    "cursor_agent": {
+        "description": (
+            "Cursor SDK agent bridge for running Composer 2.5 or other Cursor "
+            "models as a specialist coding/design agent. Opt-in and gated on "
+            "CURSOR_API_KEY plus Node.js."
+        ),
+        "tools": ["cursor_agent"],
         "includes": []
     },
 
@@ -345,6 +371,33 @@ TOOLSETS = {
         "description": "Safe toolkit without terminal access",
         "tools": [],
         "includes": ["web", "vision", "image_gen"]
+    },
+
+    # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
+    # code workspace; see agent/coding_context.py. Keeps everything you reach
+    # for while pairing on code and drops the rest (messaging, tts, image_gen,
+    # spotify, home-assistant, cron, computer-use).
+    "coding": {
+        "description": "Coding-focused toolset: files, terminal, search, web docs, skills, todo, delegate, vision, browser",
+        "tools": [
+            "web_search", "web_extract",
+            "terminal", "process", "read_terminal",
+            "read_file", "write_file", "patch", "search_files",
+            "vision_analyze",
+            "skills_list", "skill_view", "skill_manage",
+            "browser_navigate", "browser_snapshot", "browser_click",
+            "browser_type", "browser_scroll", "browser_back",
+            "browser_press", "browser_get_images",
+            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
+            "todo", "memory",
+            "session_search", "clarify",
+            "execute_code", "delegate_task",
+        ],
+        "includes": [],
+        # Posture toolset: selected per-session by agent/coding_context.py,
+        # never auto-recovered into per-platform tool config (see the
+        # non-configurable-toolset recovery loop in hermes_cli/tools_config.py).
+        "posture": True,
     },
     
     # ==========================================================================

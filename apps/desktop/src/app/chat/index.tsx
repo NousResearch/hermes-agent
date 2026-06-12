@@ -43,15 +43,15 @@ import {
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { routeSessionId } from '../routes'
-import { titlebarHeaderBaseClass, titlebarHeaderShadowClass } from '../shell/titlebar'
+import { titlebarHeaderBaseClass, titlebarHeaderShadowClass, titlebarHeaderTitleClass } from '../shell/titlebar'
 
 import { ChatDropOverlay } from './chat-drop-overlay'
 import { ChatSwapOverlay } from './chat-swap-overlay'
 import { ChatBar, ChatBarFallback } from './composer'
 import { requestComposerInsert, requestComposerInsertRefs } from './composer/focus'
-import { droppedFileInlineRef, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
+import { droppedFileInlineRefs, type SessionDragPayload, sessionInlineRef } from './composer/inline-refs'
 import type { ChatBarState } from './composer/types'
-import type { DroppedFile } from './hooks/use-composer-actions'
+import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { lastVisibleMessageIsUser, threadLoadingState } from './thread-loading'
@@ -80,6 +80,7 @@ interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
+  onRestoreToMessage?: (messageId: string) => Promise<void>
   onTranscribeAudio?: (audio: Blob) => Promise<string>
 }
 
@@ -124,10 +125,7 @@ function ChatHeader({
 
   return (
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
-      <div
-        className="min-w-0 flex-1"
-        style={{ maxWidth: 'calc(100vw - var(--titlebar-content-inset,0px) - var(--titlebar-tools-right) - var(--titlebar-tools-width) - 1.5rem)' }}
-      >
+      <div className={titlebarHeaderTitleClass}>
         <SessionActionsMenu
           align="start"
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
@@ -138,7 +136,7 @@ function ChatHeader({
           title={title}
         >
           <Button
-            className="pointer-events-auto flex h-6 min-w-0 max-w-full gap-1 border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
+            className="pointer-events-auto flex h-6 w-full min-w-0 max-w-full gap-1 overflow-hidden border border-transparent bg-transparent px-2 py-0 text-(--ui-text-secondary) hover:border-(--ui-stroke-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground data-[state=open]:border-(--ui-stroke-tertiary) data-[state=open]:bg-(--ui-control-active-background) [-webkit-app-region:no-drag]"
             type="button"
             variant="ghost"
           >
@@ -173,6 +171,7 @@ export function ChatView({
   onThreadMessagesChange,
   onEdit,
   onReload,
+  onRestoreToMessage,
   onTranscribeAudio
 }: ChatViewProps) {
   const location = useLocation()
@@ -299,19 +298,25 @@ export function ChatView({
   })
 
   // Drop files anywhere in the conversation area, not just on the composer
-  // input — appending the same inline `@file:` ref chips the composer drop
-  // produces (vs. attachment cards) so both surfaces behave identically.
+  // input. In-app drags (project tree / gutter) carry workspace-relative paths
+  // the gateway resolves directly, so they stay inline `@file:` refs. OS/Finder
+  // drops carry absolute local paths that don't exist on a remote gateway (and
+  // images need byte upload for vision), so route them through the attachment
+  // pipeline — otherwise the local path leaks into the prompt verbatim.
   const onDropFiles = useCallback(
     (candidates: DroppedFile[]) => {
-      const refs = candidates
-        .map(candidate => droppedFileInlineRef(candidate, currentCwd))
-        .filter((ref): ref is string => Boolean(ref))
+      const { inAppRefs, osDrops } = partitionDroppedFiles(candidates)
+      const refs = droppedFileInlineRefs(inAppRefs, currentCwd)
 
       if (refs.length) {
         requestComposerInsert(refs.join(' '), { mode: 'inline', target: 'main' })
       }
+
+      if (osDrops.length) {
+        void onAttachDroppedItems(osDrops)
+      }
     },
-    [currentCwd]
+    [currentCwd, onAttachDroppedItems]
   )
 
   // Dropping a sidebar session inserts an @session link the agent can resolve
@@ -353,6 +358,7 @@ export function ChatView({
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={onCancel}
+            onRestoreToMessage={onRestoreToMessage}
             sessionId={activeSessionId}
             sessionKey={threadKey}
           />

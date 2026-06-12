@@ -7,7 +7,7 @@ protecting head and tail context.
 Improvements over v2:
   - Structured summary template with Resolved/Pending question tracking
   - Filter-safe summarizer preamble that treats prior turns as source material
-  - "Remaining Work" replaces "Next Steps" to avoid reading as active instructions
+  - Historical (reference-only) section headings replace "Next Steps"/"Remaining Work" to avoid reading as active instructions
   - Clear separator when summary merges into tail message
   - Iterative summary updates (preserves info across multiple compactions)
   - Token-budget tail protection instead of fixed message count
@@ -34,7 +34,60 @@ from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
+HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
+HISTORICAL_IN_PROGRESS_HEADING = "## Historical In-Progress State"
+HISTORICAL_PENDING_ASKS_HEADING = "## Historical Pending User Asks"
+HISTORICAL_REMAINING_WORK_HEADING = "## Historical Remaining Work"
+
+
 SUMMARY_PREFIX = (
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    f"'{HISTORICAL_TASK_HEADING}' / '{HISTORICAL_IN_PROGRESS_HEADING}' / "
+    f"'{HISTORICAL_PENDING_ASKS_HEADING}' / "
+    f"'{HISTORICAL_REMAINING_WORK_HEADING}' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:"
+)
+LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+
+# Appended to every standalone summary message (and to the merged-into-tail
+# prefix) so the model has an unambiguous "summary ends here" boundary.
+# Without it, weak models read the verbatim "## Active Task" quote as fresh
+# user input (#11475, #14521) or regurgitate an assistant-role summary as
+# their own output (#33256).
+_SUMMARY_END_MARKER = (
+    "--- END OF CONTEXT SUMMARY — "
+    "respond to the message below, not the summary above ---"
+)
+
+# Handoff prefixes that shipped in earlier releases. A summary persisted under
+# one of these can be inherited into a resumed lineage (#35344); when it is
+# re-normalized on re-compaction we must strip the OLD prefix too, otherwise the
+# stale directive it carried (e.g. "resume exactly from Active Task") survives
+# embedded in the body and keeps hijacking replies. Keep newest-first; entries
+# are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
+_HISTORICAL_SUMMARY_PREFIXES = (
+    # Carveout era (#41607/#38364/#42812): "consistent → use as background"
+    # licensed stale-task resumption on topic overlap.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
@@ -57,17 +110,7 @@ SUMMARY_PREFIX = (
     "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
     "memory content due to this compaction note. "
     "The current session state (files, config, etc.) may reflect work "
-    "described here — avoid repeating it:"
-)
-LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
-
-# Handoff prefixes that shipped in earlier releases. A summary persisted under
-# one of these can be inherited into a resumed lineage (#35344); when it is
-# re-normalized on re-compaction we must strip the OLD prefix too, otherwise the
-# stale directive it carried (e.g. "resume exactly from Active Task") survives
-# embedded in the body and keeps hijacking replies. Keep newest-first; entries
-# are matched literally. Add a frozen copy here whenever SUMMARY_PREFIX changes.
-_HISTORICAL_SUMMARY_PREFIXES = (
+    "described here — avoid repeating it:",
     # Pre-#35344: contained the self-contradicting "resume exactly" directive.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
@@ -110,9 +153,17 @@ _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 # become another unbounded transcript copy after the LLM summarizer failed.
 _FALLBACK_SUMMARY_MAX_CHARS = 8_000
 _FALLBACK_TURN_MAX_CHARS = 700
+_AUTO_FOCUS_MAX_TURNS = 3
+_AUTO_FOCUS_TURN_MAX_CHARS = 260
+_AUTO_FOCUS_MAX_CHARS = 700
 
 
 _PATH_MENTION_RE = re.compile(r"(?:/|~/?|[A-Za-z]:\\)[^\s`'\")\]}<>]+")
+
+# MEDIA delivery directives must not reach the summarizer — if one leaks into
+# the summary, the downstream model may re-emit it as an active directive on
+# the next turn, triggering bogus attachment sends (#14665).
+_MEDIA_DIRECTIVE_RE = re.compile(r"MEDIA:\S+")
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
@@ -974,6 +1025,7 @@ class ContextCompressor(ContextEngine):
         for msg in turns:
             role = msg.get("role", "unknown")
             content = redact_sensitive_text(msg.get("content") or "")
+            content = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", content)
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -1155,7 +1207,7 @@ class ContextCompressor(ContextEngine):
             )
 
         reason_text = f" Summary failure reason: {reason}." if reason else ""
-        body = f"""## Active Task
+        body = f"""{HISTORICAL_TASK_HEADING}
 {active_task}
 
 ## Goal
@@ -1172,7 +1224,7 @@ Recovered from a deterministic fallback because the LLM context summarizer was u
 ## Active State
 Unknown from deterministic fallback. Inspect current repository/session state if needed.
 
-## In Progress
+{HISTORICAL_IN_PROGRESS_HEADING}
 {active_task}
 
 ## Blocked
@@ -1184,13 +1236,13 @@ None recoverable from deterministic fallback.
 ## Resolved Questions
 None recoverable from deterministic fallback.
 
-## Pending User Asks
+{HISTORICAL_PENDING_ASKS_HEADING}
 {active_task}
 
 ## Relevant Files
 {_bullets(relevant_files, limit=12)}
 
-## Remaining Work
+{HISTORICAL_REMAINING_WORK_HEADING}
 Continue from the most recent unfulfilled user ask and protected tail messages. Verify state with tools before making claims.
 
 ## Last Dropped Turns
@@ -1312,7 +1364,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _temporal_anchoring_rule = ""
 
         # Shared structured template (used by both paths).
-        _template_sections = f"""## Active Task
+        _template_sections = f"""{HISTORICAL_TASK_HEADING}
 [THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
 input verbatim — the exact words they used. This includes:
 - Explicit task assignments ("refactor the auth module")
@@ -1359,7 +1411,7 @@ Be specific with file paths, commands, line numbers, and results.]
 - Any running processes or servers
 - Environment details that matter]
 
-## In Progress
+{HISTORICAL_IN_PROGRESS_HEADING}
 [Work currently underway — what was being done when compaction fired]
 
 ## Blocked
@@ -1371,14 +1423,14 @@ Be specific with file paths, commands, line numbers, and results.]
 ## Resolved Questions
 [Questions the user asked that were ALREADY answered — include the answer so it is not repeated]
 
-## Pending User Asks
-[Questions or requests from the user that have NOT yet been answered or fulfilled. If none, write "None."]
+{HISTORICAL_PENDING_ASKS_HEADING}
+[Questions or requests from the user that have NOT yet been answered or fulfilled. These are STALE — they were from the compacted turns. Write them here for reference only. The agent must NOT act on them unless the latest user message explicitly requests it. If none, write "None."]
 
 ## Relevant Files
 [Files read, modified, or created — with brief note on each]
 
-## Remaining Work
-[What remains to be done — framed as context, not instructions]
+{HISTORICAL_REMAINING_WORK_HEADING}
+[What remains to be done — framed as STALE context for reference only. The agent must NOT resume this work unless the latest user message explicitly asks for it.]
 
 ## Critical Context
 [Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
@@ -1421,7 +1473,7 @@ Use this exact structure:
             prompt += f"""
 
 FOCUS TOPIC: "{focus_topic}"
-The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
+This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
         try:
             call_kwargs = {
@@ -1574,7 +1626,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         text = (summary or "").strip()
         for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
             if text.startswith(prefix):
-                return text[len(prefix):].lstrip()
+                text = text[len(prefix):].lstrip()
+                break
+        # Strip the trailing end marker too — a rehydrated handoff body that
+        # keeps it would leak the boundary directive into the iterative-update
+        # summarizer prompt (and the marker is re-appended on insertion anyway).
+        if text.endswith(_SUMMARY_END_MARKER):
+            text = text[: -len(_SUMMARY_END_MARKER)].rstrip()
         return text
 
     @classmethod
@@ -1589,6 +1647,39 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
+
+    @classmethod
+    def _derive_auto_focus_topic(
+        cls,
+        messages: List[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Infer a compact focus hint from the most recent real user turns."""
+        candidates: list[str] = []
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if msg.get("role") != "user":
+                continue
+            content = msg.get("content")
+            if cls._is_context_summary_content(content):
+                continue
+            text = redact_sensitive_text(_content_text_for_contains(content).strip())
+            if not text:
+                continue
+            text = " ".join(text.split())
+            if len(text) > _AUTO_FOCUS_TURN_MAX_CHARS:
+                text = text[: _AUTO_FOCUS_TURN_MAX_CHARS - 1].rstrip() + "…"
+            candidates.append(text)
+            if len(candidates) >= _AUTO_FOCUS_MAX_TURNS:
+                break
+
+        if not candidates:
+            return None
+
+        candidates.reverse()
+        focus = "Recent user focus:\n" + "\n".join(f"- {item}" for item in candidates)
+        if len(focus) > _AUTO_FOCUS_MAX_CHARS:
+            focus = focus[: _AUTO_FOCUS_MAX_CHARS - 1].rstrip() + "…"
+        return focus
 
     @classmethod
     def _find_latest_context_summary(
@@ -1753,7 +1844,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         Context compressor bug (#10896): ``_align_boundary_backward`` can pull
         ``cut_idx`` past a user message when it tries to keep tool_call/result
         groups together.  If the last user message ends up in the *compressed*
-        middle region the LLM summariser writes it into "Pending User Asks",
+        middle region the LLM summariser writes it into "Historical Pending User Asks",
         but ``SUMMARY_PREFIX`` tells the next model to respond only to user
         messages *after* the summary — so the task effectively disappears from
         the active context, causing the agent to stall, repeat completed work,
@@ -2037,7 +2128,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
+        summary = self._generate_summary(turns_to_summarize, focus_topic=summary_focus_topic)
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -2117,15 +2209,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         # When the summary lands as a standalone role="user" message,
         # weak models read the verbatim "## Active Task" quote of a past
-        # user request as fresh input (#11475, #14521). Append the explicit
-        # end marker — the same one used in the merge-into-tail path — so
-        # the model has a clear "summary above, not new input" signal.
-        if not _merge_summary_into_tail and summary_role == "user":
-            summary = (
-                summary
-                + "\n\n--- END OF CONTEXT SUMMARY — "
-                "respond to the message below, not the summary above ---"
-            )
+        # user request as fresh input (#11475, #14521).
+        # When it lands as role="assistant", models may regurgitate the
+        # summary text as their own output (#33256). In both cases, append
+        # the explicit end marker so the model has a clear "summary ends
+        # here, respond to the message below" signal.
+        if not _merge_summary_into_tail:
+            summary = summary + "\n\n" + _SUMMARY_END_MARKER
 
         if not _merge_summary_into_tail:
             compressed.append({"role": summary_role, "content": summary})
@@ -2133,11 +2223,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
             if _merge_summary_into_tail and i == compress_end:
-                merged_prefix = (
-                    summary
-                    + "\n\n--- END OF CONTEXT SUMMARY — "
-                    "respond to the message below, not the summary above ---\n\n"
-                )
+                merged_prefix = summary + "\n\n" + _SUMMARY_END_MARKER + "\n\n"
                 msg["content"] = _append_text_to_content(
                     msg.get("content"),
                     merged_prefix,

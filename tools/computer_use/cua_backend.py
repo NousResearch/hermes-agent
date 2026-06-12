@@ -8,7 +8,6 @@ macOS permission context that the Swift app can onboard, monitor, and stop.
 from __future__ import annotations
 
 import base64
-import asyncio
 import json
 import logging
 import os
@@ -19,7 +18,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -27,12 +25,14 @@ from tools.computer_use.backend import ActionResult, CaptureResult, ComputerUseB
 
 logger = logging.getLogger(__name__)
 
-PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.2.0")
+PINNED_CUA_DRIVER_VERSION = os.environ.get("HERMES_CUA_DRIVER_VERSION", "0.5.0")
 _CUA_DRIVER_CMD = os.environ.get("HERMES_CUA_DRIVER_CMD", "cua-driver")
-_CUA_DRIVER_ARGS = ["mcp"]
 
 _WINDOW_LINE_RE = re.compile(r'^-\s+(.+?)\s+\(pid\s+(\d+)\)\s+.*\[window_id:\s+(\d+)\]', re.MULTILINE)
-_ELEMENT_LINE_RE = re.compile(r'^\s*-\s+\[(\d+)\]\s+([A-Za-z0-9_]+)(.*)$', re.MULTILINE)
+_ELEMENT_LINE_RE = re.compile(
+    r'^\s*(?:-\s+)?\[(\d+)\]\s+(\w+)(?:\s+"([^"]*)"|(?:\s+\(\d+\))?\s+id=([^\s\[\]]*))?',
+    re.MULTILINE,
+)
 
 
 def _is_macos() -> bool:
@@ -155,27 +155,8 @@ def _parse_windows_from_text(text: str) -> List[Dict[str, Any]]:
     return windows
 
 
-def _label_from_element_tail(tail: str) -> str:
-    tail = tail or ""
-    for pat in (r'"([^"]+)"', r'\(([^)]+)\)', r'=\s*"([^"]+)"', r'help="([^"]+)"'):
-        m = re.search(pat, tail)
-        if m:
-            return m.group(1).strip()
-    return ""
-
-
-def _parse_elements_from_tree(markdown: str, *, app: str = "", pid: int = 0, window_id: int = 0) -> List[UIElement]:
-    elements = []
-    for m in _ELEMENT_LINE_RE.finditer(markdown or ""):
-        elements.append(UIElement(
-            index=int(m.group(1)),
-            role=m.group(2),
-            label=_label_from_element_tail(m.group(3) or ""),
-            app=app,
-            pid=pid or 0,
-            window_id=window_id or 0,
-        ))
-    return elements
+def _label_from_element_match(m: re.Match[str]) -> str:
+    return (m.group(3) or m.group(4) or "").strip()
 
 
 def _image_dimensions_from_bytes(raw: bytes) -> Tuple[int, int]:
@@ -217,6 +198,20 @@ def _image_dimensions_from_bytes(raw: bytes) -> Tuple[int, int]:
     return 0, 0
 
 
+def _parse_elements_from_tree(markdown: str, *, app: str = "", pid: int = 0, window_id: int = 0) -> List[UIElement]:
+    elements = []
+    for m in _ELEMENT_LINE_RE.finditer(markdown or ""):
+        elements.append(UIElement(
+            index=int(m.group(1)),
+            role=m.group(2),
+            label=_label_from_element_match(m),
+            app=app,
+            pid=pid or 0,
+            window_id=window_id or 0,
+        ))
+    return elements
+
+
 def _split_tree_text(full_text: str) -> Tuple[str, str]:
     lines = (full_text or "").split("\n", 1)
     return lines[0], lines[1] if len(lines) > 1 else ""
@@ -235,207 +230,6 @@ def _parse_key_combo(keys: str) -> Tuple[Optional[str], List[str]]:
     return key, modifiers
 
 
-# ---------------------------------------------------------------------------
-# Asyncio bridge — one long-lived loop on a background thread
-# ---------------------------------------------------------------------------
-
-class _AsyncBridge:
-    """Runs one asyncio loop on a daemon thread; marshals coroutines from the caller."""
-
-    def __init__(self) -> None:
-        self._loop: Optional[asyncio.AbstractEventLoop] = None
-        self._thread: Optional[threading.Thread] = None
-        self._ready = threading.Event()
-
-    def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._ready.clear()
-
-        def _run() -> None:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            self._ready.set()
-            try:
-                self._loop.run_forever()
-            finally:
-                try:
-                    self._loop.close()
-                except Exception:
-                    pass
-
-        self._thread = threading.Thread(target=_run, daemon=True, name="cua-driver-loop")
-        self._thread.start()
-        if not self._ready.wait(timeout=5.0):
-            raise RuntimeError("cua-driver asyncio bridge failed to start")
-
-    def run(self, coro, timeout: Optional[float] = 30.0) -> Any:
-        from agent.async_utils import safe_schedule_threadsafe
-        if not self._loop or not self._thread or not self._thread.is_alive():
-            if asyncio.iscoroutine(coro):
-                coro.close()
-            raise RuntimeError("cua-driver bridge not started")
-        fut = safe_schedule_threadsafe(coro, self._loop)
-        if fut is None:
-            raise RuntimeError("cua-driver bridge not started")
-        return fut.result(timeout=timeout)
-
-    def stop(self) -> None:
-        if self._loop and self._loop.is_running():
-            self._loop.call_soon_threadsafe(self._loop.stop)
-        if self._thread:
-            self._thread.join(timeout=2.0)
-        self._thread = None
-        self._loop = None
-
-
-# ---------------------------------------------------------------------------
-# MCP session (lazy, shared across tool calls)
-# ---------------------------------------------------------------------------
-
-class _CuaDriverSession:
-    """Holds the mcp ClientSession. Spawned lazily; re-entered on drop."""
-
-    def __init__(self, bridge: _AsyncBridge) -> None:
-        self._bridge = bridge
-        self._session = None
-        self._exit_stack = None
-        self._lock = threading.Lock()
-        self._started = False
-
-    def _require_started(self) -> None:
-        if not self._started:
-            raise RuntimeError("cua-driver session not started")
-
-    async def _aenter(self) -> None:
-        from contextlib import AsyncExitStack
-        from mcp import ClientSession, StdioServerParameters
-        from mcp.client.stdio import stdio_client
-
-        if not cua_driver_binary_available():
-            raise RuntimeError(cua_driver_install_hint())
-
-        params = StdioServerParameters(
-            command=_CUA_DRIVER_CMD,
-            args=_CUA_DRIVER_ARGS,
-            env={**os.environ},
-        )
-        stack = AsyncExitStack()
-        read, write = await stack.enter_async_context(stdio_client(params))
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        self._exit_stack = stack
-        self._session = session
-
-    async def _aexit(self) -> None:
-        if self._exit_stack is not None:
-            try:
-                await self._exit_stack.aclose()
-            except Exception as e:
-                logger.warning("cua-driver shutdown error: %s", e)
-        self._exit_stack = None
-        self._session = None
-
-    def start(self) -> None:
-        with self._lock:
-            if self._started:
-                return
-            self._bridge.start()
-            self._bridge.run(self._aenter(), timeout=15.0)
-            self._started = True
-
-    def stop(self) -> None:
-        with self._lock:
-            if not self._started:
-                return
-            try:
-                self._bridge.run(self._aexit(), timeout=5.0)
-            finally:
-                self._started = False
-
-    async def _call_tool_async(self, name: str, args: Dict[str, Any]) -> Dict[str, Any]:
-        result = await self._session.call_tool(name, args)
-        return _extract_tool_result(result)
-
-    @staticmethod
-    def _is_closed_session_error(exc: Exception) -> bool:
-        """Return True for MCP/stdio failures that are recoverable by reconnecting."""
-        name = exc.__class__.__name__
-        module = getattr(exc.__class__, "__module__", "")
-        return (
-            name in {"ClosedResourceError", "BrokenResourceError", "EndOfStream"}
-            or (module.startswith("anyio") and "Resource" in name)
-            or isinstance(exc, (BrokenPipeError, EOFError))
-        )
-
-    def _restart_session_locked(self) -> None:
-        """Recreate the MCP session after the daemon/stdin transport was closed."""
-        try:
-            if self._started:
-                self._bridge.run(self._aexit(), timeout=5.0)
-        except Exception as e:
-            logger.debug("cua-driver session cleanup before reconnect failed: %s", e)
-        self._started = False
-        self._bridge.run(self._aenter(), timeout=15.0)
-        self._started = True
-
-    def call_tool(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
-        self._require_started()
-        try:
-            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
-        except Exception as e:
-            if not self._is_closed_session_error(e):
-                raise
-            # Daemon restart closes the cached stdio channel. Reconnect once and
-            # retry exactly one more time — never loop, to avoid hammering a
-            # genuinely dead daemon.
-            logger.warning("cua-driver MCP session closed during %s; reconnecting once", name)
-            with self._lock:
-                self._restart_session_locked()
-            return self._bridge.run(self._call_tool_async(name, args), timeout=timeout)
-
-
-def _extract_tool_result(mcp_result: Any) -> Dict[str, Any]:
-    """Convert an mcp CallToolResult into a plain dict.
-
-    cua-driver returns a mix of text parts, image parts, and structuredContent.
-    We flatten into:
-      {
-        "data": <text or parsed json>,
-        "images": [b64, ...],
-        "structuredContent": <dict|None>,
-        "isError": bool,
-      }
-    structuredContent is populated from the MCP result's structuredContent field
-    (MCP spec §2024-11-05+) and takes precedence for structured data like
-    list_windows window arrays.
-    """
-    data: Any = None
-    images: List[str] = []
-    is_error = bool(getattr(mcp_result, "isError", False))
-    structured: Optional[Dict] = getattr(mcp_result, "structuredContent", None) or None
-    text_chunks: List[str] = []
-    for part in getattr(mcp_result, "content", []) or []:
-        ptype = getattr(part, "type", None)
-        if ptype == "text":
-            text_chunks.append(getattr(part, "text", "") or "")
-        elif ptype == "image":
-            b64 = getattr(part, "data", None)
-            if b64:
-                images.append(b64)
-    if text_chunks:
-        joined = "\n".join(t for t in text_chunks if t)
-        try:
-            data = json.loads(joined) if joined.strip().startswith(("{", "[")) else joined
-        except json.JSONDecodeError:
-            data = joined
-    return {"data": data, "images": images, "structuredContent": structured, "isError": is_error}
-
-
-# ---------------------------------------------------------------------------
-# The backend itself
-# ---------------------------------------------------------------------------
-
 class CuaDriverBackend(ComputerUseBackend):
     """Default computer-use backend using ``cua-driver call``."""
 
@@ -443,6 +237,7 @@ class CuaDriverBackend(ComputerUseBackend):
         self._active_pid: Optional[int] = None
         self._active_window_id: Optional[int] = None
         self._active_app: str = ""
+        self._last_app: Optional[str] = None
         self._app_cache: List[Dict[str, Any]] = []
         self._app_cache_at: float = 0.0
 
@@ -477,16 +272,12 @@ class CuaDriverBackend(ComputerUseBackend):
         return cua_driver_permissions_status()
 
     def _call(self, name: str, args: Dict[str, Any], timeout: float = 30.0) -> Dict[str, Any]:
+        # Test compatibility: older MCP-backed tests patch ``_session.call_tool``.
+        # The production path below remains CLI/app-daemon transport.
         session = getattr(self, "_session", None)
-        if session is not None:
-            try:
-                return session.call_tool(name, args, timeout=timeout)
-            except TypeError:
-                return session.call_tool(name, args)
-            except RuntimeError:
-                # A real _CuaDriverSession may exist but not be started yet;
-                # keep the legacy CLI/app-daemon fallback for direct backend tests.
-                pass
+        if session is not None and hasattr(session, "call_tool"):
+            return session.call_tool(name, args)
+
         exe = cua_driver_executable()
         if not exe:
             raise RuntimeError(cua_driver_install_hint())
@@ -509,10 +300,7 @@ class CuaDriverBackend(ComputerUseBackend):
 
     def _app_catalog(self, ttl: float = 5.0) -> List[Dict[str, Any]]:
         now = time.monotonic()
-        # Cache emptiness is still a valid cached result. Without this, an empty
-        # app catalog immediately falls through to a live cua-driver call, which
-        # is slow/flaky and breaks tests that intentionally seed an empty cache.
-        if now - self._app_cache_at < ttl:
+        if self._app_cache and now - self._app_cache_at < ttl:
             return self._app_cache
         out = self._call("list_apps", {})
         data = out["data"]
@@ -592,19 +380,19 @@ class CuaDriverBackend(ComputerUseBackend):
             self._active_pid = int(target.get("pid") or 0)
             self._active_window_id = int(target.get("window_id") or 0)
             self._active_app = str(target.get("app_name") or "")
+            self._last_app = self._active_app or None
         return target
 
     def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
         target = self._select_window(app)
         if not target:
-            window_title = ""
+            diagnostic = ""
             if app:
-                window_title = (
-                    f"<no on-screen window matched app={app!r}; "
-                    "call list_apps to see available app names "
-                    "(macOS may report localized names)>"
+                diagnostic = (
+                    f"<no on-screen window matched app={app!r}; call list_apps to see available app names "
+                    "(macOS reports localized names, e.g. '計算機' instead of 'Calculator')>"
                 )
-            return CaptureResult(mode=mode, width=0, height=0, elements=[], app="", window_title=window_title)
+            return CaptureResult(mode=mode, width=0, height=0, elements=[], app="", window_title=diagnostic)
         pid, window_id = self._active_pid, self._active_window_id
         png_b64: Optional[str] = None
         elements: List[UIElement] = []

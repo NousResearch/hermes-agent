@@ -65,17 +65,14 @@ _DEFAULT_ROOTS = ["tests"]
 #                        rebuild). The full pytest-shard runner can't
 #                        host these because the session-scoped
 #                        ``built_image`` fixture would do a 3-7min
-#                        ``docker build`` inside a 180s per-test
-#                        pytest-timeout cap (set by tests/docker/conftest.py),
+#                        ``docker build``,
 #                        so the build is guaranteed to die in fixture
 #                        setup. The dedicated job sidesteps both costs.
 _SKIP_PARTS = {"integration", "e2e", "docker"}
 
-# Per-file wall-clock cap. Generous default — pytest-timeout still
-# enforces per-test caps inside each subprocess; this is just an outer
-# safety net so a single hung file can't stall the whole suite. Override
+# Per-file wall-clock cap. Override
 # via --file-timeout or HERMES_TEST_FILE_TIMEOUT.
-_DEFAULT_FILE_TIMEOUT_SECONDS = 600.0  # 10 minutes
+_DEFAULT_FILE_TIMEOUT_SECONDS = 140.0 # set by observing the slowest file at commit time was ~100s in CI and adding some leeway
 
 # Duration cache: maps relative file paths to last-observed subprocess
 # wall-clock seconds. Used by ``--slice`` to distribute files across
@@ -274,18 +271,21 @@ def _run_one_file(
     On per-file timeout (``file_timeout`` seconds) or any other exception
     during ``communicate()``, we kill the whole process group / process
     tree so grandchildren (uvicorn servers, async runtimes, etc.) do not
-    orphan onto PID 1. The pytest-timeout plugin enforces per-test
-    timeouts inside the subprocess; this outer timeout exists only to
+    orphan onto PID 1. This outer timeout exists only to
     bound a pathologically slow or hung file as a whole.
     """
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+    
     subproc_start = time.monotonic()
+    # launch the pytest process
     proc = subprocess.Popen(
         cmd,
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        # skipping writing bytecode because we're running a bunch of parallel python processes on the same code
+        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'},
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
@@ -293,18 +293,15 @@ def _run_one_file(
         start_new_session=True,
     )
 
-    # Capture the pgid NOW, before the leader can exit and be reaped.
-    # Once the leader is reaped, os.getpgid(proc.pid) raises
-    # ProcessLookupError even though grandchildren in that group are
-    # still alive — defeating the whole cleanup. None on Windows where
-    # the pgid concept doesn't apply (taskkill walks ppid chain instead).
+    # Capture the pgid NOW, before the leader can exit and be reaped. Once
+    # the leader is reaped, os.getpgid(proc.pid) raises ProcessLookupError
+    # even though grandchildren in that group are still alive — defeating
+    # the whole cleanup. None on Windows where the pgid concept doesn't apply.
     pgid: int | None = None
     if sys.platform != "win32":
         try:
             pgid = os.getpgid(proc.pid)
         except (ProcessLookupError, PermissionError):
-            # Astonishingly fast child? Already dead. _kill_tree's
-            # fallback will handle this case as a no-op.
             pgid = None
 
     try:
@@ -312,15 +309,13 @@ def _run_one_file(
         rc = proc.returncode
     except subprocess.TimeoutExpired:
         _kill_tree(proc, pgid=pgid)
-        # Drain whatever the child wrote before we killed it so we have
-        # something to surface in the failure dump.
         try:
             output, _ = proc.communicate(timeout=10)
         except subprocess.TimeoutExpired:
             output = "(file timeout exceeded; output unavailable)"
         rc = 124  # de facto convention for "killed by timeout".
         output = (
-            f"(per-file timeout: {file_timeout:.0f}s exceeded; "
+            f"({file_timeout:.0f}s exceeded; "
             f"process tree SIGKILL'd)\n{output}"
         )
     except BaseException:
@@ -329,55 +324,11 @@ def _run_one_file(
         _kill_tree(proc, pgid=pgid)
         raise
     else:
-        # Happy path: pytest exited on its own. The child process already
-        # cleaned up its grandchildren if it's well-behaved, but
-        # well-behaved is not universal — kill the group anyway. Already-
-        # dead processes are a no-op.
+        # Happy path: pytest exited on its own. Kill the group anyway in
+        # case it left grandchildren behind; already-dead is a no-op.
         _kill_tree(proc, pgid=pgid)
 
-    if rc == 4 and Path(file).exists():
-        # pytest exit 4 = "file or directory not found" at exec time, yet the
-        # file is present on disk now. On loaded shared CI runners we have seen
-        # the planner enumerate a file (its tests counted via --collect-only)
-        # but the per-file subprocess fail to stat it moments later — a
-        # transient the deterministic LPT slicer otherwise reproduces on every
-        # rerun (same file set → same shard). Retry the file ONCE before
-        # surfacing it as a hard failure. We do NOT widen the exit-5 rule:
-        # exit 4 on a file that genuinely does not exist must still fail.
-        retry_proc = subprocess.Popen(
-            cmd,
-            cwd=repo_root,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            start_new_session=True,
-        )
-        retry_pgid: int | None = None
-        if sys.platform != "win32":
-            try:
-                retry_pgid = os.getpgid(retry_proc.pid)
-            except (ProcessLookupError, PermissionError):
-                retry_pgid = None
-        try:
-            retry_output, _ = retry_proc.communicate(timeout=file_timeout)
-            retry_rc = retry_proc.returncode
-        except subprocess.TimeoutExpired:
-            _kill_tree(retry_proc, pgid=retry_pgid)
-            try:
-                retry_output, _ = retry_proc.communicate(timeout=10)
-            except subprocess.TimeoutExpired:
-                retry_output = "(file timeout exceeded on retry; output unavailable)"
-            retry_rc = 124
-            retry_output = (
-                f"(per-file timeout on exit-4 retry: {file_timeout:.0f}s exceeded; "
-                f"process tree SIGKILL'd)\n{retry_output}"
-            )
-        except BaseException:
-            _kill_tree(retry_proc, pgid=retry_pgid)
-            raise
-        else:
-            _kill_tree(retry_proc, pgid=retry_pgid)
-        rc, output = retry_rc, retry_output
+        output +=  "\n"
 
     if rc == 5:
         # No tests collected — every test in the file was filtered out.
@@ -673,7 +624,7 @@ def main() -> int:
         help=(
             "Per-file wall-clock cap in seconds. On timeout, the pytest "
             "subprocess and its full process tree are SIGKILL'd. "
-            "Default: 600 (10 min), env: HERMES_TEST_FILE_TIMEOUT."
+            f"Default: {_DEFAULT_FILE_TIMEOUT_SECONDS}s ({round(_DEFAULT_FILE_TIMEOUT_SECONDS/60)} min), env: HERMES_TEST_FILE_TIMEOUT."
         ),
     )
     parser.add_argument(

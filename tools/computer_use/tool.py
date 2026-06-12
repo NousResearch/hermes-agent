@@ -30,10 +30,12 @@ For app state results or actions with `capture_after=True`:
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import os
 import re
+import struct
 import sys
 import threading
 from typing import Any, Dict, List, Optional, Tuple
@@ -54,8 +56,6 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _approval_callback = None
-_DEFAULT_MAX_ELEMENTS = 200
-_MAX_ALLOWED_MAX_ELEMENTS = 1000
 
 
 def set_approval_callback(cb) -> None:
@@ -489,6 +489,12 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
         return _maybe_follow_capture(backend, res, capture_after, app=args.get("app"))
 
     if action == "drag":
+        has_elements = args.get("from_element") is not None and args.get("to_element") is not None
+        has_coords = args.get("from_coordinate") and args.get("to_coordinate")
+        if not has_elements and not has_coords:
+            return json.dumps({
+                "error": "drag requires from_coordinate/to_coordinate or from_element/to_element",
+            })
         res = backend.drag(
             from_element=args.get("from_element"),
             to_element=args.get("to_element"),
@@ -567,50 +573,159 @@ def _text_response(res: ActionResult) -> str:
     return json.dumps(payload)
 
 
-def _coerce_max_elements(value: Any) -> int:
+# Default cap for the AX `elements` array returned by capture. Dense UIs
+# (Electron apps, Obsidian, JetBrains IDEs) can publish 500+ AX nodes, which
+# can exhaust session context after a single capture. The model-facing
+# `max_elements` argument lets callers raise this when they need the full tree.
+_DEFAULT_MAX_ELEMENTS = 100
+# Hard upper bound on caller-supplied `max_elements`. Without this, a tool
+# call passing a very large integer would silently disable the safeguard and
+# reintroduce the original unbounded behavior.
+_MAX_ALLOWED_MAX_ELEMENTS = 1000
+_MIN_PROVIDER_IMAGE_DIMENSION = 8
+
+
+def _image_dimensions_from_b64(image_b64: str) -> Optional[Tuple[int, int]]:
+    """Return (width, height) for common inline screenshot formats.
+
+    Some providers reject images below 8x8 before the model sees the tool
+    result. Inspecting the encoded bytes here lets computer_use fall back to
+    its AX/SOM text payload instead of sending an unusable placeholder.
+    """
+    if not image_b64:
+        return None
     try:
-        parsed = int(value)
+        raw = base64.b64decode(image_b64, validate=False)
+    except Exception:
+        return None
+
+    # PNG: signature + IHDR width/height.
+    if raw.startswith(b"\x89PNG\r\n\x1a\n") and len(raw) >= 24:
+        try:
+            width, height = struct.unpack(">II", raw[16:24])
+            return int(width), int(height)
+        except Exception:
+            return None
+
+    # JPEG: scan for SOF markers that carry dimensions.
+    if raw.startswith(b"\xff\xd8") and len(raw) > 4:
+        i = 2
+        while i + 9 < len(raw):
+            if raw[i] != 0xFF:
+                i += 1
+                continue
+            marker = raw[i + 1]
+            i += 2
+            while marker == 0xFF and i < len(raw):
+                marker = raw[i]
+                i += 1
+            if marker in {0xD8, 0xD9}:
+                continue
+            if marker == 0xDA:
+                break
+            if i + 2 > len(raw):
+                break
+            segment_len = int.from_bytes(raw[i:i + 2], "big")
+            if segment_len < 2 or i + segment_len > len(raw):
+                break
+            if marker in {
+                0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7,
+                0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF,
+            } and segment_len >= 7:
+                height = int.from_bytes(raw[i + 3:i + 5], "big")
+                width = int.from_bytes(raw[i + 5:i + 7], "big")
+                return int(width), int(height)
+            i += segment_len
+    return None
+
+
+def _coerce_max_elements(value: Any) -> int:
+    """Validate the caller-supplied ``max_elements``.
+
+    Falls back to :data:`_DEFAULT_MAX_ELEMENTS` for missing / non-integer /
+    sub-1 inputs so the cap can never be silently disabled by a malformed
+    tool-call argument. Clamps oversized values to
+    :data:`_MAX_ALLOWED_MAX_ELEMENTS` so a caller cannot bypass the
+    safeguard by passing a very large integer.
+    """
+    if value is None:
+        return _DEFAULT_MAX_ELEMENTS
+    try:
+        n = int(value)
     except (TypeError, ValueError):
         return _DEFAULT_MAX_ELEMENTS
-    if parsed <= 0:
+    if n < 1:
         return _DEFAULT_MAX_ELEMENTS
-    return min(parsed, _MAX_ALLOWED_MAX_ELEMENTS)
+    if n > _MAX_ALLOWED_MAX_ELEMENTS:
+        return _MAX_ALLOWED_MAX_ELEMENTS
+    return n
 
 
-def _capture_response(cap: CaptureResult, max_elements: Optional[int] = None) -> Any:
-    max_elements = _DEFAULT_MAX_ELEMENTS if max_elements is None else max_elements
-    is_multimodal = bool(cap.png_b64 and cap.mode != "ax")
+def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
     total_elements = len(cap.elements)
-    returned_elements = cap.elements if is_multimodal else cap.elements[:max_elements]
-    truncated_elements = 0 if is_multimodal else max(0, total_elements - len(returned_elements))
+    visible_elements = cap.elements[:max_elements]
+    truncated_elements = max(0, total_elements - len(visible_elements))
+    image_dimensions = _image_dimensions_from_b64(cap.png_b64 or "") if cap.png_b64 else None
+    response_width = image_dimensions[0] if image_dimensions else cap.width
+    response_height = image_dimensions[1] if image_dimensions else cap.height
+    image_too_small = bool(
+        image_dimensions
+        and (
+            image_dimensions[0] < _MIN_PROVIDER_IMAGE_DIMENSION
+            or image_dimensions[1] < _MIN_PROVIDER_IMAGE_DIMENSION
+        )
+    )
 
-    element_index = _format_elements(returned_elements)
+    # Index only what's actually surfaced in the response — otherwise the
+    # human-readable summary references element indices the model cannot
+    # find in the JSON `elements` array (e.g. max_elements=10 vs the default
+    # 40-line index window).
+    element_index = _format_elements(visible_elements)
     summary_lines = [
-        f"capture mode={cap.mode} {cap.width}x{cap.height}"
+        f"capture mode={cap.mode} {response_width}x{response_height}"
         + (f" app={cap.app}" if cap.app else "")
         + (f" window={cap.window_title!r}" if cap.window_title else ""),
         f"{total_elements} interactable element(s):",
     ]
-    if truncated_elements:
-        summary_lines.append(
-            f"response truncated to {len(returned_elements)} of {total_elements} elements; "
-            "call again with a tighter app/window target or max_elements if needed."
-        )
     if element_index:
         summary_lines.extend(element_index)
+    # Multimodal and AX paths both reference `summary`; build it once up-front
+    # so the aux-vision routing branch (which fires before either path is
+    # selected) has a valid value to hand to _route_capture_through_aux_vision.
+    # The AX path appends the "truncated to N of M" note to summary_lines
+    # below and rebuilds; the multimodal path keeps this version untouched.
+    if image_too_small:
+        summary_lines.append(
+            f"  (screenshot omitted: {image_dimensions[0]}x{image_dimensions[1]} "
+            f"is below the {_MIN_PROVIDER_IMAGE_DIMENSION}x{_MIN_PROVIDER_IMAGE_DIMENSION} "
+            "provider minimum)"
+        )
     summary = "\n".join(summary_lines)
 
-    if is_multimodal:
+    if cap.png_b64 and cap.mode != "ax" and not image_too_small:
+        # Decide whether to hand the screenshot to the auxiliary.vision
+        # pipeline (text-only result) or keep the multimodal envelope (main
+        # model handles vision natively). Issue #24015: previously the
+        # multimodal envelope was returned unconditionally, so non-vision
+        # main models tripped HTTP 404 / 400 at the provider boundary even
+        # when auxiliary.vision was explicitly configured to handle this.
         if _should_route_through_aux_vision():
             routed = _route_capture_through_aux_vision(cap, summary)
             if routed is not None:
                 return routed
+            # Aux routing was requested but failed (no vision client, aux
+            # call raised, etc.). Fall through to the multimodal envelope —
+            # better to surface a tool-result error from the main model
+            # than to silently drop the screenshot entirely.
 
         # Detect actual image format from base64 magic bytes so the MIME type
         # matches what the data contains (cua-driver may return JPEG or PNG).
         # JPEG: base64 starts with /9j/   PNG: starts with iVBOR
         _b64_prefix = cap.png_b64[:8]
         _mime = "image/jpeg" if _b64_prefix.startswith("/9j/") else "image/png"
+        # The multimodal response carries the screenshot, not the AX
+        # elements array, so a "response truncated to N of M elements"
+        # note would be inaccurate — skip it on this branch.
         return {
             "_multimodal": True,
             "content": [
@@ -619,17 +734,24 @@ def _capture_response(cap: CaptureResult, max_elements: Optional[int] = None) ->
                  "image_url": {"url": f"data:{_mime};base64,{cap.png_b64}"}},
             ],
             "text_summary": summary,
-            "meta": {"mode": cap.mode, "width": cap.width, "height": cap.height,
-                     "elements": len(cap.elements), "png_bytes": cap.png_bytes_len},
+            "meta": {"mode": cap.mode, "width": response_width, "height": response_height,
+                     "elements": total_elements, "png_bytes": cap.png_bytes_len},
         }
-    # AX-only (or image missing): text path.
+    # AX-only (or image-missing fallback): text path actually carries the
+    # `elements` array, so the truncation note applies here.
+    if truncated_elements:
+        summary_lines.append(
+            f"  (response truncated to {len(visible_elements)} of {total_elements} elements; "
+            f"raise max_elements or pass app= to narrow)"
+        )
+    summary = "\n".join(summary_lines)
     payload: Dict[str, Any] = {
         "mode": cap.mode,
-        "width": cap.width,
-        "height": cap.height,
+        "width": response_width,
+        "height": response_height,
         "app": cap.app,
         "window_title": cap.window_title,
-        "elements": [_element_to_dict(e) for e in returned_elements],
+        "elements": [_element_to_dict(e) for e in visible_elements],
         "total_elements": total_elements,
         "summary": summary,
     }
@@ -639,15 +761,24 @@ def _capture_response(cap: CaptureResult, max_elements: Optional[int] = None) ->
 
 
 # ---------------------------------------------------------------------------
-# auxiliary.vision routing for captured screenshots
+# auxiliary.vision routing for captured screenshots (#24015)
 # ---------------------------------------------------------------------------
 
 def _should_route_through_aux_vision() -> bool:
-    """Return True when screenshots should be pre-analyzed via auxiliary.vision."""
+    """Return True when ``_capture_response`` should hand the PNG to aux vision.
+
+    Reads the active main provider/model and the loaded config and asks the
+    routing helper. Any failure (config import, runtime override missing,
+    etc.) returns False so the existing multimodal envelope continues to be
+    returned — fail open on the routing decision so a broken config can
+    never silently drop the screenshot for vision-capable main models.
+    """
     try:
         from agent.auxiliary_client import _read_main_model, _read_main_provider
         from hermes_cli.config import load_config
-        from tools.computer_use.vision_routing import should_route_capture_to_aux_vision
+        from tools.computer_use.vision_routing import (
+            should_route_capture_to_aux_vision,
+        )
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing import failed: %s", exc)
         return False
@@ -655,14 +786,33 @@ def _should_route_through_aux_vision() -> bool:
         provider = _read_main_provider()
         model = _read_main_model()
         cfg = load_config()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: aux-vision routing config read failed: %s", exc)
+        return False
+    try:
         return bool(should_route_capture_to_aux_vision(provider, model, cfg))
     except Exception as exc:  # pragma: no cover - defensive
         logger.debug("computer_use: aux-vision routing decision failed: %s", exc)
         return False
 
 
-def _route_capture_through_aux_vision(cap: CaptureResult, summary: str) -> Optional[str]:
-    """Return a text-only capture result after analyzing the screenshot with aux vision."""
+def _route_capture_through_aux_vision(
+    cap: CaptureResult,
+    summary: str,
+) -> Optional[str]:
+    """Pre-analyse the captured PNG via ``vision_analyze`` and return a text result.
+
+    The captured base64 PNG is materialised to ``$HERMES_HOME/cache/vision/``
+    and handed to ``vision_analyze_tool`` with a generic describe prompt.
+    The resulting text description is merged into the existing AX/SOM
+    summary so the main model receives a single text payload that mentions
+    every interactable element AND a description of what the screenshot
+    looked like.
+
+    Returns:
+      A JSON-encoded text response on success.
+      ``None`` on failure (caller falls back to the multimodal envelope).
+    """
     if not cap.png_b64:
         return None
     try:
@@ -685,6 +835,8 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str) -> Optio
             logger.debug("computer_use: failed to decode capture base64: %s", exc)
             return None
 
+        # Pick an extension that matches the on-disk bytes so vision_analyze's
+        # MIME sniffing returns the right content-type.
         ext = ".jpg" if cap.png_b64[:8].startswith("/9j/") else ".png"
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -693,15 +845,21 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str) -> Optio
 
         prompt = (
             "Describe what is visible in this macOS application screenshot in "
-            "concise but specific terms. Mention the app name and window title "
-            "if visible, the overall layout, labelled buttons, menus, text "
-            "fields, and prominent text content. Do not invent details.\n\n"
+            "concise but specific terms. Mention the app name and window "
+            "title if visible, the overall layout, any labelled buttons, "
+            "menus or text fields, and any prominent text content the user "
+            "would need to know about. Do not invent details that are not "
+            "actually visible.\n\n"
             f"AX/SOM index for cross-reference:\n{summary}"
         )
-        result_json = _run_async(vision_analyze_tool(str(temp_image_path), prompt))
+
+        result_json = _run_async(
+            vision_analyze_tool(str(temp_image_path), prompt)
+        )
     except Exception as exc:
         logger.warning(
-            "computer_use: auxiliary.vision pre-analysis failed (%s); falling back to native multimodal envelope",
+            "computer_use: auxiliary.vision pre-analysis failed (%s); "
+            "falling back to native multimodal envelope",
             exc,
         )
         return None
@@ -720,6 +878,7 @@ def _route_capture_through_aux_vision(cap: CaptureResult, summary: str) -> Optio
                 analysis_text = str(parsed.get("analysis") or "").strip()
         except (TypeError, json.JSONDecodeError):
             analysis_text = result_json.strip()
+
     if not analysis_text:
         return None
 
@@ -744,8 +903,17 @@ def _maybe_follow_capture(
 ) -> Any:
     if not do_capture:
         return _text_response(res)
+    # Skip the follow-up capture when the action itself failed: showing a
+    # normal-looking screenshot after a failure misleads the model into thinking
+    # the action succeeded. Return the error text instead.
+    if not res.ok:
+        return _text_response(res)
     try:
-        cap = backend.capture(mode="som", app=app)
+        # Preserve the app context established by the preceding capture/focus_app so
+        # that capture_after=True re-captures the same app rather than the frontmost
+        # window (which may have changed if the action caused a focus shift).
+        last_app = app if app is not None else getattr(backend, "_last_app", None)
+        cap = backend.capture(mode="som", app=last_app)
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
@@ -794,11 +962,16 @@ def _element_to_dict(e: UIElement) -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 def check_computer_use_requirements() -> bool:
-    """Return True iff native Computer Use can run on this host.
+    """Return True iff computer_use can run on this host.
 
-    Conditions: macOS + configured backend binary installed (or override via env).
+    Conditions: macOS + cua-driver binary installed (or override via env).
     """
     if sys.platform != "darwin":
         return False
     from tools.computer_use.cua_backend import cua_driver_binary_available
     return cua_driver_binary_available()
+
+
+def get_computer_use_schema() -> Dict[str, Any]:
+    from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+    return COMPUTER_USE_SCHEMA

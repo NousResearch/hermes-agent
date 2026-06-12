@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from base64 import b64encode
 from pathlib import Path
 from typing import Any, Dict
 
@@ -40,6 +41,9 @@ _PHOTON_ENV = (
     "PHOTON_PROJECT_ID",
     "PHOTON_PROJECT_SECRET",
     "PHOTON_DASHBOARD_PROJECT_ID",
+    "PHOTON_SPECTRUM_HOST",
+    "PHOTON_ALLOWED_USERS",
+    "PHOTON_HOME_CHANNEL",
 )
 
 
@@ -96,6 +100,64 @@ def test_store_project_credentials_writes_env(tmp_hermes_home: Path) -> None:
     env_text = (tmp_hermes_home / ".env").read_text()
     assert "PHOTON_PROJECT_ID=sp-789" in env_text
     assert "PHOTON_PROJECT_SECRET=sek-ret" in env_text
+
+
+def test_store_user_numbers_round_trip(tmp_hermes_home: Path) -> None:
+    photon_auth.store_user_numbers(
+        phone_number="+15551234567",
+        assigned_phone_number="+16282679185",
+        user_id="user-uuid",
+        dashboard_project_id="dash-uuid",
+    )
+
+    phone, assigned = photon_auth.load_user_numbers()
+    assert phone == "+15551234567"
+    assert assigned == "+16282679185"
+
+    summary = photon_auth.credential_summary()
+    assert summary["phone_number"] == "+15551234567"
+    assert summary["assigned_phone_number"] == "+16282679185"
+
+    rendered: list[str] = []
+    photon_auth.print_credential_summary(rendered.append)
+    assert "  my number           : +15551234567" in rendered[0]
+    assert "  assigned number     : +16282679185" in rendered[0]
+
+
+def test_load_user_numbers_falls_back_to_home_channel(
+    tmp_hermes_home: Path,
+) -> None:
+    from hermes_cli.config import save_env_value
+
+    save_env_value("PHOTON_HOME_CHANNEL", "+15551234567")
+
+    phone, assigned = photon_auth.load_user_numbers()
+    assert phone == "+15551234567"
+    assert assigned is None
+
+
+def test_refresh_user_numbers_reads_existing_assignment(
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    photon_auth.store_user_numbers(phone_number="+15551234567")
+
+    def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
+        assert kwargs.get("headers", {}).get("Authorization") == (
+            "Basic " + b64encode(b"sp:secret").decode("ascii")
+        )
+        assert url.endswith("/projects/sp/users/")
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": [{
+            "id": "user-uuid",
+            "phoneNumber": "+1 (555) 123-4567",
+            "assignedPhoneNumber": "+16282679185",
+        }]}})
+
+    monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
+
+    phone, assigned = photon_auth.refresh_user_numbers("sp", "secret")
+    assert phone == "+15551234567"
+    assert assigned == "+16282679185"
+    assert photon_auth.load_user_numbers() == ("+15551234567", "+16282679185")
 
 
 def test_load_project_credentials_env_override(
@@ -303,7 +365,7 @@ def test_regenerate_project_secret(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_create_user_rejects_invalid_phone() -> None:
     with pytest.raises(ValueError, match="E.164"):
-        photon_auth.create_user("tok", "proj", phone_number="not-a-number")
+        photon_auth.create_user("proj", "secret", phone_number="not-a-number")
 
 
 def test_create_user_posts_dashboard_shape(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -313,27 +375,30 @@ def test_create_user_posts_dashboard_shape(monkeypatch: pytest.MonkeyPatch) -> N
         captured["url"] = url
         captured["body"] = kwargs.get("json")
         captured["headers"] = kwargs.get("headers")
-        return _FakeResponse(json_body={"success": True, "user": {
+        return _FakeResponse(json_body={"succeed": True, "data": {
             "id": "user-uuid", "phoneNumber": "+15551234567",
         }})
 
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
-    user = photon_auth.create_user("tok", "proj-id", phone_number="+15551234567")
+    user = photon_auth.create_user("proj-id", "secret", phone_number="+15551234567")
     assert user["id"] == "user-uuid"
+    assert captured["body"]["type"] == "shared"
     assert captured["body"]["phoneNumber"] == "+15551234567"
-    assert captured["headers"]["Authorization"] == "Bearer tok"
-    assert "/projects/proj-id/spectrum/users" in captured["url"]
+    assert captured["headers"]["Authorization"] == (
+        "Basic " + b64encode(b"proj-id:secret").decode("ascii")
+    )
+    assert captured["url"].endswith("/projects/proj-id/users/")
 
 
 def test_register_user_if_absent_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
     posted = {"n": 0}
 
     def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
-        return _FakeResponse(json_body=[{
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": [{
             "id": "u1",
             "phoneNumber": "+1 (555) 123-4567",
             "assignedPhoneNumber": "+16282679185",
-        }])
+        }]}})
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
         posted["n"] += 1
@@ -343,7 +408,7 @@ def test_register_user_if_absent_dedup(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
     # Same number, different formatting — should match and NOT create.
     user, created = photon_auth.register_user_if_absent(
-        "tok", "proj", phone_number="+15551234567",
+        "proj", "secret", phone_number="+15551234567",
     )
     assert created is False
     assert user["id"] == "u1"
@@ -366,15 +431,15 @@ def test_user_assigned_line() -> None:
 
 def test_register_user_if_absent_creates(monkeypatch: pytest.MonkeyPatch) -> None:
     def fake_get(url: str, **kwargs: Any) -> _FakeResponse:
-        return _FakeResponse(json_body=[])
+        return _FakeResponse(json_body={"succeed": True, "data": {"users": []}})
 
     def fake_post(url: str, **kwargs: Any) -> _FakeResponse:
-        return _FakeResponse(json_body={"success": True, "user": {"id": "u-new"}})
+        return _FakeResponse(json_body={"succeed": True, "data": {"id": "u-new"}})
 
     monkeypatch.setattr(photon_auth.httpx, "get", fake_get)
     monkeypatch.setattr(photon_auth.httpx, "post", fake_post)
     user, created = photon_auth.register_user_if_absent(
-        "tok", "proj", phone_number="+15551234567",
+        "proj", "secret", phone_number="+15551234567",
     )
     assert created is True
     assert user["id"] == "u-new"
@@ -435,6 +500,8 @@ def test_credential_summary_no_secret_leak(
     assert summary["project_key"].startswith("✓")
     assert summary["spectrum_project_id"] == "sp-uuid"
     assert summary["dashboard_project_id"] == "dash-uuid"
+    assert summary["phone_number"].startswith("✗ missing")
+    assert summary["assigned_phone_number"].startswith("✗ missing")
 
 
 # ---------------------------------------------------------------------------

@@ -234,6 +234,8 @@ class TestAppMentionHandler:
 
         assert "message" in registered_events
         assert "app_mention" in registered_events
+        assert "reaction_added" in registered_events
+        assert "reaction_removed" in registered_events
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
         # Slack slash commands are registered via a single regex matcher

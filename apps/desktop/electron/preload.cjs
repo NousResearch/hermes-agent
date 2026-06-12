@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   revalidateConnection: () => ipcRenderer.invoke('hermes:connection:revalidate'),
   touchBackend: profile => ipcRenderer.invoke('hermes:backend:touch', profile),
   getGatewayWsUrl: profile => ipcRenderer.invoke('hermes:gateway:ws-url', profile),
+  openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   getBootProgress: () => ipcRenderer.invoke('hermes:boot-progress:get'),
   getConnectionConfig: profile => ipcRenderer.invoke('hermes:connection-config:get', profile),
   saveConnectionConfig: payload => ipcRenderer.invoke('hermes:connection-config:save', payload),
@@ -38,9 +39,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   watchPreviewFile: url => ipcRenderer.invoke('hermes:watchPreviewFile', url),
   stopPreviewFileWatch: id => ipcRenderer.invoke('hermes:stopPreviewFileWatch', id),
   setTitleBarTheme: payload => ipcRenderer.send('hermes:titlebar-theme', payload),
+  setNativeTheme: mode => ipcRenderer.send('hermes:native-theme', mode),
+  setTranslucency: payload => ipcRenderer.send('hermes:translucency', payload),
   setPreviewShortcutActive: active => ipcRenderer.send('hermes:previewShortcutActive', Boolean(active)),
   openExternal: url => ipcRenderer.invoke('hermes:openExternal', url),
   fetchLinkTitle: url => ipcRenderer.invoke('hermes:fetchLinkTitle', url),
+  sanitizeWorkspaceCwd: cwd => ipcRenderer.invoke('hermes:workspace:sanitize', cwd),
   settings: {
     getDefaultProjectDir: () => ipcRenderer.invoke('hermes:setting:defaultProjectDir:get'),
     setDefaultProjectDir: dir => ipcRenderer.invoke('hermes:setting:defaultProjectDir:set', dir),
@@ -78,6 +82,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     ipcRenderer.on('hermes:open-updates', listener)
     return () => ipcRenderer.removeListener('hermes:open-updates', listener)
   },
+  onDeepLink: callback => {
+    const listener = (_event, payload) => callback(payload)
+    ipcRenderer.on('hermes:deep-link', listener)
+    return () => ipcRenderer.removeListener('hermes:deep-link', listener)
+  },
+  signalDeepLinkReady: () => ipcRenderer.invoke('hermes:deep-link-ready'),
   onWindowStateChanged: callback => {
     const listener = (_event, payload) => callback(payload)
     ipcRenderer.on('hermes:window-state-changed', listener)
@@ -132,5 +142,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:updates:progress', listener)
       return () => ipcRenderer.removeListener('hermes:updates:progress', listener)
     }
+  },
+  themes: {
+    fetchMarketplace: id => ipcRenderer.invoke('hermes:vscode-theme:fetch', id),
+    searchMarketplace: query => ipcRenderer.invoke('hermes:vscode-theme:search', query)
   }
 })

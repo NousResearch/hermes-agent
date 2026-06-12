@@ -18,6 +18,12 @@ declare global {
       // reaper spares it while its chat is active.
       touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
+      // Open (or focus) a standalone OS window for a single chat session so
+      // the user can work with multiple chats side by side. Returns ok:false
+      // with an error code when the sessionId is empty/invalid. `watch` opens
+      // a spectator window (lazy resume — no agent build) for live-streaming
+      // a running subagent's session.
+      openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -48,11 +54,14 @@ declare global {
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
+      setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
+      setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
+      sanitizeWorkspaceCwd: (cwd?: null | string) => Promise<{ cwd: string; sanitized: boolean }>
       settings: {
-        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string }>
+        getDefaultProjectDir: () => Promise<{ defaultLabel: string; dir: null | string; resolvedCwd: string }>
         pickDefaultProjectDir: () => Promise<{ canceled: boolean; dir: null | string }>
         setDefaultProjectDir: (dir: null | string) => Promise<{ dir: null | string }>
       }
@@ -70,6 +79,10 @@ declare global {
       }
       onClosePreviewRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
+      onDeepLink?: (
+        callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
+      ) => () => void
+      signalDeepLinkReady?: () => Promise<{ ok: boolean }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
@@ -92,8 +105,38 @@ declare global {
         summary: () => Promise<DesktopUninstallSummary>
         run: (mode: DesktopUninstallMode) => Promise<DesktopUninstallResult>
       }
+      themes: {
+        // Download a VS Code Marketplace extension and return the raw color
+        // theme files it contributes. The renderer converts + persists them.
+        fetchMarketplace: (id: string) => Promise<DesktopMarketplaceThemeResult>
+        // Search the Marketplace for color-theme extensions. An empty query
+        // returns the most-installed themes.
+        searchMarketplace: (query: string) => Promise<DesktopMarketplaceSearchItem[]>
+      }
     }
   }
+}
+
+export interface DesktopMarketplaceSearchItem {
+  extensionId: string
+  displayName: string
+  publisher: string
+  description: string
+  installs: number
+}
+
+export interface DesktopMarketplaceThemeFile {
+  label: string
+  /** VS Code's `uiTheme` for this entry (vs-dark / vs / hc-black). */
+  uiTheme?: string
+  /** Raw theme JSON (JSONC) text, parsed + converted by the renderer. */
+  contents: string
+}
+
+export interface DesktopMarketplaceThemeResult {
+  extensionId: string
+  displayName: string
+  themes: DesktopMarketplaceThemeFile[]
 }
 
 export interface HermesTerminalSession {

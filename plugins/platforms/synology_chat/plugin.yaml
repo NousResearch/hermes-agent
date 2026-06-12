@@ -1,0 +1,47 @@
+name: synology_chat-platform
+label: Synology Chat
+kind: platform
+version: 1.0.0
+description: >
+  Synology Chat gateway adapter for Hermes Agent.
+  Connects a Synology NAS (DSM 7.x) Chat application to Hermes: DMs via the
+  bot chatbot API, channels via per-channel outgoing/incoming webhooks.
+  Works on LAN with plain HTTP outgoing webhooks and self-signed NAS TLS.
+author: druide67
+requires_env:
+  - name: SYNOLOGY_CHAT_TOKEN
+    description: "Bot token from DSM > Chat > Integration > Bots"
+    prompt: "Synology Chat bot token"
+    password: true
+  - name: SYNOLOGY_CHAT_INCOMING_URL
+    description: "Bot incoming webhook URL (the entry.cgi URL with method=chatbot)"
+    prompt: "Bot incoming webhook URL"
+    password: false
+optional_env:
+  - name: SYNOLOGY_CHAT_WEBHOOK_HOST
+    description: "Inbound webhook bind interface (default: 0.0.0.0)"
+    prompt: "Webhook bind host"
+  - name: SYNOLOGY_CHAT_WEBHOOK_PORT
+    description: "Local port Hermes listens on for DSM outgoing webhooks (default: 8645)"
+    prompt: "Webhook listen port"
+    password: false
+  - name: SYNOLOGY_CHAT_HOME_CHANNEL
+    description: "Channel ID for cron / notification delivery (default: bot DM)"
+    prompt: "Home channel ID"
+    password: false
+  - name: SYNOLOGY_CHAT_ALLOWED_USERS
+    description: "Comma-separated DSM user IDs allowed to talk to the bot (empty = pairing flow)"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: SYNOLOGY_CHAT_ALLOW_ALL_USERS
+    description: "Allow any Synology Chat user to trigger the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: SYNOLOGY_CHAT_CA_BUNDLE
+    description: "Path to the NAS CA certificate for outbound TLS (recommended over insecure SSL)"
+    prompt: "CA bundle path"
+    password: false
+  - name: SYNOLOGY_CHAT_ALLOW_INSECURE_SSL
+    description: "Skip TLS verification for outbound posts to the NAS (escape hatch — prefer CA bundle)"
+    prompt: "Allow insecure SSL? (true/false)"
+    password: false

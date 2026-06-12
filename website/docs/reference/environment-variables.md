@@ -436,6 +436,17 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `MATTERMOST_REQUIRE_MENTION` | Require `@mention` in channels (default: `true`). Set to `false` to respond to all messages. |
 | `MATTERMOST_FREE_RESPONSE_CHANNELS` | Comma-separated channel IDs where bot responds without `@mention` |
 | `MATTERMOST_REPLY_MODE` | Reply style: `thread` (threaded replies) or `off` (flat messages, default) |
+| `SYNOLOGY_CHAT_TOKEN` | Synology Chat bot verification token (DSM > Integration > Bots) |
+| `SYNOLOGY_CHAT_INCOMING_URL` | Bot incoming webhook URL (`method=chatbot`) for DM replies |
+| `SYNOLOGY_CHAT_ALLOWED_USERS` | Comma-separated DSM user IDs allowed to message the bot |
+| `SYNOLOGY_CHAT_ALLOW_ALL_USERS` | Set `true` to allow all users (default: allowlist + pairing) |
+| `SYNOLOGY_CHAT_WEBHOOK_PORT` | Inbound webhook listen port (default: `8645`) |
+| `SYNOLOGY_CHAT_WEBHOOK_HOST` | Inbound webhook bind interface (default: `0.0.0.0`) |
+| `SYNOLOGY_CHAT_HOME_CHANNEL` | Channel ID for proactive message delivery (cron, notifications) |
+| `SYNOLOGY_CHAT_CA_BUNDLE` | Path to the NAS CA certificate for self-signed TLS (preferred over insecure mode) |
+| `SYNOLOGY_CHAT_ALLOW_INSECURE_SSL` | Set `true` to skip outbound TLS verification (escape hatch; logs a warning) |
+| `SYNOLOGY_CHANNEL_TOKEN_<id>` | Outgoing-webhook token of channel `<id>` (one per channel) |
+| `SYNOLOGY_CHANNEL_WEBHOOK_<id>` | Incoming-webhook URL of channel `<id>` (one per channel) |
 | `MATRIX_HOMESERVER` | Matrix homeserver URL (e.g. `https://matrix.org`) |
 | `MATRIX_ACCESS_TOKEN` | Matrix access token for bot authentication |
 | `MATRIX_USER_ID` | Matrix user ID (e.g. `@hermes:matrix.org`) — required for password login, optional with access token |

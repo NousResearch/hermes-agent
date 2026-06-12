@@ -513,6 +513,9 @@ class HermesACPAgent(acp.Agent):
     _EDIT_APPROVAL_POLICY_TO_MODE = {
         value: key for key, value in _MODE_TO_EDIT_APPROVAL_POLICY.items()
     }
+    _REASONING_MODEL_PROVIDERS = {"openai-codex"}
+    _REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+    _REASONING_CHOICE_MARKER = "#reasoning="
 
     def __init__(self, session_manager: SessionManager | None = None):
         super().__init__()
@@ -566,15 +569,73 @@ class HermesACPAgent(acp.Agent):
         return policy, state.cwd
 
     @staticmethod
-    def _encode_model_choice(provider: str | None, model: str | None) -> str:
+    def _encode_model_choice(
+        provider: str | None,
+        model: str | None,
+        reasoning_effort: str | None = None,
+    ) -> str:
         """Encode a model selection so ACP clients can keep provider context."""
         raw_model = str(model or "").strip()
         if not raw_model:
             return ""
         raw_provider = str(provider or "").strip().lower()
+        raw_effort = str(reasoning_effort or "").strip().lower()
+        if raw_effort:
+            raw_model = f"{raw_model}{HermesACPAgent._REASONING_CHOICE_MARKER}{raw_effort}"
         if not raw_provider:
             return raw_model
         return f"{raw_provider}:{raw_model}"
+
+    @classmethod
+    def _split_reasoning_model_choice(cls, raw_model: str) -> tuple[str, str | None]:
+        """Split ACP model choice IDs like ``model#reasoning=high``.
+
+        The parenthesized form is accepted for compatibility with clients or
+        slash-command users that submit the visible label instead of the model ID.
+        """
+        text = str(raw_model or "").strip()
+        if not text:
+            return "", None
+
+        if cls._REASONING_CHOICE_MARKER in text:
+            model_part, effort = text.rsplit(cls._REASONING_CHOICE_MARKER, 1)
+            normalized_effort = effort.strip().lower()
+            if normalized_effort in cls._REASONING_EFFORTS:
+                return model_part.strip(), normalized_effort
+
+        lower = text.lower()
+        for effort in cls._REASONING_EFFORTS:
+            suffix = f" ({effort})"
+            if lower.endswith(suffix):
+                return text[: -len(suffix)].strip(), effort
+
+        return text, None
+
+    @classmethod
+    def _reasoning_config_for_effort(cls, effort: str | None) -> dict[str, Any] | None:
+        raw = str(effort or "").strip().lower()
+        if not raw:
+            return None
+        try:
+            from hermes_constants import parse_reasoning_effort
+            return parse_reasoning_effort(raw)
+        except Exception:
+            logger.debug("Failed to parse ACP reasoning effort %r", raw, exc_info=True)
+            return None
+
+    @classmethod
+    def _current_reasoning_effort(cls, state: SessionState) -> str:
+        raw = str(getattr(state, "reasoning_effort", "") or "").strip().lower()
+        if raw in cls._REASONING_EFFORTS:
+            return raw
+
+        cfg = getattr(getattr(state, "agent", None), "reasoning_config", None)
+        if isinstance(cfg, dict):
+            effort = str(cfg.get("effort") or "").strip().lower()
+            if effort in cls._REASONING_EFFORTS:
+                return effort
+
+        return "medium"
 
     def _build_model_state(self, state: SessionState) -> SessionModelState | None:
         """Return the ACP model selector payload for editors like Zed."""
@@ -586,6 +647,8 @@ class HermesACPAgent(acp.Agent):
 
             normalized_provider = normalize_provider(provider)
             provider_name = provider_label(normalized_provider)
+            supports_reasoning_effort = normalized_provider in self._REASONING_MODEL_PROVIDERS
+            current_reasoning_effort = self._current_reasoning_effort(state)
             available_models: list[ModelInfo] = []
             seen_ids: set[str] = set()
 
@@ -593,31 +656,47 @@ class HermesACPAgent(acp.Agent):
                 rendered_model = str(model_id or "").strip()
                 if not rendered_model:
                     continue
-                choice_id = self._encode_model_choice(normalized_provider, rendered_model)
-                if choice_id in seen_ids:
-                    continue
-                desc_parts = [f"Provider: {provider_name}"]
-                if description:
-                    desc_parts.append(str(description).strip())
-                if rendered_model == model:
-                    desc_parts.append("current")
-                available_models.append(
-                    ModelInfo(
-                        model_id=choice_id,
-                        name=rendered_model,
-                        description=" • ".join(part for part in desc_parts if part),
+                effort_choices = self._REASONING_EFFORTS if supports_reasoning_effort else (None,)
+                for effort in effort_choices:
+                    choice_id = self._encode_model_choice(normalized_provider, rendered_model, effort)
+                    if choice_id in seen_ids:
+                        continue
+                    desc_parts = [f"Provider: {provider_name}"]
+                    if effort:
+                        desc_parts.append(f"Reasoning: {effort}")
+                    if description:
+                        desc_parts.append(str(description).strip())
+                    if rendered_model == model and (not effort or effort == current_reasoning_effort):
+                        desc_parts.append("current")
+                    available_models.append(
+                        ModelInfo(
+                            model_id=choice_id,
+                            name=f"{rendered_model} ({effort})" if effort else rendered_model,
+                            description=" • ".join(part for part in desc_parts if part),
+                        )
                     )
-                )
-                seen_ids.add(choice_id)
+                    seen_ids.add(choice_id)
 
-            current_model_id = self._encode_model_choice(normalized_provider, model)
+            current_model_id = self._encode_model_choice(
+                normalized_provider,
+                model,
+                current_reasoning_effort if supports_reasoning_effort else None,
+            )
             if current_model_id and current_model_id not in seen_ids:
                 available_models.insert(
                     0,
                     ModelInfo(
                         model_id=current_model_id,
-                        name=model,
-                        description=f"Provider: {provider_name} • current",
+                        name=(
+                            f"{model} ({current_reasoning_effort})"
+                            if supports_reasoning_effort
+                            else model
+                        ),
+                        description=(
+                            f"Provider: {provider_name} • Reasoning: {current_reasoning_effort} • current"
+                            if supports_reasoning_effort
+                            else f"Provider: {provider_name} • current"
+                        ),
                     ),
                 )
 
@@ -642,7 +721,7 @@ class HermesACPAgent(acp.Agent):
     def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
         """Resolve ``provider:model`` input into the provider and normalized model id."""
         target_provider = current_provider
-        new_model = raw_model.strip()
+        new_model = HermesACPAgent._split_reasoning_model_choice(raw_model)[0]
 
         try:
             from hermes_cli.models import detect_provider_for_model, parse_model_input
@@ -656,6 +735,16 @@ class HermesACPAgent(acp.Agent):
             logger.debug("Provider detection failed, using model as-is", exc_info=True)
 
         return target_provider, new_model
+
+    @classmethod
+    def _resolve_model_selection_with_reasoning(
+        cls,
+        raw_model: str,
+        current_provider: str,
+    ) -> tuple[str, str, str | None]:
+        model_without_effort, reasoning_effort = cls._split_reasoning_model_choice(raw_model)
+        target_provider, new_model = cls._resolve_model_selection(model_without_effort, current_provider)
+        return target_provider, new_model, reasoning_effort
 
     @staticmethod
     def _build_usage_update(state: SessionState) -> UsageUpdate | None:
@@ -1759,22 +1848,30 @@ class HermesACPAgent(acp.Agent):
         if not args:
             model = state.model or getattr(state.agent, "model", "unknown")
             provider = getattr(state.agent, "provider", None) or "auto"
-            return f"Current model: {model}\nProvider: {provider}"
+            reasoning_effort = self._current_reasoning_effort(state)
+            return f"Current model: {model}\nProvider: {provider}\nReasoning: {reasoning_effort}"
 
         current_provider = getattr(state.agent, "provider", None) or "openrouter"
-        target_provider, new_model = self._resolve_model_selection(args, current_provider)
+        target_provider, new_model, requested_effort = self._resolve_model_selection_with_reasoning(
+            args,
+            current_provider,
+        )
+        effective_effort = requested_effort or self._current_reasoning_effort(state)
+        reasoning_config = self._reasoning_config_for_effort(effective_effort)
 
         state.model = new_model
+        state.reasoning_effort = effective_effort
         state.agent = self.session_manager._make_agent(
             session_id=state.session_id,
             cwd=state.cwd,
             model=new_model,
             requested_provider=target_provider,
+            reasoning_config=reasoning_config,
         )
         self.session_manager.save_session(state.session_id)
         provider_label = getattr(state.agent, "provider", None) or target_provider or current_provider
         logger.info("Session %s: model switched to %s", state.session_id, new_model)
-        return f"Model switched to: {new_model}\nProvider: {provider_label}"
+        return f"Model switched to: {new_model}\nProvider: {provider_label}\nReasoning: {effective_effort}"
 
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
@@ -1976,11 +2073,14 @@ class HermesACPAgent(acp.Agent):
         state = self.session_manager.get_session(session_id)
         if state:
             current_provider = getattr(state.agent, "provider", None)
-            requested_provider, resolved_model = self._resolve_model_selection(
+            requested_provider, resolved_model, requested_effort = self._resolve_model_selection_with_reasoning(
                 model_id,
                 current_provider or "openrouter",
             )
+            effective_effort = requested_effort or self._current_reasoning_effort(state)
+            reasoning_config = self._reasoning_config_for_effort(effective_effort)
             state.model = resolved_model
+            state.reasoning_effort = effective_effort
             provider_changed = bool(current_provider and requested_provider != current_provider)
             current_base_url = None if provider_changed else getattr(state.agent, "base_url", None)
             current_api_mode = None if provider_changed else getattr(state.agent, "api_mode", None)
@@ -1991,13 +2091,15 @@ class HermesACPAgent(acp.Agent):
                 requested_provider=requested_provider,
                 base_url=current_base_url,
                 api_mode=current_api_mode,
+                reasoning_config=reasoning_config,
             )
             self.session_manager.save_session(session_id)
             logger.info(
-                "Session %s: model switched to %s via provider %s",
+                "Session %s: model switched to %s via provider %s with reasoning %s",
                 session_id,
                 resolved_model,
                 requested_provider,
+                effective_effort,
             )
             return SetSessionModelResponse()
         logger.warning("Session %s: model switch requested for missing session", session_id)

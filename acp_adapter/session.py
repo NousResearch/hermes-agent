@@ -174,6 +174,7 @@ class SessionState:
     agent: Any  # AIAgent instance
     cwd: str = "."
     model: str = ""
+    reasoning_effort: str = ""
     history: List[Dict[str, Any]] = field(default_factory=list)
     cancel_event: Any = None  # threading.Event
     is_running: bool = False
@@ -205,6 +206,43 @@ class SessionManager:
         self._agent_factory = agent_factory
         self._db_instance = db  # None → lazy-init on first use
 
+    @staticmethod
+    def reasoning_config_from_effort(effort: str | None) -> Dict[str, Any] | None:
+        """Convert a persisted effort string into AIAgent reasoning_config."""
+        raw = str(effort or "").strip().lower()
+        if not raw:
+            return None
+        try:
+            from hermes_constants import parse_reasoning_effort
+            return parse_reasoning_effort(raw)
+        except Exception:
+            logger.debug("Failed to parse reasoning effort %r", raw, exc_info=True)
+            return None
+
+    @classmethod
+    def reasoning_effort_from_config(cls, config: Dict[str, Any] | None) -> str:
+        """Return the configured global reasoning effort, if valid."""
+        agent_cfg = config.get("agent") if isinstance(config, dict) else None
+        if not isinstance(agent_cfg, dict):
+            return ""
+        raw = str(agent_cfg.get("reasoning_effort") or "").strip().lower()
+        parsed = cls.reasoning_config_from_effort(raw)
+        if not parsed:
+            return ""
+        if parsed.get("enabled") is False:
+            return "none"
+        return str(parsed.get("effort") or "").strip().lower()
+
+    @staticmethod
+    def reasoning_effort_from_agent(agent: Any) -> str:
+        """Return the effective effort stored on an AIAgent instance."""
+        cfg = getattr(agent, "reasoning_config", None)
+        if not isinstance(cfg, dict):
+            return ""
+        if cfg.get("enabled") is False:
+            return "none"
+        return str(cfg.get("effort") or "").strip().lower()
+
     # ---- public API ---------------------------------------------------------
 
     def create_session(self, cwd: str = ".") -> SessionState:
@@ -219,6 +257,7 @@ class SessionManager:
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", "") or "",
+            reasoning_effort=self.reasoning_effort_from_agent(agent),
             cancel_event=threading.Event(),
         )
         with self._lock:
@@ -264,12 +303,14 @@ class SessionManager:
             session_id=new_id,
             cwd=cwd,
             model=original.model or None,
+            reasoning_config=self.reasoning_config_from_effort(original.reasoning_effort),
         )
         state = SessionState(
             session_id=new_id,
             agent=agent,
             cwd=cwd,
             model=getattr(agent, "model", original.model) or original.model,
+            reasoning_effort=original.reasoning_effort or self.reasoning_effort_from_agent(agent),
             history=copy.deepcopy(original.history),
             cancel_event=threading.Event(),
         )
@@ -436,12 +477,15 @@ class SessionManager:
         provider = getattr(state.agent, "provider", None)
         base_url = getattr(state.agent, "base_url", None)
         api_mode = getattr(state.agent, "api_mode", None)
+        reasoning_effort = str(state.reasoning_effort or "").strip()
         if isinstance(provider, str) and provider.strip():
             session_meta["provider"] = provider.strip()
         if isinstance(base_url, str) and base_url.strip():
             session_meta["base_url"] = base_url.strip()
         if isinstance(api_mode, str) and api_mode.strip():
             session_meta["api_mode"] = api_mode.strip()
+        if reasoning_effort:
+            session_meta["reasoning_effort"] = reasoning_effort
         cwd_json = json.dumps(session_meta)
 
         try:
@@ -494,6 +538,7 @@ class SessionManager:
         requested_provider = row.get("billing_provider")
         restored_base_url = row.get("billing_base_url")
         restored_api_mode = None
+        restored_reasoning_effort = ""
         mc = row.get("model_config")
         if mc:
             try:
@@ -503,6 +548,7 @@ class SessionManager:
                     requested_provider = meta.get("provider") or requested_provider
                     restored_base_url = meta.get("base_url") or restored_base_url
                     restored_api_mode = meta.get("api_mode") or restored_api_mode
+                    restored_reasoning_effort = str(meta.get("reasoning_effort") or "").strip().lower()
             except (json.JSONDecodeError, TypeError):
                 pass
 
@@ -523,6 +569,7 @@ class SessionManager:
                 requested_provider=requested_provider,
                 base_url=restored_base_url,
                 api_mode=restored_api_mode,
+                reasoning_config=self.reasoning_config_from_effort(restored_reasoning_effort),
             )
         except Exception:
             logger.warning("Failed to recreate agent for ACP session %s", session_id, exc_info=True)
@@ -533,6 +580,7 @@ class SessionManager:
             agent=agent,
             cwd=cwd,
             model=model or getattr(agent, "model", "") or "",
+            reasoning_effort=restored_reasoning_effort or self.reasoning_effort_from_agent(agent),
             history=history,
             cancel_event=threading.Event(),
         )
@@ -564,6 +612,7 @@ class SessionManager:
         requested_provider: str | None = None,
         base_url: str | None = None,
         api_mode: str | None = None,
+        reasoning_config: Dict[str, Any] | None = None,
     ):
         if self._agent_factory is not None:
             return self._agent_factory()
@@ -581,6 +630,10 @@ class SessionManager:
             config_provider = model_cfg.get("provider")
         elif isinstance(model_cfg, str) and model_cfg.strip():
             default_model = model_cfg.strip()
+        if reasoning_config is None:
+            reasoning_config = self.reasoning_config_from_effort(
+                self.reasoning_effort_from_config(config)
+            )
 
         configured_mcp_servers = [
             name
@@ -599,6 +652,8 @@ class SessionManager:
             "session_db": self._get_db(),
             "model": model or default_model,
         }
+        if reasoning_config is not None:
+            kwargs["reasoning_config"] = reasoning_config
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

@@ -794,7 +794,7 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
     job = resolve_job_ref(job_id)
     if not job:
         return None
-    return update_job(
+    paused = update_job(
         job["id"],
         {
             "enabled": False,
@@ -803,6 +803,21 @@ def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, A
             "paused_reason": reason,
         },
     )
+    if paused:
+        try:
+            from cron.scheduler import interrupt_running_jobs
+
+            interrupt_running_jobs(
+                f"Cron job paused: {reason or 'paused'}",
+                job_ids=[job["id"]],
+            )
+        except Exception as exc:
+            logger.debug(
+                "Failed to interrupt paused cron job '%s': %s",
+                job["id"],
+                exc,
+            )
+    return paused
 
 
 def resume_job(job_id: str) -> Optional[Dict[str, Any]]:

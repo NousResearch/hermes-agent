@@ -335,6 +335,25 @@ class TestPauseResumeJob:
         assert paused["state"] == "paused"
         assert paused["paused_reason"] == "user paused"
 
+    def test_pause_interrupts_matching_running_job(self, tmp_cron_dir, monkeypatch):
+        job = create_job(prompt="Pause me", schedule="every 1h")
+        captured = {}
+
+        def _fake_interrupt(reason, *, job_ids=None):
+            captured["reason"] = reason
+            captured["job_ids"] = job_ids
+            return [job["id"]]
+
+        monkeypatch.setattr("cron.scheduler.interrupt_running_jobs", _fake_interrupt)
+
+        paused = pause_job(job["id"], reason="user paused")
+
+        assert paused is not None
+        assert captured == {
+            "reason": "Cron job paused: user paused",
+            "job_ids": [job["id"]],
+        }
+
     def test_resume_reenables_job(self, tmp_cron_dir):
         job = create_job(prompt="Resume me", schedule="every 1h")
         pause_job(job["id"], reason="user paused")

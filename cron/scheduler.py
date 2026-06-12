@@ -163,6 +163,7 @@ SILENT_MARKER = "[SILENT]"
 _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
+_running_agents: dict[str, object] = {}
 _running_lock = threading.Lock()
 
 # Sequential (env-mutating) cron jobs — workdir jobs that touch
@@ -206,6 +207,13 @@ def _get_sequential_pool() -> concurrent.futures.ThreadPoolExecutor:
 def _shutdown_parallel_pool() -> None:
     """Shut down the persistent pools on process exit."""
     global _parallel_pool, _parallel_pool_max_workers, _sequential_pool
+    active_job_ids = get_running_job_ids()
+    if active_job_ids:
+        logger.warning(
+            "Cron scheduler shutdown waiting for %d in-flight job(s): %s",
+            len(active_job_ids),
+            ", ".join(active_job_ids),
+        )
     if _parallel_pool is not None:
         _parallel_pool.shutdown(wait=True, cancel_futures=False)
         _parallel_pool = None
@@ -216,6 +224,61 @@ def _shutdown_parallel_pool() -> None:
 
 
 atexit.register(_shutdown_parallel_pool)
+
+
+def get_running_job_ids() -> list[str]:
+    """Return a stable snapshot of in-flight cron job ids."""
+    with _running_lock:
+        return sorted(str(job_id) for job_id in _running_job_ids)
+
+
+def _register_running_agent(job_id: str, agent: object) -> None:
+    """Track the live agent for an in-flight cron run."""
+    with _running_lock:
+        _running_agents[job_id] = agent
+
+
+def _unregister_running_agent(job_id: str, agent: object) -> None:
+    """Remove a live-agent mapping if it still points at this run."""
+    with _running_lock:
+        if _running_agents.get(job_id) is agent:
+            _running_agents.pop(job_id, None)
+
+
+def interrupt_running_jobs(reason: str, *, job_ids: Optional[List[str]] = None) -> list[str]:
+    """Signal live cron agents to stop via their existing interrupt pathway."""
+    with _running_lock:
+        target_ids = (
+            [str(job_id) for job_id in job_ids]
+            if job_ids is not None
+            else sorted(_running_agents)
+        )
+        targets = {
+            job_id: _running_agents[job_id]
+            for job_id in target_ids
+            if job_id in _running_agents
+        }
+
+    interrupted: list[str] = []
+    for job_id, agent in targets.items():
+        interrupt = getattr(agent, "interrupt", None)
+        if not callable(interrupt):
+            logger.warning(
+                "Cron job '%s' has a live agent without an interrupt() method",
+                job_id,
+            )
+            continue
+        try:
+            interrupt(reason)
+            interrupted.append(job_id)
+        except Exception as exc:
+            logger.warning(
+                "Failed to interrupt in-flight cron job '%s': %s",
+                job_id,
+                exc,
+            )
+
+    return interrupted
 
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
@@ -1754,115 +1817,121 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             session_id=_cron_session_id,
             session_db=_session_db,
         )
-        
-        # Run the agent with an *inactivity*-based timeout: the job can run
-        # for hours if it's actively calling tools / receiving stream tokens,
-        # but a hung API call or stuck tool with no activity for the configured
-        # duration is caught and killed.  Default 600s (10 min inactivity);
-        # override via HERMES_CRON_TIMEOUT env var.  0 = unlimited.
-        #
-        # Uses the agent's built-in activity tracker (updated by
-        # _touch_activity() on every tool call, API call, and stream delta).
-        _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-        if _raw_cron_timeout:
-            try:
-                _cron_timeout = float(_raw_cron_timeout)
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
-                    _raw_cron_timeout,
-                )
-                _cron_timeout = 600.0
-        else:
-            _cron_timeout = 600.0
-        _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
-        _POLL_INTERVAL = 5.0
-        _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Preserve scheduler-scoped ContextVar state (for example skill-declared
-        # env passthrough registrations) when the cron run hops into the worker
-        # thread used for inactivity timeout monitoring.
-        _cron_context = contextvars.copy_context()
-        _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
-        _inactivity_timeout = False
         try:
-            if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
-                result = _cron_future.result()
-            else:
-                result = None
-                while True:
-                    done, _ = concurrent.futures.wait(
-                        {_cron_future}, timeout=_POLL_INTERVAL,
+            _register_running_agent(job_id, agent)
+
+            # Run the agent with an *inactivity*-based timeout: the job can run
+            # for hours if it's actively calling tools / receiving stream tokens,
+            # but a hung API call or stuck tool with no activity for the configured
+            # duration is caught and killed.  Default 600s (10 min inactivity);
+            # override via HERMES_CRON_TIMEOUT env var.  0 = unlimited.
+            #
+            # Uses the agent's built-in activity tracker (updated by
+            # _touch_activity() on every tool call, API call, and stream delta).
+            _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+            if _raw_cron_timeout:
+                try:
+                    _cron_timeout = float(_raw_cron_timeout)
+                except (ValueError, TypeError):
+                    logger.warning(
+                        "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
+                        _raw_cron_timeout,
                     )
-                    if done:
-                        result = _cron_future.result()
-                        break
-                    # Agent still running — check inactivity.
-                    _idle_secs = 0.0
-                    if hasattr(agent, "get_activity_summary"):
-                        try:
-                            _act = agent.get_activity_summary()
-                            _idle_secs = _act.get("seconds_since_activity", 0.0)
-                        except Exception:
-                            pass
-                    if _idle_secs >= _cron_inactivity_limit:
-                        _inactivity_timeout = True
-                        break
+                    _cron_timeout = 600.0
+            else:
+                _cron_timeout = 600.0
+            _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
+            _POLL_INTERVAL = 5.0
+            _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            # Preserve scheduler-scoped ContextVar state (for example skill-declared
+            # env passthrough registrations) when the cron run hops into the worker
+            # thread used for inactivity timeout monitoring.
+            _cron_context = contextvars.copy_context()
+            _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
+            _inactivity_timeout = False
+            try:
+                if _cron_inactivity_limit is None:
+                    # Unlimited — just wait for the result.
+                    result = _cron_future.result()
+                else:
+                    result = None
+                    while True:
+                        done, _ = concurrent.futures.wait(
+                            {_cron_future}, timeout=_POLL_INTERVAL,
+                        )
+                        if done:
+                            result = _cron_future.result()
+                            break
+                        # Agent still running — check inactivity.
+                        _idle_secs = 0.0
+                        if hasattr(agent, "get_activity_summary"):
+                            try:
+                                _act = agent.get_activity_summary()
+                                _idle_secs = _act.get("seconds_since_activity", 0.0)
+                            except Exception:
+                                pass
+                        if _idle_secs >= _cron_inactivity_limit:
+                            _inactivity_timeout = True
+                            break
+            except Exception:
+                _cron_pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            finally:
+                _cron_pool.shutdown(wait=False, cancel_futures=True)
+
+            if _inactivity_timeout:
+                # Build diagnostic summary from the agent's activity tracker.
+                _activity = {}
+                if hasattr(agent, "get_activity_summary"):
+                    try:
+                        _activity = agent.get_activity_summary()
+                    except Exception:
+                        pass
+                _last_desc = _activity.get("last_activity_desc", "unknown")
+                _secs_ago = _activity.get("seconds_since_activity", 0)
+                _cur_tool = _activity.get("current_tool")
+                _iter_n = _activity.get("api_call_count", 0)
+                _iter_max = _activity.get("max_iterations", 0)
+
+                logger.error(
+                    "Job '%s' idle for %.0fs (inactivity limit %.0fs) "
+                    "| last_activity=%s | iteration=%s/%s | tool=%s",
+                    job_name, _secs_ago, _cron_inactivity_limit,
+                    _last_desc, _iter_n, _iter_max,
+                    _cur_tool or "none",
+                )
+                if hasattr(agent, "interrupt"):
+                    agent.interrupt("Cron job timed out (inactivity)")
+                raise TimeoutError(
+                    f"Cron job '{job_name}' idle for "
+                    f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
+                    f"— last activity: {_last_desc}"
+                )
+
+            # Guard against non-dict returns from run_conversation under error conditions
+            if not isinstance(result, dict):
+                raise RuntimeError(
+                    f"agent.run_conversation returned {type(result).__name__} instead of dict: {result!r}"
+                )
+
+            # If the agent itself reported failure (e.g. all retries exhausted on
+            # API errors, model abort, mid-run interrupt), do not silently mark the
+            # job as successful. run_agent populates `failed=True`/`completed=False`
+            # on these paths and may put the error into `final_response`, which
+            # would otherwise be delivered as if it were the agent's reply and the
+            # job's `last_status` set to "ok". Raise so the except handler below
+            # builds the proper failure tuple. (issue #17855)
+            if result.get("failed") is True or result.get("completed") is False:
+                _err_text = (
+                    result.get("error")
+                    or (result.get("final_response") or "").strip()
+                    or "agent reported failure"
+                )
+                raise RuntimeError(_err_text)
         except Exception:
-            _cron_pool.shutdown(wait=False, cancel_futures=True)
             raise
         finally:
-            _cron_pool.shutdown(wait=False, cancel_futures=True)
-
-        if _inactivity_timeout:
-            # Build diagnostic summary from the agent's activity tracker.
-            _activity = {}
-            if hasattr(agent, "get_activity_summary"):
-                try:
-                    _activity = agent.get_activity_summary()
-                except Exception:
-                    pass
-            _last_desc = _activity.get("last_activity_desc", "unknown")
-            _secs_ago = _activity.get("seconds_since_activity", 0)
-            _cur_tool = _activity.get("current_tool")
-            _iter_n = _activity.get("api_call_count", 0)
-            _iter_max = _activity.get("max_iterations", 0)
-
-            logger.error(
-                "Job '%s' idle for %.0fs (inactivity limit %.0fs) "
-                "| last_activity=%s | iteration=%s/%s | tool=%s",
-                job_name, _secs_ago, _cron_inactivity_limit,
-                _last_desc, _iter_n, _iter_max,
-                _cur_tool or "none",
-            )
-            if hasattr(agent, "interrupt"):
-                agent.interrupt("Cron job timed out (inactivity)")
-            raise TimeoutError(
-                f"Cron job '{job_name}' idle for "
-                f"{int(_secs_ago)}s (limit {int(_cron_inactivity_limit)}s) "
-                f"— last activity: {_last_desc}"
-            )
-
-        # Guard against non-dict returns from run_conversation under error conditions
-        if not isinstance(result, dict):
-            raise RuntimeError(
-                f"agent.run_conversation returned {type(result).__name__} instead of dict: {result!r}"
-            )
-
-        # If the agent itself reported failure (e.g. all retries exhausted on
-        # API errors, model abort, mid-run interrupt), do not silently mark the
-        # job as successful. run_agent populates `failed=True`/`completed=False`
-        # on these paths and may put the error into `final_response`, which
-        # would otherwise be delivered as if it were the agent's reply and the
-        # job's `last_status` set to "ok". Raise so the except handler below
-        # builds the proper failure tuple. (issue #17855)
-        if result.get("failed") is True or result.get("completed") is False:
-            _err_text = (
-                result.get("error")
-                or (result.get("final_response") or "").strip()
-                or "agent reported failure"
-            )
-            raise RuntimeError(_err_text)
+            _unregister_running_agent(job_id, agent)
 
         final_response = result.get("final_response", "") or ""
         # Strip leaked placeholder text that upstream may inject on empty completions.

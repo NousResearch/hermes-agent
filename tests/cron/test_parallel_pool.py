@@ -97,6 +97,64 @@ class TestRunningJobGuard:
         sched._shutdown_parallel_pool()
 
 
+class TestRunningAgentInterrupts:
+    """In-flight cron agents can be interrupted for shutdown/pause containment."""
+
+    def test_interrupt_running_jobs_targets_live_agents(self):
+        import cron.scheduler as sched
+
+        class DummyAgent:
+            def __init__(self):
+                self.reasons = []
+
+            def interrupt(self, reason):
+                self.reasons.append(reason)
+
+        sched._running_job_ids.clear()
+        sched._running_agents.clear()
+        agent_a = DummyAgent()
+        agent_b = DummyAgent()
+        sched._running_job_ids.update({"job-a", "job-b"})
+        sched._register_running_agent("job-a", agent_a)
+        sched._register_running_agent("job-b", agent_b)
+
+        interrupted = sched.interrupt_running_jobs(
+            "Gateway shutdown requested",
+            job_ids=["job-b"],
+        )
+
+        assert interrupted == ["job-b"]
+        assert agent_a.reasons == []
+        assert agent_b.reasons == ["Gateway shutdown requested"]
+
+        sched._running_agents.clear()
+        sched._running_job_ids.clear()
+
+    def test_shutdown_logs_inflight_jobs_before_waiting(self, monkeypatch, caplog):
+        import cron.scheduler as sched
+
+        class DummyPool:
+            def __init__(self):
+                self.calls = []
+
+            def shutdown(self, wait, cancel_futures):
+                self.calls.append((wait, cancel_futures))
+
+        sched._parallel_pool = DummyPool()
+        sched._parallel_pool_max_workers = 2
+        sched._sequential_pool = DummyPool()
+        sched._running_job_ids.clear()
+        sched._running_job_ids.add("job-a")
+
+        with caplog.at_level("WARNING"):
+            sched._shutdown_parallel_pool()
+
+        assert "waiting for 1 in-flight job(s): job-a" in caplog.text
+        assert sched._parallel_pool is None
+        assert sched._sequential_pool is None
+        sched._running_job_ids.clear()
+
+
 class TestSyncMode:
     """tick() blocks by default (sync=True); tick(sync=False) returns immediately."""
 

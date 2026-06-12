@@ -16151,6 +16151,18 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     
     # Stop cron ticker cleanly
     cron_stop.set()
+    try:
+        from cron.scheduler import interrupt_running_jobs
+
+        interrupted_job_ids = interrupt_running_jobs("Gateway shutdown requested")
+        if interrupted_job_ids:
+            logger.warning(
+                "Gateway shutdown interrupted %d in-flight cron job(s): %s",
+                len(interrupted_job_ids),
+                ", ".join(interrupted_job_ids),
+            )
+    except Exception as exc:
+        logger.warning("Failed to interrupt in-flight cron jobs during shutdown: %s", exc)
     cron_thread.join(timeout=5)
 
     # Stop the planned-stop watcher (daemon=True so this is belt-and-suspenders).

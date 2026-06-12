@@ -29,6 +29,7 @@
         inputsFrom = packages;
         packages = with pkgs; [
           uv
+          nodejs_26
         ];
         shellHook = ''
           echo "Hermes Agent dev shell"

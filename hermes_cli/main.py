@@ -7459,7 +7459,55 @@ def _ensure_uv_for_termux(pip_cmd: list[str]) -> str | None:
     return resolve_uv() or shutil.which("uv")
 
 
+def _ensure_managed_node() -> None:
+    """Ensure Hermes-managed Node.js matches .nvmrc, updating if necessary."""
+    nvmrc_path = PROJECT_ROOT / ".nvmrc"
+    if not nvmrc_path.exists():
+        return  # Let system node handle it
+
+    target_version = nvmrc_path.read_text().strip()
+    if not target_version:
+        return
+
+    hermes_home = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
+    managed_node = hermes_home / "node" / "bin" / "node"
+
+    if managed_node.exists():
+        try:
+            current_version = subprocess.check_output(
+                [str(managed_node), "--version"], text=True
+            ).strip().lstrip("v")
+            if current_version == target_version:
+                return  # Already up to date
+        except Exception:
+            pass  # Fall through to reinstall
+
+    bootstrap_script = PROJECT_ROOT / "scripts" / "lib" / "node-bootstrap.sh"
+    if not bootstrap_script.exists():
+        return
+
+    print(f"→ Updating Hermes-managed Node.js to {target_version}...")
+    env = {**os.environ, "HERMES_HOME": str(hermes_home)}
+    try:
+        result = subprocess.run(
+            ["bash", "-c", f'source "{bootstrap_script}" && ensure_node'],
+            env=env,
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            print(f"  ✓ Node.js updated to {target_version}")
+        else:
+            print(f"  ⚠ Node.js update failed (non-fatal): {result.stderr.strip()}")
+    except Exception as e:
+        print(f"  ⚠ Node.js update failed (non-fatal): {e}")
+
+
 def _update_node_dependencies() -> None:
+    # Ensure managed Node.js matches .nvmrc before running npm
+    _ensure_managed_node()
+
     npm = shutil.which("npm")
     if not npm:
         return

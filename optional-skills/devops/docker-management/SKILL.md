@@ -130,7 +130,7 @@ docker build --no-cache -t my-app .              # clean rebuild
 DOCKER_BUILDKIT=1 docker build -t my-app .       # faster with BuildKit
 
 # Pull and push
-docker pull node:20-alpine
+docker pull node:26-alpine
 docker login ghcr.io
 docker tag my-app:latest registry/my-app:v1.0
 docker push registry/my-app:v1.0
@@ -276,6 +276,6 @@ When reviewing or creating a Dockerfile, suggest these improvements:
 2. **Layer ordering** — put dependencies before source code so changes don't invalidate cached layers
 3. **Combine RUN commands** — fewer layers, smaller image
 4. **Use .dockerignore** — exclude `node_modules`, `.git`, `__pycache__`, etc.
-5. **Pin base image versions** — `node:20-alpine` not `node:latest`
+5. **Pin base image versions** — `node:26-alpine` not `node:latest`
 6. **Run as non-root** — add `USER` instruction for security
 7. **Use slim/alpine bases** — `python:3.12-slim` not `python:3.12`

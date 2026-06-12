@@ -10,7 +10,7 @@
   makeWrapper,
   callPackage,
   python312,
-  nodejs_22,
+  nodejs_26,
   electron,
   ripgrep,
   git,
@@ -36,7 +36,7 @@
   extraDependencyGroups ? [ ],
 }:
 let
-  nodejs = nodejs_22;
+  nodejs = nodejs_26;
   hermesVenv = callPackage ./python.nix {
     inherit uv2nix pyproject-nix pyproject-build-systems;
     dependency-groups = [ "all" ] ++ extraDependencyGroups;

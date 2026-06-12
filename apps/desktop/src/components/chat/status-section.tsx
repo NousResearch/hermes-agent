@@ -8,6 +8,8 @@ interface StatusSectionProps {
   accessory?: ReactNode
   children: ReactNode
   defaultCollapsed?: boolean
+  /** Optional glyph between the caret and the label (e.g. a `Codicon`). */
+  icon?: ReactNode
   label: ReactNode
 }
 
@@ -17,7 +19,7 @@ interface StatusSectionProps {
  * (queue, subagents, background) reads as one piece. The stack supplies the
  * outer card and the dividers between groups; this owns only its own collapse.
  */
-export function StatusSection({ accessory, children, defaultCollapsed = true, label }: StatusSectionProps) {
+export function StatusSection({ accessory, children, defaultCollapsed = true, icon, label }: StatusSectionProps) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
 
   return (
@@ -29,6 +31,7 @@ export function StatusSection({ accessory, children, defaultCollapsed = true, la
           type="button"
         >
           <DisclosureCaret className="shrink-0" open={!collapsed} size="1em" />
+          {icon && <span className="flex shrink-0 items-center">{icon}</span>}
           <span className="truncate">{label}</span>
         </button>
         {accessory && <div className="flex shrink-0 items-center gap-1">{accessory}</div>}

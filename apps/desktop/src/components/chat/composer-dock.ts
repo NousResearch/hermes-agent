@@ -17,19 +17,14 @@ export const composerSurfaceGlass = cn(
   'transition-[background-color] duration-150 ease-out'
 )
 
-/** Glassy bg for docked panels that float over the thread (queue / status
- *  stack) — slightly more solid than the surface, converging on focus. */
-const composerDockBg = cn(
-  'bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)]',
-  'group-focus-within/composer:bg-[color-mix(in_srgb,var(--dt-card)_85%,transparent)]'
-)
-
 const composerDockEdge = (edge: 'bottom' | 'top') =>
   cn('border border-border/65', edge === 'top' ? 'rounded-t-2xl border-b-0' : 'rounded-b-2xl border-t-0')
 
-/** Glassy docked card — the status stack / queue. */
+/** Glassy docked card — the status stack / queue. Paints the SAME
+ *  `--composer-fill` as the surface, so rest / scrolled / focused / drawer-open
+ *  all match the composer by construction. */
 export const composerDockCard = (edge: 'bottom' | 'top' = 'top') =>
-  cn(composerDockEdge(edge), composerDockBg, composerSurfaceGlass)
+  cn(composerDockEdge(edge), composerFill, composerSurfaceGlass)
 
 /** Fused docked card — completion drawers. Shares `--composer-fill` with the
  *  composer surface, which goes opaque while a drawer is open. */

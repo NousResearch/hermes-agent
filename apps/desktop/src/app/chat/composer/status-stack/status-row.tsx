@@ -3,11 +3,13 @@ import { Fragment, memo, type ReactNode, useState } from 'react'
 import { StatusRow } from '@/components/chat/status-row'
 import { TerminalOutput } from '@/components/chat/terminal-output'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { ArrowUpRight, X } from '@/lib/icons'
+import type { TodoStatus } from '@/lib/todos'
 import { cn } from '@/lib/utils'
 import type { ComposerStatusItem } from '@/store/composer-status'
 
@@ -18,9 +20,32 @@ const toolLabel = (name: string) =>
     .map(part => part[0]!.toUpperCase() + part.slice(1))
     .join(' ') || name
 
+// Todo rows speak checkbox, not spinner-and-dot: a dashed ring while the item
+// is still open (pending), codicons once it resolves, a live spinner only on
+// the in-progress item.
+const TODO_GLYPHS: Record<Exclude<TodoStatus, 'in_progress' | 'pending'>, { icon: string; tone: string }> = {
+  cancelled: { icon: 'circle-slash', tone: 'text-muted-foreground/45' },
+  completed: { icon: 'pass-filled', tone: 'text-emerald-500/80' }
+}
+
 // Left slot: braille spinner while running, otherwise a small status dot
 // (green = done, red = failed) so the slot is always filled and rows align.
 function leadingGlyph(item: ComposerStatusItem, s: Translations['statusStack']): ReactNode {
+  if (item.todoStatus === 'pending') {
+    return (
+      <span
+        aria-hidden
+        className="box-border size-[0.7rem] rounded-full border border-dashed border-muted-foreground/60"
+      />
+    )
+  }
+
+  if (item.todoStatus && item.todoStatus !== 'in_progress') {
+    const glyph = TODO_GLYPHS[item.todoStatus]
+
+    return <Codicon className={glyph.tone} name={glyph.icon} size="0.8rem" />
+  }
+
   if (item.state === 'running') {
     return (
       <GlyphSpinner
@@ -43,9 +68,9 @@ interface StatusItemRowProps {
   item: ComposerStatusItem
   /** Clear a finished background task from the stack. */
   onDismiss?: (id: string) => void
-  /** Open the subagent inspector (the Agents view, for now). */
+  /** Open the subagent — its own session window when it has one, else the Agents view. */
   onOpen?: () => void
-  /** Cancel a running background task (process or /background agent). */
+  /** Cancel a running background task. */
   onStop?: (id: string) => void
 }
 
@@ -102,7 +127,11 @@ export const StatusItemRow = memo(function StatusItemRow({ item, onDismiss, onOp
         <span
           className={cn(
             'min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4',
-            failed ? 'text-destructive/90' : 'text-foreground/92'
+            failed
+              ? 'text-destructive/90'
+              : item.todoStatus && item.todoStatus !== 'in_progress'
+                ? 'text-muted-foreground/75'
+                : 'text-foreground/92'
           )}
         >
           {item.title}

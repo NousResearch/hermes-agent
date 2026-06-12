@@ -1256,6 +1256,7 @@ export const en: Translations = {
     agents: 'Agents',
     background: count => `${count} Background`,
     subagents: count => `${count} Subagent${count === 1 ? '' : 's'}`,
+    todos: (done, total) => `Tasks ${done}/${total}`,
     running: 'Running',
     stop: 'Stop',
     dismiss: 'Dismiss',

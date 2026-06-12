@@ -955,6 +955,7 @@ export interface Translations {
     agents: string
     background: (count: number) => string
     subagents: (count: number) => string
+    todos: (done: number, total: number) => string
     running: string
     stop: string
     dismiss: string

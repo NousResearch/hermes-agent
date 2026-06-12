@@ -18,6 +18,7 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { parseTodos } from '@/lib/todos'
 import { setClarifyRequest } from '@/store/clarify'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
@@ -38,6 +39,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -470,6 +472,16 @@ export function useMessageStream({
       // Text deltas flush on a timer but tool events apply now; flush first so
       // a tool part can't jump ahead of the text that preceded it.
       flushQueuedDeltas(sessionId)
+
+      // The composer status stack owns todo display now (no inline panel) —
+      // mirror every todo state the tool reports into its session store.
+      if (payload?.name === 'todo') {
+        const todos = parseTodos(payload.todos) ?? parseTodos(payload.result) ?? parseTodos(payload.args)
+
+        if (todos) {
+          setSessionTodos(sessionId, todos)
+        }
+      }
 
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         for (const subagentPayload of delegateTaskPayloads(payload, phase, sourceEventType)) {

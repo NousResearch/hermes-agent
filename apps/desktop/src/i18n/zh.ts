@@ -1444,6 +1444,7 @@ export const zh: Translations = {
     agents: '代理',
     background: count => `${count} 个后台任务`,
     subagents: count => `${count} 个子代理`,
+    todos: (done, total) => `任务 ${done}/${total}`,
     running: '运行中',
     stop: '停止',
     dismiss: '关闭',

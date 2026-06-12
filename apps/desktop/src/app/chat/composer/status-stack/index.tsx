@@ -1,15 +1,17 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useMemo } from 'react'
+import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { AGENTS_ROUTE } from '@/app/routes'
 import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
+import { Codicon } from '@/components/ui/codicon'
 import { type Translations, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
   $statusItemsBySession,
+  type ComposerStatusItem,
   dismissBackgroundProcess,
   groupStatusItems,
   refreshBackgroundProcesses,
@@ -17,6 +19,7 @@ import {
   stopBackgroundProcess
 } from '@/store/composer-status'
 import { $threadScrolledUp } from '@/store/thread-scroll'
+import { openSessionInNewWindow } from '@/store/windows'
 
 import { StatusItemRow } from './status-row'
 
@@ -24,8 +27,13 @@ import { StatusItemRow } from './status-row'
 // emit no event when they die). Only armed while a running row is on screen.
 const BACKGROUND_POLL_MS = 5_000
 
-const groupLabel = (group: StatusGroup, s: Translations['statusStack']) =>
-  group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
+const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
+  if (group.type === 'todo') {
+    return s.todos(group.items.filter(i => i.todoStatus === 'completed').length, group.items.length)
+  }
+
+  return group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
+}
 
 interface ComposerStatusStackProps {
   /** The queue, built by the composer (it owns the queue's callbacks). Rendered
@@ -70,9 +78,13 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     return () => clearInterval(timer)
   }, [hasRunningBackground, sessionId])
 
-  // Subagents don't have a standalone session to open yet, so both the header
-  // accessory and row activation land on the Agents view (the live spawn tree).
   const openAgents = () => navigate(AGENTS_ROUTE)
+
+  // A subagent row opens ITS session in a standalone window (the event stream
+  // carries the child's session id); the Agents-view spawn tree is the fallback
+  // for events from older gateways that don't.
+  const openSubagent = (item: ComposerStatusItem) =>
+    item.sessionId ? void openSessionInNewWindow(item.sessionId) : openAgents()
 
   const sections: { key: string; node: ReactNode }[] = groups.map(group => ({
     key: group.type,
@@ -91,6 +103,12 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
             </Button>
           ) : undefined
         }
+        defaultCollapsed={group.type !== 'todo'}
+        icon={
+          group.type === 'todo' ? (
+            <Codicon className="text-muted-foreground/70" name="checklist" size="0.8rem" />
+          ) : undefined
+        }
         label={groupLabel(group, t.statusStack)}
       >
         {group.items.map(item => (
@@ -98,7 +116,7 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
             item={item}
             key={item.id}
             onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
-            onOpen={openAgents}
+            onOpen={() => openSubagent(item)}
             onStop={sessionId ? id => stopBackgroundProcess(sessionId, id) : undefined}
           />
         ))}
@@ -110,24 +128,54 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     sections.push({ key: 'queue', node: queue })
   }
 
-  if (sections.length === 0) {
+  const visible = sections.length > 0
+  const stackRef = useRef<HTMLDivElement | null>(null)
+
+  // The stack is out of flow (overlays the thread), so the composer's measured
+  // height never sees it. Publish our own measured height — bucketed like the
+  // composer's, to avoid style invalidation churn — so the thread's
+  // last-message clearance can add it and the stack never hides messages.
+  useLayoutEffect(() => {
+    const root = document.documentElement
+    const el = stackRef.current
+
+    if (!visible || !el) {
+      root.style.removeProperty('--status-stack-measured-height')
+
+      return
+    }
+
+    let last = -1
+
+    const sync = () => {
+      const bucket = Math.round(el.getBoundingClientRect().height / 8) * 8
+
+      if (bucket !== last) {
+        last = bucket
+        root.style.setProperty('--status-stack-measured-height', `${bucket}px`)
+      }
+    }
+
+    const observer = new ResizeObserver(sync)
+    observer.observe(el)
+    sync()
+
+    return () => {
+      observer.disconnect()
+      root.style.removeProperty('--status-stack-measured-height')
+    }
+  }, [visible])
+
+  if (!visible) {
     return null
   }
 
   return (
-    <div className="absolute inset-x-0 bottom-full z-6 -mb-[9px] max-h-[40vh] overflow-y-auto">
-      {/* Mirror the composer's fade: keep the blur constant (element opacity
-          would kill it) and only shift the bg color on scroll; ghost the
-          content separately. Drive the faded state from `scrolledUp` (not a
-          group-data variant) so the group-hover/focus override always wins. */}
-      <div
-        className={cn(
-          composerDockCard('top'),
-          'mx-1 pt-0.5 pb-1 transition-colors duration-200 ease-out',
-          scrolledUp &&
-            'bg-[color-mix(in_srgb,var(--dt-card)_60%,transparent)] group-hover/composer:bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)] group-focus-within/composer:bg-[color-mix(in_srgb,var(--dt-card)_92%,transparent)]'
-        )}
-      >
+    <div className="absolute inset-x-0 bottom-full z-6 -mb-[9px] max-h-[40vh] overflow-y-auto" ref={stackRef}>
+      {/* The card paints the shared --composer-fill (rest / scrolled / focused
+          all match the composer surface by construction); on scroll we only
+          ghost the CONTENT — element opacity on the card would kill the blur. */}
+      <div className={cn(composerDockCard('top'), 'mx-1 pt-0.5 pb-1')}>
         <div
           className={cn(
             'transition-opacity duration-200 ease-out',

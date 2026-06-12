@@ -100,6 +100,11 @@ const $projectTree = atom<ProjectTreeState>(initialState)
 let nextRootRequestId = 0
 let lastConnectionKey = ''
 
+// While the root is errored (ENOENT during a session's cwd race, a folder that
+// reappears after a checkout, a remote that wasn't ready), keep retrying on a
+// slow cadence so the tree self-heals instead of staying "UNREADABLE" forever.
+const ROOT_ERROR_RETRY_MS = 3_000
+
 function setProjectTree(updater: (current: ProjectTreeState) => ProjectTreeState) {
   $projectTree.set(updater($projectTree.get()))
 }
@@ -263,6 +268,19 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     }
     void loadRoot(cwd)
   }, [connectionKey, cwd])
+
+  // Self-heal: an errored root re-probes every few seconds while the tree is
+  // mounted. Each attempt bumps requestId, so a persistent error re-arms the
+  // timer; a success clears rootError and stops it.
+  useEffect(() => {
+    if (!cwd || state.cwd !== cwd || !state.rootError) {
+      return
+    }
+
+    const timer = window.setTimeout(() => void loadRoot(cwd, { force: true }), ROOT_ERROR_RETRY_MS)
+
+    return () => window.clearTimeout(timer)
+  }, [cwd, state.cwd, state.requestId, state.rootError])
 
   return useMemo(
     () => ({

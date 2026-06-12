@@ -58,7 +58,6 @@ import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { DirectiveContent, hermesDirectiveFormatter } from '@/components/assistant-ui/directive-text'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { VirtualizedThread } from '@/components/assistant-ui/thread-virtualizer'
-import { HoistedTodoPanel, todosFromMessageContent } from '@/components/assistant-ui/todo-tool'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool-fallback'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { UserMessageText } from '@/components/assistant-ui/user-message-text'
@@ -216,7 +215,6 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
   const messageId = useAuiState(s => s.message.id)
   const content = useAuiState(s => s.message.content)
   const messageText = messageContentText(content)
-  const hoistedTodos = useMemo(() => todosFromMessageContent(content), [content])
 
   const previewTargets = useMemo(() => {
     if (!messageText || !/(https?:\/\/|file:\/\/)/i.test(messageText)) {
@@ -246,7 +244,7 @@ const AssistantMessage: FC<{ onBranchInNewChat?: (messageId: string) => void }> 
         className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
         data-slot="aui_assistant-message-content"
       >
-        {hoistedTodos.length > 0 && <HoistedTodoPanel todos={hoistedTodos} />}
+        {/* Todos render in the composer status stack now, not inline. */}
         <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
         {messageStatus === 'running' && <StreamStallIndicator activity={`${content.length}:${messageText.length}`} />}
         {previewTargets.length > 0 && (

@@ -82,6 +82,7 @@ import {
 import { QueuePanel } from './queue-panel'
 import {
   composerPlainText,
+  normalizeComposerEditorDom,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
@@ -617,9 +618,7 @@ export function ChatBar({
   // (which drives `hasComposerPayload` → the send button). Shared by the input
   // and compositionend paths so committed IME text reaches state through either.
   const flushEditorToDraft = (editor: HTMLDivElement) => {
-    if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
-      editor.replaceChildren()
-    }
+    normalizeComposerEditorDom(editor)
 
     const nextDraft = composerPlainText(editor)
 
@@ -1708,11 +1707,11 @@ export function ChatBar({
               onPick={replaceTriggerWithChip}
             />
           )}
-          {/* Session-scoped status stack (subagents, background tasks, queue).
-              Out of flow so it never inflates the composer's measured height
-              (that drives thread bottom padding → chat resizes); overlays the
-              chat instead of pushing it. The stack collapses to nothing when
-              every status is empty. */}
+          {/* Session-scoped status stack (todos, subagents, background tasks,
+              queue). Out of flow so it never inflates the composer's measured
+              height; it overlays the chat instead of pushing it, and publishes
+              its own --status-stack-measured-height so the thread's clearance
+              accounts for it. Collapses to nothing when every status is empty. */}
           <ComposerStatusStack
             queue={
               activeQueueSessionKey && queuedPrompts.length > 0 ? (

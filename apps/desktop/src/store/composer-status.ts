@@ -1,7 +1,10 @@
 import { atom, computed } from 'nanostores'
 
+import type { TodoItem, TodoStatus } from '@/lib/todos'
+
 import { $gateway } from './gateway'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
+import { $todosBySession } from './todos'
 
 /**
  * Unified, typed status feed for the composer status stack.
@@ -13,7 +16,7 @@ import { $subagentsBySession, type SubagentProgress } from './subagents'
  * atom, so the stack has a single thing to read and never juggles sources.
  */
 export type StatusItemState = 'done' | 'failed' | 'running'
-export type StatusItemType = 'background' | 'subagent'
+export type StatusItemType = 'background' | 'subagent' | 'todo'
 
 export interface ComposerStatusItem {
   /** background: non-zero exit shown inline when failed. */
@@ -23,8 +26,12 @@ export interface ComposerStatusItem {
   id: string
   /** background process: captured stdout/stderr tail for the inline viewer. */
   output?: string
+  /** subagent: its own stored session id — row click opens that session window. */
+  sessionId?: string
   state: StatusItemState
   title: string
+  /** todo: the full four-state status driving the row's checkmark glyph. */
+  todoStatus?: TodoStatus
   type: StatusItemType
 }
 
@@ -39,34 +46,50 @@ const dismissedBySession = new Map<string, Set<string>>()
 const subToItem = (s: SubagentProgress): ComposerStatusItem => ({
   currentTool: s.currentTool,
   id: s.id,
+  sessionId: s.sessionId,
   state: 'running',
   title: s.goal,
   type: 'subagent'
 })
 
-// The single thing the stack reads: a typed, merged item list per session.
-export const $statusItemsBySession = computed([$subagentsBySession, $backgroundStatusBySession], (subs, background) => {
-  const out: Record<string, ComposerStatusItem[]> = {}
-
-  const push = (sid: string, items: ComposerStatusItem[]) => {
-    if (items.length > 0) {
-      out[sid] = out[sid] ? [...out[sid], ...items] : items
-    }
-  }
-
-  for (const [sid, list] of Object.entries(subs)) {
-    push(sid, list.filter(s => s.status === 'running' || s.status === 'queued').map(subToItem))
-  }
-
-  for (const [sid, list] of Object.entries(background)) {
-    push(sid, list)
-  }
-
-  return out
+const todoToItem = (t: TodoItem): ComposerStatusItem => ({
+  id: `todo:${t.id}`,
+  state: t.status === 'in_progress' ? 'running' : 'done',
+  title: t.content,
+  todoStatus: t.status,
+  type: 'todo'
 })
 
+// The single thing the stack reads: a typed, merged item list per session.
+export const $statusItemsBySession = computed(
+  [$subagentsBySession, $backgroundStatusBySession, $todosBySession],
+  (subs, background, todos) => {
+    const out: Record<string, ComposerStatusItem[]> = {}
+
+    const push = (sid: string, items: ComposerStatusItem[]) => {
+      if (items.length > 0) {
+        out[sid] = out[sid] ? [...out[sid], ...items] : items
+      }
+    }
+
+    for (const [sid, list] of Object.entries(todos)) {
+      push(sid, list.map(todoToItem))
+    }
+
+    for (const [sid, list] of Object.entries(subs)) {
+      push(sid, list.filter(s => s.status === 'running' || s.status === 'queued').map(subToItem))
+    }
+
+    for (const [sid, list] of Object.entries(background)) {
+      push(sid, list)
+    }
+
+    return out
+  }
+)
+
 // Fixed render order for the groups in the stack (top → bottom, above queue).
-const TYPE_ORDER: readonly StatusItemType[] = ['subagent', 'background']
+const TYPE_ORDER: readonly StatusItemType[] = ['todo', 'subagent', 'background']
 
 export interface StatusGroup {
   items: ComposerStatusItem[]

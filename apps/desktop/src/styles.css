@@ -284,8 +284,10 @@
     --radius: 0.75rem;
     --radius-scalar: 0.6;
 
-    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx). */
-    --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
+    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
+       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing. */
+    --status-stack-measured-height: 0px;
+    --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;

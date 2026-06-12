@@ -1,5 +1,6 @@
 import { atom, computed } from 'nanostores'
 
+import { $gateway } from './gateway'
 import { $subagentsBySession, type SubagentProgress } from './subagents'
 
 /**
@@ -27,8 +28,13 @@ export interface ComposerStatusItem {
   type: StatusItemType
 }
 
-// Writable source for background work (`/background` runs + bg terminal procs).
+// Writable source for background work, synced from the gateway's process
+// registry (`terminal(background=true)` spawns) via `process.list`.
 export const $backgroundStatusBySession = atom<Record<string, ComposerStatusItem[]>>({})
+
+// Rows the user X-ed away. The registry keeps finished processes around for a
+// while, so without this every refresh would resurrect a dismissed row.
+const dismissedBySession = new Map<string, Set<string>>()
 
 const subToItem = (s: SubagentProgress): ComposerStatusItem => ({
   currentTool: s.currentTool,
@@ -96,14 +102,99 @@ const writeBackground = (sid: string, items: ComposerStatusItem[]) => {
   $backgroundStatusBySession.set(next)
 }
 
-export function upsertBackgroundStatus(sid: string, item: ComposerStatusItem) {
-  const list = $backgroundStatusBySession.get()[sid] ?? []
-  const idx = list.findIndex(existing => existing.id === item.id)
-
-  writeBackground(sid, idx >= 0 ? list.map((existing, i) => (i === idx ? item : existing)) : [...list, item])
+// `tui_gateway` process.list entry (tools/process_registry.list_sessions + output_tail).
+interface GatewayProcessEntry {
+  command?: string
+  exit_code?: number
+  output_tail?: string
+  session_id?: string
+  status?: string
 }
 
-export function removeBackgroundStatus(sid: string, id: string) {
+const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
+  const exited = proc.status === 'exited'
+  const exitCode = typeof proc.exit_code === 'number' ? proc.exit_code : undefined
+
+  return {
+    exitCode,
+    id: proc.session_id ?? '',
+    output: proc.output_tail || undefined,
+    state: exited ? (exitCode ? 'failed' : 'done') : 'running',
+    title: (proc.command ?? '').split('\n')[0]!.trim() || 'background process',
+    type: 'background'
+  }
+}
+
+const sameItem = (a: ComposerStatusItem, b: ComposerStatusItem) =>
+  a.state === b.state && a.title === b.title && a.output === b.output && a.exitCode === b.exitCode
+
+/**
+ * Layout-stable sync of the registry snapshot into the store: existing rows
+ * keep their position (status flips happen in place, never reorder), new
+ * processes append, dismissed ids stay gone, and unchanged rows keep their
+ * object identity so memoised rows skip re-rendering.
+ */
+export function reconcileBackgroundProcesses(sid: string, procs: GatewayProcessEntry[]) {
+  const dismissed = dismissedBySession.get(sid)
+
+  const fresh = new Map(
+    procs
+      .filter(proc => proc.session_id && !dismissed?.has(proc.session_id))
+      .map(proc => [proc.session_id!, toBackgroundItem(proc)])
+  )
+
+  const prev = $backgroundStatusBySession.get()[sid] ?? []
+
+  const kept = prev.flatMap(old => {
+    const next = fresh.get(old.id)
+    fresh.delete(old.id)
+
+    return next ? [sameItem(old, next) ? old : next] : []
+  })
+
+  const next = [...kept, ...fresh.values()]
+
+  // Dismissals only need remembering while the registry still reports the id.
+  if (dismissed) {
+    const reported = new Set(procs.map(proc => proc.session_id))
+
+    for (const id of dismissed) {
+      if (!reported.has(id)) {
+        dismissed.delete(id)
+      }
+    }
+  }
+
+  if (next.length === prev.length && next.every((item, i) => item === prev[i])) {
+    return
+  }
+
+  writeBackground(sid, next)
+}
+
+/** Pull the session's live process snapshot from the gateway. */
+export async function refreshBackgroundProcesses(sid: string): Promise<void> {
+  const gateway = $gateway.get()
+
+  if (!sid || !gateway) {
+    return
+  }
+
+  try {
+    const result = await gateway.request<{ processes?: GatewayProcessEntry[] }>('process.list', { session_id: sid })
+
+    reconcileBackgroundProcesses(sid, result?.processes ?? [])
+  } catch {
+    // Transient socket loss — the next trigger (event or poll) retries.
+  }
+}
+
+/** X on a finished row: drop it now and keep it dropped across refreshes. */
+export function dismissBackgroundProcess(sid: string, id: string) {
+  const dismissed = dismissedBySession.get(sid) ?? new Set<string>()
+  dismissed.add(id)
+  dismissedBySession.set(sid, dismissed)
+
   const list = $backgroundStatusBySession.get()[sid] ?? []
 
   writeBackground(
@@ -112,6 +203,11 @@ export function removeBackgroundStatus(sid: string, id: string) {
   )
 }
 
-export function clearBackgroundStatus(sid: string) {
-  writeBackground(sid, [])
+/** X on a running row: kill the process for real, then drop the row. */
+export function stopBackgroundProcess(sid: string, id: string) {
+  void $gateway
+    .get()
+    ?.request('process.kill', { process_id: id, session_id: sid })
+    .catch(() => undefined)
+  dismissBackgroundProcess(sid, id)
 }

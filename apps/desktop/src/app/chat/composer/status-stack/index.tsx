@@ -1,5 +1,5 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useMemo } from 'react'
+import { type ReactNode, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 
 import { AGENTS_ROUTE } from '@/app/routes'
@@ -10,17 +10,19 @@ import { type Translations, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
   $statusItemsBySession,
+  dismissBackgroundProcess,
   groupStatusItems,
-  removeBackgroundStatus,
-  type StatusGroup
+  refreshBackgroundProcesses,
+  type StatusGroup,
+  stopBackgroundProcess
 } from '@/store/composer-status'
 import { $threadScrolledUp } from '@/store/thread-scroll'
 
 import { StatusItemRow } from './status-row'
 
-if (import.meta.env.DEV) {
-  void import('@/lib/dev-status-mocks').then(m => m.installStatusStackDevMocks())
-}
+// Slow safety-net poll for silent exits (processes without notify_on_complete
+// emit no event when they die). Only armed while a running row is on screen.
+const BACKGROUND_POLL_MS = 5_000
 
 const groupLabel = (group: StatusGroup, s: Translations['statusStack']) =>
   group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
@@ -47,6 +49,26 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     () => groupStatusItems(sessionId ? (itemsBySession[sessionId] ?? []) : []),
     [itemsBySession, sessionId]
   )
+
+  // Seed from the registry on session open; event-driven refreshes (terminal /
+  // process tool completions) live in use-message-stream.
+  useEffect(() => {
+    if (sessionId) {
+      void refreshBackgroundProcesses(sessionId)
+    }
+  }, [sessionId])
+
+  const hasRunningBackground = groups.some(g => g.type === 'background' && g.items.some(i => i.state === 'running'))
+
+  useEffect(() => {
+    if (!sessionId || !hasRunningBackground) {
+      return
+    }
+
+    const timer = setInterval(() => void refreshBackgroundProcesses(sessionId), BACKGROUND_POLL_MS)
+
+    return () => clearInterval(timer)
+  }, [hasRunningBackground, sessionId])
 
   // Subagents don't have a standalone session to open yet, so both the header
   // accessory and row activation land on the Agents view (the live spawn tree).
@@ -75,9 +97,9 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
           <StatusItemRow
             item={item}
             key={item.id}
-            onDismiss={sessionId ? id => removeBackgroundStatus(sessionId, id) : undefined}
+            onDismiss={sessionId ? id => dismissBackgroundProcess(sessionId, id) : undefined}
             onOpen={openAgents}
-            onStop={sessionId ? id => removeBackgroundStatus(sessionId, id) : undefined}
+            onStop={sessionId ? id => stopBackgroundProcess(sessionId, id) : undefined}
           />
         ))}
       </StatusSection>

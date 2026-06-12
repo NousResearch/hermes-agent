@@ -181,13 +181,16 @@ export function ChatBar({
     [activeQueueSessionKey, queuedPromptsBySession]
   )
 
-  const statusStackVisible = useMemo(() => {
-    if (!activeQueueSessionKey) {
-      return false
-    }
+  // Status items (subagents, background processes) are keyed by the RUNTIME
+  // session id — gateway events and process.list both speak that id. Only the
+  // queue uses the stored-session fallback key (prompts can queue pre-resume).
+  const statusSessionId = sessionId ?? null
 
-    return queuedPrompts.length > 0 || (statusItemsBySession[activeQueueSessionKey]?.length ?? 0) > 0
-  }, [activeQueueSessionKey, queuedPrompts.length, statusItemsBySession])
+  const statusStackVisible = useMemo(
+    () =>
+      queuedPrompts.length > 0 || (statusSessionId ? (statusItemsBySession[statusSessionId]?.length ?? 0) > 0 : false),
+    [queuedPrompts.length, statusItemsBySession, statusSessionId]
+  )
 
   const composerRef = useRef<HTMLFormElement | null>(null)
   const composerSurfaceRef = useRef<HTMLDivElement | null>(null)
@@ -1727,7 +1730,7 @@ export function ChatBar({
                 />
               ) : null
             }
-            sessionId={activeQueueSessionKey}
+            sessionId={statusSessionId}
           />
           <div
             className="pointer-events-none absolute inset-0 rounded-[inherit]"

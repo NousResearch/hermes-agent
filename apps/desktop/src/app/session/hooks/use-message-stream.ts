@@ -19,6 +19,7 @@ import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setClarifyRequest } from '@/store/clarify'
+import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -67,15 +68,7 @@ interface QueuedStreamDeltas {
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    | 'branch'
-    | 'cwd'
-    | 'fast'
-    | 'model'
-    | 'personality'
-    | 'provider'
-    | 'reasoningEffort'
-    | 'serviceTier'
-    | 'yolo'
+    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -677,9 +670,11 @@ export function useMessageStream({
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+
       if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
         return
       }
+
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
@@ -875,6 +870,12 @@ export function useMessageStream({
           // the sidebar indicator clears as soon as it's answered, not only at
           // message.complete.
           updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
+
+          // terminal/process tool calls are the only things that spawn or reap
+          // background processes — sync the composer status stack right after.
+          if (payload?.name === 'terminal' || payload?.name === 'process') {
+            void refreshBackgroundProcesses(sessionId)
+          }
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
@@ -986,6 +987,12 @@ export function useMessageStream({
             request_id: requestId,
             text: result ? JSON.stringify(result) : ''
           })
+        }
+      } else if (event.type === 'status.update') {
+        // The gateway's notification poller announces background process
+        // completions / watch matches here — re-sync the status stack.
+        if (sessionId && payload?.kind === 'process') {
+          void refreshBackgroundProcesses(sessionId)
         }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'

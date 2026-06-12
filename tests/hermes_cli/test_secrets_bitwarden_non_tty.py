@@ -6,9 +6,7 @@ because getpass.getpass() and console.input() require an interactive terminal.
 from __future__ import annotations
 
 import argparse
-from unittest.mock import patch
 
-import pytest
 
 
 class TestCmdSetupNonTtyGuard:

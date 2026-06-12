@@ -833,6 +833,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                         }, ensure_ascii=False)
 
                     return json.dumps({
+                        "content": "",
+                        "total_lines": 0,
+                        "file_size": 0,
+                        "truncated": False,
                         "status": "unchanged",
                         "message": _READ_DEDUP_STATUS_MESSAGE,
                         "path": path,

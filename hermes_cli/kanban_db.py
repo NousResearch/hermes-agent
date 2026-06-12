@@ -4859,6 +4859,25 @@ _RESPAWN_GUARD_PR_URL_RE = re.compile(
     re.IGNORECASE,
 )
 
+_PR_REVIEW_WATCHDOG_AUTHOR = "pr-review-watchdog"
+_PR_GOVERNANCE_TITLE_PREFIXES = (
+    "review-required:",
+    "needs_dev_fixes:",
+    "waiting_author_ready:",
+    "orion_approved_waiting_merge:",
+    "stale_requires_decision:",
+    "merged_needs_deploy_verify:",
+)
+
+
+def _is_pr_governance_task(row: sqlite3.Row) -> bool:
+    """Return True for watchdog-created PR governance/escalation tasks."""
+    created_by = (row["created_by"] or "").strip().casefold()
+    if created_by == _PR_REVIEW_WATCHDOG_AUTHOR:
+        return True
+    title = (row["title"] or "").strip().casefold()
+    return title.startswith(_PR_GOVERNANCE_TITLE_PREFIXES)
+
 
 @dataclass
 class DispatchResult:
@@ -5886,8 +5905,11 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
-        opened a PR; re-spawning risks a duplicate PR on the same task.
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds) on a normal implementation
+        task.  A prior worker already opened a PR; re-spawning risks a
+        duplicate PR on the same task.  PR-governance/watchdog tasks are
+        exempt because their comments can legitimately cite existing PRs
+        as evidence.
 
     Stale / dead claim locks are NOT a guard reason — they are handled
     by ``release_stale_claims`` and ``detect_crashed_workers`` which
@@ -5895,7 +5917,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
     genuinely dead (no live PID on this host).
     """
     row = conn.execute(
-        "SELECT last_failure_error FROM tasks WHERE id = ?",
+        "SELECT title, created_by, last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -5954,13 +5976,26 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         return "recent_success"
 
     # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    #    Do not apply this guard to PR governance/watchdog tasks; those tasks
+    #    cite existing pull requests as evidence and must still dispatch.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    pr_comments = []
     for c in conn.execute(
-        "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
+        "SELECT author, body FROM task_comments "
+        "WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
         if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+            pr_comments.append(c)
+    if pr_comments:
+        if _is_pr_governance_task(row):
+            return None
+        if all(
+            (c["author"] or "").strip().casefold() == _PR_REVIEW_WATCHDOG_AUTHOR
+            for c in pr_comments
+        ):
+            return None
+        return "active_pr"
 
     return None
 

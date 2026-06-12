@@ -74,6 +74,14 @@ def _patch_list_profiles(names: list[str]):
     ]
 
 
+def test_decomposer_prompt_requests_traceable_acceptance_and_evidence():
+    prompt = decomp._SYSTEM_PROMPT
+    assert "EARS-style" in prompt
+    assert "WHEN <condition> THE SYSTEM SHALL" in prompt
+    assert "Verification evidence" in prompt
+    assert "context request" in prompt
+
+
 def test_decompose_with_fanout_creates_children(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)

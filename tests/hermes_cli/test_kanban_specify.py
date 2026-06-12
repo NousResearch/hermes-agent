@@ -60,6 +60,18 @@ def _patch_aux_client(content: str, *, model: str = "test-model"):
 
 
 # ---------------------------------------------------------------------------
+# Prompt contract
+# ---------------------------------------------------------------------------
+
+def test_specifier_prompt_requests_ears_and_evidence_sections():
+    prompt = spec._SYSTEM_PROMPT
+    assert "EARS-style" in prompt
+    assert "WHEN <condition> THE SYSTEM SHALL" in prompt
+    assert "**Verification evidence**" in prompt
+    assert "data loss, deletion, auth, payments, production" in prompt
+
+
+# ---------------------------------------------------------------------------
 # JSON extraction helpers
 # ---------------------------------------------------------------------------
 

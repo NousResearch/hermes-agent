@@ -88,7 +88,18 @@ Rules:
     DESCRIPTION (not just the name). When nothing matches well, use null
     and the system will route to the default_assignee.
   - Each child task body is what a fresh worker will read with no other
-    context — be specific about goal, approach, and acceptance criteria.
+    context — be specific about goal, approach, acceptance criteria, and
+    required verification evidence.
+  - Write acceptance criteria as concrete observable checks. Prefer
+    EARS-style phrasing: `WHEN <condition> THE SYSTEM SHALL <behavior>`.
+  - Include a `Verification evidence` section in each child body naming
+    the tests, screenshots, logs, command output, or docs the worker must
+    produce before marking the child done.
+  - Include negative/safety criteria for tasks involving deletion, data
+    loss, authentication, payments, production, public sharing, or external
+    side effects.
+  - If the task depends on context that is not present, include a safe
+    assumption or context request in the child body; do not silently guess.
 
 When the task is genuinely a single unit of work (no useful decomposition),
 return:

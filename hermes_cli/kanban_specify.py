@@ -68,6 +68,13 @@ heading, in this order:
   **Goal** — one sentence, user-facing outcome.
   **Approach** — 2-5 bullets on how a worker should tackle it.
   **Acceptance criteria** — checklist of concrete, verifiable conditions.
+      Prefer EARS-style criteria: `WHEN <condition> THE SYSTEM SHALL
+      <observable behavior>`. Include negative/safety criteria when the
+      task mentions data loss, deletion, auth, payments, production, or
+      external side effects.
+  **Verification evidence** — exact evidence a worker should produce
+      (tests, screenshots, logs, command output, or docs) so a later
+      reviewer can prove the acceptance criteria passed.
   **Out of scope** — short list of things NOT to touch (omit if nothing
       obvious; never invent scope creep).
 
@@ -77,6 +84,8 @@ Rules:
   - If the original idea is already detailed, preserve its substance and
     just reformat into the sections above.
   - Never add invented requirements the user didn't hint at.
+  - Do not hide uncertainty. If context is missing, write a small safe
+    assumption or evidence request in the spec instead of guessing.
   - No preamble, no closing remarks, no code fences around the JSON.
   - Output only the JSON object and nothing else.
 """

@@ -1620,7 +1620,33 @@ class DiscordAdapter(BasePlatformAdapter):
                     )
                 except Exception as e:
                     err_text = str(e)
-                    if (
+                    if "Session is closed" in err_text and self._client:
+                        # After a Discord gateway reconnect the adapter's
+                        # ``_client`` is replaced, but a stale ``channel``
+                        # object may still reference the old client's closed
+                        # aiohttp session.  Re-fetch the channel from the
+                        # (possibly new) client and retry once.
+                        logger.warning(
+                            "[%s] Session closed on channel.send (likely post-reconnect); "
+                            "re-fetching channel %s and retrying",
+                            self.name,
+                            chat_id,
+                        )
+                        refetch_id = thread_id or chat_id
+                        try:
+                            channel = self._client.get_channel(int(refetch_id))
+                            if not channel:
+                                channel = await self._client.fetch_channel(int(refetch_id))
+                        except Exception:
+                            channel = None
+                        if channel:
+                            msg = await channel.send(
+                                content=chunk,
+                                reference=chunk_reference,
+                            )
+                        else:
+                            raise
+                    elif (
                         chunk_reference is not None
                         and (
                             (

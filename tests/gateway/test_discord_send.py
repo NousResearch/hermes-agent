@@ -445,3 +445,114 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+@pytest.mark.asyncio
+async def test_send_refetches_channel_on_session_closed():
+    """After a Discord gateway reconnect the adapter's _client is replaced but
+    a stale channel object may still reference the old client's closed aiohttp
+    session.  The send method should catch ``RuntimeError: Session is closed``,
+    re-fetch the channel from the current client, and retry once.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=42)
+    stale_channel = SimpleNamespace(
+        send=AsyncMock(side_effect=RuntimeError("Session is closed")),
+    )
+    fresh_channel = SimpleNamespace(
+        send=AsyncMock(return_value=sent_msg),
+    )
+
+    call_count = 0
+
+    def get_channel(_chat_id):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 1:
+            return stale_channel  # first call returns stale cached channel
+        return fresh_channel      # subsequent calls return fresh channel
+
+    adapter._client = SimpleNamespace(
+        get_channel=get_channel,
+        fetch_channel=AsyncMock(return_value=fresh_channel),
+    )
+
+    result = await adapter.send("555", "hello")
+
+    assert result.success is True
+    assert result.message_id == "42"
+    # The stale channel's send was attempted once (and failed)
+    stale_channel.send.await_count == 1
+    # The fresh channel's send succeeded
+    fresh_channel.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_refetches_channel_on_session_closed_with_thread():
+    """Same as above but with thread_id in metadata — the refetch should use
+    the thread_id, not the parent chat_id.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    sent_msg = SimpleNamespace(id=99)
+    stale_channel = SimpleNamespace(
+        send=AsyncMock(side_effect=RuntimeError("Session is closed")),
+    )
+    fresh_channel = SimpleNamespace(
+        send=AsyncMock(return_value=sent_msg),
+    )
+
+    call_count = 0
+
+    def get_channel(channel_id):
+        nonlocal call_count
+        call_count += 1
+        if call_count <= 1:
+            return stale_channel
+        return fresh_channel
+
+    adapter._client = SimpleNamespace(
+        get_channel=get_channel,
+        fetch_channel=AsyncMock(return_value=fresh_channel),
+    )
+
+    result = await adapter.send("555", "hello", metadata={"thread_id": "777"})
+
+    assert result.success is True
+    assert result.message_id == "99"
+    fresh_channel.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_send_raises_on_session_closed_when_client_gone():
+    """If the client is None (fully disconnected), the RuntimeError should
+    propagate as a failed SendResult rather than hanging.
+    """
+    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="***"))
+
+    stale_channel = SimpleNamespace(
+        send=AsyncMock(side_effect=RuntimeError("Session is closed")),
+    )
+
+    # Client becomes None mid-reconnect
+    client = SimpleNamespace(
+        get_channel=lambda _cid: stale_channel,
+        fetch_channel=AsyncMock(),
+    )
+    adapter._client = client
+
+    # Simulate client going away during the retry
+    original_get_channel = client.get_channel
+
+    def get_channel_then_none(_cid):
+        adapter._client = None  # simulate disconnect
+        return stale_channel
+
+    client.get_channel = get_channel_then_none
+
+    result = await adapter.send("555", "hello")
+
+    # Should fail gracefully, not hang
+    assert result.success is False
+    assert "Session is closed" in result.error

@@ -2852,6 +2852,10 @@ fn install_windows_uv_archive(archive_path: &Path, install_dir: &Path) -> Result
 }
 
 fn install_unix_uv_archive(archive_path: &Path, install_dir: &Path) -> Result<()> {
+    extract_unix_uv_tar_gz(archive_path, install_dir)
+}
+
+fn extract_unix_uv_tar_gz(archive_path: &Path, install_dir: &Path) -> Result<()> {
     fs::create_dir_all(install_dir)
         .with_context(|| format!("creating uv install dir {}", install_dir.display()))?;
     let tmp_dir = install_dir.join("uv-extracting");
@@ -2860,21 +2864,7 @@ fn install_unix_uv_archive(archive_path: &Path, install_dir: &Path) -> Result<()
         .with_context(|| format!("creating uv extraction directory {}", tmp_dir.display()))?;
 
     let result: Result<()> = (|| {
-        let status = Command::new("tar")
-            .args(["-xf"])
-            .arg(archive_path)
-            .arg("-C")
-            .arg(&tmp_dir)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .with_context(|| format!("extracting {}", archive_path.display()))?;
-        if !status.success() {
-            return Err(anyhow!(
-                "uv archive extraction failed with exit {:?}",
-                status.code()
-            ));
-        }
+        extract_tar_gz_archive(archive_path, &tmp_dir, "uv")?;
         let uv = find_file_named(&tmp_dir, "uv")?;
         let uv_dest = install_dir.join("uv");
         fs::copy(&uv, &uv_dest).with_context(|| {
@@ -2961,42 +2951,7 @@ fn extract_unix_ripgrep_tar_gz(archive_path: &Path, install_dir: &Path) -> Resul
         .with_context(|| format!("creating ripgrep extraction directory {}", tmp_dir.display()))?;
 
     let result: Result<()> = (|| {
-        let file = fs::File::open(archive_path)
-            .with_context(|| format!("opening {}", archive_path.display()))?;
-        let decoder = flate2::read::GzDecoder::new(file);
-        let mut archive = tar::Archive::new(decoder);
-        for entry in archive
-            .entries()
-            .with_context(|| format!("reading {}", archive_path.display()))?
-        {
-            let mut entry =
-                entry.with_context(|| format!("reading entry from {}", archive_path.display()))?;
-            let entry_type = entry.header().entry_type();
-            if entry_type.is_symlink() || entry_type.is_hard_link() {
-                return Err(anyhow!(
-                    "ripgrep archive contains unsupported link entry: {}",
-                    entry.path()?.display()
-                ));
-            }
-            let path = entry
-                .path()
-                .with_context(|| format!("reading entry path from {}", archive_path.display()))?
-                .into_owned();
-            if !archive_member_path_is_safe(&path) {
-                return Err(anyhow!(
-                    "ripgrep archive contains unsafe entry path: {}",
-                    path.display()
-                ));
-            }
-            let destination = tmp_dir.join(&path);
-            if let Some(parent) = destination.parent() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("creating archive directory {}", parent.display()))?;
-            }
-            entry
-                .unpack(&destination)
-                .with_context(|| format!("extracting ripgrep archive entry {}", path.display()))?;
-        }
+        extract_tar_gz_archive(archive_path, &tmp_dir, "ripgrep")?;
         let rg = find_file_named(&tmp_dir, "rg")?;
         let rg_dest = install_dir.join("rg");
         fs::copy(&rg, &rg_dest).with_context(|| {
@@ -3012,6 +2967,46 @@ fn extract_unix_ripgrep_tar_gz(archive_path: &Path, install_dir: &Path) -> Resul
     let cleanup = remove_path_if_exists(&tmp_dir);
     result?;
     cleanup
+}
+
+fn extract_tar_gz_archive(archive_path: &Path, destination_dir: &Path, label: &str) -> Result<()> {
+    let file = fs::File::open(archive_path)
+        .with_context(|| format!("opening {}", archive_path.display()))?;
+    let decoder = flate2::read::GzDecoder::new(file);
+    let mut archive = tar::Archive::new(decoder);
+    for entry in archive
+        .entries()
+        .with_context(|| format!("reading {}", archive_path.display()))?
+    {
+        let mut entry =
+            entry.with_context(|| format!("reading entry from {}", archive_path.display()))?;
+        let entry_type = entry.header().entry_type();
+        if entry_type.is_symlink() || entry_type.is_hard_link() {
+            return Err(anyhow!(
+                "{label} archive contains unsupported link entry: {}",
+                entry.path()?.display()
+            ));
+        }
+        let path = entry
+            .path()
+            .with_context(|| format!("reading entry path from {}", archive_path.display()))?
+            .into_owned();
+        if !archive_member_path_is_safe(&path) {
+            return Err(anyhow!(
+                "{label} archive contains unsafe entry path: {}",
+                path.display()
+            ));
+        }
+        let destination = destination_dir.join(&path);
+        if let Some(parent) = destination.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating archive directory {}", parent.display()))?;
+        }
+        entry
+            .unpack(&destination)
+            .with_context(|| format!("extracting {label} archive entry {}", path.display()))?;
+    }
+    Ok(())
 }
 
 fn archive_member_path_is_safe(path: &Path) -> bool {
@@ -4775,6 +4770,31 @@ mod tests {
         assert_eq!(mac_x64.archive_name, "uv-x86_64-apple-darwin.tar.gz");
         assert!(unix_uv_runtime_stage_plan(&hermes_home, "linux", "mips").is_err());
 
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extract_unix_uv_archive_copies_uv_and_uvx_from_nested_tar_gz() {
+        let root = std::env::temp_dir().join(format!(
+            "hermes-unix-uv-archive-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let archive = root.join("uv.tar.gz");
+        write_test_tar_gz(
+            &archive,
+            &[
+                ("uv-x86_64-unknown-linux-gnu/uv", b"fake uv"),
+                ("uv-x86_64-unknown-linux-gnu/uvx", b"fake uvx"),
+            ],
+        );
+        let install_dir = root.join("bin");
+
+        extract_unix_uv_tar_gz(&archive, &install_dir).unwrap();
+
+        assert_eq!(std::fs::read(install_dir.join("uv")).unwrap(), b"fake uv");
+        assert_eq!(std::fs::read(install_dir.join("uvx")).unwrap(), b"fake uvx");
+        assert!(!install_dir.join("uv-extracting").exists());
         let _ = std::fs::remove_dir_all(&root);
     }
 

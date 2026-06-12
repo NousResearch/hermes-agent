@@ -1892,7 +1892,7 @@ def _validate_base_url(base_url: str) -> None:
     from urllib.parse import urlparse
 
     candidate = str(base_url or "").strip()
-    if not candidate or candidate.startswith("acp://"):
+    if not candidate or candidate.startswith("acp://") or candidate.startswith("cursor://"):
         return
     try:
         parsed = urlparse(candidate)

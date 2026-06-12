@@ -220,6 +220,22 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "copilot-acp": [
         "copilot-acp",
     ],
+    "cursor": [
+        "auto",
+        "composer-2.5-fast",
+        "composer-2.5",
+        "composer-2-fast",
+        "composer-2",
+        "gpt-5.5-medium",
+        "gpt-5.5-high",
+        "claude-opus-4-7-high",
+        "claude-opus-4-7-medium",
+        "claude-4.6-sonnet-medium",
+        "gemini-3.1-pro",
+        "gemini-3-flash",
+        "grok-4.3",
+        "kimi-k2.5",
+    ],
     "copilot": [
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -1003,6 +1019,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nvidia",         "NVIDIA NIM",               "NVIDIA NIM (Nemotron models via build.nvidia.com or local NIM)"),
     ProviderEntry("copilot",        "GitHub Copilot",           "GitHub Copilot (Uses GITHUB_TOKEN or gh auth token)"),
     ProviderEntry("copilot-acp",    "GitHub Copilot ACP",       "GitHub Copilot ACP (Spawns copilot --acp --stdio)"),
+    ProviderEntry("cursor",         "Cursor",                   "Cursor (100+ models, subscription)"),
     ProviderEntry("huggingface",    "Hugging Face",             "Hugging Face Inference Providers"),
     ProviderEntry("gemini",         "Google AI Studio",         "Google AI Studio (Native Gemini API)"),
     ProviderEntry("google-gemini-cli", "Google Gemini (OAuth)",   "Google Gemini via OAuth + Code Assist (Code Assist OAuth flow)"),
@@ -1164,6 +1181,11 @@ _PROVIDER_ALIASES = {
     "github-model": "copilot",
     "github-copilot-acp": "copilot-acp",
     "copilot-acp-agent": "copilot-acp",
+    "cursor-agent": "cursor",
+    "cursor-cli": "cursor",
+    "cursor-sub": "cursor",
+    "cursor-subscription": "cursor",
+    "anysphere": "cursor",
     "google": "gemini",
     "google-gemini": "gemini",
     "google-ai-studio": "gemini",
@@ -2187,6 +2209,27 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             pass
         if normalized == "copilot-acp":
             return list(_PROVIDER_MODELS.get("copilot", []))
+    if normalized == "cursor":
+        try:
+            import shutil as _shutil
+            import subprocess as _subprocess
+
+            cmd = _shutil.which("cursor-agent")
+            if cmd:
+                out = _subprocess.check_output([cmd, "--list-models"], text=True, timeout=8)
+                ids: list[str] = []
+                for raw_line in out.splitlines():
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    model_id = line.split(" - ", 1)[0].strip() if " - " in line else line.split()[0]
+                    model_id = model_id.split()[0]
+                    if model_id and model_id not in ids:
+                        ids.append(model_id)
+                if ids:
+                    return ids
+        except Exception:
+            pass
     if normalized == "nous":
         # Try live Nous Portal /models endpoint
         try:

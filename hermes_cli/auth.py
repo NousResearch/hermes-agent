@@ -90,6 +90,7 @@ MINIMAX_OAUTH_REFRESH_SKEW_SECONDS = 60
 DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
+DEFAULT_CURSOR_AGENT_BASE_URL = "cursor://agent"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
 STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
 STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
@@ -228,6 +229,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="external_process",
         inference_base_url=DEFAULT_COPILOT_ACP_BASE_URL,
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "cursor": ProviderConfig(
+        id="cursor",
+        name="Cursor",
+        auth_type="external_process",
+        inference_base_url=DEFAULT_CURSOR_AGENT_BASE_URL,
+        api_key_env_vars=("CURSOR_API_KEY",),
+        base_url_env_var="HERMES_CURSOR_BASE_URL",
     ),
     "gemini": ProviderConfig(
         id="gemini",
@@ -1517,6 +1526,8 @@ def resolve_provider(
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
+        "cursor-agent": "cursor", "cursor-cli": "cursor", "cursor-sub": "cursor",
+        "cursor-subscription": "cursor", "anysphere": "cursor",
         "opencode": "opencode-zen", "zen": "opencode-zen",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth", "google-gemini-cli": "google-gemini-cli", "gemini-cli": "google-gemini-cli", "gemini-oauth": "google-gemini-cli",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
@@ -5815,6 +5826,50 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
     if not pconfig or pconfig.auth_type != "external_process":
         return {"configured": False}
 
+    if provider_id == "cursor":
+        command = (
+            os.getenv("HERMES_CURSOR_COMMAND", "").strip()
+            or os.getenv("CURSOR_AGENT_PATH", "").strip()
+            or "cursor-agent"
+        )
+        raw_args = os.getenv("HERMES_CURSOR_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else []
+        base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
+        if not base_url:
+            base_url = pconfig.inference_base_url
+        resolved_command = shutil.which(command) if command else None
+
+        logged_in_email = ""
+        logged_in = bool(os.getenv("CURSOR_API_KEY", "").strip())
+        if resolved_command:
+            try:
+                out = subprocess.check_output(
+                    [resolved_command, "status"],
+                    text=True,
+                    stderr=subprocess.STDOUT,
+                    timeout=5,
+                )
+                lower = out.lower()
+                logged_in = logged_in or ("logged in" in lower or "authenticated" in lower or "✓" in out)
+                for token in out.replace("\n", " ").split():
+                    if "@" in token and "." in token:
+                        logged_in_email = token.strip(".,;()[]{}<>")
+                        break
+            except Exception:
+                pass
+
+        return {
+            "configured": bool(resolved_command),
+            "provider": provider_id,
+            "name": pconfig.name,
+            "command": command,
+            "args": args,
+            "resolved_command": resolved_command,
+            "base_url": base_url,
+            "logged_in": bool(logged_in),
+            "email": logged_in_email,
+        }
+
     command = (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()
         or os.getenv("COPILOT_CLI_PATH", "").strip()
@@ -5858,7 +5913,7 @@ def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
         return get_gemini_oauth_auth_status()
     if target == "minimax-oauth":
         return get_minimax_oauth_auth_status()
-    if target == "copilot-acp":
+    if target in {"copilot-acp", "cursor"}:
         return get_external_process_provider_status(target)
     if target == "azure-foundry":
         return _get_azure_foundry_auth_status()
@@ -6011,6 +6066,32 @@ def resolve_external_process_provider_credentials(provider_id: str) -> Dict[str,
     base_url = os.getenv(pconfig.base_url_env_var, "").strip() if pconfig.base_url_env_var else ""
     if not base_url:
         base_url = pconfig.inference_base_url
+
+    if provider_id == "cursor":
+        command = (
+            os.getenv("HERMES_CURSOR_COMMAND", "").strip()
+            or os.getenv("CURSOR_AGENT_PATH", "").strip()
+            or "cursor-agent"
+        )
+        raw_args = os.getenv("HERMES_CURSOR_ARGS", "").strip()
+        args = shlex.split(raw_args) if raw_args else []
+        resolved_command = shutil.which(command) if command else None
+        if not resolved_command:
+            raise AuthError(
+                f"Could not find the Cursor Agent CLI command '{command}'. "
+                "Install Cursor CLI (https://cursor.com/cli) or set HERMES_CURSOR_COMMAND/CURSOR_AGENT_PATH.",
+                provider=provider_id,
+                code="missing_cursor_cli",
+            )
+        api_key = os.getenv("CURSOR_API_KEY", "").strip()
+        return {
+            "provider": provider_id,
+            "api_key": api_key or "cursor-agent-login",
+            "base_url": base_url.rstrip("/"),
+            "command": resolved_command,
+            "args": args,
+            "source": "process",
+        }
 
     command = (
         os.getenv("HERMES_COPILOT_ACP_COMMAND", "").strip()

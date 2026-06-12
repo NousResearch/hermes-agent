@@ -1499,7 +1499,7 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"openai-codex", "copilot", "copilot-acp"}:
+        if hermes_slug in {"openai-codex", "copilot", "copilot-acp", "cursor"}:
             # Use live OAuth-backed discovery so the gateway /model picker
             # matches what the user's authenticated Codex/Copilot backend
             # actually serves — including ChatGPT-Pro-only Codex slugs

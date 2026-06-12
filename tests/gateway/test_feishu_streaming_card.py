@@ -429,115 +429,7 @@ class TestCardJsonStructure:
 
 
 # ---------------------------------------------------------------------------
-# 5. Element limit handling
-# ---------------------------------------------------------------------------
-
-class TestElementLimitSplitting:
-    """Tests for card splitting when element count approaches the limit."""
-
-    def test_element_count_increments(self):
-        adapter = _make_adapter()
-        card_state = {"sequence": 0, "element_count": 1, "last_content": ""}
-        card_state["element_count"] = card_state.get("element_count", 1) + 1
-        assert card_state["element_count"] == 2
-
-    @pytest.mark.asyncio
-    async def test_split_triggers_at_limit(self):
-        adapter = _make_adapter()
-        from gateway.platforms.feishu import _STREAM_CARD_ELEMENT_LIMIT
-
-        card_id = "card_1"
-        card_state = {
-            "card_id": card_id,
-            "sequence": _STREAM_CARD_ELEMENT_LIMIT,
-            "element_count": _STREAM_CARD_ELEMENT_LIMIT,
-            "last_content": "some text",
-            "message_id": "om_1",
-            "created_at": time.monotonic(),
-        }
-        adapter._streaming_cards["chat_1"] = {card_id: card_state, "om_1": card_state}
-        adapter._card_phases["chat_1"] = _CardPhase.STREAMING
-
-        split_called = []
-        adapter._split_streaming_card = AsyncMock(
-            side_effect=lambda chat_id, card_id, card_state=None: split_called.append((chat_id, card_id))
-        )
-
-        # Mock the cardkit element-content API to succeed.
-        success_resp = SimpleNamespace(success=lambda: True)
-
-        with (
-            patch("gateway.platforms.feishu.HAS_CARDKIT", True),
-            patch("gateway.platforms.feishu.asyncio.to_thread", return_value=success_resp),
-            patch("gateway.platforms.feishu.ContentCardElementRequestBody") as mock_body_cls,
-            patch("gateway.platforms.feishu.ContentCardElementRequest") as mock_req_cls,
-        ):
-            mock_body_cls.builder.return_value \
-                .content.return_value \
-                .sequence.return_value \
-                .uuid.return_value \
-                .build.return_value = MagicMock()
-            mock_req_cls.builder.return_value \
-                .card_id.return_value \
-                .element_id.return_value \
-                .request_body.return_value \
-                .build.return_value = MagicMock()
-
-            await adapter._edit_streaming_card(
-                chat_id="chat_1", card_id=card_id,
-                content="more text", card_state=card_state,
-            )
-
-        assert len(split_called) == 1
-        assert split_called[0] == ("chat_1", "card_1")
-
-    @pytest.mark.asyncio
-    async def test_no_split_below_limit(self):
-        adapter = _make_adapter()
-        card_id = "card_1"
-        card_state = {
-            "card_id": card_id,
-            "sequence": 5,
-            "element_count": 10,
-            "last_content": "text",
-            "message_id": "om_1",
-            "created_at": time.monotonic(),
-        }
-        adapter._streaming_cards["chat_1"] = {card_id: card_state}
-
-        split_called = []
-        adapter._split_streaming_card = AsyncMock(side_effect=lambda *a, **k: split_called.append(1))
-
-        with (
-            patch("gateway.platforms.feishu.HAS_CARDKIT", True),
-            patch("gateway.platforms.feishu.asyncio.to_thread"),
-            patch("gateway.platforms.feishu.ContentCardElementRequestBody") as mock_body_cls,
-            patch("gateway.platforms.feishu.ContentCardElementRequest") as mock_req_cls,
-        ):
-            mock_body_cls.builder.return_value \
-                .content.return_value \
-                .sequence.return_value \
-                .uuid.return_value \
-                .build.return_value = MagicMock()
-            mock_req_cls.builder.return_value \
-                .card_id.return_value \
-                .element_id.return_value \
-                .request_body.return_value \
-                .build.return_value = MagicMock()
-            adapter._client.cardkit.v1.card_element.content = MagicMock(
-                return_value=SimpleNamespace(success=lambda: True)
-            )
-
-            await adapter._edit_streaming_card(
-                chat_id="chat_1", card_id=card_id,
-                content="more text", card_state=card_state,
-            )
-
-        assert len(split_called) == 0
-
-
-# ---------------------------------------------------------------------------
-# 6. Final-state footer rendering
+# 5. Final-state footer rendering
 # ---------------------------------------------------------------------------
 
 class TestFinalStateFooter:
@@ -553,7 +445,10 @@ class TestFinalStateFooter:
         card = json.loads(raw)
         elements = card["body"]["elements"]
         assert len(elements) == 2
-        assert "12.3s" in elements[1]["content"]
+        footer = elements[1]["content"]
+        assert "12.3s" in footer
+        assert "<font color='grey'>" in footer
+        assert "<text_align" not in footer
         assert elements[0]["content"] == "result text"
 
     def test_no_footer_on_zero_elapsed(self):

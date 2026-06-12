@@ -1502,49 +1502,27 @@ function SidebarWorkspaceGroup({
       style={style}
       {...rest}
     >
-      <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-medium text-(--ui-text-tertiary)">
-        <button
-          className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent text-left hover:text-(--ui-text-secondary)"
-          onClick={() => setOpen(value => !value)}
-          type="button"
-        >
-          {reorderable ? (
-            <WorkspaceReorderHandle
-              dragging={dragging}
-              dragHandleProps={dragHandleProps}
-              icon={leadingIcon}
-              label={s.reorderWorkspace(group.label)}
-            />
-          ) : (
-            leadingIcon
-          )}
-          <span className="min-w-0 truncate">{group.label}</span>
-          <span className="shrink-0">
-            <SidebarCount>
-              {isProfileGroup ? countLabel(visibleSessions.length, totalCount) : group.sessions.length}
-            </SidebarCount>
-          </span>
-          <DisclosureCaret
-            className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
-            open={open}
-          />
-        </button>
-        {(onNewSession || isProfileGroup) && (
-          <Tip label={s.newSessionIn(group.label)}>
-            <button
-              aria-label={s.newSessionIn(group.label)}
-              className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+      <WorkspaceHeader
+        action={
+          (onNewSession || isProfileGroup) && (
+            <WorkspaceAddButton
+              label={s.newSessionIn(group.label)}
               // Profile groups start a fresh session in that profile but keep the
               // all-profiles browse view (newSessionInProfile leaves the scope
               // alone); workspace groups seed the new session's cwd from the path.
               onClick={() => (isProfileGroup ? newSessionInProfile(group.id) : onNewSession?.(group.path))}
-              type="button"
-            >
-              <Codicon name="add" size="0.75rem" />
-            </button>
-          </Tip>
-        )}
-      </div>
+            />
+          )
+        }
+        count={isProfileGroup ? countLabel(visibleSessions.length, totalCount) : group.sessions.length}
+        dragging={dragging}
+        dragHandleProps={dragHandleProps}
+        icon={leadingIcon}
+        label={group.label}
+        onToggle={() => setOpen(value => !value)}
+        open={open}
+        reorderable={reorderable}
+      />
       {open && (
         <>
           {renderRows(visibleSessions)}
@@ -1637,44 +1615,22 @@ function SidebarWorkspaceParent({
       style={style}
       {...rest}
     >
-      <div className="group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem] font-semibold text-(--ui-text-secondary)">
-        <button
-          className="flex min-w-0 flex-1 items-center gap-1.5 bg-transparent text-left hover:text-foreground"
-          onClick={() => setOpen(value => !value)}
-          type="button"
-        >
-          {reorderable ? (
-            <WorkspaceReorderHandle
-              dragging={dragging}
-              dragHandleProps={dragHandleProps}
-              icon={<Codicon className="text-(--ui-text-tertiary)" name="repo" size="0.75rem" />}
-              label={s.reorderWorkspace(parent.label)}
-            />
-          ) : (
-            <Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.75rem" />
-          )}
-          <span className="min-w-0 truncate">{parent.label}</span>
-          <span className="shrink-0">
-            <SidebarCount>{parent.sessionCount}</SidebarCount>
-          </span>
-          <DisclosureCaret
-            className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
-            open={open}
-          />
-        </button>
-        {onNewSession && (newSessionPath || soleWorktree) && (
-          <Tip label={s.newSessionIn(parent.label)}>
-            <button
-              aria-label={s.newSessionIn(parent.label)}
-              className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
-              onClick={() => onNewSession?.(newSessionPath)}
-              type="button"
-            >
-              <Codicon name="add" size="0.75rem" />
-            </button>
-          </Tip>
-        )}
-      </div>
+      <WorkspaceHeader
+        action={
+          onNewSession && (newSessionPath || soleWorktree) && (
+            <WorkspaceAddButton label={s.newSessionIn(parent.label)} onClick={() => onNewSession?.(newSessionPath)} />
+          )
+        }
+        count={parent.sessionCount}
+        dragging={dragging}
+        dragHandleProps={dragHandleProps}
+        emphasis
+        icon={<Codicon className="shrink-0 text-(--ui-text-tertiary)" name="repo" size="0.75rem" />}
+        label={parent.label}
+        onToggle={() => setOpen(value => !value)}
+        open={open}
+        reorderable={reorderable}
+      />
       {open &&
         (soleWorktree ? (
           // Collapsed: the repo's sessions hang straight off the header.
@@ -1781,6 +1737,89 @@ function WorkspaceReorderHandle({
         size="0.75rem"
       />
     </span>
+  )
+}
+
+// "+" affordance shared by repo and worktree headers — reveals on header hover.
+function WorkspaceAddButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <Tip label={label}>
+      <button
+        aria-label={label}
+        className="grid size-4 shrink-0 place-items-center rounded-sm bg-transparent text-(--ui-text-quaternary) opacity-0 transition-opacity hover:bg-(--ui-control-hover-background) hover:text-foreground group-hover/workspace:opacity-100"
+        onClick={onClick}
+        type="button"
+      >
+        <Codicon name="add" size="0.75rem" />
+      </button>
+    </Tip>
+  )
+}
+
+// Collapsible header shared by the repo (emphasis) and worktree levels: a
+// toggle button whose leading glyph doubles as the reorder handle, plus an
+// optional trailing action (the +).
+function WorkspaceHeader({
+  action,
+  count,
+  dragHandleProps,
+  dragging = false,
+  emphasis = false,
+  icon,
+  label,
+  onToggle,
+  open,
+  reorderable = false
+}: {
+  action?: React.ReactNode
+  count: React.ReactNode
+  dragHandleProps?: React.HTMLAttributes<HTMLElement>
+  dragging?: boolean
+  emphasis?: boolean
+  icon: React.ReactNode
+  label: string
+  onToggle: () => void
+  open: boolean
+  reorderable?: boolean
+}) {
+  const { t } = useI18n()
+
+  return (
+    <div
+      className={cn(
+        'group/workspace flex min-h-6 items-center gap-1 px-2 pt-1 text-[0.6875rem]',
+        emphasis ? 'font-semibold text-(--ui-text-secondary)' : 'font-medium text-(--ui-text-tertiary)'
+      )}
+    >
+      <button
+        className={cn(
+          'flex min-w-0 flex-1 items-center gap-1.5 bg-transparent text-left',
+          emphasis ? 'hover:text-foreground' : 'hover:text-(--ui-text-secondary)'
+        )}
+        onClick={onToggle}
+        type="button"
+      >
+        {reorderable ? (
+          <WorkspaceReorderHandle
+            dragging={dragging}
+            dragHandleProps={dragHandleProps}
+            icon={icon}
+            label={t.sidebar.reorderWorkspace(label)}
+          />
+        ) : (
+          icon
+        )}
+        <span className="min-w-0 truncate">{label}</span>
+        <span className="shrink-0">
+          <SidebarCount>{count}</SidebarCount>
+        </span>
+        <DisclosureCaret
+          className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+          open={open}
+        />
+      </button>
+      {action}
+    </div>
   )
 }
 

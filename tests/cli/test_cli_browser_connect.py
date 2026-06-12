@@ -307,12 +307,12 @@ class TestChromeDebugLaunch:
         chrome = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 
         with patch("hermes_cli.browser_connect.shutil.which", return_value=None), \
-             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path == chrome):
+             patch("hermes_cli.browser_connect.os.path.isfile", side_effect=lambda path: path.replace("\\", "/") == chrome):
             command = manual_chrome_debug_command(9222, "Linux")
 
         assert command is not None
         # Linux/WSL uses POSIX shell quoting (single quotes around paths with spaces).
-        assert command.startswith(f"'{chrome}' --remote-debugging-port=9222")
+        assert command.replace("\\", "/").startswith(f"'{chrome}' --remote-debugging-port=9222")
 
     def test_manual_command_uses_windows_quoting_on_windows(self):
         chrome = r"C:\Program Files\Google\Chrome\Application\chrome.exe"

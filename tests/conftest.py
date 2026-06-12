@@ -326,6 +326,18 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
 
 
 @pytest.fixture(autouse=True)
+def _windows_monkeypatch_helper(monkeypatch):
+    if sys.platform == "win32":
+        original_setenv = monkeypatch.setenv
+        def custom_setenv(name, value, *args, **kwargs):
+            original_setenv(name, value, *args, **kwargs)
+            if name == "HOME":
+                original_setenv("USERPROFILE", value, *args, **kwargs)
+                original_setenv("HOMEPATH", value, *args, **kwargs)
+        monkeypatch.setenv = custom_setenv
+
+
+@pytest.fixture(autouse=True)
 def _hermetic_environment(tmp_path, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 

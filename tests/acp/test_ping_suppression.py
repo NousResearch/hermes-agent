@@ -119,6 +119,7 @@ class _FakeAgent:
 
 
 @pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="Windows does not support connect_read_pipe on anonymous pipes under proactor loop")
 async def test_bare_ping_request_produces_proper_response_and_no_stderr_noise(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

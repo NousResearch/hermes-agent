@@ -62,6 +62,42 @@ def substitute_template_vars(
     return _SKILL_TEMPLATE_RE.sub(_replace, content)
 
 
+_HAS_BASH = None
+
+def _check_bash_available() -> bool:
+    global _HAS_BASH
+    if _HAS_BASH is not None:
+        return _HAS_BASH
+    try:
+        import subprocess
+        # Check if bash exists on path and is runnable
+        subprocess.run(["bash", "-c", "exit 0"], capture_output=True, timeout=1)
+        _HAS_BASH = True
+    except Exception:
+        _HAS_BASH = False
+    return _HAS_BASH
+
+def _translate_to_powershell(command: str) -> str:
+    import re
+    cmd = command.strip()
+    if cmd == "pwd":
+        return "(Get-Location).Path"
+    
+    # Match sleep and printf/echo patterns
+    match_sleep_printf = re.match(r"sleep\s+(\d+)\s+&&\s+printf\s+(.+)", cmd)
+    if match_sleep_printf:
+        seconds = match_sleep_printf.group(1)
+        msg = match_sleep_printf.group(2).strip("'\"")
+        return f"Start-Sleep -Seconds {seconds}; Write-Output {msg}"
+
+    match_sleep_echo = re.match(r"sleep\s+(\d+)\s+&&\s+echo\s+(.+)", cmd)
+    if match_sleep_echo:
+        seconds = match_sleep_echo.group(1)
+        msg = match_sleep_echo.group(2).strip("'\"")
+        return f"Start-Sleep -Seconds {seconds}; Write-Output {msg}"
+        
+    return cmd
+
 def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     """Execute a single inline-shell snippet and return its stdout (trimmed).
 
@@ -69,17 +105,31 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     raising, so one bad snippet can't wreck the whole skill message.
     """
     _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
+    import sys
     try:
-        completed = subprocess.run(
-            ["bash", "-c", command],
-            cwd=str(cwd) if cwd else None,
-            capture_output=True,
-            text=True,
-            timeout=max(1, int(timeout)),
-            check=False,
-            stdin=subprocess.DEVNULL,
-            **_popen_kwargs,
-        )
+        if sys.platform == "win32" and not _check_bash_available():
+            ps_cmd = _translate_to_powershell(command)
+            completed = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_cmd],
+                cwd=str(cwd) if cwd else None,
+                capture_output=True,
+                text=True,
+                timeout=max(1, int(timeout)),
+                check=False,
+                stdin=subprocess.DEVNULL,
+                **_popen_kwargs,
+            )
+        else:
+            completed = subprocess.run(
+                ["bash", "-c", command],
+                cwd=str(cwd) if cwd else None,
+                capture_output=True,
+                text=True,
+                timeout=max(1, int(timeout)),
+                check=False,
+                stdin=subprocess.DEVNULL,
+                **_popen_kwargs,
+            )
     except subprocess.TimeoutExpired:
         return f"[inline-shell timeout after {timeout}s: {command}]"
     except FileNotFoundError:
@@ -95,9 +145,9 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     except Exception as exc:
         return f"[inline-shell error: {exc}]"
 
-    output = (completed.stdout or "").rstrip("\n")
+    output = (completed.stdout or "").replace("\r\n", "\n").rstrip("\n")
     if not output and completed.stderr:
-        output = completed.stderr.rstrip("\n")
+        output = completed.stderr.replace("\r\n", "\n").rstrip("\n")
     if len(output) > _INLINE_SHELL_MAX_OUTPUT:
         output = output[:_INLINE_SHELL_MAX_OUTPUT] + "...[truncated]"
     return output

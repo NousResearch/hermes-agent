@@ -90,6 +90,7 @@ import sys
 import threading
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Coroutine, Dict, List, Optional
 from urllib.parse import urlparse
 
@@ -113,8 +114,158 @@ logger = logging.getLogger(__name__)
 #
 # Fallback is os.devnull if opening the log file fails for any reason.
 
+_MCP_STDERR_LOG_MAX_BYTES = 20 * 1024 * 1024
+_MCP_STDERR_LOG_BACKUP_COUNT = 3
+_MCP_STDERR_NOISY_PATTERNS = (
+    re.compile(r"^\s*REQUEST:\s*tools/list(?:\s*\[\d+\])?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*TOOLS\s+LIST\s+REQUEST:\s*ID(?:\s*\[\d+\])?\s*$", re.IGNORECASE),
+    re.compile(r"^\s*TOOLS\s+COUNT:\s*\d+\s*$", re.IGNORECASE),
+    re.compile(r"^\s*TOOLS\s+NAMES:\s*.*$", re.IGNORECASE),
+)
+
 _mcp_stderr_log_fh: Optional[Any] = None
 _mcp_stderr_log_lock = threading.Lock()
+
+
+def _should_suppress_mcp_stderr_line(line: str) -> bool:
+    """Return True for routine MCP stderr chatter that hides real errors."""
+    stripped = (line or "").strip()
+    if not stripped:
+        return False
+    if re.search(r"\b(error|exception|traceback|failed|failure|fatal)\b", stripped, re.IGNORECASE):
+        return False
+    return any(pattern.match(stripped) for pattern in _MCP_STDERR_NOISY_PATTERNS)
+
+
+def _rotate_mcp_stderr_log_if_needed(
+    log_path: Path,
+    *,
+    max_bytes: int = _MCP_STDERR_LOG_MAX_BYTES,
+    backup_count: int = _MCP_STDERR_LOG_BACKUP_COUNT,
+) -> bool:
+    """Rotate ``mcp-stderr.log`` when it grows beyond the configured cap."""
+    try:
+        if max_bytes <= 0 or backup_count <= 0:
+            return False
+        if not log_path.exists() or log_path.stat().st_size <= max_bytes:
+            return False
+
+        for idx in range(backup_count, 0, -1):
+            current = log_path.with_name(f"{log_path.name}.{idx}")
+            if idx == backup_count:
+                try:
+                    current.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            nxt = log_path.with_name(f"{log_path.name}.{idx + 1}")
+            if current.exists():
+                current.replace(nxt)
+        log_path.replace(log_path.with_name(f"{log_path.name}.1"))
+        return True
+    except Exception as exc:  # pragma: no cover — rotation must never break MCP startup
+        logger.debug("Failed to rotate MCP stderr log %s: %s", log_path, exc)
+        return False
+
+
+class _MCPStderrLogSink:
+    """File-descriptor sink that filters noisy MCP stderr before logging.
+
+    The MCP SDK passes ``errlog`` straight into subprocess stderr.  A normal
+    Python ``write()`` wrapper would never see child output, so this sink gives
+    subprocesses a real pipe fd and drains that pipe in a daemon thread.  The
+    reader thread filters known noisy diagnostics and writes the rest to the
+    per-profile log with size-based rotation.
+    """
+
+    def __init__(self, log_path: Path):
+        self._log_path = log_path
+        self._log_path.parent.mkdir(parents=True, exist_ok=True)
+        self._read_fd, self._write_fd = os.pipe()
+        self._log_fh: Optional[Any] = None
+        self._log_bytes = 0
+        self._write_lock = threading.Lock()
+        self._reader_thread = threading.Thread(
+            target=self._drain_pipe,
+            name="mcp-stderr-log-sink",
+            daemon=True,
+        )
+        self._reader_thread.start()
+
+    def fileno(self) -> int:
+        return self._write_fd
+
+    def write(self, data: Any) -> int:
+        if isinstance(data, str):
+            payload = data.encode("utf-8", errors="replace")
+        else:
+            payload = bytes(data)
+        with self._write_lock:
+            return os.write(self._write_fd, payload)
+
+    def flush(self) -> None:
+        if self._log_fh is not None:
+            try:
+                self._log_fh.flush()
+            except Exception:
+                pass
+
+    def _open_log(self) -> Any:
+        if self._log_fh is None:
+            _rotate_mcp_stderr_log_if_needed(self._log_path)
+            self._log_fh = open(
+                self._log_path,
+                "a",
+                encoding="utf-8",
+                errors="replace",
+                buffering=1,
+            )
+            try:
+                self._log_bytes = self._log_path.stat().st_size
+            except OSError:
+                self._log_bytes = 0
+        return self._log_fh
+
+    def _write_log_line(self, line: str) -> None:
+        if _should_suppress_mcp_stderr_line(line):
+            return
+        try:
+            if self._log_bytes >= _MCP_STDERR_LOG_MAX_BYTES and self._log_fh is not None:
+                self._log_fh.close()
+                self._log_fh = None
+                _rotate_mcp_stderr_log_if_needed(self._log_path)
+            fh = self._open_log()
+            fh.write(line)
+            self._log_bytes += len(line.encode("utf-8", errors="replace"))
+        except Exception as exc:  # pragma: no cover — stderr logging is best effort
+            logger.debug("Failed to write MCP stderr log line: %s", exc)
+
+    def _drain_pipe(self) -> None:
+        pending = ""
+        try:
+            with os.fdopen(self._read_fd, "rb", buffering=0) as reader:
+                while True:
+                    chunk = reader.read(8192)
+                    if not chunk:
+                        break
+                    pending += chunk.decode("utf-8", errors="replace")
+                    lines = pending.splitlines(keepends=True)
+                    if lines and not lines[-1].endswith(("\n", "\r")):
+                        pending = lines.pop()
+                    else:
+                        pending = ""
+                    for line in lines:
+                        self._write_log_line(line)
+                if pending:
+                    self._write_log_line(pending)
+        except Exception as exc:  # pragma: no cover — best effort background drain
+            logger.debug("MCP stderr log drain stopped: %s", exc)
+        finally:
+            if self._log_fh is not None:
+                try:
+                    self._log_fh.close()
+                except Exception:
+                    pass
 
 
 def _get_mcp_stderr_log() -> Any:
@@ -134,13 +285,9 @@ def _get_mcp_stderr_log() -> Any:
             log_dir = get_hermes_home() / "logs"
             log_dir.mkdir(parents=True, exist_ok=True)
             log_path = log_dir / "mcp-stderr.log"
-            # Line-buffered so server output lands on disk promptly; errors=
-            # "replace" tolerates garbled binary output from misbehaving
-            # servers.
-            fh = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
+            _mcp_stderr_log_fh = _MCPStderrLogSink(log_path)
             # Sanity-check: confirm a real fd is available before we commit.
-            fh.fileno()
-            _mcp_stderr_log_fh = fh
+            _mcp_stderr_log_fh.fileno()
         except Exception as exc:  # pragma: no cover — best-effort fallback
             logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
             try:

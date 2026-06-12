@@ -48,8 +48,59 @@ def _make_mock_server(name, session=None, tools=None):
 
 
 # ---------------------------------------------------------------------------
+# Stdio stderr logging
+# ---------------------------------------------------------------------------
+
+class TestMCPStderrLogging:
+    def test_suppresses_routine_tools_list_diagnostics(self):
+        from tools.mcp_tool import _should_suppress_mcp_stderr_line
+
+        assert _should_suppress_mcp_stderr_line("REQUEST: tools/list [33]\n")
+        assert _should_suppress_mcp_stderr_line("TOOLS LIST REQUEST: ID [33]\n")
+        assert _should_suppress_mcp_stderr_line("TOOLS COUNT: 34\n")
+        assert _should_suppress_mcp_stderr_line("TOOLS NAMES: about, list-emails\n")
+
+    def test_keeps_errors_and_non_tools_list_logs(self):
+        from tools.mcp_tool import _should_suppress_mcp_stderr_line
+
+        assert not _should_suppress_mcp_stderr_line("ERROR tools/list failed: auth expired\n")
+        assert not _should_suppress_mcp_stderr_line("[smithery] MCP server connected\n")
+        assert not _should_suppress_mcp_stderr_line("REQUEST: emails/search [12]\n")
+
+    def test_rotates_mcp_stderr_log_when_over_limit(self, tmp_path):
+        from tools.mcp_tool import _rotate_mcp_stderr_log_if_needed
+
+        log_path = tmp_path / "mcp-stderr.log"
+        log_path.write_text("x" * 20, encoding="utf-8")
+        (tmp_path / "mcp-stderr.log.1").write_text("old", encoding="utf-8")
+
+        rotated = _rotate_mcp_stderr_log_if_needed(
+            log_path, max_bytes=10, backup_count=2
+        )
+
+        assert rotated is True
+        assert not log_path.exists()
+        assert (tmp_path / "mcp-stderr.log.1").read_text(encoding="utf-8") == "x" * 20
+        assert (tmp_path / "mcp-stderr.log.2").read_text(encoding="utf-8") == "old"
+
+    def test_does_not_rotate_small_mcp_stderr_log(self, tmp_path):
+        from tools.mcp_tool import _rotate_mcp_stderr_log_if_needed
+
+        log_path = tmp_path / "mcp-stderr.log"
+        log_path.write_text("small", encoding="utf-8")
+
+        rotated = _rotate_mcp_stderr_log_if_needed(
+            log_path, max_bytes=10, backup_count=2
+        )
+
+        assert rotated is False
+        assert log_path.read_text(encoding="utf-8") == "small"
+
+
+# ---------------------------------------------------------------------------
 # Config loading
 # ---------------------------------------------------------------------------
+
 
 class TestLoadMCPConfig:
     def test_no_config_returns_empty(self):

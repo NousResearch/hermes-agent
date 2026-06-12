@@ -402,7 +402,13 @@ def _load_simple_env(path) -> dict[str, str]:
 
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
-    """Build the profile-scoped env file that standalone hindsight-embed consumes."""
+    """Build the profile-scoped env file that standalone hindsight-embed consumes.
+
+    Supports a ``daemon_env`` dict in config.json for passing arbitrary
+    ``HINDSIGHT_API_*`` env vars to the embedded daemon (e.g. worker slots,
+    batch sizes, concurrency limits).  Keys must start with ``HINDSIGHT_``;
+    non-matching keys and ``None`` values are silently ignored.
+    """
     current_key = llm_api_key
     if current_key is None:
         current_key = (
@@ -418,12 +424,20 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     # The embedded daemon expects OpenAI wire format for these providers.
     daemon_provider = "openai" if current_provider in {"openai_compatible", "openrouter"} else current_provider
 
-    env_values = {
-        "HINDSIGHT_API_LLM_PROVIDER": str(daemon_provider),
-        "HINDSIGHT_API_LLM_API_KEY": str(current_key or ""),
-        "HINDSIGHT_API_LLM_MODEL": str(current_model),
-        "HINDSIGHT_API_LOG_LEVEL": "info",
-    }
+    # Start with daemon_env passthrough (applied first so explicit keys below always win).
+    env_values: dict[str, str] = {}
+    daemon_env = config.get("daemon_env")
+    if isinstance(daemon_env, dict):
+        for key, value in daemon_env.items():
+            if key.startswith("HINDSIGHT_") and value is not None:
+                env_values[str(key)] = str(value)
+
+    # Explicitly-bridged config.json keys always overwrite daemon_env.
+    env_values["HINDSIGHT_API_LLM_PROVIDER"] = str(daemon_provider)
+    env_values["HINDSIGHT_API_LLM_API_KEY"] = str(current_key or "")
+    env_values["HINDSIGHT_API_LLM_MODEL"] = str(current_model)
+    env_values["HINDSIGHT_API_LOG_LEVEL"] = "info"
+
     if current_base_url:
         env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(current_base_url)
 
@@ -436,6 +450,7 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(
             _parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT)
         )
+
     return env_values
 
 
@@ -881,6 +896,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
+            {"key": "daemon_env", "description": "Arbitrary HINDSIGHT_API_* env vars passed to the embedded daemon (JSON object). Example: {\"HINDSIGHT_API_WORKER_CONSOLIDATION_MAX_SLOTS\": \"4\"}", "default": {}, "when": {"mode": "local_embedded"}},
         ]
 
     def _get_client(self):

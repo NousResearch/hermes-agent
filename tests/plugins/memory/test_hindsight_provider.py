@@ -297,6 +297,48 @@ class TestConfig:
 
         assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
 
+    def test_embedded_profile_env_daemon_env_passthrough(self):
+        """daemon_env dict passes arbitrary HINDSIGHT_API_* vars to daemon."""
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "daemon_env": {
+                "HINDSIGHT_API_WORKER_MAX_SLOTS": "10",
+                "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE": "16",
+                "HINDSIGHT_API_SKIP_LLM_VERIFICATION": "true",
+                "NON_HINDSIGHT_KEY": "ignored",
+                "HINDSIGHT_API_NULL": None,
+            },
+        })
+
+        assert env["HINDSIGHT_API_WORKER_MAX_SLOTS"] == "10"
+        assert env["HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"] == "16"
+        assert env["HINDSIGHT_API_SKIP_LLM_VERIFICATION"] == "true"
+        assert "NON_HINDSIGHT_KEY" not in env
+        assert "HINDSIGHT_API_NULL" not in env
+
+    def test_embedded_profile_env_daemon_env_none_or_missing(self):
+        """daemon_env=None or missing doesn't break anything."""
+        for cfg in [
+            {"llm_provider": "openai", "llm_model": "m", "daemon_env": None},
+            {"llm_provider": "openai", "llm_model": "m"},
+        ]:
+            env = _build_embedded_profile_env(cfg)
+            assert env["HINDSIGHT_API_LLM_PROVIDER"] == "openai"
+
+    def test_embedded_profile_env_daemon_env_does_not_clobber_explicit_keys(self):
+        """daemon_env cannot override explicitly-bridged keys like llm_model."""
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "real-model",
+            "daemon_env": {
+                "HINDSIGHT_API_LLM_MODEL": "hijacked",
+            },
+        })
+        # Explicit config.json key wins because daemon_env is processed first
+        # and the explicit key overwrites it later.
+        assert env["HINDSIGHT_API_LLM_MODEL"] == "real-model"
+
     def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
         captured = {}
 

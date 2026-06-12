@@ -1069,3 +1069,93 @@ class TestSafeStderr:
             logger.info("Session hygiene: 400 messages — auto-compressing")
         finally:
             logger.removeHandler(handler)
+
+
+class TestDoRolloverPermissionError:
+    """Tests for _ManagedRotatingFileHandler.doRollover() PermissionError handling."""
+
+    def test_doRollover_permission_error_reopens_stream(self, hermes_home):
+        """When doRollover hits PermissionError, the handler reopens the
+        current file and keeps logging (Windows WinError 32 scenario)."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        root = logging.getLogger()
+        agent_handlers = [
+            h for h in root.handlers
+            if isinstance(h, hermes_logging._ManagedRotatingFileHandler)
+            and "agent.log" in getattr(h, "baseFilename", "")
+        ]
+        assert len(agent_handlers) == 1
+        handler = agent_handlers[0]
+
+        # Force the file to exceed maxBytes so next emit triggers rollover
+        original_max = handler.maxBytes
+        handler.maxBytes = 1
+
+        # Write something to make the file non-empty
+        logging.getLogger("test.rollover").info("before rollover trigger")
+        for h in root.handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+        # Patch super().doRollover to raise PermissionError
+        from unittest.mock import patch
+
+        def _raise_permission_error(self_handler):
+            raise PermissionError("[WinError 32] The process cannot access the file")
+
+        with patch.object(RotatingFileHandler, 'doRollover', _raise_permission_error):
+            # This should NOT raise -- it should catch the error
+            handler.doRollover()
+
+        # Restore maxBytes and verify the handler still works
+        handler.maxBytes = original_max
+        logging.getLogger("test.rollover").info("after rollover failure")
+        for h in root.handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+        agent_log = hermes_home / "logs" / "agent.log"
+        content = agent_log.read_text()
+        assert "after rollover failure" in content
+
+    def test_doRollover_os_error_reopens_stream(self, hermes_home):
+        """When doRollover hits a generic OSError, the handler reopens."""
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        root = logging.getLogger()
+        agent_handlers = [
+            h for h in root.handlers
+            if isinstance(h, hermes_logging._ManagedRotatingFileHandler)
+            and "agent.log" in getattr(h, "baseFilename", "")
+        ]
+        handler = agent_handlers[0]
+        original_max = handler.maxBytes
+        handler.maxBytes = 1
+
+        logging.getLogger("test.rollover2").info("before")
+        for h in root.handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+        def _raise_os_error(self_handler):
+            raise OSError("Device or resource busy")
+
+        from unittest.mock import patch
+        with patch.object(RotatingFileHandler, 'doRollover', _raise_os_error):
+            handler.doRollover()
+
+        handler.maxBytes = original_max
+        logging.getLogger("test.rollover2").info("after os error")
+        for h in root.handlers:
+            try:
+                h.flush()
+            except Exception:
+                pass
+
+        agent_log = hermes_home / "logs" / "agent.log"
+        assert "after os error" in agent_log.read_text()

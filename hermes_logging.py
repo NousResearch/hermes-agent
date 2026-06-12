@@ -467,7 +467,28 @@ class _ManagedRotatingFileHandler(RotatingFileHandler):
         return stream
 
     def doRollover(self):
-        super().doRollover()
+        try:
+            super().doRollover()
+        except (PermissionError, OSError) as exc:
+            # On Windows, PermissionError [WinError 32] fires when the log
+            # file is locked by another process (antivirus, backup agent, etc).
+            # The stdlib logging module's default handler would then print a
+            # full traceback to stderr on *every* subsequent emit — flooding
+            # both stderr and the log file itself.  Swallow the exception and
+            # force the handler to reopen its stream so it keeps writing to
+            # the current file instead of the rotated-away inode.
+            try:
+                if self.stream is not None:
+                    self.stream.close()
+            except Exception:
+                pass
+            self.stream = None  # type: ignore[assignment]
+            try:
+                self.stream = self._open()
+                self._record_stream_stat()
+            except Exception:
+                pass
+            return
         self._chmod_if_managed()
         # Our own rollover writes a new baseFilename; refresh the snapshot
         # so the next emit doesn't mistake it for external rotation.

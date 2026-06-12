@@ -5,6 +5,15 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn manager_binary() -> PathBuf {
+    manager_binary_from_env(std::env::var_os("HERMES_MANAGER_SMOKE_BIN"))
+}
+
+fn manager_binary_from_env(override_path: Option<std::ffi::OsString>) -> PathBuf {
+    if let Some(path) = override_path {
+        if !path.is_empty() {
+            return PathBuf::from(path);
+        }
+    }
     PathBuf::from(env!("CARGO_BIN_EXE_hermes-manager"))
 }
 
@@ -116,4 +125,22 @@ fn cli_smoke_manages_runtime_metadata_repair_and_lite_uninstall() {
         assert!(!path.exists(), "{} should be removed", path.display());
     }
     assert!(user_config.exists());
+}
+
+#[test]
+fn manager_binary_uses_packaged_smoke_override() {
+    let override_path = if cfg!(target_os = "windows") {
+        std::ffi::OsString::from("target/release/hermes-manager.exe")
+    } else {
+        std::ffi::OsString::from("target/release/hermes-manager")
+    };
+
+    assert_eq!(
+        manager_binary_from_env(Some(override_path.clone())),
+        PathBuf::from(override_path)
+    );
+    assert_eq!(
+        manager_binary_from_env(Some(std::ffi::OsString::new())),
+        PathBuf::from(env!("CARGO_BIN_EXE_hermes-manager"))
+    );
 }

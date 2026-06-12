@@ -163,6 +163,20 @@ jobs:
           cargo test --manifest-path apps/hermes-manager/Cargo.toml
           cli_smoke_manages_runtime_metadata_repair_and_lite_uninstall
 
+      - name: Build manager release binary
+        run: cargo build --release --manifest-path apps/hermes-manager/Cargo.toml
+
+      - name: Run manager release binary lifecycle smoke
+        shell: bash
+        run: |
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+              export HERMES_MANAGER_SMOKE_BIN="apps/hermes-manager/target/release/hermes-manager.exe"
+          else
+              export HERMES_MANAGER_SMOKE_BIN="apps/hermes-manager/target/release/hermes-manager"
+          fi
+          cargo test --manifest-path apps/hermes-manager/Cargo.toml \
+              cli_smoke_manages_runtime_metadata_repair_and_lite_uninstall
+
       - name: Run bootstrap archive lifecycle smoke
         run: >
           cargo test --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml

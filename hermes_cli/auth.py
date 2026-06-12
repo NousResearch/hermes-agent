@@ -3682,10 +3682,16 @@ def _refresh_codex_auth_tokens(
         if not getattr(exc, "relogin_required", False):
             raise
         imported = _import_codex_cli_tokens()
-        if not (imported and str(imported.get("access_token", "") or "").strip()):
+        # Require BOTH tokens before adopting: persisting a payload without a
+        # usable refresh_token would only break the next refresh cycle.
+        if not (
+            imported
+            and str(imported.get("access_token", "") or "").strip()
+            and str(imported.get("refresh_token", "") or "").strip()
+        ):
             raise
         logger.info(
-            "Codex refresh_token rejected (%s); recovered from ~/.codex/auth.json.",
+            "Codex refresh_token rejected (%s); recovered from Codex CLI auth.json.",
             getattr(exc, "code", None) or "auth_error",
         )
         _save_codex_tokens(imported)

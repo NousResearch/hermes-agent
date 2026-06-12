@@ -1680,8 +1680,9 @@ def _fetch_chutes_pricing(
     """Fetch pricing from the Chutes /v1/models catalog.
 
     Chutes returns OpenAI-style per-model pricing under ``pricing`` with
-    ``prompt``/``completion`` expressed in USD per million tokens. Convert to
-    the per-token strings used by the shared pricing formatter.
+    ``prompt``/``completion`` (and an optional ``input_cache_read`` rate)
+    expressed in USD per million tokens. Convert to the per-token strings used
+    by the shared pricing formatter.
 
     Results are cached in ``_pricing_cache`` keyed on the resolved base URL.
     """
@@ -1723,10 +1724,14 @@ def _fetch_chutes_pricing(
         out = pricing.get("completion")
         if inp is None and out is None:
             continue
-        result[str(mid)] = {
+        entry = {
             "prompt": str(float(inp or 0) / 1_000_000),
             "completion": str(float(out or 0) / 1_000_000),
         }
+        cache_read = pricing.get("input_cache_read")
+        if cache_read:
+            entry["input_cache_read"] = str(float(cache_read) / 1_000_000)
+        result[str(mid)] = entry
 
     _pricing_cache[cache_key] = result
     return result

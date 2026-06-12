@@ -1377,7 +1377,7 @@ class TestChutesProvider:
             "data": [
                 {
                     "id": "deepseek-ai/DeepSeek-V3.2-TEE",
-                    "pricing": {"prompt": 0.25, "completion": 1.0},
+                    "pricing": {"prompt": 0.25, "completion": 1.0, "input_cache_read": 0.125},
                     "price": {"input": {"usd": 0.25}, "output": {"usd": 1.0}},
                 }
             ]
@@ -1404,6 +1404,8 @@ class TestChutesProvider:
         entry = result["deepseek-ai/DeepSeek-V3.2-TEE"]
         assert float(entry["prompt"]) == 0.25 / 1_000_000
         assert float(entry["completion"]) == 1.0 / 1_000_000
+        # Cache-read rate is surfaced (inventory renders it as the "cache" column).
+        assert float(entry["input_cache_read"]) == 0.125 / 1_000_000
 
 
 # =============================================================================

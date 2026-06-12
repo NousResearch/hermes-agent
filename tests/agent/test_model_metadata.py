@@ -978,6 +978,23 @@ class TestGetModelContextLength:
         )
         assert result == 40960
 
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_chutes_null_catalog_context_falls_through(self, mock_endpoint_fetch):
+        """A few Chutes catalog entries report ``context_length: null`` (e.g.
+        Mistral-Nemo, Nemotron). The live-probe must return ``None`` for those
+        so resolution falls through to the family defaults, rather than
+        crashing or caching a bogus value."""
+        from agent.model_metadata import _resolve_endpoint_context_length
+        mock_endpoint_fetch.return_value = {
+            "unsloth/Mistral-Nemo-Instruct-2407-TEE": {"context_length": None}
+        }
+        result = _resolve_endpoint_context_length(
+            "unsloth/Mistral-Nemo-Instruct-2407-TEE",
+            "https://llm.chutes.ai/v1",
+            api_key="cpk_test",
+        )
+        assert result is None
+
     def test_extract_pricing_handles_nested_price_objects(self):
         """Chutes' /v1/models returns a nested ``price`` field that maps
         input/output to ``{tao, usd}`` sub-objects, alongside a flat

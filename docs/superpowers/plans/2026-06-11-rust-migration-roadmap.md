@@ -271,7 +271,8 @@ language-specific setup where needed.
   `tools/skills_sync.py` when available and retaining the existing bundled-skill copy fallback.
 - Bootstrap-installer Rust tests now include a local archive lifecycle smoke that exercises fresh archive extraction,
   archive refresh, manager metadata recording, repair cleanup, and lite uninstall without network access.
-- CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests.
+- CI runs bootstrap-installer Rust unit tests in addition to the manager and desktop platform tests, and a dedicated
+  Windows/Linux/macOS installer lifecycle smoke matrix runs the manager and archive lifecycle smoke tests on each OS.
 
 **Still script-backed:**
 - Language/runtime setup: Python dependency fallback tiers when `uv.lock` sync is unavailable, script fallback for
@@ -418,8 +419,7 @@ language-specific setup where needed.
    `bootstrap-tools/` archives.
 3. Expand `hermes-manager` ownership only when new bootstrap-owned runtime roots or files are introduced; current
    metadata covers the checkout, managed tool/runtime/cache directories, bootstrap cache, and staged updater binary.
-4. Extend the current local lifecycle smoke into platform runners for Windows, Linux, and macOS so fresh install,
-   archive update, repair cleanup, and lite uninstall are verified against real packaged binaries.
+4. Extend the current Windows/Linux/macOS lifecycle smoke from local archive/manager paths to real packaged binaries.
 5. Reduce shell usage in desktop bootstrap until scripts are only fallback or direct-install entry points.
 6. After one release with native bootstrap enabled, evaluate larger Rust runtime candidates from Phase 7 using measured
    install-time dependency reduction, not rewrite preference.

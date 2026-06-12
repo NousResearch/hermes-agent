@@ -127,6 +127,47 @@ jobs:
           python scripts/prepare_bootstrap_tools.py --platform linux --arch x64 --dry-run
           python scripts/prepare_bootstrap_tools.py --platform macos --arch arm64 --dry-run
 
+  installer-lifecycle-smoke:
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable
+
+      - name: Install Linux Tauri build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Cache Rust targets
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2
+        with:
+          workspaces: |
+            apps/hermes-manager
+            apps/bootstrap-installer/src-tauri
+
+      - name: Run manager lifecycle smoke
+        run: >
+          cargo test --manifest-path apps/hermes-manager/Cargo.toml
+          cli_smoke_manages_runtime_metadata_repair_and_lite_uninstall
+
+      - name: Run bootstrap archive lifecycle smoke
+        run: >
+          cargo test --manifest-path apps/bootstrap-installer/src-tauri/Cargo.toml
+          archive_lifecycle_smoke_covers_update_repair_and_lite_uninstall
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30

@@ -484,19 +484,37 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
         ),
         a: MarkdownLink,
+        // Inline code must not vote when an ancestor resolves `dir="auto"`
+        // (HTML's algorithm skips descendants that carry their own dir),
+        // mirroring the CSS isolate that already keeps it out of the
+        // plaintext scan. Fenced code never reaches this override; it goes
+        // through the code plugin's CodeCard path.
+        inlineCode: ({ className, ...props }: ComponentProps<'code'>) => (
+          <code className={className} dir="ltr" {...props} />
+        ),
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
+        // Lists and blockquotes have chrome that sits *beside* the text
+        // (markers, the quote border), and that side is driven by the CSS
+        // `direction` of the box, which `unicode-bidi: plaintext` never
+        // touches — an RTL list otherwise renders its numbers stranded at
+        // the far left. `dir="auto"` lets the browser resolve the box
+        // direction from content; the plaintext rules in styles.css keep
+        // owning per-line text direction. Inline code carries `dir="ltr"`
+        // (see the `code` override) so it doesn't vote here either, same
+        // contract as the CSS isolate.
         blockquote: ({ className, ...props }: ComponentProps<'blockquote'>) => (
           <blockquote
-            className={cn('border-l-2 border-border pl-3 text-muted-foreground italic', className)}
+            className={cn('border-s-2 border-border ps-3 text-muted-foreground italic', className)}
+            dir="auto"
             {...props}
           />
         ),
         ul: ({ className, ...props }: ComponentProps<'ul'>) => (
-          <ul className={cn('my-1 gap-0', className)} {...props} />
+          <ul className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
-          <ol className={cn('my-1 gap-0', className)} {...props} />
+          <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
         li: ({ className, ...props }: ComponentProps<'li'>) => (
           <li className={cn('leading-(--dt-line-height)', className)} {...props} />

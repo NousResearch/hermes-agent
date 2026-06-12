@@ -954,11 +954,21 @@ class LineAdapter(BasePlatformAdapter):
         if msg_type == "text":
             text = msg.get("text", "") or ""
         elif msg_type in {"image", "audio", "video", "file"}:
-            local_path = await self._download_media(message_id, msg_type)
+            # For file type, LINE provides fileName and fileSize in the webhook payload
+            original_filename = msg.get("fileName") if msg_type == "file" else None
+            file_size = msg.get("fileSize") if msg_type == "file" else None
+            local_path = await self._download_media(
+                message_id, msg_type, original_filename=original_filename
+            )
             if local_path:
                 media_urls.append(local_path)
                 media_types.append(msg_type)
-            text = f"[{msg_type}]"
+            # Provide more context for files: include filename and size
+            if msg_type == "file" and original_filename:
+                size_str = f", {file_size} bytes" if file_size else ""
+                text = f"[file: {original_filename}{size_str}] saved to: {local_path or 'failed'}"
+            else:
+                text = f"[{msg_type}]"
         elif msg_type == "sticker":
             keywords = msg.get("keywords") or []
             text = f"[sticker: {', '.join(keywords)}]" if keywords else "[sticker]"
@@ -1052,7 +1062,19 @@ class LineAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
-    async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
+    async def _download_media(
+        self, message_id: str, msg_type: str, *, original_filename: Optional[str] = None
+    ) -> Optional[str]:
+        """Download media content from LINE and cache it locally.
+
+        For file messages, LINE provides the original filename in the webhook
+        payload. We preserve it so the agent sees "report.pptx" instead of a
+        random temp filename with .bin extension.
+
+        NOTE: cache_image_from_bytes validates image magic bytes and rejects
+        non-image data (PDF, PPTX, etc.). For file-type messages we bypass
+        that check and write directly to the cache directory.
+        """
         if not self._client or not message_id:
             return None
         try:
@@ -1060,14 +1082,34 @@ class LineAdapter(BasePlatformAdapter):
         except Exception as exc:
             logger.warning("LINE: failed to fetch %s content for %s: %s", msg_type, message_id, exc)
             return None
-        ext = {
-            "image": ".jpg",
-            "audio": ".m4a",
-            "video": ".mp4",
-            "file": ".bin",
-        }.get(msg_type, ".bin")
+
+        # Determine extension: use original filename if available, else fall back to defaults
+        if original_filename:
+            # Extract extension from original filename (e.g., "report.pptx" → ".pptx")
+            _, ext = os.path.splitext(original_filename)
+            if not ext:
+                ext = ".bin"
+        else:
+            ext = {
+                "image": ".jpg",
+                "audio": ".m4a",
+                "video": ".mp4",
+                "file": ".bin",
+            }.get(msg_type, ".bin")
+
         try:
-            return cache_image_from_bytes(data, ext=ext)
+            # For file-type messages (PPTX, PDF, DOCX, etc.), bypass the image
+            # validation in cache_image_from_bytes and write directly.
+            if msg_type == "file":
+                import uuid
+                from gateway.platforms.base import get_image_cache_dir
+                cache_dir = get_image_cache_dir()
+                filename = f"file_{uuid.uuid4().hex[:12]}{ext}"
+                filepath = cache_dir / filename
+                filepath.write_bytes(data)
+                return str(filepath)
+            else:
+                return cache_image_from_bytes(data, ext=ext)
         except Exception as exc:
             logger.warning("LINE: failed to cache %s payload: %s", msg_type, exc)
             return None

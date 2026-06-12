@@ -86,7 +86,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Optional, Protocol
 
 from toolsets import get_toolset_names
 
@@ -6720,25 +6720,116 @@ def _worker_terminal_timeout_env(
     return str(desired)
 
 
-def _default_spawn(
+# ---------------------------------------------------------------------------
+# Pluggable spawn backends ("bring-your-own harness")
+# ---------------------------------------------------------------------------
+#
+# A kanban task is executed by a *spawn backend*: a small object that knows how
+# to launch some agent harness for the task. The dispatcher assembles a
+# vendor-neutral ``SpawnContext`` (profile, env pins, prompt, workspace, log
+# path, resolved skills) and hands it to the backend's ``launch()``.
+#
+# Today exactly one backend ships and is always the default: ``hermes-native``,
+# which runs the in-tree ``hermes -p <profile> chat -q`` worker. The seam exists
+# so additional harnesses (driven via durable terminal lanes, external CLIs,
+# etc.) can be registered and selected per task/profile/board WITHOUT the engine
+# hardcoding any particular vendor CLI. Backend selection becomes data, not a
+# branch in this function.
+
+
+@dataclass(frozen=True)
+class SpawnContext:
+    """Everything a spawn backend needs to launch a worker for one task.
+
+    Assembled by ``_assemble_spawn_context`` and harness-agnostic: it carries
+    no ``hermes``-specific argv. A backend decides how to deliver ``prompt``
+    and ``skills`` to whatever harness it drives (CLI flags, prompt injection,
+    a terminal lane, ...).
+    """
+
+    task: Task
+    workspace: str
+    board: Optional[str]
+    profile: str
+    env: dict[str, str]
+    prompt: str
+    log_path: Path
+    skills: list[str]
+
+
+class SpawnBackend(Protocol):
+    """A harness launcher. Implementations may live in or out of tree.
+
+    ``launch`` starts the harness for ``ctx.task`` and returns the OS pid the
+    dispatcher should watch for crash detection (or ``None`` when the backend
+    is not process-trackable). It may raise to signal a spawn failure, which
+    the dispatcher records via ``_record_spawn_failure``.
+    """
+
+    name: str
+
+    def launch(self, ctx: SpawnContext) -> Optional[int]:
+        ...
+
+
+_SPAWN_BACKENDS: dict[str, SpawnBackend] = {}
+
+DEFAULT_SPAWN_BACKEND = "hermes-native"
+
+
+def register_spawn_backend(backend: SpawnBackend) -> None:
+    """Register a spawn backend under ``backend.name`` (last write wins)."""
+    _SPAWN_BACKENDS[backend.name] = backend
+
+
+def resolve_spawn_backend(name: Optional[str]) -> SpawnBackend:
+    """Look up a backend by name, falling back to the native default.
+
+    An unknown or empty name resolves to ``hermes-native`` rather than raising:
+    a stale or mistyped harness value must never wedge dispatch — the task still
+    runs on the always-available native backend (a warning is logged so the
+    misconfiguration is visible).
+    """
+    if name:
+        backend = _SPAWN_BACKENDS.get(name)
+        if backend is not None:
+            return backend
+        _log.warning(
+            "unknown spawn backend %r; falling back to %s",
+            name, DEFAULT_SPAWN_BACKEND,
+        )
+    return _SPAWN_BACKENDS[DEFAULT_SPAWN_BACKEND]
+
+
+def _select_spawn_backend(task: Task, board: Optional[str]) -> SpawnBackend:
+    """Resolve which backend runs ``task``.
+
+    Per-task / per-profile / per-board harness selection (backed by a
+    ``harness`` column + profile config) is a follow-up; today every task
+    resolves to the native backend. ``getattr`` keeps this forward-compatible
+    with that column without depending on it yet.
+    """
+    return resolve_spawn_backend(getattr(task, "harness", None))
+
+
+def _assemble_spawn_context(
     task: Task,
     workspace: str,
     *,
     board: Optional[str] = None,
-) -> Optional[int]:
-    """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
+) -> SpawnContext:
+    """Build the harness-agnostic context for spawning ``task``'s worker.
 
-    Returns the spawned child's PID so the dispatcher can detect crashes
-    before the claim TTL expires. The child's completion is still observed
-    via the ``complete`` / ``block`` transitions the worker writes itself;
-    the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
+    Resolves the profile, the fully-pinned child env (``HERMES_KANBAN_*`` board
+    / DB / workspaces / goal-mode / timeouts), the per-task log path (rotated),
+    and the availability-filtered skill list. No harness-specific argv is built
+    here — that is the backend's job.
 
-    ``board`` pins the child's kanban context to that board: the child's
-    ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
-    vars all resolve to the same board the dispatcher claimed the task
-    from. Workers cannot accidentally see other boards.
+    ``board`` pins the child's kanban context to that board: the resulting
+    ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env vars
+    all resolve to the same board the dispatcher claimed the task from, so
+    workers cannot accidentally see other boards.
     """
-    import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
 
@@ -6815,97 +6906,152 @@ def _default_spawn(
     # attributed correctly regardless of how the child loads config.
     env["HERMES_PROFILE"] = profile_arg
 
-    cmd = [
-        *_resolve_hermes_argv(),
-        "-p", profile_arg,
-        # Worker subprocesses switch to a profile-scoped HERMES_HOME above,
-        # so they see that profile's shell-hook allowlist instead of the
-        # dispatcher's root allowlist. Pass --accept-hooks explicitly so
-        # profile-local worker sessions still register configured hooks.
-        "--accept-hooks",
-    ]
-    # Auto-load the kanban-worker skill so every dispatched worker
-    # has the pattern library (good summary/metadata shapes, retry
-    # diagnostics, block-reason examples) in its context, even if
-    # the profile hasn't wired it into skills config. The MANDATORY
-    # lifecycle is already in the system prompt via KANBAN_GUIDANCE;
-    # this skill is the deeper reference. Users can point a profile
-    # at a different/additional skill via config if they want —
-    # --skills is additive to the profile's default skill set.
+    # Resolve the per-task force-loaded skills, availability-filtered.
     #
-    # Only add the flag when the skill actually resolves for the home
-    # the worker runs under: the bundled skill is absent from many
-    # profile-scoped skills dirs, and preloading a missing skill is
-    # fatal at CLI startup. Omitting it is safe — the lifecycle
-    # contract still ships via KANBAN_GUIDANCE.
+    # The built-in kanban-worker skill loads first (when present): every
+    # dispatched worker gets the pattern library (good summary/metadata shapes,
+    # retry diagnostics, block-reason examples) in its context, even if the
+    # profile hasn't wired it into skills config. The MANDATORY lifecycle
+    # already ships in the system prompt via KANBAN_GUIDANCE; this skill is the
+    # deeper reference.
+    #
+    # Per-task skills follow, deduped against the built-in. EVERY name is
+    # availability-guarded: an unresolved skill is fatal at the worker's CLI
+    # startup (``Unknown skill(s): <name>``), crashing it before the agent loop
+    # runs. Drop-with-warning degrades gracefully — the task still runs, just
+    # without that skill's pattern library.
+    #
+    # How these names reach the harness (``--skills`` flags, prompt injection,
+    # ...) is the backend's concern; here we only decide *which* apply.
+    skills: list[str] = []
     if _kanban_worker_skill_available(env.get("HERMES_HOME")):
-        cmd.extend(["--skills", "kanban-worker"])
-    # Per-task force-loaded skills. Each name goes in its own
-    # `--skills X` pair rather than a single comma-joined arg: the CLI
-    # accepts both forms (action='append' + comma-split), but
-    # per-name pairs are easier to read in `ps` output and avoid any
-    # quoting ambiguity if a skill name ever contains unusual chars.
-    # Dedupe against the built-in so we don't double-load kanban-worker
-    # if a task author asks for it explicitly.
+        skills.append("kanban-worker")
     if task.skills:
         worker_home = env.get("HERMES_HOME")
         for sk in task.skills:
             if not sk or sk == "kanban-worker":
                 continue
-            # Availability-guard EVERY per-task force-loaded skill: an
-            # unresolved name is fatal at the worker's CLI startup
-            # (``Unknown skill(s): <name>``), crashing it before the agent loop
-            # runs. Drop-with-warning degrades gracefully — the task still runs,
-            # just without that skill's pattern library.
             if _kanban_skill_available(worker_home, sk):
-                cmd.extend(["--skills", sk])
+                skills.append(sk)
             else:
                 _log.warning(
                     "kanban task %s: dropping unresolved force-loaded skill %r "
                     "(not found under %s/skills) to avoid worker startup crash",
                     task.id, sk, worker_home or "~/.hermes",
                 )
-    if task.model_override:
-        cmd.extend(["-m", task.model_override])
-    cmd.extend([
-        "chat",
-        "-q", prompt,
-    ])
-    # Redirect output to a per-task log under <board-root>/logs/.
-    # Anchored at the board root (not the shared kanban root), so
-    # `hermes kanban log` on a specific board reads its own file and
-    # logs don't collide across boards that happen to share task ids.
+
+    # Per-task log under <board-root>/logs/. Anchored at the board root (not
+    # the shared kanban root) so `hermes kanban log` on a specific board reads
+    # its own file and logs don't collide across boards that share a task id.
     log_dir = worker_logs_dir(board=board)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"{task.id}.log"
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
-    # Use 'a' so a re-run on unblock appends rather than overwrites.
-    log_f = open(log_path, "ab")
-    try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-        )
-    except FileNotFoundError:
-        log_f.close()
-        raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
-    # NOTE: we intentionally do NOT close log_f here — we want Popen's
-    # child process to keep writing after this function returns.  The
-    # handle is kept alive by the child's inheritance.  The parent's
-    # reference goes out of scope and is GC'd, but the OS-level FD stays
-    # open in the child until the child exits.
-    return proc.pid
+    return SpawnContext(
+        task=task,
+        workspace=workspace,
+        board=board,
+        profile=profile_arg,
+        env=env,
+        prompt=prompt,
+        log_path=log_path,
+        skills=skills,
+    )
+
+
+class _HermesNativeBackend:
+    """Default backend: the in-tree ``hermes -p <profile> chat -q`` worker.
+
+    Behavior-preserving — this is the exact argv + detached ``Popen`` the
+    dispatcher used before spawn backends existed. Always registered, and used
+    whenever a task does not select another harness.
+    """
+
+    name = "hermes-native"
+
+    def launch(self, ctx: SpawnContext) -> Optional[int]:
+        import subprocess
+
+        cmd = [
+            *_resolve_hermes_argv(),
+            "-p", ctx.profile,
+            # Worker subprocesses switch to a profile-scoped HERMES_HOME, so
+            # they see that profile's shell-hook allowlist instead of the
+            # dispatcher's root allowlist. Pass --accept-hooks explicitly so
+            # profile-local worker sessions still register configured hooks.
+            "--accept-hooks",
+        ]
+        # One `--skills X` pair per resolved skill rather than a single
+        # comma-joined arg: the CLI accepts both forms (action='append' +
+        # comma-split), but per-name pairs are easier to read in `ps` output
+        # and avoid quoting ambiguity if a skill name ever contains unusual
+        # chars. The list is already deduped + availability-filtered in
+        # _assemble_spawn_context (kanban-worker first, then per-task skills).
+        for sk in ctx.skills:
+            cmd.extend(["--skills", sk])
+        if ctx.task.model_override:
+            cmd.extend(["-m", ctx.task.model_override])
+        cmd.extend([
+            "chat",
+            "-q", ctx.prompt,
+        ])
+
+        # Use 'a' so a re-run on unblock appends rather than overwrites.
+        log_f = open(ctx.log_path, "ab")
+        try:
+            proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+                cmd,
+                cwd=ctx.workspace if os.path.isdir(ctx.workspace) else None,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=ctx.env,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError(
+                "`hermes` executable not found on PATH. "
+                "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            )
+        # NOTE: we intentionally do NOT close log_f here — we want Popen's
+        # child process to keep writing after this function returns.  The
+        # handle is kept alive by the child's inheritance.  The parent's
+        # reference goes out of scope and is GC'd, but the OS-level FD stays
+        # open in the child until the child exits.
+        return proc.pid
+
+
+register_spawn_backend(_HermesNativeBackend())
+
+
+def _default_spawn(
+    task: Task,
+    workspace: str,
+    *,
+    board: Optional[str] = None,
+) -> Optional[int]:
+    """Spawn a worker for ``task`` via its selected harness backend.
+
+    Thin orchestrator: assemble the harness-agnostic ``SpawnContext`` (profile,
+    pinned env, prompt, log path, resolved skills), pick the backend for the
+    task, and delegate the actual launch. Today every task resolves to the
+    ``hermes-native`` backend, which runs the in-tree ``hermes -p <profile>
+    chat -q`` worker — so the return contract is unchanged: the spawned child's
+    PID (so the dispatcher can detect crashes before the claim TTL expires), or
+    ``None``. The child's completion is still observed via the ``complete`` /
+    ``block`` transitions the worker writes itself; the PID check is a safety
+    net for crashes, OOM kills, and Ctrl+C.
+
+    ``board`` pins the child's kanban context to that board so workers cannot
+    accidentally see other boards (see ``_assemble_spawn_context``).
+    """
+    ctx = _assemble_spawn_context(task, workspace, board=board)
+    backend = _select_spawn_backend(task, board)
+    return backend.launch(ctx)
 
 
 # ---------------------------------------------------------------------------

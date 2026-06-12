@@ -707,6 +707,8 @@ def _run_android_until_foreground(
                             stderr_path,
                             "android",
                             deadline,
+                            proc=proc,
+                            args=args,
                         )
                         time.sleep(min(_android_settle_seconds(), max(deadline - time.monotonic(), 0)))
                         if not _android_package_is_foreground(adb, cwd, package):
@@ -949,9 +951,32 @@ def _wait_for_metro_bundle_request(
     stderr_path: Path,
     platform: str,
     deadline: float,
+    *,
+    proc: subprocess.Popen[str] | None = None,
+    args: tuple[str, ...] = (),
 ) -> None:
-    if _metro_bundle_requested_before(stdout_path, stderr_path, platform, deadline):
+    while time.monotonic() < deadline:
+        if _metro_bundle_was_requested(stdout_path, stderr_path, platform):
+            return
+        if proc is not None:
+            _raise_if_process_exited(
+                proc,
+                args,
+                stdout_path,
+                stderr_path,
+                f"command exited before Metro received a {platform} bundle request: {' '.join(args)}",
+            )
+        time.sleep(1)
+    if _metro_bundle_was_requested(stdout_path, stderr_path, platform):
         return
+    if proc is not None:
+        _raise_if_process_exited(
+            proc,
+            args,
+            stdout_path,
+            stderr_path,
+            f"command exited before Metro received a {platform} bundle request: {' '.join(args)}",
+        )
     raise RuntimeError(
         "\n".join(
             [
@@ -960,6 +985,37 @@ def _wait_for_metro_bundle_request(
                 f"stderr log: {stderr_path}",
                 f"stdout tail: {_tail_text(stdout_path)}",
                 f"stderr tail: {_tail_text(stderr_path)}",
+            ]
+        )
+    )
+
+
+def _raise_if_process_exited(
+    proc: subprocess.Popen[str],
+    args: tuple[str, ...],
+    stdout_path: Path,
+    stderr_path: Path,
+    success_message: str,
+) -> None:
+    returncode = proc.poll()
+    if returncode is None:
+        return
+    if returncode != 0:
+        raise RuntimeError(
+            "\n".join(
+                [
+                    f"command failed ({returncode}): {' '.join(args)}",
+                    f"stdout: {_tail_text(stdout_path)}",
+                    f"stderr: {_tail_text(stderr_path)}",
+                ]
+            )
+        )
+    raise RuntimeError(
+        "\n".join(
+            [
+                success_message,
+                f"stdout: {_tail_text(stdout_path)}",
+                f"stderr: {_tail_text(stderr_path)}",
             ]
         )
     )

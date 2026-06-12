@@ -517,6 +517,57 @@ def test_android_foreground_runner_waits_for_bundle_before_capture(monkeypatch, 
     assert events[:4] == ["metro-start", "open-dev-client", "bundle-requested", "capture"]
 
 
+def test_android_foreground_runner_aborts_when_process_exits_before_bundle(monkeypatch, tmp_path):
+    events = []
+    monkeypatch.setenv("MONICA_PACKAGER_HOSTNAME", "localhost")
+
+    class FakeProcess:
+        def __init__(self):
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            events.append("terminate")
+
+        def wait(self, timeout):
+            return self.returncode or 0
+
+        def kill(self):
+            events.append("kill")
+
+    proc = FakeProcess()
+
+    def fake_popen(*_args, **kwargs):
+        events.append("metro-start")
+        kwargs["stderr"].write("BUILD FAILED\n")
+        kwargs["stderr"].flush()
+        return proc
+
+    def open_dev_client():
+        events.append("open-dev-client")
+        proc.returncode = 1
+
+    monkeypatch.setattr(simulator_proof.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(simulator_proof, "_android_package_is_foreground", lambda *_args: True)
+
+    with pytest.raises(RuntimeError, match="command failed \\(1\\): npm run android") as excinfo:
+        simulator_proof._run_android_until_foreground(
+            ("npm", "run", "android"),
+            tmp_path,
+            30,
+            ("adb",),
+            "com.elixir.card",
+            tmp_path,
+            open_dev_client,
+            lambda: events.append("capture"),
+        )
+
+    assert "BUILD FAILED" in str(excinfo.value)
+    assert "capture" not in events
+
+
 def test_simulator_proof_refuses_non_mobile_worktree(tmp_path):
     proof_dir = tmp_path / "proof"
     worktree = tmp_path / "app"

@@ -460,17 +460,32 @@ def test_pid_exists_returns_false_for_zombie_process():
     from unittest.mock import patch, MagicMock
     from gateway.status import _pid_exists
 
-    zombie_pid = 424242
+    import os
+    # Use the current process PID so os.kill(pid, 0) would succeed without
+    # the zombie check — confirming the check itself is what returns False.
+    zombie_pid = os.getpid()
     fake_stat = f"{zombie_pid} (defunct) Z 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0"
 
     fake_path_instance = MagicMock()
     fake_path_instance.read_text.return_value = fake_stat
 
-    with patch("gateway.status.Path", return_value=fake_path_instance) as mock_path_cls:
+    # _pid_exists imports psutil inline. Force ImportError so the test
+    # exercises the POSIX /proc zombie-check branch rather than the
+    # psutil.pid_exists fast path (which would return False for any
+    # non-existent PID, masking whether the zombie check ran at all).
+    import builtins
+    real_import = builtins.__import__
+
+    def _no_psutil(name, *args, **kwargs):
+        if name == "psutil":
+            raise ImportError("psutil disabled for zombie test")
+        return real_import(name, *args, **kwargs)
+
+    with patch("gateway.status.Path", return_value=fake_path_instance), \
+         patch.object(builtins, "__import__", _no_psutil):
         result = _pid_exists(zombie_pid)
 
     assert result is False, (
         "zombie process must be reported as not existing; "
         "otherwise --replace waits 15s and aborts with exit 1"
     )
-    mock_path_cls.assert_called_once_with(f"/proc/{zombie_pid}/stat")

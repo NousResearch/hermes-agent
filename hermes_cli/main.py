@@ -1640,6 +1640,25 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
             node = _node_bin("node")
             return [node, "--expose-gc", str(bundled)], bundled.parent
 
+    # CLI-only install (e.g. pip / Homebrew that ships the Python package but
+    # not the Node/Ink TUI tree): the ui-tui directory simply isn't on disk.
+    # Fail with an actionable message instead of letting the npm-install / node
+    # spawn below raise a bare FileNotFoundError on the missing cwd — the exact
+    # symptom users report ("FileNotFoundError: .../site-packages/ui-tui").
+    if not tui_dir.is_dir():
+        print(
+            "The TUI is not available in this installation.\n"
+            f"  Expected the TUI at: {tui_dir}\n"
+            "This Hermes was installed in a CLI-only layout (e.g. a pip / Homebrew\n"
+            "package that doesn't ship the Node/Ink TUI). To use the TUI either:\n"
+            "  • reinstall with the official installer or a git checkout, or\n"
+            "  • set HERMES_TUI_DIR to a prebuilt TUI bundle (a directory containing\n"
+            "    dist/entry.js).\n"
+            "The CLI (`hermes`) and the gateway work normally without the TUI.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     # 2. Normal flow: npm install if needed, always esbuild, then node dist/entry.js.
     #    --dev flow: npm install if needed, then tsx src/entry.tsx.
     #    Existing desktop behaviour runs npm from the workspace root.  Termux

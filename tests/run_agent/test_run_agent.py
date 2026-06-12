@@ -7607,3 +7607,175 @@ class TestMemoryProviderTurnStart:
         # The extracted body uses ``agent.X`` rather than ``self.X``;
         # assert the extracted-form spelling directly.
         assert "on_turn_start(agent._user_turn_count" in src
+
+
+class TestForcedToolRetry:
+    """Tests for agent.forced_tool_retry (forced tool_choice retry on
+    malformed tool calls) — config plumbing, the one-shot consume helper
+    in conversation_loop, and the required-fields check in tool_executor."""
+
+    def _make_agent(self, forced_tool_retry="auto"):
+        """Create an AIAgent with mocked dependencies and a specific config."""
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": {"forced_tool_retry": forced_tool_retry}},
+            ),
+        ):
+            agent = AIAgent(
+                model="qwen/qwen-plus",
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+            return agent
+
+    def test_default_config_is_auto(self):
+        """Fresh agent defaults to 'auto' retry mode with no pending choice."""
+        agent = self._make_agent()
+        assert agent._forced_tool_retry == "auto"
+        assert agent._forced_tool_choice is None
+        assert agent._forced_tool_retry_count == 0
+
+    def test_config_off_respected(self):
+        """Agent respects 'off' configuration for forced tool retry."""
+        agent = self._make_agent(forced_tool_retry="off")
+        assert agent._forced_tool_retry == "off"
+
+    def test_consume_injects_and_clears(self):
+        """Auto mode injects tool_choice for valid tools and clears the flag."""
+        from agent.conversation_loop import _consume_forced_tool_choice
+
+        agent = self._make_agent()
+        agent._forced_tool_choice = "terminal"
+        api_kwargs = {}
+
+        result = _consume_forced_tool_choice(agent, api_kwargs)
+
+        assert result is True
+        assert api_kwargs["tool_choice"]["function"]["name"] == "terminal"
+        assert agent._forced_tool_choice is None
+        assert agent._forced_tool_retry_count == 1
+
+    def test_consume_off_clears_without_injecting(self):
+        """Off mode clears the flag but does not inject tool_choice."""
+        from agent.conversation_loop import _consume_forced_tool_choice
+
+        agent = self._make_agent(forced_tool_retry="off")
+        agent._forced_tool_choice = "terminal"
+        api_kwargs = {}
+
+        result = _consume_forced_tool_choice(agent, api_kwargs)
+
+        assert result is False
+        assert "tool_choice" not in api_kwargs
+        assert agent._forced_tool_choice is None
+
+    def test_consume_unknown_tool_no_injection(self):
+        """Unknown tool names are ignored and the flag is still cleared."""
+        from agent.conversation_loop import _consume_forced_tool_choice
+
+        agent = self._make_agent()
+        agent._forced_tool_choice = "not_a_tool"
+        api_kwargs = {}
+
+        result = _consume_forced_tool_choice(agent, api_kwargs)
+
+        assert result is False
+        assert "tool_choice" not in api_kwargs
+        assert agent._forced_tool_choice is None
+
+    def test_consume_respects_per_turn_cap(self):
+        """Retry injection stops once the per-turn cap (3) is reached."""
+        from agent.conversation_loop import _consume_forced_tool_choice
+
+        agent = self._make_agent()
+        agent._forced_tool_choice = "terminal"
+        agent._forced_tool_retry_count = 3
+        api_kwargs = {}
+
+        result = _consume_forced_tool_choice(agent, api_kwargs)
+
+        assert result is False
+        assert "tool_choice" not in api_kwargs
+        assert agent._forced_tool_choice is None
+
+    def test_consume_noop_when_unarmed(self):
+        """No injection and no mutation when no tool choice is pending."""
+        from agent.conversation_loop import _consume_forced_tool_choice
+
+        agent = self._make_agent()
+        agent._forced_tool_choice = None
+        api_kwargs = {}
+
+        result = _consume_forced_tool_choice(agent, api_kwargs)
+
+        assert result is False
+        assert api_kwargs == {}
+
+    def test_missing_required_fields_reports_missing(self):
+        """Missing required fields are identified from the tool's schema."""
+        from agent.tool_executor import _missing_required_fields
+
+        agent = self._make_agent()
+        agent.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "content": {"type": "string"},
+                        },
+                        "required": ["path", "content"],
+                    },
+                },
+            }
+        ]
+
+        missing = _missing_required_fields(agent, "write_file", {"content": "x"})
+
+        assert missing == ["path"]
+
+    def test_missing_required_fields_unknown_tool_empty(self):
+        """Unknown tools return an empty missing-fields list (never block)."""
+        from agent.tool_executor import _missing_required_fields
+
+        agent = self._make_agent()
+
+        missing = _missing_required_fields(agent, "unknown_tool", {})
+
+        assert missing == []
+
+    def test_missing_required_fields_no_required_schema_empty(self):
+        """Schemas without a 'required' key return an empty list."""
+        from agent.tool_executor import _missing_required_fields
+
+        agent = self._make_agent()
+        agent.tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "simple_tool",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {},
+                    },
+                },
+            }
+        ]
+
+        missing = _missing_required_fields(agent, "simple_tool", {})
+
+        assert missing == []

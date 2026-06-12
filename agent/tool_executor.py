@@ -303,6 +303,26 @@ def _run_agent_tool_execution_middleware(
     return result, observed_args
 
 
+def _missing_required_fields(agent, tool_name: str, args: dict) -> list[str]:
+    """Names of required parameters absent from ``args`` for ``tool_name``.
+
+    Schema source is ``agent.tools`` (OpenAI function schemas, see
+    agent_init.py).  Unknown tools and schema lookup errors return [] —
+    validation here must never block a tool the registry can't describe.
+    Detection of a non-empty result arms the forced tool_choice retry
+    (``agent._forced_tool_choice``, consumed in conversation_loop.py).
+    """
+    try:
+        for t in agent.tools or []:
+            fn = t.get("function", {})
+            if fn.get("name") == tool_name:
+                req = fn.get("parameters", {}).get("required", []) or []
+                return [k for k in req if k not in args]
+    except Exception:
+        pass
+    return []
+
+
 def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute multiple tool calls concurrently using a thread pool.
 
@@ -393,6 +413,11 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             tool_call_id=getattr(tool_call, "id", "") or "",
         )
 
+        # Required-fields check (post-middleware, post-unwrap): valid-JSON
+        # args missing required fields — and unrepairable args repaired to
+        # {} upstream — are caught here before dispatch.
+        _missing_required = _missing_required_fields(agent, function_name, function_args)
+
         # ── Block evaluation (BEFORE checkpoint preflight) ───────────
         # We must know whether the tool will execute before touching
         # checkpoint state (dedup slot, real snapshots).
@@ -411,6 +436,31 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 status="blocked",
                 error_type="tool_scope_block",
                 error_message=_ts_scope_block,
+                middleware_trace=list(middleware_trace),
+            )
+        elif _missing_required:
+            # Malformed call: block before dispatch and arm the forced
+            # tool_choice retry (see conversation_loop.py) so the
+            # re-request is grammar-enforced where supported (vLLM).
+            if getattr(agent, "_forced_tool_retry", "off") == "auto":
+                agent._forced_tool_choice = function_name
+            block_result = json.dumps({
+                "error": (
+                    f"{function_name}: missing required field(s) "
+                    f"{', '.join(_missing_required)}. Re-emit the tool call "
+                    f"with every required field set."
+                ),
+            }, ensure_ascii=False)
+            _emit_terminal_post_tool_call(
+                agent,
+                function_name=function_name,
+                function_args=function_args,
+                result=block_result,
+                effective_task_id=effective_task_id,
+                tool_call_id=getattr(tool_call, "id", "") or "",
+                status="blocked",
+                error_type="missing_required_fields",
+                error_message=block_result,
                 middleware_trace=list(middleware_trace),
             )
         else:
@@ -1026,12 +1076,28 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             tool_call_id=getattr(tool_call, "id", "") or "",
         )
 
+        # Required-fields check (post-middleware, post-unwrap) — see
+        # execute_tool_calls_concurrent for rationale.
+        _missing_required = _missing_required_fields(agent, function_name, function_args)
+
         # Check plugin hooks for a block directive before executing.
         _block_msg: Optional[str] = None
         _block_error_type = "plugin_block"
         if _ts_scope_block is not None:
             _block_msg = _ts_scope_block
             _block_error_type = "tool_scope_block"
+        elif _missing_required:
+            # Malformed call: block before dispatch and arm the forced
+            # tool_choice retry (see conversation_loop.py) so the
+            # re-request is grammar-enforced where supported (vLLM).
+            if getattr(agent, "_forced_tool_retry", "off") == "auto":
+                agent._forced_tool_choice = function_name
+            _block_msg = (
+                f"{function_name}: missing required field(s) "
+                f"{', '.join(_missing_required)}. Re-emit the tool call "
+                f"with every required field set."
+            )
+            _block_error_type = "missing_required_fields"
         else:
             try:
                 from hermes_cli.plugins import get_pre_tool_call_block_message

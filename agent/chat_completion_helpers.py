@@ -2273,6 +2273,13 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         else:
                             # Unrepairable — flag for truncation handling
                             has_truncated_tool_args = True
+                            # Also arm the forced tool_choice retry: the
+                            # truncation re-request rebuilds api_kwargs in
+                            # conversation_loop, which pins tool_choice to
+                            # this tool so grammar-enforcing backends (vLLM)
+                            # regenerate the call schema-valid.
+                            if getattr(agent, "_forced_tool_retry", "off") == "auto":
+                                agent._forced_tool_choice = tool_name
                 mock_tool_calls.append(SimpleNamespace(
                     id=tc["id"],
                     type=tc["type"],

@@ -203,6 +203,7 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("agent", "max_turns"),
         ("agent", "gateway_timeout"),
         ("agent", "tool_use_enforcement"),
+        ("agent", "forced_tool_retry"),
         ("terminal", "backend"),
         ("terminal", "docker_image"),
         ("terminal", "persistent_shell"),

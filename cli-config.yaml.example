@@ -615,6 +615,15 @@ agent:
   # Recommended: 20-30 for focused tasks, 50-100 for open exploration
   max_turns: 60
 
+  # Forced tool-choice retry: when the model emits a malformed tool call
+  # (unparseable JSON arguments, or arguments missing required fields),
+  # retry once with tool_choice pinned to the failed tool. Backends with
+  # grammar-enforced structured outputs (vLLM) regenerate the call
+  # schema-valid by construction; a backend that rejects named tool_choice
+  # gets the retry unforced and the mechanism disables for that session.
+  # Values: "auto" (default) | "off"
+  forced_tool_retry: auto
+
   # Inactivity timeout for gateway agent runs (seconds, 0 = unlimited).
   # The agent can run indefinitely when actively calling tools or receiving
   # API responses.  Only fires after the agent has been idle for this duration.

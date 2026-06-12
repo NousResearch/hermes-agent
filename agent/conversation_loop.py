@@ -103,6 +103,39 @@ def _image_error_max_dimension(error: Exception) -> Optional[int]:
     return None
 
 
+def _consume_forced_tool_choice(agent: Any, api_kwargs: dict) -> bool:
+    """Consume the one-shot forced tool_choice flag into ``api_kwargs``.
+
+    Armed by the malformed-call detection sites (stream repair in
+    chat_completion_helpers.py, required-fields check in tool_executor.py).
+    Pinning tool_choice to the failed tool makes grammar-enforcing backends
+    (vLLM) regenerate the call schema-valid by construction.  The flag is
+    always cleared on read; injection happens only when the config is
+    "auto", the tool exists, and the per-turn cap (3) isn't exhausted.
+    Returns True when tool_choice was injected.
+    """
+    forced = getattr(agent, "_forced_tool_choice", None)
+    if forced is None:
+        return False
+    agent._forced_tool_choice = None  # one-shot: always consume
+    if (
+        getattr(agent, "_forced_tool_retry", "off") == "auto"
+        and forced in agent.valid_tool_names
+        and getattr(agent, "_forced_tool_retry_count", 0) < 3
+    ):
+        api_kwargs["tool_choice"] = {
+            "type": "function",
+            "function": {"name": forced},
+        }
+        agent._forced_tool_retry_count += 1
+        logger.info(
+            f"{agent.log_prefix}Forced tool_choice retry "
+            f"#{agent._forced_tool_retry_count}: {forced}"
+        )
+        return True
+    return False
+
+
 def _ollama_context_limit_error(agent: Any, request_tokens: int) -> Optional[str]:
     """Return a user-facing error when Ollama is loaded with too little context."""
     if not getattr(agent, "tools", None):
@@ -605,6 +638,10 @@ def run_conversation(
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
+    # Per-turn cap for forced tool_choice retries (the one-shot flag itself
+    # lives on the agent — set by the malformed-call detection sites, consumed
+    # at the api_kwargs build below).
+    agent._forced_tool_retry_count = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
@@ -1072,6 +1109,11 @@ def run_conversation(
                 # isn't sent with stale, primary-shaped reasoning fields.
                 agent._reapply_reasoning_echo_for_provider(api_messages)
                 api_kwargs = agent._build_api_kwargs(api_messages)
+                # Forced tool-choice retry (one-shot, armed by the
+                # malformed-call detection sites) — injected before
+                # middleware so middleware keeps veto power; provider
+                # rejections self-disable in the API-error path below.
+                _consume_forced_tool_choice(agent, api_kwargs)
                 if agent._force_ascii_payload:
                     _sanitize_structure_non_ascii(api_kwargs)
                 if agent.api_mode == "codex_responses":
@@ -2915,6 +2957,22 @@ def run_conversation(
                 # A 413 is a payload-size error — the correct response is to
                 # compress history and retry, not abort immediately.
                 status_code = getattr(api_error, "status_code", None)
+
+                # ── Forced tool_choice rejected by this backend ───────
+                # The forced-tool-retry injection (api_kwargs build above)
+                # is grammar-enforced on vLLM but other backends may
+                # reject a named tool_choice outright.  Disable the
+                # mechanism for the session and retry the call unforced
+                # (the rebuild at the top of the loop produces clean
+                # kwargs — the one-shot flag was already consumed).
+                if api_kwargs and api_kwargs.get("tool_choice") and "tool_choice" in str(api_error):
+                    agent._forced_tool_retry = "off"
+                    api_kwargs.pop("tool_choice", None)
+                    logger.warning(
+                        f"{agent.log_prefix}Provider rejected tool_choice; "
+                        f"forced_tool_retry disabled for this session."
+                    )
+                    continue
 
                 # ── Respect disabled auto-compaction on overflow ──────
                 # Ported from anomalyco/opencode#30749.  When the user has

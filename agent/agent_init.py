@@ -1333,6 +1333,17 @@ def init_agent(
     # conversation loop's intent-ack block.
     agent._intent_ack_continuation = _agent_section.get("intent_ack_continuation", "auto")
 
+    # Forced tool-choice retry: "auto" (default) re-requests a malformed
+    # tool call with tool_choice pinned to the failed tool so grammar-
+    # enforcing backends (vLLM) regenerate it schema-valid; "off" disables.
+    # The one-shot flag and per-turn counter live on the agent so the
+    # detection sites (chat_completion_helpers.py stream repair,
+    # tool_executor.py required-fields check) can arm a retry for
+    # conversation_loop.py to consume at the next kwargs build.
+    agent._forced_tool_retry = _agent_section.get("forced_tool_retry", "auto")
+    agent._forced_tool_choice = None
+    agent._forced_tool_retry_count = 0
+
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
     # applies to ALL models, not just the model families enforcement

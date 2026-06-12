@@ -954,6 +954,14 @@ DEFAULT_CONFIG = {
         # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
         # false (never), or a list of model-name substrings to match.
         "intent_ack_continuation": "auto",
+        # Forced tool-choice retry: when the model emits a malformed tool
+        # call (unparseable JSON arguments, or arguments missing required
+        # fields), re-request once with tool_choice pinned to the failed
+        # tool.  Backends with grammar-enforced structured outputs (vLLM)
+        # then regenerate the call schema-valid by construction.  Values:
+        # "auto" (default — inject and self-disable for the session if the
+        # provider rejects tool_choice) or "off".
+        "forced_tool_retry": "auto",
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating

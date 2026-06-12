@@ -154,3 +154,42 @@ def test_readiness_accepts_builtin_ios_simulator_proof_with_command_settings():
     )
 
     assert report.ready is True
+
+
+def test_readiness_blocks_approved_pr_when_github_auth_is_unavailable():
+    config = replace(_code_rollout_config(), rollout_mode="approved_pr")
+
+    report = check_monica_readiness(
+        config=config,
+        environ={
+            "MONICA_SLACK_BOT_TOKEN": "xoxb-token",
+            "MONICA_SLACK_APP_TOKEN": "xapp-token",
+            "LINEAR_API_KEY": "lin-key",
+        },
+        which=lambda name: f"/usr/bin/{name}",
+        module_available=lambda name: True,
+        command_succeeds=lambda command: command != ("gh", "auth", "status"),
+    )
+
+    failure_codes = {issue.code for issue in report.failures}
+    assert report.ready is False
+    assert "github_auth" in failure_codes
+
+
+def test_readiness_accepts_approved_pr_with_github_token_when_gh_auth_fails():
+    config = replace(_code_rollout_config(), rollout_mode="approved_pr")
+
+    report = check_monica_readiness(
+        config=config,
+        environ={
+            "MONICA_SLACK_BOT_TOKEN": "xoxb-token",
+            "MONICA_SLACK_APP_TOKEN": "xapp-token",
+            "LINEAR_API_KEY": "lin-key",
+            "GITHUB_TOKEN": "gh-token",
+        },
+        which=lambda name: f"/usr/bin/{name}",
+        module_available=lambda name: True,
+        command_succeeds=lambda command: command != ("gh", "auth", "status"),
+    )
+
+    assert report.ready is True

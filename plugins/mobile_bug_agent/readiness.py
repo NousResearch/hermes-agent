@@ -263,6 +263,13 @@ def check_monica_readiness(
                 _has_secret(env, "GITHUB_TOKEN"),
                 "GITHUB_TOKEN is missing; this is okay only if gh is already authenticated",
             )
+            require(
+                "github_auth",
+                _has_secret(env, "GITHUB_TOKEN")
+                or not verify_commands
+                or command_ok(("gh", "auth", "status")),
+                "GITHUB_TOKEN is missing and `gh auth status` failed; Monica cannot open draft PRs",
+            )
         if config.proof.enabled or config.proof.required_for_done:
             warn(
                 "proof_commands_empty",
@@ -387,6 +394,7 @@ _APPROVAL_FAILURE_PRIORITY = (
     "slack_approver_invalid",
     "git_executable",
     "gh_executable",
+    "github_auth",
     "worker_backend",
     "codex_executable",
     "codex_approval_policy",

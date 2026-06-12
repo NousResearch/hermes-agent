@@ -1389,12 +1389,13 @@ def _setup_plan_steps(report: Any) -> list[dict[str, str]]:
     if rollout_mode == "approved_pr" and failure_codes & {
         "gh_executable",
         "github_token",
+        "github_auth",
     }:
         _append_setup_step(
             steps,
             step_id="prepare_pr_tools",
             title="Prepare draft-PR tooling",
-            command="gh auth status",
+            command="gh auth status || gh auth login -h github.com",
             why="Approved-PR mode needs GitHub CLI auth for pushing branches and opening draft PRs.",
         )
     if warning_codes & {"proof_commands_empty"} or failure_codes & {

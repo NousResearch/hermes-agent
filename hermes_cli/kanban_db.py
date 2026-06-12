@@ -3092,6 +3092,9 @@ def claim_review_task(
 ) -> Optional[Task]:
     """Atomically transition ``review -> running``.
 
+    Currently unreachable: the only caller is the dead review-column dispatch in
+    :func:`dispatch_once`; retained but marked for removal.
+
     Returns the claimed ``Task`` on success, ``None`` if the task was
     already claimed (or is not in ``review`` status).
 
@@ -6018,6 +6021,10 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     Mirror of :func:`has_spawnable_ready` for the review column —
     used by the health telemetry to decide whether the dispatcher
     should have spawned a review agent.
+
+    Currently unreachable: the review-column dispatch never fires (nothing
+    transitions a task into status='review'), so this helper has no live
+    callers; retained but marked for removal.
     """
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
@@ -6350,6 +6357,14 @@ def dispatch_once(
                 result.auto_blocked.append(claimed.id)
 
     # ---- review column dispatch ----
+    #
+    # NOTE: this lane is currently unreachable and is marked for removal. No
+    # tool, CLI verb, MCP surface, or API transitions a task INTO
+    # status='review', so this loop never runs on any supported path, and the
+    # ``sdlc-review`` skill it force-loads below does not exist. Retained (not
+    # deleted) for now so the removal can be reviewed on its own — do not build
+    # on it.
+    #
     # Review tasks are tasks that a worker moved to 'review' after
     # creating a PR.  The dispatcher spawns a review agent (loading
     # sdlc-review skill) that verifies the PR and either merges (→ done)
@@ -6395,11 +6410,11 @@ def dispatch_once(
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
-        # Force-load sdlc-review skill for review agents.  The
-        # _default_spawn function already auto-loads kanban-worker, and
-        # appends task.skills via --skills.  Setting task.skills here
-        # means the review agent gets both kanban-worker (lifecycle)
-        # and sdlc-review (review logic: AC verification, merge, etc.).
+        # Unreachable (see note above): ``sdlc-review`` is a non-existent skill.
+        # This force-load previously crashed the review worker at CLI startup
+        # (Unknown skill(s): sdlc-review); _default_spawn now availability-guards
+        # per-task skills, so it is dropped-with-warning instead — but the whole
+        # review lane is unreachable and marked for removal regardless.
         claimed.skills = ["sdlc-review"]
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:

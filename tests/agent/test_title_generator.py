@@ -1,9 +1,7 @@
 """Tests for agent.title_generator — auto-generated session titles."""
 
-import threading
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from agent.title_generator import (
     generate_title,
@@ -136,6 +134,21 @@ class TestAutoTitleSession:
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_called_once_with("sess-1", "New Title")
 
+    def test_invokes_title_callback_after_setting_title(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        seen = []
+        with patch("agent.title_generator.generate_title", return_value="Readable Session"):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                title_callback=seen.append,
+            )
+        db.set_session_title.assert_called_once_with("sess-1", "Readable Session")
+        assert seen == ["Readable Session"]
+
     def test_skips_if_generation_fails(self):
         db = MagicMock()
         db.get_session_title.return_value = None
@@ -182,7 +195,13 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=None, main_runtime=None
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                failure_callback=None,
+                main_runtime=None,
+                title_callback=None,
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -202,7 +221,13 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=_cb, main_runtime=None
+                db,
+                "sess-1",
+                "hello",
+                "hi there",
+                failure_callback=_cb,
+                main_runtime=None,
+                title_callback=None,
             )
 
     def test_skips_if_no_response(self):

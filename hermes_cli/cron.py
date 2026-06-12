@@ -6,6 +6,7 @@ pause/resume/run/remove, status, and tick.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 from typing import Iterable, List, Optional
@@ -14,6 +15,24 @@ PROJECT_ROOT = Path(__file__).parent.parent.resolve()
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from hermes_cli.colors import Colors, color
+
+# Patterns that indicate a cron job targets the gateway lifecycle.
+# Matches commands that restart/stop the gateway or its service manager.
+# Deliberately specific — a bare "gateway ... restart" catch-all would block
+# legitimate prompts that merely mention an unrelated gateway (e.g. "summarize
+# the API gateway logs and report restart events").
+_GATEWAY_LIFECYCLE_PATTERNS = re.compile(
+    r"(?i)"
+    r"(hermes\s+gateway\s+(restart|stop|start))"
+    r"|(launchctl\s+(kickstart|unload|load|stop|restart)\s+.*hermes)"
+    r"|(systemctl\s+(restart|stop|start)\s+.*hermes)"
+    r"|(p?kill\s+.*hermes.*gateway)"
+)
+
+
+def _contains_gateway_lifecycle_command(text: str) -> bool:
+    """Return True if *text* contains a gateway lifecycle command pattern."""
+    return bool(_GATEWAY_LIFECYCLE_PATTERNS.search(text))
 
 
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
@@ -62,7 +81,10 @@ def cron_list(show_all: bool = False):
         state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
         next_run = job.get("next_run_at", "?")
 
-        repeat_info = job.get("repeat", {})
+        # `repeat` may be present-but-null in the job record (e.g. a one-shot
+        # job persisted with "repeat": null), so coalesce to {} rather than
+        # relying on the dict-default, which only applies to a missing key.
+        repeat_info = job.get("repeat") or {}
         repeat_times = repeat_info.get("times")
         repeat_completed = repeat_info.get("completed", 0)
         repeat_str = f"{repeat_completed}/{repeat_times}" if repeat_times else "∞"
@@ -93,6 +115,8 @@ def cron_list(show_all: bool = False):
         script = job.get("script")
         if script:
             print(f"    Script:    {script}")
+        if job.get("no_agent"):
+            print(f"    Mode:      {color('no-agent', Colors.DIM)} (script stdout delivered directly)")
         workdir = job.get("workdir")
         if workdir:
             print(f"    Workdir:   {workdir}")
@@ -161,6 +185,28 @@ def cron_status():
 
 
 def cron_create(args):
+    # Defense: reject cron jobs that contain gateway lifecycle commands.
+    # Prevents agents from scheduling their own restart/stop, which creates
+    # SIGTERM-respawn loops under launchd/systemd KeepAlive (#30719).
+    prompt = getattr(args, "prompt", None) or ""
+    script = getattr(args, "script", None)
+    combined = prompt
+    if script:
+        try:
+            script_text = Path(script).read_text(encoding="utf-8")
+            combined = f"{combined}\n{script_text}"
+        except (OSError, UnicodeDecodeError):
+            pass
+    if _contains_gateway_lifecycle_command(combined):
+        print(color(
+            "Blocked: cron job contains a gateway lifecycle command "
+            "(restart/stop/kill).\n"
+            "This is blocked to prevent restart loops (#30719).\n"
+            "Use `hermes gateway restart` from a shell outside the gateway.",
+            Colors.RED,
+        ))
+        return 1
+
     result = _cron_api(
         action="create",
         schedule=args.schedule,
@@ -172,6 +218,7 @@ def cron_create(args):
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        no_agent=getattr(args, "no_agent", False) or None,
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -184,6 +231,8 @@ def cron_create(args):
     job_data = result.get("job", {})
     if job_data.get("script"):
         print(f"  Script: {job_data['script']}")
+    if job_data.get("no_agent"):
+        print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
         print(f"  Workdir: {job_data['workdir']}")
     print(f"  Next run: {result['next_run_at']}")
@@ -191,9 +240,15 @@ def cron_create(args):
 
 
 def cron_edit(args):
-    from cron.jobs import get_job
+    from cron.jobs import AmbiguousJobReference, resolve_job_ref
 
-    job = get_job(args.job_id)
+    try:
+        job = resolve_job_ref(args.job_id)
+    except AmbiguousJobReference as exc:
+        print(color(str(exc), Colors.RED))
+        for m in exc.matches:
+            print(f"  {m['id']}  (name: {m.get('name')!r})")
+        return 1
     if not job:
         print(color(f"Job not found: {args.job_id}", Colors.RED))
         return 1
@@ -225,6 +280,7 @@ def cron_edit(args):
         skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        no_agent=getattr(args, "no_agent", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -240,6 +296,8 @@ def cron_edit(args):
         print("  Skills: none")
     if updated.get("script"):
         print(f"  Script: {updated['script']}")
+    if updated.get("no_agent"):
+        print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
         print(f"  Workdir: {updated['workdir']}")
     return 0

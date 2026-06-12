@@ -90,7 +90,7 @@ def _log(message: str) -> None:
         log_file = get_log_file()
         log_file.parent.mkdir(parents=True, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
-        with open(log_file, "a") as f:
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"[{ts}] {message}\n")
     except OSError:
         # Never let the audit log break the agent loop.
@@ -143,6 +143,33 @@ ALLOWED_CATEGORIES = {
     "temp", "test", "research", "download",
     "chrome-profile", "cron-output", "other",
 }
+
+
+# Paths under $HERMES_HOME that must NEVER be deleted by quick(),
+# regardless of what the stored category says.  This is a defense-in-depth
+# guard against stale tracked.json entries from before #34840.
+_PROTECTED_CRON_PATHS: set[str] = set()
+
+
+def _is_protected_cron_path(p: Path) -> bool:
+    """Return True if *p* is a cron control-plane file/directory that must
+    never be deleted.
+
+    This only matches the directory itself and known control-plane files
+    (``jobs.json``, ``.tick.lock``) — it does NOT blanket-protect
+    everything under ``cron/`` because ``cron/output/`` is disposable.
+    """
+    # Lazily build the set once per process so HERMES_HOME is resolved
+    # exactly once.
+    if not _PROTECTED_CRON_PATHS:
+        hermes_home = get_hermes_home()
+        for parent in ("cron", "cronjobs"):
+            base = hermes_home / parent
+            _PROTECTED_CRON_PATHS.add(str(base))
+            _PROTECTED_CRON_PATHS.add(str(base / "jobs.json"))
+            _PROTECTED_CRON_PATHS.add(str(base / ".tick.lock"))
+    resolved = str(p.resolve())
+    return resolved in _PROTECTED_CRON_PATHS
 
 
 def fmt_size(n: float) -> str:
@@ -226,6 +253,14 @@ def dry_run() -> Tuple[List[Dict], List[Dict]]:
         cat = item["category"]
         size = item["size"]
 
+        # Re-validate stale "cron-output" entries (fixes #37721).
+        if cat == "cron-output":
+            re_cat = guess_category(p)
+            if re_cat != "cron-output":
+                # Stale entry — would be skipped by quick(); omit from
+                # dry-run output too.
+                continue
+
         if cat == "test":
             auto.append(item)
         elif cat == "temp" and age > 7:
@@ -268,6 +303,28 @@ def quick() -> Dict[str, Any]:
             continue
 
         age = (now - datetime.fromisoformat(item["timestamp"])).days
+
+        # ---- stale-state migration (fixes #37721) ----
+        # Old tracked.json entries may carry a "cron-output" category for
+        # paths that are NOT under cron/output/ (e.g. cron/jobs.json).
+        # guess_category() was fixed in #34840, but existing entries are
+        # never re-validated.  Re-classify here so stale entries for cron
+        # control-plane state are not deleted.
+        if cat == "cron-output":
+            re_cat = guess_category(p)
+            if re_cat != "cron-output":
+                _log(
+                    f"SKIP stale cron-output entry: {p} "
+                    f"(re-classified as {re_cat!r})"
+                )
+                # Drop the stale entry — it was misclassified.
+                continue
+
+        # Hard safety net: never delete cron control-plane state even if
+        # the category somehow slipped through re-validation above.
+        if _is_protected_cron_path(p):
+            _log(f"SKIP protected cron path: {p}")
+            continue
 
         should_delete = (
             cat == "test"
@@ -481,7 +538,14 @@ def guess_category(path: Path) -> Optional[str]:
         }:
             return None
         if top == "cron" or top == "cronjobs":
-            return "cron-output"
+            # Only files under the disposable ``output/`` subtree are
+            # cleanup candidates. Top-level cron control-plane state
+            # (e.g. ``jobs.json``, ``.tick.lock``) must never be
+            # auto-tracked — deleting it wipes the live scheduler
+            # registry. See issue #32164.
+            if len(rel.parts) >= 2 and rel.parts[1] == "output":
+                return "cron-output"
+            return None
         if top == "cache":
             return "temp"
     except ValueError:

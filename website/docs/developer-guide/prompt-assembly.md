@@ -26,18 +26,18 @@ Primary files:
 
 ## Cached system prompt layers
 
-The cached system prompt is assembled in roughly this order:
+The cached system prompt is assembled as three ordered tiers (see `agent/system_prompt.py`):
 
-1. agent identity — `SOUL.md` from `HERMES_HOME` when available, otherwise falls back to `DEFAULT_AGENT_IDENTITY` in `prompt_builder.py`
-2. tool-aware behavior guidance
-3. Honcho static block (when active)
-4. optional system message
-5. frozen MEMORY snapshot
-6. frozen USER profile snapshot
-7. skills index
-8. context files (`AGENTS.md`, `.cursorrules`, `.cursor/rules/*.mdc`) — SOUL.md is **not** included here when it was already loaded as the identity in step 1
-9. timestamp / optional session ID
-10. platform hint
+1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, skills prompt, environment hints, platform hints
+2. **context** — caller-supplied `system_message` plus project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`)
+3. **volatile** — built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, timestamp/session/model/provider line
+
+The final system prompt is then joined as: `stable` → `context` → `volatile`.
+
+This ordering matters for precedence discussions:
+- skills are part of the **stable** tier
+- memory/profile snapshots are part of the **volatile** tier
+- both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
 
 When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
 
@@ -205,13 +205,15 @@ These are intentionally *not* persisted as part of the cached system prompt:
 - `ephemeral_system_prompt`
 - prefill messages
 - gateway-derived session context overlays
-- later-turn Honcho recall injected into the current-turn user message
+- later-turn Honcho/external recall injected into the current-turn user message
+
+`pre_llm_call` plugin context also lands in this API-call-time path: it is appended to the current turn's **user message**, not written into the cached system prompt. When multiple plugins return context, Hermes concatenates those context blocks (see [Hooks → `pre_llm_call`](../user-guide/features/hooks.md#pre_llm_call)).
 
 This separation keeps the stable prefix stable for caching.
 
 ## Memory snapshots
 
-Local memory and user profile data are injected as frozen snapshots at session start. Mid-session writes update disk state but do not mutate the already-built system prompt until a new session or forced rebuild occurs.
+Local memory and user profile data are captured in the system prompt's **volatile tier**. Mid-session writes update disk state but do not mutate the already-built cached system prompt until a rebuild path runs (new session, or explicit invalidation/rebuild flow such as compression-triggered rebuild).
 
 ## Context files
 
@@ -229,6 +231,30 @@ Long files are truncated before injection.
 ## Skills index
 
 The skills system contributes a compact skills index to the prompt when skills tooling is available.
+
+## Supported prompt customization surfaces
+
+Most users should treat `agent/prompt_builder.py` as implementation code, not a configuration surface. The supported customization path is to change the prompt inputs Hermes already loads, rather than editing Python templates in place.
+
+### Use these surfaces first
+
+- `~/.hermes/SOUL.md` — replace the built-in default identity block with your own agent persona and standing behavior.
+- `~/.hermes/MEMORY.md` and `~/.hermes/USER.md` — provide durable cross-session facts and user profile data that should be snapshotted into new sessions.
+- Project context files such as `.hermes.md`, `HERMES.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` — inject repo-specific working rules.
+- Skills — package reusable workflows and references without editing core prompt code.
+- Optional system prompt config / API overrides — add deployment-specific instruction text without forking Hermes.
+- Ephemeral overlays such as `HERMES_EPHEMERAL_SYSTEM_PROMPT` or prefill messages — add turn-scoped guidance that should not become part of the cached prompt prefix.
+
+### When to edit code instead
+
+Edit `agent/prompt_builder.py` only if you are intentionally maintaining a fork or contributing upstream behavior changes. That file assembles the prompt plumbing, cache boundaries, and injection order for every session. Direct edits there are global product changes, not per-user prompt customization.
+
+In other words:
+
+- if you want a different assistant identity, edit `SOUL.md`
+- if you want different repo rules, edit project context files
+- if you want reusable operating procedures, add or modify skills
+- if you want to change how Hermes assembles prompts for everyone, change Python and treat it as a code contribution
 
 ## Why prompt assembly is split this way
 

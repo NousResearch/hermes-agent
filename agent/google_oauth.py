@@ -59,7 +59,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, secure_parent_dir
 
 logger = logging.getLogger(__name__)
 
@@ -489,16 +489,27 @@ def save_credentials(creds: GoogleCredentials) -> Path:
     """Atomically write creds to disk with 0o600 permissions."""
     path = _credentials_path()
     path.parent.mkdir(parents=True, exist_ok=True)
+    # Tighten parent dir to 0o700 so siblings can't traverse to the creds file.
+    # On Windows this is a no-op (POSIX mode bits aren't enforced); ignore failures.
+    # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
+    secure_parent_dir(path)
     payload = json.dumps(creds.to_dict(), indent=2, sort_keys=True) + "\n"
 
     with _credentials_lock():
         tmp_path = path.with_suffix(f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
         try:
-            with open(tmp_path, "w", encoding="utf-8") as fh:
+            # Create with 0o600 atomically to close the TOCTOU window where the
+            # default umask (often 0o644) would briefly expose tokens to other
+            # local users between open() and chmod().
+            fd = os.open(
+                str(tmp_path),
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                stat.S_IRUSR | stat.S_IWUSR,
+            )
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
                 fh.write(payload)
                 fh.flush()
                 os.fsync(fh.fileno())
-            os.chmod(tmp_path, stat.S_IRUSR | stat.S_IWUSR)
             atomic_replace(tmp_path, path)
         finally:
             try:
@@ -645,7 +656,7 @@ def get_valid_access_token(*, force_refresh: bool = False) -> str:
     creds = load_credentials()
     if creds is None:
         raise GoogleOAuthError(
-            "No Google OAuth credentials found. Run `hermes login --provider google-gemini-cli` first.",
+            "No Google OAuth credentials found. Run `hermes auth add google-gemini-cli` first.",
             code="google_oauth_not_logged_in",
         )
 
@@ -888,7 +899,15 @@ def start_oauth_flow(
         try:
             import webbrowser
 
-            webbrowser.open(auth_url, new=1, autoraise=True)
+            try:
+                from hermes_cli.auth import (
+                    _can_open_graphical_browser as _can_open_gui,
+                )
+            except Exception:
+                _can_open_gui = lambda: True  # noqa: E731
+
+            if _can_open_gui():
+                webbrowser.open(auth_url, new=1, autoraise=True)
         except Exception as exc:
             logger.debug("webbrowser.open failed: %s", exc)
 

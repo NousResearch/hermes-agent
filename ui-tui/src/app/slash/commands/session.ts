@@ -10,6 +10,7 @@ import type {
   SessionUsageResponse,
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
+import { formatVoiceRecordKey, parseVoiceRecordKey } from '../../../lib/platform.js'
 import { fmtK } from '../../../lib/text.js'
 import type { PanelSection } from '../../../types.js'
 import { DEFAULT_INDICATOR_STYLE, INDICATOR_STYLES, type IndicatorStyle } from '../../interfaces.js'
@@ -61,7 +62,6 @@ export const sessionCommands: SlashCommand[] = [
 
   {
     help: 'change or show model',
-    aliases: ['provider'],
     name: 'model',
     run: (arg, ctx) => {
       if (ctx.session.guardBusySessionSwitch('change models')) {
@@ -72,10 +72,25 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: true })
       }
 
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: modelValueForConfigSet(arg) })
+      const switchModel = (confirmExpensiveModel = false) => ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { confirm_expensive_model: confirmExpensiveModel, key: 'model', session_id: ctx.sid, value: modelValueForConfigSet(arg) })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
+            if (r.confirm_required) {
+              patchOverlayState({
+                confirm: {
+                  cancelLabel: 'Cancel',
+                  confirmLabel: 'Switch anyway',
+                  danger: true,
+                  detail: r.confirm_message || r.warning || 'This model has unusually high known pricing.',
+                  onConfirm: () => switchModel(true),
+                  title: 'Expensive model selection'
+                }
+              })
+
+              return
+            }
+
             if (!r.value) {
               return ctx.transcript.sys('error: invalid response: model switch')
             }
@@ -89,6 +104,37 @@ export const sessionCommands: SlashCommand[] = [
             }))
           })
         )
+
+      switchModel()
+    }
+  },
+
+  {
+    aliases: ['switch', 'session', 'resume'],
+    help: 'browse, switch, or resume sessions',
+    name: 'sessions',
+    run: (arg, ctx) => {
+      const trimmed = arg.trim()
+
+      // A new *live* session keeps the current one running in the background
+      // (it doesn't close it), so fanning out while busy is allowed — that's
+      // the whole point of multiple live sessions.
+      if (trimmed.toLowerCase() === 'new') {
+        return ctx.session.newLiveSession()
+      }
+
+      // `/resume <id|title>` (and `/sessions <id>`) load a cold session and
+      // CLOSE the current one, so guard it while a turn is in-flight to avoid
+      // corrupting streaming/busy state. Bare opens the overlay to browse.
+      if (trimmed) {
+        if (ctx.session.guardBusySessionSwitch('switch sessions')) {
+          return
+        }
+
+        return ctx.session.resumeById(trimmed)
+      }
+
+      patchOverlayState({ sessions: true })
     }
   },
 
@@ -109,7 +155,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'switch or reset personality (history reset on set)',
+    help: 'switch personality for this session',
     name: 'personality',
     run: (arg, ctx) => {
       if (!arg) {
@@ -199,7 +245,6 @@ export const sessionCommands: SlashCommand[] = [
           void ctx.session.closeSession(prevSid)
           patchUiState({ sid: r.session_id })
           ctx.session.setSessionStartedAt(Date.now())
-          ctx.transcript.setHistoryItems([])
           ctx.transcript.sys(`branched → ${r.title ?? ''}`)
         })
       )
@@ -220,6 +265,31 @@ export const sessionCommands: SlashCommand[] = [
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
+          ctx.voice.setVoiceTts(!!r.tts)
+
+          // Render the configured record key (config.yaml ``voice.record_key``)
+          // instead of hardcoded "Ctrl+B" — the gateway response carries the
+          // current value so /voice status and /voice on stay in sync with
+          // both the CLI and the TUI's actual binding (#18994).
+          //
+          // Copilot review on #19835 caught that rendering from the fresh
+          // backend response WITHOUT updating the frontend ``voice.recordKey``
+          // state would skew display and binding between config-edit and
+          // the next ``mtime`` poll (~5s). Parse once, push into state so
+          // ``useInputHandlers()`` picks up the new binding immediately.
+          //
+          // Round-2 follow-up: only push state when the response actually
+          // carries ``record_key`` — otherwise an older gateway (or a future
+          // branch that forgets to include it) would clobber a custom user
+          // binding back to the default on every /voice invocation. The
+          // label still falls back to the documented default for display.
+          const parsed = r.record_key ? parseVoiceRecordKey(r.record_key) : undefined
+
+          if (parsed) {
+            ctx.voice.setVoiceRecordKey(parsed)
+          }
+
+          const recordKeyLabel = formatVoiceRecordKey(parsed ?? parseVoiceRecordKey('ctrl+b'))
 
           // Match CLI's _show_voice_status / _enable_voice_mode /
           // _toggle_voice_tts output shape so users don't have to learn
@@ -230,11 +300,11 @@ export const sessionCommands: SlashCommand[] = [
             ctx.transcript.sys('Voice Mode Status')
             ctx.transcript.sys(`  Mode:       ${mode}`)
             ctx.transcript.sys(`  TTS:        ${tts}`)
-            ctx.transcript.sys('  Record key: Ctrl+B')
+            ctx.transcript.sys(`  Record key: ${recordKeyLabel}`)
 
             // CLI's "Requirements:" block — surfaces STT/audio setup issues
             // so the user sees "STT provider: MISSING ..." instead of
-            // silently failing on every Ctrl+B press.
+            // silently failing on every record-key press.
             if (r.details) {
               ctx.transcript.sys('')
               ctx.transcript.sys('  Requirements:')
@@ -259,7 +329,7 @@ export const sessionCommands: SlashCommand[] = [
           if (r.enabled) {
             const tts = r.tts ? ' (TTS enabled)' : ''
             ctx.transcript.sys(`Voice mode enabled${tts}`)
-            ctx.transcript.sys('  Ctrl+B to start/stop recording')
+            ctx.transcript.sys(`  ${recordKeyLabel} to start/stop recording`)
             ctx.transcript.sys('  /voice tts  to toggle speech output')
             ctx.transcript.sys('  /voice off  to disable voice mode')
           } else {
@@ -465,7 +535,7 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'session usage (live counts — worker sees zeros)',
+    help: 'session usage + Nous credits',
     name: 'usage',
     run: (_arg, ctx) => {
       ctx.gateway.rpc<SessionUsageResponse>('session.usage', { session_id: ctx.sid }).then(r => {
@@ -479,8 +549,19 @@ export const sessionCommands: SlashCommand[] = [
           })
         }
 
+        // Nous credits block is agent-independent (a portal fetch), so it shows
+        // even with zero API calls or on a resumed session. Render it whenever
+        // present, before the token panel.
+        const creditsLines = r?.credits_lines ?? []
+        if (creditsLines.length) {
+          ctx.transcript.panel('Nous credits', [{ text: creditsLines.join('\n') }])
+        }
+
         if (!r?.calls) {
-          return ctx.transcript.sys('no API calls yet')
+          if (!creditsLines.length) {
+            ctx.transcript.sys('no API calls yet')
+          }
+          return
         }
 
         const f = (v: number | undefined) => (v ?? 0).toLocaleString()

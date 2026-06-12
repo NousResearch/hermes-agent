@@ -83,17 +83,10 @@ function parseKey(keypress: ParsedKey): [Key, string] {
     input = ''
   }
 
-  // Suppress ESC-less SGR mouse fragments. When a heavy React commit blocks
-  // the event loop past App's 50ms NORMAL_TIMEOUT flush, a CSI split across
-  // stdin chunks gets its buffered ESC flushed as a lone Escape key, and the
-  // continuation arrives as a text token with name='' — which falls through
-  // all of parseKeypress's ESC-anchored regexes and the nonAlphanumericKeys
-  // clear below (name is falsy). The fragment then leaks into the prompt as
-  // literal `[<64;74;16M`. This is the same defensive sink as the F13 guard
-  // above; the underlying tokenizer-flush race is upstream of this layer.
-  if (!keypress.name && /^\[<\d+;\d+;\d+[Mm]/.test(input)) {
-    input = ''
-  }
+  // (SGR mouse-report fragments used to be scrubbed here. They no longer reach
+  // this layer: the tokenizer keeps an incomplete CSI buffered across a
+  // watchdog flush and reassembles it on the next feed instead of force-
+  // emitting the partial as input. See termio/tokenize.ts.)
 
   // Strip meta if it's still remaining after `parseKeypress`
   // TODO(vadimdemedes): remove this in the next major version.

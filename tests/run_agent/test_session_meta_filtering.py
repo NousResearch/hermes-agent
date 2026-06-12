@@ -6,8 +6,6 @@ _sanitize_api_messages() and the CLI session-restore paths.
 """
 
 import logging
-import types
-from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent
 

@@ -19,6 +19,7 @@ Iterative Python via live Jupyter kernel (hamelnb).
 | Version | `1.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `jupyter`, `notebook`, `repl`, `data-science`, `exploration`, `iterative` |
 
 ## Reference: full SKILL.md

@@ -1,17 +1,27 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
-import os
+import json
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 from agent.display import (
     build_tool_preview,
     capture_local_edit_snapshot,
     extract_edit_diff,
+    get_cute_tool_message,
+    set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
+    _used_free_parallel,
     render_edit_diff_with_delta,
 )
+
+
+@pytest.fixture(autouse=True)
+def reset_tool_preview_max_len():
+    set_tool_preview_max_len(0)
+    yield
+    set_tool_preview_max_len(0)
 
 
 class TestBuildToolPreview:
@@ -100,6 +110,106 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+
+class TestCuteToolMessagePreviewLength:
+    def test_terminal_preview_unlimited_when_config_is_zero(self):
+        set_tool_preview_max_len(0)
+        command = "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")' | head -5"
+
+        line = get_cute_tool_message("terminal", {"command": command}, 0.1)
+
+        assert command in line
+        assert "..." not in line
+
+    def test_terminal_preview_uses_positive_configured_limit(self):
+        set_tool_preview_max_len(80)
+        command = "curl -s http://localhost:9222/json/list | jq -r '.[] | select(.type==\"page\")' | head -5"
+
+        line = get_cute_tool_message("terminal", {"command": command}, 0.1)
+
+        assert command[:77] in line
+        assert "..." in line
+        assert "head -5" not in line
+
+    def test_search_files_preview_uses_positive_configured_limit_not_default(self):
+        set_tool_preview_max_len(80)
+        pattern = "function.formatToolCall.context.preview.compactPreview.maxLength.truncate"
+
+        line = get_cute_tool_message("search_files", {"pattern": pattern}, 0.1)
+
+        assert pattern in line
+        assert "..." not in line
+
+    def test_path_preview_uses_positive_configured_limit_not_default(self):
+        set_tool_preview_max_len(80)
+        path = "/tmp/hermes-test-preview-length/deeply/nested/path/test-output.txt"
+
+        line = get_cute_tool_message("read_file", {"path": path}, 0.1)
+
+        assert path in line
+        assert "..." not in line
+
+    def test_write_file_lint_error_result_is_not_marked_failed(self):
+        result = json.dumps({
+            "bytes_written": 12,
+            "lint": {"status": "error", "output": "SyntaxError: invalid syntax"},
+        })
+
+        line = get_cute_tool_message("write_file", {"path": "/tmp/a.py"}, 0.1, result=result)
+
+        assert "[error]" not in line
+
+    def test_patch_lsp_diagnostics_result_is_not_marked_failed(self):
+        result = json.dumps({
+            "success": True,
+            "diff": "--- a/tmp.py\n+++ b/tmp.py\n",
+            "lsp_diagnostics": "<diagnostics>ERROR [1:1] type mismatch</diagnostics>",
+        })
+
+        line = get_cute_tool_message("patch", {"path": "/tmp/a.py"}, 0.1, result=result)
+
+        assert "[error]" not in line
+
+
+class TestWebProviderLabel:
+    """The free-path "Parallel search"/"Parallel fetch" verb labeling."""
+
+    def test_free_search_verb_is_parallel(self):
+        result = json.dumps({"success": True, "data": {"web": []}, "provider": "parallel"})
+        line = get_cute_tool_message("web_search", {"query": "hello"}, 0.1, result=result)
+        assert "Parallel search" in line
+        assert "hello" in line
+
+    def test_paid_search_verb_is_plain(self):
+        result = json.dumps({"success": True, "data": {"web": [{"url": "u"}]}})
+        line = get_cute_tool_message("web_search", {"query": "hi"}, 0.1, result=result)
+        assert "Parallel" not in line
+        assert "search" in line
+
+    def test_missing_result_verb_is_plain(self):
+        line = get_cute_tool_message("web_search", {"query": "hello"}, 0.1)
+        assert "Parallel" not in line
+        assert "search" in line
+
+    def test_helper_is_parallel_free_specific(self):
+        # Only Parallel's free MCP path marks results; nothing else does.
+        assert _used_free_parallel(json.dumps({"provider": "parallel"})) is True
+        assert _used_free_parallel(json.dumps({"provider": "exa"})) is False
+        assert _used_free_parallel(json.dumps({"provider": "firecrawl"})) is False
+        assert _used_free_parallel(json.dumps({"success": True, "data": {}})) is False
+        assert _used_free_parallel('not json') is False
+        assert _used_free_parallel(None) is False
+
+    def test_free_extract_verb_is_parallel(self):
+        result = json.dumps({"results": [{"url": "u", "content": "x"}], "provider": "parallel"})
+        line = get_cute_tool_message("web_extract", {"urls": ["https://a.test"]}, 0.1, result=result)
+        assert "Parallel fetch" in line
+
+    def test_paid_extract_verb_is_plain(self):
+        result = json.dumps({"results": [{"url": "u", "content": "x"}]})
+        line = get_cute_tool_message("web_extract", {"urls": ["https://a.test"]}, 0.1, result=result)
+        assert "Parallel" not in line
 
 
 class TestEditDiffPreview:

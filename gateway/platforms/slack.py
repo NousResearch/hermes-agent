@@ -1533,10 +1533,10 @@ class SlackAdapter(BasePlatformAdapter):
                     chat_id, chunk, metadata, human_delay=human_delay
                 )
 
-    def _record_uploaded_file_thread(
+    def _record_bot_thread_participation(
         self, chat_id: str, thread_ts: Optional[str]
     ) -> None:
-        """Treat successful file uploads as bot participation in a thread."""
+        """Record a thread root where this bot has posted a reply."""
         if not thread_ts:
             return
         self._bot_message_ts.add(thread_ts)
@@ -1544,6 +1544,12 @@ class SlackAdapter(BasePlatformAdapter):
             excess = len(self._bot_message_ts) - self._BOT_TS_MAX // 2
             for old_ts in list(self._bot_message_ts)[:excess]:
                 self._bot_message_ts.discard(old_ts)
+
+    def _record_uploaded_file_thread(
+        self, chat_id: str, thread_ts: Optional[str]
+    ) -> None:
+        """Backward-compatible wrapper for file/video send paths."""
+        self._record_bot_thread_participation(chat_id, thread_ts)
 
     def _is_retryable_upload_error(self, exc: Exception) -> bool:
         """Best-effort detection for transient Slack upload failures."""
@@ -2400,7 +2406,8 @@ class SlackAdapter(BasePlatformAdapter):
         #   1. The bot is @mentioned in this message, OR
         #   2. The message is a reply in a thread the bot started/participated in, OR
         #   3. The message is in a thread where the bot was previously @mentioned, OR
-        #   4. There's an existing session for this thread (survives restarts)
+        #   4. There's an existing session for this thread (survives restarts), OR
+        #   5. Slack history proves this bot already participated in the thread
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         routing_text = original_text or ""
         is_mentioned = bot_uid and f"<@{bot_uid}>" in routing_text
@@ -2435,10 +2442,26 @@ class SlackAdapter(BasePlatformAdapter):
                     thread_ts=event_thread_ts,
                     user_id=user_id,
                 )
+                has_fetched_bot_participation = False
                 if (
                     not reply_to_bot_thread
                     and not in_mentioned_thread
                     and not has_session
+                    and is_thread_reply
+                ):
+                    has_fetched_bot_participation = (
+                        await self._thread_has_prior_bot_participation(
+                            channel_id=channel_id,
+                            thread_ts=event_thread_ts,
+                            current_ts=ts,
+                            team_id=team_id,
+                        )
+                    )
+                if (
+                    not reply_to_bot_thread
+                    and not in_mentioned_thread
+                    and not has_session
+                    and not has_fetched_bot_participation
                 ):
                     return
 
@@ -3190,6 +3213,95 @@ class SlackAdapter(BasePlatformAdapter):
         # (approval state already consumed by atomic pop above)
 
     # ----- Thread context fetching -----
+
+    async def _thread_has_prior_bot_participation(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        current_ts: str,
+        team_id: str = "",
+        limit: int = 30,
+    ) -> bool:
+        """Return True if Slack history shows this bot already participated.
+
+        This is the restart-safe fallback for mention-gated channel threads:
+        in-memory ``_bot_message_ts`` / ``_mentioned_threads`` are empty after a
+        gateway restart, but Slack's thread history still contains our prior
+        bot message.  Fail closed on API errors so channel traffic does not
+        become broadly ungated.
+        """
+        if not channel_id or not thread_ts or not current_ts:
+            return False
+
+        bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
+        if not bot_uid:
+            return False
+
+        try:
+            client = self._get_client(channel_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                latest=current_ts,
+                limit=limit,
+                inclusive=False,
+            )
+            if result and result.get("ok") is False:
+                logger.debug(
+                    "[Slack] Failed to check thread bot participation; failing closed: channel=%s thread_ts=%s error=%s",
+                    channel_id,
+                    thread_ts,
+                    result.get("error", "unknown"),
+                )
+                return False
+            messages = result.get("messages", []) if result else []
+            if not messages:
+                return False
+
+            current_value = self._parse_slack_ts(current_ts)
+            for msg in messages:
+                msg_ts = str(msg.get("ts", "") or "")
+                if msg_ts == current_ts:
+                    continue
+                msg_value = self._parse_slack_ts(msg_ts)
+                if (
+                    current_value is not None
+                    and msg_value is not None
+                    and msg_value >= current_value
+                ):
+                    continue
+
+                msg_user = str(msg.get("user", "") or "")
+                if msg_user == bot_uid:
+                    self._record_bot_thread_participation(channel_id, thread_ts)
+                    logger.debug(
+                        "[Slack] Allowing unmentioned thread reply after history confirmed bot participation: channel=%s thread_ts=%s",
+                        channel_id,
+                        thread_ts,
+                    )
+                    return True
+
+            logger.debug(
+                "[Slack] Ignoring unmentioned thread reply: no prior bot participation found in Slack history (channel=%s thread_ts=%s)",
+                channel_id,
+                thread_ts,
+            )
+            return False
+        except Exception as exc:
+            logger.debug(
+                "[Slack] Failed to check thread bot participation; failing closed: channel=%s thread_ts=%s error=%s",
+                channel_id,
+                thread_ts,
+                exc,
+            )
+            return False
+
+    @staticmethod
+    def _parse_slack_ts(ts: str) -> Optional[float]:
+        try:
+            return float(ts)
+        except (TypeError, ValueError):
+            return None
 
     async def _fetch_thread_context(
         self,

@@ -107,6 +107,12 @@ def adapter():
     # Mock the Slack app client
     a._app = MagicMock()
     a._app.client = AsyncMock()
+    a._app.client.users_info = AsyncMock(
+        return_value={"user": {"profile": {"display_name": "Test User"}}}
+    )
+    a._app.client.conversations_replies = AsyncMock(
+        return_value={"ok": True, "messages": []}
+    )
     a._bot_user_id = "U_BOT"
     a._running = True
     # Capture events instead of processing them
@@ -1678,6 +1684,196 @@ class TestIncomingDocumentHandling:
 
 
 class TestMessageRouting:
+    def _channel_thread_reply_event(self, text="thread follow-up"):
+        return {
+            "text": text,
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000002",
+            "thread_ts": "1234567890.000001",
+            "team": "T123",
+        }
+
+    async def _handle_with_thread_fetches_stubbed(self, adapter, event):
+        with (
+            patch.object(
+                adapter, "_fetch_thread_context", new_callable=AsyncMock
+            ) as fetch_context,
+            patch.object(
+                adapter, "_fetch_thread_parent_text", new_callable=AsyncMock
+            ) as fetch_parent,
+        ):
+            fetch_context.return_value = ""
+            fetch_parent.return_value = ""
+            await adapter._handle_slack_message(event)
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_thread_reply_processed_when_replies_show_prior_bot_participation(
+        self, adapter
+    ):
+        """Unmentioned channel thread replies continue after restart when Slack history shows this bot already participated."""
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "ok": True,
+                "messages": [
+                    {"ts": "1234567890.000001", "user": "U_USER", "text": "parent"},
+                    {
+                        "ts": "1234567890.0000015",
+                        "user": "U_BOT",
+                        "bot_id": "B_BOT",
+                        "subtype": "bot_message",
+                        "text": "bob reply",
+                    },
+                    {
+                        "ts": "1234567890.000002",
+                        "user": "U_USER",
+                        "text": "thread follow-up",
+                    },
+                ],
+            }
+        )
+
+        await self._handle_with_thread_fetches_stubbed(
+            adapter, self._channel_thread_reply_event()
+        )
+
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args.args[0]
+        assert msg_event.text == "thread follow-up"
+        assert msg_event.source.thread_id == "1234567890.000001"
+        assert "1234567890.000001" in adapter._bot_message_ts
+        adapter._app.client.conversations_replies.assert_awaited_once_with(
+            channel="C123",
+            ts="1234567890.000001",
+            latest="1234567890.000002",
+            limit=30,
+            inclusive=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_thread_reply_checks_recent_prior_window_not_thread_start(
+        self, adapter
+    ):
+        """Long threads should check the bounded window immediately before the triggering reply."""
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "ok": True,
+                "messages": [
+                    {
+                        "ts": "1234567890.0000015",
+                        "user": "U_BOT",
+                        "bot_id": "B_BOT",
+                        "subtype": "bot_message",
+                        "text": "recent bob reply",
+                    }
+                ],
+            }
+        )
+
+        await self._handle_with_thread_fetches_stubbed(
+            adapter, self._channel_thread_reply_event()
+        )
+
+        adapter.handle_message.assert_called_once()
+        adapter._app.client.conversations_replies.assert_awaited_once_with(
+            channel="C123",
+            ts="1234567890.000001",
+            latest="1234567890.000002",
+            limit=30,
+            inclusive=False,
+        )
+
+    @pytest.mark.asyncio
+    async def test_unmentioned_thread_reply_ignored_when_replies_show_no_bot_participation(
+        self, adapter
+    ):
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "ok": True,
+                "messages": [
+                    {"ts": "1234567890.000001", "user": "U_USER", "text": "parent"},
+                    {"ts": "1234567890.000002", "user": "U_USER", "text": "follow-up"},
+                ],
+            }
+        )
+
+        await self._handle_with_thread_fetches_stubbed(
+            adapter, self._channel_thread_reply_event()
+        )
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_strict_mention_ignores_unmentioned_thread_even_with_prior_bot_participation(
+        self,
+    ):
+        config = PlatformConfig(
+            enabled=True,
+            token="***",
+            extra={"strict_mention": True, "require_mention": True},
+        )
+        adapter = SlackAdapter(config)
+        adapter._app = MagicMock()
+        adapter._app.client = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Test User"}}}
+        )
+        adapter._bot_user_id = "U_BOT"
+        adapter._running = True
+        adapter.handle_message = AsyncMock()
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "ok": True,
+                "messages": [
+                    {"ts": "1234567890.000001", "user": "U_USER", "text": "parent"},
+                    {
+                        "ts": "1234567890.0000015",
+                        "user": "U_BOT",
+                        "bot_id": "B_BOT",
+                        "subtype": "bot_message",
+                        "text": "bob reply",
+                    },
+                ],
+            }
+        )
+
+        await self._handle_with_thread_fetches_stubbed(
+            adapter, self._channel_thread_reply_event()
+        )
+
+        adapter.handle_message.assert_not_called()
+        adapter._app.client.conversations_replies.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_participation_api_failure_fails_closed(self, adapter):
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
+        adapter._app.client.conversations_replies = AsyncMock(
+            side_effect=RuntimeError("slack unavailable")
+        )
+
+        await self._handle_with_thread_fetches_stubbed(
+            adapter, self._channel_thread_reply_event()
+        )
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_thread_participation_not_ok_response_fails_closed(self, adapter):
+        adapter._team_bot_user_ids["T123"] = "U_BOT"
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={"ok": False, "error": "missing_scope", "messages": []}
+        )
+
+        await self._handle_with_thread_fetches_stubbed(
+            adapter, self._channel_thread_reply_event()
+        )
+
+        adapter.handle_message.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_dm_processed_without_mention(self, adapter):
         """DM messages should be processed without requiring a bot mention."""
@@ -1703,6 +1899,7 @@ class TestMessageRouting:
         }
         await adapter._handle_slack_message(event)
         adapter.handle_message.assert_not_called()
+        adapter._app.client.conversations_replies.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_channel_mention_strips_bot_id(self, adapter):
@@ -2525,6 +2722,12 @@ class TestThreadReplyHandling:
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
+        a._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Test User"}}}
+        )
+        a._app.client.conversations_replies = AsyncMock(
+            return_value={"ok": True, "messages": []}
+        )
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True
@@ -2621,6 +2824,7 @@ class TestThreadReplyHandling:
         }
         await adapter_with_session_store._handle_slack_message(event)
         adapter_with_session_store.handle_message.assert_not_called()
+        adapter_with_session_store._app.client.conversations_replies.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_session_store_ignores_thread_replies(self, adapter):
@@ -2663,6 +2867,12 @@ class TestAssistantThreadLifecycle:
         a = SlackAdapter(config)
         a._app = MagicMock()
         a._app.client = AsyncMock()
+        a._app.client.users_info = AsyncMock(
+            return_value={"user": {"profile": {"display_name": "Test User"}}}
+        )
+        a._app.client.conversations_replies = AsyncMock(
+            return_value={"ok": True, "messages": []}
+        )
         a._bot_user_id = "U_BOT"
         a._team_bot_user_ids = {"T_TEAM": "U_BOT"}
         a._running = True

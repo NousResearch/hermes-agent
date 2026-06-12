@@ -772,6 +772,14 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     model_in = (model or "").strip()
     canonical = normalize_provider(prov_in)
 
+    # ``custom:<name>`` slugs are user-defined providers from config.yaml
+    # (``providers:`` / ``custom_providers:``) — valid as-is, and their model
+    # namespaces routinely contain ``/`` (e.g. kr/claude-opus-4.8 on a local
+    # router). They must never be mistaken for a vendor prefix below, which
+    # would silently rewrite the assignment onto openrouter.
+    if canonical.startswith("custom:"):
+        return prov_in, model_in
+
     if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that

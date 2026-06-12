@@ -904,6 +904,7 @@ def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
         last_status = None
         last_error_code = None
         last_status_at = None
+        consecutive_failures = 0
 
     class _Pool:
         def entries(self):
@@ -941,6 +942,7 @@ def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
         last_status = "exhausted"
         last_error_code = 429
         last_status_at = 1000.0
+        consecutive_failures = 0
 
     class _Pool:
         def entries(self):
@@ -975,6 +977,7 @@ def test_auth_list_shows_auth_failure_when_exhausted_entry_is_unauthorized(monke
         last_error_reason = "invalid_token"
         last_error_message = "Access token expired or revoked."
         last_status_at = 1000.0
+        consecutive_failures = 0
 
     class _Pool:
         def entries(self):
@@ -1011,6 +1014,7 @@ def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):
         last_error_message = "Weekly credits exhausted."
         last_error_reset_at = "2026-04-12T10:30:00Z"
         last_status_at = 1000.0
+        consecutive_failures = 0
 
     class _Pool:
         def entries(self):

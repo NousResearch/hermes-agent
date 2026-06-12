@@ -210,6 +210,27 @@ class TestCreateSkill:
         assert result["success"] is True
         assert (tmp_path / "my-skill" / "SKILL.md").exists()
 
+    def test_create_skill_returns_quality_report(self, tmp_path):
+        content = """\
+---
+name: my-skill
+description: Use when testing skill quality report integration.
+---
+
+# My Skill
+
+Step 1: Do the thing.
+"""
+        with _skill_dir(tmp_path):
+            result = _create_skill("my-skill", content)
+        assert result["success"] is True
+        assert result["quality"]["grade"] == "S"
+        assert result["quality"]["failed_counts"] == {
+            "BLOCKER": 0,
+            "MAJOR": 0,
+            "MINOR": 0,
+        }
+
     def test_create_with_category(self, tmp_path):
         with _skill_dir(tmp_path):
             result = _create_skill("my-skill", VALID_SKILL_CONTENT, category="devops")
@@ -488,6 +509,7 @@ class TestRemoveFile:
             _write_file("my-skill", "references/api.md", "content")
             result = _remove_file("my-skill", "references/api.md")
         assert result["success"] is True
+        assert result["quality"]["grade"] in {"S", "A"}
         assert not (tmp_path / "my-skill" / "references" / "api.md").exists()
 
     def test_remove_nonexistent_file(self, tmp_path):

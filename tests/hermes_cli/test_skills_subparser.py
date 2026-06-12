@@ -2,6 +2,8 @@
 
 import argparse
 
+from hermes_cli.subcommands.skills import build_skills_parser
+
 
 def test_no_duplicate_skills_subparser():
     """Ensure 'skills' subparser is only registered once to avoid Python 3.11+ crash.
@@ -32,3 +34,16 @@ def test_no_duplicate_skills_subparser():
                 "See issue #898 for details."
             ) from e
         raise
+
+
+def test_skills_grade_subparser_accepts_target_and_json():
+    parser = argparse.ArgumentParser()
+    subparsers = parser.add_subparsers(dest="command")
+    build_skills_parser(subparsers, cmd_skills=lambda args: None)
+
+    args = parser.parse_args(["skills", "grade", "my-skill", "--json"])
+
+    assert args.command == "skills"
+    assert args.skills_action == "grade"
+    assert args.target == "my-skill"
+    assert args.json is True

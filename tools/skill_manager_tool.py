@@ -101,6 +101,37 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
     return None
 
+
+def _attach_quality_report(result: Dict[str, Any], skill_dir: Path) -> Dict[str, Any]:
+    """Attach a non-blocking deterministic quality report to a successful write.
+
+    Security scan above remains the only write-time blocker.  Quality grading is
+    advisory so the agent can immediately improve a weak skill without turning
+    every minor rubric issue into a failed tool call.
+    """
+    if not result.get("success"):
+        return result
+    try:
+        from tools.skill_quality import grade_skill
+
+        report = grade_skill(skill_dir)
+        data = report.to_dict()
+        data["findings"] = [
+            finding for finding in data["findings"]
+            if finding.get("status") == "fail"
+        ]
+        result["quality"] = data
+        result["quality_summary"] = (
+            f"grade {report.grade}; "
+            f"BLOCKER {report.failed_counts['BLOCKER']}, "
+            f"MAJOR {report.failed_counts['MAJOR']}, "
+            f"MINOR {report.failed_counts['MINOR']}"
+        )
+    except Exception as e:
+        logger.warning("Quality grading failed for %s: %s", skill_dir, e, exc_info=True)
+    return result
+
+
 import yaml
 
 
@@ -536,7 +567,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
-    return result
+    return _attach_quality_report(result, skill_dir)
 
 
 def _edit_skill(name: str, content: str) -> Dict[str, Any]:
@@ -565,11 +596,11 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
             _atomic_write_text(skill_md, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    return _attach_quality_report({
         "success": True,
         "message": f"Skill '{name}' updated.",
         "path": str(existing["path"]),
-    }
+    }, existing["path"])
 
 
 def _patch_skill(
@@ -660,10 +691,10 @@ def _patch_skill(
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
 
-    return {
+    return _attach_quality_report({
         "success": True,
         "message": f"Patched {'SKILL.md' if not file_path else file_path} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
-    }
+    }, skill_dir)
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:
@@ -768,11 +799,11 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
             target.unlink(missing_ok=True)
         return {"success": False, "error": scan_error}
 
-    return {
+    return _attach_quality_report({
         "success": True,
         "message": f"File '{file_path}' written to skill '{name}'.",
         "path": str(target),
-    }
+    }, existing["path"])
 
 
 def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
@@ -812,10 +843,10 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     if parent != skill_dir and parent.exists() and not any(parent.iterdir()):
         parent.rmdir()
 
-    return {
+    return _attach_quality_report({
         "success": True,
         "message": f"File '{file_path}' removed from skill '{name}'.",
-    }
+    }, skill_dir)
 
 
 # =============================================================================

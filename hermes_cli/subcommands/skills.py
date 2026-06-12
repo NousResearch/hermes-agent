@@ -135,6 +135,25 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Run AST-level analysis on Python files (opt-in diagnostic)",
     )
 
+    skills_grade = skills_subparsers.add_parser(
+        "grade",
+        help="Grade a skill with deterministic quality checks",
+        description=(
+            "Grade an installed Hermes skill or a skill directory/SKILL.md path "
+            "using deterministic quality checks for structure, trigger quality, "
+            "resource hygiene, script syntax, and dangerous content."
+        ),
+    )
+    skills_grade.add_argument(
+        "target",
+        help="Installed skill name, skill directory, or SKILL.md path",
+    )
+    skills_grade.add_argument(
+        "--json",
+        action="store_true",
+        help="Output JSON instead of a human-readable report",
+    )
+
     skills_uninstall = skills_subparsers.add_parser(
         "uninstall", help="Remove a hub-installed skill"
     )

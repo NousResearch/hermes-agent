@@ -1,3 +1,4 @@
+import json
 from io import StringIO
 from unittest.mock import patch
 
@@ -5,7 +6,7 @@ import pytest
 from rich.console import Console
 
 from cli import ChatConsole
-from hermes_cli.skills_hub import do_check, do_install, do_list, do_update, handle_skills_slash
+from hermes_cli.skills_hub import do_check, do_grade, do_install, do_list, do_update, handle_skills_slash
 
 
 class _DummyLockFile:
@@ -96,6 +97,71 @@ def _capture_update(monkeypatch, results) -> tuple[str, list[tuple[str, str, boo
 
     do_update(console=console)
     return sink.getvalue(), installs
+
+
+def test_do_grade_json_is_valid_even_on_narrow_consoles(tmp_path):
+    skill_dir = tmp_path / "json-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: json-skill
+description: Use when testing JSON output for deterministic quality reports.
+---
+
+# JSON Skill
+
+Step 1: Produce a quality report.
+""",
+        encoding="utf-8",
+    )
+    sink = StringIO()
+    console = Console(file=sink, width=20, force_terminal=False, color_system=None)
+
+    result = do_grade(str(skill_dir), console=console, as_json=True)
+
+    data = json.loads(sink.getvalue())
+    assert result == 0
+    assert data["skill_name"] == "json-skill"
+    assert data["grade"] == "S"
+
+
+def test_do_grade_json_error_is_valid_for_missing_target():
+    sink = StringIO()
+    console = Console(file=sink, width=20, force_terminal=False, color_system=None)
+
+    result = do_grade("/definitely/missing/skill", console=console, as_json=True)
+
+    data = json.loads(sink.getvalue())
+    assert result == 1
+    assert data == {
+        "success": False,
+        "error": "Skill or path not found: /definitely/missing/skill",
+    }
+
+
+def test_do_grade_returns_nonzero_for_grade_f(tmp_path):
+    skill_dir = tmp_path / "f-skill"
+    skill_dir.mkdir()
+    (skill_dir / "SKILL.md").write_text(
+        """---
+name: f-skill
+description: A helper for reports.
+---
+
+# F Skill
+
+Use when preparing recurring weekly reports.
+""",
+        encoding="utf-8",
+    )
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+
+    result = do_grade(str(skill_dir), console=console, as_json=True)
+
+    data = json.loads(sink.getvalue())
+    assert result == 1
+    assert data["grade"] == "F"
 
 
 # ---------------------------------------------------------------------------

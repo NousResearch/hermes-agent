@@ -1069,6 +1069,49 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
         c.print()
 
 
+def _resolve_quality_target(target: str) -> Optional[Path]:
+    """Resolve a grade target as path first, then installed skill name."""
+    raw = Path(target).expanduser()
+    if raw.exists():
+        return raw.parent if raw.name == "SKILL.md" else raw
+
+    # Name lookup mirrors skill_manage's active-profile + external_dirs search.
+    try:
+        from tools.skill_manager_tool import _find_skill
+
+        found = _find_skill(target)
+        if found:
+            return found["path"]
+    except Exception:
+        pass
+    return None
+
+
+def do_grade(target: str, console: Optional[Console] = None,
+             as_json: bool = False) -> int:
+    """Grade an installed skill or skill directory with deterministic checks."""
+    from tools.skill_quality import grade_skill, render_quality_report, GRADE_F
+
+    c = console or _console
+    skill_dir = _resolve_quality_target(target)
+    if not skill_dir:
+        message = f"Skill or path not found: {target}"
+        if as_json:
+            c.file.write(json.dumps({"success": False, "error": message}, ensure_ascii=False) + "\n")
+            c.file.flush()
+        else:
+            c.print(f"[bold red]Error:[/] {message}\n")
+        return 1
+
+    report = grade_skill(skill_dir)
+    if as_json:
+        c.file.write(report.to_json() + "\n")
+        c.file.flush()
+    else:
+        c.print(render_quality_report(report), markup=False)
+    return 1 if report.grade == GRADE_F else 0
+
+
 def do_uninstall(name: str, console: Optional[Console] = None,
                  skip_confirm: bool = False,
                  invalidate_cache: bool = True) -> None:
@@ -1619,6 +1662,11 @@ def skills_command(args) -> None:
     elif action == "audit":
         do_audit(name=getattr(args, "name", None),
                  deep=getattr(args, "deep", False))
+    elif action == "grade":
+        exit_code = do_grade(getattr(args, "target", ""),
+                             as_json=getattr(args, "json", False))
+        if exit_code:
+            raise SystemExit(exit_code)
     elif action == "uninstall":
         do_uninstall(args.name)
     elif action == "reset":
@@ -1654,7 +1702,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|grade|uninstall|reset|opt-out|opt-in|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1803,6 +1851,14 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         deep = "--deep" in args
         do_audit(name=name, console=c, deep=deep)
 
+    elif action == "grade":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills grade <name-or-path> [--json]\n")
+            return
+        target = args[0]
+        as_json = "--json" in args
+        do_grade(target, console=c, as_json=as_json)
+
     elif action == "uninstall":
         if not args:
             c.print("[bold red]Usage:[/] /skills uninstall <name> [--now]\n")
@@ -1882,6 +1938,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
+        "  [cyan]grade[/] <name-or-path>        Grade skill quality with deterministic checks\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"

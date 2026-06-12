@@ -31,9 +31,11 @@ pub fn hermes_home() -> PathBuf {
 
     #[cfg(target_os = "windows")]
     {
-        // %LOCALAPPDATA%\hermes — matches scripts/install.ps1's $HermesHome.
+        // %LOCALAPPDATA%\noverhead-agent-desktop — the branded bootstrapper's
+        // default home. install.ps1 is invoked with an explicit HERMES_HOME
+        // override so the script and bootstrapper stay aligned.
         if let Some(local_app_data) = dirs::data_local_dir() {
-            return local_app_data.join("hermes");
+            return local_app_data.join("noverhead-agent-desktop");
         }
     }
 
@@ -66,13 +68,13 @@ pub fn bootstrap_cache_dir() -> PathBuf {
 /// HERMES_HOME so it survives repo checkout deletion (unlike anything under
 /// hermes-agent/).
 ///
-/// On Windows this is `%LOCALAPPDATA%\hermes\hermes-setup.exe`; on other
+/// On Windows this is `%LOCALAPPDATA%\noverhead-agent-desktop\noverhead-agent-desktop-setup.exe`; on other
 /// platforms the extension differs but the directory is the same.
 pub fn installer_dest() -> PathBuf {
     let name = if cfg!(target_os = "windows") {
-        "hermes-setup.exe"
+        "noverhead-agent-desktop-setup.exe"
     } else {
-        "hermes-setup"
+        "noverhead-agent-desktop-setup"
     };
     hermes_home().join(name)
 }

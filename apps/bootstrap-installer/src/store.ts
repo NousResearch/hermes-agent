@@ -240,6 +240,7 @@ export async function initialize(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 export async function startInstall(opts?: { branch?: string }): Promise<void> {
+  const hermesHome = $hermesHome.get() ?? await invoke<string>('get_hermes_home')
   // Reset before kicking off so a retry from the failure screen clears
   // the previous run's state.
   $bootstrap.set(INITIAL)
@@ -249,7 +250,7 @@ export async function startInstall(opts?: { branch?: string }): Promise<void> {
       commit: null,
       branch: opts?.branch ?? null,
       include_desktop: true,
-      hermes_home: null
+      hermes_home: hermesHome
     }
   })
 }

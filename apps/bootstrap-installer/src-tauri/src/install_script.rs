@@ -189,7 +189,7 @@ fn truncate_ref(s: &str) -> &str {
 /// `dest_path.tmp` → `dest_path` so partial writes don't poison the cache.
 async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Result<()> {
     let url = format!(
-        "https://raw.githubusercontent.com/NousResearch/hermes-agent/{}/scripts/{}",
+        "https://raw.githubusercontent.com/noverhead-germany/hermes-agent/{}/scripts/{}",
         commit_or_ref,
         kind.filename()
     );
@@ -210,7 +210,7 @@ async fn download(kind: ScriptKind, commit_or_ref: &str, dest_path: &Path) -> Re
 
     let response = reqwest::Client::new()
         .get(&url)
-        .header("User-Agent", "hermes-setup/0.0.1")
+        .header("User-Agent", "noverhead-agent-desktop-setup/0.0.1")
         .send()
         .await
         .with_context(|| format!("GET {url}"))?;

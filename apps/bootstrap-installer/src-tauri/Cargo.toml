@@ -1,8 +1,8 @@
 [package]
 name = "hermes-bootstrap"
 version = "0.0.1"
-description = "Hermes Setup — signed installer that drives scripts/install.ps1"
-authors = ["Nous Research <info@nousresearch.com>"]
+description = "NOverhead Agent Desktop Setup — signed installer that drives scripts/install.ps1"
+authors = ["NOverhead Germany"]
 edition = "2021"
 rust-version = "1.77"
 
@@ -11,7 +11,7 @@ rust-version = "1.77"
 # what we hand her, period. Tauri honors [[bin]] over [package].name
 # for the produced executable name.
 [[bin]]
-name = "Hermes-Setup"
+name = "NOverhead-Agent-Desktop-Setup"
 path = "src/main.rs"
 
 # The library target name MUST match the `withGlobalTauri` binding name that

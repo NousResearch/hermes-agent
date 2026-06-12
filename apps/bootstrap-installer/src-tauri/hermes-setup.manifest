@@ -1,14 +1,14 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <!--
-    Hermes Setup application manifest.
+    NOverhead Agent Desktop Setup application manifest.
 
     The TL;DR: tell Windows we are NOT an installer in the classic "needs
     UAC elevation" sense, despite the product name. We provision into
-    %LOCALAPPDATA%\hermes which is user-scoped and never touch HKLM or
+    %LOCALAPPDATA%\noverhead-agent-desktop which is user-scoped and never touch HKLM or
     Program Files. install.ps1 runs as a child process and elevates
     itself only if a future stage explicitly needs HKLM access.
 
-    Without this manifest, the "Hermes Setup" productName embedded in
+    Without this manifest, the "NOverhead Agent Desktop Setup" productName embedded in
     the binary's resource trips Windows's installer-detection heuristic
     (https://learn.microsoft.com/en-us/windows/security/identity-protection/
     user-account-control/how-user-account-control-works#installer-detection)
@@ -19,10 +19,10 @@
     <assemblyIdentity
         version="0.0.1.0"
         processorArchitecture="*"
-        name="NousResearch.Hermes.Setup"
+        name="NOverhead.AgentDesktop.Setup"
         type="win32"
     />
-    <description>Hermes Setup</description>
+    <description>NOverhead Agent Desktop Setup</description>
 
     <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
         <security>

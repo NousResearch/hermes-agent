@@ -31,9 +31,9 @@ export default function Welcome() {
           }
         >
           <span>
-            <span>HERMES AGENT</span>
+            <span>NOVERHEAD AGENT DESKTOP</span>
           </span>
-          <span aria-hidden="true">HERMES AGENT</span>
+          <span aria-hidden="true">NOVERHEAD AGENT DESKTOP</span>
         </p>
 
         <p className="m-0 text-center text-base leading-normal tracking-tight text-muted-foreground">
@@ -47,7 +47,7 @@ export default function Welcome() {
         size="lg"
         className="group inline-flex items-center gap-2 px-6"
       >
-        Install Hermes
+        Install NOverhead Agent Desktop
         <ArrowRight
           size={18}
           className="transition-transform group-hover:translate-x-0.5"

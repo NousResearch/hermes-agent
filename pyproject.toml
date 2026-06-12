@@ -113,6 +113,19 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.2.0",
+  # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
+  # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
+  # Windows whenever any other process holds an append-mode handle on
+  # ``agent.log`` (always the case in Hermes — TUI, gateway, ``hy_memory``
+  # server, MCP servers, and on-demand CLI commands all log from separate
+  # processes), pinning ``agent.log`` at the 5 MiB threshold and spamming
+  # stderr on every emit (see #44873). ``concurrent-log-handler`` wraps
+  # the rename in a cross-process file lock (msvcrt on Windows, fcntl on
+  # POSIX) so only one process rotates at a time and the others wait
+  # their turn. Aliasing the import in ``hermes_logging.py`` makes the
+  # swap transparent to every existing ``isinstance`` / class-declaration
+  # check. Pure-Python, no compiled deps.
+  "concurrent-log-handler==0.9.29",
 ]
 
 [project.optional-dependencies]

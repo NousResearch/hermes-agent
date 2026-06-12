@@ -1,11 +1,14 @@
 """Tests for hermes_logging — centralized logging setup."""
-
+import io
 import logging
 import os
 import stat
 import sys
 import threading
-from logging.handlers import RotatingFileHandler
+# Same alias as hermes_logging.py so the autouse fixture's isinstance
+# checks (which strip rotating handlers between tests) match the new
+# CLH-backed handler class on installs that pulled in #44873's fix.
+from concurrent_log_handler import ConcurrentRotatingFileHandler as RotatingFileHandler
 from pathlib import Path
 from unittest.mock import patch
 

@@ -32,9 +32,23 @@ import logging
 import os
 import sys
 import threading
-from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Optional, Sequence
+
+# On Windows, stdlib ``RotatingFileHandler`` calls ``os.rename()`` in
+# ``doRollover()`` and fails with ``PermissionError [WinError 32]`` whenever
+# another process holds an append-mode handle on ``agent.log`` — which is
+# essentially always in Hermes (TUI, gateway, ``hy_memory`` server, MCP
+# servers, and on-demand CLI commands all log from separate processes),
+# pinning ``agent.log`` at the 5 MiB threshold and spamming stderr with
+# a traceback on every emit. ``concurrent-log-handler`` wraps the
+# rename in a cross-process file lock (msvcrt on Windows, fcntl on POSIX)
+# so only one process rotates at a time and the others wait their turn.
+# Drop-in API compatibility — aliasing lets every existing
+# ``RotatingFileHandler`` reference in this module (the class declaration,
+# the ``isinstance`` checks, the docstring) keep working unchanged.
+# See #44873.
+from concurrent_log_handler import ConcurrentRotatingFileHandler as RotatingFileHandler  # noqa: E402
 
 from hermes_constants import get_config_path, get_hermes_home
 

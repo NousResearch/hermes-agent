@@ -47,3 +47,7 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_MAX_POST_LENGTH
+    description: "Max characters per post before splitting into chunks (default: 16383, the server limit)."
+    prompt: "Max post length"
+    password: false

@@ -84,6 +84,19 @@ describe('PendingToolApproval', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
+  it('reveals the full command inline when the Command toggle is clicked', () => {
+    const longCommand = 'python -c "' + 'x'.repeat(400) + '"'
+    setRequest(longCommand)
+    render(<PendingToolApproval part={part('terminal')} />)
+
+    // Collapsed by default: the full command is not in the DOM yet.
+    expect(screen.queryByText(longCommand)).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: /Command/ }))
+
+    expect(screen.getByText(longCommand)).toBeTruthy()
+  })
+
   it('sends choice "deny" on Reject', async () => {
     const request = mockGateway()
     setRequest()

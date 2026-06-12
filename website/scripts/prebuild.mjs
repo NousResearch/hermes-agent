@@ -16,11 +16,10 @@
 // several minutes and burns GitHub API quota — but still gets the same
 // 2000+ external skills the deployed site has.
 //
-// If python3 or its deps (pyyaml) aren't available on the local machine, we
-// fall back to writing an empty skills.json so `npm run build` still
-// succeeds — the Skills Hub page just shows an empty state, and llms.txt
-// generation is skipped. CI always has the deps installed, so production
-// deploys get real data.
+// Prefer the repo virtualenv's Python when present, so local source checkouts use
+// the same dependencies and Python version as Hermes itself. If no usable Python
+// or deps (pyyaml) are available, fall back to writing an empty skills.json so
+// `npm run build` still succeeds — the Skills Hub page just shows an empty state.
 
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, existsSync, statSync } from "node:fs";
@@ -29,6 +28,7 @@ import { fileURLToPath } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const websiteDir = resolve(scriptDir, "..");
+const repoDir = resolve(websiteDir, "..");
 const extractScript = join(scriptDir, "extract-skills.py");
 const llmsScript = join(scriptDir, "generate-llms-txt.py");
 const cronBlueprintsScript = join(scriptDir, "extract-automation-blueprints.py");
@@ -47,14 +47,38 @@ function writeEmptyFallback(reason) {
   );
 }
 
+function pythonCommand() {
+  const candidates = [
+    process.env.PYTHON,
+    join(repoDir, "venv", "bin", "python"),
+    join(repoDir, ".venv", "bin", "python"),
+    "python3",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    // The prebuild scripts rely on PyYAML. Probe that dependency too so a
+    // stale repo venv does not shadow a working system Python.
+    const probe = spawnSync(
+      candidate,
+      ["-c", "import sys, yaml; print(sys.executable)"],
+      { encoding: "utf8" },
+    );
+    if (probe.status === 0) {
+      return candidate;
+    }
+  }
+  return "python3";
+}
+
+const python = pythonCommand();
+
 function runPython(script, label) {
   if (!existsSync(script)) {
     console.warn(`[prebuild] ${label} skipped (script missing)`);
     return false;
   }
-  const r = spawnSync("python3", [script], { stdio: "inherit", cwd: websiteDir });
+  const r = spawnSync(python, [script], { stdio: "inherit", cwd: websiteDir });
   if (r.error && r.error.code === "ENOENT") {
-    console.warn(`[prebuild] ${label} skipped (python3 not found)`);
+    console.warn(`[prebuild] ${label} skipped (${python} not found)`);
     return false;
   }
   if (r.status !== 0) {
@@ -126,12 +150,12 @@ await ensureUnifiedIndex();
 if (!existsSync(extractScript)) {
   writeEmptyFallback("extract script missing");
 } else {
-  const r = spawnSync("python3", [extractScript], {
+  const r = spawnSync(python, [extractScript], {
     stdio: "inherit",
     cwd: websiteDir,
   });
   if (r.error && r.error.code === "ENOENT") {
-    writeEmptyFallback("python3 not found");
+    writeEmptyFallback(`${python} not found`);
   } else if (r.status !== 0) {
     writeEmptyFallback(`extract-skills.py exited with status ${r.status}`);
   }

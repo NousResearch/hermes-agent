@@ -1254,6 +1254,7 @@ from gateway.platforms.base import (
     MessageType,
     _reply_anchor_for_event,
     merge_pending_message_event,
+    queued_event_count,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -3703,13 +3704,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         running_agent = self._running_agents.get(session_key)
 
         effective_mode = self._busy_input_mode
-        busy_text_mode = getattr(self, "_busy_text_mode", "interrupt")
+        busy_text_mode = getattr(self, "_busy_text_mode", "queue")
+        # TEXT follow-ups in busy_text_mode=queue still go through the runner
+        # busy handler so the user gets an immediate "queued" acknowledgement.
+        # The adapter's debounce path only stores the next turn; it is silent.
+        # Returning False here made Telegram look unresponsive even though the
+        # follow-up was queued correctly.
         if (
             event.message_type == MessageType.TEXT
             and busy_text_mode == "queue"
             and effective_mode != "steer"
         ):
-            return False
+            effective_mode = "queue"
 
         # Steer mode: inject mid-run via running_agent.steer() instead of
         # queueing + interrupting.  If the agent isn't running yet
@@ -3785,12 +3791,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Busy ack suppressed for session %s", session_key)
             return True  # input still processed, just no ack sent
 
+        queued_pending_event = adapter._pending_messages.get(session_key) if is_queue_mode else None
+        queued_count = queued_event_count(queued_pending_event) if queued_pending_event else 1
+        last_acked_queue_count = int(getattr(queued_pending_event, "_hermes_last_ack_queue_count", 0) or 0)
+        queue_count_increased = is_queue_mode and queued_count > last_acked_queue_count
+
         # Debounce: only send an acknowledgment once every 30 seconds per session
-        # to avoid spamming the user when they send multiple messages quickly
+        # to avoid spamming the user when they send multiple messages quickly.
+        # Queue-mode is the exception: if another follow-up was merged into the
+        # pending turn, send the updated Queue #N/N badge even inside cooldown so
+        # mobile users can see the backlog is growing instead of wondering if the
+        # later message was swallowed.
         _BUSY_ACK_COOLDOWN = 30
         now = time.time()
         last_ack = self._busy_ack_ts.get(session_key, 0)
-        if now - last_ack < _BUSY_ACK_COOLDOWN:
+        if now - last_ack < _BUSY_ACK_COOLDOWN and not queue_count_increased:
             return True  # interrupt sent (if not queue), ack already delivered recently
 
         self._busy_ack_ts[session_key] = now
@@ -3828,6 +3843,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
         status_detail = f" ({', '.join(status_parts)})" if status_parts else ""
+        queue_badge = "Queue #1/1"
+        if is_queue_mode:
+            queue_badge = f"Queue #{queued_count}/{queued_count}"
         if is_steer_mode:
             message = (
                 f"⏩ Steered into current run{status_detail}. "
@@ -3838,13 +3856,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # follow-up didn't accidentally kill the subagent and
             # discovers `/stop` as the explicit escape hatch.
             message = (
-                f"⏳ Subagent working{status_detail} — your message is queued for "
-                f"when it finishes (use /stop to cancel everything)."
+                f"⏳ {queue_badge}: subagent working{status_detail}. "
+                f"I’ll pick this up when it finishes (use /stop to cancel everything)."
             )
         elif is_queue_mode:
             message = (
-                f"⏳ Queued for the next turn{status_detail}. "
-                f"I'll respond once the current task finishes."
+                f"⏳ {queue_badge}{status_detail}. "
+                f"I’ll pick this up automatically once the current task finishes."
             )
         else:
             message = (
@@ -3894,6 +3912,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 ),
                 metadata=thread_meta,
             )
+            if queued_pending_event is not None:
+                setattr(queued_pending_event, "_hermes_last_ack_queue_count", queued_count)
         except Exception as e:
             logger.debug("Failed to send busy-ack: %s", e)
 
@@ -8900,10 +8920,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
 
-            # Auto voice reply: send TTS audio before the text response
+            # Auto voice reply: keep Telegram/user-visible ordering text → voice.
+            # If streaming already sent the text, send audio now. Otherwise append
+            # internal MEDIA tags so the adapter sends the text first and the voice
+            # bubble underneath during normal response post-processing.
             _already_sent = bool(agent_result.get("already_sent"))
             if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
-                await self._send_voice_reply(event, response)
+                if _already_sent:
+                    await self._send_voice_reply(event, response)
+                else:
+                    _voice_tags = await self._voice_reply_media_tags(response)
+                    if _voice_tags:
+                        response = f"{response}\n{_voice_tags}"
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -9819,8 +9847,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return True
 
+    async def _voice_reply_media_tags(self, text: str) -> str:
+        """Generate TTS audio and return MEDIA tags for post-text delivery.
+
+        Used when the normal adapter path will still send the text response.
+        The adapter strips these internal tags from the visible message, sends
+        the text first, and then uploads the audio underneath it.
+        """
+        try:
+            from tools.tts_tool import text_to_speech_tool, _strip_markdown_for_tts
+
+            tts_text = _strip_markdown_for_tts(text[:4000])
+            if not tts_text:
+                return ""
+
+            result_json = await asyncio.to_thread(text_to_speech_tool, text=tts_text)
+            try:
+                result = json.loads(result_json)
+            except (json.JSONDecodeError, TypeError):
+                logger.warning(
+                    "Auto voice reply TTS returned invalid JSON for media tags: %s",
+                    result_json[:200] if result_json else result_json,
+                )
+                return ""
+
+            actual_path = result.get("file_path")
+            if not result.get("success") or not actual_path or not os.path.isfile(actual_path):
+                logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
+                return ""
+            return f"[[audio_as_voice]]\nMEDIA:{actual_path}"
+        except Exception as e:
+            logger.warning("Auto voice reply media-tag generation failed: %s", e, exc_info=True)
+            return ""
+
     async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply."""
+        """Generate TTS audio and send as a voice message after streamed text."""
         import uuid as _uuid
         audio_path = None
         actual_path = None

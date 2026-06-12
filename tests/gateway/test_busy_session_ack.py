@@ -30,6 +30,7 @@ from gateway.platforms.base import (
     Platform,
     SessionSource,
     build_session_key,
+    queued_event_count,
 )
 
 
@@ -235,35 +236,63 @@ class TestBusySessionAck:
         adapter._send_with_retry.assert_called_once()
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
-        assert "respond once the current task finishes" in content
+        assert "Queue #1/1" in content
+        assert "pick this up automatically" in content
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
-    async def test_busy_text_mode_queue_delegates_to_adapter_handle_message(self):
-        """busy_text_mode=queue lets the adapter debounce text silently."""
+    async def test_busy_text_mode_queue_sends_ack_and_queues_text(self):
+        """busy_text_mode=queue should still acknowledge active TEXT follow-ups."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         runner._busy_text_mode = "queue"
         adapter = _make_adapter()
 
+        event = _make_event(text="part one")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        assert sk in adapter._pending_messages
+        assert adapter._pending_messages[sk] is event
+        agent.interrupt.assert_not_called()
+        adapter._send_with_retry.assert_called_once()
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queue #1/1" in content
+
+    @pytest.mark.asyncio
+    async def test_queue_ack_number_increments_for_merged_followups(self):
+        """Queue ack updates the visible queued batch number even inside cooldown."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
         first = _make_event(text="part one")
-        second = _make_event(text="part two")
+        second = MessageEvent(
+            text="part two",
+            message_type=MessageType.TEXT,
+            source=first.source,
+            message_id="msg2",
+        )
         sk = build_session_key(first.source)
 
         agent = MagicMock()
         runner._running_agents[sk] = agent
         runner.adapters[first.source.platform] = adapter
-        runner.adapters[second.source.platform] = adapter
 
-        result1 = await runner._handle_active_session_busy_message(first, sk)
-        result2 = await runner._handle_active_session_busy_message(second, sk)
+        await runner._handle_active_session_busy_message(first, sk)
+        await runner._handle_active_session_busy_message(second, sk)
 
-        assert result1 is False
-        assert result2 is False
-        assert sk not in adapter._pending_messages
-        agent.interrupt.assert_not_called()
-        adapter._send_with_retry.assert_not_called()
+        pending = adapter._pending_messages[sk]
+        assert queued_event_count(pending) == 2
+        assert adapter._send_with_retry.await_count == 2
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queue #2/2" in content
 
     @pytest.mark.asyncio
     async def test_steer_mode_calls_agent_steer_no_interrupt_no_queue(self):
@@ -323,7 +352,7 @@ class TestBusySessionAck:
         # Ack uses queue-mode wording (not steer, not interrupt)
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
+        assert "Queue #1/1" in content
         assert "Steered" not in content
 
     @pytest.mark.asyncio
@@ -348,7 +377,7 @@ class TestBusySessionAck:
 
         call_kwargs = adapter._send_with_retry.call_args
         content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
-        assert "Queued for the next turn" in content
+        assert "Queue #1/1" in content
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
@@ -664,7 +693,7 @@ class TestBusySessionOnboardingHint:
             await runner._handle_active_session_busy_message(event, sk)
 
         content = adapter._send_with_retry.call_args.kwargs.get("content", "")
-        assert "Queued for the next turn" in content
+        assert "Queue #1/1" in content
         assert "First-time tip" in content
         assert "/busy interrupt" in content
         # Must NOT tell the user to /busy queue when they're already on queue.

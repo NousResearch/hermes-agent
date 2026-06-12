@@ -403,6 +403,33 @@ class TestAutoVoiceReply:
         assert self._call(runner, "all", MessageType.TEXT, agent_messages=messages) is True
 
 
+
+
+class TestAutoTtsTextFirstOrdering:
+    """Regression coverage for Telegram UX: text appears above voice."""
+
+    def test_base_adapter_sends_text_before_auto_tts(self):
+        import inspect
+        from gateway.platforms.base import BasePlatformAdapter
+
+        source = inspect.getsource(BasePlatformAdapter._process_message_background)
+        text_idx = source.find("# Send the text portion before any auto-TTS voice bubble.")
+        play_idx = source.find("# Play auto-TTS after text.")
+
+        assert text_idx > 0
+        assert play_idx > text_idx
+        assert "caption=telegram_tts_caption" not in source
+
+    def test_runner_non_streaming_voice_reply_uses_media_tags(self):
+        import inspect
+        from gateway.run import GatewayRunner
+
+        source = inspect.getsource(GatewayRunner._handle_message_with_agent)
+
+        assert "_voice_reply_media_tags" in source
+        assert 'response = f"{response}\\n{_voice_tags}"' in source
+
+
 # =====================================================================
 # _send_voice_reply
 # =====================================================================

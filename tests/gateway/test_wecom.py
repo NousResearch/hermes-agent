@@ -122,6 +122,30 @@ class TestWeComConnect:
         assert adapter.fatal_error_code == "wecom_connect_error"
         assert "invalid secret" in (adapter.fatal_error_message or "")
 
+    @pytest.mark.asyncio
+    async def test_open_connection_cleans_up_session_when_ws_connect_fails(self, monkeypatch):
+        import gateway.platforms.wecom as wecom_module
+        from gateway.platforms.wecom import WeComAdapter
+
+        class FailingSession:
+            def ws_connect(self, *args, **kwargs):
+                raise RuntimeError("dial failed")
+
+        monkeypatch.setattr(
+            wecom_module,
+            "aiohttp",
+            SimpleNamespace(ClientSession=lambda **kwargs: FailingSession()),
+        )
+        adapter = WeComAdapter(
+            PlatformConfig(enabled=True, extra={"bot_id": "bot-1", "secret": "secret-1"})
+        )
+        adapter._cleanup_ws = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="dial failed"):
+            await adapter._open_connection()
+
+        assert adapter._cleanup_ws.await_count == 2
+
 
 class TestWeComQrScan:
     @patch("gateway.platforms.wecom.time")

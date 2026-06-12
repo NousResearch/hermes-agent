@@ -281,31 +281,38 @@ class WeComAdapter(BasePlatformAdapter):
     async def _open_connection(self) -> None:
         """Open and authenticate a websocket connection."""
         await self._cleanup_ws()
-        self._session = aiohttp.ClientSession(trust_env=True)
-        self._ws = await self._session.ws_connect(
-            self._ws_url,
-            heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2,
-            timeout=CONNECT_TIMEOUT_SECONDS,
-        )
+        if aiohttp is None:
+            raise RuntimeError("aiohttp is required for WeCom")
+        session = aiohttp.ClientSession(trust_env=True)
+        self._session = session
+        try:
+            self._ws = await session.ws_connect(
+                self._ws_url,
+                heartbeat=HEARTBEAT_INTERVAL_SECONDS * 2,
+                timeout=CONNECT_TIMEOUT_SECONDS,
+            )
 
-        req_id = self._new_req_id("subscribe")
-        await self._send_json(
-            {
-                "cmd": APP_CMD_SUBSCRIBE,
-                "headers": {"req_id": req_id},
-                "body": {
-                    "bot_id": self._bot_id,
-                    "secret": self._secret,
-                    "device_id": self._device_id,
-                },
-            }
-        )
+            req_id = self._new_req_id("subscribe")
+            await self._send_json(
+                {
+                    "cmd": APP_CMD_SUBSCRIBE,
+                    "headers": {"req_id": req_id},
+                    "body": {
+                        "bot_id": self._bot_id,
+                        "secret": self._secret,
+                        "device_id": self._device_id,
+                    },
+                }
+            )
 
-        auth_payload = await self._wait_for_handshake(req_id)
-        errcode = auth_payload.get("errcode", 0)
-        if errcode not in {0, None}:
-            errmsg = auth_payload.get("errmsg", "authentication failed")
-            raise RuntimeError(f"{errmsg} (errcode={errcode})")
+            auth_payload = await self._wait_for_handshake(req_id)
+            errcode = auth_payload.get("errcode", 0)
+            if errcode not in {0, None}:
+                errmsg = auth_payload.get("errmsg", "authentication failed")
+                raise RuntimeError(f"{errmsg} (errcode={errcode})")
+        except Exception:
+            await self._cleanup_ws()
+            raise
 
     async def _wait_for_handshake(self, req_id: str) -> Dict[str, Any]:
         """Wait for the subscribe acknowledgement."""

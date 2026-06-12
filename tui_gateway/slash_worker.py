@@ -100,6 +100,7 @@ def main():
 
     os.environ["HERMES_SESSION_KEY"] = args.session_key
     os.environ["HERMES_INTERACTIVE"] = "1"
+    os.environ["HERMES_SLASH_WORKER"] = "1"
 
     # Start before the (hundreds-of-ms) HermesCLI build — that window is itself
     # an orphan risk if the gateway dies mid-spawn.

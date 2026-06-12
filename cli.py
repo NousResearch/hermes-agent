@@ -8519,6 +8519,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if _skip:
                 return "once"
 
+        # Slash worker (TUI gateway subprocess) — non-interactive JSON protocol.
+        # The gateway user already confirmed by sending the command; auto-approve.
+        if os.getenv("HERMES_SLASH_WORKER") == "1":
+            return "once"
+
         # Gate check — respects prior "Always Approve" clicks.
         try:
             cfg = load_cli_config()

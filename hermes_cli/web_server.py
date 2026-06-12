@@ -65,6 +65,76 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
 
+# ---------------------------------------------------------------------------
+# Cached gateway config to avoid expensive plugin discovery on every request
+# ---------------------------------------------------------------------------
+_gateway_config_cache: tuple[float, Any] | None = None
+_gateway_config_cache_lock = threading.Lock()
+_GATEWAY_CONFIG_CACHE_TTL = 30.0  # seconds
+
+# ---------------------------------------------------------------------------
+# Response cache for /api/status endpoint (data doesn't need to be real-time)
+# ---------------------------------------------------------------------------
+_status_response_cache: tuple[float, dict] | None = None
+_status_response_cache_lock = threading.Lock()
+_STATUS_RESPONSE_CACHE_TTL = 5.0  # seconds
+
+
+def _get_cached_gateway_config():
+    """Get gateway config with caching to avoid repeated plugin discovery."""
+    # Bypass cache during pytest runs to avoid cross-test contamination
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        from gateway.config import load_gateway_config
+        return load_gateway_config()
+
+    global _gateway_config_cache
+    now = time.time()
+    with _gateway_config_cache_lock:
+        if _gateway_config_cache is not None:
+            cached_time, cached_config = _gateway_config_cache
+            if now - cached_time < _GATEWAY_CONFIG_CACHE_TTL:
+                return cached_config
+
+        # Cache miss or expired - load fresh
+        try:
+            from gateway.config import load_gateway_config
+            config = load_gateway_config()
+            _gateway_config_cache = (now, config)
+            return config
+        except Exception:
+            # Return stale cache if available, otherwise None
+            if _gateway_config_cache is not None:
+                return _gateway_config_cache[1]
+            raise
+
+
+def _get_cached_status_response():
+    """Get cached status response or compute fresh."""
+    # Bypass cache during pytest runs to avoid cross-test contamination
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return None
+
+    global _status_response_cache
+    now = time.time()
+    with _status_response_cache_lock:
+        if _status_response_cache is not None:
+            cached_time, cached_response = _status_response_cache
+            if now - cached_time < _STATUS_RESPONSE_CACHE_TTL:
+                return cached_response
+        return None
+
+
+def _set_cached_status_response(response: dict):
+    """Cache the status response."""
+    # Bypass cache during pytest runs to avoid cross-test contamination
+    if os.getenv("PYTEST_CURRENT_TEST"):
+        return
+
+    global _status_response_cache
+    with _status_response_cache_lock:
+        _status_response_cache = (time.time(), response)
+
+
 try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
@@ -1539,6 +1609,11 @@ async def fs_default_cwd():
 
 @app.get("/api/status")
 async def get_status():
+    # Check response cache first
+    cached = _get_cached_status_response()
+    if cached is not None:
+        return cached
+
     current_ver, latest_ver = check_config_version()
 
     # --- Gateway liveness detection ---
@@ -1566,9 +1641,7 @@ async def get_status():
     gateway_updated_at = None
     configured_gateway_platforms: set[str] | None = None
     try:
-        from gateway.config import load_gateway_config
-
-        gateway_config = load_gateway_config()
+        gateway_config = _get_cached_gateway_config()
         configured_gateway_platforms = {
             platform.value for platform in gateway_config.get_connected_platforms()
         }
@@ -1637,7 +1710,7 @@ async def get_status():
         # Module not importable yet (early startup) — leave as [].
         pass
 
-    return {
+    response = {
         "version": __version__,
         "release_date": __release_date__,
         "hermes_home": str(get_hermes_home()),
@@ -1656,6 +1729,8 @@ async def get_status():
         "auth_required": auth_required,
         "auth_providers": auth_providers,
     }
+    _set_cached_status_response(response)
+    return response
 
 
 _WINDOWS_11_MIN_BUILD = 22000

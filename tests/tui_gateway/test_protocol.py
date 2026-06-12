@@ -301,6 +301,9 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
         def get_session_by_title(self, _title):
             return None
 
+        def resolve_resume_session_id(self, target):
+            return target
+
         def reopen_session(self, _sid):
             return None
 
@@ -359,6 +362,9 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
         def get_session_by_title(self, _title):
             return None
 
+        def resolve_resume_session_id(self, target):
+            return target
+
         def reopen_session(self, _sid):
             return None
 
@@ -409,6 +415,9 @@ def test_session_resume_reuses_existing_live_session(server, monkeypatch):
 
         def get_session_by_title(self, _title):
             return None
+
+        def resolve_resume_session_id(self, current):
+            return current
 
         def reopen_session(self, _sid):
             return None
@@ -530,6 +539,9 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
 
         def get_session_by_title(self, _title):
             return None
+
+        def resolve_resume_session_id(self, current):
+            return current
 
         def reopen_session(self, _sid):
             return None

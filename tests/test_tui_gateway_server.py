@@ -876,6 +876,9 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         def get_session(self, target):
             return {"id": target}
 
+        def resolve_resume_session_id(self, target):
+            return target
+
         def reopen_session(self, target):
             captured["reopened"] = target
 
@@ -919,6 +922,61 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
 
 
+def test_session_resume_resolves_to_descendant_before_reopening(monkeypatch):
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, target):
+            captured.setdefault("get_session_calls", []).append(target)
+            if target == "parent":
+                return {"id": "parent"}
+            if target == "child":
+                return {"id": "child", "model": "gpt-5.4"}
+            return None
+
+        def resolve_resume_session_id(self, target):
+            captured["resolved_from"] = target
+            return "child"
+
+        def reopen_session(self, target):
+            captured["reopened"] = target
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            captured.setdefault("history_calls", []).append((target, include_ancestors))
+            return [{"role": "user", "content": f"{target}:{include_ancestors}"}]
+
+    def fake_make_agent(_sid, key, session_id=None, session_db=None, **kwargs):
+        captured["agent_key"] = key
+        captured["agent_session_id"] = session_id
+        captured["agent_kwargs"] = kwargs
+        return types.SimpleNamespace(model="test")
+
+    def fake_init_session(sid, key, agent, history, cols=80):
+        captured["init_key"] = key
+        server._sessions[sid] = {"agent": agent, "session_key": key}
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": "test"})
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "parent"}}
+    )
+
+    assert resp["result"]["resumed"] == "child"
+    assert resp["result"]["session_key"] == "child"
+    assert captured["resolved_from"] == "parent"
+    assert captured["reopened"] == "child"
+    assert captured["history_calls"] == [("child", False), ("child", True)]
+    assert captured["agent_key"] == "child"
+    assert captured["agent_session_id"] == "child"
+    assert captured["init_key"] == "child"
+
+
 def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     captured = {}
 
@@ -930,6 +988,9 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
                 "billing_provider": "openai-codex",
                 "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
             }
+
+        def resolve_resume_session_id(self, target):
+            return target
 
         def reopen_session(self, target):
             pass

@@ -3811,6 +3811,14 @@ def _(rid, params: dict) -> dict:
             target = found["id"]
         else:
             return _err(rid, 4007, "session not found")
+    # Resume the active descendant that actually owns the current transcript.
+    # Desktop/sidebar routes may still point at an older lineage id, but the
+    # live gateway session must re-anchor to the continuation target so follow-up
+    # turns, live-session reuse, and transcript hydration all agree.
+    resolved_target = db.resolve_resume_session_id(target)
+    if resolved_target:
+        target = resolved_target
+        found = db.get_session(target) or found
     # Fast path: if the session is already live, reuse it under the lock.
     with _session_resume_lock:
         live = _find_live_session_by_key(target)

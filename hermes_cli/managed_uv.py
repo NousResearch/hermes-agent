@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_constants import get_hermes_home
+from tools.environments.windows_env import refresh_env_from_registry
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +241,7 @@ def _install_uv_posix(env: dict[str, str]) -> None:
 
 def _install_uv_windows(env: dict[str, str]) -> None:
     """Invoke the PowerShell installer."""
+    refresh_env_from_registry()
     cmd = (
         'irm https://astral.sh/uv/install.ps1 | iex'
     )

@@ -32,6 +32,8 @@ import subprocess
 import sys
 from typing import Any
 
+from tools.environments.windows_env import refresh_env_from_registry
+
 
 # Thresholds (GiB).
 MIN_VRAM_GB_USABLE = 6
@@ -211,6 +213,7 @@ def detect_intel_arc() -> dict | None:
             return {"vendor": "intel", "name": "Intel Arc/Xe", "vram_gb": 0.0}
     # Windows: try Get-CimInstance
     if platform.system() == "Windows" and shutil.which("powershell"):
+        refresh_env_from_registry()
         out = _run(["powershell", "-NoProfile",
                     "Get-CimInstance Win32_VideoController | Select-Object Name | Format-List"])
         if "Intel" in out and ("Arc" in out or "Iris Xe" in out):
@@ -236,6 +239,7 @@ def total_system_ram_gb() -> float:
             return 0.0
     if sysname == "Windows":
         if shutil.which("powershell"):
+            refresh_env_from_registry()
             out = _run([
                 "powershell", "-NoProfile",
                 "(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory",

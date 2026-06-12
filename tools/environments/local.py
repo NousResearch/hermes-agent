@@ -14,6 +14,7 @@ from pathlib import Path
 from tools.environments.base import BaseEnvironment, _pipe_stdin
 from tools.environments._process_bash_command import _prepare_bash_cmd
 from tools.environments.proccess_pwsh import pwsh_transform
+from tools.environments.windows_env import refresh_env_from_registry
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -533,6 +534,10 @@ class LocalEnvironment(BaseEnvironment):
         modern syntax that 5.1 cannot parse; this is the load-bearing
         compatibility bridge.
         """
+        # Refresh PATH/PATHEXT from registry so newly installed tools are
+        # discoverable (e.g. WinGet, MSI).  No-op on non-Windows.
+        refresh_env_from_registry()
+
         # Unconditionally down-level PS7+ syntax → PS5.1.
         cmd_string, pwsh_warnings = pwsh_transform(cmd_string)
         self._pwsh_warnings = pwsh_warnings

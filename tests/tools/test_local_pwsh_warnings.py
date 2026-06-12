@@ -37,6 +37,25 @@ def _fake_popen_for_powershell(stdout_data="output"):
 class TestRunPowershellCapturesWarnings:
     """Test that _run_powershell always stores pwsh_transform warnings on self._pwsh_warnings."""
 
+    def test_refresh_env_from_registry_called(self):
+        """refresh_env_from_registry is called before pwsh_transform."""
+        from tools.environments.local import LocalEnvironment
+
+        with patch(
+            "tools.environments.local.refresh_env_from_registry",
+        ) as mock_refresh, patch(
+            "tools.environments.local.pwsh_transform",
+            return_value=("code", []),
+        ), patch(
+            "tools.environments.local.subprocess.Popen",
+            _fake_popen_for_powershell(),
+        ):
+            env = LocalEnvironment(cwd=r"C:\tmp", timeout=30)
+            env._shell_path = r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+            env._run_powershell("Write-Output hello")
+
+            mock_refresh.assert_called_once()
+
     def test_warnings_stored_on_instance(self):
         """When pwsh_transform returns warnings, they are stored on self._pwsh_warnings."""
         from tools.environments.local import LocalEnvironment

@@ -20,6 +20,7 @@ from typing import Optional
 
 from hermes_cli.config import get_hermes_home, get_config_path, load_config, save_config
 from hermes_constants import get_optional_skills_dir
+from tools.environments.windows_env import refresh_env_from_registry
 from hermes_cli.setup import (
     Colors,
     color,
@@ -88,6 +89,7 @@ def _detect_openclaw_processes() -> list[str]:
 
             # Node.js-hosted OpenClaw — tasklist doesn't show command lines,
             # so fall back to PowerShell.
+            refresh_env_from_registry()
             ps_cmd = (
                 'Get-CimInstance Win32_Process -Filter "Name = \'node.exe\'" | '
                 'Where-Object { $_.CommandLine -match "openclaw|clawd" } | '

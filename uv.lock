@@ -1411,6 +1411,7 @@ dependencies = [
     { name = "pyyaml" },
     { name = "requests", extra = ["socks"] },
     { name = "rich" },
+    { name = "ripgrepy" },
     { name = "ruamel-yaml" },
     { name = "tenacity" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
@@ -1696,6 +1697,7 @@ requires-dist = [
     { name = "qrcode", marker = "extra == 'messaging'", specifier = "==7.4.2" },
     { name = "requests", extras = ["socks"], specifier = "==2.33.0" },
     { name = "rich", specifier = "==14.3.3" },
+    { name = "ripgrepy", specifier = ">=2.2.0" },
     { name = "ruamel-yaml", specifier = "==0.18.17" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.10" },
     { name = "setuptools", marker = "extra == 'dev'", specifier = "==82.0.1" },
@@ -3449,6 +3451,12 @@ sdist = { url = "https://files.pythonhosted.org/packages/b3/c6/f3b320c27991c46f4
 wheels = [
     { url = "https://files.pythonhosted.org/packages/14/25/b208c5683343959b670dc001595f2f3737e051da617f66c31f7c4fa93abc/rich-14.3.3-py3-none-any.whl", hash = "sha256:793431c1f8619afa7d3b52b2cdec859562b950ea0d4b6b505397612db8d5362d", size = 310458, upload-time = "2026-02-19T17:23:13.732Z" },
 ]
+
+[[package]]
+name = "ripgrepy"
+version = "2.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/80/8a/023e7c432634a6090a26ace319a37a2a73aac8fa6a7bf142fd7b3ec8fd3b/ripgrepy-2.2.0.tar.gz", hash = "sha256:4c43c61384f257660007acd271a5d8e4abe9be0b069c418d091f7299e080ca9d", size = 31740, upload-time = "2025-07-11T01:18:01.662Z" }
 
 [[package]]
 name = "rpds-py"

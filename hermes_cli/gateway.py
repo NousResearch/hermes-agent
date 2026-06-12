@@ -23,6 +23,8 @@ from gateway.restart import (
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
 )
+from tools.environments.windows_env import refresh_env_from_registry
+
 from hermes_cli.config import (
     get_env_value,
     get_hermes_home,
@@ -395,6 +397,8 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
                 except (OSError, subprocess.TimeoutExpired):
                     result = None
             if result is None or result.returncode != 0 or not (result.stdout or ""):
+                # Refresh PATH so newly installed PowerShell is discoverable.
+                refresh_env_from_registry()
                 # Fallback: PowerShell Get-CimInstance, emit LIST-style output
                 # so the downstream parser below doesn't need to branch.
                 powershell = shutil.which("powershell") or shutil.which("pwsh")

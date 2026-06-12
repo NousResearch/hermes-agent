@@ -22,6 +22,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from tools.environments.windows_env import refresh_env_from_registry
+
 _IS_WINDOWS = platform.system() == "Windows"
 
 _DEP_CHECKS = {
@@ -139,6 +141,7 @@ def ensure_dependency(
 
     if shell == "powershell":
         from hermes_constants import get_hermes_home
+        refresh_env_from_registry()
         ps_bin = shutil.which("powershell") or shutil.which("pwsh")
         if not ps_bin:
             if interactive:

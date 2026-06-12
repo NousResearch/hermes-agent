@@ -20,6 +20,7 @@ import sys
 from pathlib import Path
 
 from hermes_constants import is_wsl as _is_wsl
+from tools.environments.windows_env import refresh_env_from_registry
 
 logger = logging.getLogger(__name__)
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
@@ -254,6 +255,7 @@ def _powershell_save_image(exe: str, dest: Path, *, timeout: int, label: str) ->
 
 def _find_powershell() -> str | None:
     """Return the first available PowerShell executable, or None."""
+    refresh_env_from_registry()
     for name in ("powershell", "pwsh"):
         try:
             r = subprocess.run(

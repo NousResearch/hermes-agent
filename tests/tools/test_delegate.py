@@ -156,6 +156,120 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestExplicitEmptyToolsetsSemantics(unittest.TestCase):
+    @patch("tools.delegate_tool._load_config")
+    def test_build_child_agent_explicit_empty_toolsets_disables_inheritance(self, mock_cfg):
+        """Regression: toolsets=[] means explicit no-tools, not inherit parent tools."""
+        mock_cfg.return_value = {}
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="no tools",
+                context=None,
+                toolsets=[],
+                model=None,
+                max_iterations=5,
+                task_count=1,
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["enabled_toolsets"], [])
+
+    @patch("tools.delegate_tool._load_config")
+    def test_build_child_agent_empty_toolsets_does_not_preserve_mcp_toolsets(self, mock_cfg):
+        """Regression: toolsets=[] means absolutely no tools, including parent MCP toolsets."""
+        mock_cfg.return_value = {"inherit_mcp_toolsets": True}
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "mcp-headroom"]
+
+        with patch("run_agent.AIAgent") as MockAgent, \
+             patch("tools.delegate_tool._is_mcp_toolset_name") as mock_is_mcp:
+            mock_is_mcp.side_effect = lambda name: str(name).startswith("mcp-")
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="no tools",
+                context=None,
+                toolsets=[],
+                model=None,
+                max_iterations=5,
+                task_count=1,
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["enabled_toolsets"], [])
+
+    @patch("tools.delegate_tool._load_config")
+    def test_build_child_agent_none_toolsets_still_inherits_parent(self, mock_cfg):
+        """None preserves legacy behaviour: inherit parent's enabled toolsets."""
+        mock_cfg.return_value = {}
+        parent = _make_mock_parent(depth=0)
+        parent.enabled_toolsets = ["terminal", "file"]
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="inherit tools",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=5,
+                task_count=1,
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(sorted(kwargs["enabled_toolsets"]), ["file", "terminal"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_batch_task_empty_toolsets_not_overwritten_by_outer_toolsets(self, mock_creds, mock_cfg):
+        """Regression: task-level [] must survive even when top-level toolsets is set."""
+        mock_cfg.return_value = {"max_iterations": 45}
+        mock_creds.return_value = {
+            "model": None,
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_child = MagicMock()
+            mock_build.return_value = mock_child
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 0,
+                "duration_seconds": 0,
+            }
+
+            delegate_task(
+                tasks=[{"goal": "no tools task", "toolsets": []}],
+                toolsets=["terminal"],
+                parent_agent=parent,
+            )
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["toolsets"], [])
+
+
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))

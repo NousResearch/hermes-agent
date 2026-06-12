@@ -452,6 +452,14 @@ def find_alias_for_profile(profile_name: str) -> Optional[str]:
             continue
         if not is_windows and entry.suffix:
             continue
+        # Wrapper scripts are a few hundred bytes; anything large is a foreign
+        # binary (uv, language servers, …) sharing ~/.local/bin. Reading those
+        # as text costs seconds each and blocks the dashboard event loop.
+        try:
+            if entry.stat().st_size > 16 * 1024:
+                continue
+        except OSError:
+            continue
         try:
             content = entry.read_text()
         except (OSError, UnicodeDecodeError):
@@ -535,8 +543,11 @@ def _read_config_model(profile_dir: Path) -> tuple:
         return None, None
     try:
         import yaml
+        # Prefer the libyaml C loader — the pure-python parser costs ~0.3s per
+        # config and this runs once per profile on dashboard-blocking paths.
+        loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
         with open(config_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+            cfg = yaml.load(f, Loader=loader) or {}
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
             return model_cfg, None

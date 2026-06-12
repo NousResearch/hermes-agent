@@ -11481,7 +11481,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             chat_id = data.get("chat_id")
             chat_type = data.get("chat_type")
             thread_id = data.get("thread_id")
-            reply_to_message_id = data.get("reply_to_message_id")
+            # New markers use reply_to_message_id; accept legacy message_id
+            # so restart notifications written before an update still thread
+            # their comeback ping correctly after the new gateway boots.
+            reply_to_message_id = data.get("reply_to_message_id") or data.get("message_id")
 
             if not platform_str or not chat_id:
                 return None

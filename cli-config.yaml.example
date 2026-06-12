@@ -719,6 +719,10 @@ platform_toolsets:
 #     # allowed_chats: ["-1001234567890"]
 #     extra:
 #       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
+#       # Bot API 10.1 Rich Messages: final replies send raw markdown via
+#       # sendRichMessage so tables, task lists, collapsible details, math, etc.
+#       # render natively (with automatic MarkdownV2 fallback). Default true.
+#       rich_messages: true  # Set false to force the legacy MarkdownV2 path
 #
 # Discord-specific settings (config.yaml top-level, not under platforms:):
 #

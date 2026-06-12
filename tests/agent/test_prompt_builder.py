@@ -877,6 +877,20 @@ class TestPromptBuilderConstants:
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
 
+    def test_telegram_hint_encourages_rich_markdown(self):
+        # Regression: Telegram now supports Bot API 10.1 Rich Messages, so the
+        # hint must encourage tables / task lists / rich Markdown and must no
+        # longer forbid tables. The adapter sends final replies via
+        # sendRichMessage with raw markdown (see test_telegram_rich_messages).
+        hint = PLATFORM_HINTS["telegram"]
+        lowered = hint.lower()
+        assert "Telegram has NO table syntax" not in hint
+        assert "table" in lowered
+        assert "task list" in lowered
+        assert "rich markdown" in lowered
+        # Local media delivery guidance must remain intact.
+        assert "include MEDIA:" in hint
+
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]
         assert "Mattermost" in hint

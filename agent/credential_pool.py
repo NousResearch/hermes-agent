@@ -1422,6 +1422,12 @@ class CredentialPool:
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
                 logger.info("credential pool: rotated to %s", _next_label)
+                # Rotation succeeded — billing may be resolved, clear notice.
+                try:
+                    from agent.billing_notice import BillingNoticeManager
+                    BillingNoticeManager().clear()
+                except Exception:
+                    pass
             return next_entry
 
     def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:

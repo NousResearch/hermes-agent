@@ -605,6 +605,15 @@ def recover_with_credential_pool(
             )
             agent._swap_credential(next_entry)
             return True, False
+        # No more pool entries to rotate — record billing notice for
+        # eventual daily PS reminder.
+        try:
+            from agent.billing_notice import BillingNoticeManager
+            _provider = str(getattr(agent, "provider", "unknown"))
+            _model = str(getattr(agent, "model", "unknown"))
+            BillingNoticeManager().record(_provider, _model)
+        except Exception:
+            pass
         return False, has_retried_429
 
     if effective_reason == FailoverReason.rate_limit:

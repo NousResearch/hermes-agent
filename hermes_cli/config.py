@@ -2418,6 +2418,16 @@ DEFAULT_CONFIG = {
     "paste_collapse_threshold_fallback": 5,
     "paste_collapse_char_threshold": 2000,
 
+    # --- Billing Reminder ---
+    # When billing exhaustion is detected, optionally remind the user
+    # via a daily PS appended to the first conversation response.
+    "billing_reminder": {
+        "enabled": False,
+        "ps_only": True,
+        "max_frequency": "daily",
+        "dm_only": True,
+    },
+
 
     # Config schema version - bump this when adding new required fields
     "_config_version": 27,

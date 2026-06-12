@@ -107,6 +107,7 @@ class VoiceCallRuntime:
                 self.bridge_manager.handle_stream_request
             )
             self.manager.prepare_call = self.bridge_manager.prepare_call
+            self.manager.realtime_speaker = self._bridge_speak
             logger.info(
                 "voice_call realtime enabled (model provider=%s)",
                 self.config.realtime.provider,
@@ -222,6 +223,17 @@ class VoiceCallRuntime:
     async def _provider_event_sink(self, event) -> None:
         if self.manager is not None:
             await self.manager.process_event(event)
+
+    async def _bridge_speak(self, record: CallRecord, text: str) -> bool:
+        """manager.speak() hook: deliver via the call's realtime bridge."""
+        bridge = (
+            self.bridge_manager.active_bridges.get(record.call_id)
+            if self.bridge_manager is not None
+            else None
+        )
+        if bridge is None:
+            return False
+        return await bridge.deliver_agent_text(text)
 
     async def _on_final_transcript(self, record: CallRecord, text: str) -> None:
         """Final caller utterance → gateway agent turn."""

@@ -795,6 +795,47 @@ async def test_bridge_ulaw_passthrough_skips_transcoding(fake_runtime):
 
 
 @pytest.mark.asyncio
+async def test_speak_and_continue_route_through_bridge_on_realtime_calls(
+    vc_config, provider, store
+):
+    """speak_to_user / continue_call on a realtime call must go through the
+    bridge (carrier TTS would talk over the stream), and the reply waiter
+    resolves from bridge transcripts (carrier transcription is off)."""
+    from plugins.platforms.voice_call.manager import CallManager
+
+    manager = CallManager(vc_config, provider, store)
+    provider.event_sink = manager.process_event
+    spoken_via_bridge = []
+
+    async def bridge_speaker(record, text):
+        spoken_via_bridge.append(text)
+        return True
+
+    manager.prepare_call = lambda record: record.metadata.update(realtime=True)
+    manager.realtime_speaker = bridge_speaker
+
+    record = await manager.initiate_call("+15555550001")
+    deadline = asyncio.get_running_loop().time() + 1.0
+    while not record.answered_at and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.01)
+
+    await manager.speak(record.call_id, "an update")
+    assert spoken_via_bridge == ["an update"]
+    assert provider.spoken == []  # no carrier TTS
+
+    async def caller_replies():
+        await asyncio.sleep(0.05)
+        # The bridge mirrors realtime user transcripts via append_transcript.
+        manager.append_transcript(record.call_id, "user", "yes go ahead")
+
+    asyncio.get_running_loop().create_task(caller_replies())
+    reply = await manager.continue_call(record.call_id, "shall I deploy?")
+    assert reply == "yes go ahead"
+    assert spoken_via_bridge == ["an update", "shall I deploy?"]
+    await manager.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_manager_skips_carrier_tts_for_realtime_calls(
     vc_config, provider, store
 ):

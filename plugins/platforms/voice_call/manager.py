@@ -58,6 +58,12 @@ class CallManager:
         # Optional hook invoked before the provider dials/answers — the
         # realtime bridge uses it to attach stream metadata to the record.
         self.prepare_call: Optional[Callable[[CallRecord], None]] = None
+        # Optional hook for speaking on realtime-bridged calls: the model
+        # owns the audio there, so carrier TTS would talk over the stream.
+        # Set by the runtime; returns True when the bridge delivered it.
+        self.realtime_speaker: Optional[
+            Callable[[CallRecord, str], Awaitable[bool]]
+        ] = None
 
         self.active: Dict[str, CallRecord] = {}
         self._by_provider_id: Dict[str, str] = {}
@@ -148,6 +154,13 @@ class CallManager:
             )
         )
         self._persist(record)
+        # On realtime calls the carrier transcription is off, so this is the
+        # only place caller utterances surface — resolve continue_call
+        # waiters here just like _on_speech does for carrier transcripts.
+        if speaker != "bot":
+            waiter = self._waiters.pop(call_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.set_result(text)
 
     def _realtime_owns_audio(self, record: CallRecord) -> bool:
         """True when a realtime bridge handles this call's audio — carrier
@@ -607,6 +620,16 @@ class CallManager:
 
     async def speak(self, call_id: str, text: str) -> None:
         record = self._require_call(call_id)
+        # Realtime calls: route through the bridge (the model speaks it);
+        # carrier TTS would talk over the media stream. The bridge mirrors
+        # the model's actual words into the transcript, so skip the append.
+        if self._realtime_owns_audio(record) and self.realtime_speaker is not None:
+            if await self.realtime_speaker(record, text):
+                return
+            logger.warning(
+                "voice_call: realtime delivery failed for %s; falling back "
+                "to carrier TTS", call_id,
+            )
         was_listening = record.state == CallState.LISTENING
         self._transition(record, CallState.SPEAKING)
         await self.provider.speak(record, text)

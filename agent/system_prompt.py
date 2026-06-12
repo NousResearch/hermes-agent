@@ -179,6 +179,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts: List[str] = []
 
+    # Declarative, cache-safe per-fragment overrides (agent.prompt_overrides).
+    # ``emit`` routes every named stable-tier fragment through the override
+    # engine before appending — resolved once here, so the assembled prompt
+    # stays byte-stable and the prefix cache stays warm.  No overrides => the
+    # text is appended unchanged.  See agent/prompt_overrides.py.
+    from agent.prompt_overrides import apply_fragment_override
+    _overrides = getattr(agent, "_prompt_overrides", None) or {}
+
+    def emit(key: str, text: Optional[str]) -> None:
+        text = apply_fragment_override(_overrides, key, text)
+        if text and text.strip():
+            stable_parts.append(text)
+
     # Try SOUL.md as primary identity unless the caller explicitly skipped it.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping
     # cwd project instructions disabled.
@@ -186,15 +199,15 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if agent.load_soul_identity or not agent.skip_context_files:
         _soul_content = _r.load_soul_md(_ctx_len)
         if _soul_content:
-            stable_parts.append(_soul_content)
+            emit("identity", _soul_content)
             _soul_loaded = True
 
     if not _soul_loaded:
         # Fallback to hardcoded identity
-        stable_parts.append(DEFAULT_AGENT_IDENTITY)
+        emit("identity", DEFAULT_AGENT_IDENTITY)
 
     # Pointer to the hermes-agent skill + docs for user questions about Hermes itself.
-    stable_parts.append(HERMES_AGENT_HELP_GUIDANCE)
+    emit("hermes_help", HERMES_AGENT_HELP_GUIDANCE)
 
     # Universal task-completion / no-fabrication guidance.  Applied to ALL
     # models regardless of tool_use_enforcement gating — the failure modes
@@ -203,7 +216,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # config.yaml ``agent.task_completion_guidance`` (default True) so
     # users who want a leaner prompt can turn it off.
     if getattr(agent, "_task_completion_guidance", True) and agent.valid_tool_names:
-        stable_parts.append(TASK_COMPLETION_GUIDANCE)
+        emit("task_completion", TASK_COMPLETION_GUIDANCE)
 
     # Universal parallel-tool-call guidance.  Tells the model to batch
     # independent tool calls into one assistant turn rather than emitting one
@@ -235,12 +248,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # Fallback for code paths that bypass agent_init (rare).
         tool_guidance.append(KANBAN_GUIDANCE)
     if tool_guidance:
-        stable_parts.append(" ".join(tool_guidance))
+        emit("tool_guidance", " ".join(tool_guidance))
 
     # Steering only lands inside tool results, so it's only reachable when the
     # agent has tools. Static text → byte-stable prompt (no cache hit).
     if agent.valid_tool_names:
-        stable_parts.append(STEER_CHANNEL_NOTE)
+        emit("steer_channel", STEER_CHANNEL_NOTE)
 
     # Computer-use — goes in as its own block rather than being merged into
     # tool_guidance because the content is multi-paragraph. The guidance is
@@ -248,11 +261,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # macOS-only wording (Mac, Space, cmd+s).
     if "computer_use" in agent.valid_tool_names:
         from agent.prompt_builder import computer_use_guidance
-        stable_parts.append(computer_use_guidance())
+        emit("computer_use", computer_use_guidance())
 
     nous_subscription_prompt = _r.build_nous_subscription_prompt(agent.valid_tool_names)
     if nous_subscription_prompt:
-        stable_parts.append(nous_subscription_prompt)
+        emit("nous_subscription", nous_subscription_prompt)
     # Tool-use enforcement: tells the model to actually call tools instead
     # of describing intended actions.  Controlled by config.yaml
     # agent.tool_use_enforcement:
@@ -275,19 +288,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             model_lower = (agent.model or "").lower()
             _inject = any(p in model_lower for p in TOOL_USE_ENFORCEMENT_MODELS)
         if _inject:
-            stable_parts.append(TOOL_USE_ENFORCEMENT_GUIDANCE)
+            emit("tool_use_enforcement", TOOL_USE_ENFORCEMENT_GUIDANCE)
             _model_lower = (agent.model or "").lower()
             # Google model operational guidance (conciseness, absolute
             # paths, parallel tool calls, verify-before-edit, etc.)
             if "gemini" in _model_lower or "gemma" in _model_lower:
-                stable_parts.append(GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
+                emit("google_operational", GOOGLE_MODEL_OPERATIONAL_GUIDANCE)
             # OpenAI GPT/Codex execution discipline (tool persistence,
             # prerequisite checks, verification, anti-hallucination).
             # Also applied to xAI Grok — same failure modes (claims completion
             # without tool calls, suggests workarounds instead of using
             # existing tools, replies with plans instead of executing).
             if "gpt" in _model_lower or "codex" in _model_lower or "grok" in _model_lower:
-                stable_parts.append(OPENAI_MODEL_EXECUTION_GUIDANCE)
+                emit("execution_discipline", OPENAI_MODEL_EXECUTION_GUIDANCE)
 
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
     if has_skills_tools:
@@ -319,7 +332,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     else:
         skills_prompt = ""
     if skills_prompt:
-        stable_parts.append(skills_prompt)
+        emit("skills", skills_prompt)
 
     # Alibaba Coding Plan API always returns "glm-4.7" as model name regardless
     # of the requested model. Inject explicit model identity into the system prompt
@@ -328,11 +341,12 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # at construction time.
     if agent.provider == "alibaba":
         _model_short = agent.model.split("/")[-1] if "/" in agent.model else agent.model
-        stable_parts.append(
+        emit(
+            "model_identity",
             f"You are powered by the model named {_model_short}. "
             f"The exact model ID is {agent.model}. "
             f"When asked what model you are, always answer based on this information, "
-            f"not on any model name returned by the API."
+            f"not on any model name returned by the API.",
         )
 
     # Environment hints (WSL, Termux, etc.) — tell the agent about the
@@ -340,7 +354,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Stable for the lifetime of the process.
     _env_hints = _r.build_environment_hints()
     if _env_hints:
-        stable_parts.append(_env_hints)
+        emit("environment_hints", _env_hints)
 
     # Coding posture (base Hermes, any interactive coding surface in a code
     # workspace — see agent/coding_context.py). The operating brief + the live
@@ -374,7 +388,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             from tools.env_probe import get_environment_probe_line
             _probe_line = get_environment_probe_line()
             if _probe_line:
-                stable_parts.append(_probe_line)
+                emit("environment_probe", _probe_line)
         except Exception:
             # Probe failure must never block prompt build.
             pass
@@ -392,7 +406,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     except Exception:
         active_profile = "default"
     if active_profile == "default":
-        stable_parts.append(
+        emit(
+            "active_profile",
             "Active Hermes profile: default. Other profiles (if any) live "
             "under ~/.hermes/profiles/<name>/. Each profile has its own "
             "skills/, plugins/, cron/, and memories/ that affect a different "
@@ -401,7 +416,8 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             "you to."
         )
     else:
-        stable_parts.append(
+        emit(
+            "active_profile",
             f"Active Hermes profile: {active_profile}. This session reads "
             f"and writes ~/.hermes/profiles/{active_profile}/. The default "
             f"profile's data lives at ~/.hermes/skills/, ~/.hermes/plugins/, "
@@ -433,7 +449,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if platform_key == "tui" and _effective_hint:
         _effective_hint = _tui_embedded_pane_clarifier(_effective_hint)
     if _effective_hint:
-        stable_parts.append(_effective_hint)
+        emit("platform_hints", _effective_hint)
 
     # ── Context tier (cwd-dependent, may change between sessions) ─
     context_parts: List[str] = []

@@ -1036,6 +1036,15 @@ DEFAULT_CONFIG = {
         # compounds over a long conversation.  Costs ~70 tokens in the cached
         # system prompt.  Set False to disable globally.
         "parallel_tool_call_guidance": True,
+        # Declarative per-fragment system-prompt overrides.  A mapping of
+        # fragment key -> {mode: replace|append|prepend|remove, text: "..."}
+        # (a bare string is shorthand for replace).  Lets you reshape any
+        # named stable-tier prompt fragment from config without editing
+        # source — full context-engineering control.  Pure data, resolved
+        # once at prompt-build time, so it never busts the prefix cache.
+        # Empty by default (no overrides => byte-identical prompt).  See the
+        # fragment-key registry in agent/prompt_overrides.py.
+        "prompt_overrides": {},
         # Local-environment toolchain probe — surfaces Python/pip/uv/PEP-668
         # state in the system prompt when something non-default is detected
         # (e.g. python3 has no pip module, pip→python version mismatch, PEP

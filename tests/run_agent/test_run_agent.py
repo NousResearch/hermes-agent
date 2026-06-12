@@ -1602,6 +1602,94 @@ class TestTaskCompletionGuidance:
             assert TASK_COMPLETION_GUIDANCE not in a._build_system_prompt()
 
 
+class TestPromptOverridesIntegration:
+    """End-to-end wiring for declarative per-fragment overrides
+    (config.yaml ``agent.prompt_overrides``).  The resolution engine is
+    unit-tested in tests/agent/test_prompt_overrides.py; this class confirms
+    the overrides actually reshape the assembled system prompt."""
+
+    def _make_agent(self, model="anthropic/claude-opus-4.8", **extra_cfg):
+        agent_cfg = dict(extra_cfg)
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal", "web_search"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": agent_cfg},
+            ),
+        ):
+            a = AIAgent(
+                model=model,
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_no_overrides_byte_identical(self):
+        """Empty overrides must produce the exact same prompt as no
+        overrides at all — the cache-warmth guarantee."""
+        baseline = self._make_agent()._build_system_prompt()
+        with_empty = self._make_agent(prompt_overrides={})._build_system_prompt()
+        assert baseline == with_empty
+
+    def test_replace_swaps_fragment(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+
+        sentinel = "STOP-AND-REPORT-ON-FRICTION-XYZZY"
+        agent = self._make_agent(
+            prompt_overrides={
+                "task_completion": {"mode": "replace", "text": sentinel}
+            }
+        )
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE not in prompt
+        assert sentinel in prompt
+
+    def test_remove_drops_fragment(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+
+        agent = self._make_agent(
+            prompt_overrides={"task_completion": {"mode": "remove"}}
+        )
+        assert TASK_COMPLETION_GUIDANCE not in agent._build_system_prompt()
+
+    def test_append_keeps_original_and_adds(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+
+        sentinel = "FRICTION-CAVEAT-PLUGH"
+        agent = self._make_agent(
+            prompt_overrides={
+                "task_completion": {"mode": "append", "text": sentinel}
+            }
+        )
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt
+        assert sentinel in prompt
+
+    def test_unknown_key_ignored_no_crash(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+
+        agent = self._make_agent(prompt_overrides={"not_a_fragment": "x"})
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE in prompt  # baseline intact
+
+    def test_bare_string_shorthand_replaces(self):
+        from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
+
+        agent = self._make_agent(prompt_overrides={"task_completion": "SHORTHAND-REPL"})
+        prompt = agent._build_system_prompt()
+        assert TASK_COMPLETION_GUIDANCE not in prompt
+        assert "SHORTHAND-REPL" in prompt
+
+
 class TestEnvironmentProbeIntegration:
     """Tests for the local Python toolchain probe wiring (config.yaml
     ``agent.environment_probe``).  The probe itself is unit-tested in

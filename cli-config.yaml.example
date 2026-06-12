@@ -733,6 +733,35 @@ agent:
   # Default 3.
   # max_verify_nudges: 3
 
+  # Per-fragment system-prompt overrides (full context-engineering control).
+  # Reshape any named stable-tier prompt fragment without editing Hermes
+  # source. Each entry is `mode: replace|append|prepend|remove` + `text`
+  # (a bare string is shorthand for `replace`). Pure data, resolved once at
+  # prompt-build time — never busts the prefix cache. With no entries the
+  # assembled prompt is byte-identical to the default.
+  #
+  # Fragment keys: identity, hermes_help, task_completion, tool_guidance,
+  #   steer_channel, computer_use, nous_subscription, tool_use_enforcement,
+  #   google_operational, execution_discipline, skills, model_identity,
+  #   environment_hints, environment_probe, active_profile, platform_hints
+  #
+  # An override only applies when that fragment is actually emitted this
+  # session; append/prepend to an absent fragment is a no-op.
+  # prompt_overrides:
+  #   # Qualify the pushy "keep going / try alternatives" guidance so the
+  #   # agent stops and reports on environment friction instead of hacking
+  #   # around it:
+  #   task_completion:
+  #     mode: append
+  #     text: >-
+  #       Exception — environment friction: if a tool, filesystem, dependency,
+  #       credential, integration, or environment problem blocks the real
+  #       path, STOP immediately, report the exact failure, and wait for the
+  #       user to fix it at the source. Do NOT work around it or substitute an
+  #       alternative approach unless the user approves.
+  #   google_operational: { mode: remove }
+  #   steer_channel: "Use the steer channel only for urgent corrections."
+
   # Enable verbose logging
   verbose: false
   

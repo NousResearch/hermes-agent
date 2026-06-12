@@ -432,6 +432,65 @@ def _resolve_host_user_spec() -> Optional[str]:
 
 _storage_opt_ok: Optional[bool] = None  # cached result across instances
 
+_selinux_enforcing: Optional[bool] = None  # cached result across instances
+
+
+def _selinux_enabled() -> bool:
+    """Return True if SELinux is in enforcing mode on the host.
+
+    Detection checks ``/sys/fs/selinux/enforce`` first (fast, no subprocess)
+    then falls back to ``getenforce``.  Result is cached per-process.
+    On non-Linux or any detection failure, returns False.
+    """
+    global _selinux_enforcing
+    if _selinux_enforcing is not None:
+        return _selinux_enforcing
+    try:
+        enforce_path = Path("/sys/fs/selinux/enforce")
+        if enforce_path.exists():
+            val = enforce_path.read_text().strip()
+            _selinux_enforcing = val == "1"
+            return _selinux_enforcing
+    except (OSError, PermissionError):
+        pass
+    # Fallback: ask getenforce
+    try:
+        result = subprocess.run(
+            ["getenforce"],
+            capture_output=True, text=True, timeout=5,
+            stdin=subprocess.DEVNULL,
+        )
+        _selinux_enforcing = result.stdout.strip().lower() == "enforcing"
+    except (subprocess.SubprocessError, OSError, FileNotFoundError):
+        _selinux_enforcing = False
+    return _selinux_enforcing
+
+
+def _selinux_label(vol_spec: str) -> str:
+    """Append ``:z`` SELinux label to a volume spec if SELinux is enforcing.
+
+    The ``:z`` suffix tells Docker to relabel the host path with a shared
+    SELinux context so the container can access it.  Skipped if the spec
+    already carries a SELinux label (``:z`` or ``:Z``), if the spec is a
+    tmpfs ``--tmpfs`` style entry, or if SELinux is not enforcing.
+
+    Only applies to bind-mount specs that look like ``host:container`` (i.e.
+    specs containing ``:`` but not starting with ``/`` as a tmpfs path).
+    """
+    if not _selinux_enabled():
+        return vol_spec
+    # Already has a SELinux label?
+    if vol_spec.endswith(":z") or vol_spec.endswith(":Z"):
+        return vol_spec
+    # Only relabel bind mounts (host:container[/mode] format).
+    # A bare path (no colon) is not a bind mount.  A spec ending in
+    # :ro/:rw etc. gets :z appended after those options.
+    parts = vol_spec.split(":")
+    if len(parts) < 2:
+        return vol_spec
+    # Parts like "/src:/dst:ro" or "/src:/dst" -- append :z
+    return vol_spec + ":z"
+
 
 def _ensure_docker_available() -> None:
     """Best-effort check that the docker CLI is available before use.
@@ -588,7 +647,7 @@ class DockerEnvironment(BaseEnvironment):
             if not vol:
                 continue
             if ":" in vol:
-                volume_args.extend(["-v", vol])
+                volume_args.extend(["-v", _selinux_label(vol)])
                 if ":/workspace" in vol:
                     workspace_explicitly_mounted = True
             else:
@@ -612,13 +671,13 @@ class DockerEnvironment(BaseEnvironment):
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
             writable_args.extend([
-                "-v", f"{self._home_dir}:/root",
+                "-v", _selinux_label(f"{self._home_dir}:/root"),
             ])
             if not bind_host_cwd and not workspace_explicitly_mounted:
                 self._workspace_dir = str(sandbox / "workspace")
                 os.makedirs(self._workspace_dir, exist_ok=True)
                 writable_args.extend([
-                    "-v", f"{self._workspace_dir}:/workspace",
+                    "-v", _selinux_label(f"{self._workspace_dir}:/workspace"),
                 ])
         else:
             if not bind_host_cwd and not workspace_explicitly_mounted:
@@ -632,7 +691,7 @@ class DockerEnvironment(BaseEnvironment):
 
         if bind_host_cwd:
             logger.info(f"Mounting configured host cwd to /workspace: {host_cwd_abs}")
-            volume_args = ["-v", f"{host_cwd_abs}:/workspace", *volume_args]
+            volume_args = ["-v", _selinux_label(f"{host_cwd_abs}:/workspace"), *volume_args]
         elif workspace_explicitly_mounted:
             logger.debug("Skipping docker cwd mount: /workspace already mounted by user config")
 
@@ -664,7 +723,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro",
+                    _selinux_label(f"{mount_entry['host_path']}:{mount_entry['container_path']}:ro"),
                 ])
                 logger.info(
                     "Docker: mounting credential %s -> %s",
@@ -684,7 +743,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro",
+                    _selinux_label(f"{skills_mount['host_path']}:{skills_mount['container_path']}:ro"),
                 ])
                 logger.info(
                     "Docker: mounting skills dir %s -> %s",
@@ -706,7 +765,7 @@ class DockerEnvironment(BaseEnvironment):
                     continue
                 volume_args.extend([
                     "-v",
-                    f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro",
+                    _selinux_label(f"{cache_mount['host_path']}:{cache_mount['container_path']}:ro"),
                 ])
                 logger.info(
                     "Docker: mounting cache dir %s -> %s",

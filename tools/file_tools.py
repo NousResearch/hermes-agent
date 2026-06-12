@@ -16,6 +16,7 @@ from tools.file_operations import (
     normalize_search_pagination,
 )
 from tools import file_state
+from tools.environments.local import _msys_to_windows_path
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -202,6 +203,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
     See :func:`_resolve_base_dir` for how the base is chosen. Absolute input
     paths are returned resolved-but-unanchored.
     """
+    filepath = _msys_to_windows_path(filepath)
     p = Path(filepath).expanduser()
     if p.is_absolute():
         return p.resolve()

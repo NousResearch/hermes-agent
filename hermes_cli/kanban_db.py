@@ -76,6 +76,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import sqlite3
 import subprocess
@@ -6836,14 +6837,21 @@ def resolve_spawn_backend(name: Optional[str]) -> SpawnBackend:
 def _select_spawn_backend(task: Task, board: Optional[str]) -> SpawnBackend:
     """Resolve which backend runs ``task``.
 
-    Per-task selection is honoured via the ``harness`` column on the task
-    (NULL -> the default ``hermes-native`` backend). Per-profile / per-board
-    config-driven defaults are a follow-up (C3); ``board`` is accepted now so
-    that wiring needs no signature change. An unknown/stale ``harness`` value
+    Selection precedence (first hit wins):
+
+    1. the task's ``harness`` column (explicit per-task override);
+    2. the board's ``kanban.harness`` default (``<board>/board.yaml``);
+    3. the executor profile's ``kanban.harness`` default
+       (``<assignee-profile>/config.yaml``);
+    4. the always-available ``hermes-native`` backend.
+
+    The board/profile config defaults let a whole board or profile opt into a
+    harness without stamping every task. An unknown/stale name at any level
     falls back to native with a warning rather than wedging dispatch -- see
     ``resolve_spawn_backend``.
     """
-    return resolve_spawn_backend(task.harness)
+    name = task.harness or _config_harness_name(task, board)
+    return resolve_spawn_backend(name)
 
 
 def _assemble_spawn_context(
@@ -7060,6 +7068,312 @@ class _HermesNativeBackend:
 
 
 register_spawn_backend(_HermesNativeBackend())
+
+
+# ---------------------------------------------------------------------------
+# Pluggable harness support: prompt compiler, profile/board config, and the
+# first non-native backend (the configured CLI run as a detached worker).
+# ---------------------------------------------------------------------------
+#
+# The spawn-backend seam (assemble context -> select backend -> launch) plus the
+# per-task ``harness`` column let a task run on a harness other than the in-tree
+# native worker. The three pieces below make a non-native harness usable:
+#
+#   * ``compile_task_prompt`` — renders the harness-agnostic ``SpawnContext``
+#     into the task brief an external CLI consumes (a file / stdin), since such
+#     CLIs don't take the native ``hermes -p <profile> chat -q`` argv.
+#   * profile/board harness config — a small schema + loader so a board or the
+#     executor profile can select and parametrise a backend (``kanban.harness``
+#     / ``kanban.harnesses.<name>``) without a per-task column.
+#   * ``CliExecBackend`` — runs the configured CLI non-interactively as a
+#     detached worker process (the native backend's launch shape), delivering
+#     the brief on stdin or as a file argument. No tmux: a one-shot exec needs
+#     no terminal, and the detached child already survives the dispatcher.
+
+
+def compile_task_prompt(ctx: SpawnContext) -> str:
+    """Render a harness-agnostic :class:`SpawnContext` into a CLI task brief.
+
+    The native backend hands the worker its context as argv + env. External
+    harnesses (codex / claude / agy / ...) instead read an instruction file or
+    stdin, so the same context (task, workspace, profile, resolved skills,
+    board) is compiled here into a deterministic Markdown brief any such CLI
+    can consume verbatim.
+
+    Vendor-neutral by construction: no CLI flags appear here. The board / DB /
+    task are pinned in the child env (``HERMES_KANBAN_*``), so the brief refers
+    to them by name (``$HERMES_KANBAN_TASK``) rather than hardcoding paths, and
+    states the kanban lifecycle contract the worker must honour to finish.
+    """
+    task = ctx.task
+    lines: list[str] = [f"# Kanban task {task.id}", ""]
+    if task.title and task.title.strip():
+        lines += [f"**{task.title.strip()}**", ""]
+    lines += [
+        f"- task id: `{task.id}`",
+        f"- board: `{ctx.board or get_current_board()}`",
+        f"- profile: `{ctx.profile}`",
+        f"- workspace: `{ctx.workspace}`",
+    ]
+    if task.branch_name:
+        lines.append(f"- branch: `{task.branch_name}`")
+    if task.model_override:
+        lines.append(f"- model: `{task.model_override}`")
+    lines.append("")
+
+    if task.body and task.body.strip():
+        lines += ["## Brief", "", task.body.strip(), ""]
+
+    if ctx.skills:
+        lines += [
+            "## Reference skills",
+            "",
+            "Load these skill pattern-libraries first (if your harness "
+            "supports skills):",
+        ]
+        lines += [f"- `{sk}`" for sk in ctx.skills]
+        lines.append("")
+
+    lines += [
+        "## Lifecycle (MANDATORY)",
+        "",
+        "You are a kanban worker. Your task id is in the environment as "
+        "`$HERMES_KANBAN_TASK`. When your work is committed and pushed, finish "
+        "the task:",
+        "",
+        "```sh",
+        'hermes kanban complete "$HERMES_KANBAN_TASK" --summary "<what you did>"',
+        "```",
+        "",
+        "If you are blocked (need review, missing input, failing dependency), "
+        "record it instead of exiting silently:",
+        "",
+        "```sh",
+        'hermes kanban block "$HERMES_KANBAN_TASK" --reason "<why>"',
+        "```",
+        "",
+    ]
+    return "\n".join(lines)
+
+
+# --- profile/board harness config ------------------------------------------
+
+_KANBAN_CONFIG_KEY = "kanban"
+
+
+def _read_yaml_mapping(path: Path) -> dict:
+    """Best-effort load of a YAML mapping; ``{}`` on absent/broken/non-mapping.
+
+    A missing or malformed config file must never wedge dispatch: the caller
+    simply finds no harness override and falls back to native, exactly as for
+    an unknown harness name.
+    """
+    try:
+        if not path.is_file():
+            return {}
+        import yaml
+        with open(path, "r", encoding="utf-8") as fh:
+            data = yaml.safe_load(fh) or {}
+        return data if isinstance(data, dict) else {}
+    except Exception as exc:  # noqa: BLE001 - config errors are non-fatal
+        _log.warning("kanban: ignoring unreadable config %s (%s)", path, exc)
+        return {}
+
+
+def _profile_config_path(profile: Optional[str]) -> Optional[Path]:
+    """``<profile-home>/config.yaml`` for ``profile`` (``None`` if unresolvable)."""
+    if not profile:
+        return None
+    try:
+        from hermes_cli.profiles import get_profile_dir
+        return get_profile_dir(profile) / "config.yaml"
+    except Exception:
+        return None
+
+
+def _board_config_path(board: Optional[str]) -> Path:
+    """Optional per-board ``board.yaml`` (the board dir holds its kanban.db)."""
+    return kanban_db_path(board=board).parent / "board.yaml"
+
+
+def _kanban_config(profile: Optional[str], board: Optional[str]) -> dict:
+    """Effective ``kanban:`` config for ``(profile, board)``.
+
+    The board's ``board.yaml`` shallow-overlays the executor profile's
+    ``config.yaml``: scalar keys (``harness``) and per-backend ``harnesses.*``
+    params from the board win over the profile. Both sources are optional.
+    """
+    merged: dict = {}
+    for path in (_profile_config_path(profile), _board_config_path(board)):
+        if path is None:
+            continue
+        block = _read_yaml_mapping(path).get(_KANBAN_CONFIG_KEY)
+        if not isinstance(block, dict):
+            continue
+        for key, val in block.items():
+            if key == "harnesses" and isinstance(val, dict):
+                existing = merged.setdefault("harnesses", {})
+                if isinstance(existing, dict):
+                    existing.update(val)
+            else:
+                merged[key] = val
+    return merged
+
+
+def _config_harness_name(task: Task, board: Optional[str]) -> Optional[str]:
+    """Configured default backend name for ``task`` (board > profile), or None."""
+    cfg = _kanban_config(getattr(task, "assignee", None), board)
+    name = cfg.get("harness")
+    if not name:
+        return None
+    return str(name).strip() or None
+
+
+# --- cli-exec backend (run a CLI harness as a detached worker) --------------
+
+_CLI_PASS_PROMPT_MODES = ("stdin", "file-arg", "none")
+
+
+@dataclass(frozen=True)
+class CliExecConfig:
+    """Parameters for :class:`CliExecBackend`.
+
+    ``command`` is the harness CLI argv (e.g. ``["codex", "exec", "--model",
+    "gpt-5.4"]``). The compiled brief reaches it per ``pass_prompt``:
+
+    * ``stdin``    -> the brief file is the process's stdin (``codex exec … <
+      brief``, the shape codex/claude exec expect)
+    * ``file-arg`` -> the brief path is appended to ``command`` (``cli … brief``)
+    * ``none``     -> ``command`` only (the harness locates the brief itself)
+    """
+
+    command: tuple[str, ...]
+    prompt_file: str = ".hermes-task.md"
+    pass_prompt: str = "stdin"
+
+    @property
+    def binary(self) -> str:
+        return self.command[0]
+
+    @classmethod
+    def from_mapping(cls, data: Optional[dict]) -> "CliExecConfig":
+        if not isinstance(data, dict):
+            raise ValueError(
+                "cli-exec config missing or not a mapping; a task routed to the "
+                "cli-exec harness needs a kanban.harnesses.cli-exec block"
+            )
+        raw_cmd = data.get("command")
+        if isinstance(raw_cmd, str):
+            cmd = tuple(shlex.split(raw_cmd))
+        elif isinstance(raw_cmd, (list, tuple)):
+            cmd = tuple(str(p) for p in raw_cmd)
+        else:
+            cmd = ()
+        if not cmd:
+            raise ValueError("cli-exec config: 'command' must be a non-empty argv")
+        pass_prompt = str(data.get("pass_prompt", "stdin"))
+        if pass_prompt not in _CLI_PASS_PROMPT_MODES:
+            raise ValueError(
+                f"cli-exec config: pass_prompt {pass_prompt!r} not in "
+                f"{_CLI_PASS_PROMPT_MODES}"
+            )
+        return cls(
+            command=cmd,
+            prompt_file=str(data.get("prompt_file", ".hermes-task.md")),
+            pass_prompt=pass_prompt,
+        )
+
+
+def _load_cli_exec_config(
+    profile: Optional[str], board: Optional[str]
+) -> CliExecConfig:
+    cfg = _kanban_config(profile, board)
+    harnesses = cfg.get("harnesses")
+    block = harnesses.get("cli-exec") if isinstance(harnesses, dict) else None
+    return CliExecConfig.from_mapping(block)
+
+
+class CliExecBackend:
+    """Run a configured CLI harness for a task as a detached worker process.
+
+    Non-interactive by design: the harness (``codex exec``, ``claude -p``, ...)
+    starts, runs to completion, and exits, with stdout/stderr teed to the task's
+    kanban log. Same launch shape as the native backend — a detached ``Popen``
+    (``start_new_session=True``) that outlives a dispatcher restart and whose pid
+    is returned for crash detection — but it runs the configured argv instead of
+    the in-tree ``hermes`` worker, and delivers the compiled brief on stdin or as
+    a file argument. No terminal multiplexer is involved: a one-shot exec needs
+    none, and the detached child already survives the dispatcher.
+
+    Parameters (command, prompt delivery) come from the executor profile's /
+    board's ``kanban.harnesses.cli-exec`` block — see :class:`CliExecConfig`.
+    Selecting this backend with no usable config, or with the harness binary
+    absent on PATH, fails loudly (recorded as a spawn failure) rather than
+    silently degrading.
+    """
+
+    name = "cli-exec"
+
+    def __init__(self, config_loader=None):
+        # Indirection so tests can inject a config without a profile on disk.
+        self._config_loader = config_loader or _load_cli_exec_config
+
+    def launch(self, ctx: SpawnContext) -> Optional[int]:
+        import subprocess
+
+        cfg = self._config_loader(ctx.profile, ctx.board)
+
+        # Dispatch precondition: the harness binary must be present on PATH, so
+        # a task is never half-started against a missing CLI.
+        if shutil.which(cfg.binary) is None:
+            raise RuntimeError(
+                f"cli-exec backend: harness binary {cfg.binary!r} not found on "
+                f"PATH for task {ctx.task.id}; cannot dispatch."
+            )
+
+        # Compile + persist the task brief into the worktree.
+        prompt_path = Path(ctx.workspace) / cfg.prompt_file
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path.write_text(compile_task_prompt(ctx), encoding="utf-8")
+
+        argv = list(cfg.command)
+        stdin_f = None
+        if cfg.pass_prompt == "file-arg":
+            argv.append(str(prompt_path))
+        elif cfg.pass_prompt == "stdin":
+            # The brief file IS the child's stdin (codex/claude exec read it).
+            stdin_f = open(prompt_path, "rb")
+
+        # Use 'a' so a re-run on unblock appends rather than overwrites.
+        log_f = open(ctx.log_path, "ab")
+        try:
+            proc = subprocess.Popen(  # noqa: S603 -- argv is a configured list
+                argv,
+                cwd=ctx.workspace if os.path.isdir(ctx.workspace) else None,
+                stdin=stdin_f if stdin_f is not None else subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=ctx.env,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            if stdin_f is not None:
+                stdin_f.close()
+            raise RuntimeError(
+                f"cli-exec backend: failed to launch {cfg.binary!r} for task "
+                f"{ctx.task.id}."
+            )
+        # The child has dup'd the brief fd; release the parent's handle. The log
+        # handle is intentionally left open (as in the native backend) so the
+        # detached child keeps writing after this returns.
+        if stdin_f is not None:
+            stdin_f.close()
+        return proc.pid
+
+
+register_spawn_backend(CliExecBackend())
 
 
 def _default_spawn(

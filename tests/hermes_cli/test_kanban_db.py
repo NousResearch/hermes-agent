@@ -4519,3 +4519,178 @@ def test_select_spawn_backend_honours_harness(kanban_home):
         assert kb._select_spawn_backend(t_unknown, None) is native_backend
     finally:
         kb._SPAWN_BACKENDS.pop("fake-c2-backend", None)
+
+
+# ---------------------------------------------------------------------------
+# Pluggable harness — prompt compiler, profile/board config, cli-exec backend
+# ---------------------------------------------------------------------------
+
+
+class _FakePopen:
+    """Capture argv/kwargs instead of spawning. The cli-exec backend imports
+    subprocess locally, so monkeypatching kb.subprocess.Popen intercepts it."""
+
+    last = None
+
+    def __init__(self, cmd, **kw):
+        self.cmd = cmd
+        self.kw = kw
+        self.pid = 4242
+        _FakePopen.last = self
+
+
+def _cli_loader(command=("echo", "run"), pass_prompt="stdin",
+                prompt_file=".hermes-task.md"):
+    def loader(profile, board):
+        return kb.CliExecConfig.from_mapping({
+            "command": list(command),
+            "pass_prompt": pass_prompt,
+            "prompt_file": prompt_file,
+        })
+    return loader
+
+
+def _ctx(tmp_path, **task_kw):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title=task_kw.pop("title", "task"), **task_kw)
+        task = kb.get_task(conn, tid)
+    ws = str(tmp_path / "ws")
+    os.makedirs(ws, exist_ok=True)
+    return kb._assemble_spawn_context(task, ws, board=None), task, ws
+
+
+def test_compile_task_prompt_deterministic_and_vendor_neutral(kanban_home, tmp_path):
+    ctx, task, _ = _ctx(tmp_path, title="S0 schema", body="Parse nodes.", assignee="coder")
+    a = kb.compile_task_prompt(ctx)
+    assert a == kb.compile_task_prompt(ctx)            # deterministic
+    assert task.id in a
+    assert "S0 schema" in a and "Parse nodes." in a
+    assert 'hermes kanban complete "$HERMES_KANBAN_TASK"' in a
+    assert 'hermes kanban block "$HERMES_KANBAN_TASK"' in a
+    assert "hermes -p" not in a                        # no native argv leaks in
+
+
+def test_compile_task_prompt_skills_section(kanban_home, tmp_path):
+    import dataclasses
+    ctx, _, _ = _ctx(tmp_path, title="sk", assignee="coder")
+    assert "## Reference skills" not in kb.compile_task_prompt(ctx)   # none resolved
+    with_skills = dataclasses.replace(ctx, skills=["kanban-worker", "extra-skill"])
+    rendered = kb.compile_task_prompt(with_skills)
+    assert "## Reference skills" in rendered
+    assert "kanban-worker" in rendered and "extra-skill" in rendered
+
+
+def test_cli_exec_config_from_mapping_valid():
+    c = kb.CliExecConfig.from_mapping(
+        {"command": ["codex", "exec", "--model", "gpt-5.4"], "pass_prompt": "stdin"}
+    )
+    assert c.command == ("codex", "exec", "--model", "gpt-5.4")
+    assert c.binary == "codex"
+    # string command is shlex-split
+    assert kb.CliExecConfig.from_mapping({"command": "claude -p"}).command == (
+        "claude", "-p",
+    )
+
+
+@pytest.mark.parametrize("bad", [
+    None, {}, {"command": []},
+    {"command": ["x"], "pass_prompt": "telepathy"},
+])
+def test_cli_exec_config_rejects_invalid(bad):
+    with pytest.raises(ValueError):
+        kb.CliExecConfig.from_mapping(bad)
+
+
+def _write_profile_harness(profile, harness, with_command=True):
+    import yaml
+    from hermes_cli.profiles import get_profile_dir
+    d = get_profile_dir(profile)
+    d.mkdir(parents=True, exist_ok=True)
+    block = {"harness": harness}
+    if with_command:
+        block["harnesses"] = {"cli-exec": {"command": ["codex", "exec"]}}
+    (d / "config.yaml").write_text(yaml.safe_dump({"kanban": block}), encoding="utf-8")
+
+
+def test_select_spawn_backend_profile_config_default(kanban_home):
+    _write_profile_harness("coder", "cli-exec")
+    with kb.connect() as conn:
+        t = kb.get_task(conn, kb.create_task(conn, title="p", assignee="coder"))
+    assert kb._select_spawn_backend(t, None).name == "cli-exec"
+
+
+def test_select_spawn_backend_task_column_overrides_profile(kanban_home):
+    _write_profile_harness("coder", "cli-exec")
+    with kb.connect() as conn:
+        t = kb.get_task(
+            conn, kb.create_task(conn, title="x", assignee="coder", harness="hermes-native")
+        )
+    assert kb._select_spawn_backend(t, None).name == "hermes-native"
+
+
+def test_select_spawn_backend_board_overrides_profile(kanban_home):
+    import yaml
+    _write_profile_harness("coder", "cli-exec")
+    board_dir = kb.kanban_db_path(board=None).parent
+    (board_dir / "board.yaml").write_text(
+        yaml.safe_dump({"kanban": {"harness": "hermes-native"}}), encoding="utf-8"
+    )
+    with kb.connect() as conn:
+        t = kb.get_task(conn, kb.create_task(conn, title="b", assignee="coder"))
+    assert kb._select_spawn_backend(t, None).name == "hermes-native"
+
+
+def test_select_spawn_backend_no_config_is_native(kanban_home):
+    with kb.connect() as conn:
+        t = kb.get_task(conn, kb.create_task(conn, title="n", assignee="researcher"))
+    assert kb._select_spawn_backend(t, None).name == "hermes-native"
+
+
+def test_cli_exec_backend_registered():
+    assert "cli-exec" in kb._SPAWN_BACKENDS
+    assert kb._SPAWN_BACKENDS["cli-exec"].name == "cli-exec"
+
+
+def test_cli_exec_backend_launch_stdin(kanban_home, tmp_path, monkeypatch):
+    ctx, task, ws = _ctx(tmp_path, title="launch", assignee="coder")
+    monkeypatch.setattr(kb.subprocess, "Popen", _FakePopen)
+    kb.CliExecBackend(config_loader=_cli_loader(("echo", "run"), "stdin")).launch(ctx)
+    p = _FakePopen.last
+    assert p.pid == 4242
+    assert p.cmd == ["echo", "run"]                       # configured argv, unmodified
+    assert p.kw["cwd"] == ws                              # runs in the worktree
+    assert p.kw["env"].get("HERMES_KANBAN_TASK") == task.id
+    assert p.kw.get("start_new_session") is True          # detached worker
+    stdin = p.kw["stdin"]                                 # brief delivered on stdin
+    assert getattr(stdin, "name", "").endswith(".hermes-task.md")
+    brief = Path(ws) / ".hermes-task.md"
+    assert brief.is_file()
+    assert brief.read_text() == kb.compile_task_prompt(ctx)
+
+
+def test_cli_exec_backend_launch_file_arg(kanban_home, tmp_path, monkeypatch):
+    ctx, _, _ = _ctx(tmp_path, title="filearg", assignee="coder")
+    monkeypatch.setattr(kb.subprocess, "Popen", _FakePopen)
+    kb.CliExecBackend(config_loader=_cli_loader(("echo",), "file-arg")).launch(ctx)
+    p = _FakePopen.last
+    assert p.cmd[-1].endswith(".hermes-task.md")          # brief path appended
+    assert p.kw["stdin"] == kb.subprocess.DEVNULL         # not via stdin
+
+
+def test_cli_exec_backend_launch_none(kanban_home, tmp_path, monkeypatch):
+    ctx, _, _ = _ctx(tmp_path, title="none", assignee="coder")
+    monkeypatch.setattr(kb.subprocess, "Popen", _FakePopen)
+    kb.CliExecBackend(config_loader=_cli_loader(("echo",), "none")).launch(ctx)
+    p = _FakePopen.last
+    assert p.cmd == ["echo"]                              # argv only
+    assert p.kw["stdin"] == kb.subprocess.DEVNULL
+
+
+def test_cli_exec_backend_missing_binary_raises(kanban_home, tmp_path):
+    ctx, _, _ = _ctx(tmp_path, title="missing", assignee="coder")
+
+    def loader(profile, board):
+        return kb.CliExecConfig.from_mapping({"command": ["nope-no-such-binary-xyz"]})
+
+    with pytest.raises(RuntimeError):
+        kb.CliExecBackend(config_loader=loader).launch(ctx)

@@ -1665,6 +1665,9 @@ export const ja = defineLocale({
     terminal: 'ターミナル',
     noFolderSelected: 'フォルダーが選択されていません',
     changeCwdTitle: '作業ディレクトリを変更',
+    remotePickerTitle: 'リモートフォルダーを選択',
+    remotePickerDescription: '接続中のバックエンド上のフォルダーを参照します。',
+    remotePickerSelect: 'フォルダーを選択',
     folderTip: cwd => `${cwd} — クリックしてフォルダーを変更`,
     openFolder: 'フォルダーを開く',
     refreshTree: 'ツリーを更新',
@@ -1914,7 +1917,14 @@ export const ja = defineLocale({
     clipboard: 'クリップボード',
     noClipboardImage: 'クリップボードに画像が見つかりません',
     clipboardPasteFailed: 'クリップボードからの貼り付けに失敗しました',
-    dropFiles: 'ファイルをドロップ'
+    dropFiles: 'ファイルをドロップ',
+    handoff: {
+      pickPlatform: '送信先を選択',
+      success: platform => `${platform} に引き継ぎました。いつでもここで再開できます。`,
+      systemNote: platform => `↻ ${platform} に引き継ぎました — いつでもここで再開できます。`,
+      failed: error => `引き継ぎに失敗しました: ${error}`,
+      timedOut: 'ゲートウェイの待機がタイムアウトしました。`hermes gateway` は起動していますか？'
+    }
   },
 
   errors: {

@@ -1626,6 +1626,9 @@ export const zhHant = defineLocale({
     terminal: '終端機',
     noFolderSelected: '未選擇資料夾',
     changeCwdTitle: '變更工作目錄',
+    remotePickerTitle: '選擇遠端資料夾',
+    remotePickerDescription: '瀏覽已連線後端上的資料夾。',
+    remotePickerSelect: '選擇資料夾',
     folderTip: cwd => `${cwd} — 點擊以變更資料夾`,
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',
@@ -1873,7 +1876,14 @@ export const zhHant = defineLocale({
     clipboard: '剪貼簿',
     noClipboardImage: '剪貼簿中沒有圖片',
     clipboardPasteFailed: '剪貼簿貼上失敗',
-    dropFiles: '拖曳檔案'
+    dropFiles: '拖曳檔案',
+    handoff: {
+      pickPlatform: '選擇目標平台',
+      success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,
+      systemNote: platform => `↻ 已移交到 ${platform} — 隨時可在此處恢復。`,
+      failed: error => `移交失敗：${error}`,
+      timedOut: '等待閘道逾時。`hermes gateway` 是否正在執行？'
+    }
   },
 
   errors: {

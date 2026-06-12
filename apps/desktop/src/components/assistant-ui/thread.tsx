@@ -929,22 +929,42 @@ const SystemMessage: FC = () => {
   const slashStatus = text.match(SLASH_STATUS_RE)
 
   if (slashStatus?.groups) {
+    const output = slashStatus.groups.output.trim()
+    // Single-line status (e.g. "model → x") reads best centered inline; padded
+    // multiline output (catalogs, usage tables) needs left-aligned, wider room
+    // or the column alignment breaks.
+    const multiline = output.includes('\n')
+
     return (
       <MessagePrimitive.Root
-        className="max-w-[min(86%,44rem)] self-center px-2 py-0.5 text-center text-[0.6875rem] leading-5 text-muted-foreground/60"
+        className={cn(
+          'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60',
+          multiline ? 'text-left' : 'text-center'
+        )}
         data-role="system"
         data-slot="aui_system-message-root"
       >
         <span className="font-mono text-muted-foreground/55">{slashStatus.groups.command}</span>
-        <span className="mx-1.5 text-muted-foreground/35">·</span>
-        <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={slashStatus.groups.output.trim()} />
+        {multiline ? (
+          <LinkifiedText className="mt-0.5 block whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+        ) : (
+          <>
+            <span className="mx-1.5 text-muted-foreground/35">·</span>
+            <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
+          </>
+        )}
       </MessagePrimitive.Root>
     )
   }
 
+  const multiline = text.includes('\n')
+
   return (
     <MessagePrimitive.Root
-      className="max-w-[min(86%,44rem)] self-center px-2 py-0.5 text-center text-[0.6875rem] leading-5 text-muted-foreground/55"
+      className={cn(
+        'w-[60%] max-w-[44rem] self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/55',
+        multiline ? 'text-left' : 'text-center'
+      )}
       data-role="system"
       data-slot="aui_system-message-root"
     >
@@ -1508,6 +1528,8 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
           >
             <div
               aria-label={copy.editMessage}
+              autoCapitalize="off"
+              autoCorrect="off"
               autoFocus
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground/95 outline-none',
@@ -1529,9 +1551,26 @@ const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sessionId }
               onPaste={handlePaste}
               ref={editorRef}
               role="textbox"
+              spellCheck={false}
               suppressContentEditableWarning
             />
-            <ComposerPrimitive.Input className="sr-only" tabIndex={-1} unstable_focusOnScrollToBottom={false} />
+            <ComposerPrimitive.Input
+              asChild
+              className="sr-only"
+              submitMode="ctrlEnter"
+              tabIndex={-1}
+              unstable_focusOnScrollToBottom={false}
+            >
+              <textarea
+                aria-hidden
+                autoCapitalize="off"
+                autoComplete="off"
+                autoCorrect="off"
+                className="sr-only"
+                spellCheck={false}
+                tabIndex={-1}
+              />
+            </ComposerPrimitive.Input>
             {staging && (
               <span
                 className="pointer-events-none absolute bottom-2 left-2 inline-flex items-center gap-1 rounded-full bg-background/80 px-1.5 py-0.5 text-[0.62rem] text-muted-foreground backdrop-blur-[1px]"

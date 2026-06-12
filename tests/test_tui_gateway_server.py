@@ -86,6 +86,47 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
+def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
+    class DbContext:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeDb:
+        def __init__(self, state):
+            self.state = state
+            self.failed_with = None
+
+        def get_handoff_state(self, _key):
+            return {"state": self.state, "platform": "telegram", "error": None}
+
+        def fail_handoff(self, _key, error):
+            self.failed_with = error
+            self.state = "failed"
+
+    sid = "rt-handoff"
+    server._sessions[sid] = {"session_key": "stored-handoff"}
+    try:
+        pending = FakeDb("pending")
+        monkeypatch.setattr(server, "_session_db", lambda _session: DbContext(pending))
+        result = server._methods["handoff.fail"]("r1", {"session_id": sid, "error": "timed out"})
+        assert result["result"] == {"failed": True, "state": "failed"}
+        assert pending.failed_with == "timed out"
+
+        completed = FakeDb("completed")
+        monkeypatch.setattr(server, "_session_db", lambda _session: DbContext(completed))
+        result = server._methods["handoff.fail"]("r2", {"session_id": sid, "error": "late timeout"})
+        assert result["result"] == {"failed": False, "state": "completed"}
+        assert completed.failed_with is None
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
     """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
     parent workspace is passed explicitly; it must pin instead of clearing back
@@ -6053,6 +6094,24 @@ def test_make_agent_reads_nested_max_turns(monkeypatch):
         server._make_agent("sid1", "key1")
 
     assert mock_agent.call_args.kwargs["max_iterations"] == 200
+
+
+def test_make_agent_waits_for_shared_mcp_discovery(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {})
+    waited = []
+
+    from hermes_cli import mcp_startup
+
+    monkeypatch.setattr(
+        mcp_startup,
+        "wait_for_mcp_discovery",
+        lambda timeout=0.75: waited.append(timeout),
+    )
+
+    with patch("run_agent.AIAgent"):
+        server._make_agent("sid1", "key1")
+
+    assert waited == [0.75]
 
 
 def test_make_agent_nested_max_turns_takes_priority(monkeypatch):

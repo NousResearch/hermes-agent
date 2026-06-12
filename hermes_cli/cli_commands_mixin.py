@@ -1255,6 +1255,57 @@ class CLICommandsMixin:
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
 
+    def _handle_suggestions_command(self, cmd: str):
+        """Handle /suggestions — review/accept/dismiss suggested automations.
+
+        Delegates to the shared handler so CLI and gateway never drift. CLI
+        origin is the local platform so an accepted job's "origin" delivery
+        resolves to a configured home channel.
+        """
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(tokens)
+        try:
+            from hermes_cli.suggestions_cmd import handle_suggestions_command
+            output = handle_suggestions_command(args)
+        except Exception as e:
+            output = f"Suggestions command failed: {e}"
+        self._console_print(output)
+
+    def _handle_blueprint_command(self, cmd: str):
+        """Handle /blueprint — set up an automation from a blueprint template.
+
+        Delegates to the shared handler. A bare ``/blueprint`` lists the
+        catalog; ``/blueprint <name>`` name-matches a blueprint and seeds the
+        agent to ask the user for each value conversationally (the result's
+        ``agent_seed``); ``/blueprint <name> slot=val …`` creates the job
+        directly. When a seed is returned it is stashed as a one-shot pending
+        message the interactive loop runs as the next agent turn.
+        """
+        import shlex
+
+        try:
+            tokens = shlex.split(cmd)[1:] if cmd else []
+        except ValueError:
+            tokens = (cmd or "").split()[1:]
+        args = " ".join(shlex.quote(t) for t in tokens)
+        try:
+            from hermes_cli.blueprint_cmd import handle_blueprint_command
+            result = handle_blueprint_command(args)
+        except Exception as e:
+            self._console_print(f"Cron blueprint command failed: {e}")
+            return
+        self._console_print(result.text)
+        seed = getattr(result, "agent_seed", None)
+        if seed:
+            # One-shot: the interactive loop picks this up right after the
+            # slash command returns and runs it as a normal agent turn.
+            self._pending_agent_seed = seed
+
     def _handle_curator_command(self, cmd: str):
         """Handle /curator slash command.
 

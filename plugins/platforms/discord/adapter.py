@@ -20,6 +20,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
+from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,43 @@ from gateway.platforms.base import (
     SUPPORTED_DOCUMENT_TYPES,
 )
 from tools.url_safety import is_safe_url
+
+
+async def _wait_for_ready_or_bot_exit(
+    ready_event: asyncio.Event,
+    bot_task: asyncio.Task,
+    timeout: float,
+) -> None:
+    """Wait until Discord is ready, or surface early bot startup failure.
+
+    ``discord.py`` startup errors (including SOCKS/proxy failures from
+    aiohttp-socks/python-socks) happen inside ``Bot.start()``.  If ``connect()``
+    only waits on ``ready_event``, a dead background task still burns the full
+    ready timeout before the gateway supervisor can reconnect.  Racing the ready
+    event against the bot task keeps failures fast and preserves the original
+    exception for logging/classification.
+    """
+    ready_task = asyncio.create_task(ready_event.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {ready_task, bot_task},
+            timeout=timeout,
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+        if not done:
+            raise asyncio.TimeoutError
+        if bot_task in done:
+            exc = bot_task.exception()
+            if exc is not None:
+                raise exc
+            if not ready_task.done():
+                raise RuntimeError("Discord bot task exited before ready")
+        await ready_task
+    finally:
+        if not ready_task.done():
+            ready_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await ready_task
 
 
 def _find_discord_windows_bundled_opus(discord_module: Any = None) -> Optional[str]:
@@ -622,6 +660,10 @@ class DiscordAdapter(BasePlatformAdapter):
         self._typing_tasks: Dict[str, asyncio.Task] = {}
         self._bot_task: Optional[asyncio.Task] = None
         self._post_connect_task: Optional[asyncio.Task] = None
+        # True while disconnect() is intentionally closing discord.py. The
+        # bot task's done callback uses this to distinguish an operator/service
+        # shutdown from a runtime websocket crash.
+        self._disconnecting = False
         # Dedup cache: prevents duplicate bot responses when Discord
         # RESUME replays events after reconnects.
         self._dedup = MessageDeduplicator()
@@ -633,6 +675,65 @@ class DiscordAdapter(BasePlatformAdapter):
         # history backfill to skip the full scan on hot paths.  Falls back to
         # scanning channel.history() on cache miss (cold start / restart).
         self._last_self_message_id: Dict[str, str] = {}
+
+    def _handle_bot_task_done(self, task: asyncio.Task) -> None:
+        """Surface post-startup discord.py task exits to the gateway supervisor.
+
+        discord.py reconnects normal gateway interruptions internally. When its
+        top-level ``Bot.start()`` task actually exits after the adapter has been
+        marked running, the Discord websocket is dead while the Hermes gateway
+        process can remain alive. Treat that split-brain state as a retryable
+        fatal adapter error so ``GatewayRunner._handle_adapter_fatal_error`` can
+        remove this adapter and queue Discord for the existing reconnect watcher.
+        """
+        if getattr(self, "_disconnecting", False):
+            # Intentional service/operator shutdown. Drain the task result so
+            # asyncio doesn't emit "exception was never retrieved" warnings.
+            with suppress(asyncio.CancelledError, Exception):
+                task.exception()
+            return
+
+        # Ignore stale callbacks from an older client if a reconnect already
+        # installed a newer Bot.start() task on this adapter instance.
+        if self._bot_task is not None and task is not self._bot_task:
+            with suppress(asyncio.CancelledError, Exception):
+                task.exception()
+            return
+
+        if not self._running:
+            # Startup failures are handled by _wait_for_ready_or_bot_exit() in
+            # connect(); this callback is only for post-startup split-brain.
+            with suppress(asyncio.CancelledError, Exception):
+                task.exception()
+            return
+
+        try:
+            exc = task.exception()
+        except asyncio.CancelledError:
+            return
+        except Exception as err:  # pragma: no cover - defensive
+            exc = err
+
+        if exc is None:
+            message = "Discord gateway task exited without an exception"
+        else:
+            message = f"Discord gateway task exited: {exc}"
+
+        logger.error("[%s] %s", self.name, message, exc_info=exc if exc else False)
+        self._set_fatal_error("discord_gateway_task_exited", message, retryable=True)
+
+        async def _notify() -> None:
+            try:
+                await self._notify_fatal_error()
+            except Exception as notify_exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "[%s] Failed to notify gateway supervisor about Discord task exit: %s",
+                    self.name,
+                    notify_exc,
+                    exc_info=True,
+                )
+
+        asyncio.create_task(_notify())
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -900,25 +1001,55 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._register_slash_commands()
 
             # Start the bot in background
+            self._disconnecting = False
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
+            self._bot_task.add_done_callback(self._handle_bot_task_done)
 
-            # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            # Wait for ready, but fail fast if discord.py's background startup
+            # task dies first (for example on SOCKS/proxy connect errors).
+            await _wait_for_ready_or_bot_exit(self._ready_event, self._bot_task, timeout=30)
 
             self._running = True
             return True
 
         except asyncio.TimeoutError:
             logger.error("[%s] Timeout waiting for connection to Discord", self.name, exc_info=True)
+            # Cancel the background bot task so it cannot fire on_message after
+            # this adapter is discarded.  Without this, the task keeps running and
+            # a later successful reconnect leaves two active Discord clients that
+            # each process every message, producing duplicate threads/responses.
+            await self._cancel_bot_task()
             self._release_platform_lock()
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            # Same zombie-client hazard as the timeout branch: the background
+            # client.start() task may already be running when a later setup
+            # step raises. Cancel it so the discarded adapter cannot connect.
+            await self._cancel_bot_task()
             self._release_platform_lock()
             return False
 
+    async def _cancel_bot_task(self) -> None:
+        """Cancel and await the background client.start() task, if running."""
+        if self._bot_task and not self._bot_task.done():
+            self._bot_task.cancel()
+            try:
+                await self._bot_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._bot_task = None
+
     async def disconnect(self) -> None:
         """Disconnect from Discord."""
+        self._disconnecting = True
+        # Cancel the bot task before closing the client.  If connect() timed out
+        # and returned False, the background client.start() task may still be
+        # running; calling client.close() alone is not enough to stop it because
+        # discord.py's reconnect loop can ignore the closed flag while a
+        # WebSocket handshake is in flight.  Explicitly cancelling the task here
+        # ensures the zombie client cannot receive or dispatch any further events.
+        await self._cancel_bot_task()
         # Clean up all active voice connections before closing the client
         for guild_id in list(self._voice_clients.keys()):
             try:

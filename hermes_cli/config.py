@@ -1429,6 +1429,10 @@ DEFAULT_CONFIG = {
         # behaves badly with replayed scrollback.
         "persistent_output": True,
         "persistent_output_max_lines": 200,
+        # Print a one-line summary of resolved modal prompts (approval /
+        # clarify) into scrollback so the question and decision survive the
+        # panel repaint. Set false to keep scrollback untouched.
+        "persist_prompts": True,
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         # File-mutation verifier footer.  When true (default), the agent
         # appends a one-line advisory to its final response whenever a
@@ -1438,6 +1442,11 @@ DEFAULT_CONFIG = {
         # class of over-claim that otherwise forces users to run
         # `git status` to verify edits landed.  Set false to suppress.
         "file_mutation_verifier": True,
+        # Nous credits status-bar notices (usage bands, grant-spent, depleted /
+        # restored).  When false, no credits notices are emitted — balance data
+        # is still captured and /usage keeps working.  Off switch for sub +
+        # top-up users who find the gauge noisy.
+        "credits_notices": True,
         # Turn-completion explainer.  When true (default), the agent appends a
         # one-line explanation to its final response whenever a turn ends
         # abnormally with no usable reply — empty content after retries, a

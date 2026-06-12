@@ -1792,7 +1792,7 @@ class CLICommandsMixin:
 
     def _handle_goal_command(self, cmd: str) -> None:
         """Dispatch /goal subcommands: set / status / pause / resume / clear."""
-        from hermes_cli.goals import parse_goal_command
+        from hermes_cli.goals import handle_goal_command
         from cli import _DIM, _RST, _cprint
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -1802,51 +1802,46 @@ class CLICommandsMixin:
             _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
             return
 
-        goal_cmd = parse_goal_command(arg)
+        result = handle_goal_command(mgr, arg)
 
-        # Bare /goal or /goal status → show current state
-        if goal_cmd.action == "status":
-            _cprint(f"  {mgr.status_line()}")
+        if result.action == "status":
+            _cprint(f"  {result.status_line}")
             return
 
-        if goal_cmd.action == "pause":
-            state = mgr.pause(reason="user-paused")
-            if state is None:
+        if result.action == "pause":
+            if result.state is None:
                 _cprint(f"  {_DIM}No goal set.{_RST}")
             else:
-                _cprint(f"  ⏸ Goal paused: {state.goal}")
+                _cprint(f"  ⏸ Goal paused: {result.state.goal}")
             return
 
-        if goal_cmd.action == "resume":
-            state = mgr.resume()
-            if state is None:
+        if result.action == "resume":
+            if result.state is None:
                 _cprint(f"  {_DIM}No goal to resume.{_RST}")
             else:
-                _cprint(f"  ▶ Goal resumed: {state.goal}")
-                prompt = mgr.next_continuation_prompt()
-                if prompt:
+                _cprint(f"  ▶ Goal resumed: {result.state.goal}")
+                if result.kickoff_prompt:
                     pending = getattr(self, "_pending_input", None)
                     if pending is not None:
-                        pending.put(prompt)
+                        pending.put(result.kickoff_prompt)
                     _cprint(f"  {_DIM}Queued the next continuation turn.{_RST}")
             return
 
-        if goal_cmd.action == "clear":
-            had = mgr.has_goal()
-            mgr.clear()
-            if had:
+        if result.action == "clear":
+            if result.had_goal:
                 _cprint("  ✓ Goal cleared.")
             else:
                 _cprint(f"  {_DIM}No active goal.{_RST}")
             return
 
-        # Otherwise treat the arg as the goal text.
-        try:
-            state = mgr.set(goal_cmd.text)
-        except ValueError as exc:
-            _cprint(f"  Invalid goal: {exc}")
+        if result.error is not None:
+            _cprint(f"  Invalid goal: {result.error}")
+            return
+        if result.state is None:
+            _cprint("  Invalid goal: no state returned")
             return
 
+        state = result.state
         _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
         _cprint(
             f"  {_DIM}After each turn, a judge model will check if the goal is done. "

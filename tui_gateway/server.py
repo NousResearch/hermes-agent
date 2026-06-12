@@ -8070,7 +8070,7 @@ def _(rid, params: dict) -> dict:
         if not session:
             return _err(rid, 4001, "no active session")
         try:
-            from hermes_cli.goals import GoalManager, parse_goal_command
+            from hermes_cli.goals import GoalManager, handle_goal_command
         except Exception as exc:
             return _err(rid, 5030, f"goals unavailable: {exc}")
 
@@ -8085,44 +8085,39 @@ def _(rid, params: dict) -> dict:
             max_turns = 20
         mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
 
-        goal_cmd = parse_goal_command(arg)
-        if goal_cmd.action == "status":
-            return _ok(rid, {"type": "exec", "output": mgr.status_line()})
-        if goal_cmd.action == "pause":
-            state = mgr.pause(reason="user-paused")
-            out = "No goal set." if state is None else f"⏸ Goal paused: {state.goal}"
+        result = handle_goal_command(mgr, arg)
+        if result.action == "status":
+            return _ok(rid, {"type": "exec", "output": result.status_line})
+        if result.action == "pause":
+            out = "No goal set." if result.state is None else f"⏸ Goal paused: {result.state.goal}"
             return _ok(rid, {"type": "exec", "output": out})
-        if goal_cmd.action == "resume":
-            state = mgr.resume()
-            if state is None:
+        if result.action == "resume":
+            if result.state is None:
                 return _ok(rid, {"type": "exec", "output": "No goal to resume."})
-            prompt = mgr.next_continuation_prompt()
-            if not prompt:
-                return _ok(rid, {"type": "exec", "output": f"▶ Goal resumed: {state.goal}"})
+            if not result.kickoff_prompt:
+                return _ok(rid, {"type": "exec", "output": f"▶ Goal resumed: {result.state.goal}"})
             return _ok(
                 rid,
                 {
                     "type": "send",
-                    "notice": f"▶ Goal resumed: {state.goal}",
-                    "message": prompt,
+                    "notice": f"▶ Goal resumed: {result.state.goal}",
+                    "message": result.kickoff_prompt,
                 },
             )
-        if goal_cmd.action == "clear":
-            had = mgr.has_goal()
-            mgr.clear()
+        if result.action == "clear":
             return _ok(
                 rid,
                 {
                     "type": "exec",
-                    "output": "✓ Goal cleared." if had else "No active goal.",
+                    "output": "✓ Goal cleared." if result.had_goal else "No active goal.",
                 },
             )
 
-        # Otherwise — treat the remaining text as the new goal.
-        try:
-            state = mgr.set(goal_cmd.text)
-        except ValueError as exc:
-            return _err(rid, 4004, f"invalid goal: {exc}")
+        if result.error is not None:
+            return _err(rid, 4004, f"invalid goal: {result.error}")
+        state = result.state
+        if state is None:
+            return _err(rid, 4004, "invalid goal: no state returned")
 
         notice = (
             f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"

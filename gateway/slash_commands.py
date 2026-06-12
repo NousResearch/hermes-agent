@@ -1562,20 +1562,21 @@ class GatewaySlashCommandsMixin:
         agent starts working on it immediately — the post-turn
         continuation hook then takes over from there.
         """
-        from hermes_cli.goals import parse_goal_command
+        from hermes_cli.goals import handle_goal_command
 
         args = (event.get_command_args() or "").strip()
-        goal_cmd = parse_goal_command(args)
 
         mgr, session_entry = self._get_goal_manager_for_event(event)
         if mgr is None:
             return t("gateway.goal.unavailable")
 
-        if goal_cmd.action == "status":
-            return mgr.status_line()
+        result = handle_goal_command(mgr, args)
 
-        if goal_cmd.action == "pause":
-            state = mgr.pause(reason="user-paused")
+        if result.action == "status":
+            return result.status_line
+
+        if result.action == "pause":
+            state = result.state
             if state is None:
                 return t("gateway.goal.no_goal_set")
             try:
@@ -1587,13 +1588,13 @@ class GatewaySlashCommandsMixin:
                 logger.debug("goal pause: pending continuation cleanup failed: %s", exc)
             return t("gateway.goal.paused", goal=state.goal)
 
-        if goal_cmd.action == "resume":
-            state = mgr.resume()
+        if result.action == "resume":
+            state = result.state
             if state is None:
                 return t("gateway.goal.no_resume")
             adapter = self.adapters.get(event.source.platform) if event.source else None
             _quick_key = self._session_key_for_source(event.source) if event.source else None
-            prompt = mgr.next_continuation_prompt()
+            prompt = result.kickoff_prompt
             if adapter and _quick_key and prompt:
                 try:
                     kickoff_event = MessageEvent(
@@ -1608,9 +1609,7 @@ class GatewaySlashCommandsMixin:
                     logger.debug("goal resume continuation enqueue failed: %s", exc)
             return t("gateway.goal.resumed", goal=state.goal)
 
-        if goal_cmd.action == "clear":
-            had = mgr.has_goal()
-            mgr.clear()
+        if result.action == "clear":
             try:
                 adapter = self.adapters.get(event.source.platform) if event.source else None
                 _quick_key = self._session_key_for_source(event.source) if event.source else None
@@ -1618,13 +1617,13 @@ class GatewaySlashCommandsMixin:
                     self._clear_goal_pending_continuations(_quick_key, adapter)
             except Exception as exc:
                 logger.debug("goal clear: pending continuation cleanup failed: %s", exc)
-            return t("gateway.goal_cleared") if had else t("gateway.no_active_goal")
+            return t("gateway.goal_cleared") if result.had_goal else t("gateway.no_active_goal")
 
-        # Otherwise — treat the remaining text as the new goal.
-        try:
-            state = mgr.set(goal_cmd.text)
-        except ValueError as exc:
-            return t("gateway.goal.invalid", error=str(exc))
+        if result.error is not None:
+            return t("gateway.goal.invalid", error=str(result.error))
+        state = result.state
+        if state is None:
+            return t("gateway.goal.invalid", error="no state returned")
 
         # Queue the goal text as an immediate first turn so the agent
         # starts making progress. The post-turn hook takes over after.

@@ -75,6 +75,35 @@ async def test_preprocess_uses_stable_participant_label_without_display_name():
     assert result == f"[{label}] hello"
 
 
+@pytest.mark.asyncio
+async def test_preprocess_sanitizes_display_name_for_shared_prefix():
+    runner = _make_runner(
+        GatewayConfig(
+            platforms={
+                Platform.WEBHOOK: PlatformConfig(enabled=True, token="fake"),
+            },
+            group_sessions_per_user=False,
+        )
+    )
+    source = SessionSource(
+        platform=Platform.WEBHOOK,
+        chat_id="room-ops",
+        chat_name="Ops Room",
+        chat_type="group",
+        user_name="  Alice\n[ops]\tlead  ",
+    )
+    event = MessageEvent(text="hello", source=source)
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert shared_participant_label(source) == "Alice (ops) lead"
+    assert result == "[Alice (ops) lead] hello"
+
+
 def test_shared_participant_labels_distinguish_multiple_unnamed_senders():
     first = SessionSource(
         platform=Platform.WEBHOOK,

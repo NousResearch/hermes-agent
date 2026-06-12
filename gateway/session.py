@@ -54,6 +54,12 @@ def _hash_chat_id(value: str) -> str:
     return _hash_id(value)
 
 
+def _sanitize_participant_label(value: str) -> str:
+    """Make a user-controlled display name safe inside ``[label]`` prefixes."""
+    collapsed = " ".join(str(value or "").split())
+    return collapsed.replace("[", "(").replace("]", ")")[:64].strip()
+
+
 from .config import (
     Platform,
     GatewayConfig,
@@ -158,7 +164,7 @@ class SessionSource:
 
 def shared_participant_label(source: SessionSource) -> Optional[str]:
     """Return the stable label used to disambiguate speakers in shared sessions."""
-    display_name = str(source.user_name or "").strip()
+    display_name = _sanitize_participant_label(source.user_name or "")
     if display_name:
         return display_name
 

@@ -8743,6 +8743,30 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
 
+    # Handle /tps directly — reads from session agent, no slash worker needed
+    if _cmd_base == "tps":
+        agent = session.get("agent")
+        if agent is None:
+            return _ok(rid, {"output": "No active agent in this session."})
+        last_dur = getattr(agent, "last_api_duration", 0.0) or 0.0
+        last_out = getattr(agent, "last_output_tokens", 0) or 0
+        if last_dur > 0 and last_out > 0:
+            tps_val = last_out / last_dur
+            output = (
+                f"⚡ Tokens per second\n"
+                f"─────────────────────────────────────────\n"
+                f"Last response:      {last_out:,} tokens in {last_dur:.1f}s\n"
+                f"Output speed:       {tps_val:,.0f} tok/s"
+            )
+        else:
+            output = (
+                f"⚡ Tokens per second\n"
+                f"─────────────────────────────────────────\n"
+                f"No API response recorded yet in this session.\n"
+                f"Send a message first, then run /tps."
+            )
+        return _ok(rid, {"output": output})
+
     worker = session.get("slash_worker")
     if not worker:
         try:

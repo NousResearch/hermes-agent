@@ -1,0 +1,1 @@
+Fix #45039: Dashboard "Default project directory" setting is ignored (even Dashboard sessions)

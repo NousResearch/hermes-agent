@@ -1,5 +1,15 @@
 # Hermes Agent - Development Guide
 
+> **Multi-agent context:** See `~/.hermes/AGENTS.md` for the system-level org chart — who does what, handoff protocols, git policies, and forbidden zones. Load that file first if you need to understand the broader agent architecture.
+
+## Agent-Specific Notes (when coding on this repo)
+
+- **Luna / Selene** — handles ad-hoc codebase queries and one-off inspections. Not a dedicated coding agent.
+- **Apollo** — background-only; never spawn for codebase work. Escalate any Hermes-core task files to Luna.
+- **Dedicated coding agent** — if systematic coding work is needed (features, PRs, refactors), 書銘 will create a separate profile for it. This guide exists for that agent. Do not assume Luna or Apollo will handle sustained coding sessions.
+
+---
+
 Instructions for AI coding assistants and developers working on the hermes-agent codebase.
 
 **Never give up on the right solution.**

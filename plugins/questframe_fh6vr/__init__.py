@@ -95,6 +95,12 @@ _TOOLS = (
         "Q",
     ),
     (
+        "questframe_cockpit_presence_selftest",
+        core.COCKPIT_PRESENCE_SELFTEST_SCHEMA,
+        core.handle_cockpit_presence_selftest,
+        "Q",
+    ),
+    (
         "questframe_support_report",
         core.SUPPORT_REPORT_SCHEMA,
         core.handle_support_report,

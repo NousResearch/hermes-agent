@@ -253,6 +253,43 @@ def test_cli_rtx3060_selftest_dispatch(monkeypatch):
     assert seen["kwargs"]["timeout_seconds"] == 75
 
 
+def test_cli_cockpit_presence_selftest_dispatch(monkeypatch):
+    seen = {}
+
+    def fake_run_launcher(command, **kwargs):
+        seen["command"] = command
+        seen["kwargs"] = kwargs
+        return {"ok": True}
+
+    monkeypatch.setattr(core, "run_launcher", fake_run_launcher)
+    parser = questframe_cli.argparse.ArgumentParser()
+    questframe_cli.register_cli(parser)
+    args = parser.parse_args(
+        [
+            "cockpit-presence-selftest",
+            "--approve",
+            "--attempt-window-capture",
+            "--seconds",
+            "10",
+            "--target-hz",
+            "72",
+        ]
+    )
+
+    exit_code = questframe_cli.questframe_command(args)
+
+    assert exit_code == 0
+    assert seen["command"] == "cockpit-presence-selftest"
+    extra = seen["kwargs"]["extra_args"]
+    assert "--json" in extra
+    assert "--approve" in extra
+    assert "--attempt-window-capture" in extra
+    assert "--seconds" in extra
+    assert "10" in extra
+    assert "--target-hz" in extra
+    assert "72" in extra
+
+
 def test_cli_depth_surface_selftest_dispatch(monkeypatch):
     seen = {}
 

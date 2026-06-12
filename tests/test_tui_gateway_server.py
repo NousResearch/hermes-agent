@@ -3410,9 +3410,11 @@ def test_prompt_submit_expands_context_refs(monkeypatch):
         api_key = ""
 
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None,
+            persist_user_message=None,
         ):
             captured["prompt"] = prompt
+            captured["persist_user_message"] = persist_user_message
             return {
                 "final_response": "ok",
                 "messages": [{"role": "assistant", "content": "ok"}],
@@ -3466,9 +3468,11 @@ def test_prompt_submit_expands_inline_multi_skill_markers(monkeypatch):
         api_key = ""
 
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None,
+            persist_user_message=None,
         ):
             captured["prompt"] = prompt
+            captured["persist_user_message"] = persist_user_message
             return {
                 "final_response": "ok",
                 "messages": [{"role": "assistant", "content": "ok"}],
@@ -3534,9 +3538,11 @@ def test_run_prompt_submit_does_not_expand_synthetic_prompt(monkeypatch):
         api_key = ""
 
         def run_conversation(
-            self, prompt, conversation_history=None, stream_callback=None
+            self, prompt, conversation_history=None, stream_callback=None,
+            persist_user_message=None,
         ):
             captured["prompt"] = prompt
+            captured["persist_user_message"] = persist_user_message
             return {
                 "final_response": "ok",
                 "messages": [{"role": "assistant", "content": "ok"}],

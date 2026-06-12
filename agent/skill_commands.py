@@ -780,6 +780,13 @@ def build_multi_skill_invocation_message(
             f"multi-skill invocation: {user_instruction}"
         )
 
+    if len(loaded_skills) > 1:
+        prompt_parts.append(
+            "[NOTE: Multiple skills are loaded for this turn. If skill instructions "
+            "conflict, earlier-loaded skills take priority over later-loaded ones. "
+            "Resolve any ambiguity in favor of the skill loaded first.]"
+        )
+
     if runtime_note:
         prompt_parts.append(f"[Runtime note: {runtime_note}]")
 

@@ -13060,20 +13060,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                             task_id=self.session_id,
                         )
                         if expanded:
+                            _display_input = user_input
                             user_input, loaded_names, missing = expanded
                             print(f"\n⚡ Loading skills: {', '.join(loaded_names)}")
                             if missing:
                                 ChatConsole().print(
                                     f"[yellow]Skipped missing skills: {', '.join(missing)}[/]"
                                 )
-                    
+                        else:
+                            _display_input = user_input
+                    else:
+                        _display_input = user_input
+
                     # Expand paste references back to full content
                     _paste_ref_re = re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
                     paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
                     if paste_refs:
                         user_input = self._expand_paste_references(user_input)
                     print()
-                    self._print_user_message_preview(user_input)
+                    self._print_user_message_preview(_display_input)
                     
                     # Show image attachment count
                     if submit_images:

@@ -5752,12 +5752,27 @@ def _run_prompt_submit(
     expand_skills: bool = False,
 ) -> None:
     if expand_skills:
+        _original_text = text
         text, _loaded_skill_names, _missing_skill_names = (
             _expand_multi_skill_prompt(
                 text,
                 session,
             )
         )
+        if _loaded_skill_names:
+            _status_update(
+                sid,
+                "skills",
+                f"Loading skills: {', '.join(_loaded_skill_names)}",
+            )
+        if _missing_skill_names:
+            _status_update(
+                sid,
+                "warning",
+                f"Skipped missing skills: {', '.join(_missing_skill_names)}",
+            )
+    else:
+        _original_text = None
     with session["history_lock"]:
         history = list(session["history"])
         history_version = int(session.get("history_version", 0))
@@ -5898,6 +5913,8 @@ def _run_prompt_submit(
                 "conversation_history": list(history),
                 "stream_callback": _stream,
             }
+            if expand_skills and _original_text is not None and _original_text != text:
+                run_kwargs["persist_user_message"] = _original_text
             try:
                 if "task_id" in inspect.signature(agent.run_conversation).parameters:
                     run_kwargs["task_id"] = session["session_key"]

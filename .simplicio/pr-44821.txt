@@ -1,0 +1,1 @@
+Fix #44821: Dashboard `approvals.mode` dropdown options don't match actual engine values

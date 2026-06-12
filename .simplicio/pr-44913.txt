@@ -1,0 +1,1 @@
+Fix #44913: Desktop hides compressed session lineage and can spin forever while response exists in gateway dashboard

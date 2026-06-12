@@ -1300,6 +1300,21 @@ class KanbanDbCorruptError(RuntimeError):
         )
 
 
+class KanbanDbUnsafeAutoVacuumError(RuntimeError):
+    """Raised when a healthy kanban DB still uses pointer-map auto-vacuum."""
+
+    def __init__(self, db_path: Path, mode: int):
+        self.db_path = db_path
+        self.mode = mode
+        mode_name = {1: "FULL", 2: "INCREMENTAL"}.get(mode, str(mode))
+        super().__init__(
+            f"Refusing to open kanban DB at {db_path}: auto_vacuum={mode_name} "
+            "uses SQLite pointer-map pages, which are unsafe for active Kanban "
+            "boards after the observed corruption pattern. Run the offline repair "
+            "workflow to rebuild the DB with PRAGMA auto_vacuum=NONE + VACUUM."
+        )
+
+
 def _backup_corrupt_db(path: Path) -> Optional[Path]:
     """Copy a corrupt DB (and its WAL/SHM sidecars) to a content-addressed backup.
 
@@ -1473,6 +1488,14 @@ def connect(
                 # Surface corrupt cells as read errors instead of silent
                 # wrong-data returns.
                 conn.execute("PRAGMA cell_size_check=ON")
+                # New boards should not use FULL auto-vacuum; pointer-map pages are a
+                # recurring corruption locus for active Kanban DBs. Existing DBs are
+                # converted by the offline repair script with VACUUM.
+                conn.execute("PRAGMA auto_vacuum=NONE")
+                auto_vacuum_row = conn.execute("PRAGMA auto_vacuum").fetchone()
+                auto_vacuum_mode = int(auto_vacuum_row[0]) if auto_vacuum_row else 0
+                if auto_vacuum_mode != 0:
+                    raise KanbanDbUnsafeAutoVacuumError(path, auto_vacuum_mode)
                 needs_init = resolved not in _INITIALIZED_PATHS
                 if needs_init:
                     # Idempotent: runs CREATE TABLE IF NOT EXISTS + the additive

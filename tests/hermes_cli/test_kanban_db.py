@@ -2702,6 +2702,51 @@ def test_connect_falls_back_to_delete_on_locking_protocol(tmp_path, monkeypatch,
     conn.close()
 
 
+def test_connect_configures_durable_sqlite_pragmas_for_new_boards(tmp_path):
+    """Kanban boards should default to conservative SQLite durability settings."""
+    db_path = tmp_path / "kanban.db"
+
+    with kb.connect(db_path=db_path) as conn:
+        pragmas = {
+            "synchronous": conn.execute("PRAGMA synchronous").fetchone()[0],
+            "secure_delete": conn.execute("PRAGMA secure_delete").fetchone()[0],
+            "cell_size_check": conn.execute("PRAGMA cell_size_check").fetchone()[0],
+            "auto_vacuum": conn.execute("PRAGMA auto_vacuum").fetchone()[0],
+        }
+
+    assert pragmas == {
+        "synchronous": 2,  # FULL
+        "secure_delete": 1,
+        "cell_size_check": 1,
+        "auto_vacuum": 0,  # NONE; avoids pointer-map pages on fresh boards
+    }
+
+
+def test_connect_refuses_existing_full_auto_vacuum_board(tmp_path):
+    """Healthy legacy boards with FULL auto-vacuum need offline VACUUM repair first."""
+    db_path = tmp_path / "legacy-full-autovac.db"
+    raw = sqlite3.connect(str(db_path))
+    try:
+        raw.execute("PRAGMA auto_vacuum=FULL")
+        raw.execute("VACUUM")
+        raw.execute("CREATE TABLE marker (id INTEGER PRIMARY KEY)")
+        raw.commit()
+        assert raw.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert raw.execute("PRAGMA auto_vacuum").fetchone()[0] == 1
+    finally:
+        raw.close()
+
+    kb._INITIALIZED_PATHS.discard(str(db_path.resolve()))
+
+    with pytest.raises(kb.KanbanDbUnsafeAutoVacuumError) as excinfo:
+        kb.connect(db_path=db_path)
+
+    msg = str(excinfo.value)
+    assert str(db_path) in msg
+    assert "auto_vacuum=FULL" in msg
+    assert "offline repair" in msg
+
+
 def test_unlink_tasks_triggers_recompute_ready(kanban_home):
     """Regression test for issue #22459.
 

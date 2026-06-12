@@ -58,8 +58,8 @@ import {
   $sidebarWorkspaceOrderIds,
   $sidebarWorkspaceParentOrderIds,
   pinSession,
-  reorderPinnedSession,
   SESSION_SEARCH_FOCUS_EVENT,
+  setPinnedSessionOrder,
   setSidebarAgentsGrouped,
   setSidebarCronOpen,
   setSidebarPinsOpen,
@@ -135,8 +135,6 @@ const WORKSPACE_PAGE = 5
 // ALL-profiles view: show only the latest N per profile up front to keep the
 // unified list scannable, then reveal/fetch more in N-sized steps on demand.
 const PROFILE_INITIAL_PAGE = 5
-const GROUP_DND_ID_PREFIX = 'group:'
-
 // Two modes via the `compact` height variant (styles.css):
 //   tall    → each section is shrink-0, capped, its own scroller; Sessions is flex-1.
 //   compact → COMPACT_FLAT drops the caps so the whole stack scrolls as one.
@@ -150,42 +148,47 @@ const SCROLL_Y = 'overflow-y-auto overflow-x-hidden overscroll-contain'
 // A non-session group's scroll body: own scroller when tall, flattened when compact.
 const GROUP_BODY = cn(SCROLL_Y, COMPACT_FLAT)
 
-const groupDndId = (id: string) => `${GROUP_DND_ID_PREFIX}${id}`
-
-const parseGroupDndId = (id: string) =>
-  id.startsWith(GROUP_DND_ID_PREFIX) ? id.slice(GROUP_DND_ID_PREFIX.length) : null
-
-// Worktree-tree parents (repo roots) reorder in their own dnd lane, distinct
-// from the worktree groups (group:) and session rows nested inside them.
-const PARENT_DND_ID_PREFIX = 'parent:'
-const parentDndId = (id: string) => `${PARENT_DND_ID_PREFIX}${id}`
-
-const parseParentDndId = (id: string) =>
-  id.startsWith(PARENT_DND_ID_PREFIX) ? id.slice(PARENT_DND_ID_PREFIX.length) : null
-
 // Sidebar reordering is a strictly vertical list. The dragged item's transform
 // is rendered Y-only in useSortableBindings (no x, no scale); this just stops
 // dnd-kit's auto-scroll from dragging the rail — or the window — sideways when
 // the pointer nears an edge, killing the horizontal "drag to valhalla".
 const reorderAutoScroll = { threshold: { x: 0, y: 0.2 } }
 
-function ReorderContext({
+// One self-contained, nesting-safe reorderable list. It owns its DndContext, so a
+// drag only ever collides with THIS list's own items — drop it at any depth (repos,
+// worktrees, sessions) and reordering "just works" without leaking into the lists
+// around or inside it. Pair each item with useSortableBindings(id); the list reports
+// the new id order and the caller persists it. This is the single generic primitive
+// behind every reorderable surface in the sidebar.
+function ReorderableList({
   children,
+  ids,
   onReorder,
   sensors
 }: {
   children: React.ReactNode
-  onReorder?: (event: DragEndEvent) => void
+  ids: string[]
+  onReorder: (ids: string[]) => void
   sensors?: ReturnType<typeof useSensors>
 }) {
+  const handleDragEnd = ({ active, over }: DragEndEvent) => {
+    if (!over || active.id === over.id) {
+      return
+    }
+
+    const from = ids.indexOf(String(active.id))
+    const to = ids.indexOf(String(over.id))
+
+    if (from >= 0 && to >= 0) {
+      onReorder(arrayMove(ids, from, to))
+    }
+  }
+
   return (
-    <DndContext
-      autoScroll={reorderAutoScroll}
-      collisionDetection={closestCenter}
-      onDragEnd={onReorder}
-      sensors={sensors}
-    >
-      {children}
+    <DndContext autoScroll={reorderAutoScroll} collisionDetection={closestCenter} onDragEnd={handleDragEnd} sensors={sensors}>
+      <SortableContext items={ids} strategy={verticalListSortingStrategy}>
+        {children}
+      </SortableContext>
     </DndContext>
   )
 }
@@ -747,90 +750,29 @@ export function ChatSidebar({
 
   const showSessionSections = showSessionSkeletons || sortedSessions.length > 0
 
-  const handlePinnedDragEnd = ({ active, over }: DragEndEvent) => {
-    if (!over || active.id === over.id) {
-      return
-    }
+  // Each reorderable list reports its OWN new id order; persisting is a direct,
+  // typed write — no id-prefix sniffing to figure out which level moved.
+  const reorderSessions = (ids: string[]) => setSidebarSessionOrderIds(ids)
 
-    const newIndex = pinnedSessions.findIndex(s => s.id === String(over.id))
+  const reorderParents = (ids: string[]) => setSidebarWorkspaceParentOrderIds(ids)
 
-    if (newIndex < 0) {
-      return
-    }
+  // Worktrees persist as one flat list (orderByIds applies it per parent), so a
+  // single parent's new worktree order is spliced back over its slice.
+  const reorderWorktree = (parentId: string, ids: string[]) =>
+    setSidebarWorkspaceOrderIds(
+      (agentTree ?? []).flatMap(parent => (parent.id === parentId ? ids : parent.groups.map(group => group.id)))
+    )
 
-    // Sortable ids are live session ids; the pinned store is keyed by durable
-    // (lineage-root) ids, so translate before reordering.
-    const dragged = sessionByAnyId.get(String(active.id))
-    reorderPinnedSession(dragged ? sessionPinId(dragged) : String(active.id), newIndex)
-  }
+  // Sortable rows carry live session ids; the pinned store is keyed by durable
+  // (lineage-root) ids, so translate before persisting the new order.
+  const reorderPinned = (ids: string[]) =>
+    setPinnedSessionOrder(
+      ids.map(id => {
+        const session = sessionByAnyId.get(id)
 
-  const handleAgentDragEnd = ({ active, over }: DragEndEvent) => {
-    if (!over || active.id === over.id) {
-      return
-    }
-
-    const activeId = String(active.id)
-    const overId = String(over.id)
-
-    // Parent (repo) reorder.
-    const activeParent = parseParentDndId(activeId)
-    const overParent = parseParentDndId(overId)
-
-    if (activeParent || overParent) {
-      const parents = agentTree ?? []
-      const oldIdx = parents.findIndex(parent => parent.id === activeParent)
-      const newIdx = parents.findIndex(parent => parent.id === overParent)
-
-      if (oldIdx < 0 || newIdx < 0) {
-        return
-      }
-
-      setSidebarWorkspaceParentOrderIds(arrayMove(parents, oldIdx, newIdx).map(parent => parent.id))
-
-      return
-    }
-
-    // Worktree reorder — only within the parent that owns the dragged group. The
-    // persisted order is a single flat list; orderByIds applies it per parent.
-    const activeGroup = parseGroupDndId(activeId)
-    const overGroup = parseGroupDndId(overId)
-
-    if (activeGroup || overGroup) {
-      const parents = agentTree ?? []
-      const owner = parents.find(parent => parent.groups.some(group => group.id === activeGroup))
-
-      if (!owner || !owner.groups.some(group => group.id === overGroup)) {
-        return
-      }
-
-      const oldIdx = owner.groups.findIndex(group => group.id === activeGroup)
-      const newIdx = owner.groups.findIndex(group => group.id === overGroup)
-
-      if (oldIdx < 0 || newIdx < 0) {
-        return
-      }
-
-      const reordered = arrayMove(owner.groups, oldIdx, newIdx).map(group => group.id)
-
-      const nextFlat = parents.flatMap(parent =>
-        parent.id === owner.id ? reordered : parent.groups.map(group => group.id)
-      )
-
-      setSidebarWorkspaceOrderIds(nextFlat)
-
-      return
-    }
-
-    // Session reorder (only the ungrouped flat recents list).
-    const oldIdx = agentSessions.findIndex(s => s.id === activeId)
-    const newIdx = agentSessions.findIndex(s => s.id === overId)
-
-    if (oldIdx < 0 || newIdx < 0) {
-      return
-    }
-
-    setSidebarSessionOrderIds(arrayMove(agentSessions, oldIdx, newIdx).map(s => s.id))
-  }
+        return session ? sessionPinId(session) : id
+      })
+    )
 
   return (
     <Sidebar
@@ -961,7 +903,7 @@ export function ChatSidebar({
                 label={s.pinned}
                 onArchiveSession={onArchiveSession}
                 onDeleteSession={onDeleteSession}
-                onReorder={handlePinnedDragEnd}
+                onReorderSessions={reorderPinned}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarPinsOpen(!pinsOpen)}
                 onTogglePin={unpinSession}
@@ -1038,7 +980,9 @@ export function ChatSidebar({
                 onArchiveSession={onArchiveSession}
                 onDeleteSession={onDeleteSession}
                 onNewSessionInWorkspace={showAllProfiles ? undefined : onNewSessionInWorkspace}
-                onReorder={showAllProfiles ? undefined : handleAgentDragEnd}
+                onReorderParents={showAllProfiles ? undefined : reorderParents}
+                onReorderSessions={showAllProfiles ? undefined : reorderSessions}
+                onReorderWorktree={showAllProfiles ? undefined : reorderWorktree}
                 onResumeSession={onResumeSession}
                 onToggle={() => setSidebarRecentsOpen(!agentsOpen)}
                 onTogglePin={pinSession}
@@ -1225,7 +1169,12 @@ interface SidebarSessionsSectionProps {
   labelMeta?: React.ReactNode
   labelIcon?: React.ReactNode
   sortable?: boolean
-  onReorder?: (event: DragEndEvent) => void
+  // Per-level reorder callbacks. Each is optional; a list is draggable iff its
+  // callback is supplied. The flat session list, the repo parents, and a parent's
+  // worktrees each own an independent ReorderableList, so nothing collides.
+  onReorderSessions?: (ids: string[]) => void
+  onReorderParents?: (ids: string[]) => void
+  onReorderWorktree?: (parentId: string, ids: string[]) => void
   dndSensors?: ReturnType<typeof useSensors>
 }
 
@@ -1253,15 +1202,19 @@ function SidebarSessionsSection({
   labelMeta,
   labelIcon,
   sortable = false,
-  onReorder,
+  onReorderSessions,
+  onReorderParents,
+  onReorderWorktree,
   dndSensors
 }: SidebarSessionsSectionProps) {
   const hasTreeSessions = Boolean(tree?.some(parent => parent.sessionCount > 0))
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
   const showEmptyState = forceEmptyState || (!hasGroupedSessions && !hasTreeSessions && sessions.length === 0)
-  const dndActive = sortable && !!onReorder
+  // The flat recents/pinned list is the only place sessions reorder by hand;
+  // grouped/tree views always sort by creation date and never drag.
+  const sessionsDraggable = sortable && !!onReorderSessions
 
-  const renderRow = (session: SessionInfo) => {
+  const renderRow = (session: SessionInfo, draggable: boolean) => {
     const rowProps = {
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
@@ -1273,105 +1226,58 @@ function SidebarSessionsSection({
       session
     }
 
-    return sortable ? (
+    return draggable ? (
       <SortableSidebarSessionRow key={session.id} {...rowProps} />
     ) : (
       <SidebarSessionRow key={session.id} {...rowProps} />
     )
   }
 
-  const renderRows = (items: SessionInfo[]) => items.map(renderRow)
-
-  const renderSessionList = (items: SessionInfo[]) =>
-    dndActive ? (
-      <SortableContext items={items.map(s => s.id)} strategy={verticalListSortingStrategy}>
-        {renderRows(items)}
-      </SortableContext>
-    ) : (
-      renderRows(items)
-    )
-
-  const renderNestedSessionList = (items: SessionInfo[]) =>
-    dndActive ? (
-      <ReorderContext onReorder={onReorder} sensors={dndSensors}>
-        <SortableContext items={items.map(s => s.id)} strategy={verticalListSortingStrategy}>
-          {renderRows(items)}
-        </SortableContext>
-      </ReorderContext>
-    ) : (
-      renderRows(items)
-    )
+  // Sessions inside repos/worktrees are date-ordered and static.
+  const renderRows = (items: SessionInfo[]) => items.map(session => renderRow(session, false))
 
   const flatVirtualized =
     !showEmptyState && !groups?.length && !tree?.length && sessions.length >= VIRTUALIZE_THRESHOLD
 
   let inner: React.ReactNode
-  let bodyOwnsDndContext = dndActive && !showEmptyState
 
   if (showEmptyState) {
     inner = emptyState
-    bodyOwnsDndContext = false
   } else if (tree?.length) {
     const parentNodes = tree.map(parent =>
-      dndActive ? (
+      onReorderParents ? (
         <SortableSidebarWorkspaceParent
+          dndSensors={dndSensors}
           key={parent.id}
           onNewSession={onNewSessionInWorkspace}
+          onReorderWorktree={onReorderWorktree}
           parent={parent}
-          renderRows={renderSessionList}
-          sortableGroups
+          renderRows={renderRows}
         />
       ) : (
         <SidebarWorkspaceParent
           key={parent.id}
           onNewSession={onNewSessionInWorkspace}
           parent={parent}
-          renderRows={renderSessionList}
+          renderRows={renderRows}
         />
       )
     )
 
-    inner = dndActive ? (
-      <ReorderContext onReorder={onReorder} sensors={dndSensors}>
-        <SortableContext items={tree.map(parent => parentDndId(parent.id))} strategy={verticalListSortingStrategy}>
-          {parentNodes}
-        </SortableContext>
-      </ReorderContext>
+    inner = onReorderParents ? (
+      <ReorderableList ids={tree.map(parent => parent.id)} onReorder={onReorderParents} sensors={dndSensors}>
+        {parentNodes}
+      </ReorderableList>
     ) : (
       parentNodes
     )
-    bodyOwnsDndContext = false
   } else if (groups?.length) {
-    const groupNodes = groups.map(group =>
-      dndActive ? (
-        <SortableSidebarWorkspaceGroup
-          group={group}
-          key={group.id}
-          onNewSession={onNewSessionInWorkspace}
-          renderRows={renderNestedSessionList}
-        />
-      ) : (
-        <SidebarWorkspaceGroup
-          group={group}
-          key={group.id}
-          onNewSession={onNewSessionInWorkspace}
-          renderRows={renderSessionList}
-        />
-      )
-    )
-
-    inner = dndActive ? (
-      <ReorderContext onReorder={onReorder} sensors={dndSensors}>
-        <SortableContext items={groups.map(g => groupDndId(g.id))} strategy={verticalListSortingStrategy}>
-          {groupNodes}
-        </SortableContext>
-      </ReorderContext>
-    ) : (
-      groupNodes
-    )
-    bodyOwnsDndContext = false
+    // Profile/source groups never reorder; render them flat with static rows.
+    inner = groups.map(group => (
+      <SidebarWorkspaceGroup group={group} key={group.id} onNewSession={onNewSessionInWorkspace} renderRows={renderRows} />
+    ))
   } else if (flatVirtualized) {
-    inner = (
+    const virtual = (
       <VirtualSessionList
         activeSessionId={activeSessionId}
         className={contentClassName}
@@ -1381,21 +1287,28 @@ function SidebarSessionsSection({
         onTogglePin={onTogglePin}
         pinned={pinned}
         sessions={sessions}
-        sortable={sortable}
+        sortable={sessionsDraggable}
         workingSessionIdSet={workingSessionIdSet}
       />
     )
-  } else {
-    inner = renderSessionList(sessions)
-  }
 
-  const body = bodyOwnsDndContext ? (
-    <ReorderContext onReorder={onReorder} sensors={dndSensors}>
-      {inner}
-    </ReorderContext>
-  ) : (
-    inner
-  )
+    inner =
+      sessionsDraggable && onReorderSessions ? (
+        <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
+          {virtual}
+        </ReorderableList>
+      ) : (
+        virtual
+      )
+  } else if (sessionsDraggable && onReorderSessions) {
+    inner = (
+      <ReorderableList ids={sessions.map(s => s.id)} onReorder={onReorderSessions} sensors={dndSensors}>
+        {sessions.map(session => renderRow(session, true))}
+      </ReorderableList>
+    )
+  } else {
+    inner = renderRows(sessions)
+  }
 
   // The virtualizer owns its own scroller, so suppress the wrapper's overflow
   // to avoid a double scroll container.
@@ -1413,7 +1326,7 @@ function SidebarSessionsSection({
       />
       {open && (
         <SidebarGroupContent className={resolvedContentClassName}>
-          {body}
+          {inner}
           {footer}
         </SidebarGroupContent>
       )}
@@ -1553,15 +1466,17 @@ interface SortableWorkspaceProps {
 }
 
 function SortableSidebarWorkspaceGroup(props: SortableWorkspaceProps) {
-  return <SidebarWorkspaceGroup {...props} {...useSortableBindings(groupDndId(props.group.id))} />
+  return <SidebarWorkspaceGroup {...props} {...useSortableBindings(props.group.id)} />
 }
 
 interface SidebarWorkspaceParentProps extends React.ComponentProps<'div'> {
   parent: SidebarWorkspaceTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
-  // Whether the worktrees inside this parent reorder (wired to a SortableContext).
-  sortableGroups?: boolean
+  // When set, this parent's worktrees reorder inside their OWN ReorderableList, so a
+  // worktree drag only ever collides with its siblings — never the repos around it.
+  onReorderWorktree?: (parentId: string, ids: string[]) => void
+  dndSensors?: ReturnType<typeof useSensors>
   // Whether this parent itself is draggable (set by useSortableBindings).
   reorderable?: boolean
   dragging?: boolean
@@ -1574,7 +1489,8 @@ function SidebarWorkspaceParent({
   parent,
   renderRows,
   onNewSession,
-  sortableGroups = false,
+  onReorderWorktree,
+  dndSensors,
   reorderable = false,
   dragging = false,
   dragHandleProps,
@@ -1597,7 +1513,7 @@ function SidebarWorkspaceParent({
   const hiddenCount = soleWorktree ? Math.max(0, soleWorktree.sessions.length - visibleSessions.length) : 0
 
   const groupNodes = parent.groups.map(group =>
-    sortableGroups ? (
+    onReorderWorktree ? (
       <SortableSidebarWorkspaceGroup group={group} key={group.id} onNewSession={onNewSession} renderRows={renderRows} />
     ) : (
       <SidebarWorkspaceGroup group={group} key={group.id} onNewSession={onNewSession} renderRows={renderRows} />
@@ -1648,13 +1564,14 @@ function SidebarWorkspaceParent({
           // Indent the worktrees under their repo; keep the column pinned to the
           // rail so long branch labels truncate instead of shoving controls off.
           <div className="grid grid-cols-[minmax(0,1fr)] gap-px pl-2.5">
-            {sortableGroups ? (
-              <SortableContext
-                items={parent.groups.map(group => groupDndId(group.id))}
-                strategy={verticalListSortingStrategy}
+            {onReorderWorktree ? (
+              <ReorderableList
+                ids={parent.groups.map(group => group.id)}
+                onReorder={ids => onReorderWorktree(parent.id, ids)}
+                sensors={dndSensors}
               >
                 {groupNodes}
-              </SortableContext>
+              </ReorderableList>
             ) : (
               groupNodes
             )}
@@ -1668,11 +1585,12 @@ interface SortableWorkspaceParentProps {
   parent: SidebarWorkspaceTree
   renderRows: (sessions: SessionInfo[]) => React.ReactNode
   onNewSession?: (path: null | string) => void
-  sortableGroups?: boolean
+  onReorderWorktree?: (parentId: string, ids: string[]) => void
+  dndSensors?: ReturnType<typeof useSensors>
 }
 
 function SortableSidebarWorkspaceParent(props: SortableWorkspaceParentProps) {
-  return <SidebarWorkspaceParent {...props} {...useSortableBindings(parentDndId(props.parent.id))} />
+  return <SidebarWorkspaceParent {...props} {...useSortableBindings(props.parent.id)} />
 }
 
 function SidebarCount({ children }: { children: React.ReactNode }) {

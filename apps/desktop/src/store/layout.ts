@@ -204,16 +204,15 @@ export function unpinSession(sessionId: string) {
   }
 }
 
-export function reorderPinnedSession(sessionId: string, targetIndex: number) {
+// Replace the whole pinned order at once (drag-reorder hands back the new order
+// rather than a single move). Keep only ids that are actually pinned so a stale
+// row can't smuggle an unpinned id into the store.
+export function setPinnedSessionOrder(ids: string[]) {
   const prev = $pinnedSessionIds.get()
+  const pinned = new Set(prev)
+  const next = ids.filter(id => pinned.has(id))
 
-  if (!prev.includes(sessionId)) {
-    return
-  }
-
-  const next = insertUniqueId(prev, sessionId, targetIndex)
-
-  if (!arraysEqual(prev, next)) {
+  if (next.length === prev.length && !arraysEqual(prev, next)) {
     $pinnedSessionIds.set(next)
   }
 }

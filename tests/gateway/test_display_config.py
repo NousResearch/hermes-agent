@@ -20,7 +20,7 @@ class TestResolveDisplaySetting:
                 },
                 "users": {
                     "slack": {
-                        "U09LYP9GT44": {"tool_progress": "verbose"},
+                        "UDEBUGUSER": {"tool_progress": "verbose"},
                     },
                 },
             }
@@ -30,7 +30,7 @@ class TestResolveDisplaySetting:
                 config,
                 "slack",
                 "tool_progress",
-                user_id="U09LYP9GT44",
+                user_id="UDEBUGUSER",
             )
             == "verbose"
         )
@@ -92,7 +92,7 @@ class TestResolveDisplaySetting:
             "display": {
                 "users": {
                     "slack": {
-                        "U09LYP9GT44": {"tool_progress": True},
+                        "UDEBUGUSER": {"tool_progress": True},
                     },
                 },
             }
@@ -102,7 +102,7 @@ class TestResolveDisplaySetting:
                 config,
                 "slack",
                 "tool_progress",
-                user_id="U09LYP9GT44",
+                user_id="UDEBUGUSER",
             )
             == "all"
         )
@@ -116,7 +116,7 @@ class TestResolveDisplaySetting:
                 "platforms": {"slack": {"tool_progress": "new"}},
                 "users": {
                     "slack": {
-                        "U09LYP9GT44": {"tool_progress": "verbose"},
+                        "UDEBUGUSER": {"tool_progress": "verbose"},
                     },
                 },
             }

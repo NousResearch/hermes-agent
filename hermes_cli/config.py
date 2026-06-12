@@ -1505,7 +1505,7 @@ DEFAULT_CONFIG = {
         # platform user IDs (e.g. Slack `U…` IDs). These override platform/global
         # settings for presentation only, without changing the agent prompt or
         # conversation state. Useful for operator debug mode:
-        # display.users.slack.U09LYP9GT44.tool_progress: verbose
+        # display.users.slack.UDEBUGUSER.tool_progress: verbose
         "users": {},
         # Gateway runtime-metadata footer appended to the FINAL message of a turn
         # (disabled by default to keep replies minimal). When enabled, renders

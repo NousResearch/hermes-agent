@@ -1,0 +1,1 @@
+Fix #44793: Desktop client process leak when switching to non-default profiles + feature request

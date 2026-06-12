@@ -2036,6 +2036,13 @@ def _sync_agent_model_with_config(sid: str, session: dict) -> None:
     if target == seen:
         return
     model, provider = target
+    # Already running the configured model (branched/resumed session before
+    # its first sync, or a config revert after a failed switch): adopt the
+    # baseline without a redundant switch.
+    if model == getattr(agent, "model", "") and (
+        not provider or provider == getattr(agent, "provider", "")
+    ):
+        return
     raw = f"{model} --provider {provider}" if provider else model
     try:
         _apply_model_switch(

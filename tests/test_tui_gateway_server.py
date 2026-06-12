@@ -1133,6 +1133,37 @@ def test_config_sync_noop_when_config_unchanged(monkeypatch):
     server._sync_agent_model_with_config("sid", session)
 
 
+def test_config_sync_adopts_baseline_when_agent_already_on_target(monkeypatch):
+    # Branched/resumed sessions reach their first sync with no snapshot but
+    # an agent already built from config; that must not trigger a switch.
+    _patch_config_model(monkeypatch, "old/model")
+    session = _sync_test_session()
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda *a, **k: pytest.fail("agent already on target must not switch"),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+    assert session["config_model_seen"] == ("old/model", "")
+
+
+def test_config_sync_switches_when_only_provider_differs(monkeypatch):
+    _patch_config_model(monkeypatch, "old/model", provider="nous")
+    session = _sync_test_session(config_model_seen=("old/model", ""))
+    calls = []
+    monkeypatch.setattr(
+        server,
+        "_apply_model_switch",
+        lambda sid, sess, raw, **kw: calls.append(raw),
+    )
+
+    server._sync_agent_model_with_config("sid", session)
+
+    assert calls == ["old/model --provider nous"]
+
+
 def test_config_sync_failure_emits_error_once_per_edit(monkeypatch):
     _patch_config_model(monkeypatch, "broken/model")
     session = _sync_test_session(config_model_seen=("old/model", ""))

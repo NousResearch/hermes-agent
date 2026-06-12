@@ -113,7 +113,18 @@ pub fn managed_runtime_roots(hermes_home: &std::path::Path) -> Vec<PathBuf> {
         hermes_home.join("node"),
         hermes_home.join("python"),
         hermes_home.join("git"),
+        hermes_home.join("bootstrap-cache"),
     ]
+}
+
+/// Runtime files that Hermes installers own and may recreate.
+pub fn managed_runtime_files(hermes_home: &std::path::Path) -> Vec<PathBuf> {
+    let installer_name = if cfg!(target_os = "windows") {
+        "hermes-setup.exe"
+    } else {
+        "hermes-setup"
+    };
+    vec![hermes_home.join(installer_name)]
 }
 
 /// Manager metadata directory.
@@ -153,7 +164,23 @@ mod tests {
                 PathBuf::from("/tmp/hermes/node"),
                 PathBuf::from("/tmp/hermes/python"),
                 PathBuf::from("/tmp/hermes/git"),
+                PathBuf::from("/tmp/hermes/bootstrap-cache"),
             ]
+        );
+    }
+
+    #[test]
+    fn managed_runtime_files_are_under_hermes_home() {
+        let home = PathBuf::from("/tmp/hermes");
+        let installer_name = if cfg!(target_os = "windows") {
+            "hermes-setup.exe"
+        } else {
+            "hermes-setup"
+        };
+
+        assert_eq!(
+            managed_runtime_files(&home),
+            vec![PathBuf::from("/tmp/hermes").join(installer_name)]
         );
     }
 

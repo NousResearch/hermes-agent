@@ -33,6 +33,11 @@ pub fn install_metadata(hermes_home: &Path) -> Result<()> {
             manifest.add_entry(runtime_root, InstalledKind::Directory);
         }
     }
+    for runtime_file in paths::managed_runtime_files(hermes_home) {
+        if runtime_file.exists() {
+            manifest.add_entry(runtime_file, InstalledKind::File);
+        }
+    }
     manifest.write_atomic(&manifest_path)
 }
 
@@ -132,6 +137,9 @@ fn ensure_lite_uninstall_entry_allowed(hermes_home: &Path, candidate: &Path) -> 
     if paths::managed_runtime_roots(hermes_home)
         .iter()
         .any(|root| crate::ownership::is_inside_root(root, candidate))
+        || paths::managed_runtime_files(hermes_home)
+            .iter()
+            .any(|file| crate::ownership::is_inside_root(file, candidate))
     {
         return Ok(());
     }
@@ -153,6 +161,13 @@ pub fn repair_clean(hermes_home: &Path) -> Result<Vec<String>> {
             removed.push(runtime_root.display().to_string());
         }
     }
+    for runtime_file in paths::managed_runtime_files(hermes_home) {
+        ensure_safe_to_delete(hermes_home, &runtime_file)?;
+        if runtime_file.exists() {
+            fs::remove_file(&runtime_file).map_err(|err| ManagerError::io(&runtime_file, err))?;
+            removed.push(runtime_file.display().to_string());
+        }
+    }
 
     let marker = paths::agent_root(hermes_home).join(".hermes-bootstrap-complete");
     ensure_safe_to_delete(hermes_home, &marker)?;
@@ -171,6 +186,12 @@ pub fn repair_clean_plan(hermes_home: &Path) -> Result<Vec<String>> {
         ensure_safe_to_delete(hermes_home, &runtime_root)?;
         if runtime_root.exists() {
             planned.push(runtime_root.display().to_string());
+        }
+    }
+    for runtime_file in paths::managed_runtime_files(hermes_home) {
+        ensure_safe_to_delete(hermes_home, &runtime_file)?;
+        if runtime_file.exists() {
+            planned.push(runtime_file.display().to_string());
         }
     }
 
@@ -218,12 +239,16 @@ mod tests {
         let node_dir = hermes_home.join("node");
         let python_dir = hermes_home.join("python");
         let git_dir = hermes_home.join("git");
+        let bootstrap_cache = hermes_home.join("bootstrap-cache");
+        let installer = paths::managed_runtime_files(&hermes_home)[0].clone();
         let user_config = hermes_home.join("config.yaml");
         fs::create_dir_all(&agent_root).expect("agent root should be created");
         fs::create_dir_all(&bin_dir).expect("bin dir should be created");
         fs::create_dir_all(&node_dir).expect("node dir should be created");
         fs::create_dir_all(&python_dir).expect("python dir should be created");
         fs::create_dir_all(&git_dir).expect("git dir should be created");
+        fs::create_dir_all(&bootstrap_cache).expect("bootstrap cache should be created");
+        fs::write(&installer, "setup").expect("installer should be created");
         fs::write(&user_config, "model: test").expect("user config should be created");
 
         super::install_metadata(&hermes_home).expect("install metadata should be created");
@@ -237,7 +262,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             paths,
-            vec![agent_root, bin_dir, node_dir, python_dir, git_dir]
+            vec![
+                agent_root,
+                bin_dir,
+                node_dir,
+                python_dir,
+                git_dir,
+                bootstrap_cache,
+                installer,
+            ]
         );
         assert!(!paths.contains(&user_config));
     }
@@ -351,12 +384,16 @@ mod tests {
         let node_dir = hermes_home.join("node");
         let python_dir = hermes_home.join("python");
         let git_dir = hermes_home.join("git");
+        let bootstrap_cache = hermes_home.join("bootstrap-cache");
+        let installer = paths::managed_runtime_files(&hermes_home)[0].clone();
         let user_config = hermes_home.join("config.yaml");
         fs::create_dir_all(&agent_root).expect("agent root should be created");
         fs::create_dir_all(&bin_dir).expect("bin dir should be created");
         fs::create_dir_all(&node_dir).expect("node dir should be created");
         fs::create_dir_all(&python_dir).expect("python dir should be created");
         fs::create_dir_all(&git_dir).expect("git dir should be created");
+        fs::create_dir_all(&bootstrap_cache).expect("bootstrap cache should be created");
+        fs::write(&installer, "setup").expect("installer should be created");
         fs::write(&user_config, "model: test").expect("user config should be created");
 
         let planned = super::repair_clean_plan(&hermes_home).expect("plan should be created");
@@ -368,6 +405,8 @@ mod tests {
                 node_dir.display().to_string(),
                 python_dir.display().to_string(),
                 git_dir.display().to_string(),
+                bootstrap_cache.display().to_string(),
+                installer.display().to_string(),
             ]
         );
 
@@ -379,6 +418,8 @@ mod tests {
         assert!(!node_dir.exists());
         assert!(!python_dir.exists());
         assert!(!git_dir.exists());
+        assert!(!bootstrap_cache.exists());
+        assert!(!installer.exists());
         assert!(user_config.exists());
     }
 

@@ -747,6 +747,7 @@ def cronjob(
                 script=_normalize_optional_job_value(script),
                 context_from=context_from,
                 enabled_toolsets=enabled_toolsets or None,
+                session_name=_normalize_optional_job_value(session_name),
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
@@ -923,6 +924,8 @@ def cronjob(
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
+            if session_name is not None:
+                updates["session_name"] = _normalize_optional_job_value(session_name)
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.
@@ -1076,6 +1079,10 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Optional list of toolset names to restrict the job's agent to (e.g. [\"web\", \"terminal\", \"file\", \"delegation\"]). When set, only tools from these toolsets are loaded, significantly reducing input token overhead. When omitted, all default tools are loaded. Infer from the job's prompt — e.g. use \"web\" if it calls web_search, \"terminal\" if it runs scripts, \"file\" if it reads files, \"delegation\" if it calls delegate_task. On update, pass an empty array to clear."
+            },
+            "session_name": {
+                "type": "string",
+                "description": "Optional named session to run the job in, making it resumable across runs. On update, pass an empty string to clear."
             },
             "workdir": {
                 "type": "string",

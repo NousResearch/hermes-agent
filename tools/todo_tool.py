@@ -62,29 +62,47 @@ class TodoStore:
         """
         if not merge:
             # Replace mode: new list entirely
-            self._items = [self._validate(t) for t in self._dedupe_by_id(todos)]
+            new_items = [self._validate(t) for t in self._dedupe_by_id(todos)]
+            self._items = new_items
         else:
             # Merge mode: update existing items by id, append new ones
-            existing = {item["id"]: item for item in self._items}
+            existing = {item["id"]: item.copy() for item in self._items}
+            new_appends = []
+            
+            validated_updates = []
             for t in self._dedupe_by_id(todos):
                 item_id = str(t.get("id", "")).strip()
                 if not item_id:
-                    continue  # Can't merge without an id
-
+                    raise ValueError("Todo item must have a valid non-empty 'id' to merge/update.")
+                
                 if item_id in existing:
-                    # Update only the fields the LLM actually provided
-                    if "content" in t and t["content"]:
-                        existing[item_id]["content"] = self._cap_content(str(t["content"]).strip())
-                    if "status" in t and t["status"]:
-                        status = str(t["status"]).strip().lower()
-                        if status in VALID_STATUSES:
-                            existing[item_id]["status"] = status
+                    content_to_update = None
+                    status_to_update = None
+                    if "content" in t:
+                        c_val = str(t["content"]).strip()
+                        if not c_val:
+                            raise ValueError("Todo item 'content' cannot be empty.")
+                        content_to_update = self._cap_content(c_val)
+                    if "status" in t:
+                        s_val = str(t["status"]).strip().lower()
+                        if not s_val or s_val not in VALID_STATUSES:
+                            raise ValueError(f"Todo item 'status' '{s_val}' is invalid.")
+                        status_to_update = s_val
+                    validated_updates.append((item_id, content_to_update, status_to_update))
                 else:
-                    # New item -- validate fully and append to end
                     validated = self._validate(t)
-                    existing[validated["id"]] = validated
-                    self._items.append(validated)
-            # Rebuild _items preserving order for existing items
+                    validated_updates.append((item_id, validated, None))
+
+            for item_id, val1, val2 in validated_updates:
+                if isinstance(val1, dict):  # New item
+                    existing[item_id] = val1
+                    new_appends.append(val1)
+                else:  # Update existing
+                    if val1 is not None:
+                        existing[item_id]["content"] = val1
+                    if val2 is not None:
+                        existing[item_id]["status"] = val2
+
             seen = set()
             rebuilt = []
             for item in self._items:
@@ -92,10 +110,12 @@ class TodoStore:
                 if current["id"] not in seen:
                     rebuilt.append(current)
                     seen.add(current["id"])
+            for item in new_appends:
+                if item["id"] not in seen:
+                    rebuilt.append(item)
+                    seen.add(item["id"])
             self._items = rebuilt
-        # Bound total item count so a replayed/oversized list can't grow the
-        # re-injection block without limit. Keep the highest-priority head
-        # (list order is priority).
+
         if len(self._items) > MAX_TODO_ITEMS:
             self._items = self._items[:MAX_TODO_ITEMS]
         return self.read()
@@ -164,21 +184,21 @@ class TodoStore:
         Returns a clean dict with only {id, content, status}.
         """
         if not isinstance(item, dict):
-            return {"id": "?", "content": "(invalid item)", "status": "pending"}
+            raise ValueError("Todo item must be a dictionary.")
 
-        item_id = str(item.get("id", "")).strip()
-        if not item_id:
-            item_id = "?"
+        if "id" not in item or not str(item.get("id", "")).strip():
+            raise ValueError("Todo item must have a valid non-empty 'id'.")
+        item_id = str(item["id"]).strip()
 
-        content = str(item.get("content", "")).strip()
-        if not content:
-            content = "(no description)"
-        else:
-            content = TodoStore._cap_content(content)
+        if "content" not in item or not str(item.get("content", "")).strip():
+            raise ValueError("Todo item must have a valid non-empty 'content'.")
+        content = TodoStore._cap_content(str(item["content"]).strip())
 
-        status = str(item.get("status", "pending")).strip().lower()
+        if "status" not in item or not str(item.get("status", "")).strip():
+            raise ValueError("Todo item must have a valid non-empty 'status'.")
+        status = str(item["status"]).strip().lower()
         if status not in VALID_STATUSES:
-            status = "pending"
+            raise ValueError(f"Todo status '{status}' is invalid. Valid statuses: {VALID_STATUSES}")
 
         return {"id": item_id, "content": content, "status": status}
 

@@ -175,3 +175,53 @@ class TestTodoStoreBounds:
         items = store.read()
         assert [i["content"] for i in items] == ["write the report", "review PR"]
         assert "[truncated]" not in items[0]["content"]
+
+
+class TestTodoStoreValidation:
+    def test_missing_or_empty_id_raises_value_error(self):
+        store = TodoStore()
+        import pytest
+        with pytest.raises(ValueError, match="Todo item must have a valid non-empty 'id'"):
+            store.write([{"content": "Missing ID", "status": "pending"}])
+        with pytest.raises(ValueError, match="Todo item must have a valid non-empty 'id'"):
+            store.write([{"id": "", "content": "Empty ID", "status": "pending"}])
+
+    def test_missing_or_empty_content_raises_value_error(self):
+        store = TodoStore()
+        import pytest
+        with pytest.raises(ValueError, match="Todo item must have a valid non-empty 'content'"):
+            store.write([{"id": "1", "status": "pending"}])
+        with pytest.raises(ValueError, match="Todo item must have a valid non-empty 'content'"):
+            store.write([{"id": "1", "content": "  ", "status": "pending"}])
+
+    def test_missing_or_empty_status_raises_value_error(self):
+        store = TodoStore()
+        import pytest
+        with pytest.raises(ValueError, match="Todo item must have a valid non-empty 'status'"):
+            store.write([{"id": "1", "content": "Valid content"}])
+        with pytest.raises(ValueError, match="Todo status 'invalid' is invalid"):
+            store.write([{"id": "1", "content": "Valid content", "status": "invalid"}])
+
+    def test_transactional_safety_replace_fails_safe(self):
+        store = TodoStore()
+        store.write([{"id": "original", "content": "Original content", "status": "pending"}])
+        import pytest
+        with pytest.raises(ValueError):
+            store.write([
+                {"id": "new-1", "content": "Valid content", "status": "pending"},
+                {"id": "new-2", "content": "", "status": "pending"},  # Invalid
+            ])
+        # The store should remain completely untouched
+        assert store.read() == [{"id": "original", "content": "Original content", "status": "pending"}]
+
+    def test_transactional_safety_merge_fails_safe(self):
+        store = TodoStore()
+        store.write([{"id": "original", "content": "Original content", "status": "pending"}])
+        import pytest
+        with pytest.raises(ValueError):
+            store.write([
+                {"id": "original", "content": "Updated content"},  # Valid update
+                {"id": "new", "content": "", "status": "pending"},  # Invalid content
+            ], merge=True)
+        # No updates should be applied if any item is invalid
+        assert store.read() == [{"id": "original", "content": "Original content", "status": "pending"}]

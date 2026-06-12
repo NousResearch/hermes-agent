@@ -109,6 +109,27 @@ def test_gui_forwards_desktop_environment_overrides(tmp_path, monkeypatch):
     assert launch_env["HERMES_DESKTOP_CWD"] == str(cwd)
 
 
+def test_gui_defaults_cwd_to_current_directory_when_omitted(tmp_path, monkeypatch):
+    import os
+    root = _make_desktop_tree(tmp_path)
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+
+    ok = subprocess.CompletedProcess([], 0)
+
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/npm"), \
+         patch("hermes_cli.main._run_npm_install_deterministic", return_value=ok), \
+         patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         patch("hermes_cli.main._write_desktop_build_stamp"), \
+         patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(cwd=None))
+
+    launch_env = mock_run.call_args_list[1].kwargs["env"]
+    assert launch_env["HERMES_DESKTOP_CWD"] == os.getcwd()
+
+
 def test_gui_exits_when_npm_missing(tmp_path, monkeypatch, capsys):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
@@ -173,6 +194,7 @@ def test_gui_linux_configures_sandbox_before_launch(tmp_path, monkeypatch):
     assert mock_run.call_args_list[2].args[0] == [str(packaged_exe)]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Symlinks require admin privileges on Windows")
 def test_gui_linux_rejects_symlink_sandbox(tmp_path, monkeypatch):
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)

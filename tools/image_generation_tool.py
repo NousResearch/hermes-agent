@@ -717,6 +717,7 @@ def _upscale_image(image_url: str, original_prompt: str) -> Optional[Dict[str, A
         return None
 
 
+
 # ---------------------------------------------------------------------------
 # Tool entry point
 # ---------------------------------------------------------------------------

@@ -257,3 +257,47 @@ class TestClarifySchema:
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""
         assert MAX_CHOICES == 4
+
+
+class TestClarifyToolMentionSanitization:
+    """Tests for Discord mention sanitization in clarify_tool."""
+
+    def test_strip_discord_mentions_from_question(self):
+        """Should strip Discord user, role, channel, and mass mentions from the question."""
+        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
+            assert question == "Hello , please check  and our channel ."
+            return "ok"
+
+        result = json.loads(clarify_tool(
+            "Hello <@123>, please check <@&456> and our channel <#789>.",
+            callback=mock_callback
+        ))
+        assert result["question"] == "Hello , please check  and our channel ."
+
+    def test_strip_discord_mass_mentions(self):
+        """Should strip @everyone and @here from the question."""
+        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
+            assert question == "Attention  , please review."
+            return "ok"
+
+        result = json.loads(clarify_tool(
+            "Attention @everyone @here, please review.",
+            callback=mock_callback
+        ))
+        assert result["question"] == "Attention  , please review."
+
+
+
+    def test_strip_discord_mentions_from_choices(self):
+        """Should strip Discord mentions from choices and discard empty choices."""
+        def mock_callback(question: str, choices: Optional[List[str]]) -> str:
+            assert choices == ["Option A", "Option B"]
+            return "picked"
+
+        result = json.loads(clarify_tool(
+            "Select",
+            choices=["Option A <@123>", "<@456>", "Option B <#999>"],
+            callback=mock_callback
+        ))
+        assert result["choices_offered"] == ["Option A", "Option B"]
+

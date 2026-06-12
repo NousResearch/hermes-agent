@@ -111,6 +111,23 @@ _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
+
+def clear_model_metadata_caches() -> None:
+    """Clear all cached model metadata.
+
+    Called on ``/new`` (session reset) so that provider-side changes
+    (e.g. LM Studio KV-cache resize) are reflected immediately.
+    """
+    global _model_metadata_cache, _model_metadata_cache_time
+    global _novita_metadata_cache, _novita_metadata_cache_time
+    _model_metadata_cache = {}
+    _model_metadata_cache_time = 0
+    _novita_metadata_cache = {}
+    _novita_metadata_cache_time = 0
+    _endpoint_model_metadata_cache.clear()
+    _endpoint_model_metadata_cache_time.clear()
+
+
 # Descending tiers for context length probing when the model is unknown.
 # We start at 256K (covers GPT-5.x, many current large-context models) and
 # step down on context-length errors until one works.  Tier[0] is also the

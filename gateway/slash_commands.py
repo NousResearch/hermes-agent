@@ -110,6 +110,14 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
+        # Clear cached model metadata so provider-side changes (e.g.
+        # LM Studio KV-cache resize) are reflected in the new session.
+        try:
+            from agent.model_metadata import clear_model_metadata_caches
+            clear_model_metadata_caches()
+        except Exception:
+            pass
+
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 

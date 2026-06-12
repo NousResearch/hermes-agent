@@ -77,6 +77,14 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     depth_surface.add_argument("--launcher-exe", default="")
     depth_surface.add_argument("--timeout-seconds", type=int, default=None)
 
+    depth_reader = subs.add_parser(
+        "depth-reader-selftest",
+        help="Run FH6VR approved D3D12 depth reader self-test (0.16 gate)",
+    )
+    depth_reader.add_argument("--launcher-exe", default="")
+    depth_reader.add_argument("--fixture", action="store_true")
+    depth_reader.add_argument("--timeout-seconds", type=int, default=None)
+
     support_report = subs.add_parser(
         "support-report", help="Create redacted JSON and HTML support reports"
     )
@@ -103,7 +111,7 @@ def questframe_command(args: argparse.Namespace) -> int:
             "{setup,status,preflight,profiles,rtx3060-selftest,session-readiness,"
             "graphics-session,frame-loop,"
             "dibr-swapchain,capture-preflight,live-capture-selftest,"
-            "depth-surface-selftest,support-report,unity-scan}"
+            "depth-surface-selftest,depth-reader-selftest,support-report,unity-scan}"
         )
         return 2
     if command == "setup":
@@ -208,6 +216,18 @@ def questframe_command(args: argparse.Namespace) -> int:
                 "fh6-depth-surface-selftest",
                 launcher_exe=getattr(args, "launcher_exe", "") or None,
                 extra_args=["--json"],
+                timeout_seconds=getattr(args, "timeout_seconds", None),
+            )
+        )
+    if command == "depth-reader-selftest":
+        extra = ["--json"]
+        if bool(getattr(args, "fixture", False)):
+            extra.append("--fixture")
+        return _print(
+            core.run_launcher(
+                "fh6-depth-reader-selftest",
+                launcher_exe=getattr(args, "launcher_exe", "") or None,
+                extra_args=extra,
                 timeout_seconds=getattr(args, "timeout_seconds", None),
             )
         )

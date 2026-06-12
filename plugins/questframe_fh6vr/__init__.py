@@ -59,6 +59,12 @@ _TOOLS = (
         "Q",
     ),
     (
+        "questframe_depth_reader_selftest",
+        core.DEPTH_READER_SELFTEST_SCHEMA,
+        core.handle_depth_reader_selftest,
+        "Q",
+    ),
+    (
         "questframe_support_report",
         core.SUPPORT_REPORT_SCHEMA,
         core.handle_support_report,
@@ -88,7 +94,8 @@ def register(ctx) -> None:
         args_hint=(
             "[status|preflight|profiles|rtx3060-selftest|session|"
             "graphics-session|frame-loop|dibr-swapchain|capture-preflight|"
-            "live-capture-selftest|depth-surface-selftest|support-report|unity-scan]"
+            "live-capture-selftest|depth-surface-selftest|depth-reader-selftest|"
+            "support-report|unity-scan]"
         ),
     )
     ctx.register_cli_command(

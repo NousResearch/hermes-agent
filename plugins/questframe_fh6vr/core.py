@@ -274,6 +274,30 @@ DEPTH_SURFACE_SELFTEST_SCHEMA = {
     },
 }
 
+DEPTH_READER_SELFTEST_SCHEMA = {
+    "name": "questframe_depth_reader_selftest",
+    "description": "Run the FH6VR approved D3D12 depth reader self-test (0.16 gate).",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "launcher_exe": {
+                "type": "string",
+                "description": "Optional one-shot FH6VR.Launcher executable path.",
+            },
+            "fixture": {
+                "type": "boolean",
+                "description": "When true, pass --fixture to create and read a local shared D3D12 depth surface.",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "minimum": 5,
+                "maximum": 300,
+                "description": "Process timeout.",
+            },
+        },
+    },
+}
+
 SUPPORT_REPORT_SCHEMA = {
     "name": "questframe_support_report",
     "description": "Create redacted QuestFrame/FH6VR JSON and HTML support reports.",
@@ -717,6 +741,7 @@ def status() -> dict[str, Any]:
             "questframe_fh6_capture_preflight",
             "questframe_live_capture_selftest",
             "questframe_depth_surface_selftest",
+            "questframe_depth_reader_selftest",
             "questframe_support_report",
             "questframe_unity_scan",
         ],
@@ -863,6 +888,21 @@ def handle_depth_surface_selftest(args: dict[str, Any] | None = None, **_: Any) 
     )
 
 
+def handle_depth_reader_selftest(args: dict[str, Any] | None = None, **_: Any) -> str:
+    args = args or {}
+    extra = ["--json"]
+    if bool(args.get("fixture")):
+        extra.append("--fixture")
+    return _json(
+        run_launcher(
+            "fh6-depth-reader-selftest",
+            launcher_exe=str(args.get("launcher_exe") or "") or None,
+            extra_args=extra,
+            timeout_seconds=int(args.get("timeout_seconds") or 0) or None,
+        )
+    )
+
+
 def support_report(
     *,
     launcher_exe: str | None = None,
@@ -945,6 +985,7 @@ HELP = """questframe commands:
   /questframe capture-preflight
   /questframe live-capture-selftest
   /questframe depth-surface-selftest
+  /questframe depth-reader-selftest [--fixture]
   /questframe support-report
   /questframe unity-scan [project_path]
 """
@@ -977,6 +1018,8 @@ def handle_slash(raw_args: str) -> str:
         return handle_live_capture_selftest({})
     if command in {"depth-surface-selftest", "depth-surface", "depth"}:
         return handle_depth_surface_selftest({})
+    if command in {"depth-reader-selftest", "depth-reader", "reader"}:
+        return handle_depth_reader_selftest({"fixture": "--fixture" in argv})
     if command in {"support-report", "report"}:
         return handle_support_report({})
     if command == "unity-scan":

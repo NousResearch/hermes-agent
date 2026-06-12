@@ -5921,6 +5921,29 @@ def _get_auxiliary_task_config(task: str) -> Dict[str, Any]:
     return task_config
 
 
+class AuxiliaryTaskDisabled(RuntimeError):
+    """Raised when an auxiliary task is disabled via ``auxiliary.<task>.enabled: false``.
+
+    Subclasses RuntimeError so existing broad except handlers around
+    auxiliary calls (title generation, compression, ...) degrade cleanly.
+    """
+
+
+def _ensure_task_enabled(task: str) -> None:
+    """Raise :class:`AuxiliaryTaskDisabled` when config disables the task.
+
+    Only a literal ``False`` disables — absent or non-bool values mean
+    enabled, so a typo never silently turns a task off.
+    """
+    if not task:
+        return
+    if _get_auxiliary_task_config(task).get("enabled") is False:
+        raise AuxiliaryTaskDisabled(
+            f"Auxiliary task '{task}' is disabled via config "
+            f"(auxiliary.{task}.enabled: false)."
+        )
+
+
 def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float:
     """Read timeout from auxiliary.{task}.timeout in config, falling back to *default*."""
     if not task:
@@ -6311,7 +6334,9 @@ def call_llm(
 
     Raises:
         RuntimeError: If no provider is configured.
+        AuxiliaryTaskDisabled: If config sets auxiliary.<task>.enabled: false.
     """
+    _ensure_task_enabled(task)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     if api_mode:
@@ -6931,6 +6956,7 @@ async def async_call_llm(
 
     Same as call_llm() but async. See call_llm() for full documentation.
     """
+    _ensure_task_enabled(task)
     resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
         task, provider, model, base_url, api_key)
     effective_extra_body = _get_task_extra_body(task)

@@ -1553,6 +1553,9 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
         "title_generation": {
+            # Set enabled: false to turn off session-title generation entirely
+            # (no auxiliary LLM call). Any auxiliary.<task> block honours this.
+            "enabled": True,
             "provider": "auto",
             "model": "",
             "base_url": "",

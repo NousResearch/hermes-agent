@@ -530,6 +530,15 @@ prompt_caching:
 #                           # extra_body:
 #                           #   chat_template_kwargs:
 #                           #     enable_thinking: false
+#
+#   # Session title generation. Set enabled: false to turn the task off
+#   # entirely — no auxiliary LLM call is made. Any auxiliary.<task> block
+#   # honours `enabled`; only a literal false disables (absent / non-bool =
+#   # enabled, so a typo never silently turns a task off).
+#   title_generation:
+#     enabled: true          # false = disable this task (skip the LLM call)
+#     provider: "auto"
+#     model: ""
 
 # =============================================================================
 # Persistent Memory

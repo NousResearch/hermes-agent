@@ -10,6 +10,7 @@ Verifies that the agent cache correctly:
 """
 
 import threading
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 
@@ -1456,6 +1457,29 @@ class TestCachedAgentInactivityReset:
 
         assert agent_fresh._api_call_count == 0
         assert agent_interrupted._api_call_count == 0
+
+    def test_fresh_turn_resets_stale_stream_delivery_state(self):
+        """Depth-0 cached-agent reuse must not inherit the previous stream final state."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+        agent.sc = SimpleNamespace(
+            _final_response_sent=True,
+            _final_content_delivered=True,
+            _already_sent=True,
+            _message_id="previous-message-id",
+            _last_sent_text="previous plain streaming body",
+        )
+
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+
+        assert agent.sc._final_response_sent is False
+        assert agent.sc._final_content_delivered is False
+        assert agent.sc._already_sent is False
+        assert agent.sc._message_id is None
+        assert agent.sc._last_sent_text == ""
 
     def test_watchdog_accumulation_across_recursive_turns(self):
         """Scenario: stuck turn + user interrupt → recursive turn.

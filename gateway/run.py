@@ -12549,6 +12549,32 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pass
 
     @staticmethod
+    def _reset_cached_stream_consumer_for_turn(agent: Any) -> None:
+        """Clear stale per-turn stream-delivery bookkeeping on cached agents."""
+        # Use __dict__ instead of hasattr/getattr directly: test fixtures often
+        # use MagicMock, where hasattr(mock, "sc") fabricates a child mock.  We
+        # only want an explicitly-attached stream consumer from a previous turn.
+        agent_dict = getattr(agent, "__dict__", {}) or {}
+        stream_consumer = agent_dict.get("sc") or agent_dict.get("_stream_consumer")
+        if stream_consumer is None:
+            return
+
+        for attr, value in (
+            ("_final_response_sent", False),
+            ("_final_content_delivered", False),
+            ("_already_sent", False),
+            ("_message_id", None),
+            ("_message_created_ts", None),
+            ("_last_sent_text", ""),
+            ("_last_edit_overflowed", False),
+            ("_fallback_final_send", False),
+            ("_fallback_prefix", ""),
+            ("_fallback_preserve_partial_messages", False),
+        ):
+            if hasattr(stream_consumer, attr):
+                setattr(stream_consumer, attr, value)
+
+    @staticmethod
     def _init_cached_agent_for_turn(agent: Any, interrupt_depth: int) -> None:
         """Reset per-turn state on a cached agent before a new turn starts.
 
@@ -12565,6 +12591,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if interrupt_depth == 0:
             agent._last_activity_ts = time.time()
             agent._last_activity_desc = "starting new turn (cached)"
+            GatewayRunner._reset_cached_stream_consumer_for_turn(agent)
             # Reset the SessionDB flush cursor so the new turn's messages are
             # fully persisted — a stale value from the previous turn would
             # cause `_flush_messages_to_session_db` to skip new rows (#44327).

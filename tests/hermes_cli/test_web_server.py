@@ -1823,6 +1823,18 @@ class TestWebServerEndpoints:
         assert data["ok"] is True
         assert data.get("gateway_tools", []) == []
 
+    def test_normalize_main_model_assignment_preserves_named_custom_provider(self):
+        """Named custom providers are valid provider slugs, not model vendors."""
+        from hermes_cli.web_server import _normalize_main_model_assignment
+
+        provider, model = _normalize_main_model_assignment(
+            "custom:polza.ai",
+            "deepseek/deepseek-v4-flash",
+        )
+
+        assert provider == "custom:polza.ai"
+        assert model == "deepseek/deepseek-v4-flash"
+
     def test_apply_main_model_assignment_base_url_and_context_reconcile(self):
         """The shared main-slot assignment helper must persist a supplied
         base_url, clear a stale base_url only when switching providers, preserve

@@ -771,8 +771,9 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     prov_in = (provider or "").strip()
     model_in = (model or "").strip()
     canonical = normalize_provider(prov_in)
+    is_named_custom = prov_in.lower().startswith("custom:")
 
-    if canonical not in _KNOWN_PROVIDER_NAMES and "/" in model_in:
+    if canonical not in _KNOWN_PROVIDER_NAMES and not is_named_custom and "/" in model_in:
         # Vendor prefix posing as a provider (analytics fallback). Resolve
         # against the user's current provider when it's an aggregator that
         # serves vendor-prefixed slugs; otherwise default to openrouter.

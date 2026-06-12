@@ -80,6 +80,41 @@ def test_write_json(capture):
     assert json.loads(buf.getvalue()) == {"test": True}
 
 
+def test_session_event_transport_can_fan_out_to_sidecar_listener(server):
+    from tui_gateway.transport import TeeTransport
+
+    class _CaptureTransport:
+        def __init__(self):
+            self.frames = []
+
+        def write(self, obj):
+            self.frames.append(obj)
+            return True
+
+        def close(self):
+            pass
+
+    primary = _CaptureTransport()
+    sidecar = _CaptureTransport()
+    sid = "runtime-fanout"
+    server._sessions[sid] = {"transport": TeeTransport(primary, sidecar)}
+
+    server._emit("message.delta", sid, {"text": "hello"})
+
+    assert primary.frames == [
+        {
+            "jsonrpc": "2.0",
+            "method": "event",
+            "params": {
+                "type": "message.delta",
+                "session_id": sid,
+                "payload": {"text": "hello"},
+            },
+        }
+    ]
+    assert sidecar.frames == primary.frames
+
+
 def test_write_json_broken_pipe(server):
     class _Broken:
         def write(self, _): raise BrokenPipeError

@@ -154,7 +154,20 @@ class SessionSource:
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
         )
-    
+
+
+def shared_participant_label(source: SessionSource) -> Optional[str]:
+    """Return the stable label used to disambiguate speakers in shared sessions."""
+    display_name = str(source.user_name or "").strip()
+    if display_name:
+        return display_name
+
+    for raw_id in (source.user_id_alt, source.user_id):
+        raw = str(raw_id or "").strip()
+        if raw:
+            return _hash_sender_id(raw)
+
+    return None
 
 
 @dataclass
@@ -321,7 +334,7 @@ def build_session_context_prompt(
         session_label = "Multi-user thread" if context.source.thread_id else "Multi-user session"
         lines.append(
             f"**Session type:** {session_label} — messages are prefixed "
-            "with [sender name]. Multiple users may participate."
+            "with [sender label]. Multiple users may participate."
         )
     elif context.source.user_name:
         lines.append(f"**User:** {context.source.user_name}")

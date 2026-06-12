@@ -15,6 +15,7 @@ WSL.  Use Linux paths for all tools.  Windows files are accessible via the
 import logging
 import os
 import shutil
+import signal
 import subprocess
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
@@ -125,7 +126,7 @@ class WslEnvironment(BaseEnvironment):
     def get_temp_dir() -> str:
         """Return the backend temp directory.  WSL's /tmp is always writable
         and cleaned on distro restart, so temp file leaks are bounded."""
-        return os.environ.get("TMPDIR", "/tmp")
+        return "/tmp"
 
     def _run_bash(
         self,

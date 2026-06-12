@@ -301,7 +301,7 @@ export const FIELD_LABELS: Record<string, string> = defineFieldCopy({
     singularityImage: 'Singularity Image',
     modalImage: 'Modal Image',
     daytonaImage: 'Daytona Image',
-    wslDistro: 'WSL Distribution'
+      wslDistro: 'WSL Distribution'
   },
   fileReadMaxChars: 'File Read Limit',
   toolOutput: {

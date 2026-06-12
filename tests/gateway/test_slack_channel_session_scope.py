@@ -257,3 +257,96 @@ class TestThreadReplyAlwaysScopesByThread:
             f"thread reply dropped with reply_in_thread={reply_in_thread}"
         )
         assert captured[0].source.thread_id == "1700000000.000009"
+
+
+class TestBotMentionThreadContextIsolation:
+    """Bot-to-bot controller commands must not inherit stale thread text."""
+
+    @pytest.mark.asyncio
+    async def test_bot_originated_thread_mention_skips_thread_context(self, adapter):
+        adapter.config.extra["allow_bots"] = "mentions"
+        event = _channel_event(
+            "<@U_BOT> exactly ACK",
+            ts="1700000000.000101",
+            thread_ts="1700000000.000001",
+        )
+        event["bot_id"] = "B_MAIN"
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+        with (
+            patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="main-bot")),
+            patch.object(adapter, "_fetch_thread_context", new=AsyncMock(return_value="STALE THREAD CONTEXT\n")) as fetch_context,
+            patch.object(adapter, "_fetch_thread_parent_text", new=AsyncMock(return_value="STALE PARENT")) as fetch_parent,
+        ):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured) == 1
+        assert captured[0].text == "exactly ACK"
+        assert captured[0].source.thread_id == "1700000000.000101"
+        assert captured[0].reply_to_message_id == "1700000000.000001"
+        assert captured[0].reply_to_text is None
+        fetch_context.assert_not_awaited()
+        fetch_parent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bot_originated_thread_mention_ignores_reply_quote_blocks(self, adapter):
+        adapter.config.extra["allow_bots"] = "mentions"
+        event = _channel_event(
+            "<@U_BOT> exactly ACK",
+            ts="1700000000.000103",
+            thread_ts="1700000000.000001",
+        )
+        event["bot_id"] = "B_MAIN"
+        event["blocks"] = [
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                        "type": "rich_text_quote",
+                        "elements": [
+                            {
+                                "type": "text",
+                                "text": "STALE HUMAN THREAD CONTEXT should not reach bot commands",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+        with patch.object(
+            adapter,
+            "_resolve_user_name",
+            new=AsyncMock(return_value="main-bot"),
+        ):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured) == 1
+        assert captured[0].text == "exactly ACK"
+        assert "STALE HUMAN" not in captured[0].text
+
+    @pytest.mark.asyncio
+    async def test_human_thread_mention_still_gets_thread_context(self, adapter):
+        event = _channel_event(
+            "<@U_BOT> continue",
+            ts="1700000000.000102",
+            thread_ts="1700000000.000001",
+        )
+
+        captured = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured.append(e))
+        with (
+            patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")),
+            patch.object(adapter, "_fetch_thread_context", new=AsyncMock(return_value="THREAD CONTEXT\n")) as fetch_context,
+            patch.object(adapter, "_fetch_thread_parent_text", new=AsyncMock(return_value="PARENT")) as fetch_parent,
+        ):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured) == 1
+        assert captured[0].text == "THREAD CONTEXT\ncontinue"
+        assert captured[0].reply_to_text == "PARENT"
+        fetch_context.assert_awaited_once()
+        fetch_parent.assert_awaited_once()

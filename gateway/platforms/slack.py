@@ -2119,7 +2119,8 @@ class SlackAdapter(BasePlatformAdapter):
         #   "none"     — ignore all bot messages (default, backward-compatible)
         #   "mentions" — accept bot messages only when they @mention us
         #   "all"      — accept all bot messages (except our own)
-        if event.get("bot_id") or event.get("subtype") == "bot_message":
+        is_bot_message = bool(event.get("bot_id") or event.get("subtype") == "bot_message")
+        if is_bot_message:
             allow_bots = self.config.extra.get("allow_bots", "")
             if not allow_bots:
                 allow_bots = os.getenv("SLACK_ALLOW_BOTS", "none")
@@ -2175,7 +2176,7 @@ class SlackAdapter(BasePlatformAdapter):
         # the plain ``text`` field.  Merge block text so the agent sees the
         # full message content.
         blocks = event.get("blocks")
-        if blocks:
+        if blocks and not is_bot_message:
             blocks_text = _extract_text_from_slack_blocks(blocks)
             if blocks_text:
                 # Only append if the blocks contain text not already present
@@ -2192,6 +2193,11 @@ class SlackAdapter(BasePlatformAdapter):
             blocks_payload = _serialize_slack_blocks_for_agent(blocks)
             if blocks_payload:
                 text = (text.strip() + "\n\n" + blocks_payload).strip()
+        elif blocks and is_bot_message:
+            # Bot-originated @mentions are controller commands. Slack reply/quote
+            # blocks can contain stale human thread text; keep only event.text so
+            # subordinates obey the current main-bot instruction.
+            logger.debug("Slack: ignoring block payload on bot-originated command")
 
         # Extract link unfurls / rich attachments (e.g. Notion previews).
         # Slack places unfurled link previews in the ``attachments`` array with
@@ -2395,10 +2401,20 @@ class SlackAdapter(BasePlatformAdapter):
 
         # When entering a thread for the first time (no existing session),
         # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
-            channel_id=channel_id,
-            thread_ts=event_thread_ts,
-            user_id=user_id,
+        #
+        # Exception: accepted bot-originated @mentions are controller commands
+        # to this bot. In long Slack threads, prepending ambient thread history
+        # can make a subordinate chase old user questions instead of obeying
+        # the latest main-bot instruction.
+        if (
+            is_thread_reply
+            and event_thread_ts is not None
+            and not is_bot_message
+            and not self._has_active_session_for_thread(
+                channel_id=channel_id,
+                thread_ts=event_thread_ts,
+                user_id=user_id,
+            )
         ):
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,
@@ -2609,14 +2625,21 @@ class SlackAdapter(BasePlatformAdapter):
         # Resolve user display name (cached after first lookup)
         user_name = await self._resolve_user_name(user_id, chat_id=channel_id)
 
-        # Build source
+        # Build source. Bot-originated explicit @mentions are controller
+        # commands; isolate each command into a fresh gateway session so old
+        # Slack-thread history from prior main→subordinate calls cannot steer
+        # the subordinate away from the latest instruction. Keep the outbound
+        # reply threaded via reply_to_message_id below.
+        source_thread_id = thread_ts
+        if is_bot_message and is_mentioned and thread_ts and thread_ts != ts:
+            source_thread_id = ts
         source = self.build_source(
             chat_id=channel_id,
             chat_name=channel_id,  # Will be resolved later if needed
             chat_type="dm" if is_dm else "group",
             user_id=user_id,
             user_name=user_name,
-            thread_id=thread_ts,
+            thread_id=source_thread_id,
         )
 
         # Per-channel ephemeral prompt
@@ -2642,7 +2665,7 @@ class SlackAdapter(BasePlatformAdapter):
         # already in the session history. Uses the thread-context cache when
         # available to avoid redundant conversations.replies calls.
         reply_to_text = None
-        if thread_ts and thread_ts != ts:
+        if thread_ts and thread_ts != ts and not is_bot_message:
             try:
                 reply_to_text = (
                     await self._fetch_thread_parent_text(

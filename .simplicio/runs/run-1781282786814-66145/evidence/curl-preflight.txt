@@ -1,0 +1,3 @@
+schema: simplicio.curl-preflight/v1
+status: planned
+reason: no concrete endpoint was detected by the fallback mapper

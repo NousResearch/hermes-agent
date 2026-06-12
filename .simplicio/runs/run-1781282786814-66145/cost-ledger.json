@@ -1,0 +1,1 @@
+{"schema":"simplicio.cost-ledger/v1","local_tokens":154,"remote_prompt_tokens":0,"remote_completion_tokens":0,"token_source":"estimated","cache_hits":0,"prompts_reused":0,"commands_avoided":0,"estimated_paid_tokens_saved":0,"client":"","model":"openai/gpt-5-mini","task_link":"fix issue #45039: Dashboard \"Default project directory\" setting is ignored (even Dashboard sessions)"}

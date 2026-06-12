@@ -1,0 +1,5 @@
+{"schema":"simplicio.narrative/v1","phase":"map","message":"mapped the repository"}
+{"schema":"simplicio.narrative/v1","phase":"analysis","message":"classified task as 'edit'"}
+{"schema":"simplicio.narrative/v1","phase":"validation","message":"built the progressive validation plan"}
+{"schema":"simplicio.narrative/v1","phase":"implementation","message":"prepared the dev-cli contract"}
+{"schema":"simplicio.narrative/v1","phase":"evidence","message":"wrote the run evidence bundle"}

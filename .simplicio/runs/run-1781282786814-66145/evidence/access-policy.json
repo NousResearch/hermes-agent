@@ -1,0 +1,1 @@
+{"schema":"simplicio.evidence-access-policy/v1","local_first":true,"remote_upload_allowed":true,"secrets_redacted":true,"protect_private_repos":true,"attachable":"only after human review"}

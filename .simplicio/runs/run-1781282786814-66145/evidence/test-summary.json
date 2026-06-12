@@ -1,0 +1,1 @@
+{"schema":"simplicio.test-summary/v1","status":"planned","levels":["syntax-format-and-changed-files","targeted-unit-tests","build-lint-typecheck"],"command":"progressive validation selected by runtime"}

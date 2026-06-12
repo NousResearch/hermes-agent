@@ -407,13 +407,17 @@ export function useSessionActions({
       creatingSessionRef.current = true
 
       try {
-        // Route the new chat to the chosen profile's backend (null = primary,
-        // so single-profile users are unaffected).
-        await ensureGatewayProfile($newChatProfile.get())
+        // A plain new session (top "New Session", /new, keybind) leaves
+        // $newChatProfile null to mean "use the live context"; the per-profile
+        // "+" sets it explicitly. Resolve null to the active gateway profile so
+        // session.create always carries it: in global-remote mode one backend
+        // serves every profile, so an omitted profile param silently lands the
+        // chat on the launch (default) profile — the "rubberbands back to
+        // default" bug. This is a no-op for single-profile/local-pooled users:
+        // a backend resolves its own launch profile to None (_profile_home).
+        const newChatProfile = $newChatProfile.get() ?? normalizeProfileKey($activeGatewayProfile.get())
+        await ensureGatewayProfile(newChatProfile)
         const cwd = $currentCwd.get().trim() || workspaceCwdForNewSession()
-        // Pass the owning profile so a new chat under a non-launch profile (global
-        // remote mode) builds its agent + persists against THAT profile's home/db.
-        const newChatProfile = $newChatProfile.get()
 
         const created = await requestGateway<SessionCreateResponse>('session.create', {
           cols: 96,

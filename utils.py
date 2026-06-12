@@ -355,6 +355,44 @@ def base_url_hostname(base_url: str) -> str:
     return (parsed.hostname or "").lower().rstrip(".")
 
 
+# ─── Model Capability Detection ──────────────────────────────────────────────
+
+
+def model_forces_max_completion_tokens(model: str) -> bool:
+    """Return True for model families that require ``max_completion_tokens``.
+
+    OpenAI's newer families reject ``max_tokens`` on /v1/chat/completions with
+    HTTP 400 ``unsupported_parameter`` — the caller must send
+    ``max_completion_tokens`` instead. This covers:
+
+    - ``gpt-4o`` / ``gpt-4o-mini`` / ``gpt-4o-*``
+    - ``gpt-4.1`` / ``gpt-4.1-*``
+    - ``gpt-5`` / ``gpt-5.x`` / ``gpt-5-*``
+    - ``o1`` / ``o1-*``
+    - ``o3`` / ``o3-*``
+    - ``o4`` / ``o4-*``
+
+    Handles vendor prefixes like ``openai/gpt-5.4`` by stripping to the tail.
+    The URL-based check (``base_url_hostname == "api.openai.com"``) misses
+    third-party OpenAI-compatible endpoints (custom OpenAI gateways,
+    OpenRouter) that front these models and enforce the same parameter
+    constraint, so name-based detection is required as a fallback.
+    """
+    m = (model or "").strip().lower()
+    if not m:
+        return False
+    if "/" in m:
+        m = m.rsplit("/", 1)[-1]
+    return (
+        m.startswith("gpt-4o")
+        or m.startswith("gpt-4.1")
+        or m.startswith("gpt-5")
+        or m.startswith("o1")
+        or m.startswith("o3")
+        or m.startswith("o4")
+    )
+
+
 def base_url_host_matches(base_url: str, domain: str) -> bool:
     """Return True when the base URL's hostname is ``domain`` or a subdomain.
 

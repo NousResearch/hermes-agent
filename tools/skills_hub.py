@@ -1946,6 +1946,12 @@ class ClawHubSource(SkillSource):
 
     BASE_URL = "https://clawhub.ai/api/v1"
 
+    # Wall-clock budget for a full catalog walk. ClawHub has 50k+ skills and
+    # the walk is sequential (~250 requests, each under per-request
+    # timeout=30 so nothing errors), so an unbounded walk can block for
+    # minutes. Bound it so a slow/large catalog cannot hang the caller.
+    CATALOG_WALK_BUDGET_SECONDS = 12
+
     def source_id(self) -> str:
         return "clawhub"
 
@@ -2113,12 +2119,13 @@ class ClawHubSource(SkillSource):
             if results:
                 return results
         else:
-            # Empty query: route through the paginating catalog walker so the
-            # full ClawHub catalog (20k+ skills) lands in the index. The
-            # single-request listing path below caps at one page (200 items)
-            # regardless of `limit`, which silently truncates the public
-            # skills index. The catalog walker follows `nextCursor`.
-            catalog = self._load_catalog_index()
+            # Empty query: route through the paginating catalog walker. When
+            # the full catalog is already disk-cached this returns it whole and
+            # the caller paginates client-side. On a cold cache, bound the walk
+            # to `limit` so a browse command renders its first page without
+            # walking the entire 50k+ catalog (max_items=0 → unbounded, used
+            # only by the offline index builder via search("", limit=0)).
+            catalog = self._load_catalog_index(max_items=limit if limit > 0 else 0)
             if catalog:
                 return self._dedupe_results(catalog)[:limit] if limit > 0 else self._dedupe_results(catalog)
 
@@ -2243,7 +2250,21 @@ class ClawHubSource(SkillSource):
         _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
         return results
 
-    def _load_catalog_index(self) -> List[SkillMeta]:
+    def _load_catalog_index(self, max_items: int = 0) -> List[SkillMeta]:
+        """Walk the ClawHub catalog via cursor pagination.
+
+        ``max_items`` bounds the walk: once at least that many distinct skills
+        have been gathered the walk stops early. This is what browse's
+        cold-start fallback wants — it only renders one page, so walking the
+        entire 50k+ catalog just to slice off the first N is pure waste.
+        ``max_items=0`` (the default, used by the offline index builder) means
+        walk to exhaustion.
+
+        Caching: only a *complete* catalog (cursor exhausted or page cap) is
+        written to the shared ``clawhub_catalog_v1`` cache. A walk truncated by
+        ``max_items`` OR the wall-clock budget is partial, so caching it would
+        poison the full-catalog cache with an incomplete slice.
+        """
         cache_key = "clawhub_catalog_v1"
         cached = _read_index_cache(cache_key)
         if cached is not None:
@@ -2258,8 +2279,22 @@ class ClawHubSource(SkillSource):
         # terminates well before this on `nextCursor` going None — the cap is
         # a safety rail against an infinite-cursor loop.
         max_pages = 750
+        # Wall-clock budget is for interactive browse (max_items > 0) only.
+        # The offline index builder passes max_items=0 and must walk the full
+        # catalog — a 12s cap there ships ~3k skills and trips the deploy
+        # health floor (20k).
+        deadline = (
+            time.monotonic() + self.CATALOG_WALK_BUDGET_SECONDS
+            if max_items > 0
+            else None
+        )
+        hit_deadline = False
+        hit_max_items = False
 
         for _ in range(max_pages):
+            if deadline is not None and time.monotonic() > deadline:
+                hit_deadline = True
+                break
             params: Dict[str, Any] = {"limit": 200}
             if cursor:
                 params["cursor"] = cursor
@@ -2297,7 +2332,19 @@ class ClawHubSource(SkillSource):
             if not isinstance(cursor, str) or not cursor:
                 break
 
-        _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
+            # Browse's cold-start fallback only renders one page, so stop as
+            # soon as we have enough to satisfy the caller's bound. The index
+            # builder passes max_items=0 (unbounded) and walks to exhaustion.
+            if max_items > 0 and len(results) >= max_items:
+                hit_max_items = True
+                break
+
+        # Only cache a walk that reached a natural stop (cursor exhausted or
+        # page cap). A walk truncated by the wall-clock budget OR by max_items
+        # is partial, so writing it would poison the shared full-catalog cache
+        # with incomplete data.
+        if not hit_deadline and not hit_max_items:
+            _write_index_cache(cache_key, [_skill_meta_to_dict(s) for s in results])
         return results
 
     def _get_json(self, url: str, timeout: int = 20) -> Optional[Any]:
@@ -3774,13 +3821,20 @@ def parallel_search_sources(
     if not active:
         return all_results, source_counts, timed_out_ids
 
-    with ThreadPoolExecutor(max_workers=min(len(active), 8)) as pool:
-        futures = {}
-        for src in active:
-            lim = per_source_limits.get(src.source_id(), 50)
-            fut = pool.submit(_search_one_source, src, query, lim)
-            futures[fut] = src.source_id()
+    # NOTE: a `with ThreadPoolExecutor(...) as pool` block calls
+    # ``shutdown(wait=True)`` on exit, which blocks until every submitted
+    # worker finishes — so a single slow source (e.g. ClawHub) keeps the
+    # caller blocked for minutes and renders ``overall_timeout`` a no-op.
+    # Manage the executor manually and shut it down with ``wait=False`` so
+    # the timeout is actually honoured.
+    pool = ThreadPoolExecutor(max_workers=min(len(active), 8))
+    futures = {}
+    for src in active:
+        lim = per_source_limits.get(src.source_id(), 50)
+        fut = pool.submit(_search_one_source, src, query, lim)
+        futures[fut] = src.source_id()
 
+    try:
         try:
             for fut in as_completed(futures, timeout=overall_timeout):
                 try:
@@ -3800,6 +3854,10 @@ def parallel_search_sources(
                     "Skills browse timed out waiting for: %s",
                     ", ".join(timed_out_ids),
                 )
+    finally:
+        # wait=False so a slow source cannot block the caller's return;
+        # cancel_futures drops not-yet-started work.
+        pool.shutdown(wait=False, cancel_futures=True)
 
     return all_results, source_counts, timed_out_ids
 

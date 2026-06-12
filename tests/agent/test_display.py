@@ -12,6 +12,7 @@ from agent.display import (
     set_tool_preview_max_len,
     _render_inline_unified_diff,
     _summarize_rendered_diff_sections,
+    _used_free_parallel,
     render_edit_diff_with_delta,
 )
 
@@ -169,6 +170,46 @@ class TestCuteToolMessagePreviewLength:
         line = get_cute_tool_message("patch", {"path": "/tmp/a.py"}, 0.1, result=result)
 
         assert "[error]" not in line
+
+
+class TestWebProviderLabel:
+    """The free-path "Parallel search"/"Parallel fetch" verb labeling."""
+
+    def test_free_search_verb_is_parallel(self):
+        result = json.dumps({"success": True, "data": {"web": []}, "provider": "parallel"})
+        line = get_cute_tool_message("web_search", {"query": "hello"}, 0.1, result=result)
+        assert "Parallel search" in line
+        assert "hello" in line
+
+    def test_paid_search_verb_is_plain(self):
+        result = json.dumps({"success": True, "data": {"web": [{"url": "u"}]}})
+        line = get_cute_tool_message("web_search", {"query": "hi"}, 0.1, result=result)
+        assert "Parallel" not in line
+        assert "search" in line
+
+    def test_missing_result_verb_is_plain(self):
+        line = get_cute_tool_message("web_search", {"query": "hello"}, 0.1)
+        assert "Parallel" not in line
+        assert "search" in line
+
+    def test_helper_is_parallel_free_specific(self):
+        # Only Parallel's free MCP path marks results; nothing else does.
+        assert _used_free_parallel(json.dumps({"provider": "parallel"})) is True
+        assert _used_free_parallel(json.dumps({"provider": "exa"})) is False
+        assert _used_free_parallel(json.dumps({"provider": "firecrawl"})) is False
+        assert _used_free_parallel(json.dumps({"success": True, "data": {}})) is False
+        assert _used_free_parallel('not json') is False
+        assert _used_free_parallel(None) is False
+
+    def test_free_extract_verb_is_parallel(self):
+        result = json.dumps({"results": [{"url": "u", "content": "x"}], "provider": "parallel"})
+        line = get_cute_tool_message("web_extract", {"urls": ["https://a.test"]}, 0.1, result=result)
+        assert "Parallel fetch" in line
+
+    def test_paid_extract_verb_is_plain(self):
+        result = json.dumps({"results": [{"url": "u", "content": "x"}]})
+        line = get_cute_tool_message("web_extract", {"urls": ["https://a.test"]}, 0.1, result=result)
+        assert "Parallel" not in line
 
 
 class TestEditDiffPreview:

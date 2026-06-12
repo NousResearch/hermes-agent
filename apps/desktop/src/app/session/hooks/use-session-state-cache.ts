@@ -5,7 +5,21 @@ import type { ChatMessage } from '@/lib/chat-messages'
 import { preserveLocalAssistantErrors } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { setMutableRef } from '@/lib/mutable-ref'
-import { $busy, $messages, noteSessionActivity, setSessionAttention, setSessionWorking, setTurnStartedAt } from '@/store/session'
+import {
+  $busy,
+  $messages,
+  noteSessionActivity,
+  setCurrentFastMode,
+  setCurrentModel,
+  setCurrentPersonality,
+  setCurrentProvider,
+  setCurrentReasoningEffort,
+  setCurrentServiceTier,
+  setSessionAttention,
+  setSessionWorking,
+  setTurnStartedAt,
+  setYoloActive
+} from '@/store/session'
 
 import type { ClientSessionState } from '../../types'
 
@@ -38,6 +52,16 @@ interface SessionStateCacheOptions {
   setAwaitingResponse: (awaiting: boolean) => void
   setBusy: (busy: boolean) => void
   setMessages: (messages: ChatMessage[]) => void
+}
+
+function syncRuntimeMetadataToView(state: ClientSessionState) {
+  setCurrentModel(state.model ?? '')
+  setCurrentProvider(state.provider ?? '')
+  setCurrentReasoningEffort(state.reasoningEffort ?? '')
+  setCurrentServiceTier(state.serviceTier ?? '')
+  setCurrentFastMode(state.fast ?? false)
+  setYoloActive(state.yolo ?? false)
+  setCurrentPersonality(state.personality ?? '')
 }
 
 export function useSessionStateCache({
@@ -124,6 +148,7 @@ export function useSessionStateCache({
       setMessages(nextMessages)
     }
 
+    syncRuntimeMetadataToView(pending.state)
     setBusy(pending.state.busy)
     setMutableRef(busyRef, pending.state.busy)
     setAwaitingResponse(pending.state.awaitingResponse)
@@ -148,6 +173,7 @@ export function useSessionStateCache({
         return
       }
 
+      syncRuntimeMetadataToView(state)
       pendingViewStateRef.current = { sessionId, state }
 
       // Terminal / attention transitions (turn finished, error, or the agent is

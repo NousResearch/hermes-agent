@@ -262,6 +262,14 @@ if [ -d "$HERMES_HOME/profiles" ]; then
     chown -R hermes:hermes "$HERMES_HOME/profiles" 2>/dev/null || true
 fi
 
+# Always reset ownership of $HERMES_HOME/cron on every boot for the same
+# docker-exec/root-write reason as profiles/. The cron scheduler state
+# (jobs.json) must stay readable by the unprivileged hermes runtime even
+# after root-context maintenance commands or scheduler writes.
+if [ -d "$HERMES_HOME/cron" ]; then
+    chown -R hermes:hermes "$HERMES_HOME/cron" 2>/dev/null || true
+fi
+
 # Reset ownership of hermes-owned top-level state files on every boot.
 # The targeted data-volume chown above only covers hermes-owned
 # *subdirectories*; loose state files living directly under $HERMES_HOME

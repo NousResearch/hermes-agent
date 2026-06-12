@@ -141,6 +141,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     # fuzzy-match collisions (e.g. "anthropic/claude-sonnet-4" is a
     # substring of "anthropic/claude-sonnet-4.6").
     # OpenRouter-prefixed models resolve via OpenRouter live API or models.dev.
+    "claude-fable-5": 1000000,
+    "claude-fable": 1000000,
     "claude-opus-4-8": 1000000,
     "claude-opus-4.8": 1000000,
     "claude-opus-4-7": 1000000,
@@ -1836,6 +1838,17 @@ def get_model_context_length(
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
+            # MiniMax M3: models.dev reports 512K but actual context is 1M.
+            # Prefer hardcoded catalog over stale probe value.
+            if _model_name_suggests_minimax_m3(model):
+                catalog = DEFAULT_CONTEXT_LENGTHS.get("minimax-m3")
+                if catalog and ctx < catalog:
+                    logger.info(
+                        "Rejecting models.dev context=%s for %r "
+                        "(MiniMax-M3 underreport); using hardcoded default %s",
+                        ctx, model, f"{catalog:,}",
+                    )
+                    ctx = catalog
             return ctx
 
     # 6. OpenRouter live API metadata — provider-unaware fallback.

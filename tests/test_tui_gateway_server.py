@@ -86,6 +86,47 @@ def test_session_context_uses_session_cwd(monkeypatch, tmp_path):
         server._sessions.pop(sid, None)
 
 
+def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
+    class DbContext:
+        def __init__(self, db):
+            self.db = db
+
+        def __enter__(self):
+            return self.db
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeDb:
+        def __init__(self, state):
+            self.state = state
+            self.failed_with = None
+
+        def get_handoff_state(self, _key):
+            return {"state": self.state, "platform": "telegram", "error": None}
+
+        def fail_handoff(self, _key, error):
+            self.failed_with = error
+            self.state = "failed"
+
+    sid = "rt-handoff"
+    server._sessions[sid] = {"session_key": "stored-handoff"}
+    try:
+        pending = FakeDb("pending")
+        monkeypatch.setattr(server, "_session_db", lambda _session: DbContext(pending))
+        result = server._methods["handoff.fail"]("r1", {"session_id": sid, "error": "timed out"})
+        assert result["result"] == {"failed": True, "state": "failed"}
+        assert pending.failed_with == "timed out"
+
+        completed = FakeDb("completed")
+        monkeypatch.setattr(server, "_session_db", lambda _session: DbContext(completed))
+        result = server._methods["handoff.fail"]("r2", {"session_id": sid, "error": "late timeout"})
+        assert result["result"] == {"failed": False, "state": "completed"}
+        assert completed.failed_with is None
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
     """Background/preview tasks use ephemeral ids absent from `_sessions`, so the
     parent workspace is passed explicitly; it must pin instead of clearing back
@@ -105,6 +146,64 @@ def test_session_context_explicit_cwd_for_ephemeral_task(monkeypatch, tmp_path):
         assert resolve_agent_cwd() == project
     finally:
         server._clear_session_context(tokens)
+
+
+def _write_profile_cfg(home: Path, cwd: str | None) -> Path:
+    import yaml
+
+    home.mkdir(parents=True, exist_ok=True)
+    cfg = {"terminal": {"cwd": cwd}} if cwd is not None else {}
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    return home
+
+
+def test_profile_configured_cwd_reads_target_profile(tmp_path):
+    """A profile's own terminal.cwd is read from its config.yaml."""
+    project = tmp_path / "proj"
+    project.mkdir()
+    home = _write_profile_cfg(tmp_path / "home", str(project))
+    assert server._profile_configured_cwd(home) == str(project)
+
+
+def test_profile_configured_cwd_skips_placeholders_and_missing(tmp_path):
+    """Placeholder values, missing config, and bad paths fall through to None."""
+    assert server._profile_configured_cwd(None) is None
+    assert server._profile_configured_cwd(tmp_path / "nope") is None
+    for placeholder in (".", "auto", "cwd", ""):
+        home = _write_profile_cfg(tmp_path / placeholder.strip("."), placeholder)
+        assert server._profile_configured_cwd(home) is None
+    home = _write_profile_cfg(tmp_path / "ghost", str(tmp_path / "does-not-exist"))
+    assert server._profile_configured_cwd(home) is None
+
+
+def test_completion_cwd_prefers_profile_over_stale_env(monkeypatch, tmp_path):
+    """Issue #40334: a new session bound to another profile must use THAT
+    profile's terminal.cwd, not the launch profile's stale TERMINAL_CWD."""
+    profile_b = tmp_path / "ef-design"
+    profile_b.mkdir()
+    home = _write_profile_cfg(tmp_path / "home-b", str(profile_b))
+    stale = tmp_path / "mahjong"
+    stale.mkdir()
+
+    monkeypatch.setenv("TERMINAL_CWD", str(stale))
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+
+    assert server._completion_cwd({"profile": "ef-design"}) == str(profile_b)
+    # No profile → unchanged fallback to the launch env var.
+    assert server._completion_cwd({}) == str(stale)
+
+
+def test_completion_cwd_explicit_cwd_wins_over_profile(monkeypatch, tmp_path):
+    """An explicit client-provided cwd still beats the profile config."""
+    explicit = tmp_path / "explicit"
+    explicit.mkdir()
+    profile_b = tmp_path / "configured"
+    profile_b.mkdir()
+    home = _write_profile_cfg(tmp_path / "home-c", str(profile_b))
+
+    monkeypatch.setattr(server, "_profile_home", lambda name: home if name else None)
+    result = server._completion_cwd({"cwd": str(explicit), "profile": "ef-design"})
+    assert result == str(explicit)
 
 
 def test_terminal_task_cwd_local_backend_uses_session_cwd(monkeypatch, tmp_path):
@@ -818,6 +917,97 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
         {"role": "assistant", "text": "root answer"},
     ]
     assert captured["history_calls"] == [("tip", False), ("tip", True)]
+
+
+def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, target):
+            return {
+                "id": target,
+                "model": "gpt-5.4",
+                "billing_provider": "openai-codex",
+                "model_config": '{"reasoning_config":{"enabled":true,"effort":"high"},"service_tier":"priority","base_url":"https://custom.example/v1","api_mode":"chat_completions"}',
+            }
+
+        def reopen_session(self, target):
+            pass
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            return [{"role": "user", "content": "hello"}]
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model="gpt-5.4", provider="openai-codex")
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider})
+
+    def fake_init_session(sid, key, agent, history, cols=80):
+        server._sessions[sid] = {"agent": agent, "session_key": key}
+
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "stored-session"}}
+    )
+
+    assert resp["result"]["info"] == {"model": "gpt-5.4", "provider": "openai-codex"}
+    assert captured["model_override"] == {
+        "model": "gpt-5.4",
+        "provider": "openai-codex",
+        "base_url": "https://custom.example/v1",
+        "api_mode": "chat_completions",
+    }
+    assert captured["provider_override"] == "openai-codex"
+    assert captured["reasoning_config_override"] == {"enabled": True, "effort": "high"}
+    assert captured["service_tier_override"] == "priority"
+    runtime_sid = resp["result"]["session_id"]
+    assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
+
+
+def test_persist_live_session_runtime_preserves_resume_metadata(monkeypatch):
+    updates = {}
+
+    class FakeDB:
+        def get_session(self, session_id):
+            assert session_id == "stored-session"
+            return {"model_config": '{"_branched_from":"root"}'}
+
+        def update_session_meta(self, session_id, model_config_json, model=None):
+            updates["meta"] = (session_id, json.loads(model_config_json), model)
+
+    agent = types.SimpleNamespace(
+        model="gpt-5.4",
+        provider="openai-codex",
+        base_url="https://custom.example/v1",
+        api_mode="chat_completions",
+        reasoning_config={"enabled": True, "effort": "high"},
+        service_tier="priority",
+        _session_db=FakeDB(),
+    )
+
+    server._persist_live_session_runtime({"agent": agent, "session_key": "stored-session"})
+
+    assert "model" not in updates
+    assert updates["meta"] == (
+        "stored-session",
+        {
+            "_branched_from": "root",
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "https://custom.example/v1",
+            "api_mode": "chat_completions",
+            "reasoning_config": {"enabled": True, "effort": "high"},
+            "service_tier": "priority",
+        },
+        "gpt-5.4",
+    )
 
 
 def test_status_callback_emits_kind_and_text():
@@ -2339,7 +2529,7 @@ def test_config_set_model_waits_for_lazy_agent_before_switch(monkeypatch):
         target["agent"] = agent
         agent_ready.set()
 
-    def fake_apply(sid, target, raw):
+    def fake_apply(sid, target, raw, **kwargs):
         calls.append(("apply", sid, target.get("agent"), raw))
         if target.get("agent") is not agent:
             raise AssertionError("model switch ran before lazy agent was ready")
@@ -2366,7 +2556,7 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
     server._sessions["sid"] = _session()
     seen = {}
 
-    def _fake_apply(sid, session, raw):
+    def _fake_apply(sid, session, raw, **_kwargs):
         seen["args"] = (sid, session["session_key"], raw)
         return {"value": "new/model", "warning": "catalog unreachable"}
 
@@ -2382,6 +2572,74 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
     assert resp["result"]["value"] == "new/model"
     assert resp["result"]["warning"] == "catalog unreachable"
     assert seen["args"] == ("sid", "session-key", "new/model")
+
+
+def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch):
+    class _Agent:
+        provider = "openrouter"
+        model = "old/model"
+        base_url = ""
+        api_key = "sk-or"
+        switched = False
+
+        def switch_model(self, **_kwargs):
+            self.switched = True
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="openai/gpt-5.5-pro",
+        target_provider="openrouter",
+        api_key="sk-or",
+        base_url="https://openrouter.ai/api/v1",
+        api_mode="chat_completions",
+        warning_message="",
+        model_info=types.SimpleNamespace(
+            has_cost_data=lambda: True,
+            cost_input=25.0,
+            cost_output=125.0,
+        ),
+    )
+
+    agent = _Agent()
+    server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda sid, session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "openai/gpt-5.5-pro --provider openrouter",
+            },
+        }
+    )
+
+    assert resp["result"]["confirm_required"] is True
+    assert "did you mean to select openai/gpt-5.5?" in resp["result"]["confirm_message"]
+    assert agent.switched is False
+
+    confirmed = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "openai/gpt-5.5-pro --provider openrouter",
+                "confirm_expensive_model": True,
+            },
+        }
+    )
+
+    assert confirmed["result"]["confirm_required"] is False
+    assert confirmed["result"]["value"] == "openai/gpt-5.5-pro"
+    assert agent.switched is True
 
 
 def test_config_set_model_global_persists(monkeypatch):
@@ -3467,8 +3725,9 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     fake_mod.get_mcp_status = lambda: fake_status
     monkeypatch.setitem(sys.modules, "tools.mcp_tool", fake_mod)
 
-    info = server._session_info(types.SimpleNamespace(tools=[], model=""))
+    info = server._session_info(types.SimpleNamespace(tools=[], model="", provider="openai-codex"))
 
+    assert info["provider"] == "openai-codex"
     assert info["mcp_servers"] == fake_status
 
 
@@ -3886,7 +4145,7 @@ def test_config_set_model_rejects_while_running(monkeypatch):
     """/model via config.set must reject during an in-flight turn."""
     seen = {"called": False}
 
-    def _fake_apply(sid, session, raw):
+    def _fake_apply(sid, session, raw, **_kwargs):
         seen["called"] = True
         return {"value": raw, "warning": ""}
 
@@ -3920,7 +4179,7 @@ def test_config_set_model_allowed_when_idle(monkeypatch):
     """Regression guard: idle sessions can still switch models."""
     seen = {"called": False}
 
-    def _fake_apply(sid, session, raw):
+    def _fake_apply(sid, session, raw, **_kwargs):
         seen["called"] = True
         return {"value": "newmodel", "warning": ""}
 
@@ -5837,6 +6096,24 @@ def test_make_agent_reads_nested_max_turns(monkeypatch):
     assert mock_agent.call_args.kwargs["max_iterations"] == 200
 
 
+def test_make_agent_waits_for_shared_mcp_discovery(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {})
+    waited = []
+
+    from hermes_cli import mcp_startup
+
+    monkeypatch.setattr(
+        mcp_startup,
+        "wait_for_mcp_discovery",
+        lambda timeout=0.75: waited.append(timeout),
+    )
+
+    with patch("run_agent.AIAgent"):
+        server._make_agent("sid1", "key1")
+
+    assert waited == [0.75]
+
+
 def test_make_agent_nested_max_turns_takes_priority(monkeypatch):
     _setup_make_agent_mocks(
         monkeypatch, {"agent": {"max_turns": 500}, "max_turns": 100}
@@ -5855,6 +6132,45 @@ def test_make_agent_defaults_to_90(monkeypatch):
         server._make_agent("sid1", "key1")
 
     assert mock_agent.call_args.kwargs["max_iterations"] == 90
+
+
+def test_make_agent_uses_session_runtime_overrides(monkeypatch):
+    _setup_make_agent_mocks(monkeypatch, {})
+    resolved = {}
+
+    def fake_resolve_runtime_provider(requested=None, target_model=None):
+        resolved["requested"] = requested
+        resolved["target_model"] = target_model
+        return {
+            "provider": requested,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+            "credential_pool": None,
+        }
+
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        fake_resolve_runtime_provider,
+    )
+
+    with patch("run_agent.AIAgent") as mock_agent:
+        server._make_agent(
+            "sid1",
+            "key1",
+            model_override="gpt-5.4",
+            provider_override="openai-codex",
+            reasoning_config_override={"enabled": True, "effort": "high"},
+            service_tier_override="priority",
+        )
+
+    assert resolved == {"requested": "openai-codex", "target_model": "gpt-5.4"}
+    assert mock_agent.call_args.kwargs["model"] == "gpt-5.4"
+    assert mock_agent.call_args.kwargs["provider"] == "openai-codex"
+    assert mock_agent.call_args.kwargs["reasoning_config"] == {"enabled": True, "effort": "high"}
+    assert mock_agent.call_args.kwargs["service_tier"] == "priority"
 
 
 def test_make_agent_handles_null_agent_config(monkeypatch):

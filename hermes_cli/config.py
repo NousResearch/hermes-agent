@@ -270,6 +270,11 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    # Deprecated tool-progress env vars — replaced by display.tool_progress in
+    # config.yaml. Kept known here so .env sanitization/reload still handle
+    # them for existing users (gateway reads them as a back-compat fallback),
+    # without surfacing them in user-facing OPTIONAL_ENV_VARS listings.
+    "HERMES_TOOL_PROGRESS", "HERMES_TOOL_PROGRESS_MODE",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_HOME_CHANNEL_NAME", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -863,6 +868,21 @@ DEFAULT_CONFIG = {
         # identity slot (SOUL.md). Empty by default. The HERMES_ENVIRONMENT_HINT
         # env var overrides this (build-time/container mechanism).
         "environment_hint": "",
+        # Coding posture — on interactive coding surfaces (CLI, TUI, desktop
+        # app, ACP) in a code workspace, Hermes adds a coding operating brief
+        # + a live git/workspace snapshot to the system prompt. See
+        # agent/coding_context.py.
+        #   "auto" (default) — prompt-only posture when the surface is
+        #                      interactive AND cwd is a code workspace.
+        #                      Toolsets are never touched; messaging platforms
+        #                      unaffected.
+        #   "focus"          — auto + collapse the toolset to the lean coding
+        #                      set (+ enabled MCP servers) + demote non-coding
+        #                      skill categories to names-only in the prompt's
+        #                      skill index. Explicit opt-in.
+        #   "on"             — force the prompt posture everywhere.
+        #   "off"            — disable entirely.
+        "coding_context": "auto",
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.
@@ -1290,6 +1310,14 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
+        "tts_audio_tags": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 30,
+            "extra_body": {},
+        },
         # Triage specifier — flesh out a rough one-liner in the Kanban
         # Triage column into a concrete spec, then promote it to ``todo``.
         # Invoked by ``hermes kanban specify`` (single id or --all). Set a
@@ -1339,6 +1367,20 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 600,
+            "extra_body": {},
+        },
+        # Monitor — urgency/importance classifier used by the important-mail
+        # monitor catalog automation (cron/scripts/classify_items.py). Scores
+        # candidate items 0-10 against the user's criteria so only above-
+        # threshold items get delivered. "auto" = main chat model; override to
+        # a cheap fast model (e.g. openrouter google/gemini-3-flash-preview,
+        # haiku) since per-item scoring is high-volume and a small model is fine.
+        "monitor": {
+            "provider": "auto",
+            "model": "",
+            "base_url": "",
+            "api_key": "",
+            "timeout": 60,
             "extra_body": {},
         },
     },
@@ -1556,7 +1598,7 @@ DEFAULT_CONFIG = {
     # Each provider supports an optional `max_text_length:` override for the
     # per-request input-character cap. Omit it to use the provider's documented
     # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
-    # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
+    # Gemini 32000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "gemini" | "neutts" (local) | "kittentts" (local) | "piper" (local)
         "edge": {
@@ -1571,6 +1613,19 @@ DEFAULT_CONFIG = {
             "model": "gpt-4o-mini-tts",
             "voice": "alloy",
             # Voices: alloy, echo, fable, onyx, nova, shimmer
+        },
+        "gemini": {
+            "model": "gemini-2.5-flash-preview-tts",
+            "voice": "Kore",
+            # When true, Gemini 3.1 TTS uses a hidden auxiliary-model rewrite
+            # pass to insert freeform square-bracket audio tags into the TTS
+            # script. Visible chat replies are unchanged.
+            "audio_tags": False,
+            # Optional local Markdown/text file with Gemini TTS performance
+            # direction. It may include AUDIO PROFILE, SCENE, DIRECTOR'S NOTES,
+            # SAMPLE CONTEXT, and either a `{transcript}` placeholder or no
+            # transcript section; Hermes appends the live transcript when absent.
+            "persona_prompt_file": "",
         },
         "xai": {
             "voice_id": "eve",  # or custom voice ID — see https://docs.x.ai/developers/model-capabilities/audio/custom-voices
@@ -1653,6 +1708,19 @@ DEFAULT_CONFIG = {
     "memory": {
         "memory_enabled": True,
         "user_profile_enabled": True,
+        # Approval gate for memory writes (add/replace/remove), applied to BOTH
+        # foreground agent turns and the background self-improvement review fork
+        # (the source of unprompted "wrong assumption" saves users reported).
+        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        #   true            — require approval: foreground writes prompt inline
+        #                     (entries are small enough to review in a chat
+        #                     bubble); background-review writes are staged
+        #                     instead of committed (a daemon thread cannot block
+        #                     on a prompt). Review staged entries with
+        #                     /memory pending, /memory approve <id>,
+        #                     /memory reject <id>.
+        # To disable memory entirely, use memory_enabled: false instead.
+        "write_approval": False,
         "memory_char_limit": 2200,   # ~800 tokens at 2.75 chars/token
         "user_char_limit": 1375,     # ~500 tokens at 2.75 chars/token
         # External memory provider plugin (empty = built-in only).
@@ -1757,6 +1825,18 @@ DEFAULT_CONFIG = {
         # External hub installs (trusted/community sources) are always
         # scanned regardless of this setting.
         "guard_agent_created": False,
+        # Approval gate for skill_manage (create/edit/patch/write_file/delete/
+        # remove_file), applied to BOTH foreground agent turns and the
+        # background self-improvement review fork.
+        #   false (default) — write freely; the gate is off (pre-gate behaviour)
+        #   true            — require approval: stage the write for review
+        #                     instead of committing (a SKILL.md is too large to
+        #                     review inline, so skills always stage rather than
+        #                     prompt). List with /skills pending, inspect with
+        #                     /skills diff <id> (full diff — CLI/dashboard/file,
+        #                     never crammed into a chat bubble), apply with
+        #                     /skills approve <id> or drop with /skills reject <id>.
+        "write_approval": False,
     },
 
     # Curator — background skill maintenance.
@@ -2440,7 +2520,7 @@ DEFAULT_CONFIG = {
 
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 28,
+    "_config_version": 29,
 }
 
 # =============================================================================
@@ -3498,21 +3578,11 @@ OPTIONAL_ENV_VARS = {
     },
     # HERMES_TOOL_PROGRESS and HERMES_TOOL_PROGRESS_MODE are deprecated —
     # now configured via display.tool_progress in config.yaml (off|new|all|verbose).
-    # Gateway falls back to these env vars for backward compatibility.
-    "HERMES_TOOL_PROGRESS": {
-        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
-        "prompt": "Tool progress (deprecated — use config.yaml)",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
-    "HERMES_TOOL_PROGRESS_MODE": {
-        "description": "(deprecated) Use display.tool_progress in config.yaml instead",
-        "prompt": "Progress mode (deprecated — use config.yaml)",
-        "url": None,
-        "password": False,
-        "category": "setting",
-    },
+    # The gateway still falls back to these env vars for backward compatibility,
+    # so they live in _EXTRA_ENV_KEYS (known to .env sanitization/reload) but
+    # are intentionally NOT listed here: OPTIONAL_ENV_VARS feeds user-facing
+    # surfaces (dashboard keys page, setup checklists) and deprecated knobs
+    # shouldn't be offered there.
     "HERMES_PREFILL_MESSAGES_FILE": {
         "description": "Path to JSON file with ephemeral prefill messages for few-shot priming",
         "prompt": "Prefill messages file path",
@@ -4711,6 +4781,34 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             if not quiet:
                 print("  ✓ Lowered model_catalog.ttl_hours to 1 (hourly picker refresh)")
 
+    # ── Version 28 → 29: rename memory/skills write_mode → write_approval ──
+    # The tri-state write_mode (on|off|approve) was replaced by a clear boolean
+    # write_approval (default false = gate off, writes flow freely; true =
+    # require approval). Only an explicit "approve" carried gating intent, so
+    # it maps to true; everything else (on/off/unset) → false. The old
+    # "off = block all writes" mode is dropped — memory_enabled: false disables
+    # memory entirely. Only rewrite a key the user actually persisted; never
+    # invent one.
+    if current_ver < 29:
+        config = read_raw_config()
+        touched = False
+        for subsystem in ("memory", "skills"):
+            sub = config.get(subsystem)
+            if not isinstance(sub, dict) or "write_mode" not in sub:
+                continue
+            old = sub.pop("write_mode")
+            old_norm = old.strip().lower() if isinstance(old, str) else old
+            sub["write_approval"] = (old_norm == "approve")
+            config[subsystem] = sub
+            touched = True
+            results["config_added"].append(
+                f"{subsystem}.write_mode → write_approval={sub['write_approval']}"
+            )
+        if touched:
+            save_config(config)
+            if not quiet:
+                print("  ✓ Renamed write_mode → write_approval (boolean gate)")
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
     
@@ -5696,19 +5794,21 @@ def save_env_value(key: str, value: str):
             f.flush()
             os.fsync(f.fileno())
         atomic_replace(tmp_path, env_path)
-        # Restore original permissions before _secure_file may tighten them.
+        # Preserve the original file mode (e.g. 0640 for Docker volume mounts)
+        # instead of letting _secure_file unconditionally tighten to 0600.
         if original_mode is not None:
             try:
                 os.chmod(env_path, original_mode)
             except OSError:
                 pass
+        else:
+            _secure_file(env_path)
     except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
             pass
         raise
-    _secure_file(env_path)
 
     os.environ[key] = value
     invalidate_env_cache()
@@ -5753,18 +5853,22 @@ def remove_env_value(key: str) -> bool:
                 f.flush()
                 os.fsync(f.fileno())
             atomic_replace(tmp_path, env_path)
+            # Preserve the original file mode (e.g. 0640 for Docker volume
+            # mounts) instead of letting _secure_file unconditionally tighten
+            # to 0600. Mirrors save_env_value().
             if original_mode is not None:
                 try:
                     os.chmod(env_path, original_mode)
                 except OSError:
                     pass
+            else:
+                _secure_file(env_path)
         except BaseException:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
             raise
-        _secure_file(env_path)
 
     os.environ.pop(key, None)
     invalidate_env_cache()

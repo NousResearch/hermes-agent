@@ -611,6 +611,30 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
+class TestSessionStoreLookupBySessionId:
+    @pytest.fixture()
+    def store(self, tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            s = SessionStore(sessions_dir=tmp_path, config=config)
+        s._db = None
+        s._loaded = True
+        return s
+
+    def test_returns_active_entry_for_persisted_session_id(self, store):
+        source = SessionSource(
+            platform=Platform.MATRIX,
+            chat_id="!room:example.org",
+            chat_type="group",
+            user_id="@alice:example.org",
+        )
+        entry = store.get_or_create_session(source)
+
+        assert store.lookup_by_session_id(entry.session_id) is entry
+        assert store.lookup_by_session_id("missing") is None
+        assert store.lookup_by_session_id("") is None
+
+
 class TestWhatsAppSessionKeyConsistency:
     """Regression: WhatsApp session keys must collapse JID/LID aliases to a
     single stable identity for both DM chat_ids and group participant_ids."""

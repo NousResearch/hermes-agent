@@ -326,6 +326,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "MiniMax-M2",
     ],
     "anthropic": [
+        "claude-fable-5",
         "claude-opus-4-8",
         "claude-opus-4-7",
         "claude-opus-4-6",
@@ -2219,7 +2220,20 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
     if normalized == "anthropic":
         live = _fetch_anthropic_models()
         if live:
-            return live
+            # The live /v1/models dump lags newly-routed curated aliases
+            # (e.g. claude-fable-5, which is reachable on Anthropic before it
+            # is enumerated by the models endpoint). Surface curated entries
+            # first, then append any live-only models, so a fresh curated
+            # model never disappears just because the API hasn't listed it yet.
+            curated = list(_PROVIDER_MODELS.get("anthropic", []))
+            merged = list(curated)
+            merged_lower = {m.lower() for m in curated}
+            for m in live:
+                if m.lower() not in merged_lower:
+                    merged.append(m)
+                    merged_lower.add(m.lower())
+            return merged
+        return list(_PROVIDER_MODELS.get("anthropic", []))
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:

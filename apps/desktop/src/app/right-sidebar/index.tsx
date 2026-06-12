@@ -4,22 +4,22 @@ import type { ReactNode } from 'react'
 import { ErrorBoundary } from '@/components/error-boundary'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { useI18n } from '@/i18n'
 import { Loader } from '@/components/ui/loader'
 import { Tip } from '@/components/ui/tooltip'
+import { useI18n } from '@/i18n'
+import { selectDesktopPaths } from '@/lib/desktop-fs'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
 import { setCurrentSessionPreviewTarget } from '@/store/preview'
-import { $currentBranch, $currentCwd } from '@/store/session'
+import { $currentCwd } from '@/store/session'
 
 import { SidebarPanelLabel } from '../shell/sidebar-label'
 
+import { RemoteFolderPicker } from './files/remote-picker'
 import { ProjectTree } from './files/tree'
 import { useProjectTree } from './files/use-project-tree'
-import { $rightSidebarTab, $terminalTakeover, type RightSidebarTabId, setRightSidebarTab } from './store'
-import { TerminalSlot } from './terminal/persistent'
 
 interface RightSidebarPaneProps {
   onActivateFile: (path: string) => void
@@ -27,24 +27,10 @@ interface RightSidebarPaneProps {
   onChangeCwd: (path: string) => Promise<void> | void
 }
 
-interface RightSidebarTab {
-  icon: string
-  id: RightSidebarTabId
-  labelKey: 'files' | 'terminal'
-}
-
-const RIGHT_SIDEBAR_TABS: readonly RightSidebarTab[] = [
-  { id: 'files', labelKey: 'files', icon: 'list-tree' },
-  { id: 'terminal', labelKey: 'terminal', icon: 'terminal' }
-]
-
 export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd }: RightSidebarPaneProps) {
   const { t } = useI18n()
   const r = t.rightSidebar
-  const activeTab = useStore($rightSidebarTab)
-  const terminalTakeover = useStore($terminalTakeover)
   const panesFlipped = useStore($panesFlipped)
-  const currentBranch = useStore($currentBranch).trim()
   const currentCwd = useStore($currentCwd).trim()
   const hasCwd = currentCwd.length > 0
 
@@ -68,10 +54,9 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
   } = useProjectTree(currentCwd)
 
   const canCollapse = Object.values(openState).some(Boolean)
-  const effectiveTab: RightSidebarTabId = terminalTakeover ? 'files' : activeTab
 
   const chooseFolder = async () => {
-    const selected = await window.hermesDesktop?.selectPaths({
+    const selected = await selectDesktopPaths({
       defaultPath: hasCwd ? currentCwd : undefined,
       directories: true,
       multiple: false,
@@ -97,8 +82,6 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
     }
   }
 
-  const tabs = terminalTakeover ? RIGHT_SIDEBAR_TABS.filter(tab => tab.id !== 'terminal') : RIGHT_SIDEBAR_TABS
-
   return (
     <aside
       aria-label={r.aria}
@@ -109,82 +92,28 @@ export function RightSidebarPane({ onActivateFile, onActivateFolder, onChangeCwd
           : 'border-l shadow-[inset_0.0625rem_0_0_color-mix(in_srgb,white_18%,transparent)]'
       )}
     >
-      <RightSidebarChrome activeTab={effectiveTab} branch={currentBranch} tabs={tabs} />
+      <RemoteFolderPicker />
 
-      {effectiveTab === 'terminal' ? (
-        <TerminalSlot />
-      ) : (
-        <FilesystemTab
-          canCollapse={canCollapse}
-          collapseNonce={collapseNonce}
-          cwd={currentCwd}
-          cwdName={cwdName}
-          data={data}
-          error={rootError}
-          hasCwd={hasCwd}
-          loading={rootLoading}
-          onActivateFile={onActivateFile}
-          onActivateFolder={onActivateFolder}
-          onChangeFolder={chooseFolder}
-          onCollapseAll={collapseAll}
-          onLoadChildren={loadChildren}
-          onNodeOpenChange={setNodeOpen}
-          onPreviewFile={previewFile}
-          onRefresh={() => void refreshRoot()}
-          openState={openState}
-        />
-      )}
+      <FilesystemTab
+        canCollapse={canCollapse}
+        collapseNonce={collapseNonce}
+        cwd={currentCwd}
+        cwdName={cwdName}
+        data={data}
+        error={rootError}
+        hasCwd={hasCwd}
+        loading={rootLoading}
+        onActivateFile={onActivateFile}
+        onActivateFolder={onActivateFolder}
+        onChangeFolder={chooseFolder}
+        onCollapseAll={collapseAll}
+        onLoadChildren={loadChildren}
+        onNodeOpenChange={setNodeOpen}
+        onPreviewFile={previewFile}
+        onRefresh={() => void refreshRoot()}
+        openState={openState}
+      />
     </aside>
-  )
-}
-
-function RightSidebarChrome({
-  activeTab,
-  branch,
-  tabs
-}: {
-  activeTab: RightSidebarTabId
-  branch: string
-  tabs: readonly RightSidebarTab[]
-}) {
-  const { t } = useI18n()
-  const r = t.rightSidebar
-
-  return (
-    <header className="shrink-0 bg-transparent text-[0.75rem]">
-      <div className="flex items-center gap-2 px-2.5 py-1">
-        <nav aria-label={r.panelsAria} className="flex min-w-0 items-center gap-1">
-          {tabs.map(tab => {
-            const label = r[tab.labelKey]
-
-            return (
-              <Tip key={tab.id} label={label}>
-                <Button
-                  aria-label={label}
-                  aria-pressed={tab.id === activeTab}
-                  className={cn(
-                    'text-(--ui-text-tertiary) hover:bg-(--ui-control-hover-background) hover:text-foreground',
-                    tab.id === activeTab && 'bg-(--ui-control-active-background) text-foreground'
-                  )}
-                  onClick={() => setRightSidebarTab(tab.id)}
-                  size="icon-xs"
-                  variant="ghost"
-                >
-                  <Codicon name={tab.icon} size="0.875rem" />
-                </Button>
-              </Tip>
-            )
-          })}
-        </nav>
-
-        {branch && (
-          <span className="ml-auto flex min-w-0 items-center gap-1 text-[0.6875rem] text-(--ui-text-tertiary)">
-            <Codicon className="shrink-0" name="git-branch" size="0.75rem" />
-            <span className="truncate">{branch}</span>
-          </span>
-        )}
-      </div>
-    </header>
   )
 }
 

@@ -210,7 +210,16 @@ export const zhHant = defineLocale({
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
       themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
-      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`
+      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
+      installTitle: '從 VS Code 安裝',
+      installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
+      installPlaceholder: 'publisher.extension',
+      installButton: '安裝',
+      installing: '安裝中…',
+      installError: '無法安裝該主題。',
+      installed: name => `已安裝「${name}」。`,
+      removeTheme: '移除主題',
+      importedBadge: '已匯入'
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -745,6 +754,17 @@ export const zhHant = defineLocale({
     settings: '設定',
     changeTheme: '變更主題...',
     changeColorMode: '變更色彩模式...',
+    installTheme: {
+      title: '安裝主題...',
+      placeholder: '搜尋 VS Code Marketplace...',
+      loading: '正在搜尋 Marketplace...',
+      error: '無法連接到 Marketplace。',
+      empty: '沒有符合的主題。',
+      install: '安裝',
+      installing: '安裝中...',
+      installed: '已安裝',
+      installs: count => `${count} 次安裝`
+    },
     settingsFields: '設定欄位',
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
@@ -1184,6 +1204,7 @@ export const zhHant = defineLocale({
       export: '匯出',
       rename: '重新命名',
       archive: '封存',
+      newWindow: '新視窗',
       copyIdFailed: '無法複製工作階段 ID',
       actionsFor: title => `${title} 的動作`,
       sessionActions: '工作階段動作',
@@ -1565,6 +1586,8 @@ export const zhHant = defineLocale({
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '關閉命令中心',
       openCommandCenter: '開啟命令中心',
+      showTerminal: '顯示終端機',
+      hideTerminal: '隱藏終端機',
       gateway: '閘道',
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
@@ -1603,6 +1626,9 @@ export const zhHant = defineLocale({
     terminal: '終端機',
     noFolderSelected: '未選擇資料夾',
     changeCwdTitle: '變更工作目錄',
+    remotePickerTitle: '選擇遠端資料夾',
+    remotePickerDescription: '瀏覽已連線後端上的資料夾。',
+    remotePickerSelect: '選擇資料夾',
     folderTip: cwd => `${cwd} — 點擊以變更資料夾`,
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',
@@ -1620,8 +1646,7 @@ export const zhHant = defineLocale({
     tryAgain: '重試',
     loadingTree: '正在載入檔案樹',
     loadingFiles: '正在載入檔案',
-    terminalFocus: '聚焦終端機檢視',
-    terminalSplit: '返回分割檢視',
+    terminalHide: '隱藏終端機',
     addToChat: '新增至聊天'
   },
 
@@ -1727,7 +1752,8 @@ export const zhHant = defineLocale({
       restoreCheckpoint: '還原檢查點',
       restoreNext: '還原至下一個檢查點',
       goForward: '前進',
-      sendEdited: '傳送編輯後的訊息'
+      sendEdited: '傳送編輯後的訊息',
+      attachingFile: '正在附加…'
     },
     approval: {
       gatewayDisconnected: 'Hermes 閘道未連線',
@@ -1850,7 +1876,14 @@ export const zhHant = defineLocale({
     clipboard: '剪貼簿',
     noClipboardImage: '剪貼簿中沒有圖片',
     clipboardPasteFailed: '剪貼簿貼上失敗',
-    dropFiles: '拖曳檔案'
+    dropFiles: '拖曳檔案',
+    handoff: {
+      pickPlatform: '選擇目標平台',
+      success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,
+      systemNote: platform => `↻ 已移交到 ${platform} — 隨時可在此處恢復。`,
+      failed: error => `移交失敗：${error}`,
+      timedOut: '等待閘道逾時。`hermes gateway` 是否正在執行？'
+    }
   },
 
   errors: {

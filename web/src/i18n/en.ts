@@ -93,6 +93,10 @@ export const en: Translations = {
     statusOverview: "Status overview",
     system: "System",
     webUi: "Web UI",
+    managingProfile: "Managing profile",
+    currentProfileOption: "this dashboard ({name})",
+    managingProfileBanner:
+      "Managing profile \u201c{name}\u201d \u2014 config, keys, skills, MCPs, model, and new chats apply to that profile.",
   },
 
   status: {
@@ -408,6 +412,10 @@ export const en: Translations = {
     setupNeeded: "Setup needed",
     disabledForCli: "Disabled for CLI",
     more: "+{count} more",
+    profileSelector: "Profile",
+    currentProfile: "current ({name})",
+    managingProfile:
+      "Managing profile \u201c{name}\u201d — toggles apply to that profile, not this dashboard\u2019s.",
   },
 
   config: {

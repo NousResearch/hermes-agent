@@ -1,22 +1,27 @@
 import type { AppendMessage, ThreadMessage } from '@assistant-ui/react'
-import { type MutableRefObject, useCallback } from 'react'
+import { useStore } from '@nanostores/react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { getProfiles, transcribeAudio } from '@/hermes'
 import { translateNow, type Translations, useI18n } from '@/i18n'
+import { stripAnsi } from '@/lib/ansi'
 import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
 import {
-  attachmentDisplayText,
+  optimisticAttachmentRef,
   parseCommandDispatch,
   parseSlashCommand,
   pathLabel,
+  sessionTitle,
   SLASH_COMMAND_RE
 } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
+  type DesktopActionId,
+  type DesktopPickerId,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
-  isModelPickerCommand
+  resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
 import { triggerHaptic } from '@/lib/haptics'
 import { setMutableRef } from '@/lib/mutable-ref'
@@ -24,10 +29,11 @@ import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { setSessionYolo } from '@/lib/yolo-session'
 import {
   $composerAttachments,
-  addComposerAttachment,
   clearComposerAttachments,
   type ComposerAttachment,
-  terminalContextBlocksFromDraft
+  setComposerAttachmentUploadState,
+  terminalContextBlocksFromDraft,
+  updateComposerAttachment
 } from '@/store/composer'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -36,11 +42,13 @@ import {
   $busy,
   $connection,
   $messages,
+  $sessions,
   $yoloActive,
   setAwaitingResponse,
   setBusy,
   setMessages,
   setModelPickerOpen,
+  setSessionPickerOpen,
   setSessions,
   setYoloActive
 } from '@/store/session'
@@ -48,11 +56,29 @@ import {
 import type {
   ClientSessionState,
   FileAttachResponse,
+  HandoffFailResponse,
+  HandoffRequestResponse,
+  HandoffStateResponse,
   ImageAttachResponse,
   SessionSteerResponse,
   SessionTitleResponse,
   SlashExecResponse
 } from '../../types'
+
+interface HandoffResult {
+  ok: boolean
+  error?: string
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function isSessionIdCandidate(value: string): boolean {
+  const trimmed = value.trim()
+
+  return /^\d{8}_\d{6}_[A-Fa-f0-9]{6}$/.test(trimmed) || /^[A-Fa-f0-9]{32}$/.test(trimmed)
+}
 
 function blobToDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -80,6 +106,12 @@ function inlineErrorMessage(error: unknown, fallback: string): string {
   const raw = error instanceof Error ? error.message : typeof error === 'string' ? error : fallback
 
   return (raw.match(/Error invoking remote method '[^']+': Error: (.+)$/)?.[1] ?? raw).replace(/^Error:\s*/, '').trim()
+}
+
+function isSessionNotFoundError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /session not found/i.test(message)
 }
 
 function base64FromDataUrl(dataUrl: string): string {
@@ -118,6 +150,122 @@ async function readFileDataUrlForAttach(filePath: string): Promise<string | null
   return dataUrl || null
 }
 
+// The readFileDataUrl IPC base64-loads the whole file into memory and is
+// hard-capped (DATA_URL_READ_MAX_BYTES, 16 MB) in electron/hardening.cjs, which
+// rejects with a raw "file is too large (N bytes; limit M bytes)" string. In
+// remote mode every attachment's bytes go through that read, so a big file
+// surfaces that internal message verbatim in the failure toast. Translate it
+// into a friendly "too large to upload to the remote gateway" line, parsing the
+// limit out of the message so it tracks the real cap. Non-cap errors pass
+// through unchanged.
+function friendlyRemoteAttachError(err: unknown, label: string): Error {
+  const message = err instanceof Error ? err.message : String(err)
+
+  if (!/too large/i.test(message)) {
+    return err instanceof Error ? err : new Error(message)
+  }
+
+  const limitBytes = Number(message.match(/limit (\d+) bytes/)?.[1])
+  const cap = Number.isFinite(limitBytes) && limitBytes > 0 ? ` (max ${Math.floor(limitBytes / (1024 * 1024))} MB)` : ''
+
+  return new Error(`${label} is too large to upload to the remote gateway${cap}.`)
+}
+
+type GatewayRequest = <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+
+/**
+ * Stage one file/image attachment into the session workspace and return the
+ * attachment rewritten with the gateway-side ref. Images upload their bytes in
+ * remote mode (so vision works) and pass the path locally; non-image files
+ * upload bytes remotely and pass the path locally. Throws on failure so callers
+ * can surface an error. Shared by submit-time sync, the eager drop-time upload,
+ * and the message-edit composer drop — keep them in lockstep.
+ */
+export async function uploadComposerAttachment(
+  attachment: ComposerAttachment,
+  opts: { remote: boolean; requestGateway: GatewayRequest; sessionId: string }
+): Promise<ComposerAttachment> {
+  const { remote, requestGateway, sessionId } = opts
+  const path = attachment.path ?? ''
+  const label = attachment.label || pathLabel(path)
+
+  if (attachment.kind === 'image') {
+    let result: ImageAttachResponse
+
+    if (remote) {
+      let payload: Awaited<ReturnType<typeof readImageForRemoteAttach>>
+
+      try {
+        payload = await readImageForRemoteAttach(path)
+      } catch (err) {
+        throw friendlyRemoteAttachError(err, label)
+      }
+
+      if (!payload) {
+        throw new Error(`Could not read ${label}`)
+      }
+
+      result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
+        session_id: sessionId,
+        content_base64: payload.contentBase64,
+        filename: payload.filename
+      })
+    } else {
+      result = await requestGateway<ImageAttachResponse>('image.attach', {
+        path,
+        session_id: sessionId
+      })
+    }
+
+    if (!result.attached) {
+      throw new Error(result.message || `Could not attach ${label}`)
+    }
+
+    const attachedPath = result.path || path
+
+    return {
+      ...attachment,
+      attachedSessionId: sessionId,
+      label: attachedPath ? pathLabel(attachedPath) : attachment.label,
+      path: attachedPath,
+      uploadState: undefined
+    }
+  }
+
+  // Non-image file.
+  let dataUrl: string | null = null
+
+  if (remote) {
+    try {
+      dataUrl = await readFileDataUrlForAttach(path)
+    } catch (err) {
+      throw friendlyRemoteAttachError(err, label)
+    }
+
+    if (!dataUrl) {
+      throw new Error(`Could not read ${label}`)
+    }
+  }
+
+  const result = await requestGateway<FileAttachResponse>('file.attach', {
+    name: label,
+    path,
+    session_id: sessionId,
+    ...(dataUrl ? { data_url: dataUrl } : {})
+  })
+
+  if (!result.attached || !result.ref_text) {
+    throw new Error(result.message || `Could not attach ${label}`)
+  }
+
+  return {
+    ...attachment,
+    attachedSessionId: sessionId,
+    refText: result.ref_text,
+    uploadState: undefined
+  }
+}
+
 interface PromptActionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
@@ -127,6 +275,7 @@ interface PromptActionsOptions {
   handleSkinCommand: (arg: string) => string
   refreshSessions: () => Promise<void>
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  resumeStoredSession: (storedSessionId: string) => Promise<void> | void
   selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
   sttEnabled: boolean
@@ -140,6 +289,15 @@ interface PromptActionsOptions {
 interface SubmitTextOptions {
   attachments?: ComposerAttachment[]
   fromQueue?: boolean
+}
+
+/** Everything a slash handler needs about the invocation it's serving. */
+interface SlashActionCtx {
+  arg: string
+  command: string
+  name: string
+  recordInput: boolean
+  sessionHint?: string
 }
 
 function renderCommandsCatalog(catalog: CommandsCatalogLike, copy: Translations['desktop']): string {
@@ -192,6 +350,7 @@ export function usePromptActions({
   handleSkinCommand,
   refreshSessions,
   requestGateway,
+  resumeStoredSession,
   selectedStoredSessionIdRef,
   startFreshSessionDraft,
   sttEnabled,
@@ -202,7 +361,11 @@ export function usePromptActions({
 
   const appendSessionTextMessage = useCallback(
     (sessionId: string, role: ChatMessage['role'], text: string) => {
-      const body = text.trim()
+      // Strip ANSI: slash-command output from the backend worker carries SGR
+      // color codes (e.g. "Unknown command" in red). The ESC byte is invisible
+      // in the chat panel, so without this the `[1;31m…[0m` payload leaks as
+      // literal text.
+      const body = stripAnsi(text).trim()
 
       if (!body) {
         return
@@ -227,6 +390,11 @@ export function usePromptActions({
     [selectedStoredSessionIdRef, updateSessionState]
   )
 
+  // In-flight drop-time eager uploads, keyed by attachment id. Submit joins
+  // these before re-uploading so a drop-then-immediately-Enter can't fire
+  // file.attach twice and stage duplicate copies on the gateway.
+  const eagerUploadInFlight = useRef<Map<string, Promise<void>>>(new Map())
+
   const syncAttachmentsForSubmit = useCallback(
     async (
       sessionId: string,
@@ -237,97 +405,40 @@ export function usePromptActions({
       const remote = $connection.get()?.mode === 'remote'
       const synced: ComposerAttachment[] = []
 
-      for (const attachment of attachments) {
+      for (const original of attachments) {
+        let attachment = original
+
+        // Join a drop-time eager upload still in flight for this attachment
+        // before deciding anything — otherwise submit and the eager task both
+        // call file.attach and stage duplicate files. After it settles, take the
+        // store's updated copy (its gateway ref, or its failure) over the stale
+        // pre-upload snapshot.
+        const inFlight = eagerUploadInFlight.current.get(attachment.id)
+
+        if (inFlight) {
+          await inFlight
+          attachment = $composerAttachments.get().find(item => item.id === attachment.id) ?? attachment
+        }
+
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
+        // A drop-time eager upload may already have staged this one (matching
+        // attachedSessionId) — don't re-upload it.
         if (!attachment.path || attachment.attachedSessionId === sessionId) {
           synced.push(attachment)
+
           continue
         }
 
-        if (attachment.kind === 'image') {
-          let result: ImageAttachResponse
+        if (attachment.kind === 'image' || attachment.kind === 'file') {
+          const nextAttachment = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
 
-          if (remote) {
-            // The gateway is on another machine — it can't read attachment.path
-            // (a path on THIS disk). Upload the bytes via image.attach_bytes.
-            const payload = await readImageForRemoteAttach(attachment.path)
-
-            if (!payload) {
-              const label = attachment.label || pathLabel(attachment.path)
-              throw new Error(`Could not read ${label}`)
-            }
-
-            result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
-              session_id: sessionId,
-              content_base64: payload.contentBase64,
-              filename: payload.filename
-            })
-          } else {
-            result = await requestGateway<ImageAttachResponse>('image.attach', {
-              session_id: sessionId,
-              path: attachment.path
-            })
-          }
-
-          if (!result.attached) {
-            const label = attachment.label || pathLabel(attachment.path)
-            throw new Error(result.message || `Could not attach ${label}`)
-          }
-
-          const attachedPath = result.path || attachment.path
-          const nextAttachment: ComposerAttachment = {
-            ...attachment,
-            id: attachment.id,
-            label: attachedPath ? pathLabel(attachedPath) : attachment.label,
-            path: attachedPath,
-            attachedSessionId: sessionId
-          }
-
+          // Update-only: never resurrect a chip the user removed mid-upload.
           if (updateComposerAttachments) {
-            addComposerAttachment(nextAttachment)
+            updateComposerAttachment(nextAttachment)
           }
 
           synced.push(nextAttachment)
-          continue
-        }
 
-        if (attachment.kind === 'file') {
-          // Non-image file refs are @file: paths the gateway reads with its file
-          // tools. On a remote gateway the desktop path doesn't exist there, so
-          // upload the bytes; the gateway stages them into the session workspace
-          // and hands back a workspace-relative ref that actually resolves.
-          // Local mode can pass the path directly (gateway shares this disk).
-          const dataUrl = remote ? await readFileDataUrlForAttach(attachment.path) : null
-
-          if (remote && !dataUrl) {
-            const label = attachment.label || pathLabel(attachment.path)
-            throw new Error(`Could not read ${label}`)
-          }
-
-          const result = await requestGateway<FileAttachResponse>('file.attach', {
-            session_id: sessionId,
-            path: attachment.path,
-            name: attachment.label || pathLabel(attachment.path),
-            ...(dataUrl ? { data_url: dataUrl } : {})
-          })
-
-          if (!result.attached || !result.ref_text) {
-            const label = attachment.label || pathLabel(attachment.path)
-            throw new Error(result.message || `Could not attach ${label}`)
-          }
-
-          const nextAttachment: ComposerAttachment = {
-            ...attachment,
-            id: attachment.id,
-            refText: result.ref_text,
-            attachedSessionId: sessionId
-          }
-
-          if (updateComposerAttachments) {
-            addComposerAttachment(nextAttachment)
-          }
-
-          synced.push(nextAttachment)
           continue
         }
 
@@ -338,6 +449,64 @@ export function usePromptActions({
     },
     [requestGateway]
   )
+
+  // Stage a freshly dropped file as soon as it lands (when a session already
+  // exists), so the upload runs while the user is still typing rather than
+  // stalling the send. The card shows a spinner via `uploadState`; on success
+  // the chip carries its gateway-side ref so submit skips re-uploading.
+  //
+  // Images are intentionally NOT eager-uploaded: attachImagePath adds the chip
+  // and then fills in `previewUrl` (the base64 thumbnail) on a second tick, so
+  // an eager upload would race that write — clobbering the thumbnail and
+  // swapping `path` to a gateway path the local preview can't read. Images are
+  // small and still byte-upload at submit via image.attach_bytes.
+  const eagerlyUploadAttachment = useCallback(
+    async (sessionId: string, attachment: ComposerAttachment) => {
+      const remote = $connection.get()?.mode === 'remote'
+
+      setComposerAttachmentUploadState(attachment.id, 'uploading')
+
+      try {
+        // Update-only: if the user removed the chip while this was uploading,
+        // don't resurrect it — just drop the staged result on the floor.
+        updateComposerAttachment(await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }))
+      } catch (err) {
+        // Leave the chip in place so submit-time sync can retry (or the user can
+        // remove it) and flag the card; also toast so a hard failure (unreadable
+        // file, gateway perms) isn't swallowed while the user keeps typing.
+        setComposerAttachmentUploadState(attachment.id, 'error')
+        notifyError(err, copy.dropFiles)
+      }
+    },
+    [copy.dropFiles, requestGateway]
+  )
+
+  const composerAttachments = useStore($composerAttachments)
+
+  useEffect(() => {
+    if (!activeSessionId) {
+      return
+    }
+
+    for (const attachment of composerAttachments) {
+      const needsUpload =
+        attachment.kind === 'file' &&
+        Boolean(attachment.path) &&
+        !attachment.attachedSessionId &&
+        !attachment.uploadState &&
+        !eagerUploadInFlight.current.has(attachment.id)
+
+      if (!needsUpload) {
+        continue
+      }
+
+      const task = eagerlyUploadAttachment(activeSessionId, attachment).finally(() =>
+        eagerUploadInFlight.current.delete(attachment.id)
+      )
+
+      eagerUploadInFlight.current.set(attachment.id, task)
+    }
+  }, [activeSessionId, composerAttachments, eagerlyUploadAttachment])
 
   const submitPromptText = useCallback(
     async (rawText: string, options?: SubmitTextOptions) => {
@@ -351,7 +520,9 @@ export function usePromptActions({
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
       // workspace-relative paths the remote gateway can resolve). Seed the
       // optimistic message with the pre-sync refs, then rewrite once synced.
-      let attachmentRefs = attachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
+      // Images use their base64 preview so the thumbnail renders inline without
+      // a (remote-mode 403-prone) /api/media fetch — see optimisticAttachmentRef.
+      let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
       const buildContextText = (atts: ComposerAttachment[]): string => {
         const contextRefs = atts
           .map(a => a.refText)
@@ -483,7 +654,8 @@ export function usePromptActions({
         })
         // Rewrite the optimistic message + prompt text with the synced refs so
         // the gateway receives @file: paths that resolve in its workspace.
-        attachmentRefs = syncedAttachments.map(attachmentDisplayText).filter((r): r is string => Boolean(r))
+        // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
+        attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(sessionId)
         const text = buildContextText(syncedAttachments)
 
@@ -495,9 +667,7 @@ export function usePromptActions({
         try {
           await requestGateway('prompt.submit', { session_id: sessionId, text })
         } catch (firstErr) {
-          const firstMsg = firstErr instanceof Error ? firstErr.message : String(firstErr)
-
-          if (/session not found/i.test(firstMsg) && selectedStoredSessionIdRef.current) {
+          if (isSessionNotFoundError(firstErr) && selectedStoredSessionIdRef.current) {
             // Re-register the session in the gateway and get a fresh live ID.
             const resumed = await requestGateway<{ session_id: string }>('session.resume', {
               session_id: selectedStoredSessionIdRef.current
@@ -569,230 +739,124 @@ export function usePromptActions({
     ]
   )
 
+  // Queue a handoff of this session to a messaging platform and watch it to
+  // a terminal state. We only write the request through the gateway; the
+  // separate `hermes gateway` process performs the actual transfer, so we
+  // poll `handoff.state` (mirror of the CLI's block-poll) for the result.
+  const handoffSession = useCallback(
+    async (
+      platform: string,
+      options?: { onProgress?: (state: string) => void; sessionId?: string }
+    ): Promise<HandoffResult> => {
+      const sid = options?.sessionId || activeSessionIdRef.current
+
+      if (!sid) {
+        return { error: copy.sessionUnavailable, ok: false }
+      }
+
+      const target = platform.trim().toLowerCase()
+
+      if (!target) {
+        return { error: copy.handoff.failed(''), ok: false }
+      }
+
+      try {
+        options?.onProgress?.('pending')
+        await requestGateway<HandoffRequestResponse>('handoff.request', {
+          platform: target,
+          session_id: sid
+        })
+      } catch (err) {
+        return { error: inlineErrorMessage(err, copy.handoff.failed(target)), ok: false }
+      }
+
+      const deadline = Date.now() + 60_000
+      let lastState = 'pending'
+
+      while (Date.now() < deadline) {
+        await delay(800)
+
+        let record: HandoffStateResponse
+
+        try {
+          record = await requestGateway<HandoffStateResponse>('handoff.state', { session_id: sid })
+        } catch {
+          continue
+        }
+
+        const state = record.state || 'pending'
+
+        if (state !== lastState) {
+          options?.onProgress?.(state)
+          lastState = state
+        }
+
+        if (state === 'completed') {
+          appendSessionTextMessage(sid, 'system', copy.handoff.systemNote(target))
+          notify({ kind: 'success', message: copy.handoff.success(target) })
+
+          return { ok: true }
+        }
+
+        if (state === 'failed') {
+          return { error: record.error || copy.handoff.failed(target), ok: false }
+        }
+      }
+
+      const cleanup = await requestGateway<HandoffFailResponse>('handoff.fail', {
+        error: copy.handoff.timedOut,
+        session_id: sid
+      }).catch(() => null)
+
+      if (cleanup?.state === 'completed') {
+        appendSessionTextMessage(sid, 'system', copy.handoff.systemNote(target))
+        notify({ kind: 'success', message: copy.handoff.success(target) })
+
+        return { ok: true }
+      }
+
+      return { error: copy.handoff.timedOut, ok: false }
+    },
+    [activeSessionIdRef, appendSessionTextMessage, copy, requestGateway]
+  )
+
   const executeSlashCommand = useCallback(
     async (rawCommand: string, options?: { sessionId?: string; recordInput?: boolean }) => {
-      const runSlash = async (commandText: string, sessionHint?: string, recordInput = true): Promise<void> => {
-        const command = commandText.trim()
-        const { name, arg } = parseSlashCommand(command)
-        const normalizedName = name.toLowerCase()
+      const ensureSessionId = async (sessionHint?: string) =>
+        sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
 
-        if (!name) {
-          const sessionId = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
-
-          if (sessionId) {
-            appendSessionTextMessage(sessionId, 'system', copy.emptySlashCommand)
-          }
-
-          return
-        }
-
-        if (normalizedName === 'new' || normalizedName === 'reset') {
-          startFreshSessionDraft()
-
-          return
-        }
-
-        if (normalizedName === 'branch' || normalizedName === 'fork') {
-          await branchCurrentSession()
-
-          return
-        }
-
-        // /yolo maps to the status-bar YOLO control — a per-session approval
-        // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
-        // it locally; the session-create path applies it on the first message.
-        if (normalizedName === 'yolo') {
-          const sid = sessionHint || activeSessionIdRef.current
-          const next = !$yoloActive.get()
-
-          if (!sid) {
-            setYoloActive(next)
-            notify({ kind: 'success', message: next ? copy.yoloArmed : copy.yoloOff })
-
-            return
-          }
-
-          try {
-            const active = await setSessionYolo(requestGateway, sid, next)
-            appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
-          } catch {
-            notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
-          }
-
-          return
-        }
-
-        // /model opens the desktop model picker overlay — the same full
-        // provider+model picker reachable from the status-bar model button —
-        // instead of the headless prompt_toolkit modal the slash worker can't
-        // render. With explicit args (`/model <name> [--provider ...]`) run the
-        // switch directly through slash.exec so power users can still type it.
-        if (isModelPickerCommand(`/${normalizedName}`)) {
-          if (!arg.trim()) {
-            setModelPickerOpen(true)
-
-            return
-          }
-
-          const sid = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
-
-          if (!sid) {
-            notify({ kind: 'error', title: 'Session unavailable', message: 'Could not create a new session' })
-
-            return
-          }
-
-          try {
-            const result = await requestGateway<SlashExecResponse>('slash.exec', {
-              session_id: sid,
-              command: command.replace(/^\/+/, '')
-            })
-
-            const body = result?.output || `/${name}: model switched`
-            appendSessionTextMessage(
-              sid,
-              'system',
-              recordInput ? slashStatusText(command, body) : body
-            )
-          } catch (err) {
-            appendSessionTextMessage(
-              sid,
-              'system',
-              `error: ${err instanceof Error ? err.message : String(err)}`
-            )
-          }
-
-          return
-        }
-
-        if (normalizedName === 'skin' && !sessionHint && !activeSessionIdRef.current) {
-          notify({ kind: 'success', message: handleSkinCommand(arg) })
-
-          return
-        }
-
-        // /profile selects which profile new chats open in — no app relaunch.
-        // A profile is per-session now, so an existing thread can't change its
-        // profile mid-stream; `/profile <name>` instead points the next new chat
-        // (and the current empty draft) at that profile's backend.
-        if (normalizedName === 'profile') {
-          const target = arg.trim()
-          const current = normalizeProfileKey($activeGatewayProfile.get())
-
-          if (!target) {
-            notify({
-              kind: 'success',
-              message: copy.profileStatus(current)
-            })
-
-            return
-          }
-
-          try {
-            const { profiles } = await getProfiles()
-            const match = profiles.find(profile => profile.name === target)
-
-            if (!match) {
-              notify({
-                kind: 'error',
-                title: copy.unknownProfile,
-                message: copy.noProfileNamed(target, profiles.map(profile => profile.name).join(', '))
-              })
-
-              return
-            }
-
-            const key = normalizeProfileKey(match.name)
-
-            $newChatProfile.set(key)
-            // Swap the live gateway now so an empty draft sends into this
-            // profile immediately; an existing thread keeps its own profile.
-            await ensureGatewayProfile(key)
-            notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
-          } catch (err) {
-            notifyError(err, copy.setProfileFailed)
-          }
-
-          return
-        }
-
-        const sessionId = sessionHint || activeSessionIdRef.current || (await createBackendSessionForSend())
+      // Resolve the target session plus a writer for inline slash output, or
+      // notify + return null when none can be created. Folds the ensure / bail /
+      // build-renderSlashOutput boilerplate every exec-style handler repeats.
+      const withSlashOutput = async (
+        ctx: SlashActionCtx
+      ): Promise<{ render: (text: string) => void; sessionId: string } | null> => {
+        const sessionId = await ensureSessionId(ctx.sessionHint)
 
         if (!sessionId) {
-          notify({
-            kind: 'error',
-            title: copy.sessionUnavailable,
-            message: copy.createSessionFailed
-          })
+          notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
 
+          return null
+        }
+
+        const render = (text: string) =>
+          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(ctx.command, text) : text)
+
+        return { render, sessionId }
+      }
+
+      // `exec` commands (and unknown skill / quick commands the backend owns)
+      // run on the gateway and render their text output inline. This is the only
+      // path that talks to slash.exec / command.dispatch.
+      async function runExec(ctx: SlashActionCtx): Promise<void> {
+        const { arg, command, name } = ctx
+        const resolved = await withSlashOutput(ctx)
+
+        if (!resolved) {
           return
         }
 
-        const renderSlashOutput = (text: string) =>
-          appendSessionTextMessage(sessionId, 'system', recordInput ? slashStatusText(command, text) : text)
-
-        // /title <name> renames the session. Route through the gateway's
-        // `session.title` RPC — the same path the TUI uses — NOT the REST
-        // renameSession endpoint and NOT the slash worker.
-        //
-        // Why not the slash worker: it's a separate HermesCLI subprocess whose
-        // SQLite write to the shared state.db can silently fail (notably on
-        // Windows), and it never refreshes the sidebar.
-        //
-        // Why not REST renameSession: `sessionId` here is the *runtime* session
-        // id returned by session.create — it is NOT the stored DB `sessions.id`,
-        // and session.create deliberately does not persist a DB row until the
-        // first turn. The REST PATCH endpoint resolves against the sessions
-        // table, so a runtime id (or a brand-new, not-yet-persisted session)
-        // 404s with "Session not found" on every platform. See #38508 / #38576.
-        //
-        // session.title maps the runtime id to the in-memory session, writes
-        // through the gateway's own DB connection, and QUEUES the title
-        // (`pending: true`) when the row isn't persisted yet — so it works for a
-        // fresh chat too. refreshSessions() then pulls the authoritative title
-        // back into the sidebar. A bare `/title` (no arg) still falls through to
-        // the worker to display the current title.
-        if (normalizedName === 'title' && arg) {
-          try {
-            const result = await requestGateway<SessionTitleResponse>('session.title', {
-              session_id: sessionId,
-              title: arg
-            })
-
-            const finalTitle = (result?.title || arg).trim()
-            const queued = result?.pending === true
-
-            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
-            await refreshSessions().catch(() => undefined)
-            renderSlashOutput(
-              finalTitle
-                ? `Session title set: ${finalTitle}${queued ? ' (queued while session initializes)' : ''}`
-                : 'Session title cleared.'
-            )
-          } catch (err) {
-            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
-          }
-
-          return
-        }
-
-        if (normalizedName === 'skin') {
-          renderSlashOutput(handleSkinCommand(arg))
-
-          return
-        }
-
-        if (name === 'help' || name === 'commands') {
-          try {
-            const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
-
-            renderSlashOutput(renderCommandsCatalog(catalog, copy))
-          } catch (err) {
-            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
-          }
-
-          return
-        }
+        const { render: renderSlashOutput, sessionId } = resolved
 
         if (!isDesktopSlashCommand(name)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
@@ -816,11 +880,7 @@ export function usePromptActions({
 
         try {
           const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', {
-              session_id: sessionId,
-              name,
-              arg
-            })
+            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
           )
 
           if (!dispatch) {
@@ -867,6 +927,261 @@ export function usePromptActions({
         }
       }
 
+      // One handler per `action` command. Adding a desktop-native command is a
+      // registry row in desktop-slash-commands.ts plus an entry here — never a
+      // new branch in a dispatch ladder.
+      const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
+        new: async () => {
+          startFreshSessionDraft()
+        },
+        branch: async () => {
+          await branchCurrentSession()
+        },
+        // /yolo maps to the status-bar YOLO control — a per-session approval
+        // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
+        // it locally; the session-create path applies it on the first message.
+        yolo: async ({ sessionHint }) => {
+          const sid = sessionHint || activeSessionIdRef.current
+          const next = !$yoloActive.get()
+
+          if (!sid) {
+            setYoloActive(next)
+            notify({ kind: 'success', message: next ? copy.yoloArmed : copy.yoloOff })
+
+            return
+          }
+
+          try {
+            const active = await setSessionYolo(requestGateway, sid, next)
+            appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
+          } catch {
+            notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
+          }
+        },
+        // /handoff hands this session to a messaging platform. The platform is
+        // completed inline in the slash popover (backend _handoff_completions),
+        // so there is no overlay: `/handoff <platform>` runs the desktop's own
+        // handoff RPC. cli_only on the backend, so it must not reach slash.exec.
+        handoff: async ({ arg, command, recordInput, sessionHint }) => {
+          const platform = arg.trim()
+
+          if (!platform) {
+            notify({ kind: 'success', message: copy.handoff.pickPlatform })
+
+            return
+          }
+
+          const sid = sessionHint || activeSessionIdRef.current
+
+          if (!sid) {
+            notify({ kind: 'error', title: copy.sessionUnavailable, message: copy.createSessionFailed })
+
+            return
+          }
+
+          const result = await handoffSession(platform, { sessionId: sid })
+
+          if (!result.ok && result.error) {
+            appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, result.error) : result.error)
+          }
+        },
+        // /profile selects which profile new chats open in — no app relaunch.
+        // A profile is per-session now, so an existing thread can't change its
+        // profile mid-stream; `/profile <name>` points the next new chat (and
+        // the current empty draft) at that profile's backend.
+        profile: async ({ arg }) => {
+          const target = arg.trim()
+          const current = normalizeProfileKey($activeGatewayProfile.get())
+
+          if (!target) {
+            notify({ kind: 'success', message: copy.profileStatus(current) })
+
+            return
+          }
+
+          try {
+            const { profiles } = await getProfiles()
+            const match = profiles.find(profile => profile.name === target)
+
+            if (!match) {
+              notify({
+                kind: 'error',
+                title: copy.unknownProfile,
+                message: copy.noProfileNamed(target, profiles.map(profile => profile.name).join(', '))
+              })
+
+              return
+            }
+
+            const key = normalizeProfileKey(match.name)
+
+            $newChatProfile.set(key)
+            await ensureGatewayProfile(key)
+            notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
+          } catch (err) {
+            notifyError(err, copy.setProfileFailed)
+          }
+        },
+        skin: async ({ arg, command, recordInput, sessionHint }) => {
+          const sid = sessionHint || activeSessionIdRef.current
+          const message = handleSkinCommand(arg)
+
+          // No session to print into yet — surface it as a toast instead of
+          // spinning up a backend session just to change the theme.
+          if (!sid) {
+            notify({ kind: 'success', message })
+
+            return
+          }
+
+          appendSessionTextMessage(sid, 'system', recordInput ? slashStatusText(command, message) : message)
+        },
+        // /title <name> renames via the gateway's session.title RPC — the same
+        // path the TUI uses, NOT REST renameSession (which 404s on runtime ids)
+        // nor the slash worker (whose DB write can silently fail). Bare /title
+        // shows the current title, which the worker owns, so delegate to exec.
+        title: async ctx => {
+          if (!ctx.arg) {
+            await runExec(ctx)
+
+            return
+          }
+
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+          const { arg } = ctx
+
+          try {
+            const result = await requestGateway<SessionTitleResponse>('session.title', {
+              session_id: sessionId,
+              title: arg
+            })
+
+            const finalTitle = (result?.title || arg).trim()
+            const queued = result?.pending === true
+
+            setSessions(prev => prev.map(s => (s.id === sessionId ? { ...s, title: finalTitle || null } : s)))
+            await refreshSessions().catch(() => undefined)
+            renderSlashOutput(
+              finalTitle
+                ? `Session title set: ${finalTitle}${queued ? ' (queued while session initializes)' : ''}`
+                : 'Session title cleared.'
+            )
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
+        help: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          try {
+            const catalog = await requestGateway<CommandsCatalogLike>('commands.catalog', { session_id: sessionId })
+
+            renderSlashOutput(renderCommandsCatalog(catalog, copy))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        }
+      }
+
+      // Picker commands open a desktop overlay; a typed arg is resolved by that
+      // picker so the command never dead-ends or falls through to the backend.
+      const openPicker = async (pickerId: DesktopPickerId, ctx: SlashActionCtx): Promise<void> => {
+        if (pickerId === 'model') {
+          if (!ctx.arg.trim()) {
+            setModelPickerOpen(true)
+
+            return
+          }
+
+          // Power users can still type `/model <name>` — run it on the backend.
+          await runExec(ctx)
+
+          return
+        }
+
+        // session picker — /resume, /sessions, /switch
+        const query = ctx.arg.trim()
+
+        if (!query) {
+          setSessionPickerOpen(true)
+
+          return
+        }
+
+        const sessions = $sessions.get()
+        const lower = query.toLowerCase()
+
+        const match =
+          sessions.find(session => session.id === query) ||
+          sessions.find(session => sessionTitle(session).toLowerCase().includes(lower)) ||
+          sessions.find(session => (session.preview ?? '').toLowerCase().includes(lower))
+
+        if (!match) {
+          if (isSessionIdCandidate(query)) {
+            await resumeStoredSession(query)
+
+            return
+          }
+
+          notify({ kind: 'error', message: copy.resumeFailed })
+
+          return
+        }
+
+        await resumeStoredSession(match.id)
+      }
+
+      // The whole dispatcher: resolve the command's desktop surface, then act on
+      // its kind. No per-command ladder — behavior lives in the registry.
+      async function runSlash(commandText: string, sessionHint?: string, recordInput = true): Promise<void> {
+        const command = commandText.trim()
+        const { name, arg } = parseSlashCommand(command)
+
+        if (!name) {
+          const sessionId = await ensureSessionId(sessionHint)
+
+          if (sessionId) {
+            appendSessionTextMessage(sessionId, 'system', copy.emptySlashCommand)
+          }
+
+          return
+        }
+
+        const ctx: SlashActionCtx = { arg, command, name, recordInput, sessionHint }
+        const surface = resolveDesktopCommand(`/${name}`)?.surface
+
+        switch (surface?.kind) {
+          case 'unavailable': {
+            const resolved = await withSlashOutput(ctx)
+            resolved?.render(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
+
+            return
+          }
+
+          case 'picker':
+            return openPicker(surface.picker, ctx)
+
+          case 'action':
+            return actionHandlers[surface.action](ctx)
+
+          default:
+            // exec spec, or an unknown skill / quick command the backend owns.
+            return runExec(ctx)
+        }
+      }
+
       await runSlash(rawCommand, options?.sessionId, options?.recordInput ?? true)
     },
     [
@@ -877,8 +1192,10 @@ export function usePromptActions({
       copy,
       createBackendSessionForSend,
       handleSkinCommand,
+      handoffSession,
       refreshSessions,
       requestGateway,
+      resumeStoredSession,
       startFreshSessionDraft,
       submitPromptText
     ]
@@ -960,11 +1277,39 @@ export function usePromptActions({
     try {
       await requestGateway('session.interrupt', { session_id: sessionId })
     } catch (err) {
+      let stopError = err
+
+      if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
+        try {
+          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
+            session_id: selectedStoredSessionIdRef.current
+          })
+          const recoveredId = resumed?.session_id
+
+          if (recoveredId) {
+            activeSessionIdRef.current = recoveredId
+            await requestGateway('session.interrupt', { session_id: recoveredId })
+
+            return
+          }
+        } catch (resumeErr) {
+          stopError = resumeErr
+        }
+      }
+
       setMutableRef(busyRef, false)
       setBusy(false)
-      notifyError(err, copy.stopFailed)
+      notifyError(stopError, copy.stopFailed)
     }
-  }, [activeSessionId, activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, updateSessionState])
+  }, [
+    activeSessionId,
+    activeSessionIdRef,
+    busyRef,
+    copy.stopFailed,
+    requestGateway,
+    selectedStoredSessionIdRef,
+    updateSessionState
+  ])
 
   // Steer = nudge the live turn without interrupting: the gateway appends the
   // text to the next tool result so the model reads it on its next iteration
@@ -1187,6 +1532,7 @@ export function usePromptActions({
     cancelRun,
     editMessage,
     handleThreadMessagesChange,
+    handoffSession,
     reloadFromMessage,
     steerPrompt,
     submitText,

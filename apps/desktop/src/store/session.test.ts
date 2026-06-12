@@ -3,13 +3,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
+  $activeSessionId,
   $attentionSessionIds,
+  $connection,
+  $currentCwd,
   $workingSessionIds,
+  applyConfiguredDefaultProjectDir,
   getRecentlySettledSessionIds,
   mergeSessionPage,
   sessionPinId,
+  setCurrentCwd,
   setSessionAttention,
-  setSessionWorking
+  setSessionWorking,
+  workspaceCwdForNewSession
 } from './session'
 
 const session = (over: Partial<SessionInfo>): SessionInfo => ({
@@ -129,12 +135,111 @@ describe('mergeSessionPage', () => {
   it('keeps a pinned session matched by its lineage root after compression', () => {
     // The pin is stored on the lineage-root id, but the loaded row surfaces
     // under its live compression tip. Matching on _lineage_root_id keeps it.
-    const previous = [session({ id: 'tip', _lineage_root_id: 'root' })]
-    const incoming = [session({ id: 'other' })]
+    const previous = [session({ id: 'tip', _lineage_root_id: 'root' })] as SessionInfo[]
+    const incoming = [session({ id: 'other' })] as SessionInfo[]
 
     const merged = mergeSessionPage(previous, incoming, ['root'])
 
     expect(merged.map(s => s.id)).toEqual(['tip', 'other'])
+  })
+
+  it('evicts an old compression tip when the incoming page has the new tip from the same lineage', () => {
+    // Repro of #43483: after auto-compression rotates the tip (#4 → #5),
+    // the sidebar showed both the old tip and the new tip as separate rows.
+    // The old tip must be evicted because its lineage key matches the incoming
+    // new tip's lineage key.
+    const previous = [
+      session({ id: 'tip-4', _lineage_root_id: 'root' }),
+      session({ id: 'other' }),
+    ] as SessionInfo[]
+    const incoming = [
+      session({ id: 'tip-5', _lineage_root_id: 'root' }),
+    ] as SessionInfo[]
+
+    // 'tip-4' is in the keep set (e.g. it was the active/working session),
+    // but should still be evicted because the incoming page carries the same
+    // lineage under a new tip id.
+    const merged = mergeSessionPage(previous, incoming, ['tip-4'])
+
+    expect(merged.map(s => s.id)).toEqual(['tip-5'])
+    // The new tip comes from the server payload.
+    expect(merged.find(s => s.id === 'tip-5')?._lineage_root_id).toBe('root')
+  })
+
+  it('preserves an unrelated pinned session even when lineage dedup is active', () => {
+    // Regression guard: lineage dedup must not accidentally evict sessions
+    // from a different lineage that happen to be in the keep set.
+    const previous = [
+      session({ id: 'a-old', _lineage_root_id: 'lineage-a' }),
+      session({ id: 'b', _lineage_root_id: 'lineage-b' }),
+    ] as SessionInfo[]
+    const incoming = [
+      session({ id: 'a-new', _lineage_root_id: 'lineage-a' }),
+    ] as SessionInfo[]
+
+    const merged = mergeSessionPage(previous, incoming, ['b'])
+
+    expect(merged.map(s => s.id)).toEqual(['b', 'a-new'])
+  })
+})
+
+describe('workspaceCwdForNewSession', () => {
+  afterEach(() => {
+    applyConfiguredDefaultProjectDir(null)
+    $connection.set(null)
+    $currentCwd.set('')
+    $activeSessionId.set(null)
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-a.default')
+    window.localStorage.removeItem('hermes.desktop.workspace-cwd.remote.http%3A%2F%2Fbackend-b.default')
+  })
+
+  it('prefers the configured default over the sticky remembered workspace', () => {
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+  })
+
+  it('falls back to the remembered workspace when no configured default is set', () => {
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/home/user/sticky')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/sticky')
+  })
+
+  it('falls back to the live cwd when neither configured nor remembered values exist', () => {
+    $currentCwd.set('/home/user/live')
+
+    expect(workspaceCwdForNewSession()).toBe('/home/user/live')
+  })
+
+  it('does not rewrite the live cwd while a session is active', () => {
+    $activeSessionId.set('sess-1')
+    $currentCwd.set('/live/session/path')
+    applyConfiguredDefaultProjectDir('/home/user/configured')
+
+    expect($currentCwd.get()).toBe('/live/session/path')
+    expect(workspaceCwdForNewSession()).toBe('/home/user/configured')
+  })
+
+  it('keeps remote workspace memory separate from local and other remotes', () => {
+    window.localStorage.setItem('hermes.desktop.workspace-cwd', '/local/project')
+    $currentCwd.set('/live/session/path')
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+
+    expect(workspaceCwdForNewSession()).toBe('')
+
+    setCurrentCwd('/backend/project-a')
+    expect(workspaceCwdForNewSession()).toBe('/backend/project-a')
+
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(workspaceCwdForNewSession()).toBe('')
+
+    setCurrentCwd('/backend/project-b')
+    expect(workspaceCwdForNewSession()).toBe('/backend/project-b')
+
+    $connection.set(null)
+    expect(workspaceCwdForNewSession()).toBe('/local/project')
   })
 })
 

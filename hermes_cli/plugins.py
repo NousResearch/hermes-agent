@@ -1069,8 +1069,21 @@ class PluginManager:
             self._plugin_skills.clear()
             self._aux_tasks.clear()
             self._context_engine = None
+        # Set the flag up front as a re-entrancy guard (a plugin's register()
+        # can transitively trigger discovery again), but reset it if the sweep
+        # raises so a failed scan is NOT cached as "discovered with an empty
+        # registry" — callers swallow the exception and would otherwise be
+        # permanently stranded on the early-return above (the "No web provider
+        # configured" class of failures).
         self._discovered = True
+        try:
+            self._discover_and_load_inner()
+        except BaseException:
+            self._discovered = False
+            raise
 
+    def _discover_and_load_inner(self) -> None:
+        """The actual discovery sweep — see :meth:`discover_and_load`."""
         manifests: List[PluginManifest] = []
 
         # 1. Bundled plugins (<repo>/plugins/<name>/)

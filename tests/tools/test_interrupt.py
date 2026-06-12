@@ -218,9 +218,9 @@ class TestRunToolCleanupOnBaseException:
     """
 
     def test_cleanup_on_base_exception(self):
-        from unittest.mock import MagicMock, patch
+        from unittest.mock import MagicMock
         import types
-        from tools.interrupt import set_interrupt, is_interrupted, _interrupted_threads, _lock
+        from tools.interrupt import set_interrupt, _interrupted_threads, _lock
 
         # Clear global state
         with _lock:

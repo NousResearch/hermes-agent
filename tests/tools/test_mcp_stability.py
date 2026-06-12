@@ -276,7 +276,6 @@ class TestStdioPgroupReaping:
         from tools.mcp_tool import (
             _kill_orphaned_mcp_children,
             _orphan_stdio_pids,
-            _stdio_pgids,
             _lock,
         )
 

@@ -71,6 +71,54 @@ _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
 _GATEWAY_PROXY_SSE_BUFFER_MAX_CHARS = 16 * 1024 * 1024
 _TELEGRAM_COMMAND_MENTION_RE = re.compile(r"(?<![\w:/])/([A-Za-z0-9][A-Za-z0-9_-]*)")
 
+
+def _delivery_log_facts(final_text: Any, stream_consumer: Any) -> str:
+    """Compose the ``key=value`` facts appended to the final-send
+    suppression log line.
+
+    Diagnostic only: lengths, short sha256 prefixes, and the consumer's
+    message id let an operator prove from logs whether the suppressed send
+    matched what streaming delivered (#27942, #29200) without logging
+    message text.  Consumer values describe its current bubble; on
+    overflow splits earlier chunks are separate messages, so reset values
+    alongside ``content_delivered=True`` mean split delivery, not lost
+    content.  Never raises: composition failures degrade to ``?`` fields
+    so log formatting can never affect the suppression decision itself.
+    """
+    import hashlib
+
+    def _digest(value: str) -> str:
+        return hashlib.sha256(value.encode("utf-8", "replace")).hexdigest()[:8]
+
+    try:
+        final = final_text if isinstance(final_text, str) else str(final_text or "")
+        parts = [f"final_len={len(final)}", f"final_digest={_digest(final)}"]
+    except Exception:
+        parts = ["final_len=? final_digest=?"]
+    summary = None
+    try:
+        getter = getattr(stream_consumer, "delivery_summary", None)
+        if callable(getter):
+            summary = getter()
+    except Exception:
+        summary = None
+    if isinstance(summary, dict):
+        parts.extend(
+            [
+                f"acc_len={summary.get('accumulated_len', '?')}",
+                f"acc_digest={summary.get('accumulated_digest', '?')}",
+                f"last_sent_len={summary.get('last_sent_len', '?')}",
+                f"sc_msg_id={summary.get('message_id') or '?'}",
+                f"last_edit_overflowed={summary.get('last_edit_overflowed', '?')}",
+            ]
+        )
+    else:
+        parts.append(
+            "acc_len=? acc_digest=? last_sent_len=? sc_msg_id=? last_edit_overflowed=?"
+        )
+    return " ".join(parts)
+
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
@@ -20265,11 +20313,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
                 logger.info(
-                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s).",
+                    "Suppressing normal final send for session %s: final delivery already confirmed (streamed=%s previewed=%s content_delivered=%s). %s",
                     session_key or "?",
                     _streamed,
                     _previewed,
                     _content_delivered,
+                    _delivery_log_facts(_final, _sc),
                 )
                 response["already_sent"] = True
             elif not _is_empty_sentinel and _transformed and _sc is not None:

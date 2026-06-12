@@ -19,6 +19,7 @@ function workspaceCwdKey(connection: HermesConnection | null = $connection.get()
 
   const base = encodeURIComponent(connection.baseUrl || 'remote')
   const profile = encodeURIComponent(connection.profile || 'default')
+
   return `${WORKSPACE_CWD_KEY}.remote.${base}.${profile}`
 }
 
@@ -64,6 +65,7 @@ export async function ensureDefaultWorkspaceCwd(): Promise<void> {
 
   if ($connection.get()?.mode === 'remote') {
     seedLiveCwd(remembered)
+
     return
   }
 
@@ -105,6 +107,32 @@ function updateAtom<T>(store: AppAtom<T>, next: Updater<T>) {
 export const sessionPinId = (session: Pick<SessionInfo, '_lineage_root_id' | 'id'>): string =>
   session._lineage_root_id ?? session.id
 
+type SessionIdentity = Pick<SessionInfo, '_lineage_ids' | '_lineage_root_id' | 'id'>
+
+/** True when an id refers to this logical conversation.
+ *
+ *  Auto-compression can leave the route or transient running-state store
+ *  pointing at an older segment while the sidebar row has already projected to
+ *  the current tip. Match all known lineage ids so header titles, selection,
+ *  and running indicators survive that rotation. */
+export function sessionMatchesId(session: SessionIdentity, id: null | string | undefined): boolean {
+  if (!id) {
+    return false
+  }
+
+  return session.id === id || session._lineage_root_id === id || Boolean(session._lineage_ids?.includes(id))
+}
+
+export function sessionMatchesAnyId(session: SessionIdentity, ids: Iterable<null | string | undefined>): boolean {
+  for (const id of ids) {
+    if (sessionMatchesId(session, id)) {
+      return true
+    }
+  }
+
+  return false
+}
+
 /** Merge a fresh server session page into the in-memory list, keeping any
  *  row the server omitted that we still want visible — both still-"working"
  *  sessions and pinned sessions.
@@ -140,6 +168,7 @@ export function mergeSessionPage(
   }
 
   const incomingIds = new Set(incoming.map(session => session.id))
+
   // Deduplicate by compression lineage: when auto-compression rotates the tip
   // id (old #4 → new #5), the incoming page carries the new tip but the
   // previous list still holds the old one.  Without lineage-level dedup both
@@ -152,7 +181,9 @@ export function mergeSessionPage(
     session =>
       !incomingIds.has(session.id) &&
       !incomingLineageKeys.has(session._lineage_root_id ?? session.id) &&
-      (keep.has(session.id) || (session._lineage_root_id != null && keep.has(session._lineage_root_id)))
+      (keep.has(session.id) ||
+        (session._lineage_root_id != null && keep.has(session._lineage_root_id)) ||
+        Boolean(session._lineage_ids?.some(id => keep.has(id))))
   )
 
   return survivors.length ? [...survivors, ...incoming] : incoming

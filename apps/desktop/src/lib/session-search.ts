@@ -13,6 +13,7 @@ export function sessionMatchesSearch(session: SessionInfo, query: string): boole
   return [
     session.id,
     session._lineage_root_id ?? '',
+    ...(session._lineage_ids ?? []),
     sessionTitle(session),
     session.preview ?? '',
     session.cwd ?? '',

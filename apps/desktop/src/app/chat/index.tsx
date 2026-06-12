@@ -38,6 +38,7 @@ import {
   $messages,
   $selectedStoredSessionId,
   $sessions,
+  sessionMatchesAnyId,
   sessionPinId
 } from '@/store/session'
 import type { ModelOptionsResponse } from '@/types/hermes'
@@ -89,6 +90,7 @@ interface ChatHeaderProps {
   isRoutedSessionView: boolean
   onDeleteSelectedSession: () => void
   onToggleSelectedPin: () => void
+  routedSessionId: null | string
   selectedSessionId: null | string
 }
 
@@ -97,13 +99,14 @@ function ChatHeader({
   isRoutedSessionView,
   onDeleteSelectedSession,
   onToggleSelectedPin,
+  routedSessionId,
   selectedSessionId
 }: ChatHeaderProps) {
   const sessions = useStore($sessions)
   const pinnedSessionIds = useStore($pinnedSessionIds)
 
   const activeStoredSession =
-    sessions.find(session => session.id === selectedSessionId || session._lineage_root_id === selectedSessionId) || null
+    sessions.find(session => sessionMatchesAnyId(session, [selectedSessionId, routedSessionId, activeSessionId])) || null
 
   const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
 
@@ -123,6 +126,8 @@ function ChatHeader({
     return null
   }
 
+  const actionSessionId = selectedSessionId || activeStoredSession?.id || routedSessionId || activeSessionId || ''
+
   return (
     <header className={cn(titlebarHeaderBaseClass, isRoutedSessionView && titlebarHeaderShadowClass)}>
       <div className={titlebarHeaderTitleClass}>
@@ -131,7 +136,7 @@ function ChatHeader({
           onDelete={selectedSessionId ? onDeleteSelectedSession : undefined}
           onPin={selectedSessionId ? onToggleSelectedPin : undefined}
           pinned={selectedIsPinned}
-          sessionId={selectedSessionId || activeSessionId || ''}
+          sessionId={actionSessionId}
           sideOffset={8}
           title={title}
         >
@@ -191,7 +196,8 @@ export function ChatView({
   const messages = useStore($messages)
   const selectedSessionId = useStore($selectedStoredSessionId)
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
-  const isRoutedSessionView = Boolean(routeSessionId(location.pathname))
+  const routedSessionId = routeSessionId(location.pathname)
+  const isRoutedSessionView = Boolean(routedSessionId)
 
   const showIntro =
     freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messages.length === 0
@@ -340,6 +346,7 @@ export function ChatView({
         isRoutedSessionView={isRoutedSessionView}
         onDeleteSelectedSession={onDeleteSelectedSession}
         onToggleSelectedPin={onToggleSelectedPin}
+        routedSessionId={routedSessionId}
         selectedSessionId={selectedSessionId}
       />
 

@@ -59,6 +59,7 @@ import {
   getRecentlySettledSessionIds,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  sessionMatchesId,
   sessionPinId,
   setAwaitingResponse,
   setBusy,
@@ -473,7 +474,7 @@ export function DesktopController() {
     }
 
     // Pin on the durable lineage-root id so the pin survives auto-compression.
-    const session = $sessions.get().find(s => s.id === sessionId || s._lineage_root_id === sessionId)
+    const session = $sessions.get().find(s => sessionMatchesId(s, sessionId))
     const pinId = session ? sessionPinId(session) : sessionId
 
     if ($pinnedSessionIds.get().includes(pinId)) {
@@ -556,7 +557,7 @@ export function DesktopController() {
 
       const storedProfile = $sessions
         .get()
-        .find(session => session.id === storedSessionId || session._lineage_root_id === storedSessionId)?.profile
+        .find(session => sessionMatchesId(session, storedSessionId))?.profile
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {

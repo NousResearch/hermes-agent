@@ -5,7 +5,7 @@ import { type FC, useCallback, useMemo, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
 import { cn } from '@/lib/utils'
-import { sessionPinId } from '@/store/session'
+import { sessionMatchesAnyId, sessionMatchesId, sessionPinId } from '@/store/session'
 
 import { SidebarSessionRow } from './session-row'
 
@@ -74,8 +74,8 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
     const commonProps: SessionRowCommonProps = {
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
+      isSelected: sessionMatchesId(session, activeSessionId),
+      isWorking: sessionMatchesAnyId(session, workingSessionIdSet),
       onArchive: () => onArchiveSession(session.id),
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),

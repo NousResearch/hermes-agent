@@ -1972,6 +1972,48 @@ class SessionDB:
             current = row["id"]
         return current
 
+    def get_compression_lineage(self, session_id: str) -> List[str]:
+        """Return the compression-continuation ids from root to tip.
+
+        Unlike ``get_compression_tip()``, callers that surface a projected tip
+        to UI clients also need the intermediate ids. A user can still be routed
+        to an older segment after context compaction, so exposing the full chain
+        lets clients treat root, intermediate ids, and current tip as the same
+        logical conversation.
+        """
+        if not session_id:
+            return []
+
+        chain = [session_id]
+        seen = {session_id}
+        current = session_id
+
+        for _ in range(100):
+            with self._lock:
+                cursor = self._conn.execute(
+                    "SELECT id FROM sessions "
+                    "WHERE parent_session_id = ? "
+                    "  AND started_at >= ("
+                    "      SELECT ended_at FROM sessions "
+                    "      WHERE id = ? AND end_reason = 'compression'"
+                    "  ) "
+                    "ORDER BY started_at DESC LIMIT 1",
+                    (current, current),
+                )
+                row = cursor.fetchone()
+            if row is None:
+                return chain
+
+            next_id = row["id"]
+            if next_id in seen:
+                return chain
+
+            chain.append(next_id)
+            seen.add(next_id)
+            current = next_id
+
+        return chain
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -2186,7 +2228,8 @@ class SessionDB:
                 if s.get("end_reason") != "compression":
                     projected.append(s)
                     continue
-                tip_id = self.get_compression_tip(s["id"])
+                lineage_ids = self.get_compression_lineage(s["id"])
+                tip_id = lineage_ids[-1] if lineage_ids else s["id"]
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
@@ -2205,6 +2248,7 @@ class SessionDB:
                     if key in tip_row:
                         merged[key] = tip_row[key]
                 merged["_lineage_root_id"] = s["id"]
+                merged["_lineage_ids"] = lineage_ids
                 projected.append(merged)
             sessions = projected
 

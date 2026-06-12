@@ -49,3 +49,30 @@ def test_unarchiving_compression_tip_unarchives_projected_root(db):
     assert db.get_session("root")["archived"] == 0
     assert db.get_session("tip")["archived"] == 0
     assert [s["id"] for s in db.list_sessions_rich(order_by_last_active=True)] == ["tip"]
+
+
+def test_projected_compression_tip_includes_full_lineage_ids(db):
+    base = time.time() - 100
+    db.create_session("root", source="cli")
+    db.create_session("middle", source="cli", parent_session_id="root")
+    db.create_session("tip", source="cli", parent_session_id="middle")
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ?, end_reason = 'compression', message_count = 1 WHERE id = 'root'",
+        (base, base + 10),
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, ended_at = ?, end_reason = 'compression', message_count = 1 WHERE id = 'middle'",
+        (base + 20, base + 30),
+    )
+    db._conn.execute(
+        "UPDATE sessions SET started_at = ?, message_count = 1 WHERE id = 'tip'",
+        (base + 40,),
+    )
+    db._conn.commit()
+
+    rows = db.list_sessions_rich(order_by_last_active=True)
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "tip"
+    assert rows[0]["_lineage_root_id"] == "root"
+    assert rows[0]["_lineage_ids"] == ["root", "middle", "tip"]

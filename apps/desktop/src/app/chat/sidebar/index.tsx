@@ -38,8 +38,8 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
-import { profileColor } from '@/lib/profile-color'
 import { comboTokens } from '@/lib/keybinds/combo'
+import { profileColor } from '@/lib/profile-color'
 import { sessionMatchesSearch } from '@/lib/session-search'
 import { normalizeSessionSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
@@ -88,6 +88,8 @@ import {
   $sessionsLoading,
   $sessionsTotal,
   $workingSessionIds,
+  sessionMatchesAnyId,
+  sessionMatchesId,
   sessionPinId
 } from '@/store/session'
 
@@ -423,6 +425,12 @@ export function ChatSidebar({
 
       if (s._lineage_root_id && !map.has(s._lineage_root_id)) {
         map.set(s._lineage_root_id, s)
+      }
+
+      for (const lineageId of s._lineage_ids ?? []) {
+        if (!map.has(lineageId)) {
+          map.set(lineageId, s)
+        }
       }
     }
 
@@ -1205,8 +1213,8 @@ function SidebarSessionsSection({
   const renderRow = (session: SessionInfo) => {
     const rowProps = {
       isPinned: pinned,
-      isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
+      isSelected: sessionMatchesId(session, activeSessionId),
+      isWorking: sessionMatchesAnyId(session, workingSessionIdSet),
       onArchive: () => onArchiveSession(session.id),
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),

@@ -18459,6 +18459,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "approvals":
             return await self._handle_approvals_command(event)
 
+        if canonical == "busy":
+            return await self._handle_busy_command(event)
+
         if canonical == "model":
             return await self._handle_model_command(event)
 

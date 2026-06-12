@@ -243,6 +243,33 @@ class TestDetectAudioEnvironment:
         assert result["warnings"] == []
         assert any("WSL" in n for n in result.get("notices", []))
 
+    def test_wsl_with_pipewire_allows_voice(self, monkeypatch, tmp_path):
+        """WSL with PIPEWIRE_REMOTE set should NOT block voice mode."""
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.delenv("SSH_CONNECTION", raising=False)
+        monkeypatch.delenv("PULSE_SERVER", raising=False)
+        monkeypatch.setenv("PIPEWIRE_REMOTE", "/run/user/1000/pipewire-0")
+        monkeypatch.setattr("tools.voice_mode._import_audio",
+                            lambda: (MagicMock(), MagicMock()))
+
+        proc_version = tmp_path / "proc_version"
+        proc_version.write_text("Linux 5.15.0-microsoft-standard-WSL2")
+
+        _real_open = open
+        def _fake_open(f, *a, **kw):
+            if f == "/proc/version":
+                return _real_open(str(proc_version), *a, **kw)
+            return _real_open(f, *a, **kw)
+
+        with patch("builtins.open", side_effect=_fake_open):
+            from tools.voice_mode import detect_audio_environment
+            result = detect_audio_environment()
+
+        assert result["available"] is True
+        assert result["warnings"] == []
+        assert any("WSL" in n for n in result.get("notices", []))
+
     def test_wsl_device_query_fails_with_pulse_continues(self, monkeypatch, tmp_path):
         """WSL device query failure should not block if PULSE_SERVER is set."""
         monkeypatch.delenv("SSH_CLIENT", raising=False)

@@ -7,6 +7,7 @@ import type {
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
+  BackendUpdateCheckResponse,
   ConfigSchemaResponse,
   CronJob,
   CronJobCreatePayload,
@@ -56,6 +57,7 @@ export type {
   AudioSpeakResponse,
   AudioTranscriptionResponse,
   AuxiliaryModelsResponse,
+  BackendUpdateCheckResponse,
   ConfigFieldSchema,
   ConfigSchemaResponse,
   CronJob,
@@ -216,6 +218,7 @@ export function getSessionMessages(id: string, profile?: string | null): Promise
   const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
   })
 }
@@ -341,13 +344,14 @@ export function setEnvVar(key: string, value: string): Promise<{ ok: boolean }> 
 
 export function validateProviderCredential(
   key: string,
-  value: string
+  value: string,
+  apiKey?: string
 ): Promise<{ ok: boolean; reachable: boolean; message: string; models?: string[] }> {
   return window.hermesDesktop.api<{ ok: boolean; reachable: boolean; message: string; models?: string[] }>({
     ...profileScoped(),
     path: '/api/providers/validate',
     method: 'POST',
-    body: { key, value }
+    body: { key, value, api_key: apiKey ?? '' }
   })
 }
 
@@ -683,6 +687,15 @@ export function updateHermes(): Promise<ActionResponse> {
   return window.hermesDesktop.api<ActionResponse>({
     path: '/api/hermes/update',
     method: 'POST'
+  })
+}
+
+/** Query the connected backend's own update state. In remote mode this is the
+ *  authoritative source for the backend's behind-count + "what's changed",
+ *  distinct from the Electron client clone's git state. */
+export function checkHermesUpdate(force = false): Promise<BackendUpdateCheckResponse> {
+  return window.hermesDesktop.api<BackendUpdateCheckResponse>({
+    path: `/api/hermes/update/check${force ? '?force=true' : ''}`
   })
 }
 

@@ -204,12 +204,24 @@ export const zhHant = defineLocale({
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',
       toolViewDesc: '產品模式會隱藏原始工具 payload；技術模式會顯示完整輸入/輸出。',
+      translucencyTitle: '視窗透明',
+      translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       product: '產品',
       productDesc: '易讀的工具活動與精簡摘要。',
       technical: '技術',
       technicalDesc: '包含原始工具參數、結果與底層細節。',
       themeTitle: '主題',
-      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。'
+      themeDesc: '僅限桌面端的調色盤。所選模式會套用在其上。',
+      themeProfileNote: profile => `已為「${profile}」設定檔儲存——每個設定檔保留各自的主題。`,
+      installTitle: '從 VS Code 安裝',
+      installDesc: '貼上 Marketplace 擴充功能 ID（例如 dracula-theme.theme-dracula），將其配色主題轉換為桌面調色盤。',
+      installPlaceholder: 'publisher.extension',
+      installButton: '安裝',
+      installing: '安裝中…',
+      installError: '無法安裝該主題。',
+      installed: name => `已安裝「${name}」。`,
+      removeTheme: '移除主題',
+      importedBadge: '已匯入'
     },
     fieldLabels: defineFieldCopy({
       model: '預設模型',
@@ -493,8 +505,7 @@ export const zhHant = defineLocale({
       defaultConnection: '預設連線適用於所有沒有自訂覆寫的設定檔。',
       profileConnection: profile => `僅當「${profile}」為作用中設定檔時使用此連線。設為本機可繼承預設連線。`,
       envOverrideTitle: '環境變數正在控制此桌面工作階段。',
-      envOverrideDesc:
-        '取消設定 HERMES_DESKTOP_REMOTE_URL 和 HERMES_DESKTOP_REMOTE_TOKEN 後才會使用下方儲存的設定。',
+      envOverrideDesc: '取消設定 HERMES_DESKTOP_REMOTE_URL 和 HERMES_DESKTOP_REMOTE_TOKEN 後才會使用下方儲存的設定。',
       localTitle: '本機閘道',
       localDesc: '在 localhost 啟動私有 Hermes 後端。這是預設方式，可離線使用。',
       remoteTitle: '遠端閘道',
@@ -616,8 +627,7 @@ export const zhHant = defineLocale({
     sessions: {
       loading: '正在載入已封存工作階段…',
       archivedTitle: '已封存工作階段',
-      archivedIntro:
-        '已封存的聊天會從側邊欄隱藏，但保留全部訊息。在側邊欄 Ctrl/⌘ 點擊聊天即可封存。',
+      archivedIntro: '已封存的聊天會從側邊欄隱藏，但保留全部訊息。在側邊欄 Ctrl/⌘ 點擊聊天即可封存。',
       emptyArchivedTitle: '暫無封存',
       emptyArchivedDesc: '封存一個聊天後會顯示在這裡。',
       unarchive: '取消封存',
@@ -626,8 +636,7 @@ export const zhHant = defineLocale({
       restored: '已還原',
       deleteConfirm: title => `永久刪除「${title}」？此操作無法復原。`,
       defaultDirTitle: '預設專案目錄',
-      defaultDirDesc:
-        '新工作階段預設從此資料夾開始，除非您選擇其他目錄。留空則使用您的家目錄。',
+      defaultDirDesc: '新工作階段預設從此資料夾開始，除非您選擇其他目錄。留空則使用您的家目錄。',
       defaultDirUpdated: '預設專案目錄已更新',
       defaultsTo: label => `預設使用 ${label}。`,
       change: '變更',
@@ -744,6 +753,17 @@ export const zhHant = defineLocale({
     settings: '設定',
     changeTheme: '變更主題...',
     changeColorMode: '變更色彩模式...',
+    installTheme: {
+      title: '安裝主題...',
+      placeholder: '搜尋 VS Code Marketplace...',
+      loading: '正在搜尋 Marketplace...',
+      error: '無法連接到 Marketplace。',
+      empty: '沒有符合的主題。',
+      install: '安裝',
+      installing: '安裝中...',
+      installed: '已安裝',
+      installs: count => `${count} 次安裝`
+    },
     settingsFields: '設定欄位',
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
@@ -1059,8 +1079,7 @@ export const zhHant = defineLocale({
     topOfHour: '每個整點',
     everyHourAt: minute => `每小時的 :${minute}`,
     newCron: '新排程工作',
-    emptyDescNew:
-      '按 cron 表達式排程一個提示詞。Hermes 會執行它，並將結果傳送至您選擇的目的地。',
+    emptyDescNew: '按 cron 表達式排程一個提示詞。Hermes 會執行它，並將結果傳送至您選擇的目的地。',
     emptyDescSearch: '請嘗試更廣泛的搜尋詞。',
     emptyTitleNew: '暫無排程工作',
     emptyTitleSearch: '無相符項目',
@@ -1183,12 +1202,14 @@ export const zhHant = defineLocale({
       export: '匯出',
       rename: '重新命名',
       archive: '封存',
+      newWindow: '新視窗',
       copyIdFailed: '無法複製工作階段 ID',
       actionsFor: title => `${title} 的動作`,
       sessionActions: '工作階段動作',
       sessionRunning: '工作階段執行中',
       needsInput: '需要您的輸入',
       waitingForAnswer: '等待您的回答',
+      handoffOrigin: platform => `從 ${platform} 轉接`,
       renamed: '已重新命名',
       renameFailed: '重新命名失敗',
       renameTitle: '重新命名工作階段',
@@ -1259,14 +1280,14 @@ export const zhHant = defineLocale({
       '/quit': '結束 hermes'
     },
     hotkeyDescs: {
-      '@': '參照檔案、資料夾、URL、git',
-      '/': '斜線指令面板',
-      '?': '此快速說明（刪除以關閉）',
-      Enter: '傳送 · Shift+Enter 換行',
-      'Cmd/Ctrl+K': '傳送下一個排隊的回合',
-      'Cmd/Ctrl+L': '重繪',
-      Esc: '關閉彈出視窗 · 取消執行',
-      '↑ / ↓': '循環彈出視窗 / 歷史記錄'
+      'composer.mention': '參照檔案、資料夾、URL、git',
+      'composer.slash': '斜線指令面板',
+      'composer.help': '此快速說明（刪除以關閉）',
+      'composer.sendNewline': '傳送 · Shift+Enter 換行',
+      'composer.sendQueued': '傳送下一個排隊的回合',
+      'keybinds.openPanel': '所有鍵盤快捷鍵',
+      'composer.cancel': '關閉彈出視窗 · 取消執行',
+      'composer.history': '循環彈出視窗 / 歷史記錄'
     },
     attachUrlTitle: '附加 URL',
     attachUrlDesc: 'Hermes 將擷取該頁面並作為此回合的脈絡。',
@@ -1279,9 +1300,10 @@ export const zhHant = defineLocale({
     attachments: count => `${count} 個附件`,
     editingInComposer: '在輸入框中編輯',
     editingQueuedInComposer: '在輸入框中編輯排隊回合',
-    editQueued: '編輯排隊回合',
-    sendQueuedNow: '立即傳送排隊回合',
-    deleteQueued: '刪除排隊回合',
+    queueEdit: '編輯',
+    queueSendNext: '下一個',
+    queueSend: '傳送',
+    queueDelete: '刪除',
     previewUnavailable: '預覽不可用',
     previewLabel: label => `預覽 ${label}`,
     couldNotPreview: label => `無法預覽 ${label}`,
@@ -1326,6 +1348,17 @@ export const zhHant = defineLocale({
     }
   },
 
+  statusStack: {
+    agents: '代理',
+    background: count => `${count} 個背景任務`,
+    subagents: count => `${count} 個子代理`,
+    todos: (done, total) => `任務 ${done}/${total}`,
+    running: '執行中',
+    stop: '停止',
+    dismiss: '關閉',
+    exit: code => `結束碼 ${code}`
+  },
+
   updates: {
     stages: {
       idle: '準備中…',
@@ -1344,9 +1377,13 @@ export const zhHant = defineLocale({
     unsupportedMessage: '此版本的 Hermes 無法在應用程式內自行更新。',
     connectionRetry: '請檢查網路連線後重試。',
     latestBody: '您正在執行最新版本。',
+    latestBodyBackend: '後端正在執行最新版本。',
     allSetTitle: '已是最新版本',
     availableTitle: '有可用更新',
     availableBody: '新版 Hermes 已可安裝。',
+    availableTitleBackend: '後端有可用更新',
+    availableBodyBackend: '已連接的 Hermes 後端有新版本可安裝。',
+    availableBodyNoChangelog: '已有新版本可用。此安裝方式無法顯示更新日誌。',
     updateNow: '立即更新',
     maybeLater: '稍後再說',
     moreChanges: count => `另有 ${count} 項變更。`,
@@ -1357,10 +1394,19 @@ export const zhHant = defineLocale({
     copied: '已複製',
     done: '完成',
     applyingBody: 'Hermes 更新程式會在自己的視窗中接管，並在完成後重新開啟 Hermes。',
+    applyingBodyBackend: '遠端後端正在套用更新並將重新啟動。恢復後 Hermes 會自動重新連線。',
     applyingClose: 'Hermes 將關閉以套用更新。',
     errorTitle: '更新未完成',
     errorBody: '沒有資料遺失。您可以現在重試。',
-    notNow: '暫不'
+    notNow: '暫不',
+    applyStatus: {
+      preparing: '正在更新後端…',
+      pulling: '後端更新中…',
+      restarting: '後端正在重新啟動以載入更新…',
+      notAvailable: '此後端無法更新。',
+      failed: '後端更新失敗。',
+      noReturn: '後端未恢復連線。更新可能未完成——請檢查後端主機。'
+    }
   },
 
   install: {
@@ -1384,8 +1430,7 @@ export const zhHant = defineLocale({
     finishingTitle: '正在收尾',
     failedDesc:
       '某個安裝步驟失敗。在 Windows 上，如果另一個 Hermes CLI 或桌面執行個體正在執行，可能會出現這種情況。請停止正在執行的 Hermes 執行個體後重試。可查看下方的詳細資訊或 desktop 記錄中的完整記錄。',
-    activeDesc:
-      '這是一次性設定。Hermes 安裝程式正在下載相依套件並設定您的電腦。之後啟動會略過此步驟。',
+    activeDesc: '這是一次性設定。Hermes 安裝程式正在下載相依套件並設定您的電腦。之後啟動會略過此步驟。',
     progress: (completed, total) => `${completed}/${total} 個步驟已完成`,
     currentStage: stage => ` -- 目前：${stage}`,
     fetchingManifest: '正在取得安裝程式 manifest...',
@@ -1451,12 +1496,10 @@ export const zhHant = defineLocale({
     copyAuthCode: '複製授權碼並貼到下方。',
     pasteAuthCode: '貼上授權碼',
     reopenAuthPage: '重新開啟授權頁面',
-    autoBrowser: provider =>
-      `已在瀏覽器中開啟 ${provider}。請在那裡授權 Hermes，連線會自動完成，無需複製或貼上。`,
+    autoBrowser: provider => `已在瀏覽器中開啟 ${provider}。請在那裡授權 Hermes，連線會自動完成，無需複製或貼上。`,
     reopenSignInPage: '重新開啟登入頁面',
     waitingAuthorize: '等待您授權...',
-    externalPending: provider =>
-      `${provider} 透過自己的 CLI 登入。請在終端機執行此指令，然後回來選擇「我已登入」：`,
+    externalPending: provider => `${provider} 透過自己的 CLI 登入。請在終端機執行此指令，然後回來選擇「我已登入」：`,
     signedIn: '我已登入',
     deviceCodeOpened: provider => `已在瀏覽器中開啟 ${provider}。請在那裡輸入此代碼：`,
     reopenVerification: '重新開啟驗證頁面',
@@ -1543,10 +1586,15 @@ export const zhHant = defineLocale({
       updateInProgress: '更新中',
       commitsBehind: (count, branch) => `落後 ${branch} ${count} 個提交`,
       desktopVersion: version => `Hermes Desktop v${version}`,
+      backendVersion: version => `後端 v${version}`,
+      clientLabel: version => `用戶端 v${version}`,
+      backendLabel: version => `後端 v${version}`,
       commit: sha => `提交 ${sha}`,
       branch: branch => `分支 ${branch}`,
       closeCommandCenter: '關閉命令中心',
       openCommandCenter: '開啟命令中心',
+      showTerminal: '顯示終端機',
+      hideTerminal: '隱藏終端機',
       gateway: '閘道',
       gatewayReady: '就緒',
       gatewayNeedsSetup: '需要設定',
@@ -1585,6 +1633,9 @@ export const zhHant = defineLocale({
     terminal: '終端機',
     noFolderSelected: '未選擇資料夾',
     changeCwdTitle: '變更工作目錄',
+    remotePickerTitle: '選擇遠端資料夾',
+    remotePickerDescription: '瀏覽已連線後端上的資料夾。',
+    remotePickerSelect: '選擇資料夾',
     folderTip: cwd => `${cwd} — 點擊以變更資料夾`,
     openFolder: '開啟資料夾',
     refreshTree: '重新整理檔案樹',
@@ -1602,8 +1653,7 @@ export const zhHant = defineLocale({
     tryAgain: '重試',
     loadingTree: '正在載入檔案樹',
     loadingFiles: '正在載入檔案',
-    terminalFocus: '聚焦終端機檢視',
-    terminalSplit: '返回分割檢視',
+    terminalHide: '隱藏終端機',
     addToChat: '新增至聊天'
   },
 
@@ -1664,16 +1714,14 @@ export const zhHant = defineLocale({
       showConsole: '顯示預覽主控台',
       hideDevTools: '隱藏預覽 DevTools',
       openDevTools: '開啟預覽 DevTools',
-      finishedRestarting: message =>
-        `Hermes 已完成預覽伺服器重新啟動${message ? `：${message}` : ''}`,
+      finishedRestarting: message => `Hermes 已完成預覽伺服器重新啟動${message ? `：${message}` : ''}`,
       failedRestarting: message => `伺服器重新啟動失敗：${message}`,
       unknownError: '未知錯誤',
       restartedTitle: '預覽伺服器已重新啟動',
       reloadingNow: '正在重新載入預覽。',
       restartFailedTitle: '預覽重新啟動失敗',
       restartFailedMessage: 'Hermes 無法重新啟動伺服器。',
-      stillWorking:
-        'Hermes 仍在執行，但尚未收到重新啟動結果。伺服器指令可能正在前台執行。',
+      stillWorking: 'Hermes 仍在執行，但尚未收到重新啟動結果。伺服器指令可能正在前台執行。',
       workspaceReloading: '工作區已變更，正在重新載入預覽',
       fileChanged: url => `檔案已變更，正在重新載入預覽：${url}`,
       filesChanged: (count, url) => `${count} 個檔案變更，正在重新載入預覽：${url}`,
@@ -1704,12 +1752,16 @@ export const zhHant = defineLocale({
       readAloud: '朗讀',
       editMessage: '編輯訊息',
       stop: '停止',
-      editableCheckpoint: '可編輯的檢查點',
       restorePrevious: '還原至上一個檢查點',
       restoreCheckpoint: '還原檢查點',
+      restoreFromHere: '還原檢查點 — 從此提示重新執行',
+      restoreTitle: '還原至此檢查點？',
+      restoreBody: '此提示之後的所有訊息將從對話中移除，並從此處重新執行該提示。',
+      restoreConfirm: '還原並重新執行',
       restoreNext: '還原至下一個檢查點',
       goForward: '前進',
-      sendEdited: '傳送編輯後的訊息'
+      sendEdited: '傳送編輯後的訊息',
+      attachingFile: '正在附加…'
     },
     approval: {
       gatewayDisconnected: 'Hermes 閘道未連線',
@@ -1731,7 +1783,7 @@ export const zhHant = defineLocale({
       loadingQuestion: '正在載入問題…',
       other: '其他（輸入您的答案）',
       placeholder: '輸入您的答案…',
-      shortcut: '⌘/Ctrl + Enter 傳送',
+      shortcutSuffix: ' 傳送',
       back: '返回',
       skip: '略過',
       send: '傳送'
@@ -1789,8 +1841,7 @@ export const zhHant = defineLocale({
     yoloSystem: active => `此工作階段 YOLO ${active ? '已開啟' : '已關閉'}`,
     yoloTitle: 'YOLO',
     yoloToggleFailed: '無法切換 YOLO',
-    profileStatus: current =>
-      `設定檔：${current}。使用 /profile <name> 或「新工作階段」選擇器在其他設定檔中開始聊天。`,
+    profileStatus: current => `設定檔：${current}。使用 /profile <name> 或「新工作階段」選擇器在其他設定檔中開始聊天。`,
     unknownProfile: '未知設定檔',
     noProfileNamed: (target, available) => `沒有名為「${target}」的設定檔。可用的：${available}`,
     newChatsProfile: name => `新聊天將使用設定檔 ${name}。`,
@@ -1832,7 +1883,14 @@ export const zhHant = defineLocale({
     clipboard: '剪貼簿',
     noClipboardImage: '剪貼簿中沒有圖片',
     clipboardPasteFailed: '剪貼簿貼上失敗',
-    dropFiles: '拖曳檔案'
+    dropFiles: '拖曳檔案',
+    handoff: {
+      pickPlatform: '選擇目標平台',
+      success: platform => `已移交到 ${platform}。隨時可在此處恢復。`,
+      systemNote: platform => `↻ 已移交到 ${platform} — 隨時可在此處恢復。`,
+      failed: error => `移交失敗：${error}`,
+      timedOut: '等待閘道逾時。`hermes gateway` 是否正在執行？'
+    }
   },
 
   errors: {

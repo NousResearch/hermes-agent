@@ -28,6 +28,7 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
 | `--insecure` | off | Allow binding to non-localhost hosts (**DANGEROUS** — exposes API keys on the network; pair with a firewall and strong auth) |
+| `--isolated` | off | When launched from a named profile (`worker dashboard`), run a dedicated per-profile server instead of routing to the machine dashboard |
 
 ```bash
 # Custom port
@@ -39,6 +40,43 @@ hermes dashboard --host 0.0.0.0
 # Start without opening browser
 hermes dashboard --no-open
 ```
+
+## Managing multiple profiles
+
+The dashboard is a **machine-level** management surface: one server manages
+every [profile](../profiles.md) on the machine. A profile switcher in the
+sidebar (visible whenever more than one profile exists) decides which
+profile the management pages read and write — Config, API Keys, Skills,
+MCP, Models, and the Chat tab all follow it. While a profile other than
+the dashboard's own is selected, an amber banner names the managed profile
+so the write target is never ambiguous.
+
+The selection lives in the URL (`?profile=<name>`), so deep links like
+`http://127.0.0.1:9119/skills?profile=worker` land with the switcher
+preselected and survive refresh.
+
+Launching the dashboard from a profile alias routes to the machine
+dashboard instead of starting a second server:
+
+```bash
+worker dashboard
+# → already running: opens the browser at ?profile=worker
+# → not running:     starts the machine dashboard with "worker" preselected
+```
+
+Pass `--isolated` to opt out and run a dedicated server scoped to that
+profile (the pre-unification behavior — useful if you deliberately expose
+different profiles' dashboards with different auth).
+
+The **Chat** tab follows the switcher too: a scoped chat spawns its PTY
+child with the selected profile's `HERMES_HOME`, so the conversation runs
+with that profile's model, skills, memory, and session history. Switching
+profiles starts a fresh terminal session.
+
+What stays per-profile and is *not* absorbed by the switcher: gateway
+processes (manage them via `hermes -p <name> gateway …`), each profile's
+session database, and cron schedulers (the Cron page already aggregates
+across profiles with its own filter).
 
 ## Prerequisites
 
@@ -234,6 +272,17 @@ Create and manage scheduled cron jobs that run agent prompts on a recurring sche
 - **Trigger now** — immediately execute a job outside its normal schedule
 - **Delete** — permanently remove a cron job
 
+### Profiles
+
+Create and manage [profiles](../profiles.md) — isolated Hermes instances with their own config, skills, and sessions.
+
+- **Profile cards** — each shows its model/provider, skill count, gateway state, description, and badges (active, default, alias)
+- **Create** — name + optional clone-from-default / clone-everything / no-bundled-skills, description, and model; the dedicated Profile Builder page (`/profiles/new`) offers the full flow (model, MCPs, skills)
+- **Manage skills & tools** — jumps to the Skills page scoped to that profile (sets the sidebar profile switcher)
+- **Set as active** — flips the sticky default that **future CLI/gateway runs** pick up (same as `hermes profile use`). This does *not* change what the dashboard manages — that's the profile switcher's job
+- **Edit model / description / SOUL** — inline editors writing into that profile
+- **Rename / Delete** — named profiles only
+
 ### Skills
 
 Browse, search, and toggle installed skills and toolsets, and install new ones from the hub. Skills are loaded from `~/.hermes/skills/` and grouped by category.
@@ -348,6 +397,16 @@ This re-reads `~/.hermes/.env` into the running process's environment. Useful wh
 ## REST API
 
 The web dashboard exposes a REST API that the frontend consumes. You can also call these endpoints directly for automation:
+
+:::tip Profile-scoped endpoints
+The management endpoint families — `/api/config`, `/api/env`, `/api/skills`,
+`/api/tools/toolsets`, `/api/mcp`, and `/api/model/{info,options,auxiliary,set}` —
+accept an optional `?profile=<name>` query parameter (or `"profile"` in the
+JSON body for writes) that scopes the read/write to that profile's
+`HERMES_HOME`. Omitted = the dashboard's own profile. Unknown profile names
+return `404`. The `/api/pty` WebSocket accepts the same parameter to spawn
+a chat under the selected profile.
+:::
 
 ### GET /api/status
 
@@ -481,7 +540,7 @@ same auth gate as the rest of `/api/`.
 | `GET /api/ops/checkpoints` · `POST .../prune` | Inspect / prune the `/rollback` store |
 | `POST /api/ops/hooks` · `DELETE /api/ops/hooks` | Create / remove a shell hook (consent-gated) |
 | `GET /api/system/stats` | Host stats — OS, CPU, memory, disk, uptime |
-| `GET /api/hermes/update/check` | Report update availability (commits behind, install method) without applying. `?force=1` busts the 6h cache |
+| `GET /api/hermes/update/check` | Report update availability (commits behind, install method) without applying. For git/pip installs that are behind, also returns a `commits` list (`sha`, `summary`, `author`, `at`) of what's changed. `?force=1` busts the 6h cache |
 | `GET /api/curator` · `PUT .../paused` · `POST .../run` | Skill-curator status + pause/resume + run |
 | `GET /api/portal` | Nous Portal auth + Tool Gateway routing (read-only) |
 | `POST /api/ops/prompt-size` · `/dump` · `/config-migrate` | Diagnostics (backgrounded) |

@@ -10,7 +10,10 @@ import {
   DIRECTIVE_CHIP_CLASS,
   directiveIconElement,
   directiveIconSvg,
-  formatRefValue
+  formatRefValue,
+  slashChipClass,
+  type SlashChipKind,
+  slashIconElement
 } from '@/components/assistant-ui/directive-text'
 
 export const RICH_INPUT_SLOT = 'composer-rich-input'
@@ -73,6 +76,24 @@ export function refChipElement(kind: string, rawValue: string, displayLabel?: st
   label.className = 'truncate'
   label.textContent = displayLabel || refLabel(id)
   chip.append(directiveIconElement(kind), label)
+
+  return chip
+}
+
+/** A non-editable pill for a picked slash command (`/skin nous`, `/tropes`).
+ *  `data-ref-text` carries the literal command so `composerPlainText` round-trips
+ *  it back to the exact text that gets submitted. */
+export function slashChipElement(command: string, kind: SlashChipKind, label?: string) {
+  const chip = document.createElement('span')
+  const text = document.createElement('span')
+
+  chip.contentEditable = 'false'
+  chip.dataset.refText = command
+  chip.dataset.slashKind = kind
+  chip.className = slashChipClass(kind)
+  text.className = 'truncate'
+  text.textContent = label || command
+  chip.append(slashIconElement(kind), text)
 
   return chip
 }
@@ -162,4 +183,37 @@ export function placeCaretEnd(element: HTMLElement) {
   range.collapse(false)
   selection?.removeAllRanges()
   selection?.addRange(range)
+}
+
+/** Drop contenteditable junk that serializes as `\n` and falsely expands the composer. */
+export function normalizeComposerEditorDom(editor: HTMLElement) {
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeName === 'BR') {
+    editor.replaceChildren()
+
+    return
+  }
+
+  if (editor.childNodes.length === 1 && editor.firstChild?.nodeType === Node.ELEMENT_NODE) {
+    const wrapper = editor.firstChild as HTMLElement
+
+    if (wrapper.tagName === 'DIV' && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
+      editor.replaceChildren(...Array.from(wrapper.childNodes))
+    }
+  }
+
+  const last = editor.lastChild
+
+  if (last?.nodeName !== 'BR') {
+    return
+  }
+
+  let prev: ChildNode | null = last.previousSibling
+
+  while (prev?.nodeType === Node.TEXT_NODE && !(prev.textContent || '').trim()) {
+    prev = prev.previousSibling
+  }
+
+  if ((prev as HTMLElement | null)?.dataset.refText) {
+    editor.removeChild(last)
+  }
 }

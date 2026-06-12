@@ -9,6 +9,7 @@ import logging
 import os
 import threading
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
@@ -44,7 +45,7 @@ class _Settings:
     plugins_toml_path: str = ""
     plugins_config: dict[str, Any] | None = None
     adaptive_enabled: bool = False
-    adaptive_mode: str = "observe"
+    adaptive_mode: str = "observe_only"
     atof_enabled: bool = False
     atof_output_directory: str = ""
     atof_filename: str = "hermes-atof.jsonl"
@@ -65,9 +66,11 @@ class _Runtime:
         self.sessions: dict[str, _SessionState] = {}
         self.subagent_parents: dict[str, _SubagentParent] = {}
         self.atof_exporter: Any = None
+        self._atof_subscriber_name = "hermes.nemo_relay.atof"
         self._plugin_config_initialized = self._configure_plugins_toml()
+        self._plugin_config_needs_reinit = False
         if not self._plugin_config_initialized:
-            self._configure_atof()
+            self._activate_direct_fallbacks()
 
     def _configure_plugins_toml(self) -> bool:
         if not self.settings.plugins_config:
@@ -78,16 +81,44 @@ class _Runtime:
             return False
         try:
             self._ensure_plugin_config_output_dirs(self.settings.plugins_config)
-            result = initialize(self.settings.plugins_config)
-            if inspect.isawaitable(result):
-                asyncio.run(result)
+            _resolve_awaitable(initialize(self.settings.plugins_config))
             return True
-        except RuntimeError:
-            logger.debug("NeMo Relay plugins.toml init skipped inside a running event loop")
-            return False
         except Exception as exc:
             logger.debug("NeMo Relay plugins.toml init failed: %s", exc, exc_info=True)
             return False
+
+    def _clear_plugins_toml(self) -> None:
+        if not self._plugin_config_initialized:
+            return
+        plugin_mod = getattr(self.nemo_relay, "plugin", None)
+        clear = getattr(plugin_mod, "clear", None)
+        if not callable(clear):
+            return
+        try:
+            _resolve_awaitable(clear())
+        finally:
+            self._plugin_config_initialized = False
+            self._plugin_config_needs_reinit = bool(self.settings.plugins_config)
+
+    def _activate_direct_fallbacks(self) -> None:
+        self._plugin_config_needs_reinit = False
+        self._configure_atof()
+
+    def _maybe_reinitialize_plugins_toml(self) -> None:
+        if not self._plugin_config_needs_reinit or self._plugin_config_initialized:
+            return
+        self._plugin_config_initialized = self._configure_plugins_toml()
+        if not self._plugin_config_initialized:
+            self._activate_direct_fallbacks()
+            return
+        self._clear_atof()
+        self._plugin_config_needs_reinit = False
+
+    def _plugins_toml_owns_exporter(self, exporter_name: str) -> bool:
+        return self._plugin_config_initialized and _observability_exporter_enabled(
+            self.settings.plugins_config,
+            exporter_name,
+        )
 
     def _ensure_plugin_config_output_dirs(self, config: dict[str, Any]) -> None:
         for component in config.get("components", []):
@@ -109,7 +140,7 @@ class _Runtime:
                     Path(output_directory).mkdir(parents=True, exist_ok=True)
 
     def _configure_atof(self) -> None:
-        if not self.settings.atof_enabled:
+        if not self.settings.atof_enabled or self.atof_exporter is not None:
             return
         config = self.nemo_relay.AtofExporterConfig()
         if self.settings.atof_output_directory:
@@ -121,16 +152,28 @@ class _Runtime:
         else:
             config.mode = self.nemo_relay.AtofExporterMode.Append
         self.atof_exporter = self.nemo_relay.AtofExporter(config)
-        self.atof_exporter.register("hermes.nemo_relay.atof")
+        self.atof_exporter.register(self._atof_subscriber_name)
+
+    def _clear_atof(self) -> None:
+        if self.atof_exporter is None:
+            return
+        deregister = getattr(self.atof_exporter, "deregister", None)
+        if callable(deregister):
+            try:
+                deregister(self._atof_subscriber_name)
+            except Exception:
+                logger.debug("NeMo Relay ATOF deregister failed", exc_info=True)
+        self.atof_exporter = None
 
     def ensure_session(self, kwargs: dict[str, Any]) -> _SessionState:
+        self._maybe_reinitialize_plugins_toml()
         session_id = _session_id(kwargs)
         state = self.sessions.get(session_id)
         if state is not None:
             return state
 
         state = _SessionState(session_id=session_id)
-        if self.settings.atif_enabled:
+        if self.settings.atif_enabled and not self._plugins_toml_owns_exporter("atif"):
             state.atif_exporter = self.nemo_relay.AtifExporter(
                 session_id,
                 self.settings.atif_agent_name,
@@ -189,6 +232,13 @@ class _Runtime:
                 state.atif_exporter.deregister(state.atif_subscriber_name)
             except Exception:
                 logger.debug("NeMo Relay ATIF deregister failed", exc_info=True)
+        if self._plugin_config_initialized and not self.sessions:
+            try:
+                self._clear_plugins_toml()
+            except Exception:
+                logger.debug("NeMo Relay plugins.toml clear failed", exc_info=True)
+        elif self.settings.plugins_config and not self.sessions:
+            self._plugin_config_needs_reinit = True
 
     def mark(self, name: str, kwargs: dict[str, Any]) -> None:
         state = self.ensure_session(kwargs)
@@ -235,6 +285,43 @@ class _Runtime:
             and callable(getattr(getattr(self.nemo_relay, "tools", None), "execute", None))
         )
 
+    def _run_managed_with_downstream_preservation(
+        self,
+        next_call: Callable[[Any], Any],
+        normalize_payload: Callable[[Any], Any],
+        shape_response: Callable[[Any], Any],
+        make_managed_execute: Callable[[Callable[[Any], Any]], Any],
+    ) -> Any:
+        # NeMo Relay's native managed execution may wrap a failing callback as an
+        # internal runtime error, hiding the real downstream provider/tool
+        # exception. Capture the original here and re-raise it after managed
+        # execution so Hermes retry classification still sees it. The LLM and tool
+        # paths share this scaffolding; they differ only in payload normalization,
+        # response shaping, and the Relay call itself.
+        raw_response: dict[str, Any] = {"set": False, "value": None}
+        callback_error: Exception | None = None
+        downstream_error: BaseException | None = None
+
+        def _impl(next_payload: Any) -> Any:
+            nonlocal callback_error, downstream_error
+            try:
+                raw = next_call(normalize_payload(next_payload))
+            except Exception as exc:
+                callback_error = exc
+                downstream_error = _original_downstream_error(exc)
+                raise
+            raw_response["set"] = True
+            raw_response["value"] = raw
+            return shape_response(raw)
+
+        try:
+            managed_result = _resolve_awaitable(make_managed_execute(_impl))
+        except Exception as exc:
+            if downstream_error is not None and _is_relay_wrapped_callback_error(exc, callback_error):
+                raise downstream_error
+            raise
+        return raw_response["value"] if raw_response["set"] else managed_result
+
     def execute_llm(self, kwargs: dict[str, Any]) -> Any:
         state = self.ensure_session(kwargs)
         request_body = _jsonable(kwargs.get("request") or {})
@@ -243,38 +330,37 @@ class _Runtime:
         if not callable(next_call):
             return request_body
 
-        raw_response: dict[str, Any] = {"set": False, "value": None}
-
-        def _impl(next_request: Any) -> Any:
+        def _normalize(next_request: Any) -> Any:
             next_body = getattr(next_request, "content", next_request)
-            raw = next_call(next_body if isinstance(next_body, dict) else request_body)
-            raw_response["set"] = True
-            raw_response["value"] = raw
-            return _llm_response_payload(raw)
+            return next_body if isinstance(next_body, dict) else request_body
 
-        async def _managed_execute() -> Any:
-            result = self.nemo_relay.llm.execute(
-                str(kwargs.get("provider") or "llm"),
-                request,
-                _impl,
-                handle=state.handle,
-                data=_jsonable(
-                    {
-                        "turn_id": kwargs.get("turn_id"),
-                        "api_request_id": kwargs.get("api_request_id"),
-                        "api_call_count": kwargs.get("api_call_count"),
-                        "mode": self.settings.adaptive_mode,
-                    }
-                ),
-                metadata=_metadata(kwargs),
-                model_name=str(kwargs.get("model") or ""),
-            )
-            if inspect.isawaitable(result):
-                return await result
-            return result
+        def _make_managed(impl: Callable[[Any], Any]) -> Any:
+            async def _managed_execute() -> Any:
+                result = self.nemo_relay.llm.execute(
+                    str(kwargs.get("provider") or "llm"),
+                    request,
+                    impl,
+                    handle=state.handle,
+                    data=_jsonable(
+                        {
+                            "turn_id": kwargs.get("turn_id"),
+                            "api_request_id": kwargs.get("api_request_id"),
+                            "api_call_count": kwargs.get("api_call_count"),
+                            "mode": self.settings.adaptive_mode,
+                        }
+                    ),
+                    metadata=_metadata(kwargs),
+                    model_name=str(kwargs.get("model") or ""),
+                )
+                if inspect.isawaitable(result):
+                    return await result
+                return result
 
-        managed_result = _resolve_awaitable(_managed_execute())
-        return raw_response["value"] if raw_response["set"] else managed_result
+            return _managed_execute()
+
+        return self._run_managed_with_downstream_preservation(
+            next_call, _normalize, _llm_response_payload, _make_managed
+        )
 
     def execute_tool(self, kwargs: dict[str, Any]) -> Any:
         state = self.ensure_session(kwargs)
@@ -284,37 +370,35 @@ class _Runtime:
         if not callable(next_call):
             return args
 
-        raw_response: dict[str, Any] = {"set": False, "value": None}
+        def _normalize(next_args: Any) -> Any:
+            return next_args if isinstance(next_args, dict) else args
 
-        def _impl(next_args: Any) -> Any:
-            effective_args = next_args if isinstance(next_args, dict) else args
-            raw = next_call(effective_args)
-            raw_response["set"] = True
-            raw_response["value"] = raw
-            return _jsonable(raw)
+        def _make_managed(impl: Callable[[Any], Any]) -> Any:
+            async def _managed_execute() -> Any:
+                result = self.nemo_relay.tools.execute(
+                    tool_name,
+                    args,
+                    impl,
+                    handle=state.handle,
+                    data=_jsonable(
+                        {
+                            "turn_id": kwargs.get("turn_id"),
+                            "api_request_id": kwargs.get("api_request_id"),
+                            "tool_call_id": kwargs.get("tool_call_id"),
+                            "mode": self.settings.adaptive_mode,
+                        }
+                    ),
+                    metadata=_metadata(kwargs),
+                )
+                if inspect.isawaitable(result):
+                    return await result
+                return result
 
-        async def _managed_execute() -> Any:
-            result = self.nemo_relay.tools.execute(
-                tool_name,
-                args,
-                _impl,
-                handle=state.handle,
-                data=_jsonable(
-                    {
-                        "turn_id": kwargs.get("turn_id"),
-                        "api_request_id": kwargs.get("api_request_id"),
-                        "tool_call_id": kwargs.get("tool_call_id"),
-                        "mode": self.settings.adaptive_mode,
-                    }
-                ),
-                metadata=_metadata(kwargs),
-            )
-            if inspect.isawaitable(result):
-                return await result
-            return result
+            return _managed_execute()
 
-        managed_result = _resolve_awaitable(_managed_execute())
-        return raw_response["value"] if raw_response["set"] else managed_result
+        return self._run_managed_with_downstream_preservation(
+            next_call, _normalize, _jsonable, _make_managed
+        )
 
 
 def register(ctx) -> None:
@@ -611,11 +695,29 @@ def _enabled_component_config(
 
 def _adaptive_mode(config: dict[str, Any] | None) -> str:
     if not isinstance(config, dict):
-        return "observe"
+        return "observe_only"
+    tool_parallelism = config.get("tool_parallelism")
+    if isinstance(tool_parallelism, dict):
+        mode = tool_parallelism.get("mode")
+        if isinstance(mode, str) and mode.strip():
+            return mode.strip()
     mode = config.get("mode")
     if isinstance(mode, str) and mode.strip():
         return mode.strip()
-    return "observe"
+    return "observe_only"
+
+
+def _observability_exporter_enabled(
+    plugins_config: dict[str, Any] | None,
+    exporter_name: str,
+) -> bool:
+    observability_config = _enabled_component_config(plugins_config, "observability")
+    if not isinstance(observability_config, dict):
+        return False
+    exporter_config = observability_config.get(exporter_name)
+    if not isinstance(exporter_config, dict):
+        return False
+    return exporter_config.get("enabled", True) is not False
 
 
 def _env(name: str) -> str:
@@ -737,6 +839,30 @@ def _value(obj: Any, key: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
         return obj.get(key, default)
     return getattr(obj, key, default)
+
+
+def _original_downstream_error(exc: Exception) -> BaseException:
+    # Hermes wraps downstream execution failures in a local/private exception
+    # class, so detect the wrapper by shape instead of importing it here.
+    original = getattr(exc, "original", None)
+    if exc.__class__.__name__ == "_DownstreamExecutionError" and isinstance(original, BaseException):
+        return original
+    return exc
+
+
+def _is_relay_wrapped_callback_error(exc: Exception, callback_error: Exception | None) -> bool:
+    # NeMo Relay re-wraps a failing callback as ``RuntimeError("internal error:
+    # <ClassName>: <message>")``. Match by prefix rather than exact equality so a
+    # trailing traceback/suffix in a future Relay version doesn't silently defeat
+    # the unwrap; the class-name + message prefix still discriminates the real
+    # downstream failure from unrelated Relay-internal errors. If Relay drops the
+    # leading ``internal error:`` shape entirely, this returns False and Hermes
+    # falls back to surfacing Relay's error (the pre-fix behavior) rather than
+    # masking it.
+    if callback_error is None or not isinstance(exc, RuntimeError):
+        return False
+    expected = f"internal error: {callback_error.__class__.__name__}: {callback_error}"
+    return str(exc).startswith(expected)
 
 
 def _llm_response_payload(response: Any) -> Any:

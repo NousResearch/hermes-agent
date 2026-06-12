@@ -397,31 +397,46 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
-def _get_child_timeout() -> float:
+def _get_child_timeout() -> Optional[float]:
     """Read delegation.child_timeout_seconds from config.
 
     Returns the number of seconds a single child agent is allowed to run
-    before being considered stuck.  Default: 600 s (10 minutes).
+    before being cut off, or ``None`` when no wall-clock cap applies.
+
+    Default: ``None`` (no timeout). Subagents doing legitimate heavy work
+    (deep code review, large research fan-outs, slow reasoning models) were
+    routinely killed mid-task by the old blanket cap even though they were
+    making steady progress. Failures should come from what the child is
+    actually doing — API errors, tool errors, iteration budget — not from a
+    generic delegation-level stopwatch. Stuck-child protection is handled
+    separately by the heartbeat staleness monitor, which stops refreshing
+    parent activity so the gateway inactivity timeout can fire.
+
+    Set ``delegation.child_timeout_seconds`` to a positive number to opt back
+    in to a hard cap (floor 30 s); ``0`` or a negative value means disabled.
     """
     cfg = _load_config()
     val = cfg.get("child_timeout_seconds")
     if val is not None:
         try:
-            return max(30.0, float(val))
+            parsed = float(val)
         except (TypeError, ValueError):
             logger.warning(
                 "delegation.child_timeout_seconds=%r is not a valid number; "
-                "using default %d",
+                "using default (no timeout)",
                 val,
-                DEFAULT_CHILD_TIMEOUT,
             )
+        else:
+            return None if parsed <= 0 else max(30.0, parsed)
     env_val = os.getenv("DELEGATION_CHILD_TIMEOUT_SECONDS")
     if env_val:
         try:
-            return max(30.0, float(env_val))
+            parsed = float(env_val)
         except (TypeError, ValueError):
             pass
-    return float(DEFAULT_CHILD_TIMEOUT)
+        else:
+            return None if parsed <= 0 else max(30.0, parsed)
+    return DEFAULT_CHILD_TIMEOUT
 
 
 def _get_max_spawn_depth() -> int:
@@ -544,7 +559,12 @@ def _preserve_parent_mcp_toolsets(
 
 
 DEFAULT_MAX_ITERATIONS = 50
-DEFAULT_CHILD_TIMEOUT = 600  # seconds before a child agent is considered stuck
+# No default wall-clock cap on child agents: legitimate heavy subagent work
+# (deep reviews, research fan-outs, slow reasoning models) was being killed
+# mid-task. Errors should come from what the child actually does; stuck-child
+# detection lives in the heartbeat staleness monitor below. Users can opt back
+# in via delegation.child_timeout_seconds.
+DEFAULT_CHILD_TIMEOUT: Optional[float] = None
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
 # Stale-heartbeat thresholds. A child with no API-call progress is either:
 #   - idle between turns (no current_tool) — probably stuck on a slow API call
@@ -552,7 +572,8 @@ _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during de
 #     operation (terminal command, web fetch, large file read)
 # The idle ceiling stays tight so genuinely stuck children don't mask the gateway
 # timeout. The in-tool ceiling is much higher so legit long-running tools get
-# time to finish; child_timeout_seconds (default 600s) is still the hard cap.
+# time to finish; delegation.child_timeout_seconds (off by default) remains an
+# optional hard cap for users who want one.
 _HEARTBEAT_STALE_CYCLES_IDLE = 15  # 15 * 30s = 450s idle between turns → stale
 _HEARTBEAT_STALE_CYCLES_IN_TOOL = 40  # 40 * 30s = 1200s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
@@ -725,6 +746,7 @@ def _build_child_progress_callback(
     depth: Optional[int] = None,
     model: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
+    session_ref: Optional[Dict[str, Any]] = None,
 ) -> Optional[callable]:
     """Build a callback that relays child agent tool calls to the parent display.
 
@@ -772,6 +794,11 @@ def _build_child_progress_callback(
             kw["model"] = model
         if toolsets is not None:
             kw["toolsets"] = list(toolsets)
+        # The child's own session id — filled into the shared ref once the
+        # child agent exists (the callback is built first), so every relayed
+        # event lets UIs open/inspect the subagent's session directly.
+        if session_ref and session_ref.get("session_id"):
+            kw["child_session_id"] = str(session_ref["session_id"])
         kw["tool_count"] = _tool_count[0]
         return kw
 
@@ -1021,6 +1048,7 @@ def _build_child_agent(
     # Build progress callback to relay tool calls to parent display.
     # Identity kwargs thread the subagent_id through every emitted event so the
     # TUI can reconstruct the spawn tree and route per-branch controls.
+    child_session_ref: Dict[str, Any] = {}
     child_progress_cb = _build_child_progress_callback(
         task_index,
         goal,
@@ -1031,6 +1059,7 @@ def _build_child_agent(
         depth=tui_depth,
         model=effective_model_for_cb,
         toolsets=child_toolsets,
+        session_ref=child_session_ref,
     )
 
     # Each subagent gets its own iteration budget capped at max_iterations
@@ -1154,7 +1183,7 @@ def _build_child_agent(
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,
         log_prefix=f"[subagent-{task_index}]",
-        platform=parent_agent.platform,
+        platform="subagent",
         skip_context_files=True,
         skip_memory=True,
         clarify_callback=None,
@@ -1170,6 +1199,9 @@ def _build_child_agent(
         iteration_budget=None,  # fresh budget per subagent
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
+    # Now the child exists, its session id can ride on every relayed event
+    # (including the spawn_requested below — first emit happens after this).
+    child_session_ref["session_id"] = getattr(child, "session_id", "") or ""
     # Set delegation depth so children can't spawn grandchildren
     child._delegate_depth = child_depth
     # Stash the post-degrade role for introspection (leaf if the
@@ -1181,10 +1213,19 @@ def _build_child_agent(
     child._parent_subagent_id = parent_subagent_id
     child._subagent_goal = goal
     child._parent_turn_id = getattr(parent_agent, "_current_turn_id", "") or ""
+    # Stable sidebar marker: delegate subagent sessions must stay out of
+    # session pickers even when a parent delete orphans them (parent_session_id
+    # → NULL). Mirrors /branch's ``_branched_from`` pattern — see
+    # ``list_sessions_rich`` child-exclusion clause.
+    parent_sid = getattr(parent_agent, "session_id", None)
+    if parent_sid and getattr(child, "_session_init_model_config", None) is not None:
+        child._session_init_model_config["_delegate_from"] = parent_sid
 
     # Share a credential pool with the child when possible so subagents can
     # rotate credentials on rate limits instead of getting pinned to one key.
-    child_pool = _resolve_child_credential_pool(effective_provider, parent_agent)
+    child_pool = _resolve_child_credential_pool(
+        effective_provider, parent_agent, effective_base_url
+    )
     if child_pool is not None:
         child._credential_pool = child_pool
 
@@ -1536,8 +1577,9 @@ def _run_single_child(
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
         )
 
-        # Run child with a hard timeout to prevent indefinite blocking
-        # when the child's API call or tool-level HTTP request hangs.
+        # Run child with an optional hard timeout (off by default —
+        # result(timeout=None) blocks until the child finishes). Stuck-child
+        # protection comes from the heartbeat staleness monitor instead.
         child_timeout = _get_child_timeout()
         _timeout_executor = ThreadPoolExecutor(
             max_workers=1,
@@ -1595,7 +1637,9 @@ def _run_single_child(
                 diagnostic_path = _dump_subagent_timeout_diagnostic(
                     child=child,
                     task_index=task_index,
-                    timeout_seconds=float(child_timeout),
+                    # is_timeout implies a cap was configured (result(timeout=None)
+                    # never raises FuturesTimeoutError); guard for the type checker.
+                    timeout_seconds=float(child_timeout or 0.0),
                     duration_seconds=float(duration),
                     worker_thread=_worker_thread_holder.get("t"),
                     goal=goal,
@@ -2368,7 +2412,11 @@ def delegate_task(
     )
 
 
-def _resolve_child_credential_pool(effective_provider: Optional[str], parent_agent):
+def _resolve_child_credential_pool(
+    effective_provider: Optional[str],
+    parent_agent,
+    effective_base_url: Optional[str] = None,
+):
     """Resolve a credential pool for the child agent.
 
     Rules:
@@ -2377,12 +2425,60 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     2. Different provider -> try to load that provider's own pool.
     3. No pool available -> return None and let the child keep the inherited
        fixed credential behavior.
+
+    Custom endpoints are a special case: every direct ``delegation.base_url``
+    runtime collapses to ``provider="custom"``, so bare provider equality would
+    treat two *different* custom endpoints as interchangeable and let the child
+    inherit the parent's pool. Leasing from that pool then overwrites the
+    child's delegated ``base_url`` with the parent's endpoint (issue #7833).
+    We therefore resolve custom runtimes by endpoint identity (the
+    ``custom:<name>`` pool key derived from the base_url) and only share the
+    parent's pool when both resolve to the *same* custom endpoint.
     """
     if not effective_provider:
         return getattr(parent_agent, "_credential_pool", None)
 
     parent_provider = getattr(parent_agent, "provider", None) or ""
     parent_pool = getattr(parent_agent, "_credential_pool", None)
+
+    # Custom endpoints: distinguish by endpoint identity, not the bare "custom"
+    # provider string. Two custom runtimes are only interchangeable when they
+    # resolve to the same custom:<name> pool key.
+    if effective_provider == "custom":
+        try:
+            from agent.credential_pool import get_custom_provider_pool_key, load_pool
+
+            child_key = get_custom_provider_pool_key(effective_base_url)
+            if child_key is None:
+                # Unregistered endpoint (raw delegation.base_url with no
+                # matching custom_providers entry) -> no shared pool exists.
+                # Keep the child's fixed delegated credential rather than
+                # risk inheriting the parent's custom endpoint.
+                return None
+
+            # Reuse the parent's pool only when it is the same custom endpoint.
+            parent_key = get_custom_provider_pool_key(
+                getattr(parent_agent, "base_url", None)
+            )
+            if (
+                parent_pool is not None
+                and parent_provider == "custom"
+                and parent_key is not None
+                and parent_key == child_key
+            ):
+                return parent_pool
+
+            pool = load_pool(child_key)
+            if pool is not None and pool.has_credentials():
+                return pool
+        except Exception as exc:
+            logger.debug(
+                "Could not resolve custom credential pool for child endpoint '%s': %s",
+                effective_base_url,
+                exc,
+            )
+        return None
+
     if parent_pool is not None and effective_provider == parent_provider:
         return parent_pool
 

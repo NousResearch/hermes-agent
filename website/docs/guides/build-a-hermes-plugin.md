@@ -488,6 +488,53 @@ When `security.allow_lazy_installs: false` is set globally, `ensure()` raises `F
 
 
 
+### Thread-safe lazy singletons
+
+Plugins often cache an expensive object — an SDK client, an HTTP session, a connection pool — in a module-level variable built on first use:
+
+```python
+_client = None
+
+def get_client():
+    global _client
+    if _client is not None:
+        return _client
+    _client = ExpensiveClient(...)   # ← TOCTOU race
+    return _client
+```
+
+This is a footgun. Hermes runs multiple threads in one process (delegated tool calls, background workers, the self-improvement fork), so two threads can hit `get_client()` before `_client` is set, **both** pass the `is not None` check, **both** run the expensive build, and the second write clobbers the first — leaking whatever resource the loser opened (connection, file handle, background thread).
+
+Don't hand-roll the lock. Use the helpers in `plugins/plugin_utils.py`:
+
+```python
+from plugins.plugin_utils import lazy_singleton, SingletonSlot
+
+# Zero-arg accessor → decorate it:
+@lazy_singleton
+def get_client():
+    return ExpensiveClient(load_config())   # runs exactly once
+
+client = get_client()    # safe across threads
+get_client.reset()       # drop the instance (tests / teardown)
+
+
+# Accessor that takes a build argument → use a slot:
+_slot: SingletonSlot = SingletonSlot()
+
+def get_client(config=None):
+    return _slot.get(lambda: ExpensiveClient(resolve(config)))
+
+def reset_client():
+    _slot.reset()
+```
+
+Both serialize concurrent first calls with double-checked locking and run the factory at most once. If the factory raises, nothing is cached and the next call retries. The honcho memory plugin (`plugins/memory/honcho/client.py`) is the reference consumer.
+
+> Rule of thumb: any time you write `global _something` followed by a `is None` check and a build, reach for one of these instead.
+
+
+
 ### Conditional tool availability
 
 For tools that depend on optional libraries:
@@ -779,6 +826,39 @@ def register(ctx):
 - **Explicit override:** If the caller passes `parent_agent=` explicitly, it is respected and not overwritten.
 
 This is the public, stable interface for tool dispatch from plugin commands. Plugins should not reach into `ctx._cli_ref.agent` or similar private state.
+
+### Handle Slack Block Kit button clicks
+
+Plugins that post Block Kit messages with interactive elements (buttons, overflow menus, datepickers, etc.) can register the click handlers directly with the Slack adapter — no monkey-patching of `slack_bolt.AsyncApp` required.
+
+```python
+def register(ctx):
+    async def _on_approve(ack, body, action):
+        # ack within 3 seconds — slack_bolt requirement.
+        await ack()
+        # body["channel"]["id"], body["user"]["id"], body["message"]["ts"]
+        # action["action_id"], action["value"]
+        sweep_id = (action.get("value") or "").split("|", 1)[-1]
+        # ...do the deterministic work, then post a follow-up.
+
+    ctx.register_slack_action_handler("inbox_sweep_approve", _on_approve)
+```
+
+**Signature:** `ctx.register_slack_action_handler(action_id, callback) -> None`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `action_id` | `str \| re.Pattern \| dict` | Whatever `slack_bolt.App.action()` accepts: a literal `action_id`, a compiled regex matching multiple ids, or a constraint dict like `{"action_id": "...", "block_id": "..."}` |
+| `callback` | async callable | Receives `(ack, body, action)` per the slack_bolt convention |
+
+**Runtime behavior:**
+
+- The handler is queued at plugin-load time and wired into the adapter's `slack_bolt.AsyncApp` when the Slack platform connects.
+- Each callback is wrapped defensively: if your handler raises, the gateway logs the error and best-effort-acks the click so Slack stops retrying.
+- Standard slack_bolt rules apply — `await ack()` within 3 seconds, then do longer work.
+- For multi-workspace deployments the handler fires for clicks from any connected workspace; use `body["team"]["id"]` if you need to scope behaviour.
+
+This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
 
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.

@@ -24,6 +24,7 @@ import {
   $visibleModels,
   collapseModelFamilies,
   DEFAULT_VISIBLE_PER_PROVIDER,
+  effectiveVisibleKeys,
   type ModelFamily,
   modelVisibilityKey,
   setModelVisibilityOpen
@@ -86,13 +87,17 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
     : null
 
   const providers = modelOptions.data?.providers
+  const effectiveVisibleModels = useMemo(
+    () => effectiveVisibleKeys(visibleModels, providers ?? []),
+    [visibleModels, providers]
+  )
 
   const switchTo = (model: string, provider: string) =>
     onSelectModel({ model, persistGlobal: !activeSessionId, provider })
 
   const groups = useMemo(
-    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, visibleModels),
-    [providers, search, optionsModel, optionsProvider, visibleModels]
+    () => groupModels(providers ?? [], search, { model: optionsModel, provider: optionsProvider }, effectiveVisibleModels),
+    [providers, search, optionsModel, optionsProvider, effectiveVisibleModels]
   )
 
   return (
@@ -157,8 +162,9 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                   currentFastMode
                 )
 
-                // Grayed text: active row shows live state (Fast + effort);
-                // others show a fast-capability hint.
+                // Grayed text is live session state only. Do not label inactive
+                // rows as "Fast" just because they have a fast-capable sibling:
+                // that makes an off Fast toggle look like it is already on.
                 const meta = isCurrent
                   ? [
                       fastControl.kind !== 'none' && fastControl.on ? copy.fast : null,
@@ -166,9 +172,7 @@ export function ModelMenuPanel({ gateway, onSelectModel, requestGateway }: Model
                     ]
                       .filter(Boolean)
                       .join(' ')
-                  : caps?.fast || family.fastId
-                    ? copy.fast
-                    : ''
+                  : ''
 
                 // Every row is a hover-Edit submenu trigger. Activating it
                 // (pointer or keyboard) switches to the family's base model;

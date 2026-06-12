@@ -229,6 +229,7 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.queue_prefetch_all("next turn")
+        mgr.flush_pending(timeout=5)
         assert p1.queued_prefetches == ["next turn"]
         assert p2.queued_prefetches == ["next turn"]
 
@@ -240,6 +241,7 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.sync_all("user msg", "assistant msg")
+        mgr.flush_pending(timeout=5)
         assert p1.synced_turns == [("user msg", "assistant msg")]
         assert p2.synced_turns == [("user msg", "assistant msg")]
 
@@ -253,7 +255,7 @@ class TestMemoryManager:
         ]
 
         mgr.sync_all("user msg", "assistant msg", session_id="sess-1", messages=messages)
-
+        mgr.flush_pending(timeout=5)
         assert p.synced_turns == [("user msg", "assistant msg", "sess-1", messages)]
 
     def test_sync_all_omits_messages_for_legacy_provider(self):
@@ -262,7 +264,7 @@ class TestMemoryManager:
         mgr.add_provider(p)
 
         mgr.sync_all("user msg", "assistant msg", messages=[{"role": "tool"}])
-
+        mgr.flush_pending(timeout=5)
         assert p.synced_turns == [("user msg", "assistant msg")]
 
     def test_sync_failure_doesnt_block_others(self):
@@ -275,6 +277,7 @@ class TestMemoryManager:
         mgr.add_provider(p2)
 
         mgr.sync_all("user", "assistant")
+        mgr.flush_pending(timeout=5)
         # p1 failed but p2 still synced
         assert p2.synced_turns == [("user", "assistant")]
 
@@ -974,6 +977,81 @@ class TestMemoryContextFencing:
         fence_end = combined.index("</memory-context>")
         assert "Alice" in combined[fence_start:fence_end]
         assert combined.index("weather") < fence_start
+
+
+class TestFlattenMessageContent:
+    """Multimodal message content (list of typed parts) must flatten to a
+    plain string before reaching providers — a raw list crashes their regex
+    sanitization with ``expected string or bytes-like object, got 'list'``.
+
+    The memory boundary reuses ``_summarize_user_message_for_log`` (the same
+    helper logging/trajectory use) with ``sep="\\n"`` instead of a forked copy.
+    """
+
+    def test_string_passthrough(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log("hello", sep="\n") == "hello"
+
+    def test_none_is_empty(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log(None, sep="\n") == ""
+
+    def test_text_parts_joined_with_sep(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]
+        assert _summarize_user_message_for_log(content, sep="\n") == "first\nsecond"
+
+    def test_default_sep_is_space(self):
+        """Logging/trajectory callers (the default) keep the space-join."""
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [
+            {"type": "text", "text": "first"},
+            {"type": "text", "text": "second"},
+        ]
+        assert _summarize_user_message_for_log(content) == "first second"
+
+    def test_image_part_becomes_marker(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [
+            {"type": "text", "text": "look at this"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,xyz"}},
+        ]
+        assert _summarize_user_message_for_log(content, sep="\n") == "[1 image] look at this"
+
+    def test_image_only_message(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        assert _summarize_user_message_for_log(content, sep="\n") == "[2 images]"
+
+    def test_unknown_parts_skipped(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        content = [{"type": "audio", "data": "..."}, {"type": "text", "text": "ok"}, 42]
+        assert _summarize_user_message_for_log(content, sep="\n") == "ok"
+
+    def test_bare_strings_in_list(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log(["plain", "strings"], sep="\n") == "plain\nstrings"
+
+    def test_scalar_fallback(self):
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        assert _summarize_user_message_for_log(42, sep="\n") == "42"
+
+    def test_flattened_output_is_regex_safe(self):
+        """The original failure: sanitize_context(list) raised TypeError."""
+        from agent.codex_responses_adapter import _summarize_user_message_for_log
+        from agent.memory_manager import sanitize_context
+        content = [
+            {"type": "text", "text": "fix this bug"},
+            {"type": "image_url", "image_url": {"url": "data:..."}},
+        ]
+        # Must not raise.
+        assert sanitize_context(_summarize_user_message_for_log(content, sep="\n"))
 
 
 # ---------------------------------------------------------------------------

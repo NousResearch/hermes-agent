@@ -158,6 +158,30 @@ class TestCreateProfile:
                         "plans", "workspace", "cron"]:
             assert (profile_dir / subdir).is_dir(), f"Missing subdir: {subdir}"
 
+    def test_seeds_placeholder_env_file(self, profile_env):
+        """Fresh profiles get their own .env (owner-only) so channel/env
+        writes are profile-scoped from day one instead of falling through
+        to the shell environment / root install."""
+        import stat
+        profile_dir = create_profile("coder", no_alias=True)
+        env_path = profile_dir / ".env"
+        assert env_path.exists()
+        content = env_path.read_text(encoding="utf-8")
+        # Placeholder only — no credentials leak in from anywhere.
+        assert all(
+            line.startswith("#") or not line.strip()
+            for line in content.splitlines()
+        )
+        mode = stat.S_IMODE(env_path.stat().st_mode)
+        assert mode == 0o600
+
+    def test_seeded_env_does_not_clobber_cloned_env(self, profile_env):
+        tmp_path = profile_env
+        default_home = tmp_path / ".hermes"
+        (default_home / ".env").write_text("KEY=val")
+        profile_dir = create_profile("coder", clone_config=True, no_alias=True)
+        assert (profile_dir / ".env").read_text() == "KEY=val"
+
     def test_duplicate_raises_file_exists(self, profile_env):
         create_profile("coder", no_alias=True)
         with pytest.raises(FileExistsError):
@@ -304,7 +328,9 @@ class TestCreateProfile:
         profile_dir = create_profile("coder", clone_config=True, no_alias=True)
         # No error; optional files just not copied
         assert not (profile_dir / "config.yaml").exists()
-        assert not (profile_dir / ".env").exists()
+        # .env is always seeded (placeholder) so the profile has its own
+        # credentials file even when the clone source lacked one.
+        assert (profile_dir / ".env").exists()
         # SOUL.md is always seeded with the default even when clone source lacks it
         assert (profile_dir / "SOUL.md").exists()
 
@@ -441,6 +467,18 @@ class TestDeleteProfile:
     def test_nonexistent_raises_file_not_found(self, profile_env):
         with pytest.raises(FileNotFoundError):
             delete_profile("nonexistent", yes=True)
+
+    def test_rmtree_failure_raises(self, profile_env):
+        profile_dir = create_profile("coder", no_alias=True)
+        set_active_profile("coder")
+
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles.shutil.rmtree", side_effect=PermissionError("locked")):
+            with pytest.raises(RuntimeError, match="Could not remove profile directory"):
+                delete_profile("coder", yes=True)
+
+        assert profile_dir.is_dir()
+        assert get_active_profile() == "default"
 
 
 # ===================================================================

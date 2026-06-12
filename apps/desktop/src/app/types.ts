@@ -27,6 +27,20 @@ export interface ImageDetachResponse {
   count?: number
 }
 
+export interface FileAttachResponse {
+  attached?: boolean
+  message?: string
+  // Gateway-side absolute path the file was staged to.
+  path?: string
+  // Workspace-relative path used to build ref_text.
+  ref_path?: string
+  // Rewritten @file: ref that resolves on the gateway (workspace-relative).
+  ref_text?: string
+  // True when bytes/host file were copied into the session workspace.
+  uploaded?: boolean
+  name?: string
+}
+
 export interface SlashExecResponse {
   output?: string
   warning?: string
@@ -45,6 +59,26 @@ export interface SessionTitleResponse {
   // to be applied on the first turn (see tui_gateway session.title handler).
   pending?: boolean
   session_key?: string
+}
+
+export interface HandoffRequestResponse {
+  queued?: boolean
+  session_key?: string
+  platform?: string
+  // Human-readable home channel name for the destination platform.
+  home_name?: string
+}
+
+export interface HandoffStateResponse {
+  // '' | 'pending' | 'running' | 'completed' | 'failed'
+  state?: string
+  platform?: string
+  error?: string
+}
+
+export interface HandoffFailResponse {
+  failed?: boolean
+  state?: string
 }
 
 export interface ExecCommandDispatchResponse {
@@ -89,6 +123,13 @@ export interface ClientSessionState {
   messages: ChatMessage[]
   branch: string
   cwd: string
+  model: string
+  provider: string
+  reasoningEffort: string
+  serviceTier: string
+  fast: boolean
+  yolo: boolean
+  personality: string
   busy: boolean
   awaitingResponse: boolean
   streamId: string | null

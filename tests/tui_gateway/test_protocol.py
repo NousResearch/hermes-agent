@@ -394,6 +394,121 @@ def test_session_resume_handles_multimodal_list_content(server, monkeypatch):
     ]
 
 
+def test_session_resume_lazy_registers_watch_session_without_agent(server, monkeypatch):
+    """``lazy: true`` (subagent watch windows) must register the live session
+    — keyed for the child mirror, on this transport — WITHOUT building an
+    agent. The eager build is what made opening a subagent window contend
+    with the already-running parent turn."""
+
+    target = "20260612_000000_child99"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [
+                {"role": "user", "content": "delegated goal"},
+            ]
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("lazy resume must not build an agent")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(server, "_make_agent", _boom)
+
+    resp = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+
+    assert "error" not in resp
+    result = resp["result"]
+    assert result["resumed"] == target
+    assert result["session_key"] == target
+    assert result["info"]["lazy"] is True
+    assert result["info"]["desktop_contract"] == server.DESKTOP_BACKEND_CONTRACT
+    assert result["messages"] == [{"role": "user", "text": "delegated goal"}]
+
+    sid = result["session_id"]
+    session = server._sessions[sid]
+    assert session["agent"] is None
+    # The child mirror finds the watch window by stored key.
+    assert server._find_live_session_by_key(target) == (sid, session)
+    # A later prompt.submit upgrade must continue THIS stored conversation.
+    assert session["resume_session_id"] == target
+    # No build started: the idle reaper must still be able to evict it, and
+    # the live status must not report a never-ending "starting".
+    assert not session["agent_ready"].is_set()
+    assert server._session_live_status(sid, session) != "starting"
+    session["transport"] = server._detached_ws_transport
+    far_future = time.time() + 999999
+    assert server._session_is_evictable(sid, session, far_future)
+
+    # Resuming again (window refresh) reuses the same live session.
+    resp2 = server.handle_request(
+        {
+            "id": "r2",
+            "method": "session.resume",
+            "params": {"session_id": target, "cols": 100, "lazy": True},
+        }
+    )
+    assert "error" not in resp2
+    assert resp2["result"]["session_id"] == sid
+    assert len(server._sessions) == 1
+
+
+def test_session_resume_lazy_reports_running_for_inflight_child(server, monkeypatch):
+    """A watch window attaching to a child mid-delegation must learn the run is
+    live from the resume response itself — the child can sit silent inside a
+    long tool call, so waiting for the next stream event leaves the window
+    looking dead."""
+
+    target = "20260612_000000_child42"
+
+    class _DB:
+        def get_session(self, _sid):
+            return {"id": target}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def reopen_session(self, _sid):
+            return None
+
+        def get_messages_as_conversation(self, _sid, include_ancestors=False):
+            return [{"role": "user", "content": "delegated goal"}]
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+    monkeypatch.setattr(
+        server, "_make_agent", lambda *a, **k: (_ for _ in ()).throw(AssertionError("no build"))
+    )
+    server._active_child_runs[target] = time.time()
+    try:
+        resp = server.handle_request(
+            {
+                "id": "r1",
+                "method": "session.resume",
+                "params": {"session_id": target, "cols": 100, "lazy": True},
+            }
+        )
+    finally:
+        server._active_child_runs.pop(target, None)
+
+    assert "error" not in resp
+    assert resp["result"]["running"] is True
+    assert resp["result"]["status"] == "streaming"
+
+
 def test_session_resume_reuses_existing_live_session(server, monkeypatch):
     """Repeated resume must not allocate duplicate live agents."""
 
@@ -611,6 +726,44 @@ def test_session_resume_live_payload_uses_current_history_with_ancestors(server,
         {"role": "user", "text": "new live turn"},
         {"role": "assistant", "text": "new live reply"},
     ]
+
+
+def test_session_activate_rebinds_orphaned_ws_session_to_current_transport(server, monkeypatch):
+    """Reconnect + activate must reattach a parked live session before orphan reap."""
+
+    class _Transport:
+        def write(self, _obj):
+            return True
+
+    sid = "runtime01"
+    old_transport = server._stdio_transport
+    new_transport = _Transport()
+    server._sessions[sid] = {
+        "agent": types.SimpleNamespace(model="test/model"),
+        "created_at": 123.0,
+        "history": [],
+        "history_lock": threading.RLock(),
+        "last_active": 123.0,
+        "running": False,
+        "session_key": "20260409_010101_abc123",
+        "transport": old_transport,
+    }
+    monkeypatch.setattr(server, "current_transport", lambda: new_transport)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda _agent, _session=None: {"model": "test/model"},
+    )
+
+    resp = server.handle_request(
+        {"id": "activate", "method": "session.activate", "params": {"session_id": sid}}
+    )
+
+    assert "error" not in resp
+    assert resp["result"]["session_id"] == sid
+    assert server._sessions[sid]["transport"] is new_transport
+    assert not server._ws_session_is_orphaned(server._sessions[sid])
 
 
 def test_session_branch_persists_branched_from_marker(server, monkeypatch):

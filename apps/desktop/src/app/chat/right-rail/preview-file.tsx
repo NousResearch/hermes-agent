@@ -10,12 +10,16 @@ import { useEffect, useMemo, useState } from 'react'
 import ShikiHighlighter from 'react-shiki'
 import { Streamdown } from 'streamdown'
 
+import { requestComposerFocus, requestComposerInsertRefs } from '@/app/chat/composer/focus'
+import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { HERMES_PATHS_MIME } from '@/app/chat/hooks/use-composer-actions'
+import { isAddSelectionShortcut } from '@/app/right-sidebar/terminal/selection'
 import { PageLoader } from '@/components/page-loader'
 import { translateNow, useI18n } from '@/i18n'
 import { readDesktopFileDataUrl, readDesktopFileText } from '@/lib/desktop-fs'
 import { cn } from '@/lib/utils'
 import type { PreviewTarget } from '@/store/preview'
+import { $currentCwd } from '@/store/session'
 
 const SHIKI_THEME = { dark: 'github-dark-default', light: 'github-light-default' } as const
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -356,6 +360,38 @@ function SourceView({ filePath, language, text }: { filePath: string; language: 
   const handleDragStart = (event: ReactDragEvent<HTMLElement>, line: number) => {
     startLineDrag(event, filePath, inSelection(line) && selection ? selection : { end: line, start: line })
   }
+
+  // ⌘/Ctrl+L with a line selection drops the same `@line:path:start-end` ref the
+  // gutter drag produces — so the keyboard path mirrors dragging the lines into
+  // the composer. Capture-phase + stopPropagation so it beats the terminal's
+  // global ⌘L handler (which would otherwise grab the native text selection).
+  useEffect(() => {
+    if (!selection) {
+      return
+    }
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!isAddSelectionShortcut(event)) {
+        return
+      }
+
+      const lineEnd = selection.end > selection.start ? selection.end : undefined
+      const ref = droppedFileInlineRef({ line: selection.start, lineEnd, path: filePath }, $currentCwd.get())
+
+      if (!ref) {
+        return
+      }
+
+      event.preventDefault()
+      event.stopPropagation()
+      requestComposerInsertRefs([ref])
+      requestComposerFocus('main')
+    }
+
+    window.addEventListener('keydown', onKeyDown, { capture: true })
+
+    return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
+  }, [filePath, selection])
 
   return (
     <div className="grid min-w-max grid-cols-[auto_minmax(0,1fr)] font-mono text-xs leading-relaxed">

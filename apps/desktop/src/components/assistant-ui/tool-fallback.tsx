@@ -12,9 +12,9 @@ import { DiffLines } from '@/components/chat/diff-lines'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
-import { BrailleSpinner } from '@/components/ui/braille-spinner'
 import { CopyButton } from '@/components/ui/copy-button'
 import { FadeText } from '@/components/ui/fade-text'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { ToolIcon } from '@/components/ui/tool-icon'
 import { useI18n } from '@/i18n'
 import { PrettyLink, LinkifiedText as SharedLinkifiedText, urlSlugTitleLabel } from '@/lib/external-link'
@@ -100,7 +100,7 @@ function rawTechnicalTrace(args: unknown, result: unknown): string {
 function statusGlyph(status: ToolStatus, copy: ToolStatusCopy): ReactNode {
   if (status === 'running') {
     return (
-      <BrailleSpinner
+      <GlyphSpinner
         ariaLabel={copy.statusRunning}
         className="size-3.5 shrink-0 text-[0.95rem] text-(--ui-text-tertiary)"
         spinner="breathe"
@@ -114,10 +114,7 @@ function statusGlyph(status: ToolStatus, copy: ToolStatusCopy): ReactNode {
 
   if (status === 'warning') {
     return (
-      <AlertCircle
-        aria-label={copy.statusRecovered}
-        className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
-      />
+      <AlertCircle aria-label={copy.statusRecovered} className="size-3.5 shrink-0 text-amber-600 dark:text-amber-400" />
     )
   }
 

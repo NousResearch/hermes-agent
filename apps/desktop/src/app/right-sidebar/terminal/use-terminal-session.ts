@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
 import { triggerHaptic } from '@/lib/haptics'
+import { $filePreviewTarget, $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
 import { makeTerminalReader, setActiveTerminalReader } from './buffer'
@@ -19,6 +20,17 @@ import {
 } from './selection'
 
 type TerminalStatus = 'closed' | 'open' | 'starting'
+
+// ⌘/Ctrl+L is a global shortcut, so a text selection in the file preview pane
+// lands in this handler with no xterm selection. Label those with the previewed
+// file's name instead of the shell, so the composer ref reads as a file quote
+// rather than a bogus "zsh:N lines".
+function previewSelectionLabel(): string {
+  const target = $filePreviewTarget.get() ?? $previewTarget.get()
+  const source = target?.path || target?.url || ''
+
+  return source.split(/[\\/]/).filter(Boolean).pop() || target?.label?.trim() || ''
+}
 
 const HERMES_PATHS_MIME = 'application/x-hermes-paths'
 
@@ -257,16 +269,20 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   )
 
   const addSelectionToChat = useCallback(() => {
-    const selectedText = readSelection() || selectionRef.current
+    const termSelection = (termRef.current?.getSelection() || selectionRef.current).trim()
+    const selectedText = termSelection || window.getSelection()?.toString() || ''
     const trimmed = selectedText.trim()
 
     if (!trimmed) {
       return
     }
 
-    const label =
-      selectionLabelRef.current ||
-      (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
+    // Terminal selection → shell-anchored label; anything else came from the
+    // preview pane sharing this global shortcut → label it with the file.
+    const label = termSelection
+      ? selectionLabelRef.current ||
+        (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
+      : previewSelectionLabel() || 'selection'
 
     onAddSelectionToChatRef.current(trimmed, label)
     termRef.current?.clearSelection()
@@ -275,7 +291,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     setSelection('')
     setSelectionStyle(null)
     triggerHaptic('selection')
-  }, [readSelection])
+  }, [])
 
   // Always listen — gating on the React selection state misses selections the
   // TUI redraw races. Only swallow ⌘/Ctrl+L when there's text to send, else it

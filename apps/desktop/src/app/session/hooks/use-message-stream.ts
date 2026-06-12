@@ -18,7 +18,9 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { gatewayEventRequiresSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
+import { parseTodos } from '@/lib/todos'
 import { setClarifyRequest } from '@/store/clarify'
+import { refreshBackgroundProcesses } from '@/store/composer-status'
 import { $gateway } from '@/store/gateway'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
@@ -37,6 +39,7 @@ import {
   setYoloActive
 } from '@/store/session'
 import { clearSessionSubagents, pruneDelegateFallbackSubagents, upsertSubagent } from '@/store/subagents'
+import { setSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import type { RpcEvent } from '@/types/hermes'
 
@@ -52,6 +55,7 @@ interface MessageStreamOptions {
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   refreshSessions: () => Promise<void>
+  sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -67,15 +71,7 @@ interface QueuedStreamDeltas {
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    | 'branch'
-    | 'cwd'
-    | 'fast'
-    | 'model'
-    | 'personality'
-    | 'provider'
-    | 'reasoningEffort'
-    | 'serviceTier'
-    | 'yolo'
+    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -253,8 +249,14 @@ export function useMessageStream({
   queryClient,
   refreshHermesConfig,
   refreshSessions,
+  sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
+  const sessionInterrupted = useCallback(
+    (sessionId: string) => sessionStateByRuntimeIdRef.current.get(sessionId)?.interrupted ?? false,
+    [sessionStateByRuntimeIdRef]
+  )
+
   // Patch the in-flight assistant message (or seed it). Centralises the
   // streamId/groupId bookkeeping every event callback would otherwise repeat.
   const mutateStream = useCallback(
@@ -478,6 +480,20 @@ export function useMessageStream({
       // a tool part can't jump ahead of the text that preceded it.
       flushQueuedDeltas(sessionId)
 
+      if (sessionInterrupted(sessionId)) {
+        return
+      }
+
+      // The composer status stack owns todo display now (no inline panel) —
+      // mirror every todo state the tool reports into its session store.
+      if (payload?.name === 'todo') {
+        const todos = parseTodos(payload.todos) ?? parseTodos(payload.result) ?? parseTodos(payload.args)
+
+        if (todos) {
+          setSessionTodos(sessionId, todos)
+        }
+      }
+
       if (!nativeSubagentSessionsRef.current.has(sessionId)) {
         for (const subagentPayload of delegateTaskPayloads(payload, phase, sourceEventType)) {
           upsertSubagent(
@@ -496,7 +512,7 @@ export function useMessageStream({
         { pending: m => phase !== 'complete' || (m.pending ?? false) }
       )
     },
-    [flushQueuedDeltas, mutateStream]
+    [flushQueuedDeltas, mutateStream, sessionInterrupted]
   )
 
   const completeAssistantMessage = useCallback(
@@ -677,9 +693,11 @@ export function useMessageStream({
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
       const explicitSid = event.session_id || ''
+
       if (!explicitSid && gatewayEventRequiresSessionId(event.type)) {
         return
       }
+
       const sessionId = explicitSid || activeSessionIdRef.current
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
@@ -875,13 +893,22 @@ export function useMessageStream({
           // the sidebar indicator clears as soon as it's answered, not only at
           // message.complete.
           updateSessionState(sessionId, state => (state.needsInput ? { ...state, needsInput: false } : state))
+
+          // terminal/process tool calls are the only things that spawn or reap
+          // background processes — sync the composer status stack right after.
+          if (
+            !sessionInterrupted(sessionId) &&
+            (payload?.name === 'terminal' || payload?.name === 'process')
+          ) {
+            void refreshBackgroundProcesses(sessionId)
+          }
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
           recordToolDiff(payload.tool_id || payload.name || '', payload.inline_diff)
         }
       } else if (SUBAGENT_EVENT_TYPES.has(event.type)) {
-        if (sessionId && payload) {
+        if (sessionId && payload && !sessionInterrupted(sessionId)) {
           if (!nativeSubagentSessionsRef.current.has(sessionId)) {
             pruneDelegateFallbackSubagents(sessionId)
           }
@@ -987,6 +1014,12 @@ export function useMessageStream({
             text: result ? JSON.stringify(result) : ''
           })
         }
+      } else if (event.type === 'status.update') {
+        // The gateway's notification poller announces background process
+        // completions / watch matches here — re-sync the status stack.
+        if (sessionId && payload?.kind === 'process') {
+          void refreshBackgroundProcesses(sessionId)
+        }
       } else if (event.type === 'error') {
         const errorMessage = payload?.message || 'Hermes reported an error'
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
@@ -1027,6 +1060,7 @@ export function useMessageStream({
       flushQueuedDeltas,
       queryClient,
       refreshHermesConfig,
+      sessionInterrupted,
       updateSessionState,
       upsertToolCall
     ]

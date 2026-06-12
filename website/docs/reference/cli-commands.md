@@ -361,13 +361,29 @@ For bot-token platforms (Telegram, Discord, Slack, Signal, SMS, WhatsApp-CloudAP
 | Option | Description |
 |--------|-------------|
 | `-t`, `--to <TARGET>` | Delivery target. Formats: `platform` (uses home channel), `platform:chat_id`, `platform:chat_id:thread_id`, or `platform:#channel-name`. Examples: `telegram`, `telegram:-1001234567890`, `discord:#ops`, `slack:C0123ABCD`, `signal:+15551234567`. |
-| `-f`, `--file <PATH>` | Read the message body from `PATH`. Pass `-` to force reading from stdin. |
+| `-f`, `--file <PATH>` | Read the message body from `PATH` (text files only — logs, reports, markdown). Pass `-` to force reading from stdin. To send an image or other binary file, use `MEDIA:<path>` (see below). |
 | `-s`, `--subject <LINE>` | Prepend a subject/header line before the message body. |
 | `-l`, `--list [platform]` | List configured targets across all platforms (or only the given platform). |
 | `-q`, `--quiet` | Suppress stdout on success — useful in scripts (rely on exit code only). |
 | `--json` | Emit raw JSON result instead of human-readable output. |
 
 If neither a positional `message` argument nor `--file` is provided, `hermes send` reads from stdin when it is not a TTY. Exit codes: `0` on success, `1` on delivery/backend failure, `2` on usage errors.
+
+### Sending images and other media
+
+`--file` is for *text* bodies only. To deliver an image, document, video, or audio file as a native platform attachment, reference it inside the message text with the `MEDIA:<local_path>` directive:
+
+```bash
+hermes send --to telegram "MEDIA:/tmp/screenshot.png"
+hermes send --to telegram "Build chart for today MEDIA:/tmp/chart.png"   # with caption
+hermes send --to discord:#ops "MEDIA:/tmp/report.pdf"
+```
+
+By default, image files are sent as photos (platforms like Telegram recompress these). Add `[[as_document]]` to the message to deliver them as uncompressed file attachments instead:
+
+```bash
+hermes send --to telegram "[[as_document]] MEDIA:/tmp/screenshot.png"
+```
 
 Examples:
 

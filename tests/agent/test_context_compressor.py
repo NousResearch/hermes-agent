@@ -1252,6 +1252,48 @@ class TestCompressWithClient:
             "respond to the message below, not the summary above ---"
         )
 
+    def test_assistant_role_summary_carries_end_marker(self):
+        """When the summary lands as standalone role='assistant' (head ends
+        with user), the message body must include the explicit
+        '--- END OF CONTEXT SUMMARY ---' marker. Without it, models may
+        regurgitate the summary text as their own output (#33256).
+        """
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "[CONTEXT SUMMARY]: stuff happened"
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        # head_last=user → summary_role="assistant" (same setup as
+        # test_summary_role_avoids_consecutive_user_when_head_ends_with_user).
+        # With min_tail=3, tail = last 3 messages (indices 5-7).
+        # head_last=user, tail_first=user → the assistant-role summary does
+        # not collide with either neighbor and should be inserted standalone.
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "user", "content": "msg 2"},  # last head — user
+            {"role": "assistant", "content": "msg 3"},
+            {"role": "user", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        summary_msg = next(
+            m for m in result if (m.get("content") or "").startswith(SUMMARY_PREFIX)
+        )
+        assert summary_msg["role"] == "assistant"
+        assert "END OF CONTEXT SUMMARY" in summary_msg["content"]
+        assert summary_msg["content"].rstrip().endswith(
+            "respond to the message below, not the summary above ---"
+        )
+
     def test_summary_role_avoids_consecutive_user_messages(self):
         """Summary role should alternate with the last head message to avoid consecutive same-role messages."""
         mock_client = MagicMock()

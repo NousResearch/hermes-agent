@@ -350,6 +350,30 @@ def _check_gateway_service_linger(issues: list[str]) -> None:
         check_warn("Could not verify systemd linger", f"({linger_detail})")
 
 
+def _check_launchd_gateway_state(issues: list[str]) -> None:
+    """Warn when macOS launchd metadata disagrees with a live gateway PID."""
+    if sys.platform != "darwin":
+        return
+    try:
+        from gateway.status import get_running_pid
+        from hermes_cli.status_warnings import collect_launchd_gateway_warning
+
+        warning = collect_launchd_gateway_warning(gateway_pid=get_running_pid())
+    except Exception:
+        return
+    if not warning:
+        return
+    _section("Gateway Service")
+    check_warn(
+        "Launchd gateway state mismatch",
+        "(pid={gateway_pid}, launchctl_status={launchctl_status}, "
+        "LastExitStatus={last_exit_status})".format(**warning),
+    )
+    check_info(
+        "Inspect `launchctl list <label>` and gateway logs before deciding whether to restart."
+    )
+
+
 _APIKEY_PROVIDERS_CACHE: list | None = None
 
 
@@ -861,6 +885,22 @@ def run_doctor(args):
         except Exception:
             pass
 
+        try:
+            from hermes_cli.status_warnings import collect_config_version_drift
+
+            drift = collect_config_version_drift()
+            if drift.get("behind"):
+                detail = ", ".join(
+                    f"{item['profile']} v{item['config_version']}→v{item['latest_config_version']}"
+                    for item in drift["behind"][:8]
+                )
+                extra = len(drift["behind"]) - 8
+                if extra > 0:
+                    detail = f"{detail}, +{extra} more"
+                check_warn("Config version drift across profiles", f"({detail})")
+        except Exception:
+            pass
+
         # Detect stale root-level model keys (known bug source — PR #4329)
         try:
             import yaml
@@ -1070,6 +1110,31 @@ def run_doctor(args):
     except Exception:
         pass
 
+    try:
+        from hermes_cli.status_warnings import collect_provider_auth_diagnostic
+
+        auth_diag = collect_provider_auth_diagnostic()
+        pool = auth_diag.get("credential_pool") or {}
+        if auth_diag.get("config_provider"):
+            detail_parts = [
+                f"pool_source={pool.get('source', 'none')}",
+                f"entries={pool.get('entries', 0)}",
+            ]
+            entry_statuses = pool.get("entry_statuses") or []
+            if entry_statuses:
+                first_status = entry_statuses[0]
+                for key in ("last_status", "last_error_code", "last_error_reason"):
+                    if first_status.get(key) is not None:
+                        detail_parts.append(f"{key}={first_status[key]}")
+            check_info(
+                f"Default provider auth diagnostic: {auth_diag.get('config_provider')} "
+                f"({', '.join(detail_parts)})"
+            )
+        for warning in auth_diag.get("warnings", []):
+            check_warn(str(warning.get("message") or warning.get("code")))
+    except Exception:
+        pass
+
     _section("Directory Structure")
     hermes_home = HERMES_HOME
     if hermes_home.exists():
@@ -1227,6 +1292,7 @@ def run_doctor(args):
             pass
 
     _check_gateway_service_linger(issues)
+    _check_launchd_gateway_state(issues)
     _check_s6_supervision(issues)
 
     if sys.platform != "win32":

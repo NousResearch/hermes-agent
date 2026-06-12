@@ -1,0 +1,54 @@
+{
+  "schema_version": "kanban.worker_handoff.v1",
+  "report_type": "worker_handoff",
+  "task_id": "t_7afc87b0",
+  "status": "review_required",
+  "summary": "Fixed reviewer-verdict approval gating so schema-shaped PASS payloads with human_approval.required=true block the review instead of completing review/source; aligned reviewer-verdict schema with transition-engine gate fields.",
+  "changed_files": [
+    "hermes_cli/kanban_db.py",
+    "tests/hermes_cli/test_kanban_db.py",
+    "docs/kanban/reports/schemas/reviewer-verdict.schema.json",
+    "tests/docs/test_kanban_report_schemas.py",
+    "docs/kanban/reports/task-t_7afc87b0-worker-handoff.json"
+  ],
+  "pre_existing_dirty_files": [
+    "gateway/kanban_watchers.py",
+    "hermes_cli/commands.py",
+    "hermes_cli/doctor.py",
+    "hermes_cli/kanban.py",
+    "hermes_cli/kanban_db.py",
+    "hermes_cli/web_server.py",
+    "package-lock.json",
+    "tests/hermes_cli/test_kanban_cli.py",
+    "tests/hermes_cli/test_kanban_db.py",
+    "website/docs/user-guide/features/kanban.md",
+    "docs/kanban-reports/",
+    "docs/kanban/reports/",
+    "hermes_cli/status_warnings.py",
+    "tests/docs/",
+    "tests/hermes_cli/test_status_warnings.py"
+  ],
+  "commands": [
+    {
+      "command": "venv/bin/python -m pytest tests/docs/test_kanban_report_schemas.py tests/hermes_cli/test_kanban_db.py -q -o 'addopts='",
+      "exit_code": 0,
+      "summary": "234 passed in 4.49s"
+    },
+    {
+      "command": "git diff --check -- hermes_cli/kanban_db.py tests/hermes_cli/test_kanban_db.py tests/docs/test_kanban_report_schemas.py docs/kanban/reports/schemas/reviewer-verdict.schema.json",
+      "exit_code": 0,
+      "summary": "No whitespace errors reported"
+    }
+  ],
+  "decisions": [
+    "human_approval.required is now the first deterministic approval gate checked by apply_review_verdict.",
+    "Approval-gated PASS verdicts block only the review task and leave the source task ready, matching existing NEEDS_HUMAN_APPROVAL/high-risk behavior.",
+    "The reviewer-verdict schema now includes engine-supported risk_gate, production_actions, next_action, and next_contract fields so supported transition vocabulary is explicit."
+  ],
+  "review": {
+    "required": true,
+    "report_path": "docs/kanban/reports/task-t_7afc87b0-worker-handoff.json",
+    "marker": "review_required: docs/kanban/reports/task-t_7afc87b0-worker-handoff.json",
+    "summary": "Review human_approval gate behavior and schema-vocabulary alignment before completing t_7afc87b0."
+  }
+}

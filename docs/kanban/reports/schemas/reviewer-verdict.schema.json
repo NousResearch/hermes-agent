@@ -1,0 +1,197 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/schemas/kanban/reviewer-verdict.v1.json",
+  "title": "Kanban Reviewer Verdict",
+  "description": "Structured reviewer output consumed by apply_review_verdict(review_task_id, verdict_payload). review_task_id is the task that ran the review; source_task_id is the worker/source task being reviewed. task_id, when present for legacy readers, MUST mean the same value as source_task_id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "review_task_id",
+    "source_task_id",
+    "reviewed_report_path",
+    "reviewer",
+    "verdict",
+    "summary",
+    "safe_to_merge",
+    "safe_to_deploy",
+    "blocking_findings",
+    "non_blocking_findings",
+    "evidence",
+    "next_action"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "kanban.reviewer_verdict.v1"},
+    "report_type": {"type": "string", "const": "reviewer_verdict"},
+    "review_task_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The Kanban task id of the reviewer task that produced this verdict. Must match the review_task_id argument passed to apply_review_verdict."
+    },
+    "source_task_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The Kanban task id of the source/worker task whose handoff report was reviewed. apply_review_verdict uses this as the task to complete/block/promote."
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Legacy alias for source_task_id; do not use for new automation unless both fields are emitted with identical values."
+    },
+    "reviewed_report_path": {"type": "string", "minLength": 1},
+    "reviewer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "agent"],
+      "properties": {
+        "profile": {"type": "string", "minLength": 1},
+        "agent": {"type": "string", "minLength": 1}
+      }
+    },
+    "verdict": {
+      "type": "string",
+      "enum": [
+        "PASS",
+        "REQUEST_CHANGES",
+        "PARTIAL",
+        "BLOCKED",
+        "NEEDS_HUMAN_APPROVAL"
+      ]
+    },
+    "summary": {"type": "string", "minLength": 1},
+    "safe_to_merge": {
+      "type": "boolean",
+      "description": "True only when the reviewed source can be merged/completed without additional changes."
+    },
+    "safe_to_deploy": {
+      "type": "boolean",
+      "description": "True only when production deployment/restart is safe and authorized by the mission contract."
+    },
+    "blocking_findings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "non_blocking_findings": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "findings": {
+      "type": "array",
+      "description": "Legacy combined finding list; prefer blocking_findings and non_blocking_findings.",
+      "items": {"$ref": "#/$defs/finding"}
+    },
+    "evidence": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/evidence_command"}
+    },
+    "commands": {
+      "type": "array",
+      "description": "Legacy alias for evidence; prefer evidence.",
+      "items": {"$ref": "#/$defs/evidence_command"}
+    },
+    "next_action": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["type", "summary"],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "complete_source_and_promote_children",
+            "request_changes",
+            "partial_followup",
+            "blocked_waiting_on_input",
+            "needs_human_approval",
+            "no_action",
+            "deploy",
+            "restart",
+            "delete_data",
+            "credential_change",
+            "external_commitment",
+            "paid_provider"
+          ]
+        },
+        "summary": {"type": "string", "minLength": 1},
+        "children_to_promote": {"type": "array", "items": {"type": "string"}},
+        "requires_human_approval": {"type": "boolean"},
+        "reason": {"type": "string", "minLength": 1},
+        "contract": {"$ref": "#/$defs/next_contract"}
+      }
+    },
+    "next_actions": {
+      "type": "array",
+      "description": "Legacy prose next-action list; prefer next_action.",
+      "items": {"type": "string"}
+    },
+    "next_contract": {"$ref": "#/$defs/next_contract"},
+    "risk_gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requires_human_approval": {"type": "boolean"},
+        "reason": {"type": "string", "minLength": 1}
+      }
+    },
+    "production_actions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "deploy": {"type": "boolean"},
+        "restart": {"type": "boolean"},
+        "delete_data": {"type": "boolean"},
+        "credential_change": {"type": "boolean"}
+      }
+    },
+    "human_approval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "reason"],
+      "properties": {
+        "required": {"type": "boolean"},
+        "reason": {"type": "string", "minLength": 1},
+        "approver_role": {"type": "string"}
+      }
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "message"],
+      "properties": {
+        "severity": {"type": "string", "enum": ["blocker", "major", "minor", "info"]},
+        "path": {"type": "string"},
+        "line": {"type": "integer"},
+        "message": {"type": "string", "minLength": 1},
+        "required_change": {"type": "string"}
+      }
+    },
+    "evidence_command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "exit_code", "summary"],
+      "properties": {
+        "command": {"type": "string", "minLength": 1},
+        "exit_code": {"type": "integer"},
+        "summary": {"type": "string", "minLength": 1}
+      }
+    },
+    "next_contract": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "title": {"type": "string", "minLength": 1},
+        "body": {"type": "string"},
+        "assignee": {"type": "string", "minLength": 1},
+        "workspace_kind": {"type": "string"},
+        "workspace_path": {"type": "string"},
+        "priority": {"type": "integer"},
+        "parents": {"type": "array", "items": {"type": "string"}},
+        "skills": {"type": "array", "items": {"type": "string"}},
+        "goal_mode": {"type": "boolean"},
+        "goal_max_turns": {"type": "integer"}
+      }
+    }
+  }
+}

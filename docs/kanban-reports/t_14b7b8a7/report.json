@@ -1,0 +1,61 @@
+{
+  "task_id": "t_14b7b8a7",
+  "status": "review_required",
+  "summary": "Fixed apply_review_verdict so payloads with both source_task_id and legacy task_id now raise when the two ids differ, before any review/source state mutation. Added a focused regression that verifies the review, source, and conflicting target statuses remain unchanged.",
+  "workspace": "/Users/chrischo/.hermes/hermes-agent",
+  "route_used": "OMX exec for code patch, parent Liz verification for tests/report",
+  "changed_files": [
+    "hermes_cli/kanban_db.py",
+    "tests/hermes_cli/test_kanban_db.py",
+    "docs/kanban-reports/t_14b7b8a7/report.json"
+  ],
+  "pre_existing_dirty_files_observed": [
+    "gateway/kanban_watchers.py",
+    "hermes_cli/commands.py",
+    "hermes_cli/doctor.py",
+    "hermes_cli/kanban.py",
+    "hermes_cli/kanban_db.py",
+    "hermes_cli/web_server.py",
+    "tests/hermes_cli/test_kanban_cli.py",
+    "tests/hermes_cli/test_kanban_db.py",
+    "website/docs/user-guide/features/kanban.md",
+    "docs/kanban-reports/",
+    "docs/kanban/reports/",
+    "hermes_cli/status_warnings.py",
+    "tests/docs/",
+    "tests/hermes_cli/test_status_warnings.py"
+  ],
+  "behavior_verified": [
+    "When source_task_id and task_id are both present and differ, apply_review_verdict raises ValueError matching source_task_id/task_id mismatch.",
+    "The mismatch is checked before source lookup/completion/blocking, so review, source, and conflicting task statuses remain unchanged.",
+    "Existing schema/docs coverage already asserts task_id is a legacy alias and examples keep task_id equal to source_task_id; no schema/doc edit was needed for this narrow engine fix."
+  ],
+  "verification": [
+    {
+      "command": "uv run python -m pytest tests/hermes_cli/test_kanban_db.py -q -k 'mismatched_source_and_legacy_task_id' -o 'addopts='",
+      "exit_code": 0,
+      "summary": "1 passed, 233 deselected"
+    },
+    {
+      "command": "uv run python -m pytest tests/hermes_cli/test_kanban_db.py tests/docs/test_kanban_report_schemas.py -q -k 'apply_review_verdict or kanban_report_schemas' -o 'addopts='",
+      "exit_code": 0,
+      "summary": "14 passed, 224 deselected"
+    }
+  ],
+  "production_actions": {
+    "deploy": false,
+    "restart": false,
+    "migration": false,
+    "secrets_read": false,
+    "summary": "Local repo edits/tests only; no commit, push, DB migration, service restart, deploy, or secret reads."
+  },
+  "residual_risks": [
+    "The shared workspace already contained broad dirty/untracked Kanban-loop changes from prior tasks; this handoff scopes only the alias mismatch fix, regression test, and this report."
+  ],
+  "review": {
+    "required": true,
+    "report_path": "docs/kanban-reports/t_14b7b8a7/report.json",
+    "marker": "review_required: docs/kanban-reports/t_14b7b8a7/report.json",
+    "summary": "Please review the narrow source_task_id/task_id alias mismatch guard and regression test."
+  }
+}

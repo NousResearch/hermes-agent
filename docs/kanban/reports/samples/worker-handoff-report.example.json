@@ -1,0 +1,43 @@
+{
+  "schema_version": "kanban.worker_handoff_report.v1",
+  "report_type": "worker_handoff",
+  "task_id": "t_bdf859a7",
+  "title": "Document Kanban handoff reports",
+  "worker": {
+    "profile": "liz",
+    "agent": "codex",
+    "run_id": "example-run-42"
+  },
+  "summary": "Added the Kanban handoff report and reviewer verdict contracts with samples and validation tests.",
+  "changed_files": [
+    "docs/kanban/reports/README.md",
+    "docs/kanban/reports/schemas/worker-handoff-report.schema.json",
+    "docs/kanban/reports/schemas/reviewer-verdict.schema.json",
+    "docs/kanban/reports/samples/worker-handoff-report.example.json",
+    "docs/kanban/reports/samples/reviewer-verdict.example.json",
+    "tests/docs/test_kanban_report_schemas.py"
+  ],
+  "pre_existing_dirty_files": [
+    "hermes_cli/doctor.py",
+    "hermes_cli/web_server.py",
+    "package-lock.json",
+    "hermes_cli/status_warnings.py",
+    "tests/hermes_cli/test_status_warnings.py"
+  ],
+  "commands": [
+    {
+      "command": "scripts/run_tests.sh tests/docs/test_kanban_report_schemas.py",
+      "exit_code": 0,
+      "summary": "3 tests passed"
+    }
+  ],
+  "schema_changed": true,
+  "residual_risks": [],
+  "route_used": "OMX Codex exec from Chris real HOME/CODEX_HOME, with Liz parent verification and cleanup",
+  "review": {
+    "required": true,
+    "marker": "review_required: docs/kanban/reports/samples/worker-handoff-report.example.json",
+    "report_path": "docs/kanban/reports/samples/worker-handoff-report.example.json",
+    "summary": "Please review the documented report contracts and samples."
+  }
+}

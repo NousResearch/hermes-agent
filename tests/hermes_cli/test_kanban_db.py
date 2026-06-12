@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import sys
@@ -344,6 +345,80 @@ def test_recompute_ready_fan_in_waits_for_all_parents(kanban_home):
         assert kb.get_task(conn, c).status == "todo"
         kb.complete_task(conn, b)
         assert kb.get_task(conn, c).status == "ready"
+
+
+def test_mission_state_missing_root_returns_none(kanban_home):
+    with kb.connect() as conn:
+        assert kb.mission_state(conn, "t_missing") is None
+
+
+def test_mission_state_summarizes_descendant_graph(kanban_home):
+    body = """
+mission_id: mission-alpha
+north_star: keep recall SLO green
+current_metric_floors:
+- trusted_recall >= 0.95
+risk_gates:
+- no DB deletes without approval
+stop_conditions:
+- repeated identical failure
+"""
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="root", body=body, assignee="lead")
+        active = kb.create_task(conn, title="active", assignee="liz", parents=[root])
+        blocked = kb.create_task(conn, title="blocked", assignee="ellie", parents=[root])
+        done = kb.create_task(conn, title="done", assignee="sage", parents=[root])
+        kb.complete_task(conn, root)
+        kb.claim_task(conn, active)
+        kb.block_task(conn, blocked, reason="waiting on credential")
+        kb.complete_task(conn, done, summary="verified metric floor")
+
+        state = kb.mission_state(conn, root)
+
+    assert state is not None
+    assert state["mission_id"] == "mission-alpha"
+    assert state["north_star"] == "keep recall SLO green"
+    assert state["current_metric_floors"] == ["trusted_recall >= 0.95"]
+    assert state["risk_gates"] == ["no DB deletes without approval"]
+    assert state["stop_conditions"] == ["repeated identical failure"]
+    assert state["total_tasks"] == 4
+    assert state["done_tasks"] == 2
+    assert state["by_status"] == {"blocked": 1, "done": 2, "running": 1}
+    assert [task["id"] for task in state["active_tasks"]] == [active]
+    assert [task["id"] for task in state["blocked_tasks"]] == [blocked]
+    done_task = next(task for task in state["tasks"] if task["id"] == done)
+    assert done_task["depth"] == 1
+    assert done_task["latest_summary"] == "verified metric floor"
+
+
+def test_mission_state_names_active_board_for_named_board_tasks(kanban_home):
+    kb.create_board("brain-quality")
+    with kb.scoped_current_board("brain-quality"):
+        with kb.connect() as conn:
+            root = kb.create_task(conn, title="brain quality mission")
+            active = kb.create_task(conn, title="active reviewer", assignee="sage", parents=[root])
+            kb.complete_task(conn, root)
+            kb.claim_task(conn, active)
+            state = kb.mission_state(conn, root)
+
+    assert state is not None
+    assert state["board"] == "brain-quality"
+    assert state["board_path"].endswith("/kanban/boards/brain-quality/kanban.db")
+    assert [task["id"] for task in state["active_tasks"]] == [active]
+
+
+def test_mission_state_deduplicates_shared_descendant(kanban_home):
+    with kb.connect() as conn:
+        root = kb.create_task(conn, title="root")
+        left = kb.create_task(conn, title="left", parents=[root])
+        right = kb.create_task(conn, title="right", parents=[root])
+        shared = kb.create_task(conn, title="shared", parents=[left, right])
+        state = kb.mission_state(conn, root)
+
+    assert state is not None
+    assert [task["id"] for task in state["tasks"]].count(shared) == 1
+    shared_task = next(task for task in state["tasks"] if task["id"] == shared)
+    assert shared_task["parents"] == sorted([left, right])
 
 
 # ---------------------------------------------------------------------------
@@ -1468,6 +1543,177 @@ def test_dispatch_dry_run_does_not_claim(kanban_home, all_assignees_spawnable):
         # Dry run must NOT mutate status.
         assert kb.get_task(conn, t1).status == "ready"
         assert kb.get_task(conn, t2).status == "ready"
+
+
+
+
+def test_dispatch_dry_run_reports_review_required_without_mutating(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="implement", assignee="liz")
+        reviewer = kb.create_task(
+            conn, title="Review implementation", assignee="reviewer", parents=[source]
+        )
+        kb.claim_task(conn, source)
+        assert kb.block_task(conn, source, reason="review-required: done")
+        kb.add_comment(
+            conn, source, "liz", "review_required: docs/kanban-reports/source.json"
+        )
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert res.review_unblocked == [{
+            "task_id": reviewer,
+            "source_task_id": source,
+            "report_path": "docs/kanban-reports/source.json",
+            "marker_source": "comment",
+        }]
+        assert kb.get_task(conn, reviewer).status == "todo"
+
+
+def test_dispatch_no_review_required_marker_is_noop(kanban_home, all_assignees_spawnable):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="implement", assignee="liz")
+        reviewer = kb.create_task(
+            conn, title="Review implementation", assignee="reviewer", parents=[source]
+        )
+        kb.claim_task(conn, source)
+        assert kb.block_task(conn, source, reason="waiting")
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert res.review_unblocked == []
+        assert kb.get_task(conn, reviewer).status == "todo"
+
+
+def test_dispatch_malformed_review_required_marker_is_noop(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="implement", assignee="liz")
+        reviewer = kb.create_task(
+            conn, title="Review implementation", assignee="reviewer", parents=[source]
+        )
+        kb.claim_task(conn, source)
+        assert kb.block_task(conn, source, reason="review-required")
+        kb.add_comment(conn, source, "liz", "review_required: --dangerous")
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert res.review_unblocked == []
+        assert kb.get_task(conn, reviewer).status == "todo"
+
+
+def test_dispatch_valid_review_required_marker_promotes_and_spawns_reviewer(
+    kanban_home, all_assignees_spawnable
+):
+    spawns = []
+
+    def fake_spawn(task, workspace):
+        spawns.append((task.id, task.assignee, task.skills, workspace))
+
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="implement", assignee="liz")
+        reviewer = kb.create_task(
+            conn, title="Review implementation", assignee="reviewer", parents=[source]
+        )
+        kb.claim_task(conn, source)
+        assert kb.block_task(conn, source, reason="review-required: done")
+        kb.add_comment(conn, source, "liz", "review_required: reports/source.json")
+
+        res = kb.dispatch_once(conn, spawn_fn=fake_spawn)
+
+        assert res.review_unblocked[0]["task_id"] == reviewer
+        reviewer_task = kb.get_task(conn, reviewer)
+        assert reviewer_task is not None
+        assert spawns == [(reviewer, "reviewer", None, reviewer_task.workspace_path)]
+        assert reviewer_task.status == "running"
+        events = kb.list_events(conn, reviewer)
+        assert any(ev.kind == "review_required_auto_unblocked" for ev in events)
+
+
+def test_dispatch_review_required_does_not_promote_finalizer_with_pending_reviewer(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="implement", assignee="liz")
+        reviewer = kb.create_task(
+            conn, title="Review implementation", assignee="reviewer", parents=[source]
+        )
+        finalizer = kb.create_task(
+            conn,
+            title="Finalizer after Sage review PASS",
+            body="Runs after Sage review PASS and closes the source task.",
+            assignee="finalizer",
+            parents=[source, reviewer],
+        )
+        kb.claim_task(conn, source)
+        assert kb.block_task(conn, source, reason="review-required: done")
+        kb.add_comment(conn, source, "liz", "review_required: reports/source.json")
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert res.review_unblocked == [{
+            "task_id": reviewer,
+            "source_task_id": source,
+            "report_path": "reports/source.json",
+            "marker_source": "comment",
+        }]
+        reviewer_task = kb.get_task(conn, reviewer)
+        finalizer_task = kb.get_task(conn, finalizer)
+        assert reviewer_task is not None
+        assert finalizer_task is not None
+        assert reviewer_task.status == "todo"
+        assert finalizer_task.status == "todo"
+
+
+def test_dispatch_structured_review_required_report_promotes_reviewer(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="implement", assignee="liz")
+        reviewer = kb.create_task(
+            conn, title="Reviewer task", assignee="reviewer", parents=[source]
+        )
+        kb.claim_task(conn, source)
+        report = {"status": "review_required", "report_path": "reports/structured.json"}
+        assert kb.block_task(conn, source, reason=json.dumps(report))
+
+        res = kb.dispatch_once(conn, dry_run=True)
+
+        assert res.review_unblocked == [{
+            "task_id": reviewer,
+            "source_task_id": source,
+            "report_path": "reports/structured.json",
+            "marker_source": "run_summary",
+        }]
+
+
+def test_dispatch_review_required_is_idempotent_and_no_high_risk_escalation(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="implement", assignee="liz")
+        reviewer = kb.create_task(
+            conn, title="Review implementation", assignee="reviewer", parents=[source]
+        )
+        kb.claim_task(conn, source)
+        report = {
+            "status": "review_required",
+            "report_path": "reports/high-risk.json",
+            "production_actions": {"deploy": True, "restart": True},
+            "risk_gate": {"requires_human_approval": True},
+        }
+        assert kb.block_task(conn, source, reason=json.dumps(report))
+
+        first = kb.dispatch_once(conn, dry_run=True)
+        second = kb.dispatch_once(conn, dry_run=True)
+
+        assert first.review_unblocked == second.review_unblocked
+        assert first.review_unblocked[0]["task_id"] == reviewer
+        assert kb.get_task(conn, source).status == "blocked"
+        assert kb.get_task(conn, reviewer).status == "todo"
 
 
 def test_dispatch_skips_unassigned(kanban_home):
@@ -3321,10 +3567,10 @@ def test_dispatch_review_dry_run(kanban_home, all_assignees_spawnable):
         assert kb.get_task(conn, t).status == "review"
 
 
-def test_dispatch_review_spawns_with_correct_skills(
+def test_dispatch_review_spawns_with_task_skills_only(
     kanban_home, all_assignees_spawnable,
 ):
-    """Review tasks get sdlc-review skill set before spawning."""
+    """Review dispatch preserves explicit task skills without forcing unknown defaults."""
     spawned_tasks = []
 
     def capture_spawn(task, workspace, board=None):
@@ -3332,12 +3578,32 @@ def test_dispatch_review_spawns_with_correct_skills(
         return 42  # fake PID
 
     with kb.connect() as conn:
+        t = kb.create_task(conn, title="review me", assignee="alice", skills=["existing-review-skill"])
+        _set_task_status(conn, t, "review")
+        res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
+    assert len(res.spawned) == 1
+    assert len(spawned_tasks) == 1
+    assert spawned_tasks[0].skills == ["existing-review-skill"]
+
+
+def test_dispatch_review_does_not_force_missing_review_skill(
+    kanban_home, all_assignees_spawnable,
+):
+    """A plain review task must not request a hardcoded missing skill."""
+    spawned_tasks = []
+
+    def capture_spawn(task, workspace, board=None):
+        spawned_tasks.append(task)
+        return 42
+
+    with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
         res = kb.dispatch_once(conn, spawn_fn=capture_spawn)
     assert len(res.spawned) == 1
     assert len(spawned_tasks) == 1
-    assert spawned_tasks[0].skills == ["sdlc-review"]
+    assert spawned_tasks[0].skills in (None, [])
+    assert spawned_tasks[0].skills != ["sdlc-review"]
 
 
 def test_dispatch_review_skips_unassigned(kanban_home):
@@ -3443,6 +3709,268 @@ def test_dispatch_review_does_not_claim_ready_tasks(
         # claim_review_task should NOT claim a ready task
         claimed = kb.claim_review_task(conn, t)
     assert claimed is None
+
+
+def _must_get_task(conn: sqlite3.Connection, task_id: str) -> kb.Task:
+    task = kb.get_task(conn, task_id)
+    assert task is not None
+    return task
+
+
+def _running_review(conn: sqlite3.Connection, *, source: str | None = None) -> str:
+    review = kb.create_task(conn, title="review", assignee="reviewer")
+    _set_task_status(conn, review, "review")
+    claimed = kb.claim_review_task(conn, review)
+    assert claimed is not None
+    if source:
+        conn.execute("UPDATE tasks SET body = ? WHERE id = ?", (f"source: {source}", review))
+    return review
+
+
+def test_apply_review_verdict_schema_valid_pass_payload_completes_source(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        child = kb.create_task(conn, title="dependent", assignee="bob", parents=[source])
+        review = _running_review(conn, source=source)
+
+        payload = {
+            "schema_version": "kanban.reviewer_verdict.v1",
+            "report_type": "reviewer_verdict",
+            "review_task_id": review,
+            "source_task_id": source,
+            "task_id": source,
+            "reviewed_report_path": "docs/kanban-reports/source.json",
+            "reviewer": {"profile": "reviewer", "agent": "codex"},
+            "verdict": "PASS",
+            "summary": "Focused checks pass and no blockers remain.",
+            "safe_to_merge": True,
+            "safe_to_deploy": False,
+            "blocking_findings": [],
+            "non_blocking_findings": [{"severity": "info", "message": "Deploy not reviewed."}],
+            "evidence": [{"command": "pytest tests/docs", "exit_code": 0, "summary": "passed"}],
+            "next_action": {
+                "type": "complete_source_and_promote_children",
+                "summary": "Complete the source and promote dependents.",
+                "children_to_promote": [child],
+            },
+        }
+
+        result = kb.apply_review_verdict(conn, review, payload)
+
+        assert result["action"] == "completed_review_and_source"
+        assert result["review_task_id"] == review
+        assert result["source_task_id"] == source
+        assert result["evidence"] == payload["evidence"]
+        assert _must_get_task(conn, review).status == "done"
+        assert _must_get_task(conn, source).status == "done"
+        assert _must_get_task(conn, child).status == "ready"
+
+
+def test_apply_review_verdict_rejects_mismatched_review_task_id(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        review = _running_review(conn, source=source)
+
+        with pytest.raises(ValueError, match="review_task_id mismatch"):
+            kb.apply_review_verdict(
+                conn,
+                review,
+                {"verdict": "PASS", "review_task_id": "t_other", "source_task_id": source},
+            )
+
+
+def test_apply_review_verdict_rejects_mismatched_source_and_legacy_task_id(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        conflicting = kb.create_task(conn, title="conflicting", assignee="bob")
+        review = _running_review(conn, source=source)
+
+        before = {
+            review: _must_get_task(conn, review).status,
+            source: _must_get_task(conn, source).status,
+            conflicting: _must_get_task(conn, conflicting).status,
+        }
+
+        with pytest.raises(ValueError, match="source_task_id/task_id mismatch"):
+            kb.apply_review_verdict(
+                conn,
+                review,
+                {"verdict": "PASS", "source_task_id": source, "task_id": conflicting},
+            )
+
+        assert _must_get_task(conn, review).status == before[review]
+        assert _must_get_task(conn, source).status == before[source]
+        assert _must_get_task(conn, conflicting).status == before[conflicting]
+
+
+def test_apply_review_verdict_pass_completes_review_source_and_promotes_child(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        child = kb.create_task(conn, title="dependent", assignee="bob", parents=[source])
+        review = _running_review(conn, source=source)
+
+        result = kb.apply_review_verdict(
+            conn,
+            review,
+            {"verdict": "PASS", "source_task_id": source, "reason": "tests green"},
+        )
+
+        assert result["review_done"] is True
+        assert result["source_done"] is True
+        assert _must_get_task(conn, review).status == "done"
+        assert _must_get_task(conn, source).status == "done"
+        assert _must_get_task(conn, child).status == "ready"
+
+
+def test_apply_review_verdict_schema_human_approval_pass_blocks_review_only(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        review = _running_review(conn, source=source)
+
+        result = kb.apply_review_verdict(
+            conn,
+            review,
+            {
+                "schema_version": "kanban.reviewer_verdict.v1",
+                "report_type": "reviewer_verdict",
+                "task_id": source,
+                "reviewed_report_path": "docs/kanban/reports/samples/worker-handoff-report.example.json",
+                "reviewer": {"profile": "reviewer", "agent": "codex"},
+                "verdict": "PASS",
+                "summary": "Implementation is correct, but release approval is still required.",
+                "findings": [],
+                "commands": [],
+                "human_approval": {
+                    "required": True,
+                    "reason": "Chris must approve production release",
+                },
+            },
+        )
+
+        assert result["action"] == "blocked_review"
+        assert _must_get_task(conn, review).status == "blocked"
+        assert _must_get_task(conn, source).status == "ready"
+        events = [e for e in kb.list_events(conn, review) if e.kind == "blocked"]
+        assert events[-1].payload is not None
+        assert "Chris must approve production release" in events[-1].payload["reason"]
+
+
+def test_apply_review_verdict_request_changes_blocks_source_and_creates_fix_contract(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        review = _running_review(conn, source=source)
+
+        result = kb.apply_review_verdict(
+            conn,
+            review,
+            {
+                "verdict": "REQUEST_CHANGES",
+                "source_task_id": source,
+                "reason": "missing regression test",
+                "next_contract": {
+                    "title": "Add regression test",
+                    "assignee": "alice",
+                    "body": "Cover the failing edge case only.",
+                },
+            },
+        )
+
+        followup = result["followup_task_id"]
+        assert followup
+        assert _must_get_task(conn, review).status == "done"
+        assert _must_get_task(conn, source).status == "blocked"
+        followup_task = _must_get_task(conn, followup)
+        assert followup_task.status == "ready"
+        assert followup_task.assignee == "alice"
+        assert "regression" in followup_task.title.lower()
+
+
+def test_apply_review_verdict_partial_preserves_evidence_and_routes_next_contract(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        review = _running_review(conn, source=source)
+
+        result = kb.apply_review_verdict(
+            conn,
+            review,
+            {
+                "verdict": "PARTIAL",
+                "source_task_id": source,
+                "reason": "unit tests pass, integration remains",
+                "evidence": [{"command": "pytest tests/unit", "exit_code": 0}],
+                "next_contract": {"title": "Finish integration coverage", "assignee": "bob"},
+            },
+        )
+
+        events = [e for e in kb.list_events(conn, source) if e.kind == "review_verdict_applied"]
+        assert events
+        assert events[-1].payload is not None
+        assert events[-1].payload["verdict"] == "PARTIAL"
+        assert events[-1].payload["evidence"] == [{"command": "pytest tests/unit", "exit_code": 0}]
+        assert _must_get_task(conn, result["followup_task_id"]).assignee == "bob"
+        assert _must_get_task(conn, source).status == "blocked"
+
+
+def test_apply_review_verdict_blocked_stores_typed_reevaluable_reason(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        review = _running_review(conn, source=source)
+
+        result = kb.apply_review_verdict(
+            conn,
+            review,
+            {"verdict": "BLOCKED", "source_task_id": source, "reason": "blocked: missing fixture"},
+        )
+
+        assert result["blocked"] is True
+        assert _must_get_task(conn, review).status == "blocked"
+        assert _must_get_task(conn, source).status == "ready"
+        events = [e for e in kb.list_events(conn, review) if e.kind == "blocked"]
+        assert events[-1].payload is not None
+        assert events[-1].payload["reason"].startswith("blocked:")
+
+
+def test_apply_review_verdict_needs_human_approval_blocks_review_only(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        review = _running_review(conn, source=source)
+
+        kb.apply_review_verdict(
+            conn,
+            review,
+            {
+                "verdict": "NEEDS_HUMAN_APPROVAL",
+                "source_task_id": source,
+                "reason": "production deploy approval required",
+            },
+        )
+
+        assert _must_get_task(conn, review).status == "blocked"
+        assert _must_get_task(conn, source).status == "ready"
+        events = [e for e in kb.list_events(conn, review) if e.kind == "blocked"]
+        assert events[-1].payload is not None
+        assert "needs_human_approval" in events[-1].payload["reason"]
+
+
+def test_apply_review_verdict_high_risk_pass_does_not_auto_complete_or_deploy(kanban_home):
+    with kb.connect() as conn:
+        source = kb.create_task(conn, title="source", assignee="alice")
+        review = _running_review(conn, source=source)
+
+        result = kb.apply_review_verdict(
+            conn,
+            review,
+            {
+                "verdict": "PASS",
+                "source_task_id": source,
+                "reason": "looks good but deploy requested",
+                "production_actions": {"deploy": True},
+            },
+        )
+
+        assert result["action"] == "blocked_review"
+        assert _must_get_task(conn, review).status == "blocked"
+        assert _must_get_task(conn, source).status == "ready"
 
 # Stale detection — detect_stale_running
 # ---------------------------------------------------------------------------

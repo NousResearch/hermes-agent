@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://hermes-agent.local/schemas/kanban/worker-handoff-report.v1.json",
+  "title": "Kanban Worker Handoff Report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "report_type",
+    "task_id",
+    "worker",
+    "summary",
+    "changed_files",
+    "pre_existing_dirty_files",
+    "commands",
+    "schema_changed",
+    "residual_risks",
+    "route_used",
+    "review"
+  ],
+  "properties": {
+    "schema_version": {"type": "string", "const": "kanban.worker_handoff_report.v1"},
+    "report_type": {"type": "string", "const": "worker_handoff"},
+    "task_id": {"type": "string", "minLength": 1},
+    "title": {"type": "string"},
+    "worker": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "agent"],
+      "properties": {
+        "profile": {"type": "string", "minLength": 1},
+        "agent": {"type": "string", "minLength": 1},
+        "run_id": {"type": ["integer", "string", "null"]}
+      }
+    },
+    "summary": {"type": "string", "minLength": 1},
+    "changed_files": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "pre_existing_dirty_files": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "observed_concurrent_dirty_files_not_owned_by_this_task": {
+      "type": "array",
+      "items": {"type": "string", "minLength": 1}
+    },
+    "commands": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["command", "exit_code", "summary"],
+        "properties": {
+          "command": {"type": "string", "minLength": 1},
+          "exit_code": {"type": "integer"},
+          "summary": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "schema_changed": {"type": "boolean"},
+    "residual_risks": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "route_used": {"type": "string", "minLength": 1},
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "marker", "report_path"],
+      "properties": {
+        "required": {"type": "boolean", "const": true},
+        "marker": {"type": "string", "pattern": "^review_required: .+"},
+        "report_path": {"type": "string", "minLength": 1},
+        "summary": {"type": "string"}
+      }
+    }
+  }
+}

@@ -1,0 +1,68 @@
+{
+  "task_id": "t_16d50bfc",
+  "status": "review_required",
+  "summary": "Narrowed Kanban review-required auto-unblock so the source->reviewer bypass no longer catches finalizers/fan-in children merely because they mention review, and preserved non-source parent gates.",
+  "workspace": "/Users/chrischo/.hermes/hermes-agent",
+  "changed_files": [
+    "hermes_cli/kanban_db.py",
+    "tests/hermes_cli/test_kanban_db.py",
+    "docs/kanban-reports/t_16d50bfc/report.json"
+  ],
+  "pre_existing_dirty_files": [
+    "gateway/kanban_watchers.py",
+    "hermes_cli/commands.py",
+    "hermes_cli/doctor.py",
+    "hermes_cli/kanban.py",
+    "hermes_cli/kanban_db.py",
+    "hermes_cli/web_server.py",
+    "package-lock.json",
+    "tests/hermes_cli/test_kanban_cli.py",
+    "tests/hermes_cli/test_kanban_db.py",
+    "website/docs/user-guide/features/kanban.md",
+    "docs/kanban-reports/",
+    "docs/kanban/reports/",
+    "hermes_cli/status_warnings.py",
+    "tests/docs/",
+    "tests/hermes_cli/test_status_warnings.py"
+  ],
+  "schema_changed": false,
+  "migration": {"needed": false, "backup_path": null, "rollback_notes": null},
+  "verification": [
+    {
+      "command": "uv run pytest tests/hermes_cli/test_kanban_db.py::test_dispatch_review_required_does_not_promote_finalizer_with_pending_reviewer -q",
+      "exit_code": 1,
+      "summary": "RED before fix: finalizer was included in review_unblocked alongside reviewer."
+    },
+    {
+      "command": "uv run pytest tests/hermes_cli/test_kanban_db.py::test_dispatch_review_required_does_not_promote_finalizer_with_pending_reviewer tests/hermes_cli/test_kanban_db.py::test_dispatch_valid_review_required_marker_promotes_and_spawns_reviewer tests/hermes_cli/test_kanban_db.py::test_dispatch_dry_run_reports_review_required_without_mutating tests/hermes_cli/test_kanban_db.py::test_dispatch_structured_review_required_report_promotes_reviewer tests/hermes_cli/test_kanban_db.py::test_dispatch_review_required_is_idempotent_and_no_high_risk_escalation -q",
+      "exit_code": 0,
+      "summary": "5 passed in 0.18s"
+    },
+    {
+      "command": "uv run pytest tests/hermes_cli/test_kanban_db.py -q",
+      "exit_code": 0,
+      "summary": "236 passed in 5.64s"
+    },
+    {
+      "command": "uv run ruff check hermes_cli/kanban_db.py tests/hermes_cli/test_kanban_db.py",
+      "exit_code": 0,
+      "summary": "All checks passed"
+    },
+    {
+      "command": "git diff --check -- hermes_cli/kanban_db.py tests/hermes_cli/test_kanban_db.py",
+      "exit_code": 0,
+      "summary": "No whitespace errors"
+    }
+  ],
+  "decisions": [
+    "Reviewer-child detection now uses title/assignee reviewer hints only; body text is excluded because downstream finalizers mention review PASS as sequencing context.",
+    "Review auto-unblock bypasses only the review-required source parent; any additional parents must already be done or archived before the child can be moved to review.",
+    "Explicit finalizer/closeout/fan-in title hints are excluded from review handoff detection."
+  ],
+  "production_actions": {"deploy": false, "restart": false, "live_smoke": false, "summary": "No gateway restart, deploy, or destructive DB mutation performed."},
+  "residual_risks": [
+    "The workspace had substantial pre-existing dirty Kanban loop changes; this patch intentionally touched only hermes_cli/kanban_db.py and tests/hermes_cli/test_kanban_db.py plus this report."
+  ],
+  "recommended_next_contracts": [],
+  "risk_gate": {"requires_human_approval": false, "reason": null}
+}

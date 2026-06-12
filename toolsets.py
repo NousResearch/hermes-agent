@@ -340,6 +340,20 @@ TOOLSETS = {
         "includes": ["web", "vision", "image_gen"]
     },
 
+    "corp_safe": {
+        "description": (
+            "Corporate-safe toolkit: chat, skills, memory, recall, web/vision, "
+            "planning — NO terminal, file-write, code execution, browser, "
+            "computer-use, home-assistant, or delegation."
+        ),
+        "tools": [],
+        "includes": [
+            "web", "vision", "image_gen",
+            "skills", "memory", "session_search",
+            "messaging", "todo", "clarify", "cronjob",
+        ],
+    },
+
     # Coding posture (base Hermes — CLI/TUI/desktop/ACP). Auto-selected in a
     # code workspace; see agent/coding_context.py. Keeps everything you reach
     # for while pairing on code and drops the rest (messaging, tts, image_gen,
@@ -580,6 +594,20 @@ TOOLSETS = {
     }
 }
 
+
+# Toolsets a corporate-restricted platform (e.g. Time) must NEVER receive,
+# because they can cause real-world / physical side effects:
+#   terminal       — arbitrary shell command execution
+#   file           — file write/patch (overwrite/delete)
+#   code_execution — arbitrary Python (bypasses every other restriction)
+#   computer_use   — desktop control
+#   browser        — browser automation (acts as the user)
+#   homeassistant  — controls physical smart-home devices
+#   delegation     — a subagent could regain dangerous tools
+CORP_DANGEROUS_TOOLSETS = frozenset({
+    "terminal", "file", "code_execution",
+    "computer_use", "browser", "homeassistant", "delegation",
+})
 
 
 def get_toolset(name: str) -> Optional[Dict[str, Any]]:

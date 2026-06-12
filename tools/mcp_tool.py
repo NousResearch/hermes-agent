@@ -262,6 +262,7 @@ _DEFAULT_CONNECT_TIMEOUT = 60    # seconds for initial connection per server
 _MAX_RECONNECT_RETRIES = 5
 _MAX_INITIAL_CONNECT_RETRIES = 3 # retries for the very first connection attempt
 _MAX_BACKOFF_SECONDS = 60
+_DEFAULT_SSE_RECONNECT_INTERVAL = 30.0
 
 # Environment variables that are safe to pass to stdio subprocesses
 _SAFE_ENV_KEYS = frozenset({
@@ -1159,8 +1160,8 @@ class MCPServerTask:
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
-        "_rpc_lock", "_pending_refresh_tasks",
-        "initialize_result",
+        "_rpc_lock", "_pending_refresh_tasks", "_reconnect_interval",
+        "_reconnect_reason", "_last_reconnect_reason", "initialize_result",
     )
 
     def __init__(self, name: str):
@@ -1191,6 +1192,9 @@ class MCPServerTask:
         # transports for conservative per-server ordering.
         self._rpc_lock = asyncio.Lock()
         self._pending_refresh_tasks: set[asyncio.Task] = set()
+        self._reconnect_interval = 0.0
+        self._reconnect_reason = ""
+        self._last_reconnect_reason = ""
         # Captures the ``InitializeResult`` returned by
         # ``await session.initialize()`` so downstream code can inspect the
         # server's real advertised capabilities (``.capabilities.resources``,
@@ -1221,6 +1225,32 @@ class MCPServerTask:
         if caps is None:
             return True
         return getattr(caps, "tools", None) is not None
+
+    def _resolve_reconnect_interval(self, config: dict) -> float:
+        """Return the minimum post-connect reconnect delay for this server.
+
+        SSE connections are long-lived event streams and remote servers often
+        need a short quiet period after a stale/chunked connection is torn
+        down. Keep historical immediate reconnects for stdio/Streamable HTTP
+        unless the server config opts into a delay.
+        """
+        default = (
+            _DEFAULT_SSE_RECONNECT_INTERVAL
+            if config.get("transport") == "sse"
+            else 0.0
+        )
+        return float(_safe_numeric(
+            config.get("reconnect_interval", default),
+            default,
+            float,
+            minimum=0,
+        ))
+
+    async def _sleep_before_reconnect(self, delay: float) -> bool:
+        """Sleep before reconnecting; return False if shutdown is pending."""
+        if delay > 0:
+            await asyncio.sleep(delay)
+        return not self._shutdown_event.is_set()
 
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
 
@@ -1408,6 +1438,7 @@ class MCPServerTask:
                             "triggering reconnect: %s",
                             self.name, exc,
                         )
+                        self._reconnect_reason = "keepalive"
                         self._reconnect_event.set()
                         break
         finally:
@@ -1421,6 +1452,8 @@ class MCPServerTask:
 
         if self._shutdown_event.is_set():
             return "shutdown"
+        self._last_reconnect_reason = self._reconnect_reason or "signal"
+        self._reconnect_reason = ""
         self._reconnect_event.clear()
         return "reconnect"
 
@@ -1849,6 +1882,9 @@ class MCPServerTask:
         """
         self._config = config
         self.tool_timeout = config.get("timeout", _DEFAULT_TOOL_TIMEOUT)
+        self._reconnect_interval = self._resolve_reconnect_interval(config)
+        self._reconnect_reason = ""
+        self._last_reconnect_reason = ""
         self._auth_type = (config.get("auth") or "").lower().strip()
 
         # Set up sampling handler if enabled and SDK types are available
@@ -1925,17 +1961,32 @@ class MCPServerTask:
                 #    touch the retry counters — this is not a failure.
                 if self._shutdown_event.is_set():
                     break
-                logger.info(
-                    "MCP server '%s': reconnecting (OAuth recovery or "
-                    "manual refresh)",
-                    self.name,
-                )
                 # Reset the session reference; _run_http/_run_stdio will
                 # repopulate it on successful re-entry.
                 self.session = None
                 # Keep _ready set across reconnects so tool handlers can
                 # still detect a transient in-flight state — it'll be
                 # re-set after the fresh session initializes.
+                reconnect_reason = self._last_reconnect_reason or "signal"
+                delay = (
+                    self._reconnect_interval
+                    if reconnect_reason == "keepalive"
+                    else 0.0
+                )
+                if delay > 0:
+                    logger.info(
+                        "MCP server '%s': reconnecting in %.0fs after "
+                        "keepalive failure",
+                        self.name, delay,
+                    )
+                    if not await self._sleep_before_reconnect(delay):
+                        break
+                else:
+                    logger.info(
+                        "MCP server '%s': reconnecting (OAuth recovery or "
+                        "manual refresh)",
+                        self.name,
+                    )
                 continue
             except asyncio.CancelledError:
                 # Task was cancelled (shutdown, gateway restart, explicit
@@ -1978,14 +2029,18 @@ class MCPServerTask:
                         self._ready.set()
                         return
 
+                    delay = max(backoff, self._reconnect_interval)
                     logger.warning(
                         "MCP server '%s' initial connection failed "
                         "(attempt %d/%d), retrying in %.0fs: %s",
                         self.name, initial_retries,
-                        _MAX_INITIAL_CONNECT_RETRIES, backoff, exc,
+                        _MAX_INITIAL_CONNECT_RETRIES, delay, exc,
                     )
-                    await asyncio.sleep(backoff)
-                    backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+                    if not await self._sleep_before_reconnect(delay):
+                        self._error = exc
+                        self._ready.set()
+                        return
+                    backoff = min(max(delay * 2, backoff * 2), _MAX_BACKOFF_SECONDS)
 
                     # Check if shutdown was requested during the sleep
                     if self._shutdown_event.is_set():
@@ -2011,14 +2066,16 @@ class MCPServerTask:
                     )
                     return
 
+                delay = max(backoff, self._reconnect_interval)
                 logger.warning(
                     "MCP server '%s' connection lost (attempt %d/%d), "
                     "reconnecting in %.0fs: %s",
                     self.name, retries, _MAX_RECONNECT_RETRIES,
-                    backoff, exc,
+                    delay, exc,
                 )
-                await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, _MAX_BACKOFF_SECONDS)
+                if not await self._sleep_before_reconnect(delay):
+                    return
+                backoff = min(max(delay * 2, backoff * 2), _MAX_BACKOFF_SECONDS)
 
                 # Check again after sleeping
                 if self._shutdown_event.is_set():

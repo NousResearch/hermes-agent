@@ -2,7 +2,7 @@
 
 import { type ToolCallMessagePartProps, useAuiState } from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
-import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useMemo, useState } from 'react'
+import { createContext, type FC, type PropsWithChildren, type ReactNode, useContext, useMemo } from 'react'
 
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
@@ -25,6 +25,7 @@ import { AlertCircle, CheckCircle2 } from '@/lib/icons'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
 import { $toolInlineDiffs } from '@/store/tool-diffs'
+import { $toolRowDismissed, dismissToolRow } from '@/store/tool-dismiss'
 import { $toolDisclosureOpen, $toolViewMode, setToolDisclosureOpen } from '@/store/tool-view'
 
 import { PendingToolApproval } from './tool-approval'
@@ -200,9 +201,9 @@ function ToolEntry({ part }: ToolEntryProps) {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
   const embedded = useContext(ToolEmbedContext)
-  const [dismissed, setDismissed] = useState(false)
   const toolViewMode = useStore($toolViewMode)
   const disclosureId = `tool-entry:${messageId}:${toolPartDisclosureId(part)}`
+  const dismissed = useStore($toolRowDismissed(disclosureId))
   const open = useDisclosureOpen(disclosureId)
   const isPending = messageRunning && part.result === undefined
   const canDismiss = !isPending && !embedded
@@ -288,25 +289,29 @@ function ToolEntry({ part }: ToolEntryProps) {
   // the disclosure caret hard to hit. Copy now lives in the expanded body's
   // top-right, where it can't fight the caret for the right edge.
   const trailing =
-    isPending && !embedded ? (
-      <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} />
-    ) : canDismiss ? (
-      <Tip label={statusCopy.dismiss}>
-        <Button
-          aria-label={statusCopy.dismiss}
-          className="-mr-1 size-5 rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:text-(--ui-text-primary) hover:opacity-100 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80"
-          onClick={event => {
-            event.stopPropagation()
-            setDismissed(true)
-          }}
-          size="icon-xs"
-          type="button"
-          variant="ghost"
-        >
-          <Codicon name="close" size="0.75rem" />
-        </Button>
-      </Tip>
-    ) : undefined
+    isPending && !embedded ? <ActivityTimerText className={TOOL_HEADER_DURATION_CLASS} seconds={elapsed} /> : undefined
+
+  // Once a turn has settled, a hover/focus-revealed dismiss lets the user clear
+  // a completed/failed row that would otherwise sit at the tail of the chat.
+  // It goes in the in-flow `action` slot (not `trailing`) so it can't overlap
+  // the disclosure caret's hit-target — see the comment above `trailing`.
+  const dismissAction = canDismiss ? (
+    <Tip label={statusCopy.dismiss}>
+      <Button
+        aria-label={statusCopy.dismiss}
+        className="size-5 rounded-md text-(--ui-text-tertiary) opacity-0 transition-opacity hover:text-(--ui-text-primary) hover:opacity-100 group-hover/disclosure-row:opacity-80 group-focus-within/disclosure-row:opacity-80"
+        onClick={event => {
+          event.stopPropagation()
+          dismissToolRow(disclosureId)
+        }}
+        size="icon-xs"
+        type="button"
+        variant="ghost"
+      >
+        <Codicon name="close" size="0.75rem" />
+      </Button>
+    </Tip>
+  ) : undefined
 
   if (dismissed) {
     return null
@@ -323,6 +328,7 @@ function ToolEntry({ part }: ToolEntryProps) {
     >
       <div className={cn(open && 'border-b border-(--ui-stroke-tertiary) px-2 py-1.5')}>
         <DisclosureRow
+          action={dismissAction}
           onToggle={hasExpandableContent ? () => setToolDisclosureOpen(disclosureId, !open) : undefined}
           open={open}
           trailing={trailing}

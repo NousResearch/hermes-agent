@@ -1,0 +1,1 @@
+Fix #44888: Desktop: Long shell commands are truncated in the approval prompt with no way to view the full command

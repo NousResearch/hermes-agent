@@ -48,9 +48,9 @@ def test_redirects_from_empty_head_to_descendant_with_messages(db):
         db.append_message("bulk", role="user", content=f"msg {i}")
 
     assert db.resolve_resume_session_id("head") == "bulk"
-
-
-def test_returns_self_when_session_has_messages(db):
+def test_returns_self_when_only_parent_has_messages(db):
+    # When a session already has messages AND no descendant has messages,
+    # it should still be returned.  The chain walk finds no better candidate.
     _make_chain(db, [("root", None), ("child", "root")])
     db.append_message("root", role="user", content="hi")
     assert db.resolve_resume_session_id("root") == "root"

@@ -131,6 +131,40 @@ async def test_slash_usage_and_status(running_runtime):
     assert "unknown subcommand" in out
 
 
+@pytest.mark.asyncio
+async def test_tool_falls_back_to_admin_endpoint(running_runtime, monkeypatch):
+    """Agents in other processes (`hermes chat`) have no in-process runtime;
+    the tool must drive the gateway's admin endpoint like the CLI does."""
+    from plugins.platforms.voice_call import cli as cli_mod
+    from plugins.platforms.voice_call import tool as tool_mod
+
+    port = running_runtime.webhook_server.bound_port
+    token = running_runtime.webhook_server.admin_token
+    # Simulate a foreign process: no runtime visible, admin endpoint known.
+    import plugins.platforms.voice_call.runtime as runtime_mod_inner
+
+    monkeypatch.setattr(runtime_mod_inner, "_runtime", None)
+    monkeypatch.setattr(cli_mod, "_admin_address", lambda extra: f"http://127.0.0.1:{port}")
+    monkeypatch.setattr(cli_mod, "_admin_token", lambda: token)
+
+    result = await _tool("initiate_call", to_number="+15555550001", message="hi")
+    assert result["success"] is True, result
+    call_id = result["call_id"]
+
+    status = await _tool("get_status")
+    assert status["success"] is True
+    assert any(c["call_id"] == call_id for c in status["active_calls"])
+
+    one = await _tool("get_status", call_id=call_id)
+    assert one["success"] is True and one["call"]["call_id"] == call_id
+
+    ended = await _tool("end_call", call_id=call_id)
+    assert ended["success"] is True
+
+    # Restore the runtime so the fixture teardown stops it cleanly.
+    monkeypatch.setattr(runtime_mod_inner, "_runtime", running_runtime)
+
+
 # -- strip_for_speech ---------------------------------------------------------
 
 

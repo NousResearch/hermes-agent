@@ -113,11 +113,11 @@ async def _dispatch(action: str, args: Dict[str, Any]) -> str:
 
     runtime = get_runtime()
     if runtime is None or runtime.manager is None:
-        return _err(
-            "voice_call runtime is not running — the gateway must be running "
-            "with the voice_call platform enabled "
-            "(gateway.platforms.voice_call.enabled: true)"
-        )
+        # No in-process runtime (e.g. the agent runs in `hermes chat`, a
+        # separate process from the gateway). Drive the running gateway
+        # through its localhost admin endpoint instead — same path the
+        # `hermes voicecall` CLI uses.
+        return await _dispatch_via_admin(action, args)
     manager = runtime.manager
 
     call_id = str(args.get("call_id") or "")
@@ -173,6 +173,64 @@ async def _dispatch(action: str, args: Dict[str, Any]) -> str:
         )
     except Exception as e:  # noqa: BLE001 — JSON contract, never raise
         return _err(str(e))
+
+
+# Tool action → gateway admin command, with the payload fields each takes.
+_ADMIN_COMMAND_MAP = {
+    "initiate_call": ("call", {"to_number": "to", "message": "message", "mode": "mode"}),
+    "continue_call": ("continue", {"call_id": "call_id", "message": "message"}),
+    "speak_to_user": ("speak", {"call_id": "call_id", "message": "message"}),
+    "send_dtmf": ("dtmf", {"call_id": "call_id", "digits": "digits"}),
+    "end_call": ("end", {"call_id": "call_id"}),
+    "get_status": ("status", {}),
+}
+
+
+async def _dispatch_via_admin(action: str, args: Dict[str, Any]) -> str:
+    from .cli import _admin_address, _admin_token, _load_extra
+
+    mapping = _ADMIN_COMMAND_MAP.get(action)
+    if mapping is None:
+        return _err(f"unknown action {action!r}")
+    command, fields = mapping
+    token = _admin_token()
+    if token is None:
+        return _err(
+            "voice_call runtime is not running — start the gateway with the "
+            "voice_call platform enabled (hermes gateway run)"
+        )
+    payload: Dict[str, Any] = {"command": command}
+    for tool_key, admin_key in fields.items():
+        value = args.get(tool_key)
+        if value is not None:
+            payload[admin_key] = value
+
+    import httpx
+
+    url = _admin_address(_load_extra()) + "/voice/admin"
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            response = await client.post(
+                url, json=payload, headers={"x-voice-call-admin-token": token}
+            )
+            result = response.json()
+    except Exception as e:  # noqa: BLE001 — connection refused etc.
+        return _err(
+            "could not reach the voice_call gateway endpoint — is the "
+            f"gateway running? ({e})"
+        )
+    if not isinstance(result, dict):
+        return _err("unexpected response from the voice_call gateway endpoint")
+    if action == "get_status" and result.get("success"):
+        calls = result.get("active_calls", [])
+        call_id = str(args.get("call_id") or "")
+        if call_id:
+            match = [c for c in calls if c.get("call_id") == call_id]
+            if not match:
+                return _err(f"no active call {call_id!r}", call_id=call_id)
+            return _ok(call=match[0])
+        return _ok(provider=result.get("provider"), active_calls=calls)
+    return json.dumps(result, ensure_ascii=False)
 
 
 async def voice_call_handler(args: Dict[str, Any], **_kwargs) -> str:

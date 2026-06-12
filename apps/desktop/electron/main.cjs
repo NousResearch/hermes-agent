@@ -5549,11 +5549,26 @@ ipcMain.handle('hermes:api', async (_event, request) => {
 
 ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) return false
-  new Notification({
+  const notification = new Notification({
     title: payload?.title || 'Hermes',
     body: payload?.body || '',
     silent: Boolean(payload?.silent)
-  }).show()
+  })
+  notification.show()
+  return true
+})
+
+ipcMain.handle('hermes:setBadgeCount', (_event, rawCount) => {
+  const count = Math.max(0, Number.isFinite(Number(rawCount)) ? Math.floor(Number(rawCount)) : 0)
+
+  if (typeof app.setBadgeCount === 'function') {
+    app.setBadgeCount(count)
+  }
+
+  if (app.dock && typeof app.dock.setBadge === 'function') {
+    app.dock.setBadge(count > 0 ? String(count) : '')
+  }
+
   return true
 })
 

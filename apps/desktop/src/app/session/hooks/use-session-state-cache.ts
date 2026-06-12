@@ -8,6 +8,7 @@ import { setMutableRef } from '@/lib/mutable-ref'
 import {
   $busy,
   $messages,
+  clearSessionNotification,
   noteSessionActivity,
   setCurrentFastMode,
   setCurrentModel,
@@ -90,7 +91,20 @@ export function useSessionStateCache({
 
   useEffect(() => {
     selectedStoredSessionIdRef.current = selectedStoredSessionId
+    clearSessionNotification(selectedStoredSessionId)
   }, [selectedStoredSessionId])
+
+  useEffect(() => {
+    const clearFocusedNotification = () => {
+      if (document.visibilityState === 'visible') {
+        clearSessionNotification(selectedStoredSessionIdRef.current)
+      }
+    }
+
+    document.addEventListener('visibilitychange', clearFocusedNotification)
+
+    return () => document.removeEventListener('visibilitychange', clearFocusedNotification)
+  }, [])
 
   const ensureSessionState = useCallback((sessionId: string, storedSessionId?: string | null) => {
     const existing = sessionStateByRuntimeIdRef.current.get(sessionId)

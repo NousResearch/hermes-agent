@@ -4,6 +4,7 @@ import type { ContextSuggestion } from '@/app/types'
 import type { HermesConnection } from '@/global'
 import type { ChatMessage } from '@/lib/chat-messages'
 import { persistString, storedString } from '@/lib/storage'
+import { normalizeProfileKey } from '@/store/profile'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
 type Updater<T> = T | ((current: T) => T)
@@ -192,6 +193,11 @@ export const $messagingTruncated = atom<boolean>(false)
 export const $sessionProfileTotals = atom<Record<string, number>>({})
 export const $sessionsLoading = atom(true)
 export const $workingSessionIds = atom<string[]>([])
+// Stored session ids with a completed/background notification the user has not
+// opened yet. These drive durable sidebar/profile badges, separate from
+// $attentionSessionIds (blocking clarify prompts) and $workingSessionIds
+// (active turns). Cleared when the session becomes the viewed chat.
+export const $notifiedSessionIds = atom<string[]>([])
 export const $activeSessionId = atom<string | null>(null)
 export const $selectedStoredSessionId = atom<string | null>(null)
 export const $messages = atom<ChatMessage[]>([])
@@ -238,6 +244,7 @@ export const setSessionProfileTotals = (next: Updater<Record<string, number>>) =
   updateAtom($sessionProfileTotals, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)
 export const setWorkingSessionIds = (next: Updater<string[]>) => updateAtom($workingSessionIds, next)
+export const setNotifiedSessionIds = (next: Updater<string[]>) => updateAtom($notifiedSessionIds, next)
 export const setActiveSessionId = (next: Updater<string | null>) => updateAtom($activeSessionId, next)
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => updateAtom($selectedStoredSessionId, next)
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)
@@ -389,6 +396,38 @@ export function setSessionAttention(sessionId: string | null | undefined, needsI
   if (sessionId) {
     toggleMembership(setAttentionSessionIds, sessionId, needsInput)
   }
+}
+
+export function setSessionNotified(sessionId: string | null | undefined, notified: boolean) {
+  if (sessionId) {
+    toggleMembership(setNotifiedSessionIds, sessionId, notified)
+  }
+}
+
+export function clearSessionNotification(sessionId: string | null | undefined) {
+  setSessionNotified(sessionId, false)
+}
+
+export function sessionNotificationProfileCounts(
+  sessions: Pick<SessionInfo, 'id' | 'profile'>[],
+  notifiedSessionIds: Iterable<string>,
+  attentionSessionIds: Iterable<string> = []
+): Record<string, number> {
+  const actionable = new Set([...notifiedSessionIds, ...attentionSessionIds])
+  const seenSessions = new Set<string>()
+  const counts: Record<string, number> = {}
+
+  for (const session of sessions) {
+    if (seenSessions.has(session.id) || !actionable.has(session.id)) {
+      continue
+    }
+
+    seenSessions.add(session.id)
+    const profile = normalizeProfileKey(session.profile)
+    counts[profile] = (counts[profile] ?? 0) + 1
+  }
+
+  return counts
 }
 
 export function setSessionWorking(sessionId: string | null | undefined, working: boolean) {

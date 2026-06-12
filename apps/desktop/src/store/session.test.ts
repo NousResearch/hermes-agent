@@ -7,13 +7,17 @@ import {
   $attentionSessionIds,
   $connection,
   $currentCwd,
+  $notifiedSessionIds,
   $workingSessionIds,
   applyConfiguredDefaultProjectDir,
+  clearSessionNotification,
   getRecentlySettledSessionIds,
   mergeSessionPage,
+  sessionNotificationProfileCounts,
   sessionPinId,
   setCurrentCwd,
   setSessionAttention,
+  setSessionNotified,
   setSessionWorking,
   workspaceCwdForNewSession
 } from './session'
@@ -62,6 +66,59 @@ describe('setSessionAttention', () => {
     setSessionAttention('', true)
     setSessionAttention('missing', false)
     expect($attentionSessionIds.get()).toEqual([])
+  })
+})
+
+describe('setSessionNotified', () => {
+  afterEach(() => {
+    $notifiedSessionIds.set([])
+  })
+
+  it('adds, removes, and clears a notified session id without duplicates', () => {
+    setSessionNotified('s1', true)
+    setSessionNotified('s1', true)
+    setSessionNotified('s2', true)
+
+    expect($notifiedSessionIds.get()).toEqual(['s1', 's2'])
+
+    clearSessionNotification('s1')
+    expect($notifiedSessionIds.get()).toEqual(['s2'])
+  })
+
+  it('ignores empty ids and no-op clears', () => {
+    setSessionNotified(null, true)
+    setSessionNotified(undefined, true)
+    setSessionNotified('', true)
+    setSessionNotified('missing', false)
+
+    expect($notifiedSessionIds.get()).toEqual([])
+  })
+})
+
+describe('sessionNotificationProfileCounts', () => {
+  it('counts the union of notified and attention sessions by profile without double-counting', () => {
+    const counts = sessionNotificationProfileCounts(
+      [
+        session({ id: 'a', profile: 'default' }),
+        session({ id: 'b', profile: 'music' }),
+        session({ id: 'b', profile: 'music' }),
+        session({ id: 'c', profile: 'music' }),
+        session({ id: 'd', profile: 'ops' })
+      ],
+      ['a', 'b', 'missing'],
+      ['b', 'c']
+    )
+
+    expect(counts).toEqual({ default: 1, music: 2 })
+  })
+
+  it('normalizes profile keys before counting badges', () => {
+    const counts = sessionNotificationProfileCounts(
+      [session({ id: 'a', profile: '' }), session({ id: 'b', profile: ' music ' })],
+      ['a', 'b']
+    )
+
+    expect(counts).toEqual({ default: 1, music: 1 })
   })
 })
 

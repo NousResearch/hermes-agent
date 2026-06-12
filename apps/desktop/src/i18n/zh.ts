@@ -1299,6 +1299,7 @@ export const zh: Translations = {
       sessionActions: '会话操作',
       sessionRunning: '会话运行中',
       needsInput: '需要你输入',
+      newNotification: '新回复',
       waitingForAnswer: '正在等待你的回答',
       handoffOrigin: platform => `从 ${platform} 转接`,
       renamed: '已重命名',

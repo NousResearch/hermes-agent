@@ -12,7 +12,7 @@ import { sessionTitle } from '@/lib/chat-runtime'
 import { triggerHaptic } from '@/lib/haptics'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session'
+import { $attentionSessionIds, $notifiedSessionIds } from '@/store/session'
 import { canOpenSessionWindow, openSessionInNewWindow } from '@/store/windows'
 
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
@@ -80,6 +80,7 @@ export function SidebarSessionRow({
   // the atom is tiny and rarely non-empty. True when a clarify prompt in this
   // session is waiting on the user.
   const needsInput = useStore($attentionSessionIds).includes(session.id)
+  const hasNotification = useStore($notifiedSessionIds).includes(session.id)
 
   return (
     <SessionContextMenu
@@ -168,8 +169,9 @@ export function SidebarSessionRow({
               data-reorder-handle
               onClick={event => event.stopPropagation()}
             >
-              <SidebarRowDot
+                <SidebarRowDot
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                hasNotification={hasNotification}
                 isWorking={isWorking}
                 needsInput={needsInput}
               />
@@ -189,7 +191,7 @@ export function SidebarSessionRow({
                 needsInput ? 'overflow-visible' : 'overflow-hidden'
               )}
             >
-              <SidebarRowDot isWorking={isWorking} needsInput={needsInput} />
+              <SidebarRowDot hasNotification={hasNotification} isWorking={isWorking} needsInput={needsInput} />
             </span>
           )}
           {handoffSource && handoffLabel ? (
@@ -239,10 +241,12 @@ export function SidebarSessionRow({
 function SidebarRowDot({
   isWorking,
   needsInput = false,
+  hasNotification = false,
   className
 }: {
   isWorking: boolean
   needsInput?: boolean
+  hasNotification?: boolean
   className?: string
 }) {
   const { t } = useI18n()
@@ -259,6 +263,20 @@ function SidebarRowDot({
         className={cn('quest-glow relative size-1.5 rounded-full bg-amber-500', className)}
         role="status"
         title={r.waitingForAnswer}
+      />
+    )
+  }
+
+  if (hasNotification) {
+    return (
+      <span
+        aria-label={r.newNotification}
+        className={cn(
+          'relative size-1.5 rounded-full bg-(--ui-accent) shadow-[0_0_0.5rem_color-mix(in_srgb,var(--ui-accent)_45%,transparent)] after:absolute after:-right-0.5 after:-top-0.5 after:size-1 after:rounded-full after:bg-rose-500 after:ring after:ring-background after:content-[\'\']',
+          className
+        )}
+        role="status"
+        title={r.newNotification}
       />
     )
   }

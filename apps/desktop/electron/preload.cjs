@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
+  setBadgeCount: count => ipcRenderer.invoke('hermes:setBadgeCount', count),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),

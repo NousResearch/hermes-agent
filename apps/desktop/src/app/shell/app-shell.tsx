@@ -1,6 +1,6 @@
 import { useStore } from '@nanostores/react'
 import type { CSSProperties, ReactNode } from 'react'
-import { useSyncExternalStore } from 'react'
+import { useEffect, useSyncExternalStore } from 'react'
 
 import { NotificationStack } from '@/components/notifications'
 import { PaneShell } from '@/components/pane-shell'
@@ -15,7 +15,7 @@ import {
   setSidebarOpen
 } from '@/store/layout'
 import { $paneWidthOverride } from '@/store/panes'
-import { $connection } from '@/store/session'
+import { $connection, $attentionSessionIds, $notifiedSessionIds } from '@/store/session'
 import { isSecondaryWindow } from '@/store/windows'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '../layout-constants'
@@ -78,7 +78,14 @@ export function AppShell({
   const narrowViewport = useMediaQuery(SIDEBAR_COLLAPSE_MEDIA_QUERY)
   const fileBrowserWidthOverride = useStore($paneWidthOverride(FILE_BROWSER_PANE_ID))
   const connection = useStore($connection)
+  const notifiedSessionIds = useStore($notifiedSessionIds)
+  const attentionSessionIds = useStore($attentionSessionIds)
   const viewportFullscreen = useSyncExternalStore(subscribeWindowSize, viewportIsFullscreen, () => false)
+  const appBadgeCount = new Set([...notifiedSessionIds, ...attentionSessionIds]).size
+
+  useEffect(() => {
+    void window.hermesDesktop?.setBadgeCount?.(appBadgeCount).catch(() => undefined)
+  }, [appBadgeCount])
   const isFullscreen = Boolean(connection?.isFullscreen) || viewportFullscreen
   const titlebarControls = titlebarControlsPosition(connection?.windowButtonPosition, isFullscreen)
   // Width Windows/Linux reserve for the OS-painted min/max/close overlay (zero

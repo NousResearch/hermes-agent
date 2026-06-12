@@ -1965,6 +1965,33 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _resolve_model_override_for_delegate(model_obj: Optional[Dict[str, Any]]) -> tuple:
+    """Resolve a model override dict into (provider, model).
+
+    Mirrors cronjob_tools._resolve_model_override. When provider is omitted
+    but model is provided, pins the current main provider from config so the
+    override doesn't drift when the user later changes their default.
+
+    Returns (provider_str_or_none, model_str_or_none).
+    """
+    if not model_obj or not isinstance(model_obj, dict):
+        return (None, None)
+    model_name = (model_obj.get("model") or "").strip() or None
+    provider_name = (model_obj.get("provider") or "").strip() or None
+    if provider_name == "custom":
+        provider_name = None
+    if model_name and not provider_name:
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config()
+            model_cfg = cfg.get("model", {})
+            if isinstance(model_cfg, dict):
+                provider_name = model_cfg.get("provider") or None
+        except Exception:
+            pass
+    return (provider_name, model_name)
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -1974,6 +2001,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    model: Optional[Dict[str, str]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -2048,6 +2076,18 @@ def delegate_task(
     except ValueError as exc:
         return tool_error(str(exc))
 
+    # Resolve top-level model override (from the model parameter).
+    # When specified, overrides the delegation config credentials for all tasks.
+    # Each task can further override per-task via its own 'model' field.
+    model_override_provider, model_override_model = _resolve_model_override_for_delegate(model)
+    if model_override_model:
+        creds["model"] = model_override_model
+        creds["provider"] = model_override_provider or creds.get("provider")
+        logger.debug(
+            "delegate_task: top-level model override -> provider=%s, model=%s",
+            creds["provider"], creds["model"],
+        )
+
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     recovered_tasks, tasks_error = _recover_tasks_from_json_string(tasks)
@@ -2068,7 +2108,7 @@ def delegate_task(
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role, "model": model}
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2109,16 +2149,25 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            # Per-task model override beats top-level model override
+            task_model_obj = t.get("model")
+            if task_model_obj:
+                task_model_provider, task_model_name = _resolve_model_override_for_delegate(task_model_obj)
+                child_model = task_model_name or creds["model"]
+                child_provider = task_model_provider or creds["provider"]
+            else:
+                child_model = creds["model"]
+                child_provider = creds["provider"]
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
                 context=t.get("context"),
                 toolsets=t.get("toolsets") or toolsets,
-                model=creds["model"],
+                model=child_model,
                 max_iterations=effective_max_iter,
                 task_count=n_tasks,
                 parent_agent=parent_agent,
-                override_provider=creds["provider"],
+                override_provider=child_provider,
                 override_base_url=creds["base_url"],
                 override_api_key=creds["api_key"],
                 override_api_mode=creds["api_mode"],
@@ -2795,6 +2844,16 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "model": {
+                            "type": "object",
+                            "properties": {
+                                "provider": {"type": "string", "description": "Provider name (e.g. 'openai', 'anthropic', 'openrouter'). Required when model is specified, unless you want to pin the current default provider."},
+                                "model": {"type": "string", "description": "Model identifier (e.g. 'gpt-4o', 'claude-sonnet-4-20250514', 'gemini-2.0-flash')."},
+                            },
+                            "required": [],
+                            "additionalProperties": false,
+                            "description": "Per-task model override. Overrides both the default delegation model and the top-level model for this task only.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2802,6 +2861,16 @@ DELEGATE_TASK_SCHEMA = {
                 # delegation.max_concurrent_children (default 3) and
                 # enforced with a clear error in delegate_task().
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "model": {
+                "type": "object",
+                "properties": {
+                    "provider": {"type": "string", "description": "Provider name (e.g. 'openai', 'anthropic', 'openrouter'). Required when model is specified, unless you want to pin the current default provider."},
+                    "model": {"type": "string", "description": "Model identifier (e.g. 'gpt-4o', 'claude-sonnet-4-20250514', 'gemini-2.0-flash')."},
+                },
+                "required": [],
+                "additionalProperties": false,
+                "description": "Override the model used by subagents. Same structure as cronjob's model parameter. When only 'model' is set, the current default provider is pinned. Example: {'provider': 'openai', 'model': 'gpt-4o'}.",
             },
             "role": {
                 "type": "string",
@@ -2852,6 +2921,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        model=args.get("model"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

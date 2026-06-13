@@ -79,7 +79,7 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """
     from toolsets import CORP_DANGEROUS_TOOLSETS
     disabled = ["cronjob", "messaging", "clarify"]
-    for name in sorted(CORP_DANGEROUS_TOOLSETS):
+    for name in sorted(CORP_DANGEROUS_TOOLSETS):  # sorted for deterministic order in logs/tests
         if name not in disabled:
             disabled.append(name)
     agent_cfg = (cfg or {}).get("agent") or {}

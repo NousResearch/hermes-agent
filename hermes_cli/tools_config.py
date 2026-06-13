@@ -152,6 +152,12 @@ _TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
     "discord_admin": {"discord"},
 }
 
+CORP_RESTRICTED_PLATFORMS: frozenset[str] = frozenset({"time"})
+"""Platforms that receive the corporate hard-deny tool filter — they can
+never obtain CORP_DANGEROUS_TOOLSETS (shell, file-write, code exec, browser,
+home-assistant, delegation, kanban, discord-admin), even if admin config
+grants them. Add a platform key here to extend the corporate-safe policy."""
+
 
 def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
     """Return True if ``ts_key`` is configurable on ``platform``.
@@ -1555,22 +1561,21 @@ def _get_platform_tools(
     # ``dangerous_tools`` — so the ``web`` toolset is never wrongly stripped.
     # ──
     from toolsets import CORP_DANGEROUS_TOOLSETS, resolve_toolset, TOOLSETS
-    CORP_RESTRICTED_PLATFORMS = {"time"}
     if platform in CORP_RESTRICTED_PLATFORMS:
-        _all_dangerous_expanded: Set[str] = set()
+        all_dangerous_expanded: Set[str] = set()
         for ts in CORP_DANGEROUS_TOOLSETS:
-            _all_dangerous_expanded |= set(resolve_toolset(ts))
+            all_dangerous_expanded |= set(resolve_toolset(ts))
         # Build the set of tools that appear in at least one safe (non-dangerous)
         # configurable toolset. Any tool present in a safe toolset should not
         # be treated as unconditionally dangerous when evaluating composites.
-        _safe_configurable_toolsets = {
+        safe_configurable_toolsets = {
             ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS
             if ts_key not in CORP_DANGEROUS_TOOLSETS
         }
-        _safe_individual_tools: Set[str] = set()
-        for _safe_ts in _safe_configurable_toolsets:
-            _safe_individual_tools |= set(resolve_toolset(_safe_ts))
-        dangerous_tools = _all_dangerous_expanded - _safe_individual_tools
+        safe_individual_tools: Set[str] = set()
+        for safe_ts in safe_configurable_toolsets:
+            safe_individual_tools |= set(resolve_toolset(safe_ts))
+        dangerous_tools = all_dangerous_expanded - safe_individual_tools
 
         def _is_corp_safe(name: str) -> bool:
             if name in CORP_DANGEROUS_TOOLSETS:
@@ -1580,6 +1585,8 @@ def _get_platform_tools(
             if name in TOOLSETS:  # composite/basic toolset: check its expansion
                 if set(resolve_toolset(name)) & dangerous_tools:
                     return False
+            # Unknown names (MCP server names, plugin toolsets not in TOOLSETS)
+            # pass through by design — they don't expose dangerous built-in tools.
             return True
 
         enabled_toolsets = {t for t in enabled_toolsets if _is_corp_safe(t)}

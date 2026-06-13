@@ -45,10 +45,12 @@ from gateway.platforms.base import (
     ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_VIDEO_TYPES,
     is_host_excluded_by_no_proxy,
     resolve_proxy_url,
     safe_url_for_log,
     cache_document_from_bytes,
+    cache_video_from_bytes,
 )
 
 
@@ -880,7 +882,7 @@ class SlackAdapter(BasePlatformAdapter):
             # doesn't log noisy 404 "unhandled request" warnings.
             @self._app.event("file_shared")
             async def handle_file_shared(event, say):
-                pass
+                await self._handle_slack_file_shared(event)
 
             @self._app.event("file_created")
             async def handle_file_created(event, say):
@@ -2173,6 +2175,84 @@ class SlackAdapter(BasePlatformAdapter):
         self._cache_assistant_thread_metadata(metadata)
         self._seed_assistant_thread_session(metadata)
 
+    async def _handle_slack_file_shared(self, event: dict) -> None:
+        """Fallback for Slack file shares that do not arrive as message.files.
+
+        Slack documents ``file_shared`` as a file-ID-only event; callers must
+        fetch ``files.info`` to get the file object. Keep this intentionally
+        narrow: normal image/audio/document uploads already arrive on the
+        message event, but some video shares have only been observed through
+        this lifecycle event.
+        """
+        channel_id = event.get("channel_id") or event.get("channel") or ""
+        file_id = event.get("file_id") or (event.get("file") or {}).get("id") or ""
+        if not channel_id or not file_id:
+            return
+
+        team_id = event.get("team_id") or event.get("team") or ""
+        try:
+            client = self._team_clients.get(team_id) if team_id else None
+            info_resp = await (client or self._get_client(channel_id)).files_info(
+                file=file_id
+            )
+        except Exception as exc:
+            response = getattr(exc, "response", None)
+            detail = self._describe_slack_api_error(response, file_obj={"id": file_id})
+            logger.warning("[Slack] files.info error for file_shared %s: %s", file_id, detail or exc)
+            return
+
+        if not info_resp.get("ok"):
+            detail = self._describe_slack_api_error(info_resp, file_obj={"id": file_id})
+            logger.warning(
+                "[Slack] files.info failed for file_shared %s: %s",
+                file_id,
+                detail or info_resp.get("error"),
+            )
+            return
+
+        file_obj = info_resp.get("file") or {}
+        if not str(file_obj.get("mimetype", "")).startswith("video/"):
+            return
+
+        share = None
+        for bucket in (file_obj.get("shares") or {}).values():
+            if not isinstance(bucket, dict):
+                continue
+            channel_shares = bucket.get(channel_id)
+            if channel_shares:
+                share = channel_shares[0]
+                break
+            if share is None:
+                for shares in bucket.values():
+                    if shares:
+                        share = shares[0]
+                        break
+        share = share or {}
+        ts = share.get("ts") or event.get("event_ts") or ""
+        thread_ts = share.get("thread_ts") or ""
+
+        # Give Slack's normal message.file_share event a chance to arrive first.
+        # If it does, _handle_slack_message records the same share ts and this
+        # fallback skips instead of duplicating the user turn.
+        await asyncio.sleep(0.75)
+        if ts and self._dedup.is_duplicate(ts):
+            return
+
+        fallback_event = {
+            "type": "message",
+            "subtype": "file_share",
+            "text": "",
+            "user": event.get("user_id") or file_obj.get("user", ""),
+            "channel": channel_id,
+            "channel_type": "im" if channel_id.startswith("D") else "channel",
+            "team": team_id,
+            "ts": "",  # already recorded above; avoid tripping our own dedup guard
+            "files": [file_obj],
+        }
+        if thread_ts and thread_ts != ts:
+            fallback_event["thread_ts"] = thread_ts
+        await self._handle_slack_message(fallback_event)
+
     async def _handle_slack_message(self, event: dict) -> None:
         """Handle an incoming Slack message event."""
         # Dedup: Slack Socket Mode can redeliver events after reconnects (#4777)
@@ -2572,6 +2652,36 @@ class SlackAdapter(BasePlatformAdapter):
                             e,
                             exc_info=True,
                         )
+            elif mimetype.startswith("video/") and url:
+                try:
+                    original_filename = f.get("name", "")
+                    _, ext = os.path.splitext(original_filename)
+                    ext = ext.lower()
+                    if ext not in SUPPORTED_VIDEO_TYPES:
+                        mime_to_ext = {v: k for k, v in SUPPORTED_VIDEO_TYPES.items()}
+                        ext = mime_to_ext.get(
+                            mimetype.split(";", 1)[0].lower(), ".mp4"
+                        )
+
+                    raw_bytes = await self._download_slack_file_bytes(
+                        url, team_id=team_id
+                    )
+                    cached_path = cache_video_from_bytes(raw_bytes, ext=ext)
+                    media_urls.append(cached_path)
+                    media_types.append(SUPPORTED_VIDEO_TYPES.get(ext, mimetype))
+                    logger.debug("[Slack] Cached user video: %s", cached_path)
+                except Exception as e:  # pragma: no cover - defensive logging
+                    detail = self._describe_slack_download_failure(e, file_obj=f)
+                    if detail:
+                        attachment_notices.append(detail)
+                        logger.warning("[Slack] %s", detail)
+                    else:
+                        logger.warning(
+                            "[Slack] Failed to cache video from %s: %s",
+                            url,
+                            e,
+                            exc_info=True,
+                        )
             elif url:
                 # Try to handle as a document attachment
                 try:
@@ -2666,6 +2776,8 @@ class SlackAdapter(BasePlatformAdapter):
         if msg_type != MessageType.COMMAND and media_types:
             if any(m.startswith("image/") for m in media_types):
                 msg_type = MessageType.PHOTO
+            elif any(m.startswith("video/") for m in media_types):
+                msg_type = MessageType.VIDEO
             elif any(m.startswith("audio/") for m in media_types):
                 msg_type = MessageType.VOICE
             else:

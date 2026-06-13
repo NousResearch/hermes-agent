@@ -99,6 +99,7 @@
     "unicode-animations": "^1.0.3",
     "unified": "^11.0.5",
     "unist-util-visit-parents": "^6.0.2",
+    "use-stick-to-bottom": "^1.1.6",
     "vfile": "^6.0.3",
     "web-haptics": "^0.0.6"
   },

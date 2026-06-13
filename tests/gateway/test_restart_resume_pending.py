@@ -35,6 +35,7 @@ import pytest
 from gateway.config import GatewayConfig, HomeChannel, Platform
 from gateway.platforms.base import MessageEvent, MessageType, SendResult
 from gateway.run import (
+    _AGENT_PENDING_SENTINEL,
     _auto_continue_freshness_window,
     _coerce_gateway_timestamp,
     _is_fresh_gateway_interruption,
@@ -1420,3 +1421,93 @@ class TestStuckLoopEscalation:
                 {"indent": None},
             )
         ]
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_sets_sentinel_before_task_execution():
+    """Auto-resume must claim the session slot before the task starts.
+
+    Regression for #45456: between ``asyncio.create_task()`` and the task's
+    first await (where ``_process_message_background`` sets the real
+    sentinel), an inbound message could arrive and spin up a duplicate
+    AIAgent.  The fix pre-claims the slot so the inbound path sees it as
+    occupied.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="race-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:race-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+
+    # Slow mock: hold the task open so we can inspect _running_agents
+    # while it's in-flight.
+    gate = asyncio.Event()
+
+    async def _slow_handle(event):
+        await gate.wait()
+
+    adapter.handle_message = _slow_handle
+
+    scheduled = runner._schedule_resume_pending_sessions()
+
+    assert scheduled == 1
+    # The sentinel must be set immediately — before the task starts executing.
+    assert pending_entry.session_key in runner._running_agents
+    assert runner._running_agents[pending_entry.session_key] is _AGENT_PENDING_SENTINEL
+    assert pending_entry.session_key in runner._running_agents_ts
+
+    # Release the task and let it complete.
+    gate.set()
+    await asyncio.sleep(0.05)
+
+    # After the task completes, the sentinel should be cleaned up.
+    assert pending_entry.session_key not in runner._running_agents
+
+
+@pytest.mark.asyncio
+async def test_auto_resume_sentinel_cleaned_on_task_failure():
+    """If handle_message raises before _process_message_background, the
+    sentinel must still be released so the session is not locked forever.
+    """
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="fail-chat")
+    pending_entry = SessionEntry(
+        session_key="agent:main:telegram:dm:fail-chat",
+        session_id="sid",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        origin=source,
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        resume_pending=True,
+        resume_reason="restart_interrupted",
+        last_resume_marked_at=datetime.now(),
+    )
+    runner.session_store._entries = {pending_entry.session_key: pending_entry}
+
+    async def _failing_handle(event):
+        raise RuntimeError("adapter exploded")
+
+    adapter.handle_message = _failing_handle
+
+    scheduled = runner._schedule_resume_pending_sessions()
+    assert scheduled == 1
+
+    # Sentinel is set immediately.
+    assert pending_entry.session_key in runner._running_agents
+
+    # Let the task run and fail.
+    await asyncio.sleep(0.05)
+
+    # The sentinel must be cleaned up despite the failure.
+    assert pending_entry.session_key not in runner._running_agents

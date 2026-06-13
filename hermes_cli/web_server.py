@@ -1645,17 +1645,16 @@ async def get_status():
         # Module not importable yet (early startup) — leave as [].
         pass
 
-    return {
+    # Always-public liveness + auth-gate shape. Safe for external uptime
+    # probes (NAS's wildcard-subdomain liveness probe), the SPA's pre-login
+    # bootstrap, and anyone who can curl the host — i.e. exactly the audience
+    # ``PUBLIC_API_PATHS`` documents this endpoint as serving.
+    status = {
         "version": __version__,
         "release_date": __release_date__,
-        "hermes_home": str(get_hermes_home()),
-        "config_path": str(get_config_path()),
-        "env_path": str(get_env_path()),
         "config_version": current_ver,
         "latest_config_version": latest_ver,
         "gateway_running": gateway_running,
-        "gateway_pid": gateway_pid,
-        "gateway_health_url": _GATEWAY_HEALTH_URL,
         "gateway_state": gateway_state,
         "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason,
@@ -1664,6 +1663,27 @@ async def get_status():
         "auth_required": auth_required,
         "auth_providers": auth_providers,
     }
+
+    # Absolute host paths, the gateway PID, and the internal gateway health
+    # URL are deployment recon a liveness probe never needs. ``/api/status``
+    # is in ``PUBLIC_API_PATHS`` so it bypasses dashboard auth; on a
+    # network-exposed (gated) bind that means *any* unauthenticated caller
+    # reaches it, and leaking host metadata there contradicts the allowlist's
+    # own contract ("version, gateway state, active session count, and the
+    # dashboard auth-gate shape. No bodies, no session content, no secrets").
+    # Surface this detail only on a loopback / ``--insecure`` bind, where the
+    # dashboard is local-only and the caller is already inside the trust
+    # envelope — the same loopback/gated split ``should_require_auth`` draws.
+    if not auth_required:
+        status.update({
+            "hermes_home": str(get_hermes_home()),
+            "config_path": str(get_config_path()),
+            "env_path": str(get_env_path()),
+            "gateway_pid": gateway_pid,
+            "gateway_health_url": _GATEWAY_HEALTH_URL,
+        })
+
+    return status
 
 
 _WINDOWS_11_MIN_BUILD = 22000

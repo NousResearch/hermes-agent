@@ -1429,36 +1429,36 @@ def _tui_need_npm_install(root: Path) -> bool:
     if not marker.is_file():
         return True
 
-    # Compare lockfile contents, not mtimes: git checkouts and npm rewrites
-    # can bump the root lockfile timestamp even when installed deps already
-    # match. Fall back to mtime when either file is unparseable.
+    # In a monorepo with npm workspaces, a full lockfile-vs-hidden-lock
+    # comparison is unreliable: the root lockfile lists deps for ALL
+    # workspaces (desktop, web, …), but a scoped ``npm ci --workspace
+    # ui-tui`` only installs the TUI's transitive deps (~795 of ~1505
+    # packages).  A naive content comparison flags ~490 desktop/web packages
+    # as "missing" and triggers a spurious reinstall on every launch.
+    #
+    # Instead, verify that the TUI's core dependency (@hermes/ink) is at the
+    # version declared in the lockfile.  If it matches, the TUI install is
+    # current.  The sentinel above already checks ink's *existence*; here we
+    # check its *version* against the lockfile so version bumps (e.g. after
+    # ``hermes update``) still trigger a reinstall.
     try:
         wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
-        installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
+        ink_entry = wanted.get("node_modules/@hermes/ink") or {}
+        wanted_version = ink_entry.get("version")
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-        return lock.stat().st_mtime > marker.stat().st_mtime
+        wanted_version = None
 
-    def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+    if wanted_version:
+        try:
+            installed_ink = json.loads(ink.read_text(encoding="utf-8"))
+            if installed_ink.get("version") == wanted_version:
+                return False
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            pass
+        return True
 
-    for name, pkg in wanted.items():
-        if not name:
-            continue
-
-        if not isinstance(pkg, dict):
-            continue
-
-        if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
-                continue
-            return True
-
-        if isinstance(installed[name], dict) and comparable(pkg) != comparable(
-            installed[name]
-        ):
-            return True
-
-    return False
+    # Fallback: no version info available — use mtime comparison.
+    return lock.stat().st_mtime > marker.stat().st_mtime
 
 
 _TUI_BUILD_INPUT_DIRS = (
@@ -1468,7 +1468,6 @@ _TUI_BUILD_INPUT_DIRS = (
 
 _TUI_BUILD_INPUT_FILES = (
     "package.json",
-    "package-lock.json",
     "tsconfig.json",
     "tsconfig.build.json",
     "babel.compiler.config.cjs",
@@ -4465,10 +4464,6 @@ def _web_ui_build_needed(web_dir: Path) -> bool:
         mp = web_dir / meta
         if mp.exists() and mp.stat().st_mtime > dist_mtime:
             return True
-    # Workspace root lockfile (single package-lock.json covers all workspaces).
-    root_lock = project_root / "package-lock.json"
-    if root_lock.exists() and root_lock.stat().st_mtime > dist_mtime:
-        return True
     return False
 
 

@@ -83,17 +83,20 @@ class TestSendMattermost:
         resp = _make_aiohttp_resp(201, json_data={"id": "post123"})
         session_ctx, session = _make_aiohttp_session(resp)
 
-        with patch("aiohttp.ClientSession", return_value=session_ctx), \
+        with patch("aiohttp.ClientSession", return_value=session_ctx) as client_session, \
+             patch("aiohttp.ClientTimeout", side_effect=AssertionError("no aiohttp timeout")), \
              patch.dict(os.environ, {"MATTERMOST_URL": "", "MATTERMOST_TOKEN": ""}, clear=False):
             extra = {"url": "https://mm.example.com"}
             result = asyncio.run(_send_mattermost("tok-abc", extra, "channel1", "hello"))
 
         assert result == {"success": True, "platform": "mattermost", "chat_id": "channel1", "message_id": "post123"}
+        assert "timeout" not in client_session.call_args[1]
         session.post.assert_called_once()
         call_kwargs = session.post.call_args
         assert call_kwargs[0][0] == "https://mm.example.com/api/v4/posts"
         assert call_kwargs[1]["headers"]["Authorization"] == "Bearer tok-abc"
         assert call_kwargs[1]["json"] == {"channel_id": "channel1", "message": "hello"}
+        assert "timeout" not in call_kwargs[1]
 
     def test_http_error(self):
         resp = _make_aiohttp_resp(400, text_data="Bad Request")

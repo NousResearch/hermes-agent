@@ -114,14 +114,19 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.get(url, headers=self._headers(), timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+            async def _do() -> Dict[str, Any]:
+                async with self._session.get(url, headers=self._headers()) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.error("MM API GET %s → %s: %s", path, resp.status, body[:200])
+                        return {}
+                    return await resp.json()
+            return await asyncio.wait_for(_do(), timeout=30)
         except aiohttp.ClientError as exc:
             logger.error("MM API GET %s network error: %s", path, exc)
+            return {}
+        except asyncio.TimeoutError:
+            logger.error("MM API GET %s timed out", path)
             return {}
 
     async def _api_post(
@@ -131,17 +136,21 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.post(
-                url, headers=self._headers(), json=payload,
-                timeout=aiohttp.ClientTimeout(total=30)
-            ) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+            async def _do() -> Dict[str, Any]:
+                async with self._session.post(
+                    url, headers=self._headers(), json=payload,
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.error("MM API POST %s → %s: %s", path, resp.status, body[:200])
+                        return {}
+                    return await resp.json()
+            return await asyncio.wait_for(_do(), timeout=30)
         except aiohttp.ClientError as exc:
             logger.error("MM API POST %s network error: %s", path, exc)
+            return {}
+        except asyncio.TimeoutError:
+            logger.error("MM API POST %s timed out", path)
             return {}
 
     async def _api_put(
@@ -151,16 +160,21 @@ class MattermostAdapter(BasePlatformAdapter):
         import aiohttp
         url = f"{self._base_url}/api/v4/{path.lstrip('/')}"
         try:
-            async with self._session.put(
-                url, headers=self._headers(), json=payload
-            ) as resp:
-                if resp.status >= 400:
-                    body = await resp.text()
-                    logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
-                    return {}
-                return await resp.json()
+            async def _do() -> Dict[str, Any]:
+                async with self._session.put(
+                    url, headers=self._headers(), json=payload
+                ) as resp:
+                    if resp.status >= 400:
+                        body = await resp.text()
+                        logger.error("MM API PUT %s → %s: %s", path, resp.status, body[:200])
+                        return {}
+                    return await resp.json()
+            return await asyncio.wait_for(_do(), timeout=30)
         except aiohttp.ClientError as exc:
             logger.error("MM API PUT %s network error: %s", path, exc)
+            return {}
+        except asyncio.TimeoutError:
+            logger.error("MM API PUT %s timed out", path)
             return {}
 
     async def _upload_file(
@@ -179,14 +193,20 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
-                return None
-            data = await resp.json()
-            infos = data.get("file_infos", [])
-            return infos[0]["id"] if infos else None
+        async def _do() -> Optional[str]:
+            async with self._session.post(url, headers=headers, data=form) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+                infos = data.get("file_infos", [])
+                return infos[0]["id"] if infos else None
+        try:
+            return await asyncio.wait_for(_do(), timeout=60)
+        except asyncio.TimeoutError:
+            logger.error("MM file upload timed out")
+            return None
 
     # ------------------------------------------------------------------
     # Required overrides
@@ -200,9 +220,7 @@ class MattermostAdapter(BasePlatformAdapter):
             logger.error("Mattermost: URL or token not configured")
             return False
 
-        self._session = aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        )
+        self._session = aiohttp.ClientSession()
         self._closing = False
 
         # Verify credentials and fetch bot identity.
@@ -438,18 +456,23 @@ class MattermostAdapter(BasePlatformAdapter):
 
         for attempt in range(3):
             try:
-                async with self._session.get(url, timeout=aiohttp.ClientTimeout(total=30)) as resp:
-                    if resp.status >= 500 or resp.status == 429:
-                        if attempt < 2:
-                            logger.debug("Mattermost download retry %d/2 for %s (status %d)",
-                                         attempt + 1, url[:80], resp.status)
-                            await asyncio.sleep(1.5 * (attempt + 1))
-                            continue
-                    if resp.status >= 400:
-                        return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
-                    file_data = await resp.read()
-                    ct = resp.content_type or "application/octet-stream"
-                    break
+                async def _download() -> tuple[int, bytes, str]:
+                    async with self._session.get(url) as resp:
+                        body = await resp.read() if resp.status < 400 else b""
+                        return resp.status, body, resp.content_type or "application/octet-stream"
+
+                status, body, content_type = await asyncio.wait_for(_download(), timeout=30)
+                if status >= 500 or status == 429:
+                    if attempt < 2:
+                        logger.debug("Mattermost download retry %d/2 for %s (status %d)",
+                                     attempt + 1, url[:80], status)
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                if status >= 400:
+                    return await self.send(chat_id, f"{caption or ''}\n{url}".strip(), reply_to)
+                file_data = body
+                ct = content_type
+                break
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 if attempt < 2:
                     await asyncio.sleep(1.5 * (attempt + 1))
@@ -568,17 +591,20 @@ class MattermostAdapter(BasePlatformAdapter):
                             logger.warning("Mattermost: blocked unsafe image URL in batch")
                             continue
                         try:
-                            async with self._session.get(
-                                image_url, timeout=aiohttp.ClientTimeout(total=30)
-                            ) as resp:
-                                if resp.status >= 400:
-                                    logger.warning(
-                                        "Mattermost: failed to download image (HTTP %d): %s",
-                                        resp.status, image_url[:80],
-                                    )
-                                    continue
-                                file_data = await resp.read()
-                                ct = resp.content_type or "image/png"
+                            async def _download_image() -> tuple[int, bytes, str]:
+                                async with self._session.get(image_url) as resp:
+                                    body = await resp.read() if resp.status < 400 else b""
+                                    return resp.status, body, resp.content_type or "image/png"
+
+                            status, file_data, ct = await asyncio.wait_for(
+                                _download_image(), timeout=30
+                            )
+                            if status >= 400:
+                                logger.warning(
+                                    "Mattermost: failed to download image (HTTP %d): %s",
+                                    status, image_url[:80],
+                                )
+                                continue
                         except Exception as dl_err:
                             logger.warning("Mattermost: download failed for %s: %s", image_url[:80], dl_err)
                             continue
@@ -808,29 +834,32 @@ class MattermostAdapter(BasePlatformAdapter):
 
                 import aiohttp
                 dl_url = f"{self._base_url}/api/v4/files/{fid}"
-                async with self._session.get(
-                    dl_url,
-                    headers={"Authorization": f"Bearer {self._token}"},
-                    timeout=aiohttp.ClientTimeout(total=30),
-                ) as resp:
-                    if resp.status < 400:
-                        file_data = await resp.read()
-                        from gateway.platforms.base import cache_image_from_bytes, cache_document_from_bytes
-                        if mime.startswith("image/"):
-                            local_path = cache_image_from_bytes(file_data, ext or ".png")
-                            media_urls.append(local_path)
-                            media_types.append(mime)
-                        elif mime.startswith("audio/"):
-                            from gateway.platforms.base import cache_audio_from_bytes
-                            local_path = cache_audio_from_bytes(file_data, ext or ".ogg")
-                            media_urls.append(local_path)
-                            media_types.append(mime)
-                        else:
-                            local_path = cache_document_from_bytes(file_data, fname)
-                            media_urls.append(local_path)
-                            media_types.append(mime)
+                async def _download_file() -> tuple[int, bytes]:
+                    async with self._session.get(
+                        dl_url,
+                        headers={"Authorization": f"Bearer {self._token}"},
+                    ) as resp:
+                        body = await resp.read() if resp.status < 400 else b""
+                        return resp.status, body
+
+                status, file_data = await asyncio.wait_for(_download_file(), timeout=30)
+                if status < 400:
+                    from gateway.platforms.base import cache_image_from_bytes, cache_document_from_bytes
+                    if mime.startswith("image/"):
+                        local_path = cache_image_from_bytes(file_data, ext or ".png")
+                        media_urls.append(local_path)
+                        media_types.append(mime)
+                    elif mime.startswith("audio/"):
+                        from gateway.platforms.base import cache_audio_from_bytes
+                        local_path = cache_audio_from_bytes(file_data, ext or ".ogg")
+                        media_urls.append(local_path)
+                        media_types.append(mime)
                     else:
-                        logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, resp.status)
+                        local_path = cache_document_from_bytes(file_data, fname)
+                        media_urls.append(local_path)
+                        media_types.append(mime)
+                else:
+                    logger.warning("Mattermost: failed to download file %s: HTTP %s", fid, status)
             except Exception as exc:
                 logger.warning("Mattermost: error downloading file %s: %s", fid, exc)
 
@@ -939,10 +968,7 @@ async def _standalone_send(
         _proxy = resolve_proxy_url(platform_env_var="MATTERMOST_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
 
-        async with aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=60),
-            **_sess_kw,
-        ) as session:
+        async with aiohttp.ClientSession(**_sess_kw) as session:
             # 1. Upload media (if any) and collect file_ids.
             file_ids: List[str] = []
             for media in media_files:
@@ -959,24 +985,29 @@ async def _standalone_send(
                         fh.read(),
                         filename=os.path.basename(file_path),
                     )
-                async with session.post(
-                    f"{base_url}/api/v4/files",
-                    data=form,
-                    headers=upload_headers,
-                    **_req_kw,
-                ) as upload_resp:
-                    if upload_resp.status not in {200, 201}:
-                        body = await upload_resp.text()
-                        return {
-                            "error": (
-                                f"Mattermost file upload failed "
-                                f"({upload_resp.status}): {body[:400]}"
-                            )
-                        }
-                    upload_data = await upload_resp.json()
-                    for info in upload_data.get("file_infos", []):
-                        if info.get("id"):
-                            file_ids.append(info["id"])
+                async def _upload() -> Dict[str, Any]:
+                    async with session.post(
+                        f"{base_url}/api/v4/files",
+                        data=form,
+                        headers=upload_headers,
+                        **_req_kw,
+                    ) as upload_resp:
+                        if upload_resp.status not in {200, 201}:
+                            body = await upload_resp.text()
+                            return {
+                                "error": (
+                                    f"Mattermost file upload failed "
+                                    f"({upload_resp.status}): {body[:400]}"
+                                )
+                            }
+                        return await upload_resp.json()
+
+                upload_data = await asyncio.wait_for(_upload(), timeout=60)
+                if "error" in upload_data:
+                    return upload_data
+                for info in upload_data.get("file_infos", []):
+                    if info.get("id"):
+                        file_ids.append(info["id"])
 
             # 2. Post the message (with thread root + attached file_ids).
             payload: Dict[str, Any] = {
@@ -987,21 +1018,26 @@ async def _standalone_send(
                 payload["root_id"] = thread_id
             if file_ids:
                 payload["file_ids"] = file_ids
-            async with session.post(
-                f"{base_url}/api/v4/posts",
-                headers=headers,
-                json=payload,
-                **_req_kw,
-            ) as resp:
-                if resp.status not in {200, 201}:
-                    body = await resp.text()
-                    return {
-                        "error": (
-                            f"Mattermost API error ({resp.status}): "
-                            f"{body[:400]}"
-                        )
-                    }
-                data = await resp.json()
+            async def _post_message() -> Dict[str, Any]:
+                async with session.post(
+                    f"{base_url}/api/v4/posts",
+                    headers=headers,
+                    json=payload,
+                    **_req_kw,
+                ) as resp:
+                    if resp.status not in {200, 201}:
+                        body = await resp.text()
+                        return {
+                            "error": (
+                                f"Mattermost API error ({resp.status}): "
+                                f"{body[:400]}"
+                            )
+                        }
+                    return await resp.json()
+
+            data = await asyncio.wait_for(_post_message(), timeout=60)
+            if "error" in data:
+                return data
             return {
                 "success": True,
                 "platform": "mattermost",

@@ -166,7 +166,8 @@ class TestMattermostSend:
 
         self.adapter._session.post = MagicMock(return_value=mock_resp)
 
-        result = await self.adapter.send("channel_1", "Hello!")
+        with patch("aiohttp.ClientTimeout", side_effect=AssertionError("no aiohttp timeout")):
+            result = await self.adapter.send("channel_1", "Hello!")
 
         assert result.success is True
         assert result.message_id == "post123"
@@ -178,6 +179,7 @@ class TestMattermostSend:
         payload = call_args[1]["json"]
         assert payload["channel_id"] == "channel_1"
         assert payload["message"] == "Hello!"
+        assert "timeout" not in call_args[1]
 
     @pytest.mark.asyncio
     async def test_send_empty_content_succeeds(self):

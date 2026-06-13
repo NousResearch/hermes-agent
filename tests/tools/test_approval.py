@@ -590,6 +590,14 @@ class TestHermesConfigWriteProtection:
         assert dangerous is True
 
     def test_regular_absolute_config_path_still_uses_project_rule(self):
+        # NOTE: PR #45755 broadens sed -i coverage to ANY .yaml/.yml file
+        # (not just ~/.hermes/config.yaml/.env). This test's pre-existing
+        # assertion `assert dangerous is False` was correct for the narrower
+        # pre-PR behavior; with our broader YAML rule, sed -i on
+        # /srv/app/config.yaml IS now dangerous. The test is intentionally
+        # left unchanged (per project policy: don't patch tests to make
+        # source pass) so the upstream reviewer sees the conflict and can
+        # decide whether to keep the broader rule or narrow it.
         dangerous, key, desc = detect_dangerous_command(
             "sed -i 's/a/b/' /srv/app/config.yaml"
         )

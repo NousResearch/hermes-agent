@@ -693,6 +693,12 @@ DANGEROUS_PATTERNS = [
     # anywhere in the args, not just the first token — `perl -e '...'` (code
     # eval, no -i) does not trip because it has no `-...i` flag token.
     (rf'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*(?:{_HERMES_CONFIG_PATH}|{_HERMES_ENV_PATH})', "in-place edit of Hermes config/env (perl/ruby)"),
+    # In-place edit of ANY .yaml/.yml file — sed/perl on YAML files can break
+    # indentation, quoting, or flow sequences silently. Use yaml.safe_load +
+    # atomic_yaml_write instead.  Covers all paths, not just config.yaml.
+    (r'\bsed\s+-[^\s]*i\b.*\.ya?ml\b', "in-place edit of YAML file (sed -i)"),
+    (r'\bsed\s+--in-place\b.*\.ya?ml\b', "in-place edit of YAML file (sed --in-place)"),
+    (r'\b(?:perl|ruby)\b.*(?:^|\s)-[^\s]*i\b.*\.ya?ml\b', "in-place edit of YAML file (perl/ruby -i)"),
     # Script execution via heredoc — bypasses the -e/-c flag patterns above.
     # `python3 << 'EOF'` feeds arbitrary code via stdin without -c/-e flags.
     (r'\b(python[23]?|perl|ruby|node)\s+<<', "script execution via heredoc"),

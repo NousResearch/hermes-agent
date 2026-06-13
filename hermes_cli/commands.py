@@ -731,7 +731,7 @@ def _collect_gateway_skill_entries(
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dir
         _skills_dir = str(SKILLS_DIR.resolve())
         _hub_dir = str((SKILLS_DIR / ".hub").resolve()).rstrip("/") + "/"
         # Build set of allowed directory prefixes: local skills dir + any
@@ -744,6 +744,9 @@ def _collect_gateway_skill_entries(
         _allowed_prefixes.extend(
             str(d).rstrip("/") + "/" for d in get_external_skills_dirs()
         )
+        _project_skills = get_project_skills_dir()
+        if _project_skills is not None:
+            _allowed_prefixes.append(str(_project_skills.resolve()).rstrip("/") + "/")
         skill_cmds = get_skill_commands()
         for cmd_key in sorted(skill_cmds):
             info = skill_cmds[cmd_key]
@@ -910,7 +913,7 @@ def discord_skill_commands_by_category(
 
     try:
         from agent.skill_commands import get_skill_commands
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, get_project_skills_dir
         from tools.skills_tool import SKILLS_DIR
 
         _skills_dir = SKILLS_DIR.resolve()
@@ -925,6 +928,9 @@ def discord_skill_commands_by_category(
                     _scan_roots.append(_P(ext).resolve())
                 except Exception:
                     continue
+            _project_skills = get_project_skills_dir()
+            if _project_skills is not None:
+                _scan_roots.append(_P(_project_skills).resolve())
         except Exception:
             pass
         skill_cmds = get_skill_commands()

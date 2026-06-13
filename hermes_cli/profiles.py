@@ -784,9 +784,9 @@ def create_profile(
     Path
         The newly created profile directory.
     """
-    if no_skills and (clone_config or clone_all):
+    if no_skills and (clone_from is not None or clone_config or clone_all):
         raise ValueError(
-            "--no-skills is mutually exclusive with --clone / --clone-all "
+            "--no-skills is mutually exclusive with --clone / --clone-from / --clone-all "
             "(cloning explicitly copies skills from the source profile)."
         )
     canon = normalize_profile_name(name)

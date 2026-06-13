@@ -9860,19 +9860,20 @@ def cmd_profile(args):
 
         try:
             clone_from = getattr(args, "clone_from", None)
+            clone_config = clone or clone_from is not None
 
             profile_dir = create_profile(
                 name=name,
                 clone_from=clone_from,
                 clone_all=clone_all,
-                clone_config=clone,
+                clone_config=clone_config,
                 no_alias=no_alias,
                 no_skills=no_skills,
                 description=getattr(args, "description", None),
             )
             print(f"\nProfile '{name}' created at {profile_dir}")
 
-            if clone or clone_all:
+            if clone_config or clone_all:
                 source_label = (
                     getattr(args, "clone_from", None) or get_active_profile_name()
                 )
@@ -9886,8 +9887,8 @@ def cmd_profile(args):
                         f"Cloned config, .env, SOUL.md, and skills from {source_label}."
                     )
 
-            # Auto-clone Honcho config for the new profile (only with --clone/--clone-all)
-            if clone or clone_all:
+            # Auto-clone Honcho config for the new profile (only with clone operations)
+            if clone_config or clone_all:
                 try:
                     from plugins.memory.honcho.cli import clone_honcho_for_profile
 
@@ -9896,10 +9897,10 @@ def cmd_profile(args):
                 except Exception:
                     pass  # Honcho plugin not installed or not configured
 
-            # Seed bundled skills (skip if --clone-all already copied them, or
-            # if --no-skills was passed — in which case seed_profile_skills()
-            # honors the marker file and returns skipped_opt_out=True).
-            if not clone_all:
+            # Seed bundled skills for fresh profiles only. Clone operations
+            # already copied the source profile's skills, including any
+            # user-installed or intentionally removed skills.
+            if not (clone_config or clone_all):
                 result = seed_profile_skills(profile_dir)
                 if result and result.get("skipped_opt_out"):
                     print(

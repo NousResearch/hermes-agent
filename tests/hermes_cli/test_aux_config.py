@@ -58,6 +58,20 @@ def test_aux_tasks_keys_all_exist_in_default_config():
     )
 
 
+def test_default_config_auxiliary_keys_all_in_aux_tasks():
+    """Every DEFAULT_CONFIG auxiliary task must appear in the picker menu.
+
+    Regression guard: `monitor` was in DEFAULT_CONFIG but missing from
+    ``_AUX_TASKS``, so the interactive ``hermes model`` picker didn't show it.
+    """
+    aux_keys = {k for k, _name, _desc in _AUX_TASKS}
+    default_keys = set(DEFAULT_CONFIG["auxiliary"].keys())
+    missing = default_keys - aux_keys
+    assert not missing, (
+        f"DEFAULT_CONFIG.auxiliary has tasks missing from _AUX_TASKS picker: {missing}"
+    )
+
+
 # ── _format_aux_current ─────────────────────────────────────────────────────
 
 

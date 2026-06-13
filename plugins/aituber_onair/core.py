@@ -841,7 +841,6 @@ def _start_voicevox_tts(values: dict[str, Any]) -> dict[str, Any]:
     log_fh = open(log_path, "ab", buffering=0)
     kwargs: dict[str, Any] = {
         "cwd": str(engine.parent),
-        "stdin": subprocess.DEVNULL,
         "stdout": log_fh,
         "stderr": subprocess.STDOUT,
         "close_fds": True,
@@ -854,7 +853,7 @@ def _start_voicevox_tts(values: dict[str, Any]) -> dict[str, Any]:
     else:
         kwargs["start_new_session"] = True
     try:
-        proc = subprocess.Popen(cmd, **kwargs)
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **kwargs)
     except OSError as exc:
         log_fh.close()
         return {"ok": False, "provider": "voicevox", "error": str(exc), "command": cmd}
@@ -1106,7 +1105,12 @@ def _play_wav_file(path: Path) -> dict[str, Any]:
         player = shutil.which("afplay") or shutil.which("paplay") or shutil.which("aplay")
         if not player:
             return {"ok": False, "error": "No local wav player was found."}
-        subprocess.run([player, str(path)], check=True, capture_output=True)
+        subprocess.run(
+            [player, str(path)],
+            check=True,
+            capture_output=True,
+            stdin=subprocess.DEVNULL,
+        )
         return {"ok": True, "backend": player}
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
@@ -1428,7 +1432,6 @@ def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
     log_fh = open(log_path, "ab", buffering=0)
     kwargs: dict[str, Any] = {
         "cwd": str(app_dir),
-        "stdin": subprocess.DEVNULL,
         "stdout": log_fh,
         "stderr": subprocess.STDOUT,
         "env": env,
@@ -1439,7 +1442,7 @@ def start_fbx_app(values: dict[str, Any]) -> dict[str, Any]:
     else:
         kwargs["start_new_session"] = True
     try:
-        proc = subprocess.Popen(cmd, **kwargs)
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **kwargs)
     except OSError as exc:
         log_fh.close()
         return {"ok": False, "error": str(exc), "command": cmd, "cwd": str(app_dir)}

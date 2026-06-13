@@ -231,9 +231,9 @@ def _play_wav(
         elif sys.platform == "darwin":
             cmd = ["afplay", tmp_path]
             if blocking:
-                subprocess.run(cmd, check=True)
+                subprocess.run(cmd, check=True, stdin=subprocess.DEVNULL)
             else:
-                subprocess.Popen(cmd)
+                subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
         else:
             # Linux: try paplay, then aplay, then ffplay
             for player in ("paplay", "aplay", "ffplay"):
@@ -241,9 +241,19 @@ def _play_wav(
                     extra = [] if player != "ffplay" else ["-nodisp", "-autoexit"]
                     cmd = [player, *extra, tmp_path]
                     if blocking:
-                        subprocess.run(cmd, check=True, capture_output=True)
+                        subprocess.run(
+                            cmd,
+                            check=True,
+                            capture_output=True,
+                            stdin=subprocess.DEVNULL,
+                        )
                     else:
-                        subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        subprocess.Popen(
+                            cmd,
+                            stdin=subprocess.DEVNULL,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
                     break
             else:
                 return {"success": False, "error": "No audio player found (paplay/aplay/ffplay)"}

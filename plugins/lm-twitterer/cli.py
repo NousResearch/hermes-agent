@@ -265,12 +265,12 @@ def _install_deps(assume_yes: bool, *, include_browser: bool = False) -> int:
             print("skipped")
             return 1
     cmd = [sys.executable, "-m", "pip", "install", *packages]
-    result = subprocess.run(cmd, check=False)
+    result = subprocess.run(cmd, check=False, stdin=subprocess.DEVNULL)
     if result.returncode == 0:
         return _install_browser_runtime(include_browser)
     # Some Hermes Windows venvs are uv-managed and intentionally omit pip.
     uv_cmd = ["uv", "pip", "install", "--python", sys.executable, *packages]
-    result = subprocess.run(uv_cmd, check=False)
+    result = subprocess.run(uv_cmd, check=False, stdin=subprocess.DEVNULL)
     if result.returncode != 0:
         return result.returncode
     return _install_browser_runtime(include_browser)
@@ -282,6 +282,7 @@ def _install_browser_runtime(include_browser: bool) -> int:
     result = subprocess.run(
         [sys.executable, "-m", "playwright", "install", "chromium"],
         check=False,
+        stdin=subprocess.DEVNULL,
     )
     return result.returncode
 
@@ -551,7 +552,7 @@ def _auth_edge_direct_command(args: argparse.Namespace) -> int:
     print("Hermes will only save auth_token and ct0 from x.com; cookie values are not printed.")
     print()
 
-    process = subprocess.Popen(cmd)
+    process = subprocess.Popen(cmd, stdin=subprocess.DEVNULL)
     endpoint = f"http://127.0.0.1:{port}"
     if not _wait_for_cdp_endpoint(endpoint, timeout_seconds=20):
         return _print(

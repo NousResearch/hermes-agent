@@ -43,7 +43,7 @@ def test_oauth_setup_token_keeps_inherited_stdin():
     subprocess calls must leave this one inheriting stdin. Regression guard for
     the over-application caught while salvaging the stdin-EOF fix.
     """
-    src = (REPO_ROOT / "agent" / "anthropic_adapter.py").read_text()
+    src = (REPO_ROOT / "agent" / "anthropic_adapter.py").read_text(encoding="utf-8")
     assert 'subprocess.run([claude_path, "setup-token"])' in src, (
         "interactive setup-token call changed shape; re-verify it still "
         "inherits stdin (no stdin=subprocess.DEVNULL)"

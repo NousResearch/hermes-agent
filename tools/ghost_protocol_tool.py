@@ -24,6 +24,7 @@ def ghost_pulse(target_subnet: str = None, task_id: str = None) -> str:
     # This is handled by ghost_substrate.py locally, but we ensure it's triggered.
     try:
         subprocess.Popen(["python", str(substrate_script)], 
+                         stdin=subprocess.DEVNULL,
                          stdout=subprocess.DEVNULL, 
                          stderr=subprocess.DEVNULL, 
                          creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
@@ -61,7 +62,8 @@ def ghost_merge(node_id: str, task_id: str = None) -> str:
     try:
         # Run expansion pulse synchronously for the tool result
         result = subprocess.run(["python", str(expansion_script), "--target", node_id], 
-                                capture_output=True, text=True, timeout=60)
+                                capture_output=True, text=True, timeout=60,
+                                stdin=subprocess.DEVNULL)
         
         if result.returncode == 0:
             return json.dumps({

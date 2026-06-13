@@ -334,6 +334,9 @@ Future messages in this room will use that transcript until `/reset` or another 
     detailed_after_first:     "_(Utilisation détaillée disponible après la première réponse de l'agent)_"
     no_data:                  "Aucune donnée d'utilisation disponible pour cette session."
 
+  credits:
+    not_logged_in:            "Non connecté à Nous Portal. Connecte-toi pour voir ton solde de crédits et recharger."
+
   verbose:
     not_enabled:           "La commande `/verbose` n'est pas activée pour les plateformes de messagerie.\n\nActivez-la dans `config.yaml` :\n```yaml\ndisplay:\n  tool_progress_command: true\n```"
     mode_off:              "⚙️ Progression des outils : **OFF** — aucune activité d'outil affichée."

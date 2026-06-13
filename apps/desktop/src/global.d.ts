@@ -20,8 +20,10 @@ declare global {
       getGatewayWsUrl: (profile?: null | string) => Promise<string>
       // Open (or focus) a standalone OS window for a single chat session so
       // the user can work with multiple chats side by side. Returns ok:false
-      // with an error code when the sessionId is empty/invalid.
-      openSessionWindow: (sessionId: string) => Promise<{ ok: boolean; error?: string }>
+      // with an error code when the sessionId is empty/invalid. `watch` opens
+      // a spectator window (lazy resume — no agent build) for live-streaming
+      // a running subagent's session.
+      openSessionWindow: (sessionId: string, opts?: { watch?: boolean }) => Promise<{ ok: boolean; error?: string }>
       getBootProgress: () => Promise<DesktopBootProgress>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
@@ -52,6 +54,8 @@ declare global {
       watchPreviewFile: (url: string) => Promise<HermesPreviewWatch>
       stopPreviewFileWatch: (id: string) => Promise<boolean>
       setTitleBarTheme?: (payload: HermesTitleBarTheme) => void
+      setNativeTheme?: (mode: 'dark' | 'light' | 'system') => void
+      setTranslucency?: (payload: { intensity: number }) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
       fetchLinkTitle: (url: string) => Promise<string>
@@ -65,6 +69,10 @@ declare global {
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
+      // Resolve git-worktree identity for a batch of session cwds, reading git's
+      // on-disk metadata locally. Returns null per cwd that isn't inside a
+      // checkout (or can't be read — e.g. a remote backend's path).
+      worktrees?: (cwds: string[]) => Promise<Record<string, HermesWorktreeInfo | null>>
       terminal: {
         dispose: (id: string) => Promise<boolean>
         onData: (id: string, callback: (payload: string) => void) => () => void
@@ -76,7 +84,7 @@ declare global {
       onClosePreviewRequested?: (callback: () => void) => () => void
       onOpenUpdatesRequested?: (callback: () => void) => () => void
       onDeepLink?: (
-        callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void,
+        callback: (payload: { kind: string; name: string; params: Record<string, string> }) => void
       ) => () => void
       signalDeepLinkReady?: () => Promise<{ ok: boolean }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
@@ -435,6 +443,18 @@ export interface HermesReadFileTextResult {
 export interface HermesPreviewWatch {
   id: string
   path: string
+}
+
+export interface HermesWorktreeInfo {
+  // Main repo root — the shared grouping key for a checkout and all its linked
+  // worktrees.
+  repoRoot: string
+  // This cwd's own worktree root.
+  worktreeRoot: string
+  // True when this is the repo's primary checkout (.git is a directory).
+  isMainWorktree: boolean
+  // Current branch (or short detached-HEAD sha), null when unreadable.
+  branch: null | string
 }
 
 export interface HermesReadDirEntry {

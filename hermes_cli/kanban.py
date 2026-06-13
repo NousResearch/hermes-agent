@@ -1348,6 +1348,28 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
+
+        # Auto-subscribe when running inside a gateway chat session.
+        # Follows the same convention as the /kanban slash-command handler:
+        # JSON mode indicates scripting, skip implicit subscription.
+        from gateway.session_context import get_session_env
+
+        session_platform = get_session_env("HERMES_SESSION_PLATFORM")
+        session_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
+        if (
+            session_platform
+            and session_chat_id
+            and not getattr(args, "json", False)
+        ):
+            kb.add_notify_sub(
+                conn,
+                task_id=task_id,
+                platform=session_platform,
+                chat_id=session_chat_id,
+                thread_id=get_session_env("HERMES_SESSION_THREAD_ID") or None,
+                user_id=get_session_env("HERMES_SESSION_USER_ID") or None,
+                notifier_profile=_profile_author(),
+            )
     if getattr(args, "json", False):
         print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
     else:

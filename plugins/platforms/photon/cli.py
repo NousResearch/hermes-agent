@@ -274,7 +274,7 @@ def _cmd_setup(args: argparse.Namespace) -> int:
 
     print()
     print("✓ Photon setup complete.")
-    print("  Start the gateway:  hermes gateway start --platform photon")
+    print("  Start the gateway:  hermes gateway start")
     return 0
 
 

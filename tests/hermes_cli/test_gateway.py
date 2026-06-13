@@ -274,6 +274,20 @@ def test_gateway_start_in_container_with_operational_systemd_uses_systemd(monkey
     assert calls == [False]
 
 
+def test_gateway_start_ignores_legacy_platform_selector(monkeypatch):
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_wsl", lambda: False)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(gateway, "systemd_start", lambda system=False: calls.append(system))
+
+    args = SimpleNamespace(gateway_command="start", system=False, all=False, platform="photon")
+    gateway.gateway_command(args)
+
+    assert calls == [False]
+
+
 def test_gateway_restart_on_windows_without_service_uses_detached_backend(monkeypatch):
     """Windows manual restart must not fall back to foreground run_gateway().
 

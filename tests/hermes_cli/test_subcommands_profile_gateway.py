@@ -81,3 +81,12 @@ def test_gateway_accept_hooks_flag():
     p = _gateway_parser()
     ns = p.parse_args(["gateway", "run", "--accept-hooks"])
     assert ns.accept_hooks is True
+
+
+def test_gateway_lifecycle_accepts_legacy_platform_flag():
+    p = _gateway_parser()
+    for action in ("start", "restart", "status"):
+        ns = p.parse_args(["gateway", action, "--platform", "photon"])
+        assert ns.gateway_command == action
+        assert ns.platform == "photon"
+        assert ns.func is _h_gateway

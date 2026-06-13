@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -339,15 +340,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "anthropic": [
         "claude-fable-5",
-        "claude-opus-4-8",
-        "claude-opus-4-7",
-        "claude-opus-4-6",
-        "claude-sonnet-4-6",
-        "claude-opus-4-5-20251101",
-        "claude-sonnet-4-5-20250929",
+        "claude-opus-4.8",
+        "claude-opus-4.7",
+        "claude-opus-4.6",
+        "claude-sonnet-4.6",
+        "claude-opus-4.5-20251101",
+        "claude-sonnet-4.5-20250929",
         "claude-opus-4-20250514",
         "claude-sonnet-4-20250514",
-        "claude-haiku-4-5-20251001",
+        "claude-haiku-4.5-20251001",
     ],
     "deepseek": [
         "deepseek-v4-pro",
@@ -2047,6 +2048,32 @@ def _strip_vendor_prefix(model_id: str) -> str:
     return raw
 
 
+_CLAUDE_FAMILY_DECIMAL_RE = re.compile(
+    r"(?P<prefix>(?:^|/)claude-[a-z][a-z0-9]*-)(?P<major>\d+)-(?P<minor>\d{1,2})(?=(?:[-:]|$))",
+    re.IGNORECASE,
+)
+_CLAUDE_LEGACY_DECIMAL_RE = re.compile(
+    r"(?P<prefix>(?:^|/)claude-)(?P<major>\d+)-(?P<minor>\d{1,2})(?=-)",
+    re.IGNORECASE,
+)
+
+
+def _anthropic_display_model_id(model_id: str) -> str:
+    """Use dot-versioned Claude IDs in picker/catalog output.
+
+    Anthropic's wire IDs use hyphens (``claude-sonnet-4-6``), but Hermes
+    displays Claude version numbers with decimals everywhere else. The
+    Anthropic adapter converts dots back to hyphens before API calls.
+    """
+    value = str(model_id or "").strip()
+
+    def _dot_version(match: re.Match[str]) -> str:
+        return f"{match.group('prefix')}{match.group('major')}.{match.group('minor')}"
+
+    value = _CLAUDE_FAMILY_DECIMAL_RE.sub(_dot_version, value)
+    return _CLAUDE_LEGACY_DECIMAL_RE.sub(_dot_version, value)
+
+
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
     return _is_anthropic_fast_model(model_id) or _is_openai_fast_model(model_id)
@@ -2299,23 +2326,28 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             base_url=cfg_base_url or None,
             api_key=cfg_api_key or None,
         )
+        curated = [
+            _anthropic_display_model_id(model)
+            for model in _PROVIDER_MODELS.get("anthropic", [])
+        ]
         if live:
             if cfg_base_url:
-                return live
+                return [_anthropic_display_model_id(model) for model in live]
             # The live /v1/models dump lags newly-routed curated aliases
             # (e.g. claude-fable-5, which is reachable on Anthropic before it
             # is enumerated by the models endpoint). Surface curated entries
             # first, then append any live-only models, so a fresh curated
             # model never disappears just because the API hasn't listed it yet.
-            curated = list(_PROVIDER_MODELS.get("anthropic", []))
             merged = list(curated)
             merged_lower = {m.lower() for m in curated}
             for m in live:
-                if m.lower() not in merged_lower:
-                    merged.append(m)
-                    merged_lower.add(m.lower())
+                display = _anthropic_display_model_id(m)
+                key = display.lower()
+                if key not in merged_lower:
+                    merged.append(display)
+                    merged_lower.add(key)
             return merged
-        return list(_PROVIDER_MODELS.get("anthropic", []))
+        return curated
     if normalized == "ollama-cloud":
         live = fetch_ollama_cloud_models(force_refresh=force_refresh)
         if live:

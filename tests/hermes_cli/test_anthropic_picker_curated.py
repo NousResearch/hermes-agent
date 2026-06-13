@@ -20,6 +20,8 @@ def test_anthropic_curated_alias_survives_when_live_omits_it():
     """A curated alias missing from /v1/models still surfaces (first)."""
     curated = M._PROVIDER_MODELS["anthropic"]
     assert "claude-fable-5" in curated  # sanity: the alias is curated
+    assert "claude-opus-4.8" in curated
+    assert "claude-opus-4-8" not in curated
 
     # Live catalog the API would actually return — no fable-5.
     live = ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5-20251001"]
@@ -34,19 +36,22 @@ def test_anthropic_curated_alias_survives_when_live_omits_it():
 def test_anthropic_merge_dedupes_overlap_and_appends_live_only():
     """Models in both lists appear once; live-only models are appended."""
     live = [
-        "claude-opus-4-8",          # overlaps curated
-        "claude-sonnet-4-6",        # overlaps curated
+        "claude-opus-4-8",          # overlaps curated after display normalization
+        "claude-sonnet-4-6",        # overlaps curated after display normalization
         "claude-future-9-99",       # live-only, not curated
     ]
     with patch.object(M, "_fetch_anthropic_models", return_value=live):
         result = M.provider_model_ids("anthropic")
 
     # No duplicates introduced by the merge.
-    assert result.count("claude-opus-4-8") == 1
+    assert result.count("claude-opus-4.8") == 1
+    assert "claude-opus-4-8" not in result
+    assert "claude-sonnet-4.6" in result
+    assert "claude-sonnet-4-6" not in result
     # Live-only entry is preserved (discovery still works for unknown models).
-    assert "claude-future-9-99" in result
+    assert "claude-future-9.99" in result
     # Curated entries lead, live-only trails.
-    assert result.index("claude-fable-5") < result.index("claude-future-9-99")
+    assert result.index("claude-fable-5") < result.index("claude-future-9.99")
 
 
 def test_anthropic_falls_back_to_curated_when_live_unavailable():
@@ -56,3 +61,21 @@ def test_anthropic_falls_back_to_curated_when_live_unavailable():
 
     assert result == list(M._PROVIDER_MODELS["anthropic"])
     assert "claude-fable-5" in result
+
+
+def test_anthropic_live_models_use_decimal_display_versions():
+    """Native Anthropic IDs are displayed with decimal Claude versions."""
+    live = [
+        "claude-opus-4-8",
+        "claude-sonnet-4-5-20250929",
+        "claude-3-5-sonnet-20241022",
+        "claude-opus-4-20250514",
+    ]
+    with patch.object(M, "_fetch_anthropic_models", return_value=live):
+        result = M.provider_model_ids("anthropic")
+
+    assert "claude-opus-4.8" in result
+    assert "claude-sonnet-4.5-20250929" in result
+    assert "claude-3.5-sonnet-20241022" in result
+    # 4.0 date-stamped IDs do not have a minor version to decimalize.
+    assert "claude-opus-4-20250514" in result

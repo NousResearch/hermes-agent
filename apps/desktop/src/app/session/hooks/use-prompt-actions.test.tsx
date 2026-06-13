@@ -364,6 +364,45 @@ describe('usePromptActions submit / queue drain semantics', () => {
     })
   })
 
+  it('a fromQueue drain that hits "session busy" stays quiet (no error bubble) and a retry sends it', async () => {
+    // The drain can fire on the settle edge before the gateway has fully wound
+    // the turn down → transient 4009. It must not append a red "session busy"
+    // bubble; the entry stays queued and the next idle retry succeeds.
+    let attempt = 0
+    const seeds: Record<string, unknown>[] = []
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        attempt += 1
+
+        if (attempt === 1) {
+          throw new Error('4009: session busy')
+        }
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    render(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={s => seeds.push(s)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const first = await handle!.submitText('queued during a turn', { fromQueue: true })
+    expect(first).toBe(false)
+    // No assistant-error message was appended for the transient busy.
+    expect(seeds.some(s => Array.isArray(s.messages) && (s.messages as { error?: string }[]).some(m => m.error))).toBe(
+      false
+    )
+
+    const second = await handle!.submitText('queued during a turn', { fromQueue: true })
+    expect(second).toBe(true)
+  })
+
   it('a normal (non-queue) submit still respects the busyRef guard', async () => {
     const busyRef = { current: true }
     const requestGateway = vi.fn(async () => ({}) as never)

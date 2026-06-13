@@ -31,6 +31,7 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from agent.context_packet import ContextPacketValidationError, render_context_packet
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -2009,11 +2010,41 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+def _append_context_packet_to_context(
+    context: Optional[str],
+    context_packet: Any,
+) -> tuple[Optional[str], Optional[str]]:
+    """Render a typed Context Packet into the child context, preserving prose.
+
+    Returns (merged_context, error).  ``None`` / plain empty values are no-ops.
+    Plain natural-language ``context`` remains untouched; only an explicit
+    ``context_packet`` argument is validated here.
+    """
+    if context_packet is None:
+        return context, None
+    try:
+        rendered = render_context_packet(context_packet)
+    except ContextPacketValidationError as exc:
+        return None, f"context_packet invalid: {exc}"
+    if rendered is None:
+        if isinstance(context_packet, str) and context_packet.strip():
+            return (
+                None,
+                "context_packet invalid: expected dict, JSON object, "
+                "or ```context-packet fenced JSON block",
+            )
+        return context, None
+    if context and str(context).strip():
+        return f"{str(context).strip()}\n\n{rendered}", None
+    return rendered, None
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    context_packet: Any = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -2101,6 +2132,11 @@ def delegate_task(
         tasks = recovered_tasks
 
     if tasks and isinstance(tasks, list):
+        if context_packet is not None:
+            return tool_error(
+                "context_packet is only supported for single-task delegate_task calls; "
+                "put a context_packet on each task object for batch delegation."
+            )
         if len(tasks) > max_children:
             return tool_error(
                 f"Too many tasks: {len(tasks)} provided, but "
@@ -2111,8 +2147,18 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
+        merged_context, packet_error = _append_context_packet_to_context(
+            context, context_packet
+        )
+        if packet_error:
+            return tool_error(packet_error)
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": merged_context,
+                "toolsets": toolsets,
+                "role": top_role,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -2120,7 +2166,7 @@ def delegate_task(
     if not task_list:
         return tool_error("No tasks provided.")
 
-    # Validate each task has a goal
+    # Validate each task has a goal and normalize optional typed context packets.
     for i, task in enumerate(task_list):
         if not isinstance(task, dict):
             return tool_error(
@@ -2128,6 +2174,16 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+        merged_context, packet_error = _append_context_packet_to_context(
+            task.get("context"), task.get("context_packet")
+        )
+        if packet_error:
+            return tool_error(f"Task {i} {packet_error}")
+        if "context_packet" in task:
+            task = dict(task)
+            task.pop("context_packet", None)
+            task["context"] = merged_context
+            task_list[i] = task
 
     overall_start = time.monotonic()
     results = []
@@ -2846,6 +2902,46 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "context_packet": {
+                "type": "object",
+                "description": (
+                    "Optional typed Context Packet handoff. When provided, Hermes "
+                    "validates and appends it to context as deterministic markdown. "
+                    "Required fields: role, source, goal, non_goals, safety, "
+                    "allowed_actions, forbidden_actions, context, evidence, "
+                    "verification, output_contract, residual_risks. Plain prose "
+                    "context remains supported; use this only when stable handoff "
+                    "fields matter."
+                ),
+                "properties": {
+                    "role": {"type": "string"},
+                    "source": {"type": "string"},
+                    "goal": {"type": "string"},
+                    "non_goals": {"type": "array", "items": {"type": "string"}},
+                    "safety": {"type": "string"},
+                    "allowed_actions": {"type": "array", "items": {"type": "string"}},
+                    "forbidden_actions": {"type": "array", "items": {"type": "string"}},
+                    "context": {"type": "array", "items": {"type": "string"}},
+                    "evidence": {"type": "array", "items": {"type": "string"}},
+                    "verification": {"type": "array", "items": {"type": "string"}},
+                    "output_contract": {"type": "string"},
+                    "residual_risks": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": [
+                    "role",
+                    "source",
+                    "goal",
+                    "non_goals",
+                    "safety",
+                    "allowed_actions",
+                    "forbidden_actions",
+                    "context",
+                    "evidence",
+                    "verification",
+                    "output_contract",
+                    "residual_risks",
+                ],
+            },
             "toolsets": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -2867,6 +2963,14 @@ DELEGATE_TASK_SCHEMA = {
                         "context": {
                             "type": "string",
                             "description": "Task-specific context",
+                        },
+                        "context_packet": {
+                            "type": "object",
+                            "description": (
+                                "Task-specific typed Context Packet. Same field "
+                                "contract as top-level context_packet; rendered into "
+                                "this task's context before the child is spawned."
+                            ),
                         },
                         "toolsets": {
                             "type": "array",
@@ -2944,6 +3048,7 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        context_packet=args.get("context_packet"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

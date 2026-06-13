@@ -58,6 +58,23 @@ def _make_mock_parent(depth=0):
     return parent
 
 
+def _valid_context_packet() -> dict:
+    return {
+        "role": "steve",
+        "source": "bob",
+        "goal": "Implement a typed handoff seam.",
+        "non_goals": ["Do not push"],
+        "safety": "No secrets or production mutations.",
+        "allowed_actions": ["read files", "edit repo files"],
+        "forbidden_actions": ["push", "deploy"],
+        "context": ["Worktree: /tmp/hermes"],
+        "evidence": ["Bob found no first-class ContextPacket schema"],
+        "verification": ["pytest tests/tools/test_delegate.py -q"],
+        "output_contract": "Report files changed, verification, and risks.",
+        "residual_risks": ["Other handoff surfaces may still use prose"],
+    }
+
+
 class TestDelegateRequirements(unittest.TestCase):
     def test_always_available(self):
         self.assertTrue(check_delegate_requirements())
@@ -68,7 +85,16 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("goal", props)
         self.assertIn("tasks", props)
         self.assertIn("context", props)
+        self.assertIn("context_packet", props)
         self.assertIn("toolsets", props)
+        packet_props = props["context_packet"]["properties"]
+        self.assertIn("role", packet_props)
+        self.assertIn("verification", packet_props)
+        self.assertIn("residual_risks", packet_props)
+        self.assertIn(
+            "context_packet",
+            props["tasks"]["items"]["properties"],
+        )
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -197,6 +223,111 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
+
+    def test_single_task_context_packet_renders_into_child_prompt(self):
+        parent = _make_mock_parent()
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(
+                    goal="Fix handoffs",
+                    context="Legacy prose context remains here.",
+                    context_packet=_valid_context_packet(),
+                    parent_agent=parent,
+                )
+            )
+
+        self.assertIn("results", result)
+        _, kwargs = MockAgent.call_args
+        prompt = kwargs["ephemeral_system_prompt"]
+        self.assertIn("Legacy prose context remains here.", prompt)
+        self.assertIn("# Context Packet", prompt)
+        self.assertIn("- role: steve", prompt)
+        self.assertIn("## Verification", prompt)
+        self.assertIn("pytest tests/tools/test_delegate.py -q", prompt)
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_plain_context_still_works_without_context_packet(self, mock_run):
+        mock_run.return_value = {
+            "task_index": 0,
+            "status": "completed",
+            "summary": "Done!",
+            "api_calls": 1,
+            "duration_seconds": 1.0,
+        }
+        parent = _make_mock_parent()
+
+        result = json.loads(
+            delegate_task(
+                goal="Fix tests",
+                context="Plain natural-language handoff.",
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("results", result)
+        self.assertEqual(result["results"][0]["status"], "completed")
+        mock_run.assert_called_once()
+
+    @patch("tools.delegate_tool._run_single_child")
+    def test_invalid_context_packet_fails_before_spawning_child(self, mock_run):
+        parent = _make_mock_parent()
+        bad_packet = _valid_context_packet()
+        bad_packet.pop("verification")
+
+        result = json.loads(
+            delegate_task(
+                goal="Fix handoffs",
+                context_packet=bad_packet,
+                parent_agent=parent,
+            )
+        )
+
+        self.assertIn("error", result)
+        self.assertIn("missing required field: verification", result["error"])
+        mock_run.assert_not_called()
+
+    def test_batch_task_context_packet_renders_per_task_context(self):
+        parent = _make_mock_parent()
+        tasks = [
+            {
+                "goal": "Task A",
+                "context": "Existing task context.",
+                "context_packet": _valid_context_packet(),
+            },
+            {"goal": "Task B"},
+        ]
+        with patch("run_agent.AIAgent") as MockAgent:
+            child_a = MagicMock()
+            child_a.run_conversation.return_value = {
+                "final_response": "Result A",
+                "completed": True,
+                "api_calls": 1,
+            }
+            child_b = MagicMock()
+            child_b.run_conversation.return_value = {
+                "final_response": "Result B",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.side_effect = [child_a, child_b]
+
+            result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+
+        self.assertIn("results", result)
+        first_prompt = MockAgent.call_args_list[0].kwargs["ephemeral_system_prompt"]
+        second_prompt = MockAgent.call_args_list[1].kwargs["ephemeral_system_prompt"]
+        self.assertIn("Existing task context.", first_prompt)
+        self.assertIn("# Context Packet", first_prompt)
+        self.assertNotIn("# Context Packet", second_prompt)
+        self.assertEqual(len(result["results"]), 2)
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):

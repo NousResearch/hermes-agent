@@ -1640,6 +1640,8 @@ export const en: Translations = {
     loadingTree: 'Loading file tree',
     loadingFiles: 'Loading files',
     terminalHide: 'Hide terminal',
+    terminalExited: 'Terminal exited',
+    terminalRestart: 'Restart terminal',
     addToChat: 'Add to chat'
   },
 

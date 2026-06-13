@@ -257,6 +257,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
   const [shellName, setShellName] = useState('shell')
+  const restartRef = useRef<() => void>(() => {})
 
   useEffect(() => {
     onAddSelectionToChatRef.current = onAddSelectionToChat
@@ -326,6 +327,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
     let disposed = false
     const cleanup: Array<() => void> = []
+    let sessionCleanup: Array<() => void> = []
     let lastSentSize: { cols: number; rows: number } | null = null
 
     const term = new Terminal({
@@ -576,13 +578,41 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
 
           setStatus('open')
 
-          cleanup.push(
+          sessionCleanup.push(
             terminalApi.onData(session.id, armedWrite),
             terminalApi.onExit(session.id, ({ code, signal }) => {
               setStatus('closed')
               term.write(`\r\n[terminal exited${signal ? `: ${signal}` : code !== null ? `: ${code}` : ''}]\r\n`)
             })
           )
+
+          restartRef.current = () => {
+            // Tear down the old session's listeners and PTY
+            sessionCleanup.forEach(run => run())
+            sessionCleanup = []
+
+            const oldId = sessionIdRef.current
+
+            if (oldId) {
+              void terminalApi.dispose(oldId)
+              sessionIdRef.current = null
+            }
+
+            // Clear the xterm buffer and reset visual state
+            term.clear()
+            term.reset()
+            setSelection('')
+            setSelectionStyle(null)
+            selectionRef.current = ''
+            selectionLabelRef.current = ''
+            promptPristine = true
+            stripLeading = true
+            lastSentSize = null
+            setStatus('starting')
+
+            // Start a fresh session
+            startSession()
+          }
 
           window.requestAnimationFrame(() => {
             fitAndResize()
@@ -638,6 +668,7 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     return () => {
       disposed = true
       cleanup.forEach(run => run())
+      sessionCleanup.forEach(run => run())
       setActiveTerminalReader(null)
 
       const id = sessionIdRef.current
@@ -699,9 +730,14 @@ export function useTerminalSession({ cwd, onAddSelectionToChat }: UseTerminalSes
     })
   }, [status])
 
+  const restartSession = useCallback(() => {
+    restartRef.current()
+  }, [])
+
   return {
     addSelectionToChat,
     hostRef,
+    restartSession,
     selection,
     selectionStyle,
     shellName,

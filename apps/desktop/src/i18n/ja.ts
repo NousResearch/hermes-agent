@@ -1770,6 +1770,8 @@ export const ja = defineLocale({
     loadingTree: 'ファイルツリーを読み込み中',
     loadingFiles: 'ファイルを読み込み中',
     terminalHide: 'ターミナルを非表示',
+    terminalExited: 'ターミナルが終了しました',
+    terminalRestart: 'ターミナルを再起動',
     addToChat: 'チャットに追加'
   },
 

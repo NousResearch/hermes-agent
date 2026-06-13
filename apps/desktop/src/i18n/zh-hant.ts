@@ -1714,6 +1714,8 @@ export const zhHant = defineLocale({
     loadingTree: '正在載入檔案樹',
     loadingFiles: '正在載入檔案',
     terminalHide: '隱藏終端機',
+    terminalExited: '終端機已結束',
+    terminalRestart: '重新啟動終端機',
     addToChat: '新增至聊天'
   },
 

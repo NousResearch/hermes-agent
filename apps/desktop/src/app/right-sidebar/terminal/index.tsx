@@ -20,7 +20,7 @@ interface TerminalTabProps {
 export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
   const { t } = useI18n()
 
-  const { addSelectionToChat, hostRef, selection, selectionStyle, shellName, status } = useTerminalSession({
+  const { addSelectionToChat, hostRef, restartSession, selection, selectionStyle, shellName, status } = useTerminalSession({
     cwd,
     onAddSelectionToChat
   })
@@ -53,6 +53,23 @@ export function TerminalTab({ cwd, onAddSelectionToChat }: TerminalTabProps) {
               strokeScale={0.68}
               type="spiral-search"
             />
+          </div>
+        )}
+        {status === 'closed' && (
+          <div className="absolute inset-0 z-10 grid place-items-center">
+            <div className="flex flex-col items-center gap-2">
+              <span className="text-sm text-(--ui-text-tertiary)">{t.rightSidebar.terminalExited}</span>
+              <Button
+                className="gap-1.5"
+                onClick={restartSession}
+                size="sm"
+                type="button"
+                variant="secondary"
+              >
+                <Codicon name="refresh" size="0.875rem" />
+                {t.rightSidebar.terminalRestart}
+              </Button>
+            </div>
           </div>
         )}
         {selection.trim() && (

@@ -1820,6 +1820,8 @@ export const zh: Translations = {
     loadingTree: '正在加载文件树',
     loadingFiles: '正在加载文件',
     terminalHide: '隐藏终端',
+    terminalExited: '终端已退出',
+    terminalRestart: '重启终端',
     addToChat: '添加到对话'
   },
 

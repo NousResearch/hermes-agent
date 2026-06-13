@@ -457,8 +457,10 @@ IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico'}
 # filesystem path.  Cover languages where a compile/type check needs an
 # external toolchain (py_compile, node, tsc, go vet, rustfmt).
 LINTERS = {
-    '.py': 'python -m py_compile {file} 2>&1',
+    '.py': 'python3 -m py_compile {file} 2>&1',
     '.js': 'node --check {file} 2>&1',
+    '.mjs': 'node --check {file} 2>&1',
+    '.cjs': 'node --check {file} 2>&1',
     '.ts': 'npx tsc --noEmit {file} 2>&1',
     '.go': 'go vet {file} 2>&1',
     '.rs': 'rustfmt --check {file} 2>&1',
@@ -600,31 +602,16 @@ def _lint_toml_inproc(content: str) -> tuple[bool, str]:
         return False, f"{type(e).__name__}: {e}"
 
 
-def _lint_python_inproc(content: str) -> tuple[bool, str]:
-    """In-process Python syntax check via ast.parse.
-
-    Catches SyntaxError, IndentationError, and everything else the
-    ast module rejects — matching py_compile's scope but with no
-    subprocess overhead and no dependency on a ``python`` in PATH.
-    """
-    import ast as _ast
-    try:
-        _ast.parse(content)
-        return True, ""
-    except SyntaxError as e:
-        loc = f" (line {e.lineno}, column {e.offset})" if e.lineno else ""
-        return False, f"{type(e).__name__}: {e.msg}{loc}"
-    except Exception as e:  # noqa: BLE001
-        return False, f"{type(e).__name__}: {e}"
-
-
 # In-process linters by file extension.  Preferred over shell linters when
 # present — no subprocess overhead, microseconds per call.  Each callable
 # takes file content (str) and returns (ok: bool, error: str).  An error
 # string of ``"__SKIP__"`` signals the linter isn't available (missing
 # dependency) and should be treated as "no linter".
+#
+# Python intentionally uses the shell linter table (``python3 -m py_compile``)
+# instead of ast.parse so the edit guardrail matches the runtime compiler and
+# never assumes a ``python`` binary exists on PATH.
 LINTERS_INPROC = {
-    '.py': _lint_python_inproc,
     '.json': _lint_json_inproc,
     '.yaml': _lint_yaml_inproc,
     '.yml': _lint_yaml_inproc,
@@ -1269,15 +1256,17 @@ class ShellFileOperations(FileOperations):
         # skipping the read keeps the hot path fast.
         ext = os.path.splitext(path)[1].lower()
         pre_content: Optional[str] = None
-        want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
+        pre_exists = False
+        want_pre = ext in LINTERS or ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
         if want_pre:
-            # Best-effort read; failure (file missing, permission) leaves
-            # pre_content as None which makes both downstream consumers
-            # degrade gracefully (lint reports all errors; LSP skips the
-            # shift map).
+            # Best-effort read.  For linted/code files this snapshot is also
+            # the rollback source if post-write syntax validation rejects the
+            # edit.  Preserve empty existing files by recording pre_exists
+            # separately from the content string.
             read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
             read_result = self._exec(read_cmd)
-            if read_result.exit_code == 0 and read_result.stdout:
+            if read_result.exit_code == 0:
+                pre_exists = True
                 pre_content = read_result.stdout
 
         # ── Line-ending preservation (Roo Code pattern) ──────────────
@@ -1352,6 +1341,28 @@ class ShellFileOperations(FileOperations):
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
 
+        if lint_result and not lint_result.success and not lint_result.skipped:
+            rollback_error = self._restore_after_rejected_edit(
+                path,
+                pre_content=pre_content,
+                pre_exists=pre_exists,
+            )
+            details = lint_result.output.strip() or lint_result.message or "syntax validation failed"
+            restore_note = (
+                f" Rollback failed: {rollback_error}"
+                if rollback_error
+                else " Original content restored."
+            )
+            return WriteResult(
+                error=(
+                    f"Edit rejected: syntax validation failed for {path}.\n"
+                    f"{details}\n"
+                    f"Fix the syntax error and retry the edit."
+                    f"{restore_note}"
+                ),
+                lint=lint_result.to_dict(),
+            )
+
         # Semantic diagnostics from the LSP layer — separate channel.
         # Only fired when the syntax tier reported clean (no point asking
         # an LSP for a file that won't even parse).  Pass pre/post
@@ -1372,6 +1383,30 @@ class ShellFileOperations(FileOperations):
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
         )
+
+    def _restore_after_rejected_edit(
+        self,
+        path: str,
+        *,
+        pre_content: Optional[str],
+        pre_exists: bool,
+    ) -> Optional[str]:
+        """Best-effort rollback after syntax validation rejects an edit.
+
+        Existing files are restored from the pre-edit snapshot.  Newly-created
+        files are removed.  Returns None on success, or an actionable error
+        string if rollback itself failed.
+        """
+        if pre_exists:
+            restore_result = self._atomic_write(path, pre_content or "")
+            if restore_result.exit_code != 0:
+                return (restore_result.stdout or "unknown restore error").strip()
+            return None
+
+        delete_result = self.delete_file(path)
+        if delete_result.error:
+            return delete_result.error
+        return None
     
     # =========================================================================
     # PATCH Implementation (Replace Mode)

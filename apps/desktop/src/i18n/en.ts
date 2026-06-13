@@ -643,6 +643,7 @@ export const en: Translations = {
     back: 'Back',
     searchPlaceholder: 'Search sessions, views, and actions',
     goTo: 'Go to',
+    goToSession: 'Go to session',
     commandCenter: 'Command Center',
     appearance: 'Appearance',
     settings: 'Settings',
@@ -1655,6 +1656,7 @@ export const en: Translations = {
   assistant: {
     thread: {
       loadingSession: 'Loading session',
+      showEarlier: 'Show earlier messages',
       loadingResponse: 'Hermes is loading a response',
       thinking: 'Thinking',
       today: time => `Today, ${time}`,

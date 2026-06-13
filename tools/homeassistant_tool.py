@@ -35,6 +35,24 @@ def _get_config():
         _HASS_TOKEN or os.getenv("HASS_TOKEN", ""),
     )
 
+
+class HomeAssistantAPIError(Exception):
+    """Home Assistant REST API returned a non-2xx status.
+
+    Used instead of ``aiohttp.ClientResponseError(request_info=None, ...)``:
+    that exception's ``__str__`` dereferences ``request_info.real_url``, so a
+    synthesized instance with ``request_info=None`` raises ``AttributeError``
+    the moment anything formats it (``f"{e}"``, logging, ``str(e)``). The
+    handler error path does exactly that, so an unrelated 400 would crash the
+    handler instead of returning a clean tool error. This type stringifies
+    safely while still exposing ``status`` / ``message`` for callers.
+    """
+
+    def __init__(self, status: int, message: str = ""):
+        self.status = int(status)
+        self.message = message or f"HTTP {self.status}"
+        super().__init__(f"HTTP {self.status}: {self.message}")
+
 # Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
 _ENTITY_ID_RE = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
 
@@ -285,12 +303,7 @@ async def _async_call_service(
         status, body_text, content_type = await _post(True)
 
     if status >= 400:
-        raise aiohttp.ClientResponseError(
-            request_info=None,  # type: ignore[arg-type]
-            history=(),
-            status=status,
-            message=body_text or f"HTTP {status}",
-        )
+        raise HomeAssistantAPIError(status, body_text)
 
     if content_type and "json" in content_type:
         try:

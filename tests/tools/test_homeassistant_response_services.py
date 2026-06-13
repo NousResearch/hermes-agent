@@ -464,6 +464,57 @@ class TestHandlerReturnResponseWiring:
 
 
 # ---------------------------------------------------------------------------
+# Unrelated 400s surface as a clean tool error (not an AttributeError crash)
+# ---------------------------------------------------------------------------
+
+
+class TestHandlerUnrelated400:
+    """An unrelated 400 must come back as a tool error, not crash the handler.
+
+    Regression for the review on #27270: the error used to be raised as
+    ``aiohttp.ClientResponseError(request_info=None, ...)``. Formatting that
+    exception (``f"{e}"`` in the handler's ``except`` block) dereferences
+    ``request_info.real_url`` and raises ``AttributeError``, so the handler's
+    error path crashed instead of returning a JSON tool error.
+    """
+
+    @staticmethod
+    def _passthrough_run_async():
+        return patch(
+            "tools.homeassistant_tool._run_async",
+            side_effect=lambda coro: _run(coro),
+        )
+
+    def test_unrelated_400_returns_tool_error(self):
+        patcher, session = _patch_aiohttp([
+            (400, '{"message": "Entity not found"}', "application/json"),
+        ])
+        with patcher, self._passthrough_run_async():
+            raw = _handle_call_service({
+                "domain": "light",
+                "service": "turn_on",
+                "entity_id": "light.x",
+            })
+        # Must be a clean JSON tool error, not a raised exception.
+        payload = json.loads(raw)
+        assert "error" in payload
+        assert "light.turn_on" in payload["error"]
+        # Unrelated 400 must not trigger a retry.
+        assert len(session.posts) == 1
+
+    def test_api_error_stringifies_safely(self):
+        """The synthesized HTTP error must format without raising."""
+        from tools.homeassistant_tool import HomeAssistantAPIError
+
+        err = HomeAssistantAPIError(400, '{"message": "Entity not found"}')
+        # Any of these used to raise AttributeError under the old aiohttp path.
+        assert str(err)
+        assert f"{err}"
+        assert err.status == 400
+        assert "Entity not found" in err.message
+
+
+# ---------------------------------------------------------------------------
 # Schema advertises the new field
 # ---------------------------------------------------------------------------
 

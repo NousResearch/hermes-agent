@@ -877,6 +877,18 @@ class TestPromptBuilderConstants:
         # check that this test is calibrated correctly).
         assert "include MEDIA:" in PLATFORM_HINTS["telegram"]
 
+    def test_telegram_hint_encourages_rich_markdown(self):
+        # Telegram Bot API 10.1 rich messages are default-on, so the hint must
+        # encourage native structured markdown instead of forbidding tables.
+        hint = PLATFORM_HINTS["telegram"]
+        lowered = hint.lower()
+        assert "Telegram has NO table syntax" not in hint
+        assert "rich markdown" in lowered
+        assert "table" in lowered
+        assert "task list" in lowered
+        assert "math" in lowered
+        assert "include MEDIA:" in hint
+
     def test_platform_hints_mattermost(self):
         hint = PLATFORM_HINTS["mattermost"]
         assert "Mattermost" in hint

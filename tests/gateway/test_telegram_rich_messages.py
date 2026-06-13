@@ -27,17 +27,8 @@ RICH_CONTENT = "## Results\n\n| Case | Status |\n|---|---|\n| rich | ✅ |\n\n- 
 
 
 def _make_adapter(extra=None):
-    """Build a TelegramAdapter with a mock bot wired for the rich path.
-
-    Rich messages are opt-in (default off) while the Bot API 10.1 endpoint
-    is validated live, so tests that exercise the rich path enable it
-    explicitly here; opt-out tests pass their own ``extra``.
-    """
-    config = PlatformConfig(
-        enabled=True,
-        token="fake-token",
-        extra={"rich_messages": True} if extra is None else extra,
-    )
+    """Build a TelegramAdapter with a mock bot wired for the rich path."""
+    config = PlatformConfig(enabled=True, token="fake-token", extra=extra or {})
     adapter = TelegramAdapter(config)
     bot = MagicMock()
     # do_api_request as an AsyncMock makes inspect.iscoroutinefunction(...) True,
@@ -76,24 +67,16 @@ async def test_rich_happy_path_sends_raw_markdown():
 
 
 @pytest.mark.asyncio
-async def test_rich_opt_out_uses_legacy():
+async def test_legacy_rich_messages_config_is_ignored():
     adapter = _make_adapter(extra={"rich_messages": False})
 
     result = await adapter.send("12345", RICH_CONTENT)
 
     assert result.success is True
-    adapter._bot.do_api_request.assert_not_called()
-    adapter._bot.send_message.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_rich_opt_out_accepts_string_false():
-    adapter = _make_adapter(extra={"rich_messages": "false"})
-
-    await adapter.send("12345", RICH_CONTENT)
-
-    adapter._bot.do_api_request.assert_not_called()
-    adapter._bot.send_message.assert_awaited()
+    # The legacy toggle was removed; stale config entries must not disable the
+    # rich path.
+    adapter._bot.do_api_request.assert_awaited_once()
+    adapter._bot.send_message.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -265,13 +248,9 @@ async def test_notification_opt_in_drops_disable_flag():
 
 
 @pytest.mark.asyncio
-async def test_rich_gate_tolerates_missing_enabled_attr():
-    """Adapters missing _rich_messages_enabled (object.__new__ in some tests)
-    must not raise — the gate reads it via getattr(default=True), and a bot
-    without an async do_api_request falls through to the legacy path."""
+async def test_rich_gate_tolerates_minimal_bot_without_raw_endpoint():
+    """A bot without an async do_api_request falls through to the legacy path."""
     adapter = _make_adapter()
-    del adapter._rich_messages_enabled  # simulate object.__new__ construction
-    # SimpleNamespace bot has no do_api_request -> _bot_supports_rich() False.
     adapter._bot = SimpleNamespace(
         send_message=AsyncMock(return_value=SimpleNamespace(message_id=42)),
         send_chat_action=AsyncMock(),
@@ -335,17 +314,6 @@ async def test_rich_draft_transient_failure_does_not_latch_off():
     adapter._bot.send_message_draft.assert_awaited_once()
     # Transient errors must NOT permanently disable rich drafts.
     assert adapter._rich_draft_disabled is False
-
-
-@pytest.mark.asyncio
-async def test_rich_draft_opt_out_uses_legacy():
-    adapter = _make_adapter(extra={"rich_messages": False})
-
-    result = await adapter.send_draft("12345", draft_id=7, content=RICH_CONTENT)
-
-    assert result.success is True
-    adapter._bot.do_api_request.assert_not_called()
-    adapter._bot.send_message_draft.assert_awaited_once()
 
 
 @pytest.mark.asyncio

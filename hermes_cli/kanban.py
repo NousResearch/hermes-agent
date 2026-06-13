@@ -477,6 +477,34 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Emit JSON (structured) instead of the default human table",
     )
 
+    # --- drain (safe board maintenance) ---
+    p_drain = sub.add_parser(
+        "drain",
+        help="Plan or apply safe Kanban drain actions",
+    )
+    p_drain.add_argument(
+        "--class",
+        dest="drain_class",
+        choices=["review_packets"],
+        default="review_packets",
+        help="Drain class to run (default: review_packets)",
+    )
+    p_drain.add_argument(
+        "--dry-run",
+        dest="apply",
+        action="store_false",
+        default=False,
+        help="Report planned actions without mutation (default)",
+    )
+    p_drain.add_argument(
+        "--apply",
+        dest="apply",
+        action="store_true",
+        help="Apply safe drain actions",
+    )
+    p_drain.add_argument("--limit", type=int, default=None)
+    p_drain.add_argument("--json", action="store_true")
+
     # --- link / unlink ---
     p_link = sub.add_parser("link", help="Add a parent->child dependency")
     p_link.add_argument("parent_id")
@@ -911,59 +939,60 @@ def kanban_command(args: argparse.Namespace) -> int:
         _restore_board_env()
         return 1
 
-    handlers = {
-        "init":     _cmd_init,
-        "create":   _cmd_create,
-        "swarm":    _cmd_swarm,
-        "list":     _cmd_list,
-        "ls":       _cmd_list,
-        "show":     _cmd_show,
-        "assign":   _cmd_assign,
-        "reclaim":  _cmd_reclaim,
-        "reassign": _cmd_reassign,
-        "diagnostics": _cmd_diagnostics,
-        "diag":     _cmd_diagnostics,
-        "link":     _cmd_link,
-        "unlink":   _cmd_unlink,
-        "claim":    _cmd_claim,
-        "comment":  _cmd_comment,
-        "complete": _cmd_complete,
-        "edit":     _cmd_edit,
-        "block":    _cmd_block,
-        "schedule": _cmd_schedule,
-        "unblock":  _cmd_unblock,
-        "promote":  _cmd_promote,
-        "archive":  _cmd_archive,
-        "tail":     _cmd_tail,
-        "dispatch": _cmd_dispatch,
-        "daemon":   _cmd_daemon,
-        "watch":    _cmd_watch,
-        "stats":    _cmd_stats,
-        "log":      _cmd_log,
-        "runs":     _cmd_runs,
-        "heartbeat": _cmd_heartbeat,
-        "assignees": _cmd_assignees,
-        "notify-subscribe":   _cmd_notify_subscribe,
-        "notify-list":        _cmd_notify_list,
-        "notify-unsubscribe": _cmd_notify_unsubscribe,
-        "context":  _cmd_context,
-        "specify":  _cmd_specify,
-        "decompose":  _cmd_decompose,
-        "gc":       _cmd_gc,
-    }
-    handler = handlers.get(action)
-    if not handler:
-        print(f"kanban: unknown action {action!r}", file=sys.stderr)
-        _restore_board_env()
-        return 2
-    try:
-        return int(handler(args) or 0)
-    except (ValueError, RuntimeError) as exc:
-        print(f"kanban: {exc}", file=sys.stderr)
-        _restore_board_env()
-        return 1
-    finally:
-        _restore_board_env()
+        handlers = {
+            "init":     _cmd_init,
+            "create":   _cmd_create,
+            "swarm":    _cmd_swarm,
+            "list":     _cmd_list,
+            "ls":       _cmd_list,
+            "show":     _cmd_show,
+            "assign":   _cmd_assign,
+            "reclaim":  _cmd_reclaim,
+            "reassign": _cmd_reassign,
+            "diagnostics": _cmd_diagnostics,
+            "diag":     _cmd_diagnostics,
+            "drain":    _cmd_drain,
+            "link":     _cmd_link,
+            "unlink":   _cmd_unlink,
+            "claim":    _cmd_claim,
+            "comment":  _cmd_comment,
+            "complete": _cmd_complete,
+            "edit":     _cmd_edit,
+            "block":    _cmd_block,
+            "schedule": _cmd_schedule,
+            "unblock":  _cmd_unblock,
+            "promote":  _cmd_promote,
+            "archive":  _cmd_archive,
+            "tail":     _cmd_tail,
+            "dispatch": _cmd_dispatch,
+            "daemon":   _cmd_daemon,
+            "watch":    _cmd_watch,
+            "stats":    _cmd_stats,
+            "log":      _cmd_log,
+            "runs":     _cmd_runs,
+            "heartbeat": _cmd_heartbeat,
+            "assignees": _cmd_assignees,
+            "notify-subscribe":   _cmd_notify_subscribe,
+            "notify-list":        _cmd_notify_list,
+            "notify-unsubscribe": _cmd_notify_unsubscribe,
+            "context":  _cmd_context,
+            "specify":  _cmd_specify,
+            "decompose":  _cmd_decompose,
+            "gc":       _cmd_gc,
+        }
+        handler = handlers.get(action)
+        if not handler:
+            print(f"kanban: unknown action {action!r}", file=sys.stderr)
+            _restore_board_env()
+            return 2
+        try:
+            return int(handler(args) or 0)
+        except (ValueError, RuntimeError) as exc:
+            print(f"kanban: {exc}", file=sys.stderr)
+            _restore_board_env()
+            return 1
+        finally:
+            _restore_board_env()
 
 
 # ---------------------------------------------------------------------------
@@ -1786,6 +1815,43 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                 if a.suggested:
                     print(f"       → {a.label}")
         print()
+    return 0
+
+
+def _cmd_drain(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_drain as kd
+
+    with kb.connect_closing() as conn:
+        report = kd.drain_review_packets(
+            conn,
+            apply=bool(getattr(args, "apply", False)),
+            limit=getattr(args, "limit", None),
+        )
+
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, ensure_ascii=False))
+        return 0
+
+    mode = "dry-run" if report["dry_run"] else "apply"
+    summary = report["summary"]
+    print(f"Kanban drain ({report['class']}, {mode})")
+    print(
+        "  packets={total_packets} planned={planned} applied={applied} "
+        "already_applied={already_applied} refused={refused} skipped={skipped}".format(
+            **summary,
+        )
+    )
+    for action in report["actions"]:
+        line = (
+            f"  {action['status']:15s} {action['action']} "
+            f"source={action['source_task_id']} review={action['review_task_id']} "
+            f"id={action['drain_action_id']}"
+        )
+        if action.get("rework_task_id"):
+            line += f" rework={action['rework_task_id']}"
+        if action.get("reason"):
+            line += f" reason={action['reason']}"
+        print(line)
     return 0
 
 

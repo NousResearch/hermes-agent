@@ -132,6 +132,11 @@ _db_error: str | None = None
 _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _sessions_lock = threading.RLock()  # reentrant: _close_session_by_id may run under callers that already hold it
+# Most-recent background teardown thread spawned by _close_session_by_id(..., background=True)
+# (the session.close RPC path). Exposed so tests/observers can join it; the
+# session itself is already popped before the thread starts, so finalization
+# runs off the response path without affecting idempotency. See #23642.
+_last_close_thread: threading.Thread | None = None
 _prompt_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
@@ -477,17 +482,49 @@ def _attach_worker(sid: str, session: dict, worker) -> None:
     worker.close()
 
 
-def _close_session_by_id(sid: str, *, end_reason: str = "tui_close") -> bool:
+def _close_session_by_id(
+    sid: str, *, end_reason: str = "tui_close", background: bool = False
+) -> bool:
     """Single idempotent teardown for one session: pop it under the sessions
     lock, then finalize, unregister notify, close agent + slash worker via the
     shared ``_teardown_session`` path. Returns True iff it closed a live
     session. The ``_finalized`` / worker ``_closed`` guards make concurrent or
-    repeat calls (e.g. session.close racing the WS-orphan reaper) harmless."""
+    repeat calls (e.g. session.close racing the WS-orphan reaper) harmless.
+
+    When ``background=True`` (used only by the explicit ``session.close`` RPC),
+    the session is still popped synchronously under ``_sessions_lock`` — so the
+    True/False return and idempotency are unchanged and the session is
+    immediately invisible to ``/resume`` and the reaper — but the potentially
+    slow ``_teardown_session`` (memory commit, finalize hook, DB end_session,
+    worker close) runs on a daemon thread. This keeps ``/clear`` /
+    ``session.close`` from blocking the JSON-RPC response on a memory commit
+    that may call an LLM + write SQLite (#23642). The popped session is owned
+    solely by that thread, so there's no double-finalize race (and
+    ``_finalized`` guards it regardless). The reaper, transport-close and
+    shutdown paths keep ``background=False`` (synchronous) so their semantics
+    and tests are unaffected."""
     with _sessions_lock:
         session = _sessions.pop(sid, None)
     if session is None:
         return False
-    _teardown_session(session, end_reason=end_reason)
+    if background:
+        global _last_close_thread
+        # Run teardown under a *copy* of the current context so context-local
+        # state the finalization depends on (e.g. the HERMES_HOME override,
+        # which is a ContextVar and gates the active-session lease store) is
+        # propagated into the daemon thread — plain threads don't inherit it.
+        ctx = contextvars.copy_context()
+        t = threading.Thread(
+            target=lambda: ctx.run(
+                _teardown_session, session, end_reason=end_reason
+            ),
+            name=f"session-close-{sid}",
+            daemon=True,
+        )
+        _last_close_thread = t
+        t.start()
+    else:
+        _teardown_session(session, end_reason=end_reason)
     return True
 
 
@@ -5068,8 +5105,17 @@ def _(rid, params: dict) -> dict:
     # both tear the same session down. _close_session_by_id is the single
     # idempotent teardown path (pop + _teardown_session) and returns False
     # when the session is already gone.
+    #
+    # background=True: the session is popped synchronously (so the return value,
+    # idempotency, and reaper-exclusion are unchanged), but the slow
+    # finalization (memory commit, which may call an LLM + write SQLite) runs on
+    # a daemon thread so the RPC response — and therefore the TUI's /clear —
+    # doesn't block on it. Fix for #23642.
     with _session_resume_lock:
-        return _ok(rid, {"closed": _close_session_by_id(sid, end_reason="tui_close")})
+        return _ok(
+            rid,
+            {"closed": _close_session_by_id(sid, end_reason="tui_close", background=True)},
+        )
 
 
 @method("session.branch")

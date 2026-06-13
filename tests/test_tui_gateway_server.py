@@ -46,6 +46,12 @@ def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
 
         closed = server._methods["session.close"]("r3", {"session_id": sid})
         assert closed["result"]["closed"] is True
+        # session.close backgrounds finalization (#23642) and the active-session
+        # lease is released inside _finalize_session, so join the close thread
+        # before asserting the registry has drained.
+        t = server._last_close_thread
+        if t is not None:
+            t.join(timeout=5)
         assert active_session_registry_snapshot() == []
 
         third = server._methods["session.create"]("r4", {"cols": 80})
@@ -1492,10 +1498,61 @@ def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
             {"id": "1", "method": "session.close", "params": {"session_id": "sid"}}
         )
         assert resp["result"]["closed"] is True
+        # session.close backgrounds finalization (#23642); the pop (and thus the
+        # True return) is synchronous, but memory commit + finalize hook run on
+        # a daemon thread. Join it before asserting on those side effects.
+        t = server._last_close_thread
+        assert t is not None
+        t.join(timeout=5)
+        assert not t.is_alive()
         assert calls["history"] == [{"role": "user", "content": "hello"}]
         assert ("on_session_finalize", "session-key") in calls["hooks"]
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_session_close_returns_promptly_despite_slow_finalization(monkeypatch):
+    """session.close must return well before a slow memory commit finishes.
+
+    Regression for #23642: finalization (which can call an LLM + write SQLite
+    via commit_memory_session) used to run synchronously on the RPC path, so
+    the TUI's /clear blocked until it completed. Finalization is now detached
+    onto a daemon thread; the response returns promptly and the commit still
+    completes in the background.
+    """
+    committed = threading.Event()
+
+    def _slow_commit(history):
+        time.sleep(0.3)
+        committed.set()
+
+    agent = types.SimpleNamespace(session_id="session-key")
+    agent.commit_memory_session = _slow_commit
+    server._sessions["slow-sid"] = _session(
+        agent=agent, history=[{"role": "user", "content": "hello"}]
+    )
+    monkeypatch.setattr(server, "_notify_session_boundary", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    try:
+        start = time.monotonic()
+        resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": "slow-sid"}}
+        )
+        elapsed = time.monotonic() - start
+        assert resp["result"]["closed"] is True
+        # Returned without waiting on the ~300ms commit.
+        assert elapsed < 0.25, f"session.close blocked for {elapsed:.3f}s"
+        # Commit hadn't finished yet at response time.
+        assert not committed.is_set()
+        # ...but it does complete in the background.
+        t = server._last_close_thread
+        assert t is not None
+        t.join(timeout=5)
+        assert committed.wait(timeout=1)
+        assert not t.is_alive()
+    finally:
+        server._sessions.pop("slow-sid", None)
 
 
 def test_ws_orphan_reap_closes_worker_when_session_stays_detached(monkeypatch):
@@ -7145,13 +7202,19 @@ def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):
     seen = []
     monkeypatch.setattr(
         server, "_close_session_by_id",
-        lambda sid, *, end_reason: bool(seen.append((sid, end_reason))) or True,
+        # background defaults so callers other than the RPC (which passes
+        # background=True for #23642) still match; the RPC must delegate with
+        # the right sid + end_reason and request backgrounded finalization.
+        lambda sid, *, end_reason, background=False: bool(
+            seen.append((sid, end_reason, background))
+        )
+        or True,
     )
     resp = server.handle_request(
         {"id": "1", "method": "session.close", "params": {"session_id": "s9"}}
     )
     assert resp["result"] == {"closed": True}
-    assert seen == [("s9", "tui_close")]
+    assert seen == [("s9", "tui_close", True)]
 
 
 def test_close_sessions_for_transport_closes_flagged_repoints_rest(monkeypatch):

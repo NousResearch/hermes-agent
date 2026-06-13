@@ -1311,6 +1311,22 @@ class GatewayStreamConsumer:
                         self._flood_strikes = 0
                         return True
                     else:
+                        if (
+                            finalize
+                            and is_turn_final
+                            and self.cfg.cursor
+                            and self._last_sent_text.endswith(self.cfg.cursor)
+                            and self._visible_prefix() == text
+                        ):
+                            # The final clean-up edit failed, but the complete
+                            # answer is already visible from the last streaming
+                            # frame (usually with only the cursor still stuck on
+                            # screen).  Mark the content delivered so the
+                            # gateway suppresses its normal full final send;
+                            # otherwise users see the same long answer twice
+                            # when Telegram/Discord rate-limit this cosmetic
+                            # final edit (#36965, #25349).
+                            self._final_content_delivered = True
                         raw_response = getattr(result, "raw_response", None)
                         if isinstance(raw_response, dict) and raw_response.get("partial_overflow"):
                             # Telegram edited/sent one or more overflow chunks,

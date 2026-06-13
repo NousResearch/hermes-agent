@@ -1,5 +1,7 @@
 """Regression tests for dashboard cron job profile routing."""
 
+import threading
+
 import pytest
 from fastapi import HTTPException
 
@@ -157,6 +159,47 @@ async def test_cron_mutation_without_profile_finds_named_profile_job(isolated_pr
     assert len(worker_jobs) == 1
     assert worker_jobs[0]["id"] == worker_job["id"]
     assert worker_jobs[0]["enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_cron_profile_scan_runs_off_event_loop(isolated_profiles, monkeypatch):
+    from hermes_cli import web_server
+
+    worker_job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="thread-offload-job",
+    )
+
+    event_loop_thread = threading.get_ident()
+    profile_scan_threads = []
+    worker_threads = []
+    original_profile_dicts = web_server._cron_profile_dicts
+    original_find = web_server._find_cron_job_profile
+
+    def tracking_profile_dicts():
+        profile_scan_threads.append(threading.get_ident())
+        return original_profile_dicts()
+
+    def tracking_find(job_id):
+        worker_threads.append(threading.get_ident())
+        return original_find(job_id)
+
+    monkeypatch.setattr(web_server, "_cron_profile_dicts", tracking_profile_dicts)
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", tracking_find)
+
+    jobs = await web_server.list_cron_jobs(profile="all")
+    paused = await web_server.pause_cron_job(worker_job["id"])
+
+    assert any(job["id"] == worker_job["id"] for job in jobs)
+    assert paused["profile"] == "worker_alpha"
+    assert profile_scan_threads
+    assert worker_threads
+    assert all(thread_id != event_loop_thread for thread_id in profile_scan_threads)
+    assert all(thread_id != event_loop_thread for thread_id in worker_threads)
+
 
 
 @pytest.mark.asyncio

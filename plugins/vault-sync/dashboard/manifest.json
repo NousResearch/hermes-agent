@@ -1,0 +1,14 @@
+{
+  "name": "vault-sync",
+  "label": "Vault Sync",
+  "description": "LOCAL GSSAI vault artefact health — read-only",
+  "icon": "Folder",
+  "version": "0.1.0",
+  "tab": {
+    "path": "/vault-sync",
+    "position": "end"
+  },
+  "slots": [],
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

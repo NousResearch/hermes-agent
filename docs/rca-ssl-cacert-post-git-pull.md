@@ -1,6 +1,6 @@
 # RCA: SSL CA cert bundle corruption after `hermes update`
 
-**Status:** resolved by `fix(agent,gateway): add SSL CA cert bundle fail-fast guard`  
+**Status:** resolved by `fix(agent,gateway): add SSL CA cert bundle fail-fast guard`
 **Severity:** P2 — degrades the agent into a crash-loop until the user re-installs deps.
 
 ## Summary

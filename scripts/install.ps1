@@ -1420,8 +1420,31 @@ function Install-Venv {
         Remove-Item -Recurse -Force "venv"
     }
     
-    # uv creates the venv and pins the Python version in one step
-    & $UvCmd venv venv --python $PythonVersion
+    # uv creates the venv and pins the Python version in one step.
+    # Relax ErrorActionPreference around the call: uv writes informational
+    # lines ("Using CPython 3.11.9 interpreter at: ...") to stderr. With
+    # $ErrorActionPreference = "Stop" (set at the top of this script) and
+    # stderr attached to a pipe -- which is exactly how GUI onboarding
+    # wizards and CI drivers run this installer -- PowerShell 5.1 promotes
+    # the first stderr line to a terminating NativeCommandError even though
+    # uv exits 0 and the venv was created successfully, killing the whole
+    # install at this stage. Same class of fix as Test-Python / Install-Uv.
+    # Verify success by outcome (the venv interpreter exists) rather than
+    # exit-code/stderr semantics.
+    $prevEAP = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        $uvOutput = & $UvCmd venv venv --python $PythonVersion 2>&1
+        $uvExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prevEAP
+    }
+    if (-not (Test-Path "venv\Scripts\python.exe")) {
+        Write-Warn "uv venv output:"
+        Write-Host $uvOutput -ForegroundColor DarkGray
+        Pop-Location
+        throw "uv venv failed (exit $uvExitCode) -- virtual environment was not created"
+    }
 
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the

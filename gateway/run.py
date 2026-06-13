@@ -1420,6 +1420,8 @@ def _build_media_placeholder(event) -> str:
             parts.append(f"[User sent an image: {url}]")
         elif mtype.startswith("audio/"):
             parts.append(f"[User sent audio: {url}]")
+        elif mtype.startswith("video/") or getattr(event, "message_type", None) == MessageType.VIDEO:
+            parts.append(f"[User sent a video: {url}]")
         else:
             parts.append(f"[User sent a file: {url}]")
     return "\n".join(parts)
@@ -7637,6 +7639,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Declare at outer scope so the audio-file-paths handling block below
         # remains safe when ``event.media_urls`` is empty (no inner block runs).
         audio_file_paths: list[str] = []
+        video_paths: list[str] = []
 
         if event.media_urls:
             image_paths = []
@@ -7654,6 +7657,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     and event.message_type not in {MessageType.AUDIO, MessageType.DOCUMENT}
                 ):
                     audio_paths.append(path)
+                if mtype.startswith("video/") or event.message_type == MessageType.VIDEO:
+                    video_paths.append(path)
 
             if image_paths:
                 # Decide routing: native (attach pixels) vs text (vision_analyze
@@ -7747,6 +7752,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"Its content is not inlined here. If the user's request involves "
                     f"what the audio contains, transcribe or process it yourself — for "
                     f"example by passing the path to a transcription or media tool — "
+                    f"instead of asking the user to describe it. Only ask what to do "
+                    f"with it if their intent is genuinely unclear.]"
+                )
+                message_text = f"{_note}\n\n{message_text}"
+
+        if video_paths:
+            from tools.credential_files import to_agent_visible_cache_path as _to_agent_path
+            for _vpath in video_paths:
+                _basename = os.path.basename(_vpath)
+                _parts = _basename.split("_", 2)
+                _display = _parts[2] if len(_parts) >= 3 else _basename
+                _display = re.sub(r'[^\w.\- ]', '_', _display)
+                _agent_path = _to_agent_path(_vpath)
+                _note = (
+                    f"[The user sent a video attachment: '{_display}'. "
+                    f"It is saved at: {_agent_path}. "
+                    f"Its content is not inlined here. If the user's request involves "
+                    f"what the video contains, inspect or process it yourself — for "
+                    f"example by passing the path to a video analysis or media tool — "
                     f"instead of asking the user to describe it. Only ask what to do "
                     f"with it if their intent is genuinely unclear.]"
                 )

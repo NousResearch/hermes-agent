@@ -3470,6 +3470,22 @@ class TestBuildCallKwargsToolDedup:
         )
         assert kwargs["stream"] is True
 
+    def test_stream_stripped_for_anthropic(self):
+        """_build_call_kwargs silently removes stream for anthropic."""
+        kwargs = _build_call_kwargs(
+            provider="anthropic", model="claude-sonnet-4-5-20250929",
+            messages=[], stream=True,
+        )
+        assert "stream" not in kwargs
+
+    def test_stream_stripped_for_minimax(self):
+        """_build_call_kwargs silently removes stream for minimax."""
+        kwargs = _build_call_kwargs(
+            provider="minimax", model="minimax-m1",
+            messages=[], stream=True,
+        )
+        assert "stream" not in kwargs
+
 
 class TestCallLlmStreaming:
     def test_streaming_chunks_are_collected_into_response_like_object(self):
@@ -3525,6 +3541,22 @@ class TestCallLlmStreaming:
         assert resp.choices[0].message.content == "retried stream"
         assert fake_client.chat.completions.create.call_count == 2
         assert fake_client.chat.completions.create.call_args.kwargs["stream"] is True
+
+    def test_anthropic_adapter_raises_not_implemented_for_stream(self):
+        """_AnthropicCompletionsAdapter raises NotImplementedError for stream."""
+        from agent.auxiliary_client import _AnthropicCompletionsAdapter
+
+        mock_client = MagicMock()
+        adapter = _AnthropicCompletionsAdapter(
+            mock_client, "claude-sonnet-4-5-20250929")
+
+        with pytest.raises(NotImplementedError, match="streaming"):
+            adapter.create(
+                model="claude-sonnet-4-5-20250929",
+                messages=[{"role": "user", "content": "hi"}],
+                max_tokens=100,
+                stream=True,
+            )
 
 
 @pytest.fixture(autouse=True)

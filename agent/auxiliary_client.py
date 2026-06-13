@@ -2838,7 +2838,8 @@ def _retry_same_provider_sync(
     if _is_anthropic_compat_endpoint(resolved_provider, retry_base):
         retry_kwargs["messages"] = _convert_openai_images_to_anthropic(retry_kwargs["messages"])
     return _validate_llm_response(
-        retry_client.chat.completions.create(**retry_kwargs), task)
+        retry_client.chat.completions.create(**retry_kwargs), task,
+    )
 
 
 async def _retry_same_provider_async(
@@ -5018,17 +5019,13 @@ def _build_call_kwargs(
         kwargs["extra_body"] = merged_extra
 
     # Anthropic Messages adapter and MiniMax (which routes through it)
-    # don't support streaming yet — strip it so wire requests don't 400,
-    # but warn so the caller knows compression streaming is disabled.
+    # don't support streaming yet — strip the stream kwarg so wire
+    # requests don't 400.  This is expected behaviour for these providers;
+    # context_compressor.py explicitly passes stream=True with a comment
+    # noting that _build_call_kwargs will strip it here.
     if kwargs.get("stream") and provider:
         p = provider.lower()
         if p in {"anthropic", "minimax"}:
-            logger.warning(
-                "_build_call_kwargs: stream=True requested but "
-                "provider=%s doesn't support auxiliary streaming; "
-                "removing stream kwarg",
-                provider,
-            )
             kwargs.pop("stream", None)
 
     return kwargs

@@ -1670,6 +1670,54 @@ def _optional_base_url(value: Any) -> Optional[str]:
     return cleaned if cleaned else None
 
 
+
+
+# Allowlist of hosts for Nous Portal authentication endpoints.
+# This prevents using stale/incorrect URLs that may be stored in auth.json
+# (e.g., api.nousresearch.com which does not resolve - Issue #44710).
+_ALLOWED_NOUS_PORTAL_HOSTS: FrozenSet[str] = frozenset({
+    "portal.nousresearch.com",
+})
+
+
+def _validate_nous_portal_url(url: Optional[str]) -> Optional[str]:
+    """Validate a Nous Portal URL against the host allowlist.
+
+    Returns ``url`` (normalized by stripping trailing slashes) if it's a
+    well-formed ``https://<allowlisted-host>/...`` URL. Returns ``None``
+    if the URL is missing, malformed, non-https, or points at an
+    unexpected host -- letting the caller fall back to the configured
+    default.
+
+    This fixes issue #44710 where stale/incorrect URLs (e.g.,
+    ``api.nousresearch.com``) stored in auth.json would cause token
+    refresh to fail with DNS resolution errors.
+    """
+    if not isinstance(url, str):
+        return None
+    cleaned = url.strip()
+    if not cleaned:
+        return None
+    try:
+        parsed = urlparse(cleaned)
+    except Exception:
+        return None
+    if parsed.scheme != "https":
+        logger.warning(
+            "nous: refusing non-https portal URL scheme %r; falling back to default",
+            parsed.scheme,
+        )
+        return None
+    if parsed.hostname not in _ALLOWED_NOUS_PORTAL_HOSTS:
+        logger.warning(
+            "nous: refusing portal URL host %r (not in allowlist); "
+            "falling back to default %r",
+            parsed.hostname,
+            DEFAULT_NOUS_PORTAL_URL,
+        )
+        return None
+    return cleaned.rstrip("/")
+
 # Allowlist of hosts the Nous Portal proxy is willing to forward inference
 # JWTs to. Sending a bearer anywhere else would leak it.
 #
@@ -4985,7 +5033,7 @@ def resolve_nous_access_token(
             )
 
         portal_base_url = (
-            _optional_base_url(state.get("portal_base_url"))
+            _validate_nous_portal_url(state.get("portal_base_url"))
             or os.getenv("HERMES_PORTAL_BASE_URL")
             or os.getenv("NOUS_PORTAL_BASE_URL")
             or DEFAULT_NOUS_PORTAL_URL
@@ -5295,7 +5343,7 @@ def resolve_nous_runtime_credentials(
         state_persisted = False
 
         portal_base_url = (
-            _optional_base_url(state.get("portal_base_url"))
+            _validate_nous_portal_url(state.get("portal_base_url"))
             or os.getenv("HERMES_PORTAL_BASE_URL")
             or os.getenv("NOUS_PORTAL_BASE_URL")
             or DEFAULT_NOUS_PORTAL_URL

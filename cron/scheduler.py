@@ -1576,7 +1576,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 else str(delivery_target["thread_id"])
             )
 
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+        model = job.get("model") or os.getenv("HERMES_MODEL") or None
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -1588,13 +1588,28 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     _cfg = yaml.safe_load(_f) or {}
                 _cfg = _expand_env_vars(_cfg)
                 _model_cfg = _cfg.get("model", {})
-                if not job.get("model"):
+                # Resolve model.default from config.yaml, matching the behavior
+                # of gateway and CLI sessions. Without this fallback, cron jobs
+                # that omit an explicit model override would pass an empty model
+                # to the API and fail with HTTP 400 "Model parameter is required".
+                # See #43899.
+                if not model:
                     if isinstance(_model_cfg, str):
                         model = _model_cfg
                     elif isinstance(_model_cfg, dict):
-                        model = _model_cfg.get("default", model)
+                        model = _model_cfg.get("default")
         except Exception as e:
             logger.warning("Job '%s': failed to load config.yaml, using defaults: %s", job_id, e)
+
+        # Fail early with a clear message if no model could be resolved.
+        # Avoid passing an empty model to the API, which produces opaque
+        # "Model parameter is required" errors downstream.
+        if not model:
+            raise RuntimeError(
+                "No model configured for cron job '%s'. "
+                "Set model.default in config.yaml, pass --model when creating "
+                "the job, or set HERMES_MODEL in the environment." % job_id
+            )
 
         # Apply IPv4 preference if configured.
         try:

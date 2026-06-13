@@ -2128,6 +2128,12 @@ def copy_reasoning_content_for_api(agent, source_msg: dict, api_msg: dict) -> No
     if source_msg.get("role") != "assistant":
         return
 
+    # 0. Reject-side providers: strip reasoning_content echoes from the
+    # outgoing API copy before any promotion/padding branch can re-add them.
+    if agent._rejects_reasoning_content_echo():
+        api_msg.pop("reasoning_content", None)
+        return
+
     # 1. Explicit reasoning_content already set — preserve it verbatim
     # (includes DeepSeek/Kimi's own space-placeholder written at creation
     # time, and any valid reasoning content from the same provider).

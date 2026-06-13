@@ -4870,6 +4870,36 @@ class AIAgent:
         self._thinking_pad_cache = (key, result)
         return result
 
+    def _rejects_reasoning_content_echo(self) -> bool:
+        """Return True when the active provider rejects replayed reasoning_content.
+
+        Some strict OpenAI-compatible providers reject assistant-history
+        ``reasoning_content`` outright on replay instead of ignoring it.
+        Cross-provider fallback from a thinking model into those providers can
+        therefore fail with HTTP 400 / 422 unless the field is stripped from
+        the outgoing API copy.
+
+        Detection is provider/base-URL driven, not model-name driven, so
+        aggregators re-exporting the same model IDs (e.g. OpenRouter) are not
+        affected.
+        """
+        key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
+        cached = getattr(self, "_reasoning_reject_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1]
+
+        provider = (self.provider or "").lower()
+        provider_tag = provider.rsplit(":", 1)[-1]
+        result = (
+            provider_tag in {"cerebras", "groq", "mistral", "sambanova"}
+            or base_url_host_matches(self.base_url, "api.cerebras.ai")
+            or base_url_host_matches(self.base_url, "api.groq.com")
+            or base_url_host_matches(self.base_url, "api.mistral.ai")
+            or base_url_host_matches(self.base_url, "api.sambanova.ai")
+        )
+        self._reasoning_reject_cache = (key, result)
+        return result
+
     def _needs_kimi_tool_reasoning(self) -> bool:
         """Return True when the current provider is Kimi / Moonshot thinking mode.
 

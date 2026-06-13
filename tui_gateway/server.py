@@ -1693,6 +1693,20 @@ def _load_service_tier() -> str | None:
     return None
 
 
+def _load_provider_routing() -> dict:
+    """OpenRouter provider-routing prefs from config.yaml (``provider_routing``).
+
+    Parity with the messaging gateway (``gateway/run.py::_load_provider_routing``)
+    and the classic CLI: without this the desktop/TUI backend builds agents with
+    no routing prefs, so OpenRouter falls back to its default (effectively random)
+    provider selection even when the user configured ``provider_routing``.
+    """
+    try:
+        return _load_cfg().get("provider_routing", {}) or {}
+    except Exception:
+        return {}
+
+
 def _load_show_reasoning() -> bool:
     return bool((_load_cfg().get("display") or {}).get("show_reasoning", False))
 
@@ -3308,6 +3322,7 @@ def _make_agent(
             requested=requested_provider,
             target_model=model or None,
         )
+    _pr = _load_provider_routing()
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -3335,6 +3350,15 @@ def _make_agent(
             else _load_service_tier()
         ),
         enabled_toolsets=_load_enabled_toolsets(),
+        # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
+        # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
+        # routing instead of letting OpenRouter pick providers at random.
+        providers_allowed=_pr.get("only"),
+        providers_ignored=_pr.get("ignore"),
+        providers_order=_pr.get("order"),
+        provider_sort=_pr.get("sort"),
+        provider_require_parameters=_pr.get("require_parameters", False),
+        provider_data_collection=_pr.get("data_collection"),
         platform="tui",
         session_id=session_id or key,
         session_db=session_db if session_db is not None else _get_db(),

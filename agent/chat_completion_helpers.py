@@ -851,6 +851,12 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             reasoning_config=agent.reasoning_config,
             request_overrides=agent.request_overrides,
             session_id=getattr(agent, "session_id", None),
+            # Bridge sub-session isolation: forks that share the parent's
+            # session_id (background-review) set _bridge_route_suffix so the
+            # claude-bridge routing key is distinct. None for normal agents.
+            # Only the chat_completions (profile) path reaches the bridge; the
+            # codex path is excluded by design. See PRD bridge-subsession-routing.
+            bridge_route_suffix=getattr(agent, "_bridge_route_suffix", None),
             provider_profile=_profile,
             ollama_num_ctx=agent._ollama_num_ctx,
             # Context forwarded to profile hooks:

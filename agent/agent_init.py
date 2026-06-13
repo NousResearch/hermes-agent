@@ -1065,6 +1065,12 @@ def init_agent(
     agent._codex_reasoning_replay_enabled = True
     agent._memory_write_origin = "assistant_tool"
     agent._memory_write_context = "foreground"
+    # Bridge sub-session routing suffix. None for normal/main agents; a forked
+    # agent that shares the parent's session_id (e.g. the background-review
+    # fork) sets this to a short tag (e.g. "review") so the claude-bridge
+    # provider emits a DISTINCT routing key and gets its own Claude CLI session
+    # instead of contaminating the parent's. See PRD bridge-subsession-routing.
+    agent._bridge_route_suffix = None
     
     # Cached system prompt -- built once per session, only rebuilt on compression
     agent._cached_system_prompt: Optional[str] = None

@@ -419,6 +419,16 @@ def _run_review_in_thread(
             )
             review_agent._memory_write_origin = "background_review"
             review_agent._memory_write_context = "background_review"
+            # Bridge sub-session isolation: mark this fork so the claude-bridge
+            # provider routing key gets a distinct "-review" suffix. Without
+            # this, the fork shares the parent's session_id (pinned below for
+            # prefix-cache parity) → identical bridge routing key → the fork's
+            # restricted-toolset turn contaminates the main agent's resumed
+            # Claude CLI session (the "I only have memory/skill tools" bug).
+            # Object attribute (not a contextvar) so it rides the kwargs-build
+            # chain by reference regardless of thread. See PRD
+            # bridge-subsession-routing D-1/D-2.
+            review_agent._bridge_route_suffix = "review"
             review_agent._memory_store = agent._memory_store
             review_agent._memory_enabled = agent._memory_enabled
             review_agent._user_profile_enabled = agent._user_profile_enabled

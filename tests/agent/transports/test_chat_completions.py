@@ -909,3 +909,51 @@ class TestChatCompletionsGeminiNativeExtraBodyStrip:
         )
         eb = kw.get("extra_body")
         assert eb and "tags" in eb
+
+
+class TestChatCompletionsBridgeRouteSuffix:
+    """The transport must forward ``bridge_route_suffix`` into a profile's
+    ``build_api_kwargs_extras`` context (PRD bridge-subsession-routing).
+
+    Proves the harness plumbing seam: the param passed by
+    ``chat_completion_helpers`` reaches the provider profile that emits the
+    bridge ``user`` routing key, so a forked sub-session can route distinctly.
+    """
+
+    def _suffix_aware_profile(self):
+        from providers.base import ProviderProfile
+        from dataclasses import dataclass
+
+        @dataclass
+        class _SuffixProbe(ProviderProfile):
+            def build_api_kwargs_extras(self, *, reasoning_config=None, **context):
+                eb, tl = super().build_api_kwargs_extras(
+                    reasoning_config=reasoning_config, **context
+                )
+                sid = context.get("session_id")
+                suffix = context.get("bridge_route_suffix")
+                if sid:
+                    user = f"hermes-sess:{sid}" + (f"-{suffix}" if suffix else "")
+                    tl = {**tl, "user": user}
+                return eb, tl
+
+        return _SuffixProbe(name="claude-bridge-probe")
+
+    def test_suffix_forwarded_to_profile_user(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="claude-opus-4-8", messages=msgs,
+            provider_profile=self._suffix_aware_profile(),
+            session_id="sess-123",
+            bridge_route_suffix="review",
+        )
+        assert kw.get("user") == "hermes-sess:sess-123-review", kw.get("user")
+
+    def test_no_suffix_emits_bare_key(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="claude-opus-4-8", messages=msgs,
+            provider_profile=self._suffix_aware_profile(),
+            session_id="sess-123",
+        )
+        assert kw.get("user") == "hermes-sess:sess-123", kw.get("user")

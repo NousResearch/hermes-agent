@@ -1297,6 +1297,47 @@ Switch between them mid-session with the triple syntax:
 You can also select named custom providers from the interactive `hermes model` menu.
 
 ---
+### Custom Endpoints in the Desktop Model Picker
+
+When you configure a local OpenAI-compatible endpoint (llama.cpp, Ollama,
+LM Studio) via `model.base_url`, Hermes works but the Desktop model picker
+(the bottom-right dropdown) does not show your models as a named group with
+selectable entries. The picker reads from the `providers.<slug>` inventory
+block in `config.yaml` — without it, there is no group label, no model list,
+and no "currently selected" marker in the UI.
+
+To make your endpoint visible in the picker, add a `providers.<slug>` block
+alongside the `model:` section:
+
+```yaml
+model:
+  provider: custom
+  default: my-model.gguf
+  model: my-model.gguf
+  base_url:http://127.0.0.1:8080/v1
+  api_key: local
+  context_length: 65536
+
+providers:
+  custom:
+    name: Custom
+    base_url:http://127.0.0.1:8080/v1
+    api_key: local
+    default_model: my-model.gguf
+    context_length: 65536
+    models:
+      my-model.gguf:
+        context_length: 65536
+```
+:::caution
+`model.default` must match the raw model id returned by `GET /v1/models`
+verbatim. Using a prefixed value like `custom/my-model.gguf` breaks the
+"currently selected" indicator in the picker.
+:::
+When you have multiple independent endpoints, create a `providers.<slug>`
+block for each. The Desktop picker shows them as separate selectable groups.
+
+---
 
 ### Cookbook: Together AI, Groq, Perplexity
 

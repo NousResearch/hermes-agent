@@ -14,6 +14,7 @@ import ssl
 import time
 from email.utils import formatdate
 
+from agent.local_muncho_fallback import local_muncho_tool_block_for_current_guard_error
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
@@ -393,6 +394,23 @@ def _handle_send(args):
     if duplicate_skip:
         return json.dumps(duplicate_skip)
 
+    guard_result, replacement_message = _guard_visible_send_before_delivery(
+        platform_name=platform_name,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        message=cleaned_message,
+        metadata={
+            "target": target,
+            "used_home_channel": used_home_channel,
+            "media_count": len(media_files),
+        },
+    )
+    if guard_result is not None:
+        return guard_result
+    if replacement_message is not None and replacement_message != cleaned_message:
+        cleaned_message = replacement_message
+        mirror_text = replacement_message
+
     # Slack: resolve user IDs (U...) to DM channel IDs via conversations.open
     if platform_name == "slack" and chat_id and chat_id.startswith("U"):
         try:
@@ -455,6 +473,74 @@ def _handle_send(args):
         return json.dumps(result)
     except Exception as e:
         return json.dumps(_error(f"Send failed: {e}"))
+
+
+def _guard_visible_send_before_delivery(
+    *,
+    platform_name: str,
+    chat_id: str,
+    thread_id: str | None,
+    message: str,
+    metadata: dict | None = None,
+):
+    """Apply the Local Muncho visible-send guard before platform delivery."""
+
+    try:
+        from agent.local_muncho.runtime import (
+            guard_internal_error_decision_for_current_context,
+            tool_block_result,
+        )
+        from agent.local_muncho.types import VisibleSendIntent
+        from gateway.local_muncho_guard import guard_visible_send
+        from model_tools import _run_async
+
+        decision = _run_async(
+            guard_visible_send(
+                VisibleSendIntent(
+                    kind="send_message",
+                    platform=platform_name,
+                    chat_id=str(chat_id or ""),
+                    thread_id=str(thread_id or ""),
+                    text=message or "",
+                    metadata=metadata or {},
+                )
+            )
+        )
+    except Exception as exc:
+        logger.debug("send_message local muncho visible-send guard error: %s", exc)
+        try:
+            decision = guard_internal_error_decision_for_current_context(
+                exc,
+                guard_name="visible_send",
+            )
+            if decision is not None and not decision.allowed:
+                return tool_block_result(decision), message
+        except Exception:
+            pass
+        result, _reason = local_muncho_tool_block_for_current_guard_error(
+            exc,
+            guard_name="visible_send",
+        )
+        return result, message
+
+    if decision.allowed:
+        return None, decision.replacement_text or message
+
+    return (
+        json.dumps(
+            {
+                "error": (
+                    decision.reason
+                    or "Local Muncho runtime blocked send_message delivery"
+                ),
+                "status": "blocked",
+                "blocked_by": "local_muncho_runtime",
+                "code": "local_muncho_block",
+            },
+            ensure_ascii=False,
+        ),
+        message,
+    )
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):

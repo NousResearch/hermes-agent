@@ -29,6 +29,7 @@ import threading
 import time
 from typing import Dict, Any, List, Optional, Tuple
 
+from agent.local_muncho_fallback import local_muncho_tool_block_for_current_guard_error
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
 
@@ -1017,6 +1018,69 @@ def handle_function_call(
     try:
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
+
+        # Local Muncho runtime guard. This is a defense-in-depth registry seam
+        # for tools that reach model_tools directly; agent-loop-owned tools are
+        # guarded in agent/tool_executor.py and agent_runtime_helpers.py.
+        try:
+            from agent.local_muncho.runtime import (
+                guard_internal_error_decision_for_current_context,
+                guard_tool_action_for_current_context,
+                tool_block_result,
+            )
+
+            _muncho_decision = guard_tool_action_for_current_context(
+                function_name,
+                function_args,
+            )
+        except Exception as _muncho_guard_err:
+            logger.debug("local muncho tool guard error: %s", _muncho_guard_err)
+            try:
+                _muncho_decision = guard_internal_error_decision_for_current_context(
+                    _muncho_guard_err,
+                    guard_name="tool_action",
+                )
+            except Exception:
+                _muncho_decision = None
+                _muncho_fallback_result, _muncho_fallback_reason = (
+                    local_muncho_tool_block_for_current_guard_error(
+                        _muncho_guard_err,
+                        guard_name="tool_action",
+                    )
+                )
+                if _muncho_fallback_result is not None:
+                    _emit_post_tool_call_hook(
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=_muncho_fallback_result,
+                        task_id=task_id,
+                        session_id=session_id,
+                        tool_call_id=tool_call_id,
+                        turn_id=turn_id,
+                        api_request_id=api_request_id,
+                        status="blocked",
+                        error_type="local_muncho_runtime",
+                        error_message=_muncho_fallback_reason,
+                        middleware_trace=list(_tool_middleware_trace),
+                    )
+                    return _muncho_fallback_result
+        if _muncho_decision is not None and not _muncho_decision.allowed:
+            result = tool_block_result(_muncho_decision)
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=task_id,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+                turn_id=turn_id,
+                api_request_id=api_request_id,
+                status="blocked",
+                error_type="local_muncho_runtime",
+                error_message=_muncho_decision.message or _muncho_decision.reason,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+            return result
 
         # Check plugin hooks for a block directive (unless caller already
         # checked — e.g. run_agent._invoke_tool passes skip=True to

@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 from hermes_cli.timeouts import get_provider_request_timeout
 from agent.prompt_builder import format_steer_marker
 from agent.tool_dispatch_helpers import _trajectory_normalize_msg, make_tool_result_message
+from agent.local_muncho_fallback import local_muncho_tool_block_for_agent_guard_error
 from agent.trajectory import convert_scratchpad_to_think
 from agent.credential_pool import STATUS_EXHAUSTED
 from agent.error_classifier import FailoverReason
@@ -1757,6 +1758,77 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 status="blocked",
                 error_type="plugin_block",
                 error_message=block_message,
+                middleware_trace=list(_tool_middleware_trace),
+            )
+        except Exception:
+            pass
+        return result
+
+    try:
+        from agent.local_muncho.runtime import (
+            guard_internal_error_decision_for_agent,
+            guard_tool_action_for_agent,
+            tool_block_result,
+        )
+
+        _muncho_decision = guard_tool_action_for_agent(
+            agent,
+            function_name,
+            function_args,
+        )
+    except Exception as _muncho_guard_err:
+        logger.debug("local muncho tool guard error: %s", _muncho_guard_err)
+        try:
+            _muncho_decision = guard_internal_error_decision_for_agent(
+                agent,
+                _muncho_guard_err,
+                guard_name="tool_action",
+            )
+        except Exception:
+            _muncho_decision = None
+            _muncho_fallback_result, _muncho_fallback_reason = (
+                local_muncho_tool_block_for_agent_guard_error(
+                    agent,
+                    _muncho_guard_err,
+                    guard_name="tool_action",
+                )
+            )
+            if _muncho_fallback_result is not None:
+                try:
+                    from model_tools import _emit_post_tool_call_hook
+                    _emit_post_tool_call_hook(
+                        function_name=function_name,
+                        function_args=function_args,
+                        result=_muncho_fallback_result,
+                        task_id=effective_task_id or "",
+                        session_id=getattr(agent, "session_id", "") or "",
+                        tool_call_id=tool_call_id or "",
+                        turn_id=getattr(agent, "_current_turn_id", "") or "",
+                        api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                        status="blocked",
+                        error_type="local_muncho_runtime",
+                        error_message=_muncho_fallback_reason,
+                        middleware_trace=list(_tool_middleware_trace),
+                    )
+                except Exception:
+                    pass
+                return _muncho_fallback_result
+    if _muncho_decision is not None and not _muncho_decision.allowed:
+        result = tool_block_result(_muncho_decision)
+        try:
+            from model_tools import _emit_post_tool_call_hook
+            _emit_post_tool_call_hook(
+                function_name=function_name,
+                function_args=function_args,
+                result=result,
+                task_id=effective_task_id or "",
+                session_id=getattr(agent, "session_id", "") or "",
+                tool_call_id=tool_call_id or "",
+                turn_id=getattr(agent, "_current_turn_id", "") or "",
+                api_request_id=getattr(agent, "_current_api_request_id", "") or "",
+                status="blocked",
+                error_type="local_muncho_runtime",
+                error_message=_muncho_decision.message or _muncho_decision.reason,
                 middleware_trace=list(_tool_middleware_trace),
             )
         except Exception:

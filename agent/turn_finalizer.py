@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.local_muncho_fallback import local_muncho_final_text_for_agent_guard_error
 
 
 def finalize_turn(
@@ -259,6 +260,45 @@ def finalize_turn(
                             )
         except Exception as _exp_err:
             logger.debug("turn-completion explainer failed: %s", _exp_err)
+
+    # Local Muncho evidence-first validation. This is intentionally before
+    # transform_llm_output/post_llm_call so model text is replaced before any
+    # downstream visible-output hook observes it. No-op unless the runtime is
+    # explicitly enabled for the current context.
+    if final_response and not interrupted:
+        try:
+            from agent.local_muncho.runtime import (
+                guard_internal_error_decision_for_agent,
+                validate_final_response_for_agent,
+            )
+
+            final_response = validate_final_response_for_agent(
+                agent,
+                final_response,
+                messages,
+            )
+        except Exception as _muncho_err:
+            logger.debug("local muncho final-output guard failed: %s", _muncho_err)
+            try:
+                _muncho_decision = guard_internal_error_decision_for_agent(
+                    agent,
+                    _muncho_err,
+                    guard_name="final_output",
+                )
+                if _muncho_decision is not None and not _muncho_decision.allowed:
+                    final_response = (
+                        _muncho_decision.replacement_text
+                        or _muncho_decision.message
+                        or final_response
+                    )
+            except Exception:
+                _fallback_text = local_muncho_final_text_for_agent_guard_error(
+                    agent,
+                    _muncho_err,
+                    guard_name="final_output",
+                )
+                if _fallback_text is not None:
+                    final_response = _fallback_text
 
     _response_transformed = False
 

@@ -30,6 +30,7 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
+from agent.local_muncho_fallback import local_muncho_tool_block_for_agent_guard_error
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -2128,6 +2129,49 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    try:
+        from agent.local_muncho.runtime import (
+            guard_internal_error_decision_for_agent,
+            guard_worker_spawn_for_agent,
+        )
+        from agent.local_muncho.types import WorkerContract
+
+        _muncho_decision = guard_worker_spawn_for_agent(
+            parent_agent,
+            WorkerContract(
+                goals=tuple(str(task.get("goal") or "") for task in task_list),
+                task_count=len(task_list),
+                source_task_id=str(getattr(parent_agent, "task_id", "") or ""),
+                metadata={"role": top_role},
+            ),
+            source="delegate_task",
+        )
+    except Exception as _muncho_err:
+        logger.debug("delegate_task local muncho guard error: %s", _muncho_err)
+        try:
+            _muncho_decision = guard_internal_error_decision_for_agent(
+                parent_agent,
+                _muncho_err,
+                guard_name="worker_spawn",
+            )
+        except Exception:
+            _muncho_decision = None
+            _muncho_fallback_result, _ = (
+                local_muncho_tool_block_for_agent_guard_error(
+                    parent_agent,
+                    _muncho_err,
+                    guard_name="worker_spawn",
+                )
+            )
+            if _muncho_fallback_result is not None:
+                return _muncho_fallback_result
+    if _muncho_decision is not None and not _muncho_decision.allowed:
+        return tool_error(
+            _muncho_decision.message
+            or _muncho_decision.reason
+            or "Local Muncho runtime blocked delegate_task spawn."
+        )
 
     overall_start = time.monotonic()
     results = []

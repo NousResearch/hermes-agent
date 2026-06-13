@@ -2049,6 +2049,33 @@ DEFAULT_CONFIG = {
     # Gateway / cron / non-interactive runs need this (or one of the other
     # channels) to pick up newly-added hooks.
     "hooks_auto_accept": False,
+
+    # Local Muncho primary runtime guard. Disabled by default and inert unless
+    # a caller supplies an explicit internal-support runtime context.
+    "muncho_runtime": {
+        "enabled": False,
+        "lane": "internal-support",
+        "runtime_id": "local-muncho",
+        "runtime_kind": "local-primary",
+        "heartbeat_interval_seconds": 30,
+        "lease_ttl_seconds": 90,
+        "local_unhealthy_after_seconds": 120,
+        "quiet_period_before_switch_back_seconds": 180,
+        "fail_open": False,
+        "allow_stub": False,
+        "owner_visible_degraded_status": True,
+        "streaming": {
+            "buffer_only": True,
+            "drafts_enabled": False,
+        },
+        "brain": {
+            "schema": "muncho_internal_support",
+            "postgres_dsn_env": "MUNCHO_POSTGRES_DSN",
+            "redis_url_env": "MUNCHO_REDIS_URL",
+            "knowledge_pack_path": None,
+        },
+    },
+
     # Custom personalities — add your own entries here
     # Supports string format: {"name": "system prompt"}
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}

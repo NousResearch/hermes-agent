@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+﻿import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'path'
@@ -8,7 +8,7 @@ export default defineConfig({
   plugins: [react(), tailwindcss()],
   css: {
     // Pin an explicit (empty) PostCSS config. Tailwind is handled entirely by
-    // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins — and
+    // `@tailwindcss/vite`, so the renderer needs no PostCSS plugins â€” and
     // without this, Vite's `postcss-load-config` walks UP the filesystem
     // looking for a stray `postcss.config.*` / `tailwind.config.*`. The desktop
     // build runs from inside the user's home tree (e.g.
@@ -37,6 +37,7 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, './src'),
       '@hermes/shared': path.resolve(__dirname, '../shared/src'),
+      '@assistant-ui/tap/react-shim': path.resolve(__dirname, '../../node_modules/react'),
       react: path.resolve(__dirname, '../../node_modules/react'),
       'react-dom': path.resolve(__dirname, '../../node_modules/react-dom'),
       'react/jsx-dev-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-dev-runtime.js'),

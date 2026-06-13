@@ -35,7 +35,9 @@ import {
   $gatewayState,
   $introPersonality,
   $introSeed,
+  $lastVisibleMessageIsUser,
   $messages,
+  $messagesEmpty,
   $selectedStoredSessionId,
   $sessions,
   sessionPinId
@@ -55,7 +57,7 @@ import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-ac
 import { useFileDropZone } from './hooks/use-file-drop-zone'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
-import { lastVisibleMessageIsUser, threadLoadingState } from './thread-loading'
+import { threadLoadingState } from './thread-loading'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -156,105 +158,35 @@ function ChatHeader({
   )
 }
 
-export function ChatView({
-  className,
-  gateway,
-  onToggleSelectedPin,
-  onDeleteSelectedSession,
+interface ChatRuntimeBoundaryProps {
+  busy: boolean
+  children: React.ReactNode
+  onCancel: () => Promise<void> | void
+  onEdit: (message: AppendMessage) => Promise<void>
+  onReload: (parentId: string | null) => Promise<void>
+  onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+}
+
+/**
+ * Owns the $messages subscription and the assistant-ui external-store runtime.
+ *
+ * Isolated from ChatView so the per-token delta flush (which replaces the
+ * $messages atom ~30×/s during streaming) only re-renders this component and
+ * the runtime provider. The children (Thread, ChatBar) are created by
+ * ChatView, whose render output is stable across flushes — so React bails out
+ * of re-rendering them by element identity and the stream's render cost stays
+ * confined to the streaming message's own subtree.
+ */
+function ChatRuntimeBoundary({
+  busy,
+  children,
   onCancel,
-  onAddContextRef,
-  onAddUrl,
-  onAttachImageBlob,
-  onAttachDroppedItems,
-  onBranchInNewChat,
-  maxVoiceRecordingSeconds,
-  onPasteClipboardImage,
-  onPickFiles,
-  onPickFolders,
-  onPickImages,
-  onRemoveAttachment,
-  onSteer,
-  onSubmit,
-  onThreadMessagesChange,
   onEdit,
   onReload,
-  onRestoreToMessage,
-  onTranscribeAudio
-}: ChatViewProps) {
-  const location = useLocation()
-  const activeSessionId = useStore($activeSessionId)
-  const awaitingResponse = useStore($awaitingResponse)
-  const busy = useStore($busy)
-  const contextSuggestions = useStore($contextSuggestions)
-  const currentCwd = useStore($currentCwd)
-  const currentModel = useStore($currentModel)
-  const currentProvider = useStore($currentProvider)
-  const freshDraftReady = useStore($freshDraftReady)
-  const gatewayState = useStore($gatewayState)
-  const gatewaySwapTarget = useStore($gatewaySwapTarget)
-  const gatewayOpen = gatewayState === 'open'
-  const introPersonality = useStore($introPersonality)
-  const introSeed = useStore($introSeed)
+  onThreadMessagesChange
+}: ChatRuntimeBoundaryProps) {
   const messages = useStore($messages)
-  const selectedSessionId = useStore($selectedStoredSessionId)
   const runtimeMessageCacheRef = useRef(new WeakMap<ChatMessage, ThreadMessage>())
-  const isRoutedSessionView = Boolean(routeSessionId(location.pathname))
-
-  const showIntro =
-    freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messages.length === 0
-
-  // Session is still loading if the route references a session we haven't
-  // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
-  // session exists — even if it has zero messages (a brand-new routed
-  // session). The flicker where `busy` flips true briefly during hydrate
-  // is handled by `threadLoadingState`'s last-visible-user gate.
-  const loadingSession = isRoutedSessionView && messages.length === 0 && !activeSessionId
-  const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleMessageIsUser(messages))
-  const showChatBar = !loadingSession
-  const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
-
-  const modelOptionsQuery = useQuery<ModelOptionsResponse>({
-    queryKey: ['model-options', activeSessionId || 'global'],
-    queryFn: () => {
-      if (!activeSessionId) {
-        return getGlobalModelOptions()
-      }
-
-      if (!gateway) {
-        throw new Error('Hermes gateway unavailable')
-      }
-
-      return gateway.request<ModelOptionsResponse>('model.options', { session_id: activeSessionId })
-    },
-    enabled: gatewayOpen
-  })
-
-  const quickModels = useMemo(
-    () => quickModelOptions(modelOptionsQuery.data, currentProvider, currentModel),
-    [currentModel, currentProvider, modelOptionsQuery.data]
-  )
-
-  const chatBarState = useMemo<ChatBarState>(
-    () => ({
-      model: {
-        model: currentModel,
-        provider: currentProvider,
-        canSwitch: gatewayOpen,
-        loading: !gatewayOpen || (!currentModel && !currentProvider),
-        quickModels
-      },
-      tools: {
-        enabled: true,
-        label: 'Add context',
-        suggestions: contextSuggestions
-      },
-      voice: {
-        enabled: true,
-        active: false
-      }
-    }),
-    [contextSuggestions, currentModel, currentProvider, gatewayOpen, quickModels]
-  )
 
   const runtimeMessageRepository = useMemo(() => {
     const items: { message: ThreadMessage; parentId: string | null }[] = []
@@ -303,6 +235,113 @@ export function ChatView({
     onCancel: async () => onCancel(),
     onReload
   })
+
+  return <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+}
+
+export function ChatView({
+  className,
+  gateway,
+  onToggleSelectedPin,
+  onDeleteSelectedSession,
+  onCancel,
+  onAddContextRef,
+  onAddUrl,
+  onAttachImageBlob,
+  onAttachDroppedItems,
+  onBranchInNewChat,
+  maxVoiceRecordingSeconds,
+  onPasteClipboardImage,
+  onPickFiles,
+  onPickFolders,
+  onPickImages,
+  onRemoveAttachment,
+  onSteer,
+  onSubmit,
+  onThreadMessagesChange,
+  onEdit,
+  onReload,
+  onRestoreToMessage,
+  onTranscribeAudio
+}: ChatViewProps) {
+  const location = useLocation()
+  const activeSessionId = useStore($activeSessionId)
+  const awaitingResponse = useStore($awaitingResponse)
+  const busy = useStore($busy)
+  const contextSuggestions = useStore($contextSuggestions)
+  const currentCwd = useStore($currentCwd)
+  const currentModel = useStore($currentModel)
+  const currentProvider = useStore($currentProvider)
+  const freshDraftReady = useStore($freshDraftReady)
+  const gatewayState = useStore($gatewayState)
+  const gatewaySwapTarget = useStore($gatewaySwapTarget)
+  const gatewayOpen = gatewayState === 'open'
+  const introPersonality = useStore($introPersonality)
+  const introSeed = useStore($introSeed)
+  // PERF: ChatView must not subscribe to $messages — the atom is replaced on
+  // every streaming delta flush (~30×/s) and a subscription here re-renders
+  // the entire chat shell (header, chat bar, thread wrapper) per token. The
+  // runtime that DOES need the messages lives in ChatRuntimeBoundary below;
+  // this component only needs streaming-stable derivations.
+  const messagesEmpty = useStore($messagesEmpty)
+  const lastVisibleIsUser = useStore($lastVisibleMessageIsUser)
+  const selectedSessionId = useStore($selectedStoredSessionId)
+  const isRoutedSessionView = Boolean(routeSessionId(location.pathname))
+
+  const showIntro = freshDraftReady && !isRoutedSessionView && !selectedSessionId && !activeSessionId && messagesEmpty
+
+  // Session is still loading if the route references a session we haven't
+  // resumed yet. Once `activeSessionId` is set (runtime has resumed), the
+  // session exists — even if it has zero messages (a brand-new routed
+  // session). The flicker where `busy` flips true briefly during hydrate
+  // is handled by `threadLoadingState`'s last-visible-user gate.
+  const loadingSession = isRoutedSessionView && messagesEmpty && !activeSessionId
+  const threadLoading = threadLoadingState(loadingSession, busy, awaitingResponse, lastVisibleIsUser)
+  const showChatBar = !loadingSession
+  const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
+
+  const modelOptionsQuery = useQuery<ModelOptionsResponse>({
+    queryKey: ['model-options', activeSessionId || 'global'],
+    queryFn: () => {
+      if (!activeSessionId) {
+        return getGlobalModelOptions()
+      }
+
+      if (!gateway) {
+        throw new Error('Hermes gateway unavailable')
+      }
+
+      return gateway.request<ModelOptionsResponse>('model.options', { session_id: activeSessionId })
+    },
+    enabled: gatewayOpen
+  })
+
+  const quickModels = useMemo(
+    () => quickModelOptions(modelOptionsQuery.data, currentProvider, currentModel),
+    [currentModel, currentProvider, modelOptionsQuery.data]
+  )
+
+  const chatBarState = useMemo<ChatBarState>(
+    () => ({
+      model: {
+        model: currentModel,
+        provider: currentProvider,
+        canSwitch: gatewayOpen,
+        loading: !gatewayOpen || (!currentModel && !currentProvider),
+        quickModels
+      },
+      tools: {
+        enabled: true,
+        label: 'Add context',
+        suggestions: contextSuggestions
+      },
+      voice: {
+        enabled: true,
+        active: false
+      }
+    }),
+    [contextSuggestions, currentModel, currentProvider, gatewayOpen, quickModels]
+  )
 
   // Drop files anywhere in the conversation area, not just on the composer
   // input. In-app drags (project tree / gutter) carry workspace-relative paths
@@ -356,7 +395,13 @@ export function ChatView({
         className="relative min-h-0 max-w-full flex-1 overflow-hidden bg-(--ui-chat-surface-background) contain-[layout_paint]"
         {...dropHandlers}
       >
-        <AssistantRuntimeProvider runtime={runtime}>
+        <ChatRuntimeBoundary
+          busy={busy}
+          onCancel={onCancel}
+          onEdit={onEdit}
+          onReload={onReload}
+          onThreadMessagesChange={onThreadMessagesChange}
+        >
           <Thread
             clampToComposer={showChatBar}
             cwd={currentCwd}
@@ -397,7 +442,7 @@ export function ChatView({
               />
             </Suspense>
           )}
-        </AssistantRuntimeProvider>
+        </ChatRuntimeBoundary>
         {showChatBar && <ScrollToBottomButton />}
         <ChatDropOverlay kind={dragKind} />
         <ChatSwapOverlay profile={gatewaySwapTarget} />

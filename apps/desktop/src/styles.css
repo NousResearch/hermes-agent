@@ -918,17 +918,6 @@ canvas {
   mask-image: none;
 }
 
-/* Attachment chips sit above the clamped text. They render normally in flow,
-   but collapse to nothing while the bubble is stuck to the top of the viewport
-   (data-stuck, set by an IntersectionObserver sentinel) so a prompt with
-   attachments can't eat the screen as you scroll past it during a stream. */
-[data-stuck='true'] .sticky-human-attachments {
-  max-height: 0;
-  overflow: hidden;
-  border-bottom-width: 0;
-  padding-bottom: 0;
-}
-
 /* The thread renders items in natural document flow (padding spacers, not
    transforms) and @tanstack/react-virtual already adjusts scrollTop itself
    when an off-screen turn is measured and its real height differs from the

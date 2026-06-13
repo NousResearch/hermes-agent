@@ -895,11 +895,9 @@ canvas {
 }
 
 /* Sticky human bubbles clamp to ~2 lines with a soft bottom fade so a long
-   prompt doesn't dominate the viewport. The clamp lifts on focus only (clicking
-   opens the edit composer, which shows the full text) — not on hover, so the
-   bubble doesn't jump as the pointer passes over it. No transition: the lift
-   happens in the same click that swaps in the edit composer, so animating it
-   just flashes a half-expanded bubble on the way in. */
+   prompt doesn't dominate the viewport. The clamp lifts only in the edit
+   composer; expanding on read-only :focus-within ran on mousedown (before the
+   swap) and fought stick-to-bottom when parked at the bottom. */
 .sticky-human-clamp {
   cursor: pointer;
   max-height: calc(2 * var(--dt-line-height) * var(--conversation-text-font-size) + 0.15rem);
@@ -911,23 +909,16 @@ canvas {
   mask-image: linear-gradient(to bottom, #000 55%, transparent);
 }
 
-.composer-human-message:focus-within .sticky-human-clamp {
-  max-height: min(var(--human-msg-full, 24rem), 24rem);
-  overflow-y: auto;
-  -webkit-mask-image: none;
-  mask-image: none;
-}
-
-/* The thread renders items in natural document flow (padding spacers, not
-   transforms) and @tanstack/react-virtual already adjusts scrollTop itself
-   when an off-screen turn is measured and its real height differs from the
-   220px estimate. The browser's native scroll anchoring (overflow-anchor:
-   auto) would adjust scrollTop for that SAME size delta, so the two
-   double-correct and the view lurches — most visibly on Windows mouse wheels,
-   whose coarse notches mount/measure several under-estimated turns per tick.
-   Opt out of native anchoring so only the virtualizer compensates. */
+/* Stick-to-bottom owns scrollTop while following. Once escaped, native anchoring
+   is safe and keeps sticky human edits from shoving the viewport; data-editing
+   enables that path before React swaps in the inline editor. */
 [data-slot='aui_thread-viewport'] {
   overflow-anchor: none;
+}
+
+[data-slot='aui_thread-viewport'][data-following='false'],
+[data-slot='aui_thread-viewport'][data-editing='true'] {
+  overflow-anchor: auto;
 }
 
 [data-slot='aui_thread-content'] {

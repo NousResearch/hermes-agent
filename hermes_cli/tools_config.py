@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 
 from hermes_cli.config import (
     cfg_get,
@@ -612,6 +613,7 @@ def _pip_install(
                 [uv_bin, "pip", "install", *args],
                 capture_output=capture_output, text=True, timeout=timeout,
                 env=uv_env,
+                creationflags=windows_hide_flags(),
             )
             if result.returncode == 0:
                 return result

@@ -16,11 +16,13 @@ import logging
 import os
 import re
 import shutil
+import subprocess
 import sys
 import copy
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.nous_subscription import get_nous_subscription_features
 from tools.tool_backend_helpers import managed_nous_tools_enabled
 from utils import base_url_hostname
@@ -66,6 +68,15 @@ def _supports_same_provider_pool_setup(provider: str) -> bool:
     if not pconfig:
         return False
     return pconfig.auth_type in {"api_key", "oauth_device_code"}
+
+
+def _run_uv_pip_install_for_current_python(uv_bin: str, *packages: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [uv_bin, "pip", "install", "--python", sys.executable, *packages],
+        capture_output=True,
+        text=True,
+        creationflags=windows_hide_flags(),
+    )
 
 
 # Default model lists per provider — used as fallback when the live
@@ -1268,22 +1279,10 @@ def setup_terminal_backend(config: dict):
                 __import__("modal")
             except ImportError:
                 print_info("Installing modal SDK...")
-                import subprocess
 
                 uv_bin = shutil.which("uv")
                 if uv_bin:
-                    result = subprocess.run(
-                        [
-                            uv_bin,
-                            "pip",
-                            "install",
-                            "--python",
-                            sys.executable,
-                            "modal",
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
+                    result = _run_uv_pip_install_for_current_python(uv_bin, "modal")
                 else:
                     result = subprocess.run(
                         [sys.executable, "-m", "pip", "install", "modal"],
@@ -1328,15 +1327,10 @@ def setup_terminal_backend(config: dict):
             __import__("daytona")
         except ImportError:
             print_info("Installing daytona SDK...")
-            import subprocess
 
             uv_bin = shutil.which("uv")
             if uv_bin:
-                result = subprocess.run(
-                    [uv_bin, "pip", "install", "--python", sys.executable, "daytona"],
-                    capture_output=True,
-                    text=True,
-                )
+                result = _run_uv_pip_install_for_current_python(uv_bin, "daytona")
             else:
                 result = subprocess.run(
                     [sys.executable, "-m", "pip", "install", "daytona"],
@@ -1980,13 +1974,9 @@ def _setup_matrix():
                 __import__("mautrix")
             except ImportError:
                 print_info(f"Installing {matrix_pkg}...")
-                import subprocess
                 uv_bin = shutil.which("uv")
                 if uv_bin:
-                    result = subprocess.run(
-                        [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
-                        capture_output=True, text=True,
-                    )
+                    result = _run_uv_pip_install_for_current_python(uv_bin, matrix_pkg)
                 else:
                     result = subprocess.run(
                         [sys.executable, "-m", "pip", "install", matrix_pkg],

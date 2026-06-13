@@ -61,6 +61,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 
@@ -366,6 +368,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 [uv_bin, "pip", "install", *specs],
                 capture_output=True, text=True, timeout=timeout, env=uv_env,
                 stdin=subprocess.DEVNULL,
+                creationflags=windows_hide_flags(),
             )
             if r.returncode == 0:
                 return _InstallResult(True, r.stdout or "", r.stderr or "")

@@ -64,6 +64,8 @@ except ModuleNotFoundError:
 import os
 import sys
 
+from hermes_cli._subprocess_compat import windows_hide_flags
+
 
 def _set_process_title() -> None:
     """Set the process title to 'hermes' so tools like 'ps', 'top', and
@@ -6666,6 +6668,7 @@ def _run_install_with_heartbeat(
             cwd=PROJECT_ROOT,
             check=True,
             env=env,
+            creationflags=windows_hide_flags(),
         )
     finally:
         done.set()

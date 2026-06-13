@@ -4694,3 +4694,246 @@ def test_cli_exec_backend_missing_binary_raises(kanban_home, tmp_path):
 
     with pytest.raises(RuntimeError):
         kb.CliExecBackend(config_loader=loader).launch(ctx)
+
+
+# ---------------------------------------------------------------------------
+# tmux terminal-lane backend (interactive harness in a durable PTY)
+# ---------------------------------------------------------------------------
+
+
+class _FakeTmuxRun:
+    """Record module-level ``subprocess.run`` calls and fake tmux output.
+
+    The tmux backend and ``_cleanup_worker_tmux`` both call the module-level
+    ``subprocess.run`` for every tmux subcommand, so monkeypatching
+    ``kb.subprocess.run`` intercepts them all.
+
+    * ``new-session`` returns ``new_session_rc``;
+    * ``list-panes -F '#{pane_pid}'`` returns ``pane_pid`` (None -> empty);
+    * ``list-panes -F '#{pane_dead}'`` returns ``pane_dead``;
+    * everything else returns success.
+    """
+
+    def __init__(self, pane_pid="31337", new_session_rc=0, pane_dead="1"):
+        self.calls = []
+        self.pane_pid = pane_pid
+        self.new_session_rc = new_session_rc
+        self.pane_dead = pane_dead
+
+    def __call__(self, cmd, **kw):
+        argv = list(cmd)
+        self.calls.append(argv)
+        rc, out = 0, ""
+        if argv[:2] == ["tmux", "new-session"]:
+            rc = self.new_session_rc
+        elif argv[:2] == ["tmux", "list-panes"]:
+            if "#{pane_pid}" in argv:
+                out = "" if self.pane_pid is None else f"{self.pane_pid}\n"
+            elif "#{pane_dead}" in argv:
+                out = self.pane_dead
+        return kb.subprocess.CompletedProcess(argv, rc, stdout=out, stderr="")
+
+    def first(self, *head):
+        """The first recorded call whose argv starts with ``head``."""
+        head = list(head)
+        return next((c for c in self.calls if c[:len(head)] == head), None)
+
+    def has(self, *head):
+        return self.first(*head) is not None
+
+
+def _tmux_loader(command=("repl",), pass_prompt="send-keys",
+                 prompt_file=".hermes-task.md", session_name="klane-{task_id}",
+                 send_keys=None):
+    data = {
+        "command": list(command),
+        "pass_prompt": pass_prompt,
+        "prompt_file": prompt_file,
+        "session_name": session_name,
+    }
+    if send_keys is not None:
+        data["send_keys"] = send_keys
+
+    def loader(profile, board):
+        return kb.TmuxLaneConfig.from_mapping(data)
+
+    return loader
+
+
+def _which_present(monkeypatch):
+    """Make every binary look installed so precondition checks pass."""
+    monkeypatch.setattr(kb.shutil, "which", lambda b: f"/usr/bin/{b}")
+
+
+def test_tmux_lane_config_from_mapping_valid():
+    c = kb.TmuxLaneConfig.from_mapping(
+        {"command": ["codex"], "pass_prompt": "send-keys"}
+    )
+    assert c.command == ("codex",)
+    assert c.binary == "codex"
+    assert c.pass_prompt == "send-keys"                      # interactive default
+    assert c.session_name == "klane-{task_id}"
+    assert "{prompt_file}" in c.send_keys
+    # string command is shlex-split, like cli-exec
+    assert kb.TmuxLaneConfig.from_mapping({"command": "claude --repl"}).command == (
+        "claude", "--repl",
+    )
+
+
+def test_tmux_lane_config_default_pass_prompt_is_send_keys():
+    # Decision: interactive lanes default to send-keys (vs cli-exec's stdin).
+    assert kb.TmuxLaneConfig.from_mapping({"command": ["x"]}).pass_prompt == "send-keys"
+
+
+@pytest.mark.parametrize("bad", [
+    None, {}, {"command": []},
+    {"command": ["x"], "pass_prompt": "stdin"},     # stdin is a cli-exec mode
+    {"command": ["x"], "pass_prompt": "telepathy"},
+])
+def test_tmux_lane_config_rejects_invalid(bad):
+    with pytest.raises(ValueError):
+        kb.TmuxLaneConfig.from_mapping(bad)
+
+
+def test_tmux_lane_backend_registered():
+    assert "tmux" in kb._SPAWN_BACKENDS
+    assert kb._SPAWN_BACKENDS["tmux"].name == "tmux"
+
+
+def test_tmux_lane_backend_launch_send_keys(kanban_home, tmp_path, monkeypatch):
+    ctx, task, ws = _ctx(tmp_path, title="lane", assignee="coder")
+    _which_present(monkeypatch)
+    fake = _FakeTmuxRun(pane_pid="31337")
+    monkeypatch.setattr(kb.subprocess, "run", fake)
+
+    pid = kb.TmuxLaneBackend(config_loader=_tmux_loader(("repl",), "send-keys")).launch(ctx)
+
+    assert pid == 31337                                      # pane_pid is tracked
+    ns = fake.first("tmux", "new-session")
+    assert ns is not None
+    assert "-d" in ns                                        # detached
+    assert ns[ns.index("-s") + 1] == f"klane-{task.id}"      # session per task id
+    assert ns[ns.index("-c") + 1] == ws                      # start-dir = workspace
+    assert f"HERMES_KANBAN_TASK={task.id}" in ns             # pinned env via -e
+    assert ns[-1] == "repl"                                  # harness argv, unmodified
+    # send-keys delivers a pointer to the brief, then Enter
+    assert fake.has("tmux", "send-keys")
+    sk = fake.first("tmux", "send-keys", "-t", f"klane-{task.id}", "-l")
+    assert sk is not None and ".hermes-task.md" in sk[-1]
+    assert fake.has("tmux", "send-keys", "-t", f"klane-{task.id}", "Enter")
+    # brief written verbatim, like cli-exec
+    brief = Path(ws) / ".hermes-task.md"
+    assert brief.is_file()
+    assert brief.read_text() == kb.compile_task_prompt(ctx)
+
+
+def test_tmux_lane_backend_pipes_pane_to_log(kanban_home, tmp_path, monkeypatch):
+    ctx, task, ws = _ctx(tmp_path, title="pipe", assignee="coder")
+    _which_present(monkeypatch)
+    fake = _FakeTmuxRun()
+    monkeypatch.setattr(kb.subprocess, "run", fake)
+    kb.TmuxLaneBackend(config_loader=_tmux_loader(("repl",))).launch(ctx)
+    pp = fake.first("tmux", "pipe-pane")
+    assert pp is not None
+    assert str(ctx.log_path) in pp[-1]                       # output tee'd to task log
+
+
+def test_tmux_lane_backend_launch_file_arg(kanban_home, tmp_path, monkeypatch):
+    ctx, task, ws = _ctx(tmp_path, title="filearg", assignee="coder")
+    _which_present(monkeypatch)
+    fake = _FakeTmuxRun()
+    monkeypatch.setattr(kb.subprocess, "run", fake)
+    kb.TmuxLaneBackend(config_loader=_tmux_loader(("repl",), "file-arg")).launch(ctx)
+    ns = fake.first("tmux", "new-session")
+    assert ns[-1].endswith(".hermes-task.md")                # brief path in pane cmd
+    assert not fake.has("tmux", "send-keys")                 # no keystrokes in file-arg
+
+
+def test_tmux_lane_backend_launch_none(kanban_home, tmp_path, monkeypatch):
+    ctx, task, ws = _ctx(tmp_path, title="none", assignee="coder")
+    _which_present(monkeypatch)
+    fake = _FakeTmuxRun()
+    monkeypatch.setattr(kb.subprocess, "run", fake)
+    kb.TmuxLaneBackend(config_loader=_tmux_loader(("repl",), "none")).launch(ctx)
+    ns = fake.first("tmux", "new-session")
+    assert ns[-1] == "repl"                                  # argv only
+    assert not fake.has("tmux", "send-keys")
+
+
+def test_tmux_lane_backend_missing_tmux_raises(kanban_home, tmp_path, monkeypatch):
+    ctx, _, _ = _ctx(tmp_path, title="notmux", assignee="coder")
+    monkeypatch.setattr(kb.shutil, "which", lambda b: None if b == "tmux" else "/usr/bin/x")
+    with pytest.raises(RuntimeError):
+        kb.TmuxLaneBackend(config_loader=_tmux_loader(("repl",))).launch(ctx)
+
+
+def test_tmux_lane_backend_missing_binary_raises(kanban_home, tmp_path, monkeypatch):
+    ctx, _, _ = _ctx(tmp_path, title="nobin", assignee="coder")
+    monkeypatch.setattr(
+        kb.shutil, "which", lambda b: "/usr/bin/tmux" if b == "tmux" else None
+    )
+    with pytest.raises(RuntimeError):
+        kb.TmuxLaneBackend(
+            config_loader=_tmux_loader(("nope-no-such-binary-xyz",))
+        ).launch(ctx)
+
+
+def test_tmux_lane_backend_new_session_failure_raises(kanban_home, tmp_path, monkeypatch):
+    ctx, _, _ = _ctx(tmp_path, title="failns", assignee="coder")
+    _which_present(monkeypatch)
+    monkeypatch.setattr(kb.subprocess, "run", _FakeTmuxRun(new_session_rc=1))
+    with pytest.raises(RuntimeError):
+        kb.TmuxLaneBackend(config_loader=_tmux_loader(("repl",))).launch(ctx)
+
+
+def test_tmux_lane_backend_no_pane_pid_returns_none(kanban_home, tmp_path, monkeypatch):
+    ctx, _, _ = _ctx(tmp_path, title="nopid", assignee="coder")
+    _which_present(monkeypatch)
+    monkeypatch.setattr(kb.subprocess, "run", _FakeTmuxRun(pane_pid=None))
+    # Session created but no pane_pid -> untracked, not a spawn failure.
+    pid = kb.TmuxLaneBackend(config_loader=_tmux_loader(("repl",))).launch(ctx)
+    assert pid is None
+
+
+def test_tmux_lane_select_via_board_config(kanban_home):
+    import yaml
+    board_dir = kb.kanban_db_path(board=None).parent
+    (board_dir / "board.yaml").write_text(
+        yaml.safe_dump({"kanban": {"harness": "tmux"}}), encoding="utf-8"
+    )
+    with kb.connect() as conn:
+        t = kb.get_task(conn, kb.create_task(conn, title="b", assignee="coder"))
+    assert kb._select_spawn_backend(t, None).name == "tmux"
+
+
+def test_cleanup_worker_tmux_targets_klane_session(kanban_home, tmp_path, monkeypatch):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="lane", assignee="coder")
+    fake = _FakeTmuxRun(pane_dead="1")
+    monkeypatch.setattr(kb.subprocess, "run", fake)
+    with kb.connect() as conn:
+        kb._cleanup_worker_tmux(conn, tid)
+    # the lane session keyed on the task id is reaped once its pane is dead
+    assert fake.has("tmux", "list-panes", "-t", f"klane-{tid}")
+    assert fake.has("tmux", "kill-session", "-t", f"klane-{tid}")
+
+
+def test_cleanup_worker_tmux_still_handles_swarm(kanban_home, tmp_path, monkeypatch):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="swarm", assignee="swarm1")
+    fake = _FakeTmuxRun(pane_dead="1")
+    monkeypatch.setattr(kb.subprocess, "run", fake)
+    with kb.connect() as conn:
+        kb._cleanup_worker_tmux(conn, tid)
+    # legacy swarm-<assignee> naming still reaped (regression guard)
+    assert fake.has("tmux", "kill-session", "-t", "swarm-swarm1")
+
+
+def test_cleanup_worker_tmux_skips_live_pane(kanban_home, tmp_path, monkeypatch):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="live", assignee="coder")
+    fake = _FakeTmuxRun(pane_dead="0")          # pane still alive
+    monkeypatch.setattr(kb.subprocess, "run", fake)
+    with kb.connect() as conn:
+        kb._cleanup_worker_tmux(conn, tid)
+    assert not fake.has("tmux", "kill-session")  # never tear down a running worker

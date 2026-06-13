@@ -3966,29 +3966,52 @@ def _try_cleanup_parent_workspaces(conn: sqlite3.Connection, task_id: str) -> No
 
 
 def _cleanup_worker_tmux(conn: sqlite3.Connection, task_id: str) -> None:
-    """Kill the tmux session associated with a task's assignee, if dead."""
+    """Kill the dead tmux session(s) a finished task left behind.
+
+    Two session-naming conventions are reclaimed:
+
+    * ``swarm-<assignee>`` -- legacy swarm workers whose sessions are created
+      outside the engine;
+    * ``klane-<task_id>`` -- interactive terminal lanes spawned by
+      :class:`TmuxLaneBackend`.
+
+    A session is killed only once its pane is dead (the worker process exited),
+    so a still-running worker is never torn down. With ``remain-on-exit`` off
+    (the tmux default) a finished lane self-destroys and there is nothing to
+    reap; this is the belt-and-braces path for a pane that lingers. Best-effort
+    -- any error is swallowed so cleanup never blocks task completion.
+    """
     try:
+        # The lane session is keyed on the task id and needs no assignee.
+        sessions = [f"klane-{task_id}"]
         row = conn.execute(
             "SELECT assignee FROM tasks WHERE id = ?", (task_id,)
         ).fetchone()
-        if not row or not row["assignee"]:
-            return
-        assignee: str = row["assignee"]
-        # Workers named swarm1-12 use tmux sessions named swarm-swarm1 etc.
-        session = f"swarm-{assignee}"
-        # Check if session exists and pane is dead before killing
-        out = subprocess.run(
-            ["tmux", "list-panes", "-t", session, "-F", "#{pane_dead}"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if out.stdout.strip() == "1":
-            subprocess.run(
-                ["tmux", "kill-session", "-t", session],
-                capture_output=True, timeout=5,
-            )
-            _log.debug("Killed stale tmux session: %s", session)
+        if row and row["assignee"]:
+            # Workers named swarm1-12 use tmux sessions named swarm-swarm1 etc.
+            sessions.append(f"swarm-{row['assignee']}")
+        for session in sessions:
+            _kill_tmux_session_if_dead(session)
     except Exception:
-        pass  # best-effort — never block completion
+        pass  # best-effort -- never block completion
+
+
+def _kill_tmux_session_if_dead(session: str) -> None:
+    """Kill ``session`` iff it exists and its pane is already dead.
+
+    A non-existent session makes ``list-panes`` exit non-zero with empty
+    output, so the dead-check fails closed and nothing is killed.
+    """
+    out = subprocess.run(
+        ["tmux", "list-panes", "-t", session, "-F", "#{pane_dead}"],
+        capture_output=True, text=True, timeout=5,
+    )
+    if out.stdout.strip() == "1":
+        subprocess.run(
+            ["tmux", "kill-session", "-t", session],
+            capture_output=True, timeout=5,
+        )
+        _log.debug("Killed stale tmux session: %s", session)
 
 
 # ---------------------------------------------------------------------------
@@ -7374,6 +7397,245 @@ class CliExecBackend:
 
 
 register_spawn_backend(CliExecBackend())
+
+
+# --- tmux terminal-lane backend (interactive harness in a durable PTY) ------
+#
+# Where cli-exec runs a one-shot, non-interactive CLI as a detached process,
+# the tmux lane gives an INTERACTIVE harness (a REPL like ``codex`` / ``claude``
+# in chat mode, ``aider``, ...) a real, durable PTY. The session is detached
+# (``new-session -d``) so it outlives a dispatcher restart -- the "durable
+# terminal lane" this seam was designed for. The brief is compiled to a file in
+# the workspace (as cli-exec does); the harness receives it by being told to
+# read that file (``send-keys``, the default -- it types a one-line pointer into
+# the live REPL), by a file argument (``file-arg``), or not at all (``none``,
+# the harness locates the brief itself).
+#
+# Decisions recorded for this backend (handoff item 1, step 4):
+#   * NAME = "tmux" -- mirrors the ``kanban.harnesses.tmux`` config key;
+#     "terminal-lane" was considered and rejected as longer with no upside.
+#   * Default prompt delivery = "send-keys" -- feeding a live REPL is the whole
+#     point of an interactive lane (vs cli-exec's stdin one-shot). The multi-
+#     line brief stays in the file; send-keys only types a short pointer to it,
+#     which is robust (no multi-line keystroke replay into a starting program).
+
+_TMUX_PASS_PROMPT_MODES = ("send-keys", "file-arg", "none")
+
+_DEFAULT_TMUX_SEND_KEYS = (
+    "Read {prompt_file} and complete this kanban task, following the "
+    "lifecycle instructions in it."
+)
+
+
+@dataclass(frozen=True)
+class TmuxLaneConfig:
+    """Parameters for :class:`TmuxLaneBackend`.
+
+    ``command`` is the interactive harness argv (e.g. ``["codex"]`` or
+    ``["claude"]`` started in its REPL). The compiled brief reaches it per
+    ``pass_prompt``:
+
+    * ``send-keys`` -> after the session is created, ``send_keys`` (with
+      ``{prompt_file}`` / ``{task_id}`` substituted) is typed into the live
+      pane followed by Enter; the brief itself stays in ``prompt_file``.
+    * ``file-arg``  -> the brief path is appended to ``command``.
+    * ``none``      -> ``command`` only (the harness locates the brief itself).
+
+    ``session_name`` is a template; ``{task_id}`` is substituted to form the
+    detached session name (default ``klane-<task_id>``), which
+    :func:`_cleanup_worker_tmux` reaps once the pane dies.
+    """
+
+    command: tuple[str, ...]
+    prompt_file: str = ".hermes-task.md"
+    pass_prompt: str = "send-keys"
+    session_name: str = "klane-{task_id}"
+    send_keys: str = _DEFAULT_TMUX_SEND_KEYS
+
+    @property
+    def binary(self) -> str:
+        return self.command[0]
+
+    @classmethod
+    def from_mapping(cls, data: Optional[dict]) -> "TmuxLaneConfig":
+        if not isinstance(data, dict):
+            raise ValueError(
+                "tmux config missing or not a mapping; a task routed to the "
+                "tmux harness needs a kanban.harnesses.tmux block"
+            )
+        raw_cmd = data.get("command")
+        if isinstance(raw_cmd, str):
+            cmd = tuple(shlex.split(raw_cmd))
+        elif isinstance(raw_cmd, (list, tuple)):
+            cmd = tuple(str(p) for p in raw_cmd)
+        else:
+            cmd = ()
+        if not cmd:
+            raise ValueError("tmux config: 'command' must be a non-empty argv")
+        pass_prompt = str(data.get("pass_prompt", "send-keys"))
+        if pass_prompt not in _TMUX_PASS_PROMPT_MODES:
+            raise ValueError(
+                f"tmux config: pass_prompt {pass_prompt!r} not in "
+                f"{_TMUX_PASS_PROMPT_MODES}"
+            )
+        return cls(
+            command=cmd,
+            prompt_file=str(data.get("prompt_file", ".hermes-task.md")),
+            pass_prompt=pass_prompt,
+            session_name=str(data.get("session_name", "klane-{task_id}")),
+            send_keys=str(data.get("send_keys", _DEFAULT_TMUX_SEND_KEYS)),
+        )
+
+
+def _load_tmux_lane_config(
+    profile: Optional[str], board: Optional[str]
+) -> TmuxLaneConfig:
+    cfg = _kanban_config(profile, board)
+    harnesses = cfg.get("harnesses")
+    block = harnesses.get("tmux") if isinstance(harnesses, dict) else None
+    return TmuxLaneConfig.from_mapping(block)
+
+
+def _parse_pane_pid(raw: str) -> Optional[int]:
+    """First parseable ``#{pane_pid}`` line from ``list-panes`` output, or None."""
+    for line in (raw or "").splitlines():
+        line = line.strip()
+        if line.isdigit():
+            return int(line)
+    return None
+
+
+class TmuxLaneBackend:
+    """Run an interactive harness for a task inside a detached tmux pane.
+
+    Unlike :class:`CliExecBackend` (a one-shot detached ``Popen``), this backend
+    gives the harness a real PTY via a detached tmux session
+    (``tmux new-session -d``). That session survives a dispatcher restart -- the
+    durable terminal lane this seam was built for -- and the harness can be an
+    interactive REPL rather than a non-interactive exec.
+
+    launch():
+      1. compile + persist the task brief into the workspace;
+      2. create the detached session (``-c`` workspace, ``-e KEY=VAL`` for the
+         pinned ``HERMES_KANBAN_*`` child env -- tmux >= 3.0);
+      3. tee the pane's output into the task log via ``pipe-pane`` (so the log
+         grows live, exactly as the native / cli-exec backends' logs do);
+      4. deliver the brief per ``pass_prompt`` (``send-keys`` types a pointer to
+         the brief file into the live REPL);
+      5. return the pane's ``#{pane_pid}`` for crash detection: when the harness
+         exits, that pid dies and the existing ``_pid_alive`` check reclaims the
+         task.
+
+    A missing ``tmux`` or harness binary fails loudly (recorded as a spawn
+    failure) rather than silently degrading. Parameters come from the executor
+    profile's / board's ``kanban.harnesses.tmux`` block -- see
+    :class:`TmuxLaneConfig`.
+    """
+
+    name = "tmux"
+
+    def __init__(self, config_loader=None):
+        # Indirection so tests can inject a config without a profile on disk.
+        self._config_loader = config_loader or _load_tmux_lane_config
+
+    def launch(self, ctx: SpawnContext) -> Optional[int]:
+        cfg = self._config_loader(ctx.profile, ctx.board)
+
+        # Preconditions: both tmux and the harness binary must be present, so a
+        # task is never half-started against a missing dependency.
+        if shutil.which("tmux") is None:
+            raise RuntimeError(
+                f"tmux backend: 'tmux' not found on PATH for task {ctx.task.id}; "
+                "cannot open a terminal lane."
+            )
+        if shutil.which(cfg.binary) is None:
+            raise RuntimeError(
+                f"tmux backend: harness binary {cfg.binary!r} not found on PATH "
+                f"for task {ctx.task.id}; cannot dispatch."
+            )
+
+        # Compile + persist the task brief into the workspace.
+        prompt_path = Path(ctx.workspace) / cfg.prompt_file
+        prompt_path.parent.mkdir(parents=True, exist_ok=True)
+        prompt_path.write_text(compile_task_prompt(ctx), encoding="utf-8")
+
+        session = cfg.session_name.format(task_id=ctx.task.id)
+
+        # Worker command for the pane. ``file-arg`` appends the brief path.
+        argv = list(cfg.command)
+        if cfg.pass_prompt == "file-arg":
+            argv.append(str(prompt_path))
+        shell_command = shlex.join(argv)
+
+        # Detached session. ``-e KEY=VAL`` (tmux >= 3.0) propagates the pinned
+        # child env even when an existing tmux server (with a different env)
+        # serves the new session. ``-c`` only when the workspace exists, else
+        # tmux rejects the start-directory.
+        new_session = ["tmux", "new-session", "-d", "-s", session]
+        if os.path.isdir(ctx.workspace):
+            new_session += ["-c", ctx.workspace]
+        for key, val in ctx.env.items():
+            new_session += ["-e", f"{key}={val}"]
+        new_session.append(shell_command)
+
+        created = subprocess.run(  # noqa: S603 -- argv is a built list
+            new_session, capture_output=True, text=True, timeout=15,
+        )
+        if created.returncode != 0:
+            raise RuntimeError(
+                f"tmux backend: failed to create session {session!r} for task "
+                f"{ctx.task.id}: "
+                f"{created.stderr.strip() or created.stdout.strip()}"
+            )
+
+        # Tee pane output into the task log so it grows live (items 2/3 build on
+        # log mtime + tailing). Best-effort: a logging gap must not wedge an
+        # otherwise-running worker.
+        try:
+            subprocess.run(  # noqa: S603
+                ["tmux", "pipe-pane", "-t", session, "-o",
+                 f"cat >> {shlex.quote(str(ctx.log_path))}"],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception as exc:  # noqa: BLE001 -- logging is best-effort
+            _log.warning(
+                "tmux backend: could not pipe pane output to %s for task %s (%s)",
+                ctx.log_path, ctx.task.id, exc,
+            )
+
+        # Deliver the brief to the live REPL. ``-l`` types the pointer text
+        # literally; a separate ``Enter`` submits it. The bytes buffer in the
+        # PTY until the harness reads them, so this is safe right after launch.
+        if cfg.pass_prompt == "send-keys":
+            keys = cfg.send_keys.format(
+                prompt_file=cfg.prompt_file, task_id=ctx.task.id
+            )
+            subprocess.run(  # noqa: S603
+                ["tmux", "send-keys", "-t", session, "-l", keys],
+                capture_output=True, text=True, timeout=5,
+            )
+            subprocess.run(  # noqa: S603
+                ["tmux", "send-keys", "-t", session, "Enter"],
+                capture_output=True, text=True, timeout=5,
+            )
+
+        # The pane pid is the watchable host-local PID for crash detection. A
+        # freshly created session always has exactly one pane.
+        panes = subprocess.run(  # noqa: S603
+            ["tmux", "list-panes", "-t", session, "-F", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        pid = _parse_pane_pid(panes.stdout)
+        if pid is None:
+            _log.warning(
+                "tmux backend: no pane_pid for session %s (task %s); worker is "
+                "running but untracked for crash detection",
+                session, ctx.task.id,
+            )
+        return pid
+
+
+register_spawn_backend(TmuxLaneBackend())
 
 
 def _default_spawn(

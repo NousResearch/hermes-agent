@@ -32,7 +32,6 @@ import { triggerHaptic } from '@/lib/haptics'
 import { PROFILE_SWATCHES, profileColorSoft, resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 import {
-  $activeGatewayProfile,
   $profileColors,
   $profileCreateRequest,
   $profileOrder,
@@ -91,7 +90,6 @@ export function ProfileRail() {
   const p = t.profiles
   const profiles = useStore($profiles)
   const scope = useStore($profileScope)
-  const gatewayProfile = useStore($activeGatewayProfile)
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const navigate = useNavigate()
@@ -127,9 +125,9 @@ export function ProfileRail() {
   }, [])
 
   const isAll = scope === ALL_PROFILES
-  const activeKey = normalizeProfileKey(gatewayProfile)
+  const selectedKey = isAll ? ALL_PROFILES : normalizeProfileKey(scope)
   const defaultProfile = profiles.find(profile => profile.is_default)
-  const onDefault = !isAll && activeKey === 'default'
+  const onDefault = !isAll && selectedKey === 'default'
 
   const named = sortByProfileOrder(profiles.filter(profile => !profile.is_default), order)
   const multiProfile = profiles.length > 1
@@ -242,7 +240,7 @@ export function ProfileRail() {
               <div className="relative flex items-center gap-1">
                 {named.map(profile => (
                   <ProfileSquare
-                    active={!isAll && normalizeProfileKey(profile.name) === activeKey}
+                    active={!isAll && normalizeProfileKey(profile.name) === selectedKey}
                     color={resolveProfileColor(profile.name, colors)}
                     key={profile.name}
                     label={profile.name}

@@ -8,8 +8,8 @@ body:
       value: |
         Thanks for the suggestion! Before submitting, please consider:
 
-        - **Is this a new skill?** Most capabilities should be [skills, not tools](https://github.com/NousResearch/hermes-agent/blob/main/CONTRIBUTING.md#should-it-be-a-skill-or-a-tool). If it's a specialized integration (crypto, NFT, niche SaaS), it belongs on the Skills Hub, not bundled.
-        - **Search [existing issues](https://github.com/NousResearch/hermes-agent/issues)** — someone may have already proposed this.
+        - **Is this a new skill?** Most capabilities should be [skills, not tools](https://github.com/TJ-coding/nautilus-agent/blob/main/CONTRIBUTING.md#should-it-be-a-skill-or-a-tool). If it's a specialized integration (crypto, NFT, niche SaaS), it belongs on the Skills Hub, not bundled.
+        - **Search [existing issues](https://github.com/TJ-coding/nautilus-agent/issues)** — someone may have already proposed this.
 
   - type: textarea
     id: problem
@@ -28,7 +28,7 @@ body:
       label: Proposed Solution
       description: How do you think this should work? Be as specific as you can — CLI flags, config options, UI behavior.
       placeholder: |
-        Add a `--foo` flag to `hermes chat` that enables...
+        Add a `--foo` flag to `nautilus chat` that enables...
         Or: Add a config key `bar.baz` that controls...
     validations:
       required: true
@@ -77,7 +77,7 @@ body:
     attributes:
       label: Debug Report (optional)
       description: |
-        If this feature request is related to a problem you're experiencing, run `hermes debug share` and paste the links here.
+        If this feature request is related to a problem you're experiencing, run `nautilus debug share` and paste the links here.
         In an interactive chat session, you can use `/debug` instead.
         This helps us understand your environment and any related logs.
       placeholder: |

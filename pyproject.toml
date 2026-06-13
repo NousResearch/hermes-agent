@@ -6,9 +6,9 @@ requires = ["setuptools>=77.0,<83"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "hermes-agent"
+name = "nautilus-agent"
 version = "0.16.0"
-description = "The self-improving AI agent — creates skills from experience, improves them during use, and runs anywhere"
+description = "Nautilus Agent — AI for Scientists. A friendly fork of Hermes Agent that adapts self-improving tools to scientific workflows."
 readme = "README.md"
 # Upper bound is load-bearing, not cosmetic. uv resolves the project's
 # Python from `requires-python`, and an inherited `UV_PYTHON` env var (or a
@@ -271,7 +271,9 @@ all = [
 
 [project.scripts]
 hermes = "hermes_cli.main:main"
+nautilus = "hermes_cli.main:main"
 hermes-agent = "run_agent:main"
+nautilus-agent = "run_agent:main"
 hermes-acp = "acp_adapter.entry:main"
 
 [tool.setuptools]

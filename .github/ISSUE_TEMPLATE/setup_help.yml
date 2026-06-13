@@ -1,5 +1,5 @@
 name: "🔧 Setup / Installation Help"
-description: Having trouble installing or configuring Hermes? Ask here.
+description: Having trouble installing or configuring Nautilus Agent? Ask here.
 title: "[Setup]: "
 labels: ["setup"]
 body:
@@ -9,11 +9,11 @@ body:
         Sorry you're having trouble! Please fill out the details below so we can help.
 
         **Quick checks first:**
-        - Run `hermes debug share` and paste the links in the Debug Report section below
+        - Run `nautilus debug share` and paste the links in the Debug Report section below
         - If you're in a chat session, you can use `/debug` instead — it does the same thing
-        - Try `hermes update` to get the latest version
-        - Check the [README troubleshooting section](https://github.com/NousResearch/hermes-agent#troubleshooting)
-        - For general questions, consider the [Nous Research Discord](https://discord.gg/NousResearch) for faster help
+        - Try `nautilus update` to get the latest version
+        - Check the [README troubleshooting section](https://github.com/TJ-coding/nautilus-agent#troubleshooting)
+        - For general questions, consider the [Nous Research Discord (for upstream Hermes)](https://discord.gg/NousResearch) for faster help
 
   - type: textarea
     id: description
@@ -21,7 +21,7 @@ body:
       label: What's Going Wrong?
       description: Describe what you're trying to do and where it fails.
       placeholder: |
-        I ran `hermes setup` and selected Nous Portal, but when I try to
+        I ran `nautilus setup` and selected Nous Portal, but when I try to
         start the gateway I get...
     validations:
       required: true
@@ -33,9 +33,9 @@ body:
       description: What did you do? Include the exact commands you ran.
       placeholder: |
         1. Ran the install script: `curl -fsSL ... | bash`
-        2. Ran `hermes setup` and chose "Quick setup"
+        2. Ran `nautilus setup` and chose "Quick setup"
         3. Selected OpenRouter, entered API key
-        4. Ran `hermes chat` and got error...
+        4. Ran `nautilus chat` and got error...
     validations:
       required: true
 
@@ -71,7 +71,7 @@ body:
     id: hermes-version
     attributes:
       label: Hermes Version
-      description: Output of `hermes version` (if install got that far)
+      description: Output of `nautilus version` (if install got that far)
       placeholder: "2.1.0"
 
   - type: textarea
@@ -79,13 +79,13 @@ body:
     attributes:
       label: Debug Report
       description: |
-        Run `hermes debug share` from your terminal and paste the links it prints here.
+        Run `nautilus debug share` from your terminal and paste the links it prints here.
         This uploads your system info, config, and recent logs to a paste service automatically.
 
         If you're in an interactive chat session, you can also use the `/debug` slash command — it does the same thing.
 
-        If the upload fails or install didn't get that far, run `hermes debug share --local` and paste the output directly.
-        If even that doesn't work, run `hermes doctor` and paste that output instead.
+        If the upload fails or install didn't get that far, run `nautilus debug share --local` and paste the output directly.
+        If even that doesn't work, run `nautilus doctor` and paste that output instead.
       placeholder: |
         Report   https://paste.rs/abc123
         agent.log   https://paste.rs/def456
@@ -107,6 +107,6 @@ body:
       label: What I've Already Tried
       description: List any fixes or workarounds you've already attempted.
       placeholder: |
-        - Ran `hermes update`
+        - Ran `nautilus update`
         - Tried reinstalling with `pip install -e ".[all]"`
         - Checked that OPENROUTER_API_KEY is set in ~/.hermes/.env

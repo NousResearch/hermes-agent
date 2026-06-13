@@ -1164,11 +1164,12 @@ DEFAULT_CONFIG = {
     #   See: https://openrouter.ai/docs/guides/routing/routers/pareto-router
     # fusion: enable OpenRouter Fusion server-side model collaboration.
     #   When enabled, Hermes appends the `openrouter:fusion` server tool to
-    #   OpenRouter chat-completions requests. `force: true` sets
-    #   `tool_choice: required` so Fusion is used for every eligible request.
-    #   Leave analysis_models empty to let OpenRouter choose the analysis
-    #   panel. The router model `openrouter/fusion` also works through the
-    #   normal model setting.
+    #   OpenRouter chat-completions requests. `force: true` sends Fusion as
+    #   the only request tool and sets `tool_choice: required`; this guarantees
+    #   Fusion is selected, but local Hermes tools are unavailable for that
+    #   request. Leave analysis_models empty to let OpenRouter choose the
+    #   analysis panel. The router model `openrouter/fusion` also works
+    #   through the normal model setting.
     #   See: https://openrouter.ai/docs/features/fusion
     "openrouter": {
         "response_cache": True,

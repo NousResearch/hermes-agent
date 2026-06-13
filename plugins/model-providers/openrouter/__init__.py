@@ -4,7 +4,7 @@ import logging
 from typing import Any
 
 from providers import register_provider
-from providers.base import ProviderProfile
+from providers.base import ProviderProfile, ProviderServerTools
 
 logger = logging.getLogger(__name__)
 
@@ -115,6 +115,7 @@ def normalize_fusion_config(value: Any) -> dict[str, Any] | None:
     return {
         "tool": {"type": "openrouter:fusion", "parameters": parameters},
         "tool_choice": "required" if _coerce_bool(value.get("force"), default=False) else None,
+        "replace_local_tools": _coerce_bool(value.get("force"), default=False),
     }
 
 
@@ -177,11 +178,14 @@ class OpenRouterProfile(ProviderProfile):
 
     def build_server_tools(
         self, *, model: str | None = None, **context: Any
-    ) -> list[dict[str, Any]]:
+    ) -> ProviderServerTools:
         fusion = normalize_fusion_config(context.get("openrouter_fusion"))
         if not fusion:
-            return []
-        return [fusion["tool"]]
+            return ProviderServerTools()
+        return ProviderServerTools(
+            tools=[fusion["tool"]],
+            replace_local_tools=bool(fusion.get("replace_local_tools")),
+        )
 
     def build_api_kwargs_extras(
         self,

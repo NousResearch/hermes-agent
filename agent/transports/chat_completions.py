@@ -503,17 +503,21 @@ class ChatCompletionsTransport(ProviderTransport):
         # sanitization; server tools are provider declarations, not JSON Schema
         # functions Hermes will dispatch locally.
         request_tools: list[dict[str, Any]] = []
-        if tools:
-            local_tools = tools
-            if is_moonshot_model(model):
-                local_tools = sanitize_moonshot_tools(local_tools)
-            request_tools.extend(local_tools)
         server_tools = profile.build_server_tools(
             model=model,
             openrouter_fusion=params.get("openrouter_fusion"),
         )
-        if server_tools:
-            request_tools.extend(server_tools)
+        if isinstance(server_tools, list):
+            from providers.base import ProviderServerTools
+
+            server_tools = ProviderServerTools(tools=server_tools)
+        if tools and not server_tools.replace_local_tools:
+            local_tools = tools
+            if is_moonshot_model(model):
+                local_tools = sanitize_moonshot_tools(local_tools)
+            request_tools.extend(local_tools)
+        if server_tools.tools:
+            request_tools.extend(server_tools.tools)
         if request_tools:
             api_kwargs["tools"] = request_tools
 

@@ -588,3 +588,145 @@ class TestTelegramApprovalCallback:
         query.answer.assert_called_once()
         query.edit_message_text.assert_called_once()
         assert (tmp_path / ".update_response").read_text() == "n"
+
+
+class TestTelegramKanbanButtons:
+    @pytest.mark.asyncio
+    async def test_send_metadata_reply_markup_adds_inline_keyboard(self):
+        adapter = _make_adapter()
+        adapter._bot.send_message = AsyncMock(return_value=SimpleNamespace(message_id=42))
+
+        result = await adapter.send(
+            "12345",
+            "Kanban decision needed",
+            metadata={
+                "telegram_reply_markup": {
+                    "inline_keyboard": [[
+                        {"text": "✅ Approve", "callback_data": "kb:approve:t_123:"},
+                    ]]
+                }
+            },
+        )
+
+        assert result.success is True
+        kwargs = adapter._bot.send_message.call_args[1]
+        assert kwargs["reply_markup"] is not None
+
+    @pytest.mark.asyncio
+    async def test_approve_button_unblocks_kanban_task(self, tmp_path):
+        from hermes_cli import kanban_db as kb
+
+        env = {
+            "TELEGRAM_ALLOWED_USERS": "*",
+            "HERMES_KANBAN_HOME": str(tmp_path),
+            "HERMES_KANBAN_DB": "",
+            "HERMES_KANBAN_BOARD": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with kb.connect_closing(board="default") as conn:
+                task_id = kb.create_task(
+                    conn,
+                    title="Review draft",
+                    assignee="c3o",
+                    created_by="test",
+                    initial_status="blocked",
+                )
+
+            adapter = _make_adapter()
+            query = AsyncMock()
+            query.data = f"kb:approve:{task_id}:"
+            query.message = MagicMock()
+            query.message.chat_id = 12345
+            query.from_user = MagicMock()
+            query.from_user.id = "12345"
+            query.from_user.first_name = "S"
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+
+            update = MagicMock()
+            update.callback_query = query
+
+            await adapter._handle_callback_query(update, MagicMock())
+
+            with kb.connect_closing(board="default") as conn:
+                task = kb.get_task(conn, task_id)
+                comments = kb.list_comments(conn, task_id)
+
+        assert task.status == "ready"
+        assert any("Approve via Telegram" in c.body for c in comments)
+        query.answer.assert_called_once()
+        assert "approved" in query.answer.call_args[1]["text"]
+        query.edit_message_text.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_reject_button_keeps_blocked_task_blocked_with_comment(self, tmp_path):
+        from hermes_cli import kanban_db as kb
+
+        env = {
+            "TELEGRAM_ALLOWED_USERS": "*",
+            "HERMES_KANBAN_HOME": str(tmp_path),
+            "HERMES_KANBAN_DB": "",
+            "HERMES_KANBAN_BOARD": "",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            with kb.connect_closing(board="default") as conn:
+                task_id = kb.create_task(
+                    conn,
+                    title="Review draft",
+                    assignee="c3o",
+                    created_by="test",
+                    initial_status="blocked",
+                )
+
+            adapter = _make_adapter()
+            query = AsyncMock()
+            query.data = f"kb:reject:{task_id}:"
+            query.message = MagicMock()
+            query.message.chat_id = 12345
+            query.from_user = MagicMock()
+            query.from_user.id = "12345"
+            query.from_user.first_name = "S"
+            query.answer = AsyncMock()
+            query.edit_message_text = AsyncMock()
+
+            update = MagicMock()
+            update.callback_query = query
+
+            await adapter._handle_callback_query(update, MagicMock())
+
+            with kb.connect_closing(board="default") as conn:
+                task = kb.get_task(conn, task_id)
+                comments = kb.list_comments(conn, task_id)
+
+        assert task.status == "blocked"
+        assert any("Rejected via Telegram" in c.body for c in comments)
+        assert "rejected" in query.answer.call_args[1]["text"]
+
+    @pytest.mark.asyncio
+    async def test_kanban_button_rejects_unauthorized_user(self, tmp_path):
+        from hermes_cli import kanban_db as kb
+
+        adapter = _make_adapter()
+        runner = _AuthRunner(authorized=False)
+        adapter._message_handler = runner._handle_message
+
+        query = AsyncMock()
+        query.data = "kb:resume:t_missing:default"
+        query.message = MagicMock()
+        query.message.chat_id = 12345
+        query.message.chat.type = "private"
+        query.from_user = MagicMock()
+        query.from_user.id = 222
+        query.from_user.first_name = "Mallory"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+
+        update = MagicMock()
+        update.callback_query = query
+
+        with patch.dict(os.environ, {"HERMES_KANBAN_HOME": str(tmp_path)}, clear=False):
+            await adapter._handle_callback_query(update, MagicMock())
+
+        query.answer.assert_called_once()
+        assert "not authorized" in query.answer.call_args[1]["text"].lower()
+        query.edit_message_text.assert_not_called()

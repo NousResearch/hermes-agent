@@ -88,6 +88,37 @@ def test_kanban_notifier_dedupes_board_slugs_pointing_to_same_db(tmp_path, monke
     assert tid in adapter.sent[0]["text"]
 
 
+def test_blocked_telegram_notification_includes_kanban_action_buttons(tmp_path, monkeypatch):
+    db_path = tmp_path / "blocked-buttons.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="needs decision", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1")
+        kb.block_task(conn, tid, reason="review-required: check this")
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
+
+    assert len(adapter.sent) == 1
+    markup = adapter.sent[0]["metadata"]["telegram_reply_markup"]
+    callbacks = [
+        button["callback_data"]
+        for row in markup["inline_keyboard"]
+        for button in row
+    ]
+    assert callbacks == [
+        f"kb:approve:{tid}:default",
+        f"kb:reject:{tid}:default",
+        f"kb:park:{tid}:default",
+        f"kb:resume:{tid}:default",
+    ]
+
+
 def test_kanban_notifier_claim_prevents_second_watcher_send(tmp_path, monkeypatch):
     db_path = tmp_path / "single-owner.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))

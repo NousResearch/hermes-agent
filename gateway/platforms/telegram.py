@@ -594,6 +594,35 @@ class TelegramAdapter(BasePlatformAdapter):
         reply_to = metadata.get("telegram_reply_to_message_id")
         return int(reply_to) if reply_to is not None else None
 
+    @classmethod
+    def _metadata_reply_markup(cls, metadata: Optional[Dict[str, Any]]) -> Any:
+        """Return Telegram reply markup supplied by gateway metadata."""
+        if not metadata:
+            return None
+        markup = metadata.get("telegram_reply_markup")
+        if not markup:
+            return None
+        if isinstance(InlineKeyboardMarkup, type) and isinstance(markup, InlineKeyboardMarkup):
+            return markup
+        rows = markup.get("inline_keyboard") if isinstance(markup, dict) else None
+        if not isinstance(rows, list):
+            return None
+        keyboard = []
+        for row in rows:
+            if not isinstance(row, list):
+                return None
+            buttons = []
+            for button in row:
+                if not isinstance(button, dict):
+                    return None
+                text = button.get("text")
+                callback_data = button.get("callback_data")
+                if not text or not callback_data:
+                    return None
+                buttons.append(InlineKeyboardButton(str(text), callback_data=str(callback_data)))
+            keyboard.append(buttons)
+        return InlineKeyboardMarkup(keyboard)
+
     @staticmethod
     def _looks_like_private_chat_id(chat_id: str) -> bool:
         try:
@@ -2194,6 +2223,9 @@ class TelegramAdapter(BasePlatformAdapter):
             for i, chunk in enumerate(chunks):
                 retried_thread_not_found = False
                 metadata_reply_to = self._metadata_reply_to_message_id(metadata)
+                reply_markup = None
+                if i == len(chunks) - 1 and metadata:
+                    reply_markup = self._metadata_reply_markup(metadata)
                 private_dm_topic_send = self._is_private_dm_topic_send(chat_id, thread_id, metadata)
                 # reply_to_mode="off" on the existing telegram_dm_topic_reply_fallback path
                 # is an explicit user opt-in to "message_thread_id alone is enough" (PR #23994
@@ -2247,6 +2279,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                reply_markup=reply_markup,
                             )
                         except Exception as md_error:
                             # Markdown parsing failed, try plain text
@@ -2261,6 +2294,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     **thread_kwargs,
                                     **self._link_preview_kwargs(),
                                     **self._notification_kwargs(metadata),
+                                    reply_markup=reply_markup,
                                 )
                             else:
                                 raise
@@ -2723,6 +2757,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 **retry_thread_kwargs,
                                 **self._link_preview_kwargs(),
                                 **self._notification_kwargs(metadata),
+                                reply_markup=reply_markup,
                             )
                             break
                         except Exception as _retry_err:
@@ -3969,6 +4004,72 @@ class TelegramAdapter(BasePlatformAdapter):
                         "Telegram clarify button: resolve_gateway_clarify returned False (id=%s)",
                         clarify_id,
                     )
+            return
+
+        # --- Kanban decision callbacks (kb:action:task_id:board) ---
+        if data.startswith("kb:"):
+            parts = data.split(":", 3)
+            if len(parts) != 4:
+                await query.answer(text="Invalid Kanban action.")
+                return
+            action, task_id, board = parts[1], parts[2], parts[3] or "default"
+            caller_id = str(getattr(query.from_user, "id", ""))
+            if not self._is_callback_user_authorized(
+                caller_id,
+                chat_id=query_chat_id,
+                chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                user_name=query_user_name,
+            ):
+                await query.answer(text="⛔ You are not authorized to update Kanban tasks.")
+                return
+
+            user_display = getattr(query.from_user, "first_name", "User")
+            actor = f"Telegram:{user_display}"
+            try:
+                from hermes_cli import kanban_db as kb
+
+                board = kb._normalize_board_slug(board) or kb.DEFAULT_BOARD
+                with kb.connect_closing(board=board) as conn:
+                    task = kb.get_task(conn, task_id)
+                    if task is None:
+                        await query.answer(text=f"Kanban task {task_id} was not found.")
+                        return
+                    status = task.status
+                    if action in {"approve", "resume"}:
+                        kb.add_comment(conn, task_id, actor, f"{action.title()} via Telegram by {user_display}.")
+                        ok = kb.unblock_task(conn, task_id) if status in {"blocked", "scheduled"} else status == "ready"
+                        label = "approved" if action == "approve" else "resumed"
+                    elif action in {"reject", "park"}:
+                        label = "rejected" if action == "reject" else "parked"
+                        reason = f"{label.title()} via Telegram by {user_display}"
+                        if status in {"running", "ready"}:
+                            ok = kb.block_task(conn, task_id, reason=reason)
+                        elif status == "blocked":
+                            kb.add_comment(conn, task_id, actor, reason + ".")
+                            ok = True
+                        else:
+                            ok = False
+                    else:
+                        await query.answer(text="Unknown Kanban action.")
+                        return
+
+                if not ok:
+                    await query.answer(text=f"Could not {action} {task_id} from status '{status}'.")
+                    return
+                confirmation = f"✓ Kanban {task_id} {label} on {board} by {user_display}"
+                await query.answer(text=confirmation[:200])
+                try:
+                    await query.edit_message_text(
+                        text=self.format_message(confirmation),
+                        parse_mode=ParseMode.MARKDOWN_V2,
+                        reply_markup=None,
+                    )
+                except Exception:
+                    pass
+            except Exception as exc:
+                logger.error("[%s] Kanban callback failed: %s", self.name, exc, exc_info=True)
+                await query.answer(text=f"Kanban action failed: {exc}")
             return
 
         # --- Update prompt callbacks ---

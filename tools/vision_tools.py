@@ -812,14 +812,21 @@ def _supports_media_in_tool_results(provider: str, model: str) -> bool:
             return True
         return False
 
-    # Check the provider's registered profile for the supports_vision flag.
-    # This covers vision-capable providers like xiaomi, minimax, etc. that
-    # aren't in the hardcoded list above.
+    # Check the provider's registered profile.  Some providers (e.g. Xiaomi
+    # MiMo) support vision in user messages but reject list-type tool content
+    # with HTTP 400.  The ``supports_vision_tool_messages`` flag on the
+    # ProviderProfile gates this: when False, the provider cannot accept
+    # images inside tool-result messages even though it supports vision
+    # generally.
     try:
         from providers import get_provider_profile
         profile = get_provider_profile(p)
         if profile is not None and profile.supports_vision:
-            return True
+            if getattr(profile, "supports_vision_tool_messages", True):
+                return True
+            # Provider supports vision but NOT in tool messages — treat as
+            # unsupported for the purpose of multimodal tool results.
+            return False
     except Exception:
         pass
 
@@ -850,9 +857,15 @@ def _should_use_native_vision_fast_path() -> bool:
         cfg = load_config()
         if decide_image_input_mode(provider, model, cfg) != "native":
             return False
+        # Both checks must pass: the provider must accept images inside tool
+        # results AND the model must be declared vision-capable.  Using OR
+        # here causes false positives — e.g. xiaomi's profile has
+        # supports_vision=True but rejects list-type tool content, so
+        # _supports_media_in_tool_results would pass alone and incorrectly
+        # route images into tool-result messages that get HTTP-400'd.
         return (
             _supports_media_in_tool_results(provider, model)
-            or _lookup_supports_vision(provider, model, cfg) is True
+            and _lookup_supports_vision(provider, model, cfg) is True
         )
     except Exception as exc:
         logger.debug("Native vision fast-path check failed: %s", exc)

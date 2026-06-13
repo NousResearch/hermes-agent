@@ -356,6 +356,7 @@ AUTHOR_MAP = {
     "rino.alpin@gmail.com": "kunci115",  # PR #27098 salvage (thread-not-found retry)
     "hayka-pacha@users.noreply.github.com": "hayka-pacha",  # PR #25270 salvage (registry-aware mcp_ prefix strip)
     "237601532+chromalinx@users.noreply.github.com": "chromalinx",  # PR #27014 salvage (commands for groups+DM)
+    "chromalinx@users.noreply.github.com": "chromalinx",  # PR #37026 salvage (SSL CA guard)
     "booker1207@gmail.com": "booker1207",  # PR #25132 salvage (gate profile bots by allowed topics)
     "kiranvk2011@gmail.com": "kiranvk-2011",  # PR #24815 salvage (image documents → vision)
     "kosmonaut-t@centrum.cz": "rak135",  # PR #25960 salvage (Windows /restart)

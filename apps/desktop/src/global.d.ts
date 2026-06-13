@@ -52,9 +52,9 @@ declare global {
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       testConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionTestResult>
-      probeConnectionConfig: (remoteUrl: string) => Promise<DesktopConnectionProbeResult>
-      oauthLoginConnectionConfig: (remoteUrl: string) => Promise<DesktopOauthLoginResult>
-      oauthLogoutConnectionConfig: (remoteUrl?: string) => Promise<DesktopOauthLogoutResult>
+      probeConnectionConfig: (payload: string | DesktopConnectionConfigInput) => Promise<DesktopConnectionProbeResult>
+      oauthLoginConnectionConfig: (payload: string | DesktopConnectionConfigInput) => Promise<DesktopOauthLoginResult>
+      oauthLogoutConnectionConfig: (payload?: string | DesktopConnectionConfigInput) => Promise<DesktopOauthLogoutResult>
       // Hermes Cloud: one portal login powers discovery + silent per-agent
       // sign-in (cloud-auto-discovery Phase 3).
       cloud: {
@@ -380,9 +380,12 @@ export interface HermesConnection {
   // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
   mode?: 'local' | 'remote'
   authMode?: 'oauth' | 'token'
+  effectiveUrl?: string
   nativeOverlayWidth: number
-  source?: 'env' | 'local' | 'settings'
+  publicUrl?: string
+  source?: 'env' | 'local' | 'profile' | 'settings'
   token: string
+  transportMode?: DesktopRemoteTransportMode
   wsUrl: string
   logs: string[]
   // Set for pool (non-primary) backends so the renderer knows which profile a
@@ -408,6 +411,8 @@ export interface DesktopActiveProfile {
   profile: string | null
 }
 
+export type DesktopRemoteTransportMode = 'direct' | 'local_mtls_proxy'
+
 export interface DesktopConnectionConfig {
   envOverride: boolean
   // The saved connection mode. 'cloud' is a Hermes Cloud connection: it carries
@@ -420,9 +425,12 @@ export interface DesktopConnectionConfig {
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
   remoteAuthMode: 'oauth' | 'token'
+  remoteEffectiveUrl?: string
   remoteOauthConnected: boolean
+  remotePublicUrl?: string
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
+  remoteTransportMode?: DesktopRemoteTransportMode
   remoteUrl: string
   // For a 'cloud' connection: the persisted Hermes Cloud org (slug or id) the
   // connected instance was discovered under, so Settings → Gateway can reopen
@@ -436,7 +444,10 @@ export interface DesktopConnectionConfigInput {
   // override instead of the global connection.
   profile?: null | string
   remoteAuthMode?: 'oauth' | 'token'
+  remoteEffectiveUrl?: string
+  remotePublicUrl?: string
   remoteToken?: string
+  remoteTransportMode?: DesktopRemoteTransportMode
   remoteUrl?: string
   // For a 'cloud' connection: the selected Hermes Cloud org (slug or id) to
   // persist so Settings can reopen into it. Ignored for remote/local modes.
@@ -445,7 +456,10 @@ export interface DesktopConnectionConfigInput {
 
 export interface DesktopConnectionTestResult {
   baseUrl: string
+  effectiveUrl?: string
   ok: boolean
+  publicUrl?: string | null
+  transportMode?: DesktopRemoteTransportMode
   version: string | null
 }
 
@@ -461,9 +475,12 @@ export interface DesktopAuthProvider {
 
 export interface DesktopConnectionProbeResult {
   baseUrl: string
+  effectiveUrl?: string
+  publicUrl?: string
   reachable: boolean
   authMode: 'oauth' | 'token' | 'unknown'
   providers: DesktopAuthProvider[]
+  transportMode?: DesktopRemoteTransportMode
   version: string | null
   error: string | null
 }
@@ -471,6 +488,9 @@ export interface DesktopConnectionProbeResult {
 export interface DesktopOauthLoginResult {
   ok: boolean
   baseUrl: string
+  effectiveUrl?: string
+  publicUrl?: string
+  transportMode?: DesktopRemoteTransportMode
   connected: boolean
 }
 

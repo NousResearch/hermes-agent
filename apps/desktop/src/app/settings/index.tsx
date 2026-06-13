@@ -36,7 +36,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
-export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+export function SettingsView({ onClose, onConfigSaved, onMainModelChanged, onReconnectApplied }: SettingsPageProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
@@ -245,7 +245,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
           ) : activeView === 'about' ? (
             <AboutSettings />
           ) : activeView === 'gateway' ? (
-            <GatewaySettings />
+            <GatewaySettings onReconnectApplied={onReconnectApplied} />
           ) : activeView.startsWith('config:') ? (
             <ConfigSettings
               activeSectionId={activeView.slice('config:'.length)}

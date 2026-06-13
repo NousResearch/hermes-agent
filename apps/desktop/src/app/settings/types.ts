@@ -19,6 +19,7 @@ export interface SettingsPageProps {
   onClose: () => void
   onConfigSaved?: () => void
   onMainModelChanged?: (provider: string, model: string) => void
+  onReconnectApplied?: () => void
 }
 
 export interface ProviderGroup {

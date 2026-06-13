@@ -653,9 +653,15 @@ export const ja = defineLocale({
       remoteTitle: 'リモートゲートウェイ',
       remoteDesc:
         'このデスクトップシェルをリモートの Hermes バックエンドに接続します。ホスト型ゲートウェイは OAuth またはユーザー名とパスワードを使用します。自己ホスト型はセッショントークンを使用する場合があります。',
-      remoteUrlTitle: 'リモート URL',
+      remoteUrlTitle: 'ゲートウェイ URL',
       remoteUrlDesc:
-        'リモートダッシュボードバックエンドのベース URL。/hermes などのパスプレフィックスもサポートしています。',
+        'ユーザー向けに表示するリモートゲートウェイの公開 URL。/hermes などのパスプレフィックスもサポートしています。',
+      transportTitle: 'トランスポート',
+      transportDesc: 'Desktop がゲートウェイへ直接接続するか、ローカル mTLS proxy 経由で接続するかを選びます。',
+      transportDirect: '直接接続',
+      transportLocalMtlsProxy: 'ローカル mTLS proxy',
+      effectiveUrlTitle: 'ローカル proxy URL',
+      effectiveUrlDesc: 'Desktop が実際に使用する高度なトランスポートエンドポイントです。公開ゲートウェイ URL は設定に表示されます。',
       probing: 'このゲートウェイの認証方法を確認中…',
       probeError: 'このゲートウェイにまだ到達できません。URL を確認してください。応答後に認証方法が表示されます。',
       signedIn: 'サインイン済み',
@@ -694,6 +700,8 @@ export const ja = defineLocale({
       restartingMessage: 'Hermes Desktop は保存された設定を使用して再接続します。',
       savedMessage: '次回起動時に保存されます。',
       connectedTo: (baseUrl, version) => `${baseUrl}${version ? ` · Hermes ${version}` : ''} に接続しました`,
+      connectedToViaProxy: (publicUrl, effectiveUrl, version) =>
+        `${publicUrl} に ${effectiveUrl} 経由で接続しました${version ? ` · Hermes ${version}` : ''}`,
       reachableTitle: 'リモートゲートウェイに到達可能',
       signedOutTitle: 'サインアウトしました',
       signedOutMessage: 'リモートゲートウェイセッションをクリアしました。',

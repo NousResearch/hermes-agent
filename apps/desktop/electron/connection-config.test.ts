@@ -24,13 +24,20 @@ import {
   cookiesHaveSession,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeRemoteTransport,
   normAuthMode,
+  normTransportMode,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
+  REMOTE_TRANSPORT_MODES,
+  remoteEffectiveUrl,
+  remotePublicUrl,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
-  tokenPreview
+  tokenPreview,
+  TRANSPORT_DIRECT,
+  TRANSPORT_LOCAL_MTLS_PROXY
 } from './connection-config'
 
 // --- connectionScopeKey / normAuthMode ---
@@ -62,6 +69,61 @@ test('modeIsRemoteLike is true for remote and cloud, false otherwise', () => {
   assert.equal(modeIsRemoteLike('weird'), false)
 })
 
+test('normTransportMode accepts direct and local mTLS proxy only', () => {
+  assert.deepEqual(REMOTE_TRANSPORT_MODES, [TRANSPORT_DIRECT, TRANSPORT_LOCAL_MTLS_PROXY])
+  assert.equal(normTransportMode('direct'), 'direct')
+  assert.equal(normTransportMode('local_mtls_proxy'), 'local_mtls_proxy')
+  assert.equal(normTransportMode(undefined), 'direct')
+  assert.equal(normTransportMode('weird'), 'direct')
+})
+
+// --- remote transport normalization ---
+
+test('normalizeRemoteTransport maps legacy url to public and effective direct transport', () => {
+  assert.deepEqual(normalizeRemoteTransport({ url: ' https://gw.example.com/hermes/ ' }), {
+    url: 'https://gw.example.com/hermes',
+    publicUrl: 'https://gw.example.com/hermes',
+    effectiveUrl: 'https://gw.example.com/hermes',
+    transportMode: 'direct'
+  })
+})
+
+test('normalizeRemoteTransport preserves public identity while using a loopback effective URL', () => {
+  assert.deepEqual(
+    normalizeRemoteTransport({
+      publicUrl: 'https://hermes-gateway-omarchy.cs100.dev/',
+      effectiveUrl: 'http://127.0.0.1:19119/',
+      transportMode: 'local_mtls_proxy'
+    }),
+    {
+      url: 'https://hermes-gateway-omarchy.cs100.dev',
+      publicUrl: 'https://hermes-gateway-omarchy.cs100.dev',
+      effectiveUrl: 'http://127.0.0.1:19119',
+      transportMode: 'local_mtls_proxy'
+    }
+  )
+})
+
+test('normalizeRemoteTransport falls back effective URL to public URL', () => {
+  assert.deepEqual(normalizeRemoteTransport({ publicUrl: 'https://gw.example.com' }), {
+    url: 'https://gw.example.com',
+    publicUrl: 'https://gw.example.com',
+    effectiveUrl: 'https://gw.example.com',
+    transportMode: 'direct'
+  })
+})
+
+test('remotePublicUrl and remoteEffectiveUrl expose the split transport URLs', () => {
+  const block = {
+    publicUrl: 'https://public.example.com',
+    effectiveUrl: 'http://127.0.0.1:19119',
+    transportMode: 'local_mtls_proxy'
+  }
+
+  assert.equal(remotePublicUrl(block), 'https://public.example.com')
+  assert.equal(remoteEffectiveUrl(block), 'http://127.0.0.1:19119')
+})
+
 // --- profileRemoteOverride ---
 
 test('profileRemoteOverride returns null when no profile is given', () => {
@@ -91,8 +153,34 @@ test('profileRemoteOverride returns the per-profile remote with defaulted auth m
 
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
     url: 'https://coder.example.com/hermes',
+    publicUrl: 'https://coder.example.com/hermes',
+    effectiveUrl: 'https://coder.example.com/hermes',
+    transportMode: 'direct',
     authMode: 'token',
     token: { value: 'sek' }
+  })
+})
+
+test('profileRemoteOverride preserves split remote transport metadata', () => {
+  const config = {
+    profiles: {
+      coder: {
+        mode: 'remote',
+        publicUrl: 'https://public.example.com',
+        effectiveUrl: 'http://127.0.0.1:19119',
+        transportMode: 'local_mtls_proxy',
+        authMode: 'oauth'
+      }
+    }
+  }
+
+  assert.deepEqual(profileRemoteOverride(config, 'coder'), {
+    url: 'https://public.example.com',
+    publicUrl: 'https://public.example.com',
+    effectiveUrl: 'http://127.0.0.1:19119',
+    transportMode: 'local_mtls_proxy',
+    authMode: 'oauth',
+    token: undefined
   })
 })
 
@@ -109,8 +197,12 @@ test('profileRemoteOverride treats a cloud entry as a remote override', () => {
       coder: { mode: 'cloud', url: 'https://agent-1.agents.nousresearch.com', authMode: 'oauth' }
     }
   }
+
   assert.deepEqual(profileRemoteOverride(config, 'coder'), {
     url: 'https://agent-1.agents.nousresearch.com',
+    publicUrl: 'https://agent-1.agents.nousresearch.com',
+    effectiveUrl: 'https://agent-1.agents.nousresearch.com',
+    transportMode: 'direct',
     authMode: 'oauth',
     token: undefined
   })

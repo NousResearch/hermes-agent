@@ -46,6 +46,7 @@ import {
   cookiesHaveSession,
   modeIsRemoteLike,
   normalizeRemoteBaseUrl,
+  normalizeRemoteTransport,
   normAuthMode,
   pathWithGlobalRemoteProfile,
   profileRemoteOverride,
@@ -869,6 +870,7 @@ function planDesktopLogRotation(size) {
   if (size < DESKTOP_LOG_MAX_BYTES) {
     return []
   }
+
   const backups = n => Array.from({ length: n }, (_, i) => desktopLogBackupPath(i + 1))
 
   // Pathological boot-loop log: reclaim live + every backup outright.
@@ -936,6 +938,7 @@ function flushDesktopLogBufferSync() {
   if (!desktopLogBuffer) {
     return
   }
+
   const chunk = desktopLogBuffer
   desktopLogBuffer = ''
 
@@ -952,6 +955,7 @@ function flushDesktopLogBufferAsync() {
   if (!desktopLogBuffer) {
     return desktopLogFlushPromise
   }
+
   const chunk = desktopLogBuffer
   desktopLogBuffer = ''
 
@@ -972,6 +976,7 @@ function scheduleDesktopLogFlush() {
   if (desktopLogFlushTimer) {
     return
   }
+
   desktopLogFlushTimer = setTimeout(() => {
     desktopLogFlushTimer = null
     void flushDesktopLogBufferAsync()
@@ -984,6 +989,7 @@ function rememberLog(chunk) {
   if (!text) {
     return
   }
+
   const lines = text.split(/\r?\n/).map(line => `[hermes] ${line}`)
   hermesLog.push(...lines)
 
@@ -1182,11 +1188,13 @@ function broadcastBootProgress() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:boot-progress', bootProgressState)
 }
 
@@ -1266,11 +1274,13 @@ function broadcastBootstrapEvent(ev) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:bootstrap:event', ev)
 }
 
@@ -1525,6 +1535,7 @@ function backendSupportsServe(backend) {
   if (!backend || !backend.command) {
     return true
   }
+
   const key = `${backend.command}::${backend.root || ''}`
 
   if (_serveSupportCache.has(key)) {
@@ -2325,6 +2336,7 @@ function isShimLocked(shimPath) {
   if (!IS_WINDOWS) {
     return false
   }
+
   let fd
 
   try {
@@ -2462,6 +2474,7 @@ async function releaseBackendLock(updateRoot, tag) {
     for (const pid of stragglers) {
       forceKillProcessTree(pid)
     }
+
     await new Promise(r => setTimeout(r, 300))
   }
 
@@ -2756,6 +2769,7 @@ function runningAppBundle() {
   if (!IS_MAC) {
     return null
   }
+
   let dir = path.dirname(app.getPath('exe')) // .../Contents/MacOS
 
   for (let i = 0; i < 2; i++) {
@@ -3182,6 +3196,7 @@ function resolveRendererIndex() {
   if (found) {
     return found
   }
+
   // Nothing on disk. A packaged build with no renderer bundle blank-pages with
   // a bare ERR_FILE_NOT_FOUND and no clue why (see #39484). Surface the cause
   // and the fix before Electron loads the missing file.
@@ -3230,6 +3245,7 @@ function resolveHermesCwd() {
     if (!candidate) {
       continue
     }
+
     const resolved = path.resolve(String(candidate))
 
     if (isPackagedInstallPath(resolved)) {
@@ -3754,6 +3770,7 @@ function fetchJson(url, token, options: any = {}) {
     if (body) {
       req.write(body)
     }
+
     req.end()
   })
 }
@@ -3843,6 +3860,7 @@ function fetchPublicJson(url, options: any = {}) {
     if (body) {
       req.write(body)
     }
+
     req.end()
   })
 }
@@ -3960,6 +3978,7 @@ function cacheTitle(key, title) {
   if (titleCache.size >= TITLE_CACHE_LIMIT) {
     titleCache.delete(titleCache.keys().next().value)
   }
+
   titleCache.set(key, title)
 }
 
@@ -4014,6 +4033,7 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
       if (bytes >= TITLE_BYTE_BUDGET) {
         return
       }
+
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
       const remaining = TITLE_BYTE_BUDGET - bytes
       const next = buffer.length > remaining ? buffer.subarray(0, remaining) : buffer
@@ -4026,6 +4046,7 @@ function fetchHtmlTitleWithCurl(rawUrl: string): Promise<string> {
       if (!chunks.length) {
         return resolve('')
       }
+
       resolve(parseHtmlTitle(Buffer.concat(chunks).toString('utf8')))
     })
   })
@@ -4035,6 +4056,7 @@ function getLinkTitleSession() {
   if (linkTitleSession || !app.isReady()) {
     return linkTitleSession
   }
+
   linkTitleSession = session.fromPartition('hermes:link-titles', { cache: false })
   linkTitleSession.webRequest.onBeforeRequest((details, callback) => {
     callback({ cancel: RENDER_TITLE_BLOCKED_RESOURCES.has(details.resourceType) })
@@ -4077,6 +4099,7 @@ function runRenderTitleJob(rawUrl) {
       if (settled) {
         return
       }
+
       settled = true
 
       if (hardTimer) {
@@ -4086,6 +4109,7 @@ function runRenderTitleJob(rawUrl) {
       if (graceTimer) {
         clearTimeout(graceTimer)
       }
+
       const value = (title || '').replace(/\s+/g, ' ').trim()
 
       try {
@@ -4111,6 +4135,7 @@ function runRenderTitleJob(rawUrl) {
       if (graceTimer) {
         clearTimeout(graceTimer)
       }
+
       graceTimer = setTimeout(finishWithTitle, RENDER_TITLE_GRACE_MS)
     }
 
@@ -4192,6 +4217,7 @@ async function resourceBufferFromUrl(rawUrl) {
     if (!match) {
       throw new Error('Invalid data URL')
     }
+
     const mimeType = match[1] || 'application/octet-stream'
     const encoded = match[3] || ''
     const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
@@ -4240,6 +4266,7 @@ async function copyImageFromUrl(rawUrl) {
   if (image.isEmpty()) {
     throw new Error('Could not read image')
   }
+
   clipboard.writeImage(image)
 }
 
@@ -4255,6 +4282,7 @@ async function saveImageFromUrl(rawUrl) {
   if (result.canceled || !result.filePath) {
     return false
   }
+
   await fs.promises.writeFile(result.filePath, buffer)
 
   return true
@@ -4389,11 +4417,13 @@ function sendPreviewFileChanged(payload) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:preview-file-changed', payload)
 }
 
@@ -4414,12 +4444,14 @@ async function watchPreviewFile(rawUrl) {
     if (timer) {
       clearTimeout(timer)
     }
+
     timer = setTimeout(() => {
       timer = null
 
       if (!fileExists(filePath)) {
         return
       }
+
       sendPreviewFileChanged({ id, path: filePath, url: pathToFileURL(filePath).toString() })
     }, PREVIEW_WATCH_DEBOUNCE_MS)
   })
@@ -4429,6 +4461,7 @@ async function watchPreviewFile(rawUrl) {
       if (timer) {
         clearTimeout(timer)
       }
+
       watcher.close()
     }
   })
@@ -4503,11 +4536,13 @@ function sendBackendExit(payload) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:backend-exit', payload)
 }
 
@@ -4515,11 +4550,13 @@ function sendClosePreviewRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:close-preview-requested')
 }
 
@@ -4530,11 +4567,13 @@ function sendPowerResume() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:power-resume')
 }
 
@@ -4544,6 +4583,7 @@ function registerPowerResumeListeners() {
   if (powerResumeRegistered) {
     return
   }
+
   powerResumeRegistered = true
 
   try {
@@ -4565,16 +4605,19 @@ function sendOpenUpdatesRequested() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   webContents.send('hermes:open-updates')
 
   if (!mainWindow.isVisible()) {
     mainWindow.show()
   }
+
   mainWindow.focus()
 }
 
@@ -4582,11 +4625,13 @@ function sendWindowStateChanged(nextIsFullscreen?: boolean) {
   if (!mainWindow || mainWindow.isDestroyed()) {
     return
   }
+
   const { webContents } = mainWindow
 
   if (!webContents || webContents.isDestroyed()) {
     return
   }
+
   const state = getWindowState()
 
   if (typeof nextIsFullscreen === 'boolean') {
@@ -4731,6 +4776,7 @@ function installDevToolsShortcut(window) {
     if (!isInspectShortcut) {
       return
     }
+
     event.preventDefault()
     toggleDevTools(window)
   })
@@ -4766,6 +4812,7 @@ function setAndPersistZoomLevel(window, zoomLevel) {
   if (!window || window.isDestroyed()) {
     return
   }
+
   const next = clampZoomLevel(zoomLevel)
   window.webContents.setZoomLevel(next)
   // Keep any open settings UI in sync, including changes made via the
@@ -4782,6 +4829,7 @@ function restorePersistedZoomLevel(window) {
   if (!window || window.isDestroyed()) {
     return
   }
+
   window.webContents
     .executeJavaScript(
       `(() => { try { return localStorage.getItem(${JSON.stringify(ZOOM_STORAGE_KEY)}) } catch { return null } })()`
@@ -4790,6 +4838,7 @@ function restorePersistedZoomLevel(window) {
       if (stored == null || !window || window.isDestroyed()) {
         return
       }
+
       const level = clampZoomLevel(Number(stored))
       window.webContents.setZoomLevel(level)
     })
@@ -4866,6 +4915,7 @@ function installContextMenu(window) {
       if (template.length) {
         template.push({ type: 'separator' })
       }
+
       template.push(
         {
           label: 'Open Link',
@@ -5019,6 +5069,7 @@ function getOauthSession() {
   if (oauthSession || !app.isReady()) {
     return oauthSession
   }
+
   oauthSession = session.fromPartition(OAUTH_SESSION_PARTITION)
 
   return oauthSession
@@ -5034,6 +5085,7 @@ async function hasOauthSessionCookie(baseUrl) {
   if (!sess) {
     return false
   }
+
   const parsed = new URL(baseUrl)
 
   try {
@@ -5066,6 +5118,7 @@ async function hasLiveOauthSession(baseUrl) {
   if (!sess) {
     return false
   }
+
   const parsed = new URL(baseUrl)
 
   try {
@@ -5148,6 +5201,7 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
       if (settled) {
         return
       }
+
       settled = true
 
       if (pollTimer) {
@@ -5317,6 +5371,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
         if (timedOut) {
           return
         }
+
         clearTimeout(timer)
         const text = Buffer.concat(chunks).toString('utf8')
         const statusCode = res.statusCode || 500
@@ -5355,6 +5410,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
       if (timedOut) {
         return
       }
+
       clearTimeout(timer)
       reject(error)
     })
@@ -5362,6 +5418,7 @@ function fetchJsonViaOauthSession(url, options: any = {}) {
     if (body) {
       request.write(body)
     }
+
     request.end()
   })
 }
@@ -5496,6 +5553,7 @@ function openPortalLoginWindow() {
       if (settled) {
         return
       }
+
       settled = true
 
       if (pollTimer) {
@@ -5582,6 +5640,7 @@ async function discoverCloudAgents(org?: string) {
     const err = new Error(
       'You are not signed in to Hermes Cloud. Open Settings → Gateway, choose Hermes Cloud, and sign in.'
     ) as any
+
     err.needsCloudLogin = true
     throw err
   }
@@ -5742,6 +5801,48 @@ function decryptDesktopSecret(secret) {
 // Validate + normalize the per-profile remote overrides map read from disk.
 // Drops malformed names/entries and keeps only the recognized fields so a
 // hand-edited or stale connection.json can't inject junk into resolution.
+function sanitizeRemoteBlock(raw) {
+  const block = raw && typeof raw === 'object' ? raw : {}
+
+  const cleaned: {
+    url?: string
+    publicUrl?: string
+    effectiveUrl?: string
+    transportMode: 'direct' | 'local_mtls_proxy'
+    authMode: 'oauth' | 'token'
+    token?: object
+    org?: string
+  } = {
+    transportMode: block.transportMode === 'local_mtls_proxy' ? 'local_mtls_proxy' : 'direct',
+    authMode: normAuthMode(block.authMode)
+  }
+
+  const legacyUrl = String(block.url || '').trim()
+  const publicUrl = String(block.publicUrl || legacyUrl).trim()
+  const effectiveUrl = String(block.effectiveUrl || legacyUrl || publicUrl).trim()
+
+  if (publicUrl) {
+    cleaned.url = publicUrl
+    cleaned.publicUrl = publicUrl
+  }
+
+  if (effectiveUrl) {
+    cleaned.effectiveUrl = effectiveUrl
+  }
+
+  if (block.token && typeof block.token === 'object') {
+    cleaned.token = block.token
+  }
+
+  const org = String(block.org || '').trim()
+
+  if (org) {
+    cleaned.org = org
+  }
+
+  return cleaned
+}
+
 function sanitizeConnectionProfiles(raw: Record<string, any>) {
   if (!raw || typeof raw !== 'object') {
     return {}
@@ -5758,35 +5859,11 @@ function sanitizeConnectionProfiles(raw: Record<string, any>) {
       continue
     }
 
-    const cleaned: {
-      mode: 'remote' | 'local' | 'cloud'
-      url?: string
-      authMode?: string
-      token?: object
-      org?: string
-    } = {
-      mode: modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
-    }
-    const url = String(entry.url || '').trim()
+    const mode = modeIsRemoteLike(entry.mode) ? entry.mode : 'local'
+    const cleaned = { mode, ...sanitizeRemoteBlock(entry) }
 
-    if (url) {
-      cleaned.url = url
-    }
-
-    cleaned.authMode = normAuthMode(entry.authMode)
-
-    if ((entry as any).token && typeof entry.token === 'object') {
-      cleaned.token = entry.token
-    }
-
-    // Preserve the Hermes Cloud org tag on cloud-mode entries so Settings can
-    // reopen into the same org for a per-profile cloud connection.
-    if (cleaned.mode === 'cloud') {
-      const org = String(entry.org || '').trim()
-
-      if (org) {
-        cleaned.org = org
-      }
+    if (mode !== 'cloud') {
+      delete cleaned.org
     }
 
     out[name] = cleaned
@@ -5818,11 +5895,12 @@ function readDesktopConnectionConfig() {
     const parsed = JSON.parse(raw)
 
     if (parsed && typeof parsed === 'object') {
-      const remote = parsed.remote && typeof parsed.remote === 'object' ? parsed.remote : {}
-      // authMode lives on the remote sub-object: 'oauth' (cookie + ws-ticket)
-      // or 'token' (legacy static session token). Default to 'token' for
-      // backward compatibility with configs written before OAuth support.
-      remote.authMode = remote.authMode === 'oauth' ? 'oauth' : 'token'
+      const remote = sanitizeRemoteBlock(parsed.remote)
+
+      if (parsed.mode !== 'cloud') {
+        delete remote.org
+      }
+
       config = {
         mode: modeIsRemoteLike(parsed.mode) ? parsed.mode : 'local',
         remote,
@@ -5894,7 +5972,14 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 
   const remoteToken = decryptDesktopSecret(block.token)
   const authMode = normAuthMode(block.authMode)
-  const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
+
+  const transport = envOverride
+    ? normalizeRemoteTransport({ url: process.env.HERMES_DESKTOP_REMOTE_URL })
+    : normalizeRemoteTransport(block)
+
+  const remoteUrl = transport.publicUrl
+  const remoteEffectiveUrl = transport.effectiveUrl
+  const remoteTransportMode = transport.transportMode
   // The env override forces a plain remote connection. Otherwise reflect the
   // saved mode, preserving 'cloud' (a Hermes Cloud connection — Q6) so the UI
   // reopens into the cloud picker; any non-remote-like value collapses to local.
@@ -5903,13 +5988,13 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 
   let remoteOauthConnected = false
 
-  if (authMode === 'oauth' && remoteUrl) {
+  if (authMode === 'oauth' && remoteEffectiveUrl) {
     try {
       // Display signal: treat a live RT cookie as "connected" even if the AT
       // cookie has lapsed — the gateway refreshes the AT on the next request,
       // so the session is still usable. The authoritative liveness check is
       // the ws-ticket mint in resolveRemoteBackend at actual connect time.
-      remoteOauthConnected = await hasLiveOauthSession(remoteUrl)
+      remoteOauthConnected = await hasLiveOauthSession(remoteEffectiveUrl)
     } catch {
       remoteOauthConnected = false
     }
@@ -5920,7 +6005,10 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     // Echo the scope back so the UI knows which profile (if any) this reflects.
     profile: key,
     remoteAuthMode: authMode,
+    remoteEffectiveUrl,
     remoteOauthConnected,
+    remotePublicUrl: remoteUrl,
+    remoteTransportMode,
     remoteUrl,
     // The persisted Hermes Cloud org (slug/id) for a cloud connection, or '' for
     // remote/local. Lets Settings → Gateway reopen into the same org.
@@ -5939,17 +6027,25 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
 // `org` (optional) is the Hermes Cloud org slug/id the instance was discovered
 // under — persisted so Settings can reopen into the same org; omitted from the
 // block when empty so plain remote connections stay unchanged.
-function buildRemoteBlock(remoteUrl, authMode, token, org?: string) {
+function buildRemoteBlock(remoteUrl, authMode, token, options: any = {}) {
   if (authMode !== 'oauth' && !decryptDesktopSecret(token)) {
     throw new Error('Remote gateway session token is required.')
   }
 
-  const block: { url: string; authMode: string; token: object; org?: string } = {
-    url: normalizeRemoteBaseUrl(remoteUrl),
+  const transport = normalizeRemoteTransport({
+    url: remoteUrl,
+    publicUrl: options.publicUrl ?? remoteUrl,
+    effectiveUrl: options.effectiveUrl ?? remoteUrl,
+    transportMode: options.transportMode
+  })
+
+  const block: any = {
+    ...transport,
     authMode,
     token
   }
-  const orgValue = typeof org === 'string' ? org.trim() : ''
+
+  const orgValue = typeof options.org === 'string' ? options.org.trim() : ''
 
   if (orgValue) {
     block.org = orgValue
@@ -5978,7 +6074,9 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   const existingMode = key ? existing.profiles?.[key]?.mode : existing.mode
   const leavingCloud = existingMode === 'cloud' && mode !== 'cloud'
   const existingBlock = leavingCloud ? {} : rawExistingBlock
-  const remoteUrl = String(input.remoteUrl ?? existingBlock.url ?? '').trim()
+  const remoteUrl = String(input.remotePublicUrl ?? input.remoteUrl ?? existingBlock.publicUrl ?? existingBlock.url ?? '').trim()
+  const remoteEffectiveUrl = String(input.remoteEffectiveUrl ?? existingBlock.effectiveUrl ?? existingBlock.url ?? remoteUrl).trim()
+  const remoteTransportMode = input.remoteTransportMode ?? existingBlock.transportMode
   // authMode: explicit input wins; otherwise inherit the saved value, default 'token'.
   const authMode = resolveAuthMode(input.remoteAuthMode, existingBlock.authMode)
   // Cloud org: only meaningful for 'cloud' mode. Explicit input wins; otherwise
@@ -6000,7 +6098,14 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
     const profiles = { ...(existing.profiles || {}) }
 
     if (remoteLike) {
-      profiles[key] = { mode, ...buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg) }
+      profiles[key] = {
+        mode,
+        ...buildRemoteBlock(remoteUrl, authMode, nextToken, {
+          effectiveUrl: remoteEffectiveUrl,
+          transportMode: remoteTransportMode,
+          org: cloudOrg
+        })
+      }
     } else {
       delete profiles[key]
     }
@@ -6013,8 +6118,21 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   }
 
   const nextRemote = remoteLike
-    ? buildRemoteBlock(remoteUrl, authMode, nextToken, cloudOrg)
-    : { url: remoteUrl ? normalizeRemoteBaseUrl(remoteUrl) : remoteUrl, authMode, token: nextToken }
+    ? buildRemoteBlock(remoteUrl, authMode, nextToken, {
+        effectiveUrl: remoteEffectiveUrl,
+        transportMode: remoteTransportMode,
+        org: cloudOrg
+      })
+    : {
+        ...normalizeRemoteTransport({
+          url: remoteUrl,
+          publicUrl: remoteUrl,
+          effectiveUrl: remoteEffectiveUrl || remoteUrl,
+          transportMode: remoteTransportMode
+        }),
+        authMode,
+        token: nextToken
+      }
 
   // Preserve per-profile overrides when saving the global connection.
   return { mode, remote: nextRemote, profiles: existing.profiles || {} }
@@ -6025,8 +6143,11 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
 // and is shared by the per-profile, env, and global resolution paths. `token`
 // is the DECRYPTED static token (or null in OAuth mode). `source` is a label
 // for diagnostics ('profile' | 'env' | 'settings').
-async function buildRemoteConnection(rawUrl, authMode, token, source) {
+async function buildRemoteConnection(rawUrl, authMode, token, source, options: any = {}) {
+  const publicUrl = normalizeRemoteBaseUrl(options.publicUrl || rawUrl)
   const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const effectiveUrl = baseUrl
+  const transportMode = options.transportMode === 'local_mtls_proxy' ? 'local_mtls_proxy' : 'direct'
 
   if (authMode === 'oauth') {
     // OAuth gateway: auth comes from the session cookies in the OAuth
@@ -6063,9 +6184,12 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
 
     return {
       baseUrl,
+      effectiveUrl,
       mode: 'remote',
+      publicUrl,
       source,
       authMode: 'oauth',
+      transportMode,
       // No static token in OAuth mode; REST is cookie-authed via the partition.
       token: null,
       wsUrl: buildGatewayWsUrlWithTicket(baseUrl, ticket)
@@ -6081,9 +6205,12 @@ async function buildRemoteConnection(rawUrl, authMode, token, source) {
 
   return {
     baseUrl,
+    effectiveUrl,
     mode: 'remote',
+    publicUrl,
     source,
     authMode: 'token',
+    transportMode,
     token,
     wsUrl: buildGatewayWsUrl(baseUrl, token)
   }
@@ -6107,7 +6234,10 @@ async function resolveRemoteBackend(profile) {
   if (override) {
     const token = override.authMode === 'oauth' ? null : decryptDesktopSecret(override.token)
 
-    return buildRemoteConnection(override.url, override.authMode, token, 'profile')
+    return buildRemoteConnection(override.effectiveUrl, override.authMode, token, 'profile', {
+      publicUrl: override.publicUrl,
+      transportMode: override.transportMode
+    })
   }
 
   // 2. Env override (global, token-auth only).
@@ -6131,9 +6261,13 @@ async function resolveRemoteBackend(profile) {
   }
 
   const authMode = normAuthMode(config.remote?.authMode)
+  const remoteTransport = normalizeRemoteTransport(config.remote)
   const token = authMode === 'oauth' ? null : decryptDesktopSecret(config.remote?.token)
 
-  return buildRemoteConnection(config.remote?.url, authMode, token, 'settings')
+  return buildRemoteConnection(remoteTransport.effectiveUrl, authMode, token, 'settings', {
+    publicUrl: remoteTransport.publicUrl,
+    transportMode: remoteTransport.transportMode
+  })
 }
 
 // A remote profile's sessions live on its remote host's state.db, not on a local
@@ -6176,7 +6310,20 @@ async function requestJsonForProfile(profile: string, path: string, method: Meth
   return conn.authMode === 'oauth' ? fetchJsonViaOauthSession(url, opts) : fetchJson(url, conn.token, opts)
 }
 
-async function probeRemoteAuthMode(rawUrl) {
+function resolveRemoteTransportInput(input) {
+  if (input && typeof input === 'object') {
+    return normalizeRemoteTransport({
+      url: input.remotePublicUrl ?? input.remoteUrl,
+      publicUrl: input.remotePublicUrl ?? input.remoteUrl,
+      effectiveUrl: input.remoteEffectiveUrl ?? input.remoteUrl,
+      transportMode: input.remoteTransportMode
+    })
+  }
+
+  return normalizeRemoteTransport({ url: input })
+}
+
+async function probeRemoteAuthMode(input) {
   // Determine how a remote gateway expects callers to authenticate, WITHOUT
   // sending any credentials. ``/api/status`` is public on every Hermes
   // gateway (it backs the portal liveness probe) and reports:
@@ -6189,7 +6336,8 @@ async function probeRemoteAuthMode(rawUrl) {
   // OAuth login button vs a session-token entry box. Network/parse failures
   // surface as ``reachable: false`` rather than throwing, so a half-typed or
   // unreachable URL degrades to "can't tell yet" instead of a hard error.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  const transport = resolveRemoteTransportInput(input)
+  const baseUrl = transport.effectiveUrl
 
   let status
 
@@ -6198,6 +6346,9 @@ async function probeRemoteAuthMode(rawUrl) {
   } catch (error: any) {
     return {
       baseUrl,
+      effectiveUrl: baseUrl,
+      publicUrl: transport.publicUrl,
+      transportMode: transport.transportMode,
       reachable: false,
       authMode: 'unknown',
       providers: [],
@@ -6235,6 +6386,9 @@ async function probeRemoteAuthMode(rawUrl) {
 
   return {
     baseUrl,
+    effectiveUrl: baseUrl,
+    publicUrl: transport.publicUrl,
+    transportMode: transport.transportMode,
     reachable: true,
     authMode: authRequired ? 'oauth' : 'token',
     providers,
@@ -6258,11 +6412,16 @@ async function testDesktopConnectionConfig(input: any = {}) {
   // need a base URL. For a remote config we normalize the URL from the input;
   // for local we fall back to the resolved/started backend.
   let baseUrl
+  let publicUrl = null
+  let transportMode = 'direct'
   let token = null
   let authMode = 'token'
 
   if (wantRemote && block?.url) {
-    baseUrl = normalizeRemoteBaseUrl(block.url)
+    const transport = normalizeRemoteTransport(block)
+    baseUrl = transport.effectiveUrl
+    publicUrl = transport.publicUrl
+    transportMode = transport.transportMode
     authMode = normAuthMode(block.authMode)
 
     if (authMode !== 'oauth') {
@@ -6271,6 +6430,8 @@ async function testDesktopConnectionConfig(input: any = {}) {
   } else {
     const remote = (await resolveRemoteBackend(key)) || (await startHermes())
     baseUrl = remote.baseUrl
+    publicUrl = remote.publicUrl || remote.baseUrl
+    transportMode = remote.transportMode || 'direct'
     token = remote.token
     authMode = normAuthMode(remote.authMode)
   }
@@ -6303,6 +6464,9 @@ async function testDesktopConnectionConfig(input: any = {}) {
   return {
     ok: true,
     baseUrl,
+    effectiveUrl: baseUrl,
+    publicUrl,
+    transportMode,
     version: status?.version || null
   }
 }
@@ -6468,6 +6632,7 @@ function touchPoolBackend(profile) {
   if (!key) {
     return
   }
+
   const entry = backendPool.get(key)
 
   if (entry) {
@@ -6483,6 +6648,7 @@ function evictLruPoolBackends(keep) {
   if (backendPool.size <= keep) {
     return
   }
+
   const now = Date.now()
 
   const evictable = [...backendPool.entries()]
@@ -6495,6 +6661,7 @@ function evictLruPoolBackends(keep) {
     if (removable <= 0) {
       break
     }
+
     rememberLog(`Evicting idle profile backend "${profile}" (LRU cap ${POOL_MAX_BACKENDS})`)
     stopPoolBackend(profile)
     removable -= 1
@@ -6505,6 +6672,7 @@ function startPoolIdleReaper() {
   if (poolIdleReaper) {
     return
   }
+
   poolIdleReaper = setInterval(() => {
     const now = Date.now()
 
@@ -6657,6 +6825,7 @@ function stopPoolBackend(profile) {
   if (!entry) {
     return
   }
+
   backendPool.delete(profile)
   stopBackendChild(entry.process)
 }
@@ -6667,6 +6836,7 @@ async function teardownPoolBackendAndWait(profile) {
   if (!entry) {
     return
   }
+
   backendPool.delete(profile)
 
   stopBackendChild(entry.process)
@@ -6971,6 +7141,7 @@ async function startHermes() {
 function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {}) {
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
+
   if (zoom) {
     installZoomShortcuts(win)
     // Re-apply persisted zoom on show/restore (Windows drops webContents zoom on
@@ -6978,6 +7149,7 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     installZoomReassertOnWindowEvents(win, () => restorePersistedZoomLevel(win))
     win.webContents.once('did-finish-load', () => restorePersistedZoomLevel(win))
   }
+
   installContextMenu(win)
   win.webContents.setWindowOpenHandler(details => {
     openExternalUrl(details.url)
@@ -7013,6 +7185,7 @@ function focusWindow(win) {
   if (!win.isVisible()) {
     win.show()
   }
+
   win.focus()
 }
 
@@ -7450,6 +7623,7 @@ ipcMain.on('hermes:zoom:set-percent', (event, percent) => {
   if (!window || window.isDestroyed()) {
     return
   }
+
   setAndPersistZoomLevel(window, percentToZoomLevel(Number(percent)))
 })
 
@@ -7640,19 +7814,28 @@ ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
 )
 ipcMain.handle('hermes:connection-config:test', async (_event, payload) => testDesktopConnectionConfig(payload))
-ipcMain.handle('hermes:connection-config:probe', async (_event, rawUrl) => probeRemoteAuthMode(rawUrl))
-ipcMain.handle('hermes:connection-config:oauth-login', async (_event, rawUrl) => {
+ipcMain.handle('hermes:connection-config:probe', async (_event, payload) => probeRemoteAuthMode(payload))
+ipcMain.handle('hermes:connection-config:oauth-login', async (_event, payload) => {
   // Open the gateway's OAuth login window and wait for the session cookie to
-  // land in the OAuth partition. The caller (settings UI) typically saves the
-  // remote config with authMode='oauth' first, then calls this. We normalize
-  // the URL defensively so a login can be driven from a raw URL too.
-  const baseUrl = normalizeRemoteBaseUrl(rawUrl)
+  // land in the OAuth partition. Normalize the effective URL defensively: when
+  // using a local mTLS proxy, the public URL remains the user-facing identity
+  // but OAuth transport still goes through the loopback proxy.
+  const transport = resolveRemoteTransportInput(payload)
+  const baseUrl = transport.effectiveUrl
   await openOauthLoginWindow(baseUrl)
 
-  return { ok: true, baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
+  return {
+    ok: true,
+    baseUrl,
+    effectiveUrl: baseUrl,
+    publicUrl: transport.publicUrl,
+    transportMode: transport.transportMode,
+    connected: await hasOauthSessionCookie(baseUrl)
+  }
 })
-ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, rawUrl) => {
-  const baseUrl = rawUrl ? normalizeRemoteBaseUrl(rawUrl) : ''
+ipcMain.handle('hermes:connection-config:oauth-logout', async (_event, payload) => {
+  const transport = payload ? resolveRemoteTransportInput(payload) : null
+  const baseUrl = transport?.effectiveUrl || ''
   await clearOauthSession(baseUrl || undefined)
 
   // Report against the SAME liveness notion the Settings indicator uses
@@ -7951,6 +8134,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   if (!Notification.isSupported()) {
     return false
   }
+
   // Action buttons render only on signed macOS builds; elsewhere they're dropped
   // and the body click still works.
   const actions = Array.isArray(payload?.actions) ? payload.actions : []
@@ -7966,6 +8150,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return
     }
+
     focusWindow(mainWindow)
 
     if (payload?.sessionId) {
@@ -7976,6 +8161,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
     if (!mainWindow || mainWindow.isDestroyed()) {
       return
     }
+
     const action = actions[index]
 
     if (action?.id) {
@@ -8770,6 +8956,7 @@ async function getUninstallSummary() {
       if (settled) {
         return
       }
+
       settled = true
       resolve(value)
     }
@@ -8964,6 +9151,7 @@ function handleDeepLink(url) {
   if (!url || typeof url !== 'string') {
     return
   }
+
   let parsed
 
   try {
@@ -8993,6 +9181,7 @@ function handleDeepLink(url) {
     if (mainWindow.isMinimized()) {
       mainWindow.restore()
     }
+
     mainWindow.focus()
     mainWindow.webContents.send('hermes:deep-link', payload)
     rememberLog(`[deeplink] delivered ${kind}/${name}`)
@@ -9049,6 +9238,7 @@ if (!_gotSingleInstanceLock) {
       if (mainWindow.isMinimized()) {
         mainWindow.restore()
       }
+
       mainWindow.focus()
     }
   })

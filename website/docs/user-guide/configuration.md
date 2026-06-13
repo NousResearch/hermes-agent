@@ -1166,6 +1166,7 @@ Some models occasionally describe intended actions as text instead of making too
 ```yaml
 agent:
   tool_use_enforcement: "auto"   # "auto" | true | false | ["model-substring", ...]
+  xai_operational_guidance: false # experimental opt-in for Grok/xAI models
 ```
 
 | Value | Behavior |
@@ -1177,7 +1178,7 @@ agent:
 
 ### What it injects
 
-When enabled, three layers of guidance may be added to the system prompt:
+When enabled, up to four layers of guidance may be added to the system prompt:
 
 1. **General tool-use enforcement** (all matched models) — instructs the model to make tool calls immediately instead of describing intentions, keep working until the task is complete, and never end a turn with a promise of future action.
 
@@ -1185,7 +1186,11 @@ When enabled, three layers of guidance may be added to the system prompt:
 
 3. **Google operational guidance** (Gemini and Gemma models only) — conciseness, absolute paths, parallel tool calls, and verify-before-edit patterns.
 
+4. **xAI/Grok operational guidance** (Grok/xAI models only, disabled by default) — experimental Claim-Action-Evidence discipline for Hermes runtimes: verify post-state before final claims,
+   recover from tool errors by changing strategy, inspect runtime capabilities when tools are available, and route actions to the correct environment or domain.
+
 These are transparent to the user and only affect the system prompt. Models that already use tools reliably (like Claude) don't need this guidance, which is why `"auto"` excludes them.
+The xAI/Grok-specific layer is additionally guarded by `agent.xai_operational_guidance: true` because model-specific prompt tuning can regress task routing.
 
 ### When to turn it on
 

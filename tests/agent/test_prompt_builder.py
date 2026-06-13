@@ -23,6 +23,7 @@ from agent.prompt_builder import (
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
+    XAI_MODEL_OPERATIONAL_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
     PLATFORM_HINTS,
@@ -1342,6 +1343,38 @@ class TestOpenAIModelExecutionGuidance:
     def test_guidance_is_string(self):
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)
         assert len(OPENAI_MODEL_EXECUTION_GUIDANCE) > 100
+
+
+class TestXAIModelOperationalGuidance:
+    """Tests for xAI/Grok-specific operational guidance."""
+
+    def test_guidance_covers_claim_action_evidence(self):
+        text = XAI_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "claim-action-evidence" in text
+        assert "external state changed" in text
+        assert "recent tool result" in text
+
+    def test_guidance_covers_verification_and_scope(self):
+        text = XAI_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "verify" in text
+        assert "post-state" in text
+        assert "scope the final claim" in text
+
+    def test_guidance_covers_tool_error_recovery(self):
+        text = XAI_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "tool call fails" in text
+        assert "schema" in text
+        assert "do not repeat" in text
+
+    def test_guidance_covers_runtime_self_awareness(self):
+        text = XAI_MODEL_OPERATIONAL_GUIDANCE.lower()
+        assert "runtime-capability" in text
+        assert "hidden-system-prompt" in text
+        assert "runtime introspection" in text
+
+    def test_guidance_is_string(self):
+        assert isinstance(XAI_MODEL_OPERATIONAL_GUIDANCE, str)
+        assert len(XAI_MODEL_OPERATIONAL_GUIDANCE) > 100
 
 
 # =========================================================================

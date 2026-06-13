@@ -749,8 +749,16 @@ function Set-GitBashEnvVar {
 # crashes with a SyntaxError that surfaces only as the opaque "Build desktop
 # app ... exit code 1" install failure. Returns $true when a `node --version`
 # string clears that floor.
+function Test-NodeVersionShape {
+    param([string]$Version)
+    return $Version -match '^v\d+\.\d+\.\d+$'
+}
+
 function Test-NodeVersionOk {
     param([string]$Version)
+    if (-not (Test-NodeVersionShape $Version)) {
+        return $false
+    }
     try {
         $v = [version]($Version -replace '^v', '' -replace '-.*$', '')
     } catch {
@@ -761,30 +769,76 @@ function Test-NodeVersionOk {
     return $false
 }
 
+function Get-NodeVersionResult {
+    param([string]$NodePath)
+    try {
+        $output = & $NodePath --version 2>&1
+        $exitCode = $LASTEXITCODE
+        $version = ($output | Out-String).Trim()
+        return [pscustomobject]@{
+            ExitCode = $exitCode
+            Version = $version
+        }
+    } catch {
+        return [pscustomobject]@{
+            ExitCode = 1
+            Version = $_.Exception.Message
+        }
+    }
+}
+
 function Test-Node {
     Write-Info "Checking Node.js (for browser tools)..."
 
+    $nodeVersion = ""
+    $nodeUnusable = $false
     if (Get-Command node -ErrorAction SilentlyContinue) {
-        $version = node --version
-        if (Test-NodeVersionOk $version) {
-            Write-Success "Node.js $version found"
-            $script:HasNode = $true
-            return $true
+        $nodeResult = Get-NodeVersionResult "node"
+        $nodeVersion = $nodeResult.Version
+        if ($nodeResult.ExitCode -eq 0) {
+            if (Test-NodeVersionShape $nodeVersion) {
+                if (Test-NodeVersionOk $nodeVersion) {
+                    Write-Success "Node.js $nodeVersion found"
+                    $script:HasNode = $true
+                    return $true
+                }
+            } else {
+                Write-Warn "Node.js binary is present but returned an invalid version string: $nodeVersion"
+                $nodeUnusable = $true
+            }
+        } else {
+            if ($nodeVersion) {
+                Write-Warn "Node.js binary is present but cannot run: $nodeVersion"
+            } else {
+                Write-Warn "Node.js binary is present but cannot run: node --version failed"
+            }
+            $nodeUnusable = $true
         }
-        Write-Warn "Node.js $version is too old for the desktop build (need ^20.19 or >=22.12)"
     }
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
     $managedNode = "$HermesHome\node\node.exe"
-    if ((Test-Path $managedNode) -and (Test-NodeVersionOk (& $managedNode --version))) {
-        $version = & $managedNode --version
+    if (Test-Path $managedNode) {
+        $managedResult = Get-NodeVersionResult $managedNode
+    } else {
+        $managedResult = $null
+    }
+    if ($managedResult -and $managedResult.ExitCode -eq 0 -and (Test-NodeVersionShape $managedResult.Version) -and (Test-NodeVersionOk $managedResult.Version)) {
+        $version = $managedResult.Version
         $env:Path = "$HermesHome\node;$env:Path"
         Write-Success "Node.js $version found (Hermes-managed)"
         $script:HasNode = $true
         return $true
     }
 
-    Write-Info "Installing Hermes-managed Node.js $NodeVersion LTS..."
+    if ($nodeUnusable) {
+        Write-Info "Installing Hermes-managed Node.js $NodeVersion LTS because the system Node.js binary is unusable..."
+    } else {
+        if ($nodeVersion) {
+            Write-Warn "Node.js $nodeVersion is too old for the desktop build (need ^20.19 or >=22.12)"
+        }
+        Write-Info "Installing Hermes-managed Node.js $NodeVersion LTS..."
+    }
 
     # Try the portable-zip path FIRST -- no UAC, no admin, no winget MSI.
     # winget install OpenJS.NodeJS.LTS triggers a system-wide MSI install

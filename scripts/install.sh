@@ -719,25 +719,56 @@ node_satisfies_build() {
     return 1
 }
 
+node_version_looks_valid() {
+    [[ "$1" =~ ^v[0-9]+[.][0-9]+[.][0-9]+$ ]]
+}
+
 check_node() {
     log_info "Checking Node.js (for browser tools)..."
 
-    if command -v node &> /dev/null && node_satisfies_build "$(node --version)"; then
-        log_success "Node.js $(node --version) found"
-        HAS_NODE=true
-        return 0
+    local node_version=""
+    local node_unusable=false
+    if command -v node &> /dev/null; then
+        if node_version=$(node --version 2>&1); then
+            if node_version_looks_valid "$node_version"; then
+                if node_satisfies_build "$node_version"; then
+                    log_success "Node.js $node_version found"
+                    HAS_NODE=true
+                    return 0
+                fi
+            else
+                log_warn "Node.js binary is present but returned an invalid version string: $node_version"
+                node_unusable=true
+            fi
+        else
+            if [ -n "$node_version" ]; then
+                log_warn "Node.js binary is present but cannot run: $node_version"
+            else
+                log_warn "Node.js binary is present but cannot run: node --version failed"
+            fi
+            node_unusable=true
+        fi
     fi
 
     # Prefer a Hermes-managed Node from a previous run over a too-old system one.
-    if [ -x "$HERMES_HOME/node/bin/node" ] && node_satisfies_build "$("$HERMES_HOME/node/bin/node" --version)"; then
+    local managed_node="$HERMES_HOME/node/bin/node"
+    local managed_version=""
+    if [ -x "$managed_node" ] \
+        && managed_version=$("$managed_node" --version 2>/dev/null) \
+        && node_version_looks_valid "$managed_version" \
+        && node_satisfies_build "$managed_version"; then
         export PATH="$HERMES_HOME/node/bin:$PATH"
-        log_success "Node.js $("$HERMES_HOME/node/bin/node" --version) found (Hermes-managed)"
+        log_success "Node.js $managed_version found (Hermes-managed)"
         HAS_NODE=true
         return 0
     fi
 
-    if command -v node &> /dev/null; then
-        log_warn "Node.js $(node --version) is too old for the desktop build (need ^20.19 or >=22.12) — installing Hermes-managed Node $NODE_VERSION LTS..."
+    if [ "$node_unusable" = true ]; then
+        log_info "Installing Hermes-managed Node.js $NODE_VERSION LTS because the system Node.js binary is unusable..."
+        install_node true
+        return 0
+    elif command -v node &> /dev/null; then
+        log_warn "Node.js $node_version is too old for the desktop build (need ^20.19 or >=22.12) — installing Hermes-managed Node $NODE_VERSION LTS..."
     elif [ "$DISTRO" = "termux" ]; then
         log_info "Node.js not found — installing Node.js via pkg..."
     else
@@ -747,7 +778,9 @@ check_node() {
 }
 
 install_node() {
-    if [ "$DISTRO" = "termux" ]; then
+    # Broken system binaries must not loop back through Termux pkg no-ops.
+    local force_managed="${1:-false}"
+    if [ "$DISTRO" = "termux" ] && [ "$force_managed" != "true" ]; then
         log_info "Installing Node.js via pkg..."
         if pkg install -y nodejs >/dev/null; then
             local installed_ver

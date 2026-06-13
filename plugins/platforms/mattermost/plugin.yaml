@@ -47,3 +47,7 @@ optional_env:
     description: "If set, the bot only responds in these channels (whitelist)."
     prompt: "Allowed channel IDs (comma-separated)"
     password: false
+  - name: MATTERMOST_THREAD_CONTEXT
+    description: "First-turn thread context policy: allowlisted, off, or all. Default: allowlisted."
+    prompt: "Thread context policy (allowlisted|off|all)"
+    password: false

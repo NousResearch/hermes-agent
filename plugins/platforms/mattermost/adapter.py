@@ -98,6 +98,7 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+        self._thread_context_user_cache: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -265,6 +266,181 @@ class MattermostAdapter(BasePlatformAdapter):
         if data and data.get("root_id"):
             return data["root_id"]
         return post_id
+
+    async def _resolve_thread_user_name(self, user_id: str) -> str:
+        """Resolve a Mattermost user id for thread-context attribution."""
+        if not user_id:
+            return "unknown"
+        cached = self._thread_context_user_cache.get(user_id)
+        if cached:
+            return cached
+        data = await self._api_get(f"users/{user_id}")
+        name = (
+            str(data.get("username") or data.get("nickname") or "").lstrip("@")
+            if data
+            else ""
+        )
+        if not name:
+            name = user_id
+        self._thread_context_user_cache[user_id] = name
+        return name
+
+    def _thread_context_mode(self) -> str:
+        """Return the thread-history seeding policy."""
+        configured = self.config.extra.get("thread_context") if self.config.extra else None
+        raw = configured if configured is not None else os.getenv(
+            "MATTERMOST_THREAD_CONTEXT",
+            "allowlisted",
+        )
+        mode = str(raw).strip().lower()
+        return mode if mode in {"off", "allowlisted", "all"} else "allowlisted"
+
+    @staticmethod
+    def _truthy_env(name: str) -> bool:
+        return os.getenv(name, "").strip().lower() in {"true", "1", "yes", "on"}
+
+    def _thread_context_author_allowed(self, user_id: str) -> bool:
+        """Return True when an author may contribute injected thread context."""
+        if self._thread_context_mode() == "all":
+            return True
+
+        if self._truthy_env("MATTERMOST_ALLOW_ALL_USERS") or self._truthy_env(
+            "GATEWAY_ALLOW_ALL_USERS"
+        ):
+            return True
+
+        allowed_ids = {
+            value.strip()
+            for raw in (
+                os.getenv("MATTERMOST_ALLOWED_USERS", ""),
+                os.getenv("GATEWAY_ALLOWED_USERS", ""),
+            )
+            for value in raw.split(",")
+            if value.strip()
+        }
+        if "*" in allowed_ids:
+            return True
+        return bool(user_id) and user_id in allowed_ids
+
+    async def _fetch_thread_context(
+        self,
+        root_id: str,
+        current_post_id: str,
+        limit: int = 30,
+    ) -> str:
+        """Fetch prior Mattermost thread posts for first-turn context."""
+        if not root_id:
+            return ""
+
+        try:
+            data = await self._api_get(f"posts/{root_id}/thread")
+            raw_posts = data.get("posts") if isinstance(data, dict) else None
+            if isinstance(raw_posts, dict):
+                posts = list(raw_posts.values())
+            elif isinstance(raw_posts, list):
+                posts = raw_posts
+            else:
+                return ""
+
+            posts.sort(key=lambda p: (p.get("create_at", 0), p.get("id", "")))
+            eligible_posts = []
+            for post in posts:
+                post_id = str(post.get("id") or "")
+                if post_id == current_post_id:
+                    continue
+
+                text = str(post.get("message") or "").strip()
+                if not text or text.startswith("/"):
+                    continue
+
+                if not self._thread_context_author_allowed(
+                    str(post.get("user_id") or "")
+                ):
+                    continue
+
+                eligible_posts.append(post)
+
+            context_parts = []
+            for post in eligible_posts[-limit:]:
+                text = str(post.get("message") or "").strip()
+                props = post.get("props") if isinstance(post.get("props"), dict) else {}
+                name = (
+                    props.get("override_username")
+                    or post.get("username")
+                    or post.get("user_name")
+                )
+                if name:
+                    name = str(name).lstrip("@")
+                else:
+                    name = await self._resolve_thread_user_name(
+                        str(post.get("user_id") or "")
+                    )
+                context_parts.append(f"[{name}]: {text}")
+
+            if not context_parts:
+                return ""
+
+            return (
+                "[Thread context - prior messages in this thread "
+                "(not yet in conversation history):]\n"
+                + "\n".join(context_parts)
+                + "\n[End of thread context]\n\n"
+            )
+        except Exception as exc:
+            logger.warning("Mattermost: failed to fetch thread context: %s", exc)
+            return ""
+
+    def _has_active_session_for_thread(
+        self,
+        channel_id: str,
+        chat_type: str,
+        user_id: str,
+        thread_id: str,
+    ) -> bool:
+        """Return True when this Mattermost thread already has session history."""
+        session_store = getattr(self, "_session_store", None)
+        if not session_store or not thread_id:
+            return False
+
+        try:
+            from gateway.session import SessionSource, build_session_key
+
+            source = SessionSource(
+                platform=Platform.MATTERMOST,
+                chat_id=channel_id,
+                chat_type=chat_type,
+                user_id=user_id,
+                thread_id=thread_id,
+            )
+            generate_session_key = getattr(session_store, "_generate_session_key", None)
+            session_key = (
+                generate_session_key(source) if callable(generate_session_key) else None
+            )
+            if not isinstance(session_key, str) or not session_key:
+                extra = self.config.extra or {}
+                session_key = build_session_key(
+                    source,
+                    group_sessions_per_user=extra.get("group_sessions_per_user", True),
+                    thread_sessions_per_user=extra.get(
+                        "thread_sessions_per_user",
+                        False,
+                    ),
+                )
+
+            ensure_loaded = getattr(session_store, "_ensure_loaded", None)
+            if callable(ensure_loaded):
+                ensure_loaded()
+            entries = getattr(session_store, "_entries", {})
+            entry = entries.get(session_key) if isinstance(entries, dict) else None
+            if not entry:
+                return False
+
+            should_reset = getattr(session_store, "_should_reset", None)
+            if callable(should_reset) and should_reset(entry, source):
+                return False
+            return True
+        except Exception:
+            return False
 
     async def send(
         self,
@@ -788,6 +964,23 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Thread support: if the post is in a thread, use root_id.
         thread_id = post.get("root_id") or None
+        if (
+            thread_id
+            and not message_text.startswith("/")
+            and self._thread_context_mode() != "off"
+            and not self._has_active_session_for_thread(
+                channel_id=channel_id,
+                chat_type=chat_type,
+                user_id=sender_id,
+                thread_id=thread_id,
+            )
+        ):
+            thread_context = await self._fetch_thread_context(
+                root_id=thread_id,
+                current_post_id=post_id,
+            )
+            if thread_context:
+                message_text = thread_context + message_text
 
         # Determine message type.
         file_ids = post.get("file_ids") or []
@@ -1118,6 +1311,9 @@ def _apply_yaml_config(yaml_cfg: dict, mattermost_cfg: dict) -> dict | None:
         if isinstance(ac, list):
             ac = ",".join(str(v) for v in ac)
         os.environ["MATTERMOST_ALLOWED_CHANNELS"] = str(ac)
+    tc = mattermost_cfg.get("thread_context")
+    if tc is not None and not os.getenv("MATTERMOST_THREAD_CONTEXT"):
+        os.environ["MATTERMOST_THREAD_CONTEXT"] = str(tc)
     return None  # all settings flow through env; nothing to merge into extras
 
 

@@ -324,8 +324,13 @@ class SlackAdapter(BasePlatformAdapter):
     # the prefix that works everywhere — instruction text must show it.
     typed_command_prefix = "!"
 
+    # Platform identity. Slack-API-compatible subclasses (e.g. Time) override
+    # this so their messages carry their own Platform value — load-bearing for
+    # per-platform config + security toolset scoping.
+    PLATFORM_ID = Platform.SLACK
+
     def __init__(self, config: PlatformConfig):
-        super().__init__(config, Platform.SLACK)
+        super().__init__(config, self.PLATFORM_ID)
         self._app: Optional[Any] = None
         self._handler: Optional[Any] = None
         self._bot_user_id: Optional[str] = None
@@ -375,6 +380,28 @@ class SlackAdapter(BasePlatformAdapter):
         self._socket_watchdog_task: Optional[asyncio.Task] = None
         self._socket_reconnect_lock = asyncio.Lock()
         self._socket_watchdog_interval_s = 15.0
+
+    # ── Overridable seams for Slack-API-compatible platforms (e.g. Time) ──
+    def _app_token_env(self) -> str:
+        """Env var holding the Socket Mode app token."""
+        return "SLACK_APP_TOKEN"
+
+    def _api_base_url(self) -> Optional[str]:
+        """Web API base URL. None = slack_bolt default (https://slack.com/api/)."""
+        return None
+
+    def _make_async_app(self, token: str):
+        """Build the AsyncApp, honoring a custom base_url when set."""
+        if self._api_base_url():
+            return AsyncApp(token=token, client=self._make_web_client(token))
+        return AsyncApp(token=token)
+
+    def _make_web_client(self, token: str):
+        """Build an AsyncWebClient, honoring a custom base_url when set."""
+        base = self._api_base_url()
+        if base:
+            return AsyncWebClient(token=token, base_url=base)
+        return AsyncWebClient(token=token)
 
     def _start_socket_mode_handler(self) -> None:
         """Start the Slack Socket Mode background task."""
@@ -740,13 +767,13 @@ class SlackAdapter(BasePlatformAdapter):
             return False
 
         raw_token = self.config.token
-        app_token = os.getenv("SLACK_APP_TOKEN")
+        app_token = os.getenv(self._app_token_env())
 
         if not raw_token:
             logger.error("[Slack] SLACK_BOT_TOKEN not set")
             return False
         if not app_token:
-            logger.error("[Slack] SLACK_APP_TOKEN not set")
+            logger.error("[Slack] %s not set", self._app_token_env())
             return False
 
         proxy_url = _resolve_slack_proxy_url()
@@ -830,12 +857,12 @@ class SlackAdapter(BasePlatformAdapter):
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
-            self._app = AsyncApp(token=primary_token)
+            self._app = self._make_async_app(primary_token)
             _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client
             for token in bot_tokens:
-                client = AsyncWebClient(token=token)
+                client = self._make_web_client(token)
                 _apply_slack_proxy(client, proxy_url)
                 auth_response = await client.auth_test()
                 team_id = auth_response.get("team_id", "")
@@ -2930,7 +2957,7 @@ class SlackAdapter(BasePlatformAdapter):
                 from gateway.session import SessionSource
 
                 source = SessionSource(
-                    platform=Platform.SLACK,
+                    platform=self.platform,
                     chat_id=str(channel_id or normalized_user_id),
                     chat_type="dm" if str(channel_id or "").startswith("D") else "group",
                     user_id=normalized_user_id,
@@ -3492,7 +3519,7 @@ class SlackAdapter(BasePlatformAdapter):
             from gateway.session import SessionSource, build_session_key
 
             source = SessionSource(
-                platform=Platform.SLACK,
+                platform=self.platform,
                 chat_id=channel_id,
                 chat_type="group",
                 user_id=user_id,

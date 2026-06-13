@@ -1,0 +1,35 @@
+name: time-platform
+label: Time
+kind: platform
+version: 1.0.0
+description: >
+  Time (Т‑Банк) corporate messenger adapter for Hermes Agent.
+  Time is Slack-API-compatible; this adapter subclasses the Slack
+  adapter and points it at Time's endpoints.
+author: densin
+requires_env:
+  - name: TIME_BOT_TOKEN
+    description: "Bot token for Time (Slack xoxb-equivalent)"
+    prompt: "Time bot token"
+    password: true
+  - name: TIME_APP_TOKEN
+    description: "Socket Mode app token (Slack xapp-equivalent)"
+    prompt: "Time app token"
+    password: true
+  - name: TIME_API_BASE_URL
+    description: "Time Web API base URL (e.g. https://time.tbank.ru/api/)"
+    prompt: "Time API base URL"
+    password: false
+optional_env:
+  - name: TIME_ALLOWED_USERS
+    description: "Comma-separated Time user IDs allowed to talk to the bot"
+    prompt: "Allowed users (comma-separated)"
+    password: false
+  - name: TIME_ALLOW_ALL_USERS
+    description: "Allow anyone to talk to the bot (dev only)"
+    prompt: "Allow all users? (true/false)"
+    password: false
+  - name: TIME_HOME_CHANNEL
+    description: "Channel for cron / notification delivery"
+    prompt: "Home channel (or empty)"
+    password: false

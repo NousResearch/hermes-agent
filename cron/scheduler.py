@@ -61,17 +61,27 @@ class CronPromptInjectionBlocked(Exception):
 def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     """Toolsets a cron-spawned agent must never receive.
 
-    Three protected toolsets are always disabled in cron context:
+    Always disabled in cron context:
       - ``cronjob`` — would let a cron-spawned agent schedule more cron jobs
       - ``messaging`` — interactive, needs a live gateway session
       - ``clarify`` — interactive, blocks waiting for user input
+      - everything in ``CORP_DANGEROUS_TOOLSETS`` — cron runs unattended, so
+        physically dangerous tools (shell, file-write, code exec, browser,
+        home-assistant, delegation, kanban, discord-admin) are denied here.
+        This also closes the escalation where a corp-restricted platform
+        (e.g. Time) creates a cron job with a per-job ``enabled_toolsets``
+        that requests a dangerous toolset — ``disabled_toolsets`` overrides
+        ``enabled_toolsets`` at tool-definition time.
 
     User-level ``agent.disabled_toolsets`` from config.yaml is layered on top
     so per-job ``enabled_toolsets`` cannot bypass policy that applies to
-    ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
-    past config.yaml's denylist).
+    ordinary agent runs (#25752).
     """
+    from toolsets import CORP_DANGEROUS_TOOLSETS
     disabled = ["cronjob", "messaging", "clarify"]
+    for name in sorted(CORP_DANGEROUS_TOOLSETS):  # sorted for deterministic order in logs/tests
+        if name not in disabled:
+            disabled.append(name)
     agent_cfg = (cfg or {}).get("agent") or {}
     user_disabled = agent_cfg.get("disabled_toolsets") or []
     for name in user_disabled:

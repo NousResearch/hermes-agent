@@ -703,6 +703,12 @@ platform_toolsets:
   yuanbao: [hermes-yuanbao]
   teams: [hermes-teams]
   google_chat: [hermes-google_chat]
+  # Time (Т‑Банк) — corporate-safe profile. The platform ALSO hard-denies
+  # dangerous toolsets in code (see CORP_RESTRICTED_PLATFORMS), so even if you
+  # widen this list the agent never gets shell / file-write / code-exec /
+  # browser / computer-use / home-assistant / delegation / kanban /
+  # discord-admin. Cron jobs are likewise stripped of dangerous toolsets.
+  time: [corp_safe]
 
 # =============================================================================
 # Gateway Platform Settings

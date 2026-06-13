@@ -4556,6 +4556,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 continue
 
+            # Claim the session slot *before* spawning the task so that an
+            # inbound message arriving between task creation and the task's
+            # first await (where _process_message_background sets the real
+            # sentinel) sees the slot as occupied and queues behind it
+            # instead of spinning up a duplicate AIAgent (#45456).
+            self._running_agents[entry.session_key] = _AGENT_PENDING_SENTINEL
+            self._running_agents_ts[entry.session_key] = time.time()
+
             # Empty-text internal event — the _is_resume_pending branch in
             # _handle_message_with_agent prepends the proper reason-aware
             # system note before the turn runs.
@@ -4565,7 +4573,33 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 internal=True,
             )
-            task = asyncio.create_task(adapter.handle_message(event))
+
+            async def _guarded_handle_message(
+                _adapter: Any, _event: MessageEvent, _key: str = entry.session_key,
+            ) -> None:
+                """Ensure the pre-claimed sentinel is always released.
+
+                In the normal flow the resume turn reaches
+                ``_handle_message``, which replaces our pre-claim with
+                its own ``_AGENT_PENDING_SENTINEL`` (and releases it in
+                its ``finally`` block) once the run begins.  If
+                ``handle_message`` raises *before* the runner takes over
+                the slot (e.g. during topic recovery or session-key
+                resolution), nobody clears our pre-claim — so we do it
+                here unconditionally.  The ``is _AGENT_PENDING_SENTINEL``
+                guard below only releases the slot we ourselves placed,
+                never one a live run currently owns.
+                """
+                try:
+                    await _adapter.handle_message(_event)
+                finally:
+                    # Only release if the sentinel we set is still there
+                    # (i.e. _process_message_background hasn't replaced
+                    # and cleaned it already).
+                    if self._running_agents.get(_key) is _AGENT_PENDING_SENTINEL:
+                        self._release_running_agent_state(_key)
+
+            task = asyncio.create_task(_guarded_handle_message(adapter, event))
             self._background_tasks.add(task)
             task.add_done_callback(self._background_tasks.discard)
             scheduled += 1
@@ -8815,12 +8849,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "Auto-resetting session %s after compression exhaustion.",
                     session_entry.session_id,
                 )
-                self.session_store.reset_session(session_key)
+                new_entry = self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
                 if hasattr(self, "_pending_model_notes"):
                     self._pending_model_notes.pop(session_key, None)
+                if new_entry is not None:
+                    # Drop the stale reference to the bloated compressed child and
+                    # re-point the Telegram topic binding at the fresh session.
+                    # Compression rotated session_entry.session_id to the oversized
+                    # compressed child earlier this turn (the agent-result sync
+                    # above), and that _sync also rewrote the (chat_id, thread_id)
+                    # -> bloated-child binding. reset_session swaps in a clean,
+                    # parentless session, but without re-syncing the binding the
+                    # next inbound message in this topic gets switch_session'd back
+                    # onto the bloated child by the binding-heal walk, reloads the
+                    # oversized transcript, and re-triggers compression exhaustion
+                    # forever (#35809 — regression of the #9893/#10063 auto-reset).
+                    # No-op on non-topic lanes.
+                    session_entry = new_entry
+                    self._sync_telegram_topic_binding(
+                        source, session_entry, reason="compression-exhausted-reset",
+                    )
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "

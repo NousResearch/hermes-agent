@@ -639,13 +639,42 @@ def _get_hermes_config_resolved() -> str | None:
     return _hermes_config_resolved
 
 
-def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
-    """Return an error message if the path targets a sensitive system location."""
+def _resolve_for_sensitive_path_check(filepath: str, task_id: str = "default") -> tuple[str, str]:
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
         resolved = filepath
     normalized = os.path.normpath(_expand_tilde(filepath))
+    return resolved, normalized
+
+
+def _same_filesystem_path(left: str, right: str) -> bool:
+    return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
+
+
+def _slash_normalized_path(value: str) -> str:
+    return os.path.normpath(_expand_tilde(value)).replace("\\", "/")
+
+
+def _is_hermes_config_path(filepath: str, task_id: str = "default") -> bool:
+    hermes_config = _get_hermes_config_resolved()
+    if not hermes_config:
+        return False
+    resolved, normalized = _resolve_for_sensitive_path_check(filepath, task_id)
+    return (
+        _same_filesystem_path(resolved, hermes_config)
+        or _same_filesystem_path(normalized, hermes_config)
+    )
+
+
+def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None:
+    """Return an error message if the path targets a hard-denied system location."""
+    resolved, normalized = _resolve_for_sensitive_path_check(filepath, task_id)
+    slash_candidates = {
+        _slash_normalized_path(filepath),
+        _slash_normalized_path(resolved),
+        _slash_normalized_path(normalized),
+    }
     _err = (
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
@@ -653,20 +682,47 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     for prefix in _SENSITIVE_PATH_PREFIXES:
         if resolved.startswith(prefix) or normalized.startswith(prefix):
             return _err
+        if any(candidate.startswith(prefix) for candidate in slash_candidates):
+            return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
-    # Prevent agents from modifying the Hermes config file directly.
-    # approvals.mode and other security settings live here; a malicious or
-    # prompt-injected agent could silently disable exec approval by writing to
-    # this file.
-    hermes_config = _get_hermes_config_resolved()
-    if hermes_config and (resolved == hermes_config or normalized == hermes_config):
-        return (
-            f"Refusing to write to Hermes config file: {filepath}\n"
-            "Agent cannot modify security-sensitive configuration. "
-            "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
-        )
+    if any(candidate in _SENSITIVE_EXACT_PATHS for candidate in slash_candidates):
+        return _err
     return None
+
+
+def _get_file_approval_callback():
+    try:
+        from tools.terminal_tool import _get_approval_callback
+        return _get_approval_callback()
+    except Exception:
+        return None
+
+
+def _check_hermes_config_write_approval(
+    tool_name: str,
+    filepath: str,
+    task_id: str = "default",
+) -> str | None:
+    if not _is_hermes_config_path(filepath, task_id):
+        return None
+    try:
+        from tools.approval import check_sensitive_file_write_guard
+
+        decision = check_sensitive_file_write_guard(
+            tool_name,
+            filepath,
+            approval_callback=_get_file_approval_callback(),
+        )
+    except Exception as exc:
+        logger.warning("Hermes config approval check failed: %s", exc, exc_info=True)
+        return (
+            "BLOCKED: Hermes config file edit requires approval, but the "
+            "approval check failed. Do NOT retry through another tool."
+        )
+    if decision.get("approved"):
+        return None
+    return decision.get("message") or "BLOCKED: Hermes config file edit was not approved."
 
 
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
@@ -1658,6 +1714,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    approval_err = _check_hermes_config_write_approval("write_file", path, task_id)
+    if approval_err:
+        return tool_error(approval_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
@@ -1786,6 +1845,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         sensitive_err = _check_sensitive_path(_p, task_id)
         if sensitive_err:
             return tool_error(sensitive_err)
+        approval_err = _check_hermes_config_write_approval("patch", _p, task_id)
+        if approval_err:
+            return tool_error(approval_err)
         if not cross_profile:
             cross_warning = _check_cross_profile_path(_p, task_id)
             if cross_warning:

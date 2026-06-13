@@ -535,6 +535,36 @@ class TestHTTPHandling:
         assert event.source.chat_id == "webhook:test:delivery-xyz"
 
     @pytest.mark.asyncio
+    async def test_webhook_handler_dispatches_shared_ingress_envelope(self):
+        """Webhook requests dispatch through the shared ingress envelope helper."""
+        routes = {"deploy": {"secret": _INSECURE_NO_AUTH, "prompt": "Deploy {branch}"}}
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/deploy",
+                json={"branch": "main"},
+                headers={"X-GitHub-Delivery": "delivery-42"},
+            )
+            assert resp.status == 202
+
+            await asyncio.sleep(0)
+
+        adapter.handle_message.assert_awaited_once()
+        dispatched_event = adapter.handle_message.await_args_list[0].args[0]
+        assert dispatched_event.text == "Deploy main"
+        assert dispatched_event.message_id == "delivery-42"
+        assert dispatched_event.raw_message == {"branch": "main"}
+        assert dispatched_event.source.chat_id == "webhook:deploy:delivery-42"
+        assert dispatched_event.source.chat_name == "webhook/deploy"
+        assert dispatched_event.source.chat_type == "webhook"
+        assert dispatched_event.source.user_id == "webhook:deploy"
+        assert dispatched_event.source.user_name == "deploy"
+        assert adapter._background_tasks == set()
+
+    @pytest.mark.asyncio
     async def test_route_without_secret_rejects_unsigned_request(self):
         """Missing HMAC secret must fail closed even if connect() was bypassed."""
         routes = {"test": {"prompt": "hi"}}

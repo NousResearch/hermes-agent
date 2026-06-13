@@ -32,6 +32,7 @@ class IngressAdapter(Protocol):
         chat_type: str = "dm",
         user_id: str | None = None,
         user_name: str | None = None,
+        **kwargs: Any,
     ) -> SessionSource: ...
 
     async def handle_message(self, event: MessageEvent): ...

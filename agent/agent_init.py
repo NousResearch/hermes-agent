@@ -353,12 +353,14 @@ def init_agent(
 
     try:
         from hermes_cli.model_normalize import (
-            _AGGREGATOR_PROVIDERS,
             normalize_model_for_provider,
         )
 
-        if agent.provider not in _AGGREGATOR_PROVIDERS:
-            agent.model = normalize_model_for_provider(agent.model, agent.provider)
+        # Normalize the model name for all providers, including aggregators.
+        # Aggregators need Anthropic dash-style version numbers repaired to
+        # dot-form (e.g. anthropic/claude-sonnet-4-6 → anthropic/claude-sonnet-4.6).
+        # The normalizer is idempotent, so already-correct names pass through.
+        agent.model = normalize_model_for_provider(agent.model, agent.provider)
     except Exception:
         pass
 

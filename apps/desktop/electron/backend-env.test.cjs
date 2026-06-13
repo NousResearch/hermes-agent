@@ -27,7 +27,7 @@ test('desktop backend PATH adds Hermes-managed bins and missing POSIX sane entri
   assert.ok(entries.includes('/usr/local/sbin'), 'missing standard sbin is added')
 
   for (const expected of POSIX_SANE_PATH_ENTRIES) {
-    assert.ok(entries.includes(expected), '${expected} should be present')
+    assert.ok(entries.includes(expected), `${expected} should be present`)
   }
 })
 

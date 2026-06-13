@@ -14048,7 +14048,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:
-                # Config changed or first message — create fresh agent
+                # Config changed or first message — create fresh agent.
+                # Look up whether the Codex gpt-5.5 autoraise notice was
+                # already delivered for this durable session, so the rebuilt
+                # AIAgent suppresses its own copy of the notice (#42187).
+                _autoraise_notice_shown = False
+                if getattr(self, "session_store", None) is not None:
+                    try:
+                        self.session_store._ensure_loaded()
+                        _existing_entry = self.session_store._entries.get(session_key)
+                        if _existing_entry is not None:
+                            _autoraise_notice_shown = (
+                                _existing_entry.codex_gpt55_autoraise_notice_shown
+                            )
+                    except Exception:
+                        pass
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -14078,9 +14092,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    gateway_session_autoraise_notice_shown=_autoraise_notice_shown,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                # If the AIAgent stashed the notice, persist that fact so the
+                # next rebuild for this durable session suppresses it (#42187).
+                if (
+                    getattr(agent, "_compression_warning", None)
+                    and getattr(self, "session_store", None) is not None
+                ):
+                    try:
+                        self.session_store.mark_autoraise_notice_shown(session_key)
+                    except Exception:
+                        pass
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)

@@ -1223,6 +1223,141 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
+class TestCodexGpt55AutoraiseNoticeShown:
+    """Tests for the codex_gpt55_autoraise_notice_shown field — gates the
+    Codex gpt-5.5 autoraise notice to once per durable gateway session.
+    See issue #42187.
+    """
+
+    def test_session_entry_default(self):
+        """New sessions should have codex_gpt55_autoraise_notice_shown=False
+        so the notice is eligible to be shown once."""
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        assert entry.codex_gpt55_autoraise_notice_shown is False
+
+    def test_session_entry_roundtrip(self):
+        """The flag should survive serialization/deserialization."""
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="test",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            codex_gpt55_autoraise_notice_shown=True,
+        )
+        d = entry.to_dict()
+        assert d["codex_gpt55_autoraise_notice_shown"] is True
+        restored = SessionEntry.from_dict(d)
+        assert restored.codex_gpt55_autoraise_notice_shown is True
+
+    def test_session_entry_from_old_data(self):
+        """Old sessions.json without the field should default to False so
+        the notice remains eligible on existing sessions."""
+        from gateway.session import SessionEntry
+        data = {
+            "session_key": "test",
+            "session_id": "s1",
+            "created_at": "2025-01-01T00:00:00",
+            "updated_at": "2025-01-01T00:00:00",
+            # No codex_gpt55_autoraise_notice_shown — pre-fix format
+        }
+        entry = SessionEntry.from_dict(data)
+        assert entry.codex_gpt55_autoraise_notice_shown is False
+
+    def test_mark_autoraise_notice_shown_sets_and_persists(self, tmp_path):
+        """mark_autoraise_notice_shown should flip False -> True and save."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+        )
+        store._entries = {"k1": entry}
+
+        store.mark_autoraise_notice_shown("k1")
+        assert entry.codex_gpt55_autoraise_notice_shown is True
+        store._save.assert_called_once()
+
+    def test_mark_autoraise_notice_shown_idempotent(self, tmp_path):
+        """Marking an already-shown session should be a no-op (no extra save)."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            codex_gpt55_autoraise_notice_shown=True,
+        )
+        store._entries = {"k1": entry}
+
+        store.mark_autoraise_notice_shown("k1")
+        assert entry.codex_gpt55_autoraise_notice_shown is True
+        store._save.assert_not_called()
+
+    def test_mark_autoraise_notice_shown_missing_entry_is_noop(self, tmp_path):
+        """Marking an unknown session_key should not error or save."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+        store._entries = {}
+
+        store.mark_autoraise_notice_shown("does-not-exist")
+        store._save.assert_not_called()
+
+    def test_reset_session_clears_notice_shown(self, tmp_path):
+        """reset_session (/new, /reset) should produce a fresh entry whose
+        notice-shown flag is False, re-eligible for one emission."""
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._loaded = True
+        store._db = None
+        store._save = MagicMock()
+
+        from gateway.session import SessionEntry
+        from datetime import datetime
+        entry = SessionEntry(
+            session_key="k1",
+            session_id="s1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            codex_gpt55_autoraise_notice_shown=True,
+        )
+        store._entries = {"k1": entry}
+
+        new_entry = store.reset_session("k1")
+        assert new_entry is not None
+        assert new_entry.codex_gpt55_autoraise_notice_shown is False
+
+
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 

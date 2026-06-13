@@ -209,6 +209,7 @@ def init_agent(
     chat_type: str = None,
     thread_id: str = None,
     gateway_session_key: str = None,
+    gateway_session_autoraise_notice_shown: bool = False,
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
@@ -293,6 +294,10 @@ def init_agent(
     agent._chat_type = chat_type
     agent._thread_id = thread_id
     agent._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
+    # When True, the gateway has already delivered the Codex gpt-5.5
+    # autoraise notice once for this durable session, so this AIAgent
+    # rebuild must suppress its own copy of the notice (#42187).
+    agent._gateway_session_autoraise_notice_shown = gateway_session_autoraise_notice_shown
     # Pluggable print function — CLI replaces this with _cprint so that
     # raw ANSI status lines are routed through prompt_toolkit's renderer
     # instead of going directly to stdout where patch_stdout's StdoutProxy
@@ -1666,8 +1671,15 @@ def init_agent(
     # Gateway parity for the Codex gpt-5.5 autoraise notice: the startup print
     # above only reaches the CLI, so stash the same text here to be replayed
     # through status_callback on the first turn (Telegram/Discord/Slack/etc.).
+    # Suppress when the gateway reports it has already delivered the notice
+    # once for this durable session, so the notice does not re-fire when the
+    # AIAgent is rebuilt for the same session (#42187).
     _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-    if _autoraise and compression_enabled:
+    if (
+        _autoraise
+        and compression_enabled
+        and not gateway_session_autoraise_notice_shown
+    ):
         agent._compression_warning = _build_codex_gpt55_autoraise_notice(_autoraise)
     # Lazy feasibility check: deferred to the first turn that approaches the
     # compression threshold. Running it eagerly here costs ~400ms cold (network

@@ -287,7 +287,8 @@ export const uk: Translations = {
     nameRule:
       "Лише малі літери, цифри, _ та -; має починатися з літери або цифри; до 64 символів.",
     invalidName: "Недопустима назва профілю",
-    cloneFromDefault: "Клонувати конфігурацію з профілю за замовчуванням",
+    cloneFrom: "Клонувати з профілю",
+    cloneFromNone: "Жоден (порожній)",
     allProfiles: "Профілі",
     noProfiles: "Профілів не знайдено.",
     defaultBadge: "за замовчуванням",

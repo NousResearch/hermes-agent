@@ -45,7 +45,13 @@ import {
 } from '@/store/session'
 import { reportBackendContract } from '@/store/updates'
 import { isWatchWindow } from '@/store/windows'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo, UsageStats } from '@/types/hermes'
+import type {
+  SessionCreateResponse,
+  SessionInfo,
+  SessionResumeResponse,
+  SessionRuntimeInfo,
+  UsageStats
+} from '@/types/hermes'
 
 import { NEW_CHAT_ROUTE, sessionRoute, SETTINGS_ROUTE } from '../../routes'
 import type { ClientSessionState, SidebarNavItem } from '../../types'
@@ -254,15 +260,7 @@ async function resolveStoredSession(storedSessionId: string): Promise<SessionInf
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    | 'branch'
-    | 'cwd'
-    | 'fast'
-    | 'model'
-    | 'personality'
-    | 'provider'
-    | 'reasoningEffort'
-    | 'serviceTier'
-    | 'yolo'
+    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
   >
 >
 
@@ -534,11 +532,8 @@ export function useSessionActions({
       // When ensureGatewayProfile swaps to a pooled profile whose backend is
       // still starting (or whose WS connect was rejected — e.g. stale OAuth
       // ticket 403 / host-origin 4403 — and is backing off), the gateway may
-      // not be open yet.  Avoid blocking the resume on a gateway RPC that will
-      // fail; fall through to the local-snapshot path instead.
-      const gatewayAfterSwap = $gateway.get()
-      const gatewayReady = gatewayAfterSwap?.connectionState === 'open'
-
+      // not be open yet.  Skip the RPC and complete the cached/local resume
+      // instead — the gateway will refresh usage asynchronously once it opens.
       const cachedRuntimeId = runtimeIdByStoredSessionIdRef.current.get(storedSessionId)
       const cachedState = cachedRuntimeId && sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)
 
@@ -568,7 +563,7 @@ export function useSessionActions({
         setCurrentBranch(cachedViewState.branch)
         setSessionStartedAt(Date.now())
 
-        if (gatewayReady) {
+        if ($gateway.get()?.connectionState === 'open') {
           try {
             const usage = await requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
 
@@ -595,9 +590,23 @@ export function useSessionActions({
             sessionStateByRuntimeIdRef.current.delete(cachedRuntimeId)
           }
         } else {
-          // Gateway isn't ready (e.g. pooled backend still connecting or WS
-          // rejected with 4403).  Skip the RPC — the cached state is sufficient
-          // for a fast local resume.
+          // Gateway isn't ready yet — complete the local resume first, then
+          // refresh usage asynchronously once the connection opens.
+          const gateway = $gateway.get()
+          if (gateway) {
+            const offState = gateway.onState(st => {
+              if (st === 'open') {
+                offState()
+                requestGateway<UsageStats>('session.usage', { session_id: cachedRuntimeId })
+                  .then(usage => {
+                    if (usage) setCurrentUsage(current => ({ ...current, ...usage }))
+                  })
+                  .catch(() => {
+                    // Best-effort; stale cache is acceptable for this session.
+                  })
+              }
+            })
+          }
           return
         }
       }

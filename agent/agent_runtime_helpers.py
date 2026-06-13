@@ -881,6 +881,8 @@ def try_recover_primary_transport(
 
 def drop_thinking_only_and_merge_users(
     messages: List[Dict[str, Any]],
+    *,
+    drop_codex_reasoning_items: bool = True,
 ) -> List[Dict[str, Any]]:
     """Drop thinking-only assistant turns; merge any adjacent user messages left behind.
 
@@ -902,7 +904,13 @@ def drop_thinking_only_and_merge_users(
         return messages
 
     # Pass 1: drop thinking-only assistant turns.
-    kept = [m for m in messages if not _ra().AIAgent._is_thinking_only_assistant(m)]
+    kept = [
+        m for m in messages
+        if not _ra().AIAgent._is_thinking_only_assistant(
+            m,
+            drop_codex_reasoning_items=drop_codex_reasoning_items,
+        )
+    ]
     dropped = len(messages) - len(kept)
     if dropped == 0:
         return messages

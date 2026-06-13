@@ -85,3 +85,28 @@ class TestParseMemoryShowArgs:
     def test_extra_tokens_ignored_after_target(self):
         # Only the first token is the target; trailing tokens are ignored.
         assert parse_memory_show_args("user extra junk") == {"target": "user"}
+
+
+class TestFromConfig:
+    def test_uses_configured_limits(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"memory": {"memory_char_limit": 999, "user_char_limit": 444}},
+        )
+        store = MemoryStore.from_config()
+        assert store.memory_char_limit == 999
+        assert store.user_char_limit == 444
+
+    def test_falls_back_to_defaults_on_missing_config(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        store = MemoryStore.from_config()
+        assert store.memory_char_limit == 2200
+        assert store.user_char_limit == 1375
+
+    def test_falls_back_on_load_error(self, monkeypatch):
+        def _boom():
+            raise RuntimeError("no config")
+        monkeypatch.setattr("hermes_cli.config.load_config", _boom)
+        store = MemoryStore.from_config()
+        assert store.memory_char_limit == 2200
+        assert store.user_char_limit == 1375

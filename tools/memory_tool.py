@@ -129,6 +129,24 @@ class MemoryStore:
         # Frozen snapshot for system prompt -- set once at load_from_disk()
         self._system_prompt_snapshot: Dict[str, str] = {"memory": "", "user": ""}
 
+    @classmethod
+    def from_config(cls) -> "MemoryStore":
+        """Build a store using configured char limits from config.yaml.
+
+        Mirrors agent/agent_init.py so the /memory show readout reports the
+        same limits the agent enforces, instead of the bare-constructor
+        defaults. Falls back to defaults if config can't be read.
+        """
+        try:
+            from hermes_cli.config import load_config
+            mem_cfg = load_config().get("memory", {}) or {}
+        except Exception:
+            mem_cfg = {}
+        return cls(
+            memory_char_limit=mem_cfg.get("memory_char_limit", 2200),
+            user_char_limit=mem_cfg.get("user_char_limit", 1375),
+        )
+
     def load_from_disk(self):
         """Load entries from MEMORY.md and USER.md, capture system prompt snapshot.
 

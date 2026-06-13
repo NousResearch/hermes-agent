@@ -975,11 +975,10 @@ def test_toolset_has_keys_treats_no_key_providers_as_configured():
     assert _toolset_has_keys("computer_use", config) is True
 
 
-def test_web_no_prompt_when_usable_keyless():
-    """Fresh install: web works via the free Parallel MCP, so enabling the web
-    toolset should not force provider setup."""
-    with patch("tools.web_tools.check_web_api_key", return_value=True):
-        assert _toolset_needs_configuration_prompt("web", {}) is False
+def test_web_prompts_when_no_backend_is_configured():
+    """Fresh install should ask the user to choose a web backend."""
+    with patch("tools.web_tools.check_web_api_key", return_value=False):
+        assert _toolset_needs_configuration_prompt("web", {}) is True
 
 
 def test_web_no_prompt_when_extract_backend_is_extract_capable():

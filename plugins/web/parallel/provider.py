@@ -5,9 +5,8 @@ Subclasses :class:`agent.web_search_provider.WebSearchProvider`.
 Search runs on one of two transports, picked by credential:
 
 - **No key →** the free hosted Search MCP at ``https://search.parallel.ai/mcp``
-  (anonymous Streamable-HTTP JSON-RPC). This makes ``web_search`` work out of
-  the box with zero setup, which is why ``parallel`` is the keyless default
-  backend in :func:`tools.web_tools._get_backend`.
+  (anonymous Streamable-HTTP JSON-RPC) when the user explicitly selects the
+  ``parallel`` backend.
 - **``PARALLEL_API_KEY`` →** the ``parallel`` SDK's v1 ``search`` / ``extract``
   REST endpoints (objective-tuned, mode-selectable, higher rate limits).
 
@@ -512,8 +511,8 @@ class ParallelWebSearchProvider(WebSearchProvider):
         Deliberately key-based: this gates the registry's active-provider walk
         and the ``hermes tools`` picker (auto-selecting Parallel for a user who
         hasn't named it), so it must not claim availability on the keyless path.
-        The keyless free-MCP path is reached independently via
-        :func:`tools.web_tools._get_backend`'s ``parallel`` terminal default.
+        The keyless free-MCP path is reached only when config explicitly selects
+        the ``parallel`` backend.
         """
         return bool(os.getenv("PARALLEL_API_KEY", "").strip())
 
@@ -529,8 +528,8 @@ class ParallelWebSearchProvider(WebSearchProvider):
         With ``PARALLEL_API_KEY`` set, uses the v1 ``search`` REST endpoint with
         the configured mode (``PARALLEL_SEARCH_MODE`` env var, default
         "advanced"; limit requested via advanced_settings.max_results, capped at
-        20). Without a key, falls back to the free hosted Search MCP so search
-        still works with zero setup.
+        20). Without a key, falls back to the free hosted Search MCP for users
+        who explicitly selected the ``parallel`` backend.
         """
         try:
             from tools.interrupt import is_interrupted
@@ -594,8 +593,7 @@ class ParallelWebSearchProvider(WebSearchProvider):
 
         With ``PARALLEL_API_KEY`` set, uses the async SDK's v1 ``extract`` for
         full page content. Without a key, falls back to the free hosted Search
-        MCP's ``web_fetch`` tool so extraction works with zero setup, mirroring
-        the keyless search path.
+        MCP's ``web_fetch`` tool, mirroring the explicit keyless search path.
 
         Returns the legacy list-of-results shape that
         :func:`tools.web_tools.web_extract_tool` expects: one entry per

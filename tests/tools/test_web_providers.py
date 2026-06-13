@@ -202,8 +202,8 @@ class TestPerCapabilityBackendSelection:
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-key")
         # The explicit per-capability choice (exa) is honored even though it's
-        # unavailable, so its setup error surfaces — we don't silently reroute
-        # to the shared backend (or the keyless Parallel default).
+        # unavailable, so its setup error surfaces; we don't silently reroute
+        # to the shared backend.
         assert web_tools._get_search_backend() == "exa"
 
     def test_fully_backward_compatible_with_web_backend_only(self, monkeypatch):
@@ -323,40 +323,21 @@ class TestUnconfiguredErrorEnvelopeParity:
         result = json.loads(out)
         assert "error" in result
 
-    def test_unconfigured_search_falls_back_to_free_parallel(self, monkeypatch):
-        """``web_search_tool`` with no creds routes to Parallel's free Search
-        MCP rather than erroring. The MCP transport is mocked so the test
-        stays offline; we assert dispatch landed on parallel and returned the
-        standard search envelope.
+    def test_unconfigured_search_returns_setup_error(self, monkeypatch):
+        """``web_search_tool`` with no creds returns a setup error.
+
+        No-config installs must not silently route queries to a hosted backend.
         """
         from tools import web_tools
-        import plugins.web.parallel.provider as parallel_provider
 
         self._clear_web_creds(monkeypatch)
         monkeypatch.setattr(web_tools, "_firecrawl_client", None, raising=False)
         monkeypatch.setattr(web_tools, "_firecrawl_client_config", None, raising=False)
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
-
-        captured = {}
-
-        def _fake_mcp(query, limit, api_key):
-            captured["query"] = query
-            captured["api_key"] = api_key
-            return {
-                "success": True,
-                "data": {"web": [
-                    {"url": "https://example.com", "title": "Example",
-                     "description": "hit", "position": 1},
-                ]},
-            }
-
-        monkeypatch.setattr(parallel_provider, "_mcp_web_search", _fake_mcp)
+        monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
 
         result = json.loads(web_tools.web_search_tool("hello world", limit=3))
-        assert result.get("success") is True, f"expected success, got {result}"
-        assert result["data"]["web"][0]["url"] == "https://example.com"
-        # Keyless path: dispatched to parallel with no Bearer token.
-        assert captured == {"query": "hello world", "api_key": None}
+        assert "Web tools are not configured" in result["error"]
 
 
 class TestDispatchersTriggerPluginDiscovery:

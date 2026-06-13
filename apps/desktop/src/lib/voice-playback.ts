@@ -1,4 +1,4 @@
-import { speakText } from '@/hermes'
+import { speakText, speakTextStreaming } from '@/hermes'
 import {
   $voicePlayback,
   setVoicePlaybackState,
@@ -119,6 +119,131 @@ export async function playSpeechText(text: string, options: VoicePlaybackOptions
       setVoicePlaybackState(currentState('idle'))
     }
 
+    throw error
+  }
+}
+
+/**
+ * Play text with streaming: synthesizes sentence-by-sentence and plays
+ * each chunk as it arrives. Drastically reduces time-to-first-audio for
+ * long messages and eliminates timeout risks.
+ */
+export async function playSpeechTextStreaming(
+  text: string,
+  options: VoicePlaybackOptions
+): Promise<boolean> {
+  stopVoicePlayback()
+
+  const speakableText = sanitizeTextForSpeech(text)
+
+  if (!speakableText) {
+    return false
+  }
+
+  const ownSequence = sequence
+  const isCurrent = () => ownSequence === sequence
+
+  setVoicePlaybackState(currentState('preparing', options))
+
+  const queue: string[] = []
+  let playbackActive = true
+  let streamDone = false
+  let streamError: Error | null = null
+
+  const streamPromise = (async () => {
+    try {
+      for await (const event of speakTextStreaming(speakableText)) {
+        if (!isCurrent()) return
+        if (event.done) {
+          streamDone = true
+          return
+        }
+        if (event.data_url) {
+          queue.push(event.data_url)
+          if (playbackActive && queue.length === 1) {
+            setVoicePlaybackState(currentState('speaking', options))
+            playNextChunk()
+          }
+        }
+      }
+      streamDone = true
+    } catch (err) {
+      streamError = err instanceof Error ? err : new Error(String(err))
+      streamDone = true
+    }
+  })()
+
+  function playNextChunk() {
+    if (!isCurrent() || !playbackActive) return
+
+    const dataUrl = queue.shift()
+
+    if (!dataUrl) {
+      if (streamDone) {
+        currentAudio = null
+        setVoicePlaybackState(currentState('idle'))
+        if (streamError) throw streamError
+      }
+      if (!streamDone) {
+        setTimeout(() => playNextChunk(), 0)
+      }
+      return
+    }
+
+    const audio = new Audio(dataUrl)
+    currentAudio = audio
+    setVoicePlaybackState(currentState('speaking', options, audio))
+
+    const cleanup = () => {
+      audio.removeEventListener('ended', onEnded)
+      audio.removeEventListener('error', onError)
+    }
+
+    const onEnded = () => {
+      cleanup()
+      playNextChunk()
+    }
+
+    const onError = () => {
+      cleanup()
+      playNextChunk()
+    }
+
+    currentStop = () => {
+      playbackActive = false
+      cleanup()
+      currentAudio = null
+      setVoicePlaybackState(currentState('idle'))
+    }
+
+    audio.addEventListener('ended', onEnded, { once: true })
+    audio.addEventListener('error', onError, { once: true })
+    void audio.play().catch(() => {
+      cleanup()
+      playNextChunk()
+    })
+  }
+
+  try {
+    await streamPromise
+
+    while (playbackActive && (queue.length > 0 || !streamDone)) {
+      if (!isCurrent()) return false
+      await new Promise(r => setTimeout(r, 100))
+    }
+
+    if (!isCurrent()) return false
+    if (streamError) throw streamError
+
+    currentAudio = null
+    setVoicePlaybackState(currentState('idle'))
+    return true
+  } catch (error) {
+    if (isCurrent()) {
+      currentStop = null
+      currentAudio = null
+      setVoicePlaybackState(currentState('idle'))
+    }
     throw error
   }
 }

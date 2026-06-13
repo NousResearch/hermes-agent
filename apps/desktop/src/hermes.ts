@@ -724,6 +724,66 @@ export function speakText(text: string): Promise<AudioSpeakResponse> {
   })
 }
 
+export interface SpeakStreamEvent {
+  index: number
+  total: number
+  data_url?: string
+  error?: string
+  done?: boolean
+}
+
+/**
+ * Stream speech synthesis sentence-by-sentence via SSE.
+ * Calls /api/audio/speak-stream and returns an async generator
+ * that yields each sentence's audio as a data URL as it becomes available.
+ * Much faster time-to-first-audio than speakText() for long messages.
+ */
+export async function* speakTextStreaming(text: string): AsyncGenerator<SpeakStreamEvent> {
+  const conn = await window.hermesDesktop.getConnection()
+  const resp = await fetch(`${conn.baseUrl}/api/audio/speak-stream`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text })
+  })
+
+  if (!resp.ok) {
+    throw new Error(`Speech stream failed: ${resp.status} ${resp.statusText}`)
+  }
+
+  const reader = resp.body?.getReader()
+  if (!reader) {
+    throw new Error('No readable stream in response')
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed.startsWith('data: ')) continue
+        const data = trimmed.slice(6)
+        try {
+          const event: SpeakStreamEvent = JSON.parse(data)
+          yield event
+        } catch {
+          // skip unparseable events
+        }
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
 export function getElevenLabsVoices(): Promise<ElevenLabsVoicesResponse> {
   return window.hermesDesktop.api<ElevenLabsVoicesResponse>({
     path: '/api/audio/elevenlabs/voices'

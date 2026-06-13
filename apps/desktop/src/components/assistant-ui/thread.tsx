@@ -95,7 +95,7 @@ import { GitBranchIcon, Loader2Icon, Volume2Icon, VolumeXIcon } from '@/lib/icon
 import { extractPreviewTargets } from '@/lib/preview-targets'
 import { useEnterAnimation } from '@/lib/use-enter-animation'
 import { cn } from '@/lib/utils'
-import { playSpeechText, stopVoicePlayback } from '@/lib/voice-playback'
+import { playSpeechTextStreaming, stopVoicePlayback } from '@/lib/voice-playback'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
 import { $connection } from '@/store/session'
@@ -704,7 +704,7 @@ const ReadAloudItem: FC<{ getText: () => string; messageId: string }> = ({ getTe
     }
 
     try {
-      await playSpeechText(text, { messageId, source: 'read-aloud' })
+      await playSpeechTextStreaming(text, { messageId, source: 'read-aloud' })
     } catch (error) {
       notifyError(error, copy.readAloudFailed)
     }

@@ -69,6 +69,7 @@ try:
     from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+    from starlette.responses import StreamingResponse
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
 except ImportError:
@@ -81,6 +82,7 @@ except ImportError:
         from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+        from starlette.responses import StreamingResponse
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
     except Exception:
@@ -2487,6 +2489,210 @@ async def speak_text(payload: TTSSpeakRequest):
         "mime_type": mime_type,
         "provider": result.get("provider"),
     }
+
+
+# ── Streaming TTS helpers ────────────────────────────────────────────────
+
+# Match sentence boundaries: punctuation followed by space + capital letter,
+# or double newlines (paragraph breaks), or line breaks.
+_SENTENCE_SPLIT_RE = re.compile(
+    r'(?<=[.!?…])\s+(?=[A-Z"\'(*\[])'
+    r'|(?<=\S)\n\n+(?=\S)'
+    r'|(?<=[.!?…])\n(?=[A-Z"\'(*\[])'
+)
+
+# Markdown stripping for TTS (mirrors tts_tool._strip_markdown_for_tts)
+_MD_TTS_CODE_BLOCK = re.compile(r'```[\s\S]*?```')
+_MD_TTS_LINK = re.compile(r'\[([^\]]+)\]\([^)]+\)')
+_MD_TTS_URL = re.compile(r'https?://\S+')
+_MD_TTS_BOLD = re.compile(r'\*\*(.+?)\*\*')
+_MD_TTS_ITALIC = re.compile(r'\*(.+?)\*')
+_MD_TTS_INLINE_CODE = re.compile(r'`(.+?)`')
+_MD_TTS_HEADER = re.compile(r'^#+\s*', flags=re.MULTILINE)
+_MD_TTS_LIST_ITEM = re.compile(r'^\s*[-*]\s+', flags=re.MULTILINE)
+_MD_TTS_HR = re.compile(r'-{3,}')
+_MD_TTS_EXCESS_NL = re.compile(r'\n{3,}')
+
+# Minimum characters per chunk — sentences shorter than this get merged
+# with the next one to avoid too many tiny TTS calls.
+_MIN_CHUNK_LENGTH = 60
+# Maximum characters per chunk — if a single "sentence" exceeds this,
+# we hard-split it at a word boundary.
+_MAX_CHUNK_LENGTH = 800
+
+
+def _strip_markdown_for_speech(text: str) -> str:
+    """Remove markdown formatting that shouldn't be spoken aloud."""
+    text = _MD_TTS_CODE_BLOCK.sub(' ', text)
+    text = _MD_TTS_LINK.sub(r'\1', text)
+    text = _MD_TTS_URL.sub('', text)
+    text = _MD_TTS_BOLD.sub(r'\1', text)
+    text = _MD_TTS_ITALIC.sub(r'\1', text)
+    text = _MD_TTS_INLINE_CODE.sub(r'\1', text)
+    text = _MD_TTS_HEADER.sub('', text)
+    text = _MD_TTS_LIST_ITEM.sub('', text)
+    text = _MD_TTS_HR.sub('', text)
+    text = _MD_TTS_EXCESS_NL.sub('\n\n', text)
+    return text.strip()
+
+
+def _split_text_for_streaming(text: str) -> list[str]:
+    """Split text into speakable chunks for progressive TTS.
+
+    Returns a list of text chunks, each roughly a sentence or two,
+    respecting min/max length bounds for good TTS performance.
+    """
+    clean = _strip_markdown_for_speech(text)
+    if not clean:
+        return []
+
+    # Split on sentence boundaries
+    raw_parts = _SENTENCE_SPLIT_RE.split(clean)
+
+    # Merge short fragments and enforce max length
+    chunks: list[str] = []
+    buffer = ""
+
+    for part in raw_parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        # If this part alone exceeds max, hard-split it
+        if len(part) > _MAX_CHUNK_LENGTH:
+            # Flush buffer first
+            if buffer:
+                chunks.append(buffer)
+                buffer = ""
+            # Hard-split at word boundaries
+            while len(part) > _MAX_CHUNK_LENGTH:
+                # Find the last space before max_chunk_length
+                split_at = part.rfind(' ', 0, _MAX_CHUNK_LENGTH)
+                if split_at == -1:
+                    split_at = _MAX_CHUNK_LENGTH  # fallback: force split
+                chunks.append(part[:split_at].strip())
+                part = part[split_at:].strip()
+            if part:
+                buffer = part
+            continue
+
+        # Merge with buffer if below min length
+        if buffer:
+            candidate = buffer + " " + part
+            if len(candidate) <= _MAX_CHUNK_LENGTH:
+                buffer = candidate
+            else:
+                chunks.append(buffer)
+                buffer = part
+        else:
+            buffer = part
+
+        # If buffer reached a good size, flush it
+        if len(buffer) >= _MIN_CHUNK_LENGTH:
+            chunks.append(buffer)
+            buffer = ""
+
+    # Flush remaining buffer
+    if buffer:
+        if chunks and len(buffer) < _MIN_CHUNK_LENGTH:
+            # Merge very short trailing text with previous chunk
+            chunks[-1] = chunks[-1] + " " + buffer
+        else:
+            chunks.append(buffer)
+
+    return chunks
+
+
+async def _synthesize_chunk(text: str) -> str | None:
+    """Synthesize a single chunk and return base64 data URL or None."""
+    try:
+        from tools.tts_tool import text_to_speech_tool
+
+        loop = asyncio.get_running_loop()
+        result_json = await loop.run_in_executor(None, text_to_speech_tool, text)
+
+        result = json.loads(result_json) if isinstance(result_json, str) else result_json
+        if not result.get("success"):
+            return None
+
+        file_path = result.get("file_path")
+        if not file_path or not os.path.isfile(file_path):
+            return None
+
+        ext = os.path.splitext(file_path)[1].lower()
+        mime_type = {
+            ".mp3": "audio/mpeg",
+            ".ogg": "audio/ogg",
+            ".opus": "audio/ogg",
+            ".wav": "audio/wav",
+            ".flac": "audio/flac",
+        }.get(ext, "audio/mpeg")
+
+        try:
+            with open(file_path, "rb") as fh:
+                audio_bytes = fh.read()
+        except OSError:
+            return None
+        finally:
+            try:
+                os.unlink(file_path)
+            except OSError:
+                pass
+
+        encoded = base64.b64encode(audio_bytes).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
+    except Exception:
+        _log.exception("Streaming TTS chunk synthesis failed")
+        return None
+
+
+async def _stream_speech_sse(text: str):
+    """Async generator that yields SSE events for progressive TTS."""
+    chunks = _split_text_for_streaming(text)
+    total = len(chunks)
+
+    if total == 0:
+        yield f"data: {json.dumps({'error': 'No speakable text'})}\n\n"
+        yield f"data: {json.dumps({'done': True})}\n\n"
+        return
+
+    for i, chunk in enumerate(chunks):
+        data_url = await _synthesize_chunk(chunk)
+        if data_url:
+            event = {"index": i, "total": total, "data_url": data_url}
+        else:
+            event = {"index": i, "total": total, "error": f"Synthesis failed for chunk {i}"}
+        yield f"data: {json.dumps(event)}\n\n"
+
+    yield f"data: {json.dumps({'done': True})}\n\n"
+
+
+@app.post("/api/audio/speak-stream")
+async def speak_text_stream(payload: TTSSpeakRequest):
+    """Stream speech synthesis sentence-by-sentence via Server-Sent Events.
+
+    Each event carries a base64 data-URL for one sentence so the desktop
+    can start playback immediately instead of waiting for the full text
+    to be rendered. For long messages this drastically cuts time-to-first-audio
+    and eliminates timeout risks.
+
+    Events:
+        data: {"index": 0, "total": 15, "data_url": "data:audio/mpeg;base64,..."}
+        data: {"done": true}
+    """
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    return StreamingResponse(
+        _stream_speech_sse(text),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # disable nginx buffering
+        },
+    )
 
 
 @app.get("/api/actions/{name}/status")

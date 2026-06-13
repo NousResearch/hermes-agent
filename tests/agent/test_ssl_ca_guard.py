@@ -70,3 +70,13 @@ def test_verify_ca_bundle_with_fallback_keeps_same_contract(monkeypatch, tmp_pat
     monkeypatch.setenv("SSL_CERT_FILE", str(fake))
     with pytest.raises(SSLConfigurationError):
         verify_ca_bundle_with_fallback()
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on"])
+def test_skip_env_var_bypasses_guard(monkeypatch, tmp_path, value):
+    """HERMES_SKIP_SSL_GUARD is an intentional escape hatch for managed trust stores."""
+    fake = tmp_path / "missing.pem"
+    monkeypatch.setenv("HERMES_SKIP_SSL_GUARD", value)
+    monkeypatch.setenv("SSL_CERT_FILE", str(fake))
+    verify_ca_bundle()
+    verify_ca_bundle_with_fallback()

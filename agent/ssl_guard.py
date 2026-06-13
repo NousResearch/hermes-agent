@@ -22,6 +22,12 @@ _CA_BUNDLE_ENV_VARS = (
     "CURL_CA_BUNDLE",
 )
 
+_SKIP_VALUES = {"1", "true", "yes", "on"}
+
+
+def _skip_ssl_guard_enabled() -> bool:
+    return os.getenv("HERMES_SKIP_SSL_GUARD", "").strip().lower() in _SKIP_VALUES
+
 
 def _repair_hint() -> str:
     return (
@@ -60,6 +66,10 @@ def verify_ca_bundle() -> None:
             points at a bad path, or if certifi's bundled ``cacert.pem`` is
             missing/corrupt.
     """
+    if _skip_ssl_guard_enabled():
+        logger.debug("SSL CA bundle guard skipped via HERMES_SKIP_SSL_GUARD")
+        return
+
     for env_var in _CA_BUNDLE_ENV_VARS:
         value = os.getenv(env_var)
         if value:

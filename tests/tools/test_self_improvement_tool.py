@@ -2235,6 +2235,14 @@ def test_execution_throughput_gap_prioritizes_journal_followthrough_without_ctx_
     assert remediation["ctx_inactivity_blocking"] is False
     assert "inactive ctx is informational" in drift["detail"]
     assert "journal entries" in remediation["actions"][0]
+    execution_metrics = benchmark["checks"]["execution_loop"]["metrics"]
+    assert execution_metrics["pending_journal_follow_through_count"] == 6
+    pending_runs = execution_metrics["pending_journal_follow_through_codex_runs"]
+    assert pending_runs[0]["id"] == "codex_0"
+    assert "operatorDecisionSupport or nextDecision" in pending_runs[0]["required_journal_fields"]
+    assert pending_runs[0]["operator_decision_support_path"].startswith(
+        "entries[*].selfImprovementFocus[*]"
+    )
 
     issue_selection = benchmark["issue_selection"]
     assert issue_selection["recommended_focus"] == "Codex delivery journal follow-through"

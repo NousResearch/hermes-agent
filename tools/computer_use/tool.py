@@ -131,6 +131,17 @@ _always_allow: set = set()  # action names the user unlocked for the session
 def _get_backend() -> ComputerUseBackend:
     global _backend
     with _backend_lock:
+        if _backend is not None:
+            # If the cached backend failed to start (e.g. missing 'mcp' on first
+            # attempt), re-create it. Check by trying its is_available() which
+            # returns True even if _started is False (it only checks the binary).
+            try:
+                from tools.computer_use.cua_backend import CuaDriverBackend
+                if isinstance(_backend, CuaDriverBackend) and _backend._session._started is False:
+                    _backend.stop()
+                    _backend = None
+            except Exception:
+                pass
         if _backend is None:
             backend_name = os.environ.get("HERMES_COMPUTER_USE_BACKEND", "cua").lower()
             if backend_name in {"cua", "cua-driver", ""}:

@@ -62,6 +62,7 @@ from hermes_cli.config import (
     recommended_update_command_for_method,
     redact_key,
 )
+from agent.file_safety import is_write_denied
 from gateway.status import get_running_pid, read_runtime_status
 from utils import env_var_enabled
 
@@ -934,6 +935,14 @@ _MEDIA_MAX_BYTES = 25 * 1024 * 1024
 _MANAGED_FILES_ROOT_ENV = "HERMES_DASHBOARD_FILES_ROOT"
 _MANAGED_FILE_MAX_BYTES = 100 * 1024 * 1024
 _HOSTED_MANAGED_FILES_ROOT = Path("/opt/data")
+_MANAGED_PROTECTED_FILE_NAMES = {
+    ".anthropic_oauth.json",
+    ".env",
+    "auth.json",
+    "config.yaml",
+    "webhook_subscriptions.json",
+}
+_MANAGED_PROTECTED_DIR_NAMES = {"mcp-tokens", "pairing"}
 
 
 @dataclass(frozen=True)
@@ -941,6 +950,7 @@ class ManagedFilesPolicy:
     default_path: Path
     locked_root: Path | None
     can_change_path: bool
+    can_delete: bool
 
 
 _FS_READDIR_HIDDEN = {
@@ -1202,6 +1212,46 @@ def _path_text(raw_path: str | None) -> str:
     return text
 
 
+def _profile_control_path_parts(parts: tuple[str, ...]) -> tuple[str, ...] | None:
+    if len(parts) < 3 or parts[0] != "profiles" or not parts[1]:
+        return None
+    profile_prefix = parts[:2]
+    profile_item = parts[2]
+    if profile_item in _MANAGED_PROTECTED_FILE_NAMES | _MANAGED_PROTECTED_DIR_NAMES:
+        return (*profile_prefix, profile_item)
+    return None
+
+
+def _locked_root_control_path(policy: ManagedFilesPolicy, target: Path) -> Path | None:
+    if policy.locked_root is None:
+        return None
+    try:
+        parts = target.relative_to(policy.locked_root).parts
+    except ValueError:
+        return None
+    if not parts:
+        return None
+
+    if parts[0] in _MANAGED_PROTECTED_FILE_NAMES | _MANAGED_PROTECTED_DIR_NAMES:
+        return policy.locked_root / parts[0]
+
+    profile_parts = _profile_control_path_parts(parts)
+    if profile_parts is not None:
+        return policy.locked_root.joinpath(*profile_parts)
+    return None
+
+
+def _ensure_managed_file_write_allowed(
+    policy: ManagedFilesPolicy,
+    target: Path,
+    *,
+    action: str,
+) -> None:
+    protected_path = _locked_root_control_path(policy, target)
+    if protected_path is not None or is_write_denied(str(target)):
+        raise HTTPException(status_code=403, detail=f"{action} denied for protected Hermes path")
+
+
 def _local_dashboard_request(request: Request) -> bool:
     if getattr(request.app.state, "auth_required", False):
         return False
@@ -1224,18 +1274,41 @@ def _default_hermes_root_is_opt_data() -> bool:
     return root == _HOSTED_MANAGED_FILES_ROOT
 
 
+def _is_hosted_managed_files_root(root: Path) -> bool:
+    try:
+        return root.expanduser().resolve(strict=False) == _HOSTED_MANAGED_FILES_ROOT.resolve(strict=False)
+    except (OSError, RuntimeError):
+        return root == _HOSTED_MANAGED_FILES_ROOT
+
+
 def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
     raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
     if raw_forced_root:
         root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
-        return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
+        is_hosted_root = _is_hosted_managed_files_root(root)
+        return ManagedFilesPolicy(
+            default_path=root,
+            locked_root=root,
+            can_change_path=False,
+            can_delete=not is_hosted_root,
+        )
 
     if not _local_dashboard_request(request) or _default_hermes_root_is_opt_data():
         root = _ensure_managed_root(_HOSTED_MANAGED_FILES_ROOT) if create_root else _HOSTED_MANAGED_FILES_ROOT
-        return ManagedFilesPolicy(default_path=root, locked_root=root, can_change_path=False)
+        return ManagedFilesPolicy(
+            default_path=root,
+            locked_root=root,
+            can_change_path=False,
+            can_delete=False,
+        )
 
     home = _canonical_path(Path.home())
-    return ManagedFilesPolicy(default_path=home, locked_root=None, can_change_path=True)
+    return ManagedFilesPolicy(
+        default_path=home,
+        locked_root=None,
+        can_change_path=True,
+        can_delete=True,
+    )
 
 
 def _resolve_managed_path(
@@ -1282,6 +1355,7 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
         "root": locked_root,
         "locked_root": locked_root,
         "can_change_path": policy.can_change_path,
+        "can_delete": policy.can_delete,
     }
 
 
@@ -1391,6 +1465,7 @@ async def read_managed_file(request: Request, path: str):
 @app.post("/api/files/upload")
 async def upload_managed_file(payload: ManagedFileUpload, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    _ensure_managed_file_write_allowed(policy, target, action="Upload")
     if target.exists() and target.is_dir():
         raise HTTPException(status_code=409, detail="A directory already exists at that path")
     if target.exists() and not payload.overwrite:
@@ -1416,6 +1491,7 @@ async def upload_managed_file(payload: ManagedFileUpload, request: Request):
 @app.post("/api/files/mkdir")
 async def create_managed_directory(payload: ManagedDirectoryCreate, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request, for_write=True)
+    _ensure_managed_file_write_allowed(policy, target, action="Create")
     if target.exists() and not target.is_dir():
         raise HTTPException(status_code=409, detail="A file already exists at that path")
 
@@ -1437,6 +1513,9 @@ async def create_managed_directory(payload: ManagedDirectoryCreate, request: Req
 @app.delete("/api/files")
 async def delete_managed_file(payload: ManagedFileDelete, request: Request):
     policy, target, display_path = _resolve_managed_path(payload.path, request)
+    if not policy.can_delete:
+        raise HTTPException(status_code=403, detail="File deletion is disabled for this dashboard")
+    _ensure_managed_file_write_allowed(policy, target, action="Delete")
     if policy.locked_root is not None and target == policy.locked_root:
         raise HTTPException(status_code=400, detail="Cannot delete the managed files root")
     if target.parent == target:

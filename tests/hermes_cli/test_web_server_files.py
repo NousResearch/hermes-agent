@@ -41,6 +41,7 @@ def _close_client(client):
 def forced_files_client(monkeypatch, tmp_path):
     root = tmp_path / "data"
     monkeypatch.setenv("HERMES_DASHBOARD_FILES_ROOT", str(root))
+    monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
 
     client, prev_auth_required, prev_bound_host = _client_with_app_state()
     try:
@@ -55,6 +56,7 @@ def local_files_client(monkeypatch, tmp_path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
     monkeypatch.delenv("HERMES_HOME", raising=False)
     monkeypatch.setenv("HOME", str(home))
 
@@ -81,6 +83,7 @@ def test_forced_root_file_upload_list_read_delete_roundtrip(forced_files_client)
     assert created.json()["entry"]["path"] == str(file_path)
     assert created.json()["locked_root"] == str(root)
     assert created.json()["can_change_path"] is False
+    assert created.json()["can_delete"] is True
     assert file_path.read_text() == "hello"
 
     listing = client.get("/api/files", params={"path": str(root / "out")})
@@ -171,6 +174,49 @@ def test_forced_root_paths_stay_under_root(forced_files_client, tmp_path):
     assert escaped.status_code == 403
 
 
+def test_file_browser_blocks_control_plane_uploads_under_locked_root(forced_files_client):
+    client, root = forced_files_client
+
+    root_config = client.post(
+        "/api/files/upload",
+        json={
+            "path": str(root / "config.yaml"),
+            "data_url": "data:text/plain;base64,bW9kZWw6IGV2aWw=",
+        },
+    )
+    assert root_config.status_code == 403
+    assert not (root / "config.yaml").exists()
+
+    profile_config = client.post(
+        "/api/files/upload",
+        json={
+            "path": str(root / "profiles" / "default" / "config.yaml"),
+            "data_url": "data:text/plain;base64,bW9kZWw6IGV2aWw=",
+        },
+    )
+    assert profile_config.status_code == 403
+    assert not (root / "profiles" / "default" / "config.yaml").exists()
+
+    mcp_tokens = client.post("/api/files/mkdir", json={"path": str(root / "mcp-tokens")})
+    assert mcp_tokens.status_code == 403
+    assert not (root / "mcp-tokens").exists()
+
+
+def test_file_browser_blocks_control_plane_delete_under_locked_root(forced_files_client):
+    client, root = forced_files_client
+    root.mkdir(exist_ok=True)
+    config_path = root / "config.yaml"
+    config_path.write_text("model: keep")
+
+    deleted = client.request(
+        "DELETE",
+        "/api/files",
+        json={"path": str(config_path)},
+    )
+    assert deleted.status_code == 403
+    assert config_path.read_text() == "model: keep"
+
+
 def test_local_mode_defaults_to_home_and_can_jump_to_absolute_path(local_files_client, tmp_path):
     client, home = local_files_client
     (home / "home.txt").write_text("home")
@@ -180,6 +226,7 @@ def test_local_mode_defaults_to_home_and_can_jump_to_absolute_path(local_files_c
     assert default_listing.json()["path"] == str(home)
     assert default_listing.json()["locked_root"] is None
     assert default_listing.json()["can_change_path"] is True
+    assert default_listing.json()["can_delete"] is True
     assert default_listing.json()["entries"][0]["path"] == str(home / "home.txt")
 
     other = tmp_path / "other"
@@ -202,6 +249,7 @@ def test_local_mode_upload_read_mkdir_delete_roundtrip(local_files_client):
     assert created_folder.status_code == 200
     assert created_folder.json()["locked_root"] is None
     assert created_folder.json()["can_change_path"] is True
+    assert created_folder.json()["can_delete"] is True
     assert folder.is_dir()
 
     uploaded = client.post(
@@ -229,6 +277,7 @@ def test_local_mode_upload_read_mkdir_delete_roundtrip(local_files_client):
 
 def test_hosted_policy_locks_to_opt_data(monkeypatch):
     monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
     monkeypatch.setenv("HERMES_HOME", "/opt/data")
     client, prev_auth_required, prev_bound_host = _client_with_app_state()
     try:
@@ -244,3 +293,34 @@ def test_hosted_policy_locks_to_opt_data(monkeypatch):
 
     assert str(policy.locked_root) == "/opt/data"
     assert policy.can_change_path is False
+    assert policy.can_delete is False
+
+
+def test_hosted_data_root_blocks_file_browser_delete(monkeypatch, tmp_path):
+    root = tmp_path / "data"
+    monkeypatch.delenv("HERMES_DASHBOARD_FILES_ROOT", raising=False)
+    monkeypatch.delenv("HERMES_WRITE_SAFE_ROOT", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(web_server, "_HOSTED_MANAGED_FILES_ROOT", root)
+
+    client, prev_auth_required, prev_bound_host = _client_with_app_state()
+    try:
+        listing = client.get("/api/files")
+        assert listing.status_code == 200
+        assert listing.json()["path"] == str(root)
+        assert listing.json()["locked_root"] == str(root)
+        assert listing.json()["can_change_path"] is False
+        assert listing.json()["can_delete"] is False
+
+        file_path = root / "keep.txt"
+        file_path.write_text("keep")
+        deleted = client.request(
+            "DELETE",
+            "/api/files",
+            json={"path": str(file_path)},
+        )
+        assert deleted.status_code == 403
+        assert file_path.read_text() == "keep"
+    finally:
+        _close_client(client)
+        _restore_app_state(prev_auth_required, prev_bound_host)

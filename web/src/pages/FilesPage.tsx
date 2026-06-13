@@ -107,6 +107,7 @@ export default function FilesPage() {
 
   const activePath = listing?.path ?? currentPath ?? "";
   const canChangePath = listing?.can_change_path ?? false;
+  const canDelete = listing?.can_delete ?? false;
   const canUpload = Boolean(activePath) && !uploading;
   const headerPath = displayPath(listing?.locked_root ?? listing?.path ?? currentPath);
 
@@ -260,6 +261,11 @@ export default function FilesPage() {
 
   const confirmDelete = async () => {
     if (!pendingDelete) return;
+    if (!canDelete) {
+      setPendingDelete(null);
+      showToast("Delete is disabled for this dashboard", "error");
+      return;
+    }
     setDeleting(true);
     try {
       await api.deleteFile(pendingDelete.path, pendingDelete.is_directory);
@@ -451,16 +457,18 @@ export default function FilesPage() {
                       <Download />
                     </Button>
                   )}
-                  <Button
-                    ghost
-                    size="icon"
-                    type="button"
-                    onClick={() => setPendingDelete(entry)}
-                    aria-label={`Delete ${entry.name}`}
-                    className="text-destructive hover:text-destructive"
-                  >
-                    <Trash2 />
-                  </Button>
+                  {canDelete && (
+                    <Button
+                      ghost
+                      size="icon"
+                      type="button"
+                      onClick={() => setPendingDelete(entry)}
+                      aria-label={`Delete ${entry.name}`}
+                      className="text-destructive hover:text-destructive"
+                    >
+                      <Trash2 />
+                    </Button>
+                  )}
                 </span>
               </div>
             ))

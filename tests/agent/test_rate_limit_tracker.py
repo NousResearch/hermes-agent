@@ -207,3 +207,46 @@ class TestAgentIntegration:
         # None should not crash
         result = parse_rate_limit_headers({})
         assert result is None
+
+
+class TestFormatStatusbar:
+    """format_rate_limit_statusbar — ultra-compact status bar summary."""
+
+    def test_no_data_returns_empty_string(self):
+        from agent.rate_limit_tracker import format_rate_limit_statusbar
+
+        assert format_rate_limit_statusbar(RateLimitState()) == ""
+
+    def test_minute_windows_preferred_and_no_reset_text(self):
+        from agent.rate_limit_tracker import format_rate_limit_statusbar
+
+        state = parse_rate_limit_headers(NOUS_HEADERS, provider="nous")
+        result = format_rate_limit_statusbar(state)
+        assert "RPM 795/800" in result
+        assert "TPM" in result
+        # Hourly windows and reset countdowns are omitted when the
+        # per-minute buckets exist — this is the status bar, not /usage.
+        assert "RPH" not in result
+        assert "TPH" not in result
+        assert "resets" not in result
+        assert " · " in result
+
+    def test_falls_back_to_hourly_windows(self):
+        from agent.rate_limit_tracker import format_rate_limit_statusbar
+
+        state = RateLimitState(
+            requests_hour=RateLimitBucket(limit=33600, remaining=33590),
+            tokens_hour=RateLimitBucket(limit=336000000, remaining=335999000),
+            captured_at=time.time(),
+        )
+        result = format_rate_limit_statusbar(state)
+        assert "RPH" in result
+        assert "TPH" in result
+        assert "RPM" not in result
+        assert "TPM" not in result
+
+    def test_has_data_but_no_limits_returns_empty_string(self):
+        from agent.rate_limit_tracker import format_rate_limit_statusbar
+
+        state = RateLimitState(captured_at=time.time())
+        assert format_rate_limit_statusbar(state) == ""

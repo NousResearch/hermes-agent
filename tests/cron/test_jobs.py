@@ -991,3 +991,113 @@ class TestSaveJobOutput:
         with pytest.raises(ValueError, match="output path"):
             save_job_output(str(tmp_cron_dir / "outside"), "# Results")
         assert not (tmp_cron_dir / "outside").exists()
+
+
+# =========================================================================
+# fallback_providers + profile persistence (Ahlnos fork additions)
+# =========================================================================
+
+class TestFallbackProvidersPersistence:
+    """Pin the None-vs-[] storage contract for per-job fallback chains.
+
+    The documented semantics: None = inherit the profile's configured
+    fallback chain; explicit [] = no fallback, fail fast on primary
+    failure. The distinction must survive the jobs.json round trip.
+    """
+
+    def test_create_without_fallback_stores_explicit_none(self, tmp_cron_dir):
+        job = create_job("p", "30m")
+        assert job["fallback_providers"] is None
+        reloaded = get_job(job["id"])
+        assert reloaded["fallback_providers"] is None
+        # The key itself is always written by create_job. The scheduler's
+        # _effective_fallback_chain() gates on key MEMBERSHIP, not on
+        # `is not None`, so every job created here resolves to "no
+        # fallback" instead of inheriting the profile chain.
+        # TODO: suspected bug — scheduler should treat None as "inherit";
+        # flagged in the PR body. Pinning the storage shape that triggers it.
+        raw = load_jobs()[0]
+        assert "fallback_providers" in raw
+        assert raw["fallback_providers"] is None
+
+    def test_explicit_empty_list_survives_round_trip(self, tmp_cron_dir):
+        job = create_job("p", "30m", fallback_providers=[])
+        assert job["fallback_providers"] == []
+        reloaded = get_job(job["id"])
+        assert reloaded["fallback_providers"] == []
+        assert reloaded["fallback_providers"] is not None
+
+    def test_entries_are_cleaned_and_non_dicts_dropped(self, tmp_cron_dir):
+        job = create_job(
+            "p",
+            "30m",
+            fallback_providers=[
+                {"provider": "openrouter", "model": "m", "min_effort": "low"},
+                "garbage-entry",
+            ],
+        )
+        assert job["fallback_providers"] == [
+            {"provider": "openrouter", "model": "m", "min_effort": "low"}
+        ]
+        reloaded = get_job(job["id"])
+        assert reloaded["fallback_providers"] == job["fallback_providers"]
+
+    def test_all_garbage_list_normalizes_to_inherit(self, tmp_cron_dir):
+        # Current behavior: a non-empty list with no dict entries is treated
+        # as if fallback_providers was never passed (None = inherit), NOT as
+        # an explicit "no fallback" empty list.
+        job = create_job("p", "30m", fallback_providers=["just-a-string"])
+        assert job["fallback_providers"] is None
+
+    def test_non_list_scalar_normalizes_to_inherit(self, tmp_cron_dir):
+        job = create_job("p", "30m", fallback_providers="openrouter")
+        assert job["fallback_providers"] is None
+
+    def test_update_round_trips_empty_list(self, tmp_cron_dir):
+        job = create_job("p", "30m", fallback_providers=[{"provider": "x", "model": "y"}])
+        updated = update_job(job["id"], {"fallback_providers": []})
+        assert updated["fallback_providers"] == []
+        assert get_job(job["id"])["fallback_providers"] == []
+
+
+class TestJobProfileField:
+    def test_create_without_profile_stores_none(self, tmp_cron_dir):
+        job = create_job("p", "30m")
+        assert job["profile"] is None
+        assert get_job(job["id"])["profile"] is None
+
+    def test_blank_profile_disables_selection(self, tmp_cron_dir):
+        assert create_job("p", "30m", profile="   ")["profile"] is None
+
+    def test_default_profile_is_canonicalized_without_dir_check(self, tmp_cron_dir):
+        # "default" is the built-in root profile — always valid, matched
+        # case-insensitively, and stored canonically.
+        job = create_job("p", "30m", profile="Default")
+        assert job["profile"] == "default"
+        assert get_job(job["id"])["profile"] == "default"
+
+    def test_unknown_profile_rejected_at_create_time(self, tmp_cron_dir, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        with pytest.raises(FileNotFoundError, match="does not exist"):
+            create_job("p", "30m", profile="no-such-profile")
+
+    def test_existing_named_profile_stored_lowercase(self, tmp_cron_dir, tmp_path, monkeypatch):
+        from pathlib import Path
+
+        (tmp_path / ".hermes" / "profiles" / "coder").mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        job = create_job("p", "30m", profile="Coder")
+        assert job["profile"] == "coder"
+
+    def test_legacy_empty_string_profile_normalizes_to_none_on_read(self, tmp_cron_dir):
+        # Hand-edited / legacy records can carry profile: "" — readers must
+        # see None so per-job profile selection stays off.
+        job = create_job("p", "30m")
+        jobs = load_jobs()
+        jobs[0]["profile"] = ""
+        save_jobs(jobs)
+        assert get_job(job["id"])["profile"] is None

@@ -209,7 +209,10 @@ DEFAULT_CONTEXT_LENGTHS = {
     # https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000,
     "minimax": 204800,
-    # GLM
+    # GLM — GLM-5.2 ships with 1M context; GLM-5 and GLM-5.1 are 200K.
+    # Substring matching is longest-first, so "glm-5.2" wins over the
+    # generic "glm" catch-all for that slug.
+    "glm-5.2": 1_000_000,
     "glm": 202752,
     # xAI Grok — xAI /v1/models does not return context_length metadata,
     # so these hardcoded fallbacks prevent Hermes from probing-down to

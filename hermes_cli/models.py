@@ -256,6 +256,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "gemini-3.5-flash",
     ],
     "zai": [
+        "glm-5.2",
         "glm-5.1",
         "glm-5",
         "glm-5v-turbo",
@@ -280,6 +281,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "openai/gpt-oss-120b",
     ],
     "kimi-coding": [
+        "kimi-k2.7-code",
         "kimi-k2.6",
         "kimi-k2.5",
         "kimi-for-coding",
@@ -2330,7 +2332,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             if api_key:
                 live = _p.fetch_models(api_key=api_key)
                 if live:
-                    return live
+                    # Merge curated entries with live results so models that
+                    # are reachable for inference before they appear in
+                    # /v1/models survive the live fetch (same pattern as the
+                    # Anthropic path above). Curated go first to preserve the
+                    # recommended ordering in the /model picker.
+                    curated = list(_PROVIDER_MODELS.get(normalized, []))
+                    merged = list(curated)
+                    merged_lower = {m.lower() for m in curated}
+                    for m in live:
+                        if m.lower() not in merged_lower:
+                            merged.append(m)
+                            merged_lower.add(m.lower())
+                    return merged
             # Use profile's fallback_models if defined
             if _p.fallback_models:
                 return list(_p.fallback_models)

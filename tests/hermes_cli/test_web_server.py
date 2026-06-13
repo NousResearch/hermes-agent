@@ -501,15 +501,16 @@ class TestWebServerEndpoints:
         from hermes_cli import profiles as profiles_mod
         from hermes_state import SessionDB
 
-        profiles_mod.create_profile("alpha", no_alias=True)
-        alpha_db = SessionDB(db_path=profiles_mod.get_profile_dir("alpha") / "state.db")
+        profile_name = "alpha-profile-scope"
+        profiles_mod.create_profile(profile_name, no_alias=True)
+        alpha_db = SessionDB(db_path=profiles_mod.get_profile_dir(profile_name) / "state.db")
         try:
             alpha_db.create_session(session_id="alpha-only", source="cli")
             alpha_db.append_message(session_id="alpha-only", role="user", content="hello alpha")
         finally:
             alpha_db.close()
 
-        resp = self.client.get("/api/sessions?limit=20&offset=0&profile=alpha")
+        resp = self.client.get(f"/api/sessions?limit=20&offset=0&profile={profile_name}")
         assert resp.status_code == 200
         data = resp.json()
         assert any(s["id"] == "alpha-only" for s in data["sessions"])
@@ -520,18 +521,63 @@ class TestWebServerEndpoints:
         from hermes_cli import profiles as profiles_mod
         from hermes_state import SessionDB
 
-        profiles_mod.create_profile("beta", no_alias=True)
-        beta_db = SessionDB(db_path=profiles_mod.get_profile_dir("beta") / "state.db")
+        profile_name = "beta-profile-scope"
+        profiles_mod.create_profile(profile_name, no_alias=True)
+        beta_db = SessionDB(db_path=profiles_mod.get_profile_dir(profile_name) / "state.db")
         try:
             beta_db.create_session(session_id="beta-only", source="cli")
             beta_db.append_message(session_id="beta-only", role="user", content="hello beta")
         finally:
             beta_db.close()
 
-        resp = self.client.get("/api/sessions/stats?profile=beta")
+        resp = self.client.get(f"/api/sessions/stats?profile={profile_name}")
         assert resp.status_code == 200
         data = resp.json()
-        assert data["total"] >= 1
+        assert data["total"] == 1
+        assert data["active_store"] == 1
+
+    def test_sessions_export_respects_profile_query(self):
+        """GET /api/sessions/{id}/export?profile=... must read the selected profile DB."""
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        profile_name = "export-profile-scope"
+        profiles_mod.create_profile(profile_name, no_alias=True)
+        export_db = SessionDB(db_path=profiles_mod.get_profile_dir(profile_name) / "state.db")
+        try:
+            export_db.create_session(session_id="export-only", source="cli")
+            export_db.append_message(session_id="export-only", role="user", content="hello export")
+        finally:
+            export_db.close()
+
+        resp = self.client.get(f"/api/sessions/export-only/export?profile={profile_name}")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["id"] == "export-only"
+        assert data["messages"][0]["content"] == "hello export"
+
+    def test_sessions_prune_respects_profile_query(self):
+        """POST /api/sessions/prune?profile=... must prune within the selected profile DB."""
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        profile_name = "prune-profile-scope"
+        profiles_mod.create_profile(profile_name, no_alias=True)
+        prune_db = SessionDB(db_path=profiles_mod.get_profile_dir(profile_name) / "state.db")
+        try:
+            prune_db.create_session(session_id="prune-me", source="cli")
+            prune_db.end_session("prune-me", "completed")
+            prune_db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (0, 0, "prune-me"),
+            )
+            prune_db._conn.commit()
+        finally:
+            prune_db.close()
+
+        resp = self.client.post(f"/api/sessions/prune?profile={profile_name}", json={"older_than_days": 1})
+        assert resp.status_code == 200
+        assert resp.json()["removed"] >= 1
 
     def test_profiles_sessions_tags_default_profile(self):
         """The cross-profile aggregator returns the default profile's rows

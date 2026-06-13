@@ -6416,7 +6416,10 @@ async def get_session_stats(profile: Optional[str] = None):
         db.close()
 
 
-def _open_session_db_for_profile(profile: Optional[str]):
+def _open_session_db_for_profile(
+    profile: Optional[str],
+    home: Optional[Path] = None,
+):
     """Open a SessionDB for read paths, optionally for another profile.
 
     ``profile`` None/empty → this process's own ``state.db`` (the common,
@@ -6425,22 +6428,29 @@ def _open_session_db_for_profile(profile: Optional[str]):
     (transcripts, detail) without spawning that profile's backend.
     """
     from hermes_state import SessionDB
+
     if not profile:
         return SessionDB()
-    _name, home = _cron_profile_home(profile)
-    return SessionDB(db_path=Path(home) / "state.db")
+
+    resolved_home = home if home is not None else _cron_profile_home(profile)[1]
+    return SessionDB(db_path=resolved_home / "state.db")
 
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
-    db = _open_session_db_for_profile(profile)
+    resolved_name = None
+    resolved_home = None
+    if profile:
+        resolved_name, resolved_home = _cron_profile_home(profile)
+
+    db = _open_session_db_for_profile(profile, resolved_home)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
         if not session:
             raise HTTPException(status_code=404, detail="Session not found")
-        if profile:
-            session["profile"] = _cron_profile_home(profile)[0]
+        if resolved_name:
+            session["profile"] = resolved_name
         return session
     finally:
         db.close()
@@ -6499,7 +6509,11 @@ class SessionRename(BaseModel):
 
 
 @app.patch("/api/sessions/{session_id}")
-async def rename_session_endpoint(session_id: str, body: SessionRename, profile: Optional[str] = None):
+async def rename_session_endpoint(
+    session_id: str,
+    body: SessionRename,
+    profile: Optional[str] = None,
+):
     """Update a session: rename (or clear its title) and/or archive it.
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
@@ -6554,13 +6568,22 @@ class SessionPrune(BaseModel):
 
 
 @app.post("/api/sessions/prune")
-async def prune_sessions_endpoint(body: SessionPrune, profile: Optional[str] = None):
+async def prune_sessions_endpoint(
+    body: SessionPrune,
+    profile: Optional[str] = None,
+):
     """Delete ended sessions older than N days (mirrors `hermes sessions prune`)."""
     if body.older_than_days < 1:
         raise HTTPException(status_code=400, detail="older_than_days must be >= 1")
-    db = _open_session_db_for_profile(profile)
+
+    resolved_name = None
+    resolved_home = get_hermes_home()
+    if profile:
+        resolved_name, resolved_home = _cron_profile_home(profile)
+
+    db = _open_session_db_for_profile(profile, resolved_home)
     try:
-        sessions_dir = (_cron_profile_home(profile)[1] if profile else get_hermes_home()) / "sessions"
+        sessions_dir = resolved_home / "sessions"
         removed = db.prune_sessions(
             older_than_days=body.older_than_days,
             source=(body.source or None),

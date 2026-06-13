@@ -887,6 +887,11 @@ class TestPromptBuilderConstants:
         assert "table" in lowered
         assert "task list" in lowered
         assert "math" in lowered
+        # Hint should proactively steer toward structured formatting, not just
+        # permit it: bullet + numbered lists for scannable, structured output.
+        assert "bullet" in lowered
+        assert "numbered" in lowered
+        # Local media delivery guidance must remain intact.
         assert "include MEDIA:" in hint
 
     def test_platform_hints_mattermost(self):

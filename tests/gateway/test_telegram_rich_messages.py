@@ -80,6 +80,25 @@ async def test_legacy_rich_messages_config_is_ignored():
 
 
 @pytest.mark.asyncio
+async def test_expect_edits_metadata_keeps_preview_on_legacy_path():
+    adapter = _make_adapter()
+
+    result = await adapter.send(
+        "12345",
+        RICH_CONTENT,
+        metadata={"expect_edits": True},
+    )
+
+    assert result.success is True
+    # Streaming preview sends will be edited later, so they must not be born as
+    # rich messages until Hermes wires rich_message edits directly.
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
 async def test_oversized_content_skips_rich_and_chunks():
     adapter = _make_adapter()
     # > 32,768 UTF-8 bytes -> rich pre-check fails, legacy chunking takes over.
@@ -326,3 +345,40 @@ async def test_rich_draft_oversized_uses_legacy():
     assert result.success is True
     adapter._bot.do_api_request.assert_not_called()
     adapter._bot.send_message_draft.assert_awaited_once()
+
+
+# ----------------------------------------------------------------------
+# prefers_fresh_final_streaming: the stream consumer asks the adapter whether
+# to finalize a streamed reply by sending a fresh (rich) message + deleting the
+# preview, instead of final-editing the preview through the non-rich edit path.
+# Telegram opts in exactly when the content is rich-eligible.
+# ----------------------------------------------------------------------
+def test_prefers_fresh_final_streaming_when_rich_enabled():
+    adapter = _make_adapter()
+    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is True
+
+
+def test_prefers_fresh_final_streaming_ignores_legacy_toggle():
+    adapter = _make_adapter(extra={"rich_messages": False})
+    assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is True
+
+
+# ----------------------------------------------------------------------
+# streaming_overflow_limit: with rich on, the stream consumer may accumulate up
+# to the 32,768-char rich cap before splitting, so a reply that fits one
+# sendRichMessage / sendRichMessageDraft isn't fragmented at the 4,096 limit.
+# ----------------------------------------------------------------------
+def test_streaming_overflow_limit_is_rich_cap_when_enabled():
+    adapter = _make_adapter()
+    assert adapter.streaming_overflow_limit() == TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+
+def test_streaming_overflow_limit_ignores_legacy_toggle():
+    adapter = _make_adapter(extra={"rich_messages": False})
+    assert adapter.streaming_overflow_limit() == TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+
+def test_streaming_overflow_limit_none_when_rich_latched_off():
+    adapter = _make_adapter()
+    adapter._rich_send_disabled = True
+    assert adapter.streaming_overflow_limit() is None

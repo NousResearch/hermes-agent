@@ -879,7 +879,10 @@ def _classify_by_status(
                 retryable=False,
                 should_fallback=True,
             )
-        return result_fn(FailoverReason.server_error, retryable=True)
+        # Bare 500/502 server-error path: also route to the fallback
+        # chain (#32961). The provider is down or returning generic 5xx;
+        # the next provider in fallback_providers is a reasonable next try.
+        return result_fn(FailoverReason.server_error, retryable=True, should_fallback=True)
 
     if status_code in {503, 529}:
         return result_fn(FailoverReason.overloaded, retryable=True)
@@ -892,9 +895,13 @@ def _classify_by_status(
             should_fallback=True,
         )
 
-    # Other 5xx — retryable
+    # Other 5xx — retryable, and route to fallback_providers (#32961):
+    # a 501/504/505 from the primary means the next provider in the
+    # chain should get a turn rather than burning the retry budget on
+    # the same host. 503/529 are explicitly handled above as `overloaded`
+    # and are intentionally out of scope.
     if 500 <= status_code < 600:
-        return result_fn(FailoverReason.server_error, retryable=True)
+        return result_fn(FailoverReason.server_error, retryable=True, should_fallback=True)
 
     return None
 

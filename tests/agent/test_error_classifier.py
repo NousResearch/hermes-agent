@@ -405,6 +405,51 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.server_error
         assert result.retryable is True
 
+    # ── Server errors should trigger fallback chain (#32961) ──
+    # Bare 500/502 (no request-validation signal) currently returns
+    # `should_fallback=False` (the dataclass default), so the
+    # `fallback_providers` chain never advances and Hermes retries the
+    # same provider. This is the same recovery contract the connection-
+    # error path already follows.
+
+    def test_500_plain_server_error_should_fallback(self):
+        e = MockAPIError("Internal Server Error", status_code=500)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_fallback is True
+
+    def test_502_plain_server_error_should_fallback(self):
+        e = MockAPIError("Bad Gateway", status_code=502)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_fallback is True
+
+    def test_504_other_5xx_should_fallback(self):
+        """The 'other 5xx' catch-all (e.g. 504 Gateway Timeout) at the
+        bottom of classify_api_error must also propagate should_fallback.
+        503/529 are handled earlier as `overloaded` and are out of scope."""
+        e = MockAPIError("Gateway Timeout", status_code=504)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_fallback is True
+
+    def test_503_overloaded_unchanged_no_fallback(self):
+        """Regression guard (#32961): 503/529 is intentionally classified as
+        `overloaded` and does NOT trigger the fallback chain. overloaded ==
+        transient retry signal; server_error == provider-down. Future diffs
+        touching the 500/502 path must NOT silently widen to 503/529."""
+        e = MockAPIError("Service Unavailable", status_code=503)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+        assert result.should_fallback is False
+        e2 = MockAPIError("Overloaded", status_code=529)
+        result2 = classify_api_error(e2)
+        assert result2.reason == FailoverReason.overloaded
+        assert result2.should_fallback is False
+
     # ── Model not found ──
 
     def test_404_model_not_found(self):

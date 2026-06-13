@@ -196,37 +196,11 @@ def _strip_mdv2(text: str) -> str:
     return cleaned
 
 
-# ---------------------------------------------------------------------------
-# Markdown table → Telegram-friendly row groups
-# ---------------------------------------------------------------------------
-# Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
-# so pipe tables render as noisy backslash-pipe text with no alignment.
-# Reformating each row into a bold heading plus bullet list keeps the content
-# readable on mobile clients while preserving the source data.
-
-# Matches a GFM table delimiter row: optional outer pipes, cells containing
-# only dashes (with optional leading/trailing colons for alignment) separated
-# by '|'.  Requires at least one internal '|' so lone '---' horizontal rules
-# are NOT matched.
-_TABLE_SEPARATOR_RE = re.compile(
-    r'^\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*){1,}\|?\s*$'
+from gateway.platforms.helpers import (
+    TABLE_SEPARATOR_RE as _TABLE_SEPARATOR_RE,
+    is_table_row as _is_table_row,
+    split_markdown_table_row as _split_markdown_table_row,
 )
-
-
-def _is_table_row(line: str) -> bool:
-    """Return True if *line* could plausibly be a table data row."""
-    stripped = line.strip()
-    return bool(stripped) and '|' in stripped
-
-
-def _split_markdown_table_row(line: str) -> list[str]:
-    """Split a simple GFM table row into stripped cell values."""
-    stripped = line.strip()
-    if stripped.startswith("|"):
-        stripped = stripped[1:]
-    if stripped.endswith("|"):
-        stripped = stripped[:-1]
-    return [cell.strip() for cell in stripped.split("|")]
 
 
 def _render_table_block_for_telegram(table_block: list[str]) -> str:

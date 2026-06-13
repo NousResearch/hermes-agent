@@ -300,9 +300,13 @@ class ModelSwitchResult:
 # ---------------------------------------------------------------------------
 
 def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool]:
-    """Parse --provider, --global, and --refresh flags from /model command args.
+    """Parse --provider, --global, --tui-session, and --refresh flags from /model command args.
 
     Returns (model_input, explicit_provider, is_global, force_refresh).
+
+    ``--tui-session`` is a no-op marker sent by the TUI model picker for
+    session-scoped switches. It is stripped so it doesn't pollute the model
+    name, and leaves ``is_global=False`` (the default).
 
     Examples::
 
@@ -312,6 +316,7 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool]:
         "--provider my-ollama"           -> ("", "my-ollama", False, False)
         "--refresh"                      -> ("", "", False, True)
         "sonnet --provider anthropic --global" -> ("sonnet", "anthropic", True, False)
+        "sonnet --provider custom --tui-session" -> ("sonnet", "custom", False, False)
     """
     is_global = False
     explicit_provider = ""
@@ -320,7 +325,14 @@ def parse_model_flags(raw_args: str) -> tuple[str, str, bool, bool]:
     # Normalize Unicode dashes (Telegram/iOS auto-converts -- to em/en dash)
     # A single Unicode dash before a flag keyword becomes "--"
     import re as _re
-    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|refresh)', r'--\1', raw_args)
+    raw_args = _re.sub(r'[\u2012\u2013\u2014\u2015](provider|global|refresh|tui-session)', r'--\1', raw_args)
+
+    # Extract --tui-session (TUI model picker session-scoped switch marker).
+    # This flag must be stripped before model name parsing so it doesn't
+    # leak into the model input and cause "Model names cannot contain spaces".
+    # It explicitly means is_global=False (session-only override).
+    if "--tui-session" in raw_args:
+        raw_args = raw_args.replace("--tui-session", "").strip()
 
     # Extract --global
     if "--global" in raw_args:

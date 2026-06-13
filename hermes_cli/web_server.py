@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import hmac
+import inspect
 import importlib.util
 import json
 import logging
@@ -93,6 +94,7 @@ try:
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
     from pydantic import BaseModel
+    from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
     # running `hermes dashboard` needs fastapi+uvicorn; lazy install keeps
@@ -108,6 +110,7 @@ except ImportError:
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
         from pydantic import BaseModel
+        from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
@@ -10004,7 +10007,12 @@ def _list_cron_jobs_sync(profile: str = "all"):
 
 async def _run_cron_dashboard_io(func, *args, **kwargs):
     """Run cron dashboard profile/job I/O outside the FastAPI event loop."""
-    return await asyncio.to_thread(func, *args, **kwargs)
+    if inspect.iscoroutinefunction(func):
+        raise TypeError("_run_cron_dashboard_io only accepts sync callables")
+    result = await run_in_threadpool(func, *args, **kwargs)
+    if inspect.isawaitable(result):
+        raise TypeError("_run_cron_dashboard_io sync callable returned an awaitable")
+    return result
 
 
 @app.get("/api/cron/jobs")

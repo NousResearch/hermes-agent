@@ -174,7 +174,6 @@ export function ChatBar({
   const queuedPromptsBySession = useStore($queuedPromptsBySession)
   const statusItemsBySession = useStore($statusItemsBySession)
   const scrolledUp = useStore($threadScrolledUp)
-  const sessionMessages = useStore($messages)
   const activeQueueSessionKey = queueSessionKey || sessionId || null
 
   const queuedPrompts = useMemo(
@@ -866,7 +865,9 @@ export function ChatBar({
       event.preventDefault()
       triggerKeyConsumedRef.current = true
 
-      const history = deriveUserHistory(sessionMessages, chatMessageText)
+      // $messages is read imperatively (not subscribed) so the composer
+      // doesn't re-render on every streaming delta flush.
+      const history = deriveUserHistory($messages.get(), chatMessageText)
       const entry = browseBackward(sessionId, currentDraft, history)
 
       if (entry !== null) {
@@ -891,7 +892,7 @@ export function ChatBar({
         event.preventDefault()
         triggerKeyConsumedRef.current = true
 
-        const history = deriveUserHistory(sessionMessages, chatMessageText)
+        const history = deriveUserHistory($messages.get(), chatMessageText)
         const result = browseForward(sessionId, history)
 
         if (result !== null) {

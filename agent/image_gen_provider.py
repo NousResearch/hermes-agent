@@ -262,6 +262,13 @@ def save_url_image(
             continue
         # Final response (non-redirect) — break out
         break
+    else:
+        # Loop exhausted — too many safe redirects without a final response
+        if response is not None:
+            response.close()
+        raise ValueError(
+            f"Blocked: too many redirects (>{_MAX_REDIRECTS}) fetching provider-returned URL"
+        )
     response.raise_for_status()
 
     # Infer extension from the response content-type, falling back to the

@@ -109,7 +109,6 @@ def test_save_url_image_multi_hop_redirect_validates_each_hop():
 
     hop1 = _mock_redirect_response("https://cdn2.example.com/step2")
     hop2 = _mock_redirect_response("http://10.0.0.1/internal")
-    final = _mock_final_response()
 
     def _is_safe(url: str) -> bool:
         return "10.0.0.1" not in url
@@ -123,3 +122,23 @@ def test_save_url_image_multi_hop_redirect_validates_each_hop():
         # (only 2 requests: initial + safe redirect)
         from unittest.mock import _CallList
         # Verify the private URL was never fetched
+
+
+def test_save_url_image_too_many_redirects_raises():
+    """SSRF guard: redirect loop exceeding budget must raise ValueError."""
+    from agent.image_gen_provider import save_url_image
+
+    # 11 safe redirects (exceeds _MAX_REDIRECTS=10) — loop exhausts
+    redirects = [
+        _mock_redirect_response(f"https://cdn{i}.example.com/next")
+        for i in range(11)
+    ]
+
+    with patch("requests.get", side_effect=redirects), \
+         patch("tools.url_safety.is_safe_url", return_value=True):
+        with pytest.raises(ValueError, match="too many redirects"):
+            save_url_image("https://cdn.example.com/image.png")
+
+    # All 11 redirect responses should have been closed
+    for r in redirects:
+        r.close.assert_called()

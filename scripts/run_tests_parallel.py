@@ -48,9 +48,14 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-if hasattr(sys.stdout, "reconfigure"):
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+def _reconfigure_stream(stream: object) -> None:
+    reconfigure = getattr(stream, "reconfigure", None)
+    if callable(reconfigure):
+        reconfigure(encoding="utf-8", errors="replace")
+
+
+_reconfigure_stream(sys.stdout)
+_reconfigure_stream(sys.stderr)
 
 
 # Default test discovery roots.
@@ -272,6 +277,8 @@ def _spawn_pytest_once(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
         # POSIX: place the child at the head of its own process group so
         # _kill_tree can SIGKILL the group atomically.
         # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
@@ -377,19 +384,10 @@ def _run_one_file(
     """
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
     subproc_start = time.monotonic()
-    proc = subprocess.Popen(
+    rc, output = _spawn_pytest_once(
         cmd,
-        cwd=repo_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        # POSIX: place the child at the head of its own process group so
-        # _kill_tree can SIGKILL the group atomically.
-        # Windows: this maps to CREATE_NEW_PROCESS_GROUP in CPython 3.12+;
-        # _kill_tree handles the Windows path via taskkill /F /T.
-        start_new_session=True,
+        repo_root,
+        file_timeout,
     )
 
     # pytest exit 4 = "file or directory not found" at exec time. On loaded

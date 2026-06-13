@@ -17,7 +17,7 @@ from typing import Any
 try:
     from hermes_constants import get_hermes_home
 except Exception:  # pragma: no cover - early import safety
-    def get_hermes_home() -> Path:  # type: ignore[no-redef]
+    def get_hermes_home() -> Path:
         return Path.home() / ".hermes"
 
 
@@ -387,6 +387,8 @@ def _plugin_character_name() -> str:
 def _plugin_fbx_port(explicit: Any = None) -> int:
     cfg = _plugin_config()
     raw = explicit if explicit is not None else cfg.get("fbx_port")
+    if raw is None:
+        return DEFAULT_FBX_PORT
     try:
         port = int(raw)
     except (TypeError, ValueError):
@@ -398,6 +400,12 @@ def _bounded(text: str, limit: int = 16000) -> str:
     if len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n[TRUNCATED]"
+
+
+def _process_output_text(value: str | bytes | None) -> str:
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+    return value or ""
 
 
 def _run_command(
@@ -425,8 +433,8 @@ def _run_command(
         return {
             "ok": False,
             "error": f"Command timed out after {timeout_seconds}s.",
-            "stdout": _bounded(exc.stdout or ""),
-            "stderr": _bounded(exc.stderr or ""),
+            "stdout": _bounded(_process_output_text(exc.stdout)),
+            "stderr": _bounded(_process_output_text(exc.stderr)),
         }
     except OSError as exc:
         return {"ok": False, "error": str(exc)}

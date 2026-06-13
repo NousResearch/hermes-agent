@@ -44,6 +44,16 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --python 3.11 --extra dev
 
+      - name: Lint and typecheck plugin
+        run: |
+          source .venv/bin/activate
+          ruff check \
+            plugins/aituber_onair \
+            tests/plugins/test_aituber_onair_plugin.py
+          ty check \
+            plugins/aituber_onair \
+            tests/plugins/test_aituber_onair_plugin.py
+
       - name: Compile plugin
         run: |
           source .venv/bin/activate

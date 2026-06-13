@@ -51,6 +51,7 @@ Examples:
     hermes auth add <provider>    Add a pooled credential
     hermes auth list              List pooled credentials
     hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
+    hermes auth switch <p> <t>    Move pooled credential to first by index, id, or label
     hermes auth reset <provider>  Clear exhaustion status for a provider
     hermes model                  Select default model
     hermes fallback [list]        Show fallback provider chain

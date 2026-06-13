@@ -816,6 +816,52 @@ def prune_quick_snapshots(
     return _prune_quick_snapshots(_quick_snapshot_root(hermes_home), keep=keep)
 
 
+_QUICK_PRE_UPDATE_MAX_AGE_DAYS = 7
+
+
+def prune_pre_update_snapshots(
+    max_age_days: int = _QUICK_PRE_UPDATE_MAX_AGE_DAYS,
+    hermes_home: Optional[Path] = None,
+) -> int:
+    """Prune pre-update quick snapshots older than ``max_age_days``.
+
+    Only directories named ``YYYYMMDD-HHMMSS-pre-update`` are eligible.
+    Manual snapshots, non-pre-update labels, and unparseable names are skipped
+    to avoid deleting user-created rollback points. Timestamps are interpreted
+    as UTC, matching ``create_quick_snapshot``. Returns the number deleted.
+    """
+    root = _quick_snapshot_root(hermes_home)
+    if not root.exists():
+        return 0
+
+    cutoff = datetime.now(timezone.utc).timestamp() - max_age_days * 86400
+    deleted = 0
+    for snapshot_dir in sorted(root.iterdir()):
+        if not snapshot_dir.is_dir() or not snapshot_dir.name.endswith("-pre-update"):
+            continue
+
+        ts_part = snapshot_dir.name.removesuffix("-pre-update")
+        try:
+            snapshot_time = datetime.strptime(ts_part, "%Y%m%d-%H%M%S").replace(
+                tzinfo=timezone.utc
+            )
+        except ValueError:
+            continue
+
+        if snapshot_time.timestamp() >= cutoff:
+            continue
+
+        try:
+            shutil.rmtree(snapshot_dir)
+            deleted += 1
+        except OSError as exc:
+            logger.warning(
+                "Failed to prune old pre-update snapshot %s: %s", snapshot_dir.name, exc
+            )
+
+    return deleted
+
+
 def run_quick_backup(args) -> None:
     """CLI entry point for hermes backup --quick."""
     label = getattr(args, "label", None)

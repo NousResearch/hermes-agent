@@ -1318,6 +1318,34 @@ class TestQuickSnapshot:
         assert deleted == 7
         assert len(list_quick_snapshots(hermes_home=hermes_home)) == 3
 
+    def test_prune_pre_update_snapshots_deletes_only_old_pre_update(self, hermes_home):
+        from datetime import datetime, timedelta, timezone
+
+        from hermes_cli.backup import prune_pre_update_snapshots
+
+        snap_root = hermes_home / "state-snapshots"
+        snap_root.mkdir(parents=True)
+
+        old_ts = (datetime.now(timezone.utc) - timedelta(days=10)).strftime("%Y%m%d-%H%M%S")
+        fresh_ts = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y%m%d-%H%M%S")
+        manual_ts = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y%m%d-%H%M%S")
+
+        old_pre_update = snap_root / f"{old_ts}-pre-update"
+        fresh_pre_update = snap_root / f"{fresh_ts}-pre-update"
+        manual_snapshot = snap_root / f"{manual_ts}-manual"
+        unparseable_pre_update = snap_root / "manual-pre-update"
+
+        for snapshot_dir in (old_pre_update, fresh_pre_update, manual_snapshot, unparseable_pre_update):
+            snapshot_dir.mkdir()
+            (snapshot_dir / "manifest.json").write_text("{}")
+
+        assert prune_pre_update_snapshots(max_age_days=7, hermes_home=hermes_home) == 1
+
+        assert not old_pre_update.exists()
+        assert fresh_pre_update.exists()
+        assert manual_snapshot.exists()
+        assert unparseable_pre_update.exists()
+
     def test_snapshot_includes_pairing_directories(self, hermes_home):
         """Pairing JSONs live outside state.db — snapshot must capture them
         recursively (generic + per-platform) so approved-user lists survive

@@ -57,6 +57,7 @@ import {
   $gatewayState,
   $messages,
   $messagingSessions,
+  $newChatWorkspaceTargetGeneration,
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
@@ -70,6 +71,7 @@ import {
   setCurrentModel,
   setCurrentProvider,
   setMessages,
+  setNewChatWorkspaceTarget,
   setRememberedSessionId
 } from '../store/session'
 import { onSessionsChanged } from '../store/session-sync'
@@ -735,25 +737,32 @@ export function DesktopController() {
 
   const startSessionInWorkspace = useCallback(
     (path: null | string) => {
-      startFreshSessionDraft()
-
       // A worktree lane carries its own path; the trunk "+" can be path-less (the
       // main checkout is implicit), so fall back to the active project's root
       // instead of no-op'ing on null — that was "+ on main does nothing".
       const target = path?.trim() || resolveNewSessionCwd()
 
+      startFreshSessionDraft({ workspaceTarget: target || null })
+
       if (!target) {
         return
       }
+
+      const workspaceGeneration = $newChatWorkspaceTargetGeneration.get()
 
       // The next message creates the backend session in $currentCwd, so seed
       // it (and the branch) from the workspace the user clicked the + on.
       setCurrentCwd(target)
       void requestGateway<{ branch?: string; cwd?: string }>('config.get', { key: 'project', cwd: target })
         .then(info => {
+          if ($newChatWorkspaceTargetGeneration.get() !== workspaceGeneration || activeSessionIdRef.current) {
+            return
+          }
+
           const resolved = info.cwd || target
 
           setCurrentCwd(resolved)
+          setNewChatWorkspaceTarget(resolved)
           setCurrentBranch(info.branch || '')
 
           // An EXPLICIT target (a worktree/lane path — e.g. just-created via
@@ -768,9 +777,13 @@ export function DesktopController() {
             void followActiveSessionCwd(resolved)
           }
         })
-        .catch(() => undefined)
+        .catch(() => {
+          if ($newChatWorkspaceTargetGeneration.get() === workspaceGeneration && !activeSessionIdRef.current) {
+            setCurrentBranch('')
+          }
+        })
     },
-    [requestGateway, startFreshSessionDraft]
+    [activeSessionIdRef, requestGateway, startFreshSessionDraft]
   )
 
   // Composer "branch off into a new worktree": the composer already created the

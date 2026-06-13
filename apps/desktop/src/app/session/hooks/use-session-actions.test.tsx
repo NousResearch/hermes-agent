@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from '@testing-library/react'
+import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
 import { useEffect } from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -10,9 +10,12 @@ import {
   $activeSessionId,
   $currentCwd,
   $messages,
+  $newChatWorkspaceTarget,
   $resumeFailedSessionId,
   setActiveSessionId,
+  setCurrentCwd,
   setMessages,
+  setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
   setSessions
 } from '@/store/session'
@@ -31,6 +34,7 @@ vi.mock('@/hermes', async importOriginal => ({
 }))
 
 const RUNTIME_SESSION_ID = 'rt-new-001'
+type HarnessHandle = Pick<ReturnType<typeof useSessionActions>, 'createBackendSessionForSend' | 'startFreshSessionDraft'>
 
 function storedSession(overrides: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -55,7 +59,7 @@ function Harness({
   onReady,
   requestGateway
 }: {
-  onReady: (create: (preview?: string | null) => Promise<string | null>) => void
+  onReady: (handle: HarnessHandle) => void
   requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
 }) {
   const ref = <T,>(value: T): MutableRefObject<T> => ({ current: value })
@@ -78,13 +82,16 @@ function Harness({
   })
 
   useEffect(() => {
-    onReady(actions.createBackendSessionForSend)
-  }, [actions.createBackendSessionForSend, onReady])
+    onReady(actions)
+  }, [actions, onReady])
 
   return null
 }
 
-async function createWith(profileSetup: () => void): Promise<Record<string, unknown> | undefined> {
+async function createWith(
+  profileSetup: () => void,
+  beforeCreate?: (handle: HarnessHandle) => Promise<void> | void
+): Promise<Record<string, unknown> | undefined> {
   let createParams: Record<string, unknown> | undefined
 
   const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
@@ -97,13 +104,23 @@ async function createWith(profileSetup: () => void): Promise<Record<string, unkn
     return {} as never
   })
 
-  $currentCwd.set('')
+  setCurrentCwd('')
+  setNewChatWorkspaceTarget(undefined)
   profileSetup()
 
-  let create: ((preview?: string | null) => Promise<string | null>) | null = null
-  render(<Harness onReady={c => (create = c)} requestGateway={requestGateway} />)
-  await waitFor(() => expect(create).not.toBeNull())
-  await create!()
+  let handle: HarnessHandle | null = null
+  render(<Harness onReady={h => (handle = h)} requestGateway={requestGateway} />)
+  await waitFor(() => expect(handle).not.toBeNull())
+
+  if (beforeCreate) {
+    await act(async () => {
+      await beforeCreate(handle!)
+    })
+  }
+
+  await act(async () => {
+    await handle!.createBackendSessionForSend()
+  })
 
   return createParams
 }
@@ -113,7 +130,8 @@ describe('createBackendSessionForSend profile routing', () => {
     cleanup()
     $newChatProfile.set(null)
     $activeGatewayProfile.set('default')
-    $currentCwd.set('')
+    setCurrentCwd('')
+    setNewChatWorkspaceTarget(undefined)
     vi.restoreAllMocks()
   })
 
@@ -591,4 +609,45 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(methods).not.toContain('session.resume')
     expect(runtimeIdByStoredSessionIdRef.current.get('stored-A')).toBe('rt-A')
   })
+})
+
+describe('createBackendSessionForSend workspace target', () => {
+  afterEach(() => {
+    cleanup()
+    $newChatProfile.set(null)
+    $activeGatewayProfile.set('default')
+    setCurrentCwd('')
+    setNewChatWorkspaceTarget(undefined)
+    vi.restoreAllMocks()
+  })
+
+  it('omits cwd for an explicit no-workspace draft even when global cwd changes before send', async () => {
+    const params = await createWith(
+      () => {
+        $activeGatewayProfile.set('default')
+      },
+      handle => {
+        handle.startFreshSessionDraft({ workspaceTarget: null })
+        $currentCwd.set('/project-open-in-file-browser')
+      }
+    )
+
+    expect(params).not.toHaveProperty('cwd')
+    expect($newChatWorkspaceTarget.get()).toBeUndefined()
+  })
+
+  it('uses the clicked workspace target instead of a later global cwd value', async () => {
+    const params = await createWith(
+      () => {
+        $activeGatewayProfile.set('default')
+      },
+      handle => {
+        handle.startFreshSessionDraft({ workspaceTarget: '/clicked-workspace' })
+        $currentCwd.set('/project-open-in-file-browser')
+      }
+    )
+
+    expect(params).toMatchObject({ cwd: '/clicked-workspace' })
+  })
+
 })

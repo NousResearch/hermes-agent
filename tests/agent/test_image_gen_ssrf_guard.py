@@ -1,6 +1,6 @@
 """Tests for save_url_image SSRF guard in agent.image_gen_provider."""
 import pytest
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import patch, MagicMock
 
 
 @pytest.fixture(autouse=True)
@@ -113,15 +113,17 @@ def test_save_url_image_multi_hop_redirect_validates_each_hop():
     def _is_safe(url: str) -> bool:
         return "10.0.0.1" not in url
 
-    with patch("requests.get", side_effect=[hop1, hop2]), \
+    with patch("requests.get", side_effect=[hop1, hop2]) as mock_get, \
          patch("tools.url_safety.is_safe_url", side_effect=_is_safe):
         with pytest.raises(ValueError, match="redirect target.*10\\.0\\.0\\.1"):
             save_url_image("https://cdn.example.com/image.png")
 
         # hop2's Location was private → third request must NOT happen
         # (only 2 requests: initial + safe redirect)
-        from unittest.mock import _CallList
-        # Verify the private URL was never fetched
+        assert mock_get.call_count == 2
+        # The private URL (10.0.0.1) must never appear in any request
+        for c in mock_get.call_args_list:
+            assert "10.0.0.1" not in c.args[0]
 
 
 def test_save_url_image_too_many_redirects_raises():
